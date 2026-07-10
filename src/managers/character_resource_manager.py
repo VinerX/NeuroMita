@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 from main_logger import logger
+from managers.history_manager import HistoryManager
+from managers.memory_manager import MemoryManager
+from managers.reminder_manager import ReminderManager
 
 
 @dataclass
@@ -15,19 +18,18 @@ class _CharacterDescriptor:
 
 
 class CharacterResourceManager:
-    """Единый владелец runtime-хранилищ всех персонажей.
-
-    Character остаётся доменным объектом и лишь предоставляет совместимые
-    свойства ``history_manager``, ``memory_system`` и ``reminder_system``.
-    Реальные менеджеры создаются лениво и не дублируются для одного char_id.
-    """
+    """Application-scoped owner of one history, memory and reminder service."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._descriptors: dict[str, _CharacterDescriptor] = {}
-        self._histories: dict[str, object] = {}
-        self._memories: dict[str, object] = {}
-        self._reminders: dict[str, object] = {}
+        self._history_views: dict[str, object] = {}
+        self._memory_views: dict[str, object] = {}
+        self._reminder_views: dict[str, object] = {}
+
+        self.history_manager = HistoryManager()
+        self.memory_manager = MemoryManager()
+        self.reminder_manager = ReminderManager()
 
     @staticmethod
     def _key(character_id: str) -> str:
@@ -46,18 +48,35 @@ class CharacterResourceManager:
         with self._lock:
             descriptor = self._descriptors.get(key)
             if descriptor is None:
-                self._descriptors[key] = _CharacterDescriptor(
+                descriptor = _CharacterDescriptor(
                     character_id=key,
                     character_name=str(character_name or key),
                     prompt_set_path=str(prompt_set_path or ""),
                 )
+                self._descriptors[key] = descriptor
             else:
-                descriptor.character_name = str(character_name or descriptor.character_name or key)
-                descriptor.prompt_set_path = str(prompt_set_path or descriptor.prompt_set_path or "")
+                descriptor.character_name = str(
+                    character_name or descriptor.character_name or key
+                )
+                descriptor.prompt_set_path = str(
+                    prompt_set_path or descriptor.prompt_set_path or ""
+                )
 
-            memory = self._memories.get(key)
-            if memory is not None:
-                memory.prompt_set_path = descriptor.prompt_set_path
+            self.history_manager.register_scope(
+                key,
+                descriptor.character_name,
+                descriptor.prompt_set_path,
+            )
+            self.memory_manager.register_scope(
+                key,
+                descriptor.character_name,
+                descriptor.prompt_set_path,
+            )
+            self.reminder_manager.register_scope(
+                key,
+                descriptor.character_name,
+                descriptor.prompt_set_path,
+            )
 
     def update_prompt_set_path(self, character_id: str, prompt_set_path: str) -> None:
         key = self._key(character_id)
@@ -67,81 +86,84 @@ class CharacterResourceManager:
                 descriptor = _CharacterDescriptor(key, key)
                 self._descriptors[key] = descriptor
             descriptor.prompt_set_path = str(prompt_set_path or "")
-            memory = self._memories.get(key)
-            if memory is not None:
-                memory.prompt_set_path = descriptor.prompt_set_path
+            self.register_character(
+                key,
+                descriptor.character_name,
+                descriptor.prompt_set_path,
+            )
 
-    def _descriptor(self, character_id: str, character_name: str = "") -> _CharacterDescriptor:
+    def _descriptor(
+        self,
+        character_id: str,
+        character_name: str = "",
+    ) -> _CharacterDescriptor:
         key = self._key(character_id)
         descriptor = self._descriptors.get(key)
         if descriptor is None:
             descriptor = _CharacterDescriptor(key, str(character_name or key))
             self._descriptors[key] = descriptor
+            self.register_character(key, descriptor.character_name, "")
         return descriptor
 
     def history_for(self, character_id: str, character_name: str = ""):
-        key = self._key(character_id)
         with self._lock:
-            manager = self._histories.get(key)
-            if manager is None:
-                from managers.history_manager import HistoryManager
-
-                descriptor = self._descriptor(key, character_name)
-                manager = HistoryManager(
-                    character_name=descriptor.character_name,
-                    character_id=key,
+            descriptor = self._descriptor(character_id, character_name)
+            view = self._history_views.get(descriptor.character_id)
+            if view is None:
+                view = self.history_manager.bind(
+                    descriptor.character_id,
+                    descriptor.character_name,
+                    descriptor.prompt_set_path,
                 )
-                self._histories[key] = manager
-                logger.debug(f"[CharacterResources] HistoryManager created for {key}")
-            return manager
+                self._history_views[descriptor.character_id] = view
+            return view
 
     def memory_for(self, character_id: str, character_name: str = ""):
-        key = self._key(character_id)
         with self._lock:
-            manager = self._memories.get(key)
-            if manager is None:
-                from managers.memory_manager import MemoryManager
-
-                descriptor = self._descriptor(key, character_name)
-                manager = MemoryManager(key)
-                manager.prompt_set_path = descriptor.prompt_set_path
-                self._memories[key] = manager
-                logger.debug(f"[CharacterResources] MemoryManager created for {key}")
-            return manager
+            descriptor = self._descriptor(character_id, character_name)
+            view = self._memory_views.get(descriptor.character_id)
+            if view is None:
+                view = self.memory_manager.bind(
+                    descriptor.character_id,
+                    descriptor.character_name,
+                    descriptor.prompt_set_path,
+                )
+                self._memory_views[descriptor.character_id] = view
+            return view
 
     def reminders_for(self, character_id: str, character_name: str = ""):
-        key = self._key(character_id)
         with self._lock:
-            manager = self._reminders.get(key)
-            if manager is None:
-                from managers.reminder_manager import ReminderManager
-
-                self._descriptor(key, character_name)
-                manager = ReminderManager(key)
-                self._reminders[key] = manager
-                logger.debug(f"[CharacterResources] ReminderManager created for {key}")
-            return manager
+            descriptor = self._descriptor(character_id, character_name)
+            view = self._reminder_views.get(descriptor.character_id)
+            if view is None:
+                view = self.reminder_manager.bind(
+                    descriptor.character_id,
+                    descriptor.character_name,
+                    descriptor.prompt_set_path,
+                )
+                self._reminder_views[descriptor.character_id] = view
+            return view
 
     def shutdown(self) -> None:
-        """Останавливает process-wide фоновые executors менеджеров."""
-        for manager_type in ("history", "memory", "rag"):
+        for name, callback in (
+            ("history", self.history_manager.shutdown_executor),
+            ("memory", self.memory_manager.shutdown_executor),
+        ):
             try:
-                if manager_type == "history":
-                    from managers.history_manager import HistoryManager
-
-                    HistoryManager.shutdown_executor()
-                elif manager_type == "memory":
-                    from managers.memory_manager import MemoryManager
-
-                    MemoryManager.shutdown_executor()
-                else:
-                    from managers.rag.rag_manager import RAGManager
-
-                    RAGManager.shutdown_executor()
+                callback()
             except Exception as exc:
                 logger.warning(
-                    f"[CharacterResources] Failed to shutdown {manager_type} executor: {exc}"
+                    f"[CharacterResources] Failed to shutdown {name} executor: {exc}"
                 )
+
+        try:
+            from managers.rag.rag_manager import RAGManager
+
+            RAGManager.shutdown_executor()
+        except Exception as exc:
+            logger.warning(
+                f"[CharacterResources] Failed to shutdown rag executor: {exc}"
+            )
 
 
 _global_resources: Optional[CharacterResourceManager] = None

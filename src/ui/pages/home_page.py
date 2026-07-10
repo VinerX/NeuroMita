@@ -30,8 +30,6 @@ _UPDATE_CHECK_THROTTLE_SEC = 600
 
 from core.events import Events
 from main_logger import logger
-from ui.pages.news_support import build_release_news_items, load_news_releases_async
-from ui.widgets.launcher_dashboard_helpers import NewsItem
 from utils import _
 from localization.live import tr_set
 
@@ -255,7 +253,9 @@ class HomePage(LauncherHomeBackground):
         except Exception as exc:
             logger.info(f"Install signals subscribe skipped: {exc}")
 
-    def _get_release_news_items(self, limit: int = 3) -> list[NewsItem]:
+    def _get_release_news_items(self, limit: int = 3):
+        from ui.pages.news_support import build_release_news_items
+
         return build_release_news_items(self.gui, limit=limit)
 
     def _build_home_update_chip(self) -> QFrame:
@@ -674,6 +674,8 @@ class HomePage(LauncherHomeBackground):
         return qta.icon(icon_name, color="#ffffff")
 
     def refresh_news_content(self):
+        from ui.pages.news_support import load_news_releases_async
+
         # Лента релизов грузится в фоне (load_news_releases_async), чтобы старт
         # главной страницы и кнопка обновления не морозили GUI при недоступном
         # GitHub. Перерисовка панели — в GUI-потоке через _queue_ui_call.
@@ -692,6 +694,8 @@ class HomePage(LauncherHomeBackground):
 
         release_items = self._get_release_news_items(limit=3)
         if not release_items:
+            from ui.widgets.launcher_dashboard_helpers import NewsItem
+
             release_items = [
                 NewsItem(
                     _("Релизы недоступны", "Releases unavailable"),
@@ -742,6 +746,7 @@ class HomePage(LauncherHomeBackground):
         self.refresh_primary_label()
 
     def on_activated(self):
+        self._connect_install_signals()
         self.refresh_status_cards()
         self.refresh_news_content()
         self._refresh_update_state()

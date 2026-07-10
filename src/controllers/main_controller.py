@@ -1,29 +1,12 @@
+from __future__ import annotations
+
 import threading
-from controllers.capture_controller import CaptureController
-from controllers.model_controller import ModelController
-from controllers.character_controller import CharacterController
-from controllers.settings_controller import SettingsController
-from controllers.chat_controller import ChatController
-from controllers.loop_controller import LoopController
-from controllers.task_controller import TaskController
-from controllers.api_presets_controller import ApiPresetsController
-from controllers.embedding_presets_controller import EmbeddingPresetsController
-from controllers.local_voice_controller import LocalVoiceController
-from controllers.prompt_controller import PromptController
-from controllers.history_controller import HistoryController
-from controllers.graph_controller import GraphController
-from controllers.voice_model_controller import VoiceModelController
-from controllers.install_controller import InstallController
-from controllers.installable_controller import InstallableController
-from controllers.protocols_controller import ProtocolsController
-from controllers.embedding_controller import EmbeddingController
-from controllers.ai_engine_controller import AIEngineController
 
 from main_logger import logger
-from utils.pip_installer import PipInstaller
 from core.events import get_event_bus, Events, Event, shutdown_event_bus
 from core.app_paths import settings_dir, settings_path
 from core.executors import executors
+from startup.startup_profiler import startup_trace
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
 from services.contracts import (
@@ -45,11 +28,16 @@ from services.loop_service import NoLoopService
 from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 
-from controllers.server_controller import ServerController
 
 
 class MainController:
-    def __init__(self, view, startup_mode: str = "full"):
+    def __init__(
+        self,
+        view,
+        startup_mode: str = "full",
+        settings_controller: SettingsController | None = None,
+    ):
+        startup_trace.mark("controller.main.start", startup_mode=startup_mode)
         self.view = view
         self.event_bus = get_event_bus()
         self.startup_mode = self._normalize_startup_mode(startup_mode)
@@ -70,8 +58,13 @@ class MainController:
 
         # Композиционный корень: инфраструктурные сервисы регистрируются
         # в порядке зависимостей до создания остальных контроллеров.
-        self.settings_controller = SettingsController(self.config_path)
+        if settings_controller is None:
+            from controllers.settings_controller import SettingsController
+
+            settings_controller = SettingsController(self.config_path)
+        self.settings_controller = settings_controller
         self.settings = self.settings_controller.settings
+        startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
 
         if self.backend_enabled:
@@ -95,6 +88,26 @@ class MainController:
             self._subscribe_to_events()
             logger.notify("MainController initialized in GUI-only mode.")
             return
+
+        from controllers.ai_engine_controller import AIEngineController
+        from controllers.api_presets_controller import ApiPresetsController
+        from controllers.capture_controller import CaptureController
+        from controllers.character_controller import CharacterController
+        from controllers.chat_controller import ChatController
+        from controllers.embedding_controller import EmbeddingController
+        from controllers.embedding_presets_controller import EmbeddingPresetsController
+        from controllers.graph_controller import GraphController
+        from controllers.history_controller import HistoryController
+        from controllers.install_controller import InstallController
+        from controllers.installable_controller import InstallableController
+        from controllers.local_voice_controller import LocalVoiceController
+        from controllers.loop_controller import LoopController
+        from controllers.model_controller import ModelController
+        from controllers.prompt_controller import PromptController
+        from controllers.protocols_controller import ProtocolsController
+        from controllers.task_controller import TaskController
+        from controllers.voice_model_controller import VoiceModelController
+        from utils.pip_installer import PipInstaller
 
         self.loop_controller = LoopController()
         logger.notify("LoopController initialized.")
@@ -130,7 +143,9 @@ class MainController:
         self.installable_controller = InstallableController()
         logger.notify("InstallableController initialized.")
 
+        startup_trace.mark("controller.ai_engine.start")
         self.ai_engine_controller = AIEngineController()
+        startup_trace.mark("controller.ai_engine.created")
         services().register(AIEngineService, self.ai_engine_controller, replace=True)
         logger.notify(
             f"AIEngineController успешно инициализирован (mode={getattr(self.ai_engine_controller, 'mode', 'unknown')})."
@@ -176,10 +191,17 @@ class MainController:
         self.voice_model_controller = VoiceModelController(config_dir=target_folder)
         logger.notify("VoiceModelController (backend) успешно инициализирован.")
 
+        startup_trace.mark("controller.characters.start")
         self.character_controller = CharacterController(self.settings)
+        startup_trace.mark(
+            "controller.characters.ready",
+            loaded=len(self.character_controller.character_manager.characters),
+        )
         logger.notify("CharacterController успешно инициализирован.")
 
+        startup_trace.mark("controller.model.start")
         self.model_controller = ModelController(self.settings)
+        startup_trace.mark("controller.model.ready")
         logger.notify("ModelController успешно инициализирован.")
 
         self.embedding_controller = EmbeddingController()
@@ -190,7 +212,10 @@ class MainController:
         logger.notify("CaptureController успешно инициализирован.")
 
         from controllers.reminder_controller import ReminderController
-        self.reminder_controller = ReminderController(self.settings)
+        self.reminder_controller = ReminderController(
+            self.settings,
+            character_resources=self.character_controller.character_manager.resources,
+        )
         logger.notify("ReminderController успешно инициализирован.")
 
         self.speech_controller = None
@@ -202,7 +227,9 @@ class MainController:
         except Exception as exc:
             logger.warning(f"Speech recognition disabled: {exc}")
 
+        startup_trace.mark("controller.server.start")
         self._init_server_controller()
+        startup_trace.mark("controller.server.ready")
 
         self.chat_controller = ChatController(self.settings)
         logger.notify("ChatController успешно инициализирован.")
@@ -215,6 +242,8 @@ class MainController:
         if self.headless:
             self.settings_controller.load_api_settings(False)
         logger.notify("MainController подписался на события")
+        startup_trace.mark("controller.main.ready", headless=self.headless)
+        startup_trace.write()
 
     @staticmethod
     def _normalize_startup_mode(startup_mode: str | None) -> str:
@@ -231,6 +260,8 @@ class MainController:
         # влияет и оставлена только для совместимости со старыми settings.json.
         if getattr(self, 'server_controller', None):
             return
+
+        from controllers.server_controller import ServerController
 
         self.server_controller = ServerController(self.game_link)
         logger.notify("ServerController (новый API) успешно инициализирован.")
@@ -249,6 +280,14 @@ class MainController:
             except Exception:
                 pass
             self.gui_controller = GuiController(self, view)
+            setattr(view, "backend_ready", True)
+            setattr(view, "backend_startup_error", "")
+            try:
+                from ui.widgets.chat_panel import update_send_button_state
+
+                update_send_button_state(view)
+            except Exception:
+                pass
             logger.notify("GuiController успешно инициализирован.")
             if self.backend_enabled:
                 self.settings_controller.load_api_settings(False)

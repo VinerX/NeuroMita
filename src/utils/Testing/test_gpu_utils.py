@@ -41,7 +41,7 @@ class GpuUtilsTests(unittest.TestCase):
         check_output_mock.assert_not_called()
 
     def test_get_primary_gpu_info_prefers_discrete_nvidia_name(self):
-        with patch(
+        with patch("utils.gpu_utils.platform.system", return_value="Windows"), patch(
             "utils.gpu_utils.subprocess.check_output",
             return_value="Name\nIntel(R) Iris(R) Xe Graphics\nNVIDIA GeForce RTX 4060 Laptop GPU\n",
         ):

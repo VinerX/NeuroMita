@@ -13,13 +13,14 @@ from typing import Any, Optional, ClassVar
 
 from main_logger import logger
 from managers.database_manager import DatabaseManager
+from managers.character_scoped_service import CharacterScopedService
 
 
 # TODO: Decompose — this class is 1100+ lines. Consider splitting into:
 #   history_reader.py (load_history, get_messages, pagination)
 #   history_writer.py (add_message, save_history, _insert_history_row)
 #   variable_store.py (update_variable, update_variables_batch, load/save vars)
-class HistoryManager:
+class HistoryManager(CharacterScopedService):
     """
     HistoryManager (SQL):
     - хранит историю в SQLite (таблица history)
@@ -66,33 +67,64 @@ class HistoryManager:
         "meta_data",
     )
 
-    def __init__(self, character_name: str = "Common", history_file_name: str = "", character_id: str | None = None):
-        self.character_name = str(character_name or "Common")
-        self.character_id = str(character_id or "").strip()
-        self.storage_key = self.character_id or self.character_name
-
+    def __init__(self, character_name: str = "", history_file_name: str = "", character_id: str | None = None):
+        super().__init__(
+            default_character_id=str(character_id or character_name or ""),
+            default_character_name=str(character_name or character_id or ""),
+        )
         self.db = DatabaseManager()
 
-        # кеш фактических колонок history
+        # Схема общая для всех персонажей и проверяется один раз на сервис.
         self._history_cols: set[str] = set()
-        # сериализация write-операций для дедуп/check-then-insert (class-level per character)
-        self._write_lock = self._get_char_write_lock(self.storage_key)
 
-        # небольшой кеш для картинок: filename -> file_path
-        self._img_cache_lock = Lock()
-        self._img_path_cache: dict[str, str] = {}
+        # Character-local state remains data inside the single service instance.
+        self._img_cache_locks: dict[str, Lock] = {}
+        self._img_path_caches: dict[str, dict[str, str]] = {}
+        self._rags: dict[str, object | None] = {}
+        self._rag_initialized: set[str] = set()
 
-        # Гарантируем схему (и наполняем кеш)
         self._ensure_history_schema()
 
-        # RAG опционален: любые проблемы не должны ломать основную логику
-        # Lazy import to avoid pulling heavy ML dependencies when RAG is disabled
+    @property
+    def _write_lock(self) -> Lock:
+        return self._get_char_write_lock(self.storage_key)
+
+    @property
+    def _img_cache_lock(self) -> Lock:
+        key = self.storage_key
+        lock = self._img_cache_locks.get(key)
+        if lock is None:
+            lock = Lock()
+            self._img_cache_locks[key] = lock
+        return lock
+
+    @property
+    def _img_path_cache(self) -> dict[str, str]:
+        return self._img_path_caches.setdefault(self.storage_key, {})
+
+    @property
+    def rag(self):
+        key = self.storage_key
+        if key in self._rag_initialized:
+            return self._rags.get(key)
+        self._rag_initialized.add(key)
         try:
             from managers.rag.rag_manager import RAGManager
-            self.rag = RAGManager.for_character(self.storage_key)
-        except Exception as e:
-            logger.warning(f"RAGManager init failed (RAG disabled for this session): {e}", exc_info=True)
-            self.rag = None
+
+            self._rags[key] = RAGManager.for_character(key)
+        except Exception as exc:
+            logger.warning(
+                f"RAGManager init failed for {key} (RAG disabled for this session): {exc}",
+                exc_info=True,
+            )
+            self._rags[key] = None
+        return self._rags.get(key)
+
+    @rag.setter
+    def rag(self, value) -> None:
+        key = self.storage_key
+        self._rag_initialized.add(key)
+        self._rags[key] = value
 
     # ---------------------------------------------------------------------
     # Embedding async helpers

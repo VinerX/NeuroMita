@@ -2,13 +2,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QStackedWidget, QVBoxLayout, QWidget
 
 from styles.main_styles import get_stylesheet
-from ui.pages.home_page import build_home_page
-from ui.pages.logs_page import build_logs_page
 from ui.pages.main_page_registry import MAIN_PAGE_ORDER, get_main_page_factory
-from ui.pages.news_page import build_news_page
-from ui.pages.news_support import get_news_content as load_news_content
-from ui.pages.news_support import get_news_releases as load_news_releases
-from ui.pages.news_support import load_news_releases_async
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
 from ui.widgets.settings_panel import apply_section_visibility
 from ui.windows.app_window_base import AppWindowBase
@@ -26,7 +20,7 @@ class MainWindow(AppWindowBase):
         main_layout.setSpacing(0)
 
         self.shell_sidebar = LauncherSidebarWidget(
-            initial_page="sandbox",
+            initial_page="home",
             on_page_requested=self.switch_main_page,
         )
         self.shell_sidebar.social_requested.connect(self._on_shell_social_requested)
@@ -51,7 +45,13 @@ class MainWindow(AppWindowBase):
         main_layout.addWidget(content_host, 1)
 
         self.page_map = {}
-        self._deferred_main_pages = {"home", "news", "developer", "wiki", "logs"}
+        self._deferred_main_pages = {
+            "sandbox",
+            "news",
+            "developer",
+            "wiki",
+            "logs",
+        }
         self._page_building = set()
         self._page_placeholders = {}
         self._pending_page_actions = {}
@@ -61,19 +61,16 @@ class MainWindow(AppWindowBase):
         except Exception:
             pass
 
-        self._ensure_main_page("sandbox", eager=True)
-        self.switch_main_page("sandbox")
+        self._ensure_main_page("home", eager=True)
+        self.switch_main_page("home", activate=False)
         self._apply_initial_geometry(1560, 920)
-        QTimer.singleShot(0, self._prefetch_release_feed)
-        # Настройки — самая тяжёлая страница по сборке виджетов; раньше она
-        # строилась лениво по первому клику и подвисала. Прогреваем её в фоне
-        # (в простое после первой отрисовки), как и ленту релизов, чтобы открытие
-        # было мгновенным. Виджеты можно создавать только в GUI-потоке, поэтому
-        # это отложенная сборка на главном потоке, а не отдельный поток.
+        # Settings construction is intentionally opt-in. Building hundreds of
+        # widgets shortly after show stalls the GUI thread and corrupts startup
+        # latency; the page remains lazy unless the user explicitly enables it.
         try:
-            prebuild_settings = bool(self.settings.get("PREBUILD_SETTINGS_PAGE_ON_STARTUP", True))
+            prebuild_settings = bool(self.settings.get("PREBUILD_SETTINGS_PAGE_ON_STARTUP", False))
         except Exception:
-            prebuild_settings = True
+            prebuild_settings = False
         if prebuild_settings:
             QTimer.singleShot(450, self._prebuild_settings_page)
 
@@ -88,6 +85,8 @@ class MainWindow(AppWindowBase):
         данные уже готовы. Колбэк-заглушка ничего не трогает в GUI.
         """
         try:
+            from ui.pages.news_support import load_news_releases_async
+
             load_news_releases_async(self, lambda _releases: None)
         except Exception:
             pass
@@ -251,7 +250,7 @@ class MainWindow(AppWindowBase):
         if page is not None:
             page.show_category(category, force=force, subsection=subsection)
 
-    def switch_main_page(self, page_key):
+    def switch_main_page(self, page_key, *, activate: bool = True):
         if page_key not in MAIN_PAGE_ORDER or not hasattr(self, "page_stack"):
             return
         page = self._ensure_main_page(page_key)
@@ -269,8 +268,17 @@ class MainWindow(AppWindowBase):
             self.shell_sidebar.set_active_page(page_key)
 
         is_placeholder = self._page_placeholders.get(page_key) is page
-        if not is_placeholder and hasattr(page, "on_activated"):
+        if activate and not is_placeholder and hasattr(page, "on_activated"):
             page.on_activated()
+
+    def activate_current_main_page(self):
+        page_key = getattr(self, "current_main_page", "")
+        page = getattr(self, "page_map", {}).get(page_key)
+        if page is None or self._page_placeholders.get(page_key) is page:
+            return False
+        if hasattr(page, "on_activated"):
+            page.on_activated()
+        return True
 
     def open_release_page(self, release_id: str = ""):
         self.switch_main_page("news")
@@ -280,12 +288,18 @@ class MainWindow(AppWindowBase):
         )
 
     def _build_home_page(self):
+        from ui.pages.home_page import build_home_page
+
         return build_home_page(self)
 
     def _build_news_page(self):
+        from ui.pages.news_page import build_news_page
+
         return build_news_page(self)
 
     def _build_logs_page(self):
+        from ui.pages.logs_page import build_logs_page
+
         return build_logs_page(self)
 
     def _refresh_logs_view(self):
@@ -299,10 +313,14 @@ class MainWindow(AppWindowBase):
             page.refresh_content()
 
     def get_news_content(self):
-        return load_news_content(self)
+        from ui.pages.news_support import get_news_content
+
+        return get_news_content(self)
 
     def get_news_releases(self):
-        return load_news_releases(self)
+        from ui.pages.news_support import get_news_releases
+
+        return get_news_releases(self)
 
     def _refresh_home_primary_label(self):
         page = getattr(self, "home_page", None)

@@ -5,6 +5,11 @@ import os
 import sys
 from dataclasses import dataclass
 
+from startup.startup_profiler import startup_trace
+
+startup_trace.claim_owner()
+startup_trace.mark("entry.module_loaded")
+
 os.environ.setdefault("QT_API", "pyqt6")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("UV_LINK_MODE", "copy")
@@ -82,59 +87,134 @@ def _run_gui(runtime, startup_mode: str) -> int:
     if QApplication is None:
         raise RuntimeError("GUI runtime was not initialized")
 
-    from controllers.main_controller import MainController
-    from ui.windows.main_window import MainWindow
-
+    startup_trace.mark("gui.host.start")
     logger.success("Функция main() запущена")
-    app = QApplication(sys.argv)
+    with startup_trace.phase("gui.qapplication_create"):
+        app = QApplication(sys.argv)
     logger.info("QApplication создан")
 
     from ui.wheel_guard import install_combobox_wheel_guard
 
     install_combobox_wheel_guard(app)
 
-    if sys.platform == "win32":
-        try:
-            import ctypes
+    try:
+        from PyQt6.QtGui import QIcon
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "mycompany.myproduct.subproduct.version"
-            )
+        app.setWindowIcon(QIcon("Icon.ico"))
+    except Exception:
+        pass
+
+    with startup_trace.phase("gui.shell_services_create"):
+        from controllers.settings_controller import SettingsController
+        from core.app_paths import settings_path
+        from core.services import services
+        from services.character_registry import SettingsOnlyCharacterRegistry
+        from services.contracts import (
+            AppVarsService,
+            CharacterRegistry,
+            GameLinkService,
+            LoopService,
+            SettingsService,
+        )
+        from services.game_link_service import DisconnectedGameLinkService
+        from services.loop_service import NoLoopService
+        from services.settings_service import DefaultAppVarsService
+
+        shell_settings_controller = SettingsController(
+            str(settings_path("settings.json", create_parent=True))
+        )
+        shell_settings_service = services().get(SettingsService)
+        shell_game_link = DisconnectedGameLinkService()
+        services().register(GameLinkService, shell_game_link, replace=True)
+        services().register(LoopService, NoLoopService(), replace=True)
+        services().register(
+            CharacterRegistry,
+            SettingsOnlyCharacterRegistry(shell_settings_service),
+            replace=True,
+        )
+        services().register(
+            AppVarsService,
+            DefaultAppVarsService(shell_settings_service, shell_game_link),
+            replace=True,
+        )
+
+    with startup_trace.phase("gui.window_import"):
+        from ui.windows.main_window import MainWindow
+
+    logger.info("Создаю MainWindow...")
+    with startup_trace.phase("gui.window_create"):
+        main_window = MainWindow(shell_settings_controller.settings)
+    logger.info("MainWindow создан")
+
+    main_window.show()
+    startup_trace.mark("gui.window_shown")
+    app.processEvents()
+    startup_trace.mark("gui.first_paint")
+    startup_trace.write()
+
+    from PyQt6.QtCore import QTimer
+    from startup.gui_backend_loader import GuiBackendLoader
+
+    def on_backend_ready(controller) -> None:
+        try:
+            with startup_trace.phase("gui.controller_attach"):
+                controller.update_view(main_window)
+            QTimer.singleShot(0, main_window.load_chat_history)
+            startup_trace.mark("gui.backend_attached")
+            startup_trace.write()
+            home_page = getattr(main_window, "home_page", None)
+            if home_page is not None:
+                home_page.refresh_status_cards()
+        except Exception as exc:
+            logger.error(f"Failed to attach GUI backend: {exc}", exc_info=True)
+            try:
+                controller.close_app()
+            except Exception:
+                pass
+            on_backend_failed(exc)
+
+    def on_backend_failed(error: BaseException) -> None:
+        message = f"Backend startup failed: {type(error).__name__}: {error}"
+        logger.error(message)
+        main_window.backend_ready = False
+        main_window.backend_startup_error = message
+        try:
+            from ui.widgets.chat_panel import update_send_button_state
+
+            update_send_button_state(main_window)
+            main_window._set_home_progress(message, 0, 1, busy=False)
         except Exception:
             pass
 
-    logger.info("Создаю MainController...")
-    controller = MainController(None, startup_mode=startup_mode)
-    logger.info("MainController создан")
-
-    try:
-        from managers.finetune_collector import FineTuneCollector
-        from managers.generation_input_collector import GenerationInputCollector
-
-        FineTuneCollector.instance = FineTuneCollector()
-        GenerationInputCollector.instance = GenerationInputCollector()
-        logger.info("FineTuneCollector инициализирован")
-    except Exception as exc:
-        logger.warning(f"FineTuneCollector не инициализирован: {exc}")
-
-    logger.info("Создаю MainWindow...")
-    main_window = MainWindow(controller.settings)
-    logger.info("MainWindow создан")
-    controller.update_view(main_window)
-    main_window.load_chat_history()
+    backend_loader = GuiBackendLoader(
+        runtime=runtime,
+        startup_mode=startup_mode,
+        settings_controller=shell_settings_controller,
+        on_ready=on_backend_ready,
+        on_failed=on_backend_failed,
+        parent=app,
+    )
+    main_window.backend_loader = backend_loader
+    app.aboutToQuit.connect(backend_loader.request_shutdown)
 
     try:
         from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
 
-        install_dark_titlebar_sync(app, True)
-        apply_dark_titlebar(main_window, True)
+        install_dark_titlebar_sync(main_window)
+        apply_dark_titlebar(main_window)
     except Exception:
         pass
 
-    app.aboutToQuit.connect(controller.close_app)
-    main_window.show()
+    QTimer.singleShot(0, main_window.activate_current_main_page)
+    QTimer.singleShot(0, backend_loader.start)
+    startup_trace.mark("gui.ready_for_event_loop")
+    startup_trace.write()
     logger.info("Запускаю app.exec()...")
-    return int(app.exec())
+    result = int(app.exec())
+    backend_loader.request_shutdown()
+    if not backend_loader.wait(timeout=5.0):
+        logger.warning("GUI backend startup thread did not stop within 5 seconds")
+    return result
 
 
 def _run_headless(runtime, options: StartupOptions) -> int:
@@ -153,10 +233,17 @@ def _run_headless(runtime, options: StartupOptions) -> int:
 def main() -> int:
     mp.freeze_support()
     options = _consume_startup_options(sys.argv)
+    startup_trace.configure(mode=options.mode)
+    startup_trace.mark("entry.options_parsed", mode=options.mode)
 
     from startup.runtime_bootstrap import initialize_runtime
 
-    runtime = initialize_runtime(__file__, load_gui=options.mode != "headless")
+    runtime = initialize_runtime(
+        __file__,
+        load_gui=options.mode != "headless",
+        defer_backend_bootstrap=options.mode != "headless",
+    )
+    startup_trace.mark("entry.runtime_initialized")
     if options.mode == "headless":
         return _run_headless(runtime, options)
     return _run_gui(runtime, options.mode)

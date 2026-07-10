@@ -8,18 +8,36 @@ import re
 import sys
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from startup.startup_profiler import startup_trace
 
-@dataclass(frozen=True)
+
+@dataclass
 class RuntimeContext:
     base_dir: str
     libs_dir: str
     QApplication: Any
     logger: Any
     crash_log_handle: Any = None
+    _backend_bootstrap: Callable[[], None] | None = field(default=None, repr=False)
+    _backend_bootstrap_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+    )
+    _backend_bootstrap_done: bool = field(default=False, repr=False)
+
+    def ensure_backend_bootstrap(self) -> None:
+        if self._backend_bootstrap_done:
+            return
+        with self._backend_bootstrap_lock:
+            if self._backend_bootstrap_done:
+                return
+            if self._backend_bootstrap is not None:
+                self._backend_bootstrap()
+            self._backend_bootstrap_done = True
 
 
 def _resolve_base_dir(entry_file: str | None = None) -> str:
@@ -339,6 +357,7 @@ def initialize_runtime(
     entry_file: str | None = None,
     *,
     load_gui: bool = True,
+    defer_backend_bootstrap: bool = False,
 ) -> RuntimeContext:
     os.environ.setdefault("QT_API", "pyqt6")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -348,12 +367,16 @@ def initialize_runtime(
         os.environ["TORCH_LOGS"] = "+dynamo"
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
 
-    base_dir = _resolve_base_dir(entry_file)
-    libs_dir = _configure_paths(base_dir)
-    crash_log = _configure_crash_logging(base_dir)
+    with startup_trace.phase("runtime.resolve_paths"):
+        base_dir = _resolve_base_dir(entry_file)
+        libs_dir = _configure_paths(base_dir)
+        startup_trace.configure(base_dir=base_dir)
+    with startup_trace.phase("runtime.crash_logging"):
+        crash_log = _configure_crash_logging(base_dir)
 
-    from main_logger import logger
-    from _version import __version__
+    with startup_trace.phase("runtime.logger_import"):
+        from main_logger import logger
+        from _version import __version__
 
     _install_exception_hooks(logger)
     logger.success(f"\n\n{_startup_banner('NeuroMita', __version__)}\n\n")
@@ -364,13 +387,37 @@ def initialize_runtime(
     logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
     logger.info(f"Lib: {libs_dir}")
 
-    _load_environment(base_dir, logger)
-    _prime_onnxruntime(logger)
-    _run_update_checks(base_dir, logger)
-    _run_torch_bootstrap(libs_dir, logger)
-    _apply_compatibility_patches(libs_dir, logger)
-    _ensure_project_root(base_dir, logger)
-    QApplication = _import_gui_runtime() if load_gui else None
+    with startup_trace.phase("runtime.environment"):
+        _load_environment(base_dir, logger)
+    with startup_trace.phase("runtime.onnxruntime_import"):
+        _prime_onnxruntime(logger)
+    # Update checks stay before GUI imports. Applying a source update after part
+    # of the application has already been imported would create a mixed-version
+    # process. The expensive backend compatibility work can safely happen after
+    # the first GUI paint, but still before backend controllers are imported.
+    with startup_trace.phase("runtime.update_checks"):
+        _run_update_checks(base_dir, logger)
+
+    def complete_backend_bootstrap() -> None:
+        with startup_trace.phase("runtime.torch_bootstrap"):
+            _run_torch_bootstrap(libs_dir, logger)
+        with startup_trace.phase("runtime.compatibility_patches"):
+            _apply_compatibility_patches(libs_dir, logger)
+        startup_trace.mark("runtime.backend_bootstrap_ready")
+        startup_trace.write()
+
+    backend_bootstrap_done = False
+    if not defer_backend_bootstrap:
+        complete_backend_bootstrap()
+        backend_bootstrap_done = True
+
+    with startup_trace.phase("runtime.project_root"):
+        _ensure_project_root(base_dir, logger)
+    with startup_trace.phase("runtime.qt_import", enabled=bool(load_gui)):
+        QApplication = _import_gui_runtime() if load_gui else None
+
+    startup_trace.mark("runtime.ready", gui=bool(load_gui))
+    startup_trace.write()
 
     return RuntimeContext(
         base_dir=base_dir,
@@ -378,4 +425,6 @@ def initialize_runtime(
         QApplication=QApplication,
         logger=logger,
         crash_log_handle=crash_log,
+        _backend_bootstrap=complete_backend_bootstrap,
+        _backend_bootstrap_done=backend_bootstrap_done,
     )

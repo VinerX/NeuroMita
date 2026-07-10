@@ -72,11 +72,14 @@ class _Harness:
     def __init__(self, settings: dict, bus: _FakeBus):
         self._settings = settings
         self.event_bus = bus
+        self.backend_ready = True
+        self.backend_startup_error = ""
         self.staged_image_data = []
         self.user_entry = None
         self.rendered: list = []
         self.image_preview_bar = None
         self.show_thinking_signal = _NoopSignal()
+        self.show_error_signal = _NoopSignal()
         self.run_ui_task_signal = _DirectGuiSignal()
 
     def _get_setting(self, key, default=None):
@@ -102,6 +105,16 @@ class SendMessageCaptureTests(unittest.TestCase):
     def tearDown(self):
         self.awb.message_renderer = self._orig_renderer
         self.awb.use = self._orig_registry_use
+
+    def test_backend_startup_blocks_early_send(self):
+        bus = _FakeBus()
+        h = _Harness({"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False}, bus)
+        h.backend_ready = False
+
+        result = h.send_message(user_input="too early")
+
+        self.assertFalse(result)
+        self.assertEqual(bus.emitted, [])
 
     def test_no_capture_enabled_sends_synchronously(self):
         bus = _FakeBus()

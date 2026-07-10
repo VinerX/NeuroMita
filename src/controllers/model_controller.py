@@ -1,7 +1,6 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
-from managers.rag.rag_manager import RAGManager
 import base64
 import json
 import datetime
@@ -9,7 +8,6 @@ import re
 import copy
 import threading
 from typing import Optional, Any
-import base64
 
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
@@ -158,18 +156,15 @@ class ModelController(GenerationService):
         return self._characters.current()
 
     def _refresh_chat_model_character_refs(self):
-        """Заполняем ссылки в ChatModel (он ещё держит их напрямую)."""
-        registry = self._characters
-        self.model.current_character = registry.current()
-
-        chars_map = {}
-        for cid in registry.all_ids():
-            ch = registry.get(str(cid))
-            if ch is not None and hasattr(ch, "char_id"):
-                chars_map[ch.char_id] = ch
-
-        self.model.characters = chars_map
-        self.model.GameMaster = chars_map.get("GameMaster")
+        """Refresh only the active runtime; do not materialize every character."""
+        current = self._characters.current()
+        self.model.current_character = current
+        if current is not None and hasattr(current, "char_id"):
+            self.model.characters = {str(current.char_id): current}
+            self.model.GameMaster = current if str(current.char_id) == "GameMaster" else None
+        else:
+            self.model.characters = {}
+            self.model.GameMaster = None
 
     # ---------------------------------------------------------------------
     # Subscriptions
@@ -355,7 +350,7 @@ class ModelController(GenerationService):
             return None
         cid = data.get("character_id") or data.get("char_id") or data.get("character")
         return str(cid) if cid else None
-    
+
     def _normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
             return []
@@ -1565,6 +1560,8 @@ class ModelController(GenerationService):
             final_input = system_input
         if final_input:
             try:
+                from managers.rag.rag_manager import RAGManager
+
                 rag = RAGManager.for_character(char_id)
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))

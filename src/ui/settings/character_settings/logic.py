@@ -848,8 +848,7 @@ def open_character_history_folder(gui):
 def purge_deleted_data(gui):
     """Physically delete is_deleted=1 records for ALL characters, with JSON backup."""
     import os
-    from managers.memory_manager import MemoryManager
-    from managers.history_manager import HistoryManager
+    from managers.character_resource_manager import get_character_resource_manager
     from managers.database_manager import DatabaseManager
 
     character_ids = _get_all_character_ids()
@@ -859,6 +858,7 @@ def purge_deleted_data(gui):
         return
 
     db = DatabaseManager()
+    character_resources = get_character_resource_manager()
     db_size_before = os.path.getsize(db.db_path) if os.path.exists(db.db_path) else 0
 
     reply = QMessageBox.question(
@@ -883,7 +883,7 @@ def purge_deleted_data(gui):
 
     for char_id in character_ids:
         try:
-            mm = MemoryManager(char_id)
+            mm = character_resources.memory_for(char_id)
             r = mm.purge_deleted(backup=True)
             total_memories += r["purged_memories"]
             if r.get("backed_up"):
@@ -892,7 +892,7 @@ def purge_deleted_data(gui):
             errors.append(f"{char_id} memories: {e}")
 
         try:
-            hm = HistoryManager(character_name=char_id, character_id=char_id)
+            hm = character_resources.history_for(char_id)
             r = hm.purge_deleted(backup=True)
             total_history += r["purged_history"]
             if r.get("backed_up"):

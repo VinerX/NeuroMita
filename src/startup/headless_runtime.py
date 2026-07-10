@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from startup.startup_profiler import startup_trace
+
 
 @dataclass(frozen=True)
 class HeadlessOptions:
@@ -119,6 +121,8 @@ class HeadlessRuntimeHost:
                 raise RuntimeError(f"Headless server failed to start: {startup_error or 'unknown error'}")
 
             self._log_snapshot("Headless runtime ready")
+            startup_trace.mark("headless.ready", **self.snapshot())
+            startup_trace.write()
             interval = max(0.0, float(self.options.status_interval or 0.0))
             run_seconds = max(0.0, float(self.options.run_seconds or 0.0))
             started_at = time.monotonic()
@@ -147,4 +151,6 @@ class HeadlessRuntimeHost:
                     controller.close_app()
                 except Exception as exc:
                     self.logger.error(f"Headless shutdown failed: {exc}", exc_info=True)
+            startup_trace.mark("headless.stopped")
+            startup_trace.write()
             self._restore_signal_handlers()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import os
+import ntpath
 import re
 import sys
 import tempfile
@@ -418,20 +419,41 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self.RVC_DEFAULT_F0_METHOD
         return method
 
+    @staticmethod
+    def _normalize_runtime_path(path: str) -> str:
+        value = str(path or "").strip()
+        if not value:
+            return ""
+        # Embedded/runtime settings can contain Windows paths even when tools
+        # inspect them from another OS. POSIX abspath would prepend cwd and
+        # corrupt values such as C:\RuntimeRoot.
+        if ntpath.isabs(value) or (len(value) >= 2 and value[1] == ":"):
+            return ntpath.normpath(value)
+        return os.path.abspath(value)
+
     def _hubert_candidate_paths(self) -> list[str]:
+        roots = (
+            os.getcwd(),
+            os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models")),
+            os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")),
+        )
         candidates = [
-            os.path.abspath(os.path.join(os.getcwd(), "hubert_base.pt")),
-            os.path.abspath(os.path.join(os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models")), "hubert_base.pt")),
-            os.path.abspath(os.path.join(os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")), "hubert_base.pt")),
+            self._normalize_runtime_path(ntpath.join(root, "hubert_base.pt")
+                                         if ntpath.isabs(str(root)) or (len(str(root)) >= 2 and str(root)[1] == ":")
+                                         else os.path.join(str(root), "hubert_base.pt"))
+            for root in roots
         ]
         seen: set[str] = set()
         result: list[str] = []
         for item in candidates:
-            key = os.path.normcase(os.path.abspath(str(item)))
+            if not item:
+                continue
+            is_windows_path = ntpath.isabs(item) or (len(item) >= 2 and item[1] == ":")
+            key = ntpath.normcase(item) if is_windows_path else os.path.normcase(item)
             if key in seen:
                 continue
             seen.add(key)
-            result.append(os.path.abspath(str(item)))
+            result.append(item)
         return result
 
     def _describe_hubert_state(self) -> str:

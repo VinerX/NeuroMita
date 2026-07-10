@@ -244,6 +244,10 @@ class ChatPanel(QWidget):
 
         layout.addWidget(self._build_composer())
 
+        on_ready = getattr(self.gui, "_on_chat_ui_ready", None)
+        if callable(on_ready):
+            on_ready()
+
 
 def setup_chat_panel(gui, main_layout):
     from ui.pages.sandbox_page import SandboxPage
@@ -387,6 +391,10 @@ def refresh_composer_state_sync_legacy(gui):
 
 def update_send_button_state(gui):
     if not getattr(gui, "user_entry", None) or not getattr(gui, "send_button", None):
+        return
+
+    if not getattr(gui, "backend_ready", False):
+        gui.send_button.setEnabled(False)
         return
 
     # Отправка полностью заблокирована (нет пресета/промптов) — см. #5.

@@ -93,7 +93,5 @@ class CharacterController:
         return False
 
     def _on_clear_all_histories(self, event: Event):
-        for ch in self.character_manager.characters.values():
-            if hasattr(ch, "clear_history"):
-                ch.clear_history()
+        self.character_manager.clear_all_histories()
         return True

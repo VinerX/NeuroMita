@@ -553,8 +553,8 @@ def _run_ttl_cleanup(gui) -> None:
                 _("Не удалось определить текущего персонажа.", "Could not determine the current character."),
             )
             return
-        from managers.memory_manager import MemoryManager
-        mm = MemoryManager(char_id)
+        from managers.character_resource_manager import get_character_resource_manager
+        mm = get_character_resource_manager().memory_for(char_id)
         count = mm.apply_ttl_cleanup()
         QMessageBox.information(
             gui,
@@ -602,8 +602,8 @@ def _run_history_ttl_cleanup(gui) -> None:
             QMessageBox.warning(gui, _("TTL истории", "History TTL"),
                                 _("Не удалось определить текущего персонажа.", "Could not determine the current character."))
             return
-        from managers.history_manager import HistoryManager
-        hm = HistoryManager(char_id)
+        from managers.character_resource_manager import get_character_resource_manager
+        hm = get_character_resource_manager().history_for(char_id)
         count = hm.apply_history_ttl_cleanup()
         QMessageBox.information(
             gui, _("TTL истории", "History TTL"),
@@ -1379,8 +1379,8 @@ def _run_memory_dedup(gui, dry_run: bool = True) -> None:
             if confirm != QMessageBox.StandardButton.Yes:
                 return
 
-            from managers.memory_manager import MemoryManager
-            mm = MemoryManager(char_id)
+            from managers.character_resource_manager import get_character_resource_manager
+            mm = get_character_resource_manager().memory_for(char_id)
             result = dedup.apply(plan, mm)
             QMessageBox.information(
                 gui,

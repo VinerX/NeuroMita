@@ -1,60 +1,76 @@
-import time
 import threading
+import time
 
-from core.events import get_event_bus, Events
+from core.events import Events, get_event_bus
 from core.services import use
-from services.contracts import CharacterRegistry
 from main_logger import logger
+from services.contracts import CharacterRegistry
 
 
 class ReminderController:
     CHECK_INTERVAL_SEC = 30
 
-    def __init__(self, settings):
+    def __init__(self, settings, character_resources=None):
         self.settings = settings
+        self.character_resources = character_resources
         self.event_bus = get_event_bus()
         self._start_periodic_check()
 
     def _start_periodic_check(self):
         def check_loop():
-            # Выходим, как только шина событий остановлена (закрытие приложения):
-            # иначе демон-поток продолжает emit во время teardown → access violation.
             while self.event_bus.is_running:
                 try:
                     if self.settings.get("REMINDERS_ENABLED", True):
                         self._check_and_fire_reminders()
-                except Exception as e:
-                    logger.error(f"[ReminderController] Error in check loop: {e}", exc_info=True)
-                # Сон дробим, чтобы быстро реагировать на остановку шины.
+                except Exception as exc:
+                    logger.error(
+                        f"[ReminderController] Error in check loop: {exc}",
+                        exc_info=True,
+                    )
                 for _ in range(self.CHECK_INTERVAL_SEC):
                     if not self.event_bus.is_running:
                         return
                     time.sleep(1)
 
-        thread = threading.Thread(target=check_loop, daemon=True, name="ReminderController")
+        thread = threading.Thread(
+            target=check_loop,
+            daemon=True,
+            name="ReminderController",
+        )
         thread.start()
         logger.info("[ReminderController] Periodic check thread started.")
 
-    def _check_and_fire_reminders(self):
-        """Check all characters for due reminders and emit chat events."""
+    def _reminder_system_for(self, character_id: str):
+        resources = self.character_resources
+        if resources is not None:
+            return resources.reminders_for(character_id)
+
         registry = use(CharacterRegistry)
+        character = registry.get(character_id)
+        return getattr(character, "reminder_system", None) if character else None
 
-        for cid in registry.all_ids():
-            char = registry.get(cid)
-
-            if not char or not getattr(char, "reminder_system", None):
+    def _check_and_fire_reminders(self):
+        registry = use(CharacterRegistry)
+        for character_id in registry.all_ids():
+            reminder_system = self._reminder_system_for(character_id)
+            if reminder_system is None:
                 continue
 
-            due_reminders = char.reminder_system.get_due_reminders()
+            due_reminders = reminder_system.get_due_reminders()
             for reminder in due_reminders:
-                n = reminder.get("N")
+                number = reminder.get("N")
                 text = reminder.get("text", "")
-                logger.info(f"[ReminderController] Firing reminder #{n} for '{cid}': {text[:60]}")
-                # Dismiss first to avoid double-firing on slow event delivery
-                char.reminder_system.dismiss_reminder(n)
-                self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-                    "character_id": cid,
-                    "user_input": "",
-                    "system_input": f"[Reminder] {text}",
-                    "event_type": "reminder",
-                })
+                logger.info(
+                    f"[ReminderController] Firing reminder #{number} "
+                    f"for '{character_id}': {text[:60]}"
+                )
+                reminder_system.dismiss_reminder(number)
+                self.event_bus.emit(
+                    Events.Chat.SEND_MESSAGE,
+                    {
+                        "character_id": character_id,
+                        "user_input": "",
+                        "system_input": f"[Reminder] {text}",
+                        "event_type": "reminder",
+                    },
+                )

@@ -1,78 +1,49 @@
-import io
 import base64
-import re
-import time
+import json
+import os
 import uuid
 from pathlib import Path
-import os
-from PyQt6.QtCore import QSize
-from styles.main_styles import get_stylesheet
-from utils import process_text_to_voice
-from utils import getTranslationVariant as _
+
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPropertyAnimation,
+    QTimer,
+    QUrl,
+    Qt,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QDesktopServices, QIcon, QKeyEvent
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+import ui.gui_templates as gui_templates
+from core.events import Events, get_event_bus
+from core.services import use
 from localization.live import tr_set
 from main_logger import logger
-import ui.gui_templates as gui_templates
-from ui.widgets.settings_sections import CollapsibleSection
-from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
-import types
-import json
-import qtawesome as qta
-
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl, QRectF
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
-    QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox,
-    QMenu
-)
-from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap, QPainter, QLinearGradient, QColor
-
-from ui.settings import (
-    api_settings, character_settings, game_settings,
-    microphone_settings, screen_analysis_settings, voiceover_settings,
-    model_interaction_settings, general_settings, updates_settings
-)
-
-from ui.widgets import (status_indicators_widget)
-from ui.widgets import chat_panel
-from ui.widgets.overlay_widget import OverlayWidget
-from ui.widgets.image_viewer_widget import ImageViewerWidget
-from ui.widgets.image_preview_widget import ImagePreviewBar
-from ui.widgets.mita_status_widget import MitaStatusWidget
-
-from ui.window_manager import WindowManager
-
-from controllers.voice_model_controller import VoiceModelController
-
-from core.events import get_event_bus, Events, Event
-from core.services import use
 from services.contracts import CharacterRegistry, GameLinkService
-
-from ui.dialogs.model_loading_dialog import create_model_loading_dialog
-from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
-from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
-from ui.dialogs.voice_model_dialog_manager import handle_voice_model_dialog
-
-from ui.widgets.launcher_dashboard_helpers import (
-    DashboardAction,
-    DashboardCard,
-    DashboardMetric,
-    LogItem,
-    NewsItem,
-    create_shell_page_container,
-    create_home_page,
-    create_logs_page,
-    create_news_page,
-)
-from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
-from ui.widgets.settings_panel import create_settings_page
-from ui.widgets.chat_panel import setup_chat_panel, hide_image_preview_bar, update_send_button_state
+from ui.async_bus import run_async
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
-
+from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
+from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
+from ui.window_manager import WindowManager
+from ui.widgets import chat_panel
+from ui.widgets.chat_panel import hide_image_preview_bar
+from ui.widgets.overlay_widget import OverlayWidget
 from ui.windows.voice_action_windows import VoiceInstallationWindow
-from ui.async_bus import run_async
+from utils import getTranslationVariant as _
 
 
 class AppWindowBase(QMainWindow):
@@ -93,16 +64,16 @@ class AppWindowBase(QMainWindow):
     hide_compression_signal = pyqtSignal()
 
     history_loaded_signal = pyqtSignal(dict)
-    more_history_loaded_signal = pyqtSignal(dict)     
-    model_initialized_signal = pyqtSignal(dict)       
-    model_init_cancelled_signal = pyqtSignal(dict)    
-    model_init_failed_signal = pyqtSignal(dict)       
-    show_tg_code_dialog_signal = pyqtSignal(dict)     
-    show_tg_password_dialog_signal = pyqtSignal(dict) 
-    reload_prompts_success_signal = pyqtSignal()      
-    reload_prompts_failed_signal = pyqtSignal(dict)   
-    display_loading_popup_signal = pyqtSignal(dict)   
-    hide_loading_popup_signal = pyqtSignal()          
+    more_history_loaded_signal = pyqtSignal(dict)
+    model_initialized_signal = pyqtSignal(dict)
+    model_init_cancelled_signal = pyqtSignal(dict)
+    model_init_failed_signal = pyqtSignal(dict)
+    show_tg_code_dialog_signal = pyqtSignal(dict)
+    show_tg_password_dialog_signal = pyqtSignal(dict)
+    reload_prompts_success_signal = pyqtSignal()
+    reload_prompts_failed_signal = pyqtSignal(dict)
+    display_loading_popup_signal = pyqtSignal(dict)
+    hide_loading_popup_signal = pyqtSignal()
 
     clear_user_input_signal = pyqtSignal()
     insert_user_input_signal = pyqtSignal(str)
@@ -122,7 +93,7 @@ class AppWindowBase(QMainWindow):
     create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
     close_installation_window_signal = pyqtSignal(object)
     finalize_installation_window_signal = pyqtSignal(object, bool)  # win, close_now
-    
+
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
     asr_install_failed_signal = pyqtSignal(dict)
@@ -139,17 +110,19 @@ class AppWindowBase(QMainWindow):
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
-        
+        self.backend_ready = False
+        self.backend_startup_error = ""
+
         try:
             self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
         except Exception:
             self.SETTINGS_PANEL_WIDTH = 520
         self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
-        
+
         self.event_bus = get_event_bus()
         self._connect_signals()
         self._init_window_manager()
-        
+
         self.voice_language_var = None
         self.local_voice_combobox = None
         self.debug_window = None
@@ -160,6 +133,11 @@ class AppWindowBase(QMainWindow):
         self.attachment_label = None
         self.attach_button = None
         self.send_screen_button = None
+        self._chat_ui_ready = False
+        self._chat_history_load_pending = False
+        self._pending_history_payload = None
+        self._chat_event_filters_installed = False
+        self._history_load_inflight = False
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         self.setWindowIcon(QIcon('Icon.png'))
@@ -196,7 +174,7 @@ class AppWindowBase(QMainWindow):
         self.chat_delegate = ChatMessageDelegate()
         self._ensure_settings_animation()
 
-        self.chat_window.installEventFilter(self)
+        self._on_chat_ui_ready()
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
@@ -205,6 +183,8 @@ class AppWindowBase(QMainWindow):
         init_image_preview(self)
 
         try:
+            from ui.settings import microphone_settings
+
             microphone_settings.load_mic_settings(self)
         except Exception as e:
             logger.info(f"Не удалось удачно получить настройки микрофона: {e}")
@@ -391,7 +371,7 @@ class AppWindowBase(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         return dialog
-    
+
     def _factory_vc_redist_dialog(self, parent, payload: dict):
         from ui.windows.voice_action_windows import VCRedistWarningDialog
         return VCRedistWarningDialog(parent=parent)
@@ -535,13 +515,19 @@ class AppWindowBase(QMainWindow):
 
     def eventFilter(self, obj, event):
 
+        chat_window = getattr(self, "chat_window", None)
+
         # кнопка "вниз" — на скролле чата
-        if obj == self.chat_window.viewport() and event.type() in (QEvent.Type.Resize, QEvent.Type.Paint):
+        if (
+            chat_window is not None
+            and obj == chat_window.viewport()
+            and event.type() in (QEvent.Type.Resize, QEvent.Type.Paint)
+        ):
             if hasattr(self, 'scroll_to_bottom_btn'):
                 chat_panel.reposition_scroll_button(self)
 
         # позиционирование статуса при ресайзе чата
-        if obj == self.chat_window and event.type() == QEvent.Type.Resize:
+        if chat_window is not None and obj == chat_window and event.type() == QEvent.Type.Resize:
             QTimer.singleShot(0, lambda: chat_panel.position_mita_status(self))
 
         # хоткеи в поле ввода
@@ -565,33 +551,88 @@ class AppWindowBase(QMainWindow):
 
         return super().eventFilter(obj, event)
 
+    def _on_chat_ui_ready(self):
+        """Attach chat-only hooks when the lazy Sandbox page materializes."""
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            return False
+
+        if not self._chat_event_filters_installed:
+            try:
+                chat_window.installEventFilter(self)
+                chat_window.viewport().installEventFilter(self)
+                user_entry = getattr(self, "user_entry", None)
+                if user_entry is not None:
+                    user_entry.installEventFilter(self)
+                self._chat_event_filters_installed = True
+            except Exception as exc:
+                logger.warning(f"Failed to install chat event filters: {exc}")
+
+        self._chat_ui_ready = True
+
+        pending_payload = self._pending_history_payload
+        self._pending_history_payload = None
+        if pending_payload is not None:
+            QTimer.singleShot(0, lambda data=pending_payload: self._on_history_loaded(data))
+        elif self._chat_history_load_pending:
+            self._chat_history_load_pending = False
+            QTimer.singleShot(0, self.load_chat_history)
+        return True
+
     def load_chat_history(self):
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            self._chat_history_load_pending = True
+            logger.debug("[Load] Chat UI is not ready; history load deferred")
+            return False
+
+        self._chat_history_load_pending = False
+        self._history_load_inflight = True
         logger.debug("[Load] load_chat_history: начало")
         logger.debug("[Load] Отключаем updates в chat_window")
-        self.chat_window.setUpdatesEnabled(False)
+        chat_window.setUpdatesEnabled(False)
         logger.debug("[Load] Вызываем clear_chat_display()")
-        self.clear_chat_display()
-        logger.debug("[Load] Эмитим LOAD_HISTORY")
-        self.event_bus.emit(Events.Model.LOAD_HISTORY)
-        logger.debug("[Load] load_chat_history: конец")
+        try:
+            self.clear_chat_display()
+            logger.debug("[Load] Эмитим LOAD_HISTORY")
+            self.event_bus.emit(Events.Model.LOAD_HISTORY)
+            QTimer.singleShot(15000, self._recover_stalled_history_load)
+            logger.debug("[Load] load_chat_history: конец")
+            return True
+        except Exception:
+            self._history_load_inflight = False
+            chat_window.setUpdatesEnabled(True)
+            chat_window.update()
+            raise
+
+    def _recover_stalled_history_load(self):
+        if not self._history_load_inflight:
+            return
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is not None:
+            logger.warning("History UI load timed out; restoring chat repaint")
+            chat_window.setUpdatesEnabled(True)
+            chat_window.update()
+        self._history_load_inflight = False
 
     def _on_history_loaded(self, data: dict):
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            self._pending_history_payload = dict(data or {})
+            return
+
         messages = data.get('messages', [])
         character_id = data.get('character_id', '')
         logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
-        for i, entry in enumerate(messages):
-            msg_role = entry.get("role", "?")
-            msg_content = entry.get("content", "")
-            content_preview = msg_content[:50] if isinstance(msg_content, str) else f"list({len(msg_content)})"
-            logger.info(f"[HistoryLoaded] msg[{i}] role='{msg_role}', preview='{content_preview}'")
-            role = entry["role"]
-            content = entry["content"]
-            message_time = entry.get("time", "???")
-            structured_data = entry.get("structured_data")
-            message_id = entry.get("message_id")
-            sample_id = entry.get("sample_id")
-            thinking_text = entry.get("thinking")
-            try:
+        try:
+            for entry in messages:
+                role = entry["role"]
+                content = entry["content"]
+                message_time = entry.get("time", "???")
+                structured_data = entry.get("structured_data")
+                message_id = entry.get("message_id")
+                sample_id = entry.get("sample_id")
+                thinking_text = entry.get("thinking")
                 show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
                 if role == "assistant" and thinking_text and show_think_in_gui:
                     speaker = entry.get("speaker", "")
@@ -607,12 +648,14 @@ class AppWindowBase(QMainWindow):
                                                 message_id=message_id, character_id=character_id,
                                                 ui_images=entry.get("_ui_images") or [],
                                                 sample_id=sample_id)
-            except Exception as ex:
-                logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
-        self.update_debug_info()
-        self.chat_window.scroll_to_bottom()
-        self.chat_window.setUpdatesEnabled(True)
-        self.chat_window.update()
+            self.update_debug_info()
+            chat_window.scroll_to_bottom()
+        except Exception as exc:
+            logger.error(f"Failed to project loaded history: {exc}", exc_info=True)
+        finally:
+            self._history_load_inflight = False
+            chat_window.setUpdatesEnabled(True)
+            chat_window.update()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -786,12 +829,16 @@ class AppWindowBase(QMainWindow):
         self._chat_font_size = font_size
 
     def clear_chat_display(self):
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            return False
         logger.debug("[Clear] clear_chat_display: начало")
-        logger.debug(f"[Clear] chat_window.message_count: {self.chat_window.message_count()}")
-        self.chat_window.clear_messages()
+        logger.debug(f"[Clear] chat_window.message_count: {chat_window.message_count()}")
+        chat_window.clear_messages()
         logger.debug("[Clear] Сообщения очищены")
         self.event_bus.emit(Events.Chat.CLEAR_CHAT)
         logger.debug("[Clear] clear_chat_display: конец")
+        return True
 
     @staticmethod
     def _dedupe_images(image_list):
@@ -830,6 +877,15 @@ class AppWindowBase(QMainWindow):
         user_input: str = None,
         merge_input_from_entry: bool = False,
     ):
+        if not self.backend_ready:
+            message = self.backend_startup_error or _(
+                "Backend ещё запускается. Повторите отправку после завершения инициализации.",
+                "The backend is still starting. Retry after initialization completes.",
+            )
+            logger.info(message)
+            self.show_error_signal.emit(message)
+            return False
+
         # user_input=None → берём из поля ввода (обычная отправка). Задан явно
         # (напр. мгновенная отправка из ASR) — используем его и не трогаем поле.
         from_entry = user_input is None
@@ -996,9 +1052,14 @@ class AppWindowBase(QMainWindow):
                 hide_image_preview_bar(self)
 
     def load_more_history(self):
+        if getattr(self, "chat_window", None) is None:
+            return False
         self.event_bus.emit(Events.Model.LOAD_MORE_HISTORY)
+        return True
 
     def _on_more_history_loaded(self, data: dict):
+        if getattr(self, "chat_window", None) is None:
+            return
         messages_to_prepend = data.get('messages', [])
         if not messages_to_prepend:
             return
@@ -1071,7 +1132,7 @@ class AppWindowBase(QMainWindow):
         except Exception as exc:
             logger.info(f"Не удалось открыть папку логов: {exc}")
 
- 
+
     def _show_ffmpeg_installing_popup(self):
         if hasattr(self, 'ffmpeg_install_popup') and self.ffmpeg_install_popup:
             return
@@ -1132,7 +1193,7 @@ class AppWindowBase(QMainWindow):
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Скрываем статус')
             self.mita_status.hide_animated()
-    
+
     def _pulse_error_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.pulse_error_animation()
@@ -1168,22 +1229,22 @@ class AppWindowBase(QMainWindow):
         self.event_bus.emit(Events.GUI.HIDE_MITA_STATUS)
 
     def _on_reload_prompts_success(self):
-        QMessageBox.information(self, _("Успешно", "Success"), 
+        QMessageBox.information(self, _("Успешно", "Success"),
             _("Промпты успешно скачаны и перезагружены.", "Prompts successfully downloaded and reloaded."))
-    
+
     def _on_reload_prompts_failed(self, data: dict):
         error = data.get('error', 'Unknown error')
         if error == "Event loop not running":
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
                 _("Не удалось запустить асинхронную загрузку промптов.", "Failed to start asynchronous prompt download."))
         else:
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
-                _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.", 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
+                _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.",
                   "Failed to download prompts from GitHub. Check your internet connection."))
-    
+
     def _show_loading_popup(self, message):
         self.event_bus.emit(Events.GUI.SHOW_LOADING_POPUP, {"message": message})
-    
+
     def _on_display_loading_popup(self, data: dict):
         message = data.get('message', 'Loading...')
         if not hasattr(self, 'loading_popup'):
@@ -1196,10 +1257,10 @@ class AppWindowBase(QMainWindow):
         else:
             self.loading_popup.setLabelText(message)
         self.loading_popup.show()
-    
+
     def _close_loading_popup(self):
         self.event_bus.emit(Events.GUI.CLOSE_LOADING_POPUP)
-    
+
     def _on_hide_loading_popup(self):
         if hasattr(self, 'loading_popup') and self.loading_popup:
             self.loading_popup.close()
@@ -1207,7 +1268,7 @@ class AppWindowBase(QMainWindow):
     def _on_clear_user_input(self):
         if self.user_entry:
             self.user_entry.clear()
-    
+
     def _on_insert_user_input(self, text: str):
         if self.user_entry:
             self.user_entry.insertPlainText(text + " ")
@@ -1224,7 +1285,9 @@ class AppWindowBase(QMainWindow):
         QMessageBox.critical(self, title, message)
 
     def _on_remove_last_chat_widgets(self, n: int):
-        self.chat_window.remove_last_n_widgets(n)
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is not None:
+            chat_window.remove_last_n_widgets(n)
 
     def _on_update_model_loading_status(self, status: str):
         if hasattr(self, 'loading_status_label'):
@@ -1356,7 +1419,7 @@ class AppWindowBase(QMainWindow):
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 10)
         header_layout.setSpacing(5)
-        
+
         title_label = QLabel(title)
         title_label.setObjectName('SectionTitle')
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1364,7 +1427,7 @@ class AppWindowBase(QMainWindow):
             QLabel#SectionTitle { font-size: 14px; font-weight: bold; color: #ffffff; padding: 5px 0; }
         ''')
         header_layout.addWidget(title_label)
-        
+
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
@@ -1381,7 +1444,7 @@ class AppWindowBase(QMainWindow):
     def _check_eula_and_guide(self):
         if not self._get_setting("EULA_ACCEPTED", False):
             self._show_eula_dialog()
-    
+
     def _show_eula_dialog(self):
         from ui.widgets.eula_widget import EULAWidget
         eula_widget = EULAWidget()
@@ -1389,7 +1452,7 @@ class AppWindowBase(QMainWindow):
         eula_widget.rejected.connect(lambda: self._on_eula_rejected(eula_widget))
         self.overlay.set_content(eula_widget, locked=True)
         self.overlay.show_animated()
-        
+
     def _on_eula_accepted(self, eula_widget):
         self.overlay.hide_animated()
         # Если на стартовом экране выбрали другой язык — интерфейс уже построен
@@ -1402,15 +1465,15 @@ class AppWindowBase(QMainWindow):
         except Exception:
             pass
         QTimer.singleShot(500, self._show_guide)
-        
+
     def _on_eula_rejected(self, eula_widget):
-        QMessageBox.critical(self, "Отказ от соглашения / Agreement Rejected", 
+        QMessageBox.critical(self, "Отказ от соглашения / Agreement Rejected",
             "Вы не можете использовать программу без принятия лицензионного соглашения.\n"
             "You cannot use the software without accepting the license agreement.")
         self.close()
         import sys
         sys.exit(0)
-        
+
     def _show_guide(self):
         from ui.widgets.guide_widget import GuideWidget
         guide_widget = GuideWidget()
@@ -1418,10 +1481,10 @@ class AppWindowBase(QMainWindow):
         self.overlay.set_content(guide_widget)
         self.overlay.show_animated()
         guide_widget.start()
-        
+
     def _on_guide_closed(self, guide_widget):
         self.overlay.hide_animated()
-        
+
     def _setup_guide_highlights(self, guide_widget):
         if len(guide_widget.pages) > 1:
             guide_widget.pages[1].set_highlight_target(
@@ -1459,7 +1522,7 @@ class AppWindowBase(QMainWindow):
             guide_widget.pages[9].set_highlight_target(
                 lambda: self.settings_buttons.get("debug") if hasattr(self, 'settings_buttons') else None
             )
-    
+
         # ===== Совместимость: обновление индикаторов статуса =====
     def update_status_colors(self):
         self._status_refresh_ticket += 1

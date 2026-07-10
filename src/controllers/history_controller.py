@@ -27,6 +27,14 @@ class HistoryController(HistoryService):
     _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
     _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
     _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
+    _DEFAULT_COMPRESSION_PROMPT = (
+        "Summarize the conversation below into a compact factual memory for "
+        "{current_character_name}. Preserve important events, decisions, "
+        "relationships, names, promises, and unresolved topics. Do not invent "
+        "facts. If a previous summary exists, merge it without duplicating "
+        "information.\n\nPrevious summary:\n{previous_summary}\n\n"
+        "Conversation:\n{history_messages}\n\nSummary:"
+    )
 
     # Режимы вывода сжатия истории (HISTORY_COMPRESSION_OUTPUT_TARGET):
     #   layered — слоистая сводка в истории (по умолчанию): новое пишется отдельным
@@ -545,19 +553,30 @@ class HistoryController(HistoryService):
         *,
         previous_summary: str = "",
     ) -> Optional[str]:
-        try:
-            template_path = str(self._get_setting(
-                "HISTORY_COMPRESSION_PROMPT_TEMPLATE",
-                "Prompts/System/compression_prompt.txt"
-            ))
-            with open(template_path, "r", encoding="utf-8") as f:
-                prompt_template = f.read()
-        except Exception as e:
-            logger.error(
-                f"[HistoryController] Ошибка чтения шаблона сжатия истории '{template_path}': {e}",
-                exc_info=True
-            )
-            return None
+        configured_template_path = str(self._get_setting(
+            "HISTORY_COMPRESSION_PROMPT_TEMPLATE",
+            "Prompts/System/compression_prompt.txt",
+        ) or "").strip()
+        prompt_template = ""
+        resolved_template_path = configured_template_path
+        if configured_template_path:
+            try:
+                from core.app_paths import base_dir
+
+                candidate = Path(configured_template_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = base_dir() / candidate
+                resolved_template_path = str(candidate.resolve())
+                prompt_template = candidate.read_text(encoding="utf-8").strip()
+            except Exception as exc:
+                logger.warning(
+                    "[HistoryController] Compression template unavailable at %s; "
+                    "using built-in fallback: %s",
+                    resolved_template_path,
+                    exc,
+                )
+        if not prompt_template:
+            prompt_template = self._DEFAULT_COMPRESSION_PROMPT
 
         try:
             formatted_messages = "\n".join([

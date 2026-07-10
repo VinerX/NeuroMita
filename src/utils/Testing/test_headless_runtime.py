@@ -19,6 +19,7 @@ from core.app_paths import settings_path
 from game_connections.handlers.actions.get_settings import GetSettingsAction
 from game_connections.handlers.registry import RequestContext
 from startup.headless_runtime import HeadlessRuntimeHost
+from startup.runtime_bootstrap import RuntimeContext
 
 
 class _RequestServer:
@@ -37,6 +38,21 @@ class _RequestServer:
 
 
 class HeadlessRuntimeTests(unittest.TestCase):
+    def test_deferred_backend_bootstrap_is_idempotent(self):
+        calls = []
+        runtime = RuntimeContext(
+            base_dir="/tmp/base",
+            libs_dir="/tmp/base/Lib",
+            QApplication=None,
+            logger=object(),
+            _backend_bootstrap=lambda: calls.append("bootstrap"),
+        )
+
+        runtime.ensure_backend_bootstrap()
+        runtime.ensure_backend_bootstrap()
+
+        self.assertEqual(calls, ["bootstrap"])
+
     def test_entrypoint_parses_headless_options_without_consuming_other_args(self):
         spec = importlib.util.spec_from_file_location(
             "neuromita_test_entrypoint",
