@@ -256,7 +256,6 @@ class PresetsMixin:
             v.api_settings_container.setVisible(True)
 
             self.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": int(preset_id)})
-            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
 
             self._snapshot = self._get_snapshot()
             self._set_dirty(False)

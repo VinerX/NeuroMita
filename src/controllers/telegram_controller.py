@@ -11,8 +11,14 @@ from services.contracts import LoopService, SettingsService, TelegramService
 
 
 class TelegramController(TelegramService):
+    _SETTING_KEYS = frozenset({
+        "USE_VOICEOVER", "VOICEOVER_METHOD", "TG_AUTOCONNECT",
+        "NM_TELEGRAM_API_ID", "NM_TELEGRAM_API_HASH", "NM_TELEGRAM_PHONE",
+        "TG_MIN_REQUEST_INTERVAL", "SILERO_TIME", "AUDIO_BOT",
+    })
+
     def __init__(self):
-        self.settings: Any = None
+        self.settings: Any = use(SettingsService)
         self.event_bus = get_event_bus()
 
         self.bot_handler: Optional[TelegramBotHandler] = None
@@ -35,11 +41,15 @@ class TelegramController(TelegramService):
         self._last_tg_request_ts: float = 0.0
         self._min_request_interval: float = 0.0
 
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._SETTING_KEYS
+        )
         self._subscribe_to_events()
+        self._attach_running_loop()
+        self._load_settings_snapshot(reason="initial")
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe("telegram_settings_loaded", self._on_telegram_settings_loaded, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
 
         self.event_bus.subscribe(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, self._on_send_voice_request, weak=False)
         self.event_bus.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_set_silero_connected, weak=False)
@@ -53,31 +63,42 @@ class TelegramController(TelegramService):
         self.event_bus.subscribe(start_evt, self._on_start_requested, weak=False)
         self.event_bus.subscribe(stop_evt, self._on_stop_requested, weak=False)
 
+    def _attach_running_loop(self) -> None:
+        try:
+            loop_service = use(LoopService)
+            if not loop_service.is_running():
+                return
+            self._loop = loop_service.loop()
+            loop_service.run(self._init_queue_and_start_worker())
+        except Exception:
+            self._loop = None
+
     # ---------------- settings / status ----------------
     def _on_telegram_settings_loaded(self, event: Event):
         data = event.data or {}
-        self.api_id = data.get("api_id", "") or ""
-        self.api_hash = data.get("api_hash", "") or ""
-        self.phone = data.get("phone", "") or ""
-        self.settings = data.get("settings", None)
+        supplied = data.get("settings")
+        if supplied is not None:
+            self.settings = supplied
+        self._load_settings_snapshot(reason="telegram_settings_loaded")
 
-        if self.settings:
-            try:
-                self._min_request_interval = float(self.settings.get("TG_MIN_REQUEST_INTERVAL", 0) or 0)
-            except Exception:
-                self._min_request_interval = 0.0
+    def _load_settings_snapshot(self, *, reason: str) -> None:
+        settings = self.settings or use(SettingsService)
+        self.api_id = settings.get("NM_TELEGRAM_API_ID", "") or ""
+        self.api_hash = settings.get("NM_TELEGRAM_API_HASH", "") or ""
+        self.phone = settings.get("NM_TELEGRAM_PHONE", "") or ""
+        try:
+            self._min_request_interval = float(settings.get("TG_MIN_REQUEST_INTERVAL", 0) or 0)
+        except Exception:
+            self._min_request_interval = 0.0
 
         logger.info(
             f"Telegram настройки загружены: api_id={SH(self.api_id)}, api_hash={SH(self.api_hash)}, phone={SH(self.phone)}"
         )
+        self._maybe_autoconnect(reason=reason)
 
-        # После загрузки настроек попробуем автоподключиться (без спама — есть кулдаун)
-        self._maybe_autoconnect(reason="telegram_settings_loaded")
-
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = data.get("key")
-        value = data.get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "SILERO_TIME" and self.bot_handler:
             try:
@@ -308,6 +329,13 @@ class TelegramController(TelegramService):
         self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        self.stop_silero_async(source="shutdown")
+
     # ---------------- voice requests ----------------
     def _on_send_voice_request(self, event: Event):
         data = event.data or {}
@@ -332,9 +360,11 @@ class TelegramController(TelegramService):
         logger.debug(f"TG voice request добавлен в очередь (размер: {self._voice_queue.qsize() + 1})")
 
     async def _init_queue_and_start_worker(self):
+        if self._voice_queue is not None:
+            return
         self._voice_queue = asyncio.Queue()
         logger.info("TG voice queue создана, запускаем worker")
-        asyncio.ensure_future(self._queue_worker())
+        asyncio.create_task(self._queue_worker())
 
     async def _queue_worker(self):
         logger.info("TG voice queue worker запущен")

@@ -5,29 +5,38 @@ import json
 import os
 import queue
 import threading
+from typing import Any, Iterable
 
-from main_logger import logger
 from core.app_paths import settings_path
+from core.settings_registry import SettingChange, SettingsRegistry, SettingsSubscription
+from main_logger import logger
 
 
 class SettingsManager:
-    instance = None
+    """Owns the in-memory registry and asynchronous JSON persistence.
+
+    ``settings`` intentionally points to ``registry`` for compatibility with
+    legacy code that treated it as a mutable dict. New code should use
+    ``get/set/snapshot/subscribe`` directly.
+    """
+
+    instance: "SettingsManager | None" = None
     SAVE_DEBOUNCE_SEC = 0.5
     _SENTINEL = object()
-    _fallback_settings: dict = {}
+    _fallback_settings: dict[str, Any] = {}
     _fallback_path: str | None = None
     _fallback_mtime: float | None = None
     _fallback_lock = threading.RLock()
 
     def __init__(self, config_path: str):
         self.config_path = os.path.abspath(config_path)
-        self.settings: dict = {}
-        self._settings_lock = threading.RLock()
         self._save_queue: "queue.Queue[object]" = queue.Queue(maxsize=1)
         self._stop_lock = threading.Lock()
         self._stopped = False
 
-        self.load_settings()
+        loaded = self._read_settings_file()
+        self.registry = SettingsRegistry(loaded, on_mutated=self._schedule_save)
+        self.settings = self.registry
         SettingsManager.instance = self
 
         self._writer_thread = threading.Thread(
@@ -39,30 +48,50 @@ class SettingsManager:
         atexit.register(self._stop_writer)
 
     @staticmethod
-    def get(key, default=None):
+    def get(key: str, default: Any = None) -> Any:
         inst = SettingsManager.instance
         if inst:
-            with inst._settings_lock:
-                return inst.settings.get(key, default)
+            return inst.registry.get(key, default)
         fallback = SettingsManager._load_fallback_settings()
         return fallback.get(key, default)
 
     @staticmethod
-    def set(key, value):
+    def set(key: str, value: Any, *, source: str = "runtime") -> bool:
         inst = SettingsManager.instance
         if not inst:
             logger.error("SettingsManager.set() called before init")
-            return
-        with inst._settings_lock:
-            inst.settings[key] = value
-        inst._schedule_save()
+            return False
+        return inst.registry.set(key, value, source=source)
+
+    def require(self, key: str) -> Any:
+        return self.registry.require(key)
+
+    def snapshot(self, keys: Iterable[str] | None = None) -> dict[str, Any]:
+        return self.registry.snapshot(keys)
+
+    def update_many(
+        self,
+        values: dict[str, Any],
+        *,
+        source: str = "runtime",
+    ) -> tuple[SettingChange, ...]:
+        return self.registry.update_many(values, source=source)
+
+    def subscribe(
+        self,
+        callback,
+        *,
+        keys: Iterable[str] | None = None,
+        replay: bool = False,
+    ) -> SettingsSubscription:
+        return self.registry.subscribe(callback, keys=keys, replay=replay)
 
     @staticmethod
     def _fallback_config_path() -> str:
         return str(settings_path("settings.json"))
 
     @staticmethod
-    def _load_fallback_settings() -> dict:
+    def _load_fallback_settings() -> dict[str, Any]:
         path = SettingsManager._fallback_config_path()
         with SettingsManager._fallback_lock:
             try:
@@ -89,27 +118,27 @@ class SettingsManager:
             SettingsManager._fallback_mtime = mtime
             return SettingsManager._fallback_settings
 
-    def load_settings(self):
+    def _read_settings_file(self) -> dict[str, Any]:
         try:
             if not os.path.exists(self.config_path):
                 logger.info("Файл настроек не найден – используем дефолты")
-                return
+                return {}
 
             with open(self.config_path, "r", encoding="utf-8") as source:
                 loaded = json.load(source)
-            with self._settings_lock:
-                self.settings = loaded if isinstance(loaded, dict) else {}
             logger.info("Настройки загружены")
+            return loaded if isinstance(loaded, dict) else {}
         except (OSError, json.JSONDecodeError) as exc:
             logger.error(f"Не удалось загрузить настройки: {exc}")
-            with self._settings_lock:
-                self.settings = {}
+            return {}
 
-    def _snapshot(self) -> dict:
-        with self._settings_lock:
-            return dict(self.settings)
+    def load_settings(self) -> None:
+        self.registry.replace_all(self._read_settings_file(), notify=False)
 
-    def _write_file(self):
+    def _snapshot(self) -> dict[str, Any]:
+        return self.registry.snapshot()
+
+    def _write_file(self) -> None:
         snapshot = self._snapshot()
         tmp_path = self.config_path + ".tmp"
         directory = os.path.dirname(self.config_path)
@@ -124,7 +153,7 @@ class SettingsManager:
         os.replace(tmp_path, self.config_path)
         logger.debug("Настройки сохранены")
 
-    def _schedule_save(self):
+    def _schedule_save(self) -> None:
         if self._stopped:
             return
         try:
@@ -132,16 +161,16 @@ class SettingsManager:
         except queue.Full:
             pass
 
-    def save_settings(self):
+    def save_settings(self) -> None:
         self._schedule_save()
 
     @staticmethod
-    def save():
+    def save() -> None:
         inst = SettingsManager.instance
         if inst:
             inst._schedule_save()
 
-    def _save_worker(self):
+    def _save_worker(self) -> None:
         stop_requested = False
         while not stop_requested:
             item = self._save_queue.get()
@@ -162,10 +191,10 @@ class SettingsManager:
             except Exception as exc:
                 logger.error(f"Ошибка сохранения настроек: {exc}")
 
-    def close(self):
+    def close(self) -> None:
         self._stop_writer()
 
-    def _stop_writer(self):
+    def _stop_writer(self) -> None:
         with self._stop_lock:
             if self._stopped:
                 return

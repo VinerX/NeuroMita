@@ -3,12 +3,26 @@ import threading
 from handlers.screen_handler import ScreenCapture
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import SettingsService
 
 
 class CaptureController:
-    def __init__(self, settings):
+    _SETTING_KEYS = frozenset({
+        "ENABLE_IMAGE_ANALYSIS", "ENABLE_SCREEN_ANALYSIS", "ENABLE_CAMERA_CAPTURE",
+        "AUTO_ATTACH_IMAGES", "SCREEN_CAPTURE_INTERVAL", "SCREEN_CAPTURE_QUALITY",
+        "SCREEN_CAPTURE_FPS", "SCREEN_CAPTURE_HISTORY_LIMIT",
+        "SCREEN_CAPTURE_TRANSFER_LIMIT", "SCREEN_CAPTURE_WIDTH",
+        "SCREEN_CAPTURE_HEIGHT", "EXCLUDE_GUI_WINDOW", "EXCLUDE_WINDOW_TITLE",
+        "SEND_IMAGE_REQUESTS", "IMAGE_REQUEST_INTERVAL",
+    })
+
+    def __init__(self, settings=None):
         logger.info("CaptureController инициализируется")
-        self.settings = settings
+        self.settings = settings or use(SettingsService)
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._SETTING_KEYS
+        )
 
         self.event_bus = get_event_bus()
         self.screen_capture_instance = ScreenCapture()
@@ -26,8 +40,19 @@ class CaptureController:
         self._shutdown_event = threading.Event()
         
         self._subscribe_to_events()
-        
+
         self._start_periodic_check()
+        self._apply_initial_settings()
+
+    def _apply_initial_settings(self):
+        if not self.settings or not self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
+            return
+        if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
+            logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
+            self.start_screen_capture_thread()
+        if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
+            logger.info("Настройка 'ENABLE_CAMERA_CAPTURE' включена. Автоматический запуск захвата с камеры.")
+            self.start_camera_capture_thread()
         
     def _subscribe_to_events(self):
         self.event_bus.subscribe("capture_settings_loaded", self._on_capture_settings_loaded, weak=False)
@@ -47,18 +72,9 @@ class CaptureController:
         self.event_bus.subscribe(Events.Capture.GET_CAMERA_FRAMES, self._on_get_camera_frames, weak=False)
         self.event_bus.subscribe(Events.Capture.STOP_SCREEN_CAPTURE, self._on_stop_screen_capture, weak=False)
         self.event_bus.subscribe(Events.Capture.STOP_CAMERA_CAPTURE, self._on_stop_camera_capture, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
 
     def _on_capture_settings_loaded(self, event: Event):
-        if self.settings:
-            if self.settings.get("ENABLE_IMAGE_ANALYSIS", False):
-                if self.settings.get("ENABLE_SCREEN_ANALYSIS", False):
-                    logger.info("Настройка 'ENABLE_SCREEN_ANALYSIS' включена. Автоматический запуск захвата экрана.")
-                    self.start_screen_capture_thread()
-
-                if self.settings.get("ENABLE_CAMERA_CAPTURE", False):
-                    logger.info("Настройка 'ENABLE_CAMERA_CAPTURE' включена. Автоматический запуск захвата с камеры.")
-                    self.start_camera_capture_thread()
+        self._apply_initial_settings()
                 
     def _on_start_screen_capture(self, event: Event):
         logger.info("Получено событие start_screen_capture")
@@ -140,9 +156,9 @@ class CaptureController:
             return frames
         return []
             
-    def _on_setting_changed(self, event: Event):
-        key = event.data.get('key')
-        value = event.data.get('value')
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
         
         if key == "ENABLE_IMAGE_ANALYSIS":
             if bool(value):
@@ -292,6 +308,10 @@ class CaptureController:
             logger.info("Таймер периодической отправки изображений остановлен.")
             
     def shutdown(self):
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
         self._shutdown_event.set()
         self.stop_image_request_timer()
         self.stop_screen_capture_thread()

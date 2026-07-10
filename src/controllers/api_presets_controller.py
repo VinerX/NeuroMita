@@ -360,7 +360,7 @@ class ApiPresetsController(ApiPresetService):
 
             if self.presets_path.exists():
                 self._load_presets_only()
-                logger.info(f"Loaded {len(self.templates)} templates (refreshed from code) and {len(self.presets)} user presets")
+                logger.info(f"Loaded {len(self.templates)} templates and {len(self.presets)} user presets")
                 return
 
             if self.legacy_path.exists():
@@ -380,11 +380,16 @@ class ApiPresetsController(ApiPresetService):
         code_templates: Dict[int, ApiTemplate] = {p["id"]: ApiTemplate(**p) for p in API_TEMPLATES_DATA}
 
         file_templates_raw: Dict[int, Dict[str, Any]] = {}
+        existing_payload: Dict[str, Any] = {}
         if self.templates_path.exists():
             try:
                 with open(self.templates_path, "r", encoding="utf-8") as f:
                     tdata = json.load(f)
-                file_templates_raw = {int(k): v for k, v in tdata.get("templates", {}).items()}
+                existing_payload = tdata if isinstance(tdata, dict) else {}
+                file_templates_raw = {
+                    int(k): v
+                    for k, v in existing_payload.get("templates", {}).items()
+                }
             except Exception as e:
                 logger.warning(f"Failed to read existing api_templates.json for merge: {e}")
 
@@ -398,8 +403,14 @@ class ApiPresetsController(ApiPresetService):
             tpl.known_models = sorted(list(merged_models), reverse=True)
 
         self.templates = code_templates
-        self._save_templates()
-        logger.info(f"Refreshed templates from code and saved. Total templates: {len(self.templates)}")
+        current_payload = {
+            "templates": {str(template.id): asdict(template) for template in self.templates.values()}
+        }
+        if existing_payload == current_payload:
+            logger.info(f"API templates unchanged. Total templates: {len(self.templates)}")
+        else:
+            self._atomic_write_json(self.templates_path, current_payload)
+            logger.info(f"API templates refreshed from code. Total templates: {len(self.templates)}")
 
     def _user_preset_from_dict(self, raw: Any, fallback_id: Optional[int] = None) -> Optional[UserPreset]:
         if not isinstance(raw, dict):
@@ -1447,5 +1458,8 @@ class ApiPresetsController(ApiPresetService):
         preset_id = (event.data or {}).get("id")
         self.current_preset_id = preset_id
         if preset_id is not None:
-            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
+            from core.services import use
+            from services.contracts import SettingsService
+
+            use(SettingsService).update("LAST_API_PRESET_ID", int(preset_id))
         return True

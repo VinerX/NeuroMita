@@ -427,7 +427,7 @@ class GuideWidget(QWidget):
         # Раньше здесь были: SettingsManager.set() без сохранения на диск и emit
         # несуществующего Events.Settings.GUIDE_LEVEL_CHANGED — оба под try/except,
         # то есть уровень гайда молча не сохранялся и никто о смене не узнавал.
-        # SettingsService.update() пишет на диск и эмитит Core.SETTING_CHANGED.
+        # SettingsService.update() сразу обновляет реестр и планирует запись на диск.
         try:
             use(SettingsService).update("GUIDE_LEVEL", level)
         except Exception as e:

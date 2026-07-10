@@ -140,6 +140,10 @@ class CharacterManager:
         target = self.current_character_to_change
         self.current_character_to_change = ""
 
+        current_id = str(getattr(self.current_character, "char_id", "") or "")
+        if current_id == target:
+            return
+
         if target not in self._definitions:
             logger.warning(
                 f"[CharacterManager] Attempted to change to unknown character: {target}"

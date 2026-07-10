@@ -46,7 +46,9 @@ class AsrEventsController(BaseController):
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
 
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self._subscribe_settings(
+            self._on_setting_changed, keys=("MIC_ACTIVE", "RECOGNIZER_TYPE")
+        )
 
         # Live-переключение языка интерфейса: перерисовать индикатор/пилюлю ASR
         # на новом языке без перезапуска (иначе оставался текст прежней локали).
@@ -280,15 +282,14 @@ class AsrEventsController(BaseController):
         self._sync_indicator(force=True)
 
     # ---------------- settings changes ----------------
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = str(data.get("key") or "").strip()
+    def _on_setting_changed(self, change):
+        key = str(change.key or "").strip()
         if key in ("MIC_ACTIVE", "RECOGNIZER_TYPE"):
-            self._settings_cache[key] = data.get("value")
+            self._settings_cache[key] = change.value
 
             if key == "MIC_ACTIVE":
                 try:
-                    if not bool(data.get("value", False)):
+                    if not bool(change.value):
                         self._asr_initializing = False
                         self._ready_cache = (None, 0.0)
                 except Exception:

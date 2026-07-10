@@ -110,6 +110,11 @@ class ServerController:
         ]
 
         self.echo_suppressor = ServerEchoSuppressor()
+        self.settings = use(SettingsService)
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed,
+            keys=set(self.settings_to_send) | {"GM_VOICE"},
+        )
 
         self._subscribe_to_events()
         self._init_server()
@@ -119,7 +124,6 @@ class ServerController:
 
         eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
         eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
         eb.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
@@ -134,7 +138,6 @@ class ServerController:
             eb = self.event_bus
             eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
             eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
-            eb.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
             eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
             eb.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)
@@ -244,6 +247,10 @@ class ServerController:
             return
 
         logger.info("Destroying ServerController...")
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
         self._unsubscribe_from_events()
         self.stop_server()
         self._destroyed = True
@@ -298,12 +305,12 @@ class ServerController:
             return None
         return self.server
 
-    def _on_setting_changed(self, event: Event):
+    def _on_setting_changed(self, change):
         if self._destroyed or not self.server:
             return
 
-        key = (event.data or {}).get('key')
-        value = (event.data or {}).get('value')
+        key = change.key
+        value = change.value
 
         if key == 'IGNORE_GAME_REQUESTS':
             self.server.set_ignore_game_requests(bool(value))

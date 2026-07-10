@@ -11,23 +11,35 @@ from main_logger import logger
 from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import GameLinkService, LoopService
+from services.contracts import GameLinkService, LoopService, SettingsService
 from utils import getTranslationVariant as _
 
 
 class SpeechController:
+    _SETTING_KEYS = frozenset({
+        "MIC_ACTIVE", "RECOGNIZER_TYPE", "SILENCE_THRESHOLD",
+        "VAD_THRESHOLD", "SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC",
+        "VOSK_SAMPLE_RATE", "CHUNK_SIZE", "VAD_PRE_BUFFER_DURATION_SEC",
+        "MAX_SPEECH_DURATION_SEC", "NM_MICROPHONE_ID", "NM_MICROPHONE_NAME",
+    })
+
     # Хвост после конца реплики: гасим затухание звука и задержку VAD,
     # который выдаёт текст уже после паузы.
     _MUTE_TAIL_SEC = 0.4
 
     def __init__(self):
-        self.settings = None
+        self.settings = use(SettingsService)
         self.device_id = 0
         self.selected_microphone = ""
         self.mic_recognition_active = False
         self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
+
+        self._glossary_lock = threading.RLock()
+        self._glossary_cache: list[dict] | None = None
+        self._glossary_loading = False
+        self._glossary_callbacks: list = []
 
         self._last_text = ""
         self._last_text_norm = ""
@@ -47,12 +59,16 @@ class SpeechController:
             }
         }
 
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._SETTING_KEYS
+        )
         self._subscribe_to_events()
+        self._apply_settings_snapshot()
 
     # ——— settings json
     def _load_asr_settings(self):
         try:
-            os.makedirs("Settings", exist_ok=True)
+            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
             if os.path.exists(self._asr_settings_path):
                 with open(self._asr_settings_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -94,7 +110,7 @@ class SpeechController:
 
     def _save_asr_settings(self):
         try:
-            os.makedirs("Settings", exist_ok=True)
+            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
             with open(self._asr_settings_path, "w", encoding="utf-8") as f:
                 json.dump(self._asr_settings, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -104,7 +120,6 @@ class SpeechController:
     def _subscribe_to_events(self):
         eb = self.events_bus
         eb.subscribe("speech_settings_loaded", self._on_speech_settings_loaded, weak=False)
-        eb.subscribe("setting_changed", self._on_setting_changed, weak=False)
 
         eb.subscribe(Events.Speech.GET_INSTANT_SEND_STATUS, self._on_get_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SET_INSTANT_SEND_STATUS, self._on_set_instant_send_status, weak=False)
@@ -146,7 +161,12 @@ class SpeechController:
 
     # ——— settings loaded
     def _on_speech_settings_loaded(self, event: Event):
-        self.settings = event.data.get('settings')
+        supplied = (event.data or {}).get('settings')
+        if supplied is not None:
+            self.settings = supplied
+        self._apply_settings_snapshot()
+
+    def _apply_settings_snapshot(self):
         self._load_asr_settings()
 
         engine = self.settings.get("RECOGNIZER_TYPE", self._asr_settings.get("engine", "google"))
@@ -181,9 +201,9 @@ class SpeechController:
             threading.Thread(target=_delayed_start, daemon=True).start()
 
     # ——— settings changed
-    def _on_setting_changed(self, event: Event):
-        key = event.data.get('key')
-        value = event.data.get('value')
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "MIC_ACTIVE":
             if bool(value):
@@ -259,9 +279,8 @@ class SpeechController:
     def _start_maybe_install_async(self):
         """Run the (potentially slow) ASR start off the caller's thread.
 
-        SETTING_CHANGED handlers fire on the event-bus thread; starting ASR
-        loads the model and can block for many seconds (CUDA init), which would
-        stall the whole bus. Always do it on a worker thread."""
+        Settings observers may run on the caller thread; starting ASR loads a
+        model and can block for many seconds. Always do it on a worker thread."""
         def _worker():
             try:
                 self._start_maybe_install()
@@ -337,6 +356,20 @@ class SpeechController:
                 'Failed to start speech recognition. See the log for details.'
             )
         })
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        try:
+            SpeechRecognition.speech_recognition_stop()
+        except Exception:
+            pass
+        self.mic_recognition_active = False
+        self.asr_is_ready = False
+        with self._glossary_lock:
+            self._glossary_callbacks.clear()
 
     # —— universal ASR settings IO
     def _on_get_recognizer_settings_schema(self, event: Event):
@@ -609,128 +642,192 @@ class SpeechController:
 
     def _on_get_asr_models_glossary(self, event: Event):
         data = event.data or {}
-        cb = data.get("callback")
+        callback = data.get("callback")
+        refresh = bool(data.get("refresh", False))
 
-        def compute():
+        with self._glossary_lock:
+            if self._glossary_cache is not None and not refresh:
+                cached = [dict(item) for item in self._glossary_cache]
+                if callable(callback):
+                    try:
+                        callback(cached, None)
+                    except Exception:
+                        pass
+                    return None
+                return cached
+
+            if callable(callback):
+                self._glossary_callbacks.append(callback)
+
+            if self._glossary_loading:
+                return [] if not callable(callback) else None
+
+            self._glossary_loading = True
+
+        def worker() -> None:
+            error = None
             try:
-                from core.install_requirements import check_requirements
-                from utils.gpu_utils import check_gpu_provider
-
-                try:
-                    gpu_vendor = check_gpu_provider() or "CPU"
-                except Exception:
-                    gpu_vendor = "CPU"
-
-                if not self._asr_settings or not self._asr_settings.get("models"):
-                    self._load_asr_settings()
-
-                models_map = self._asr_settings.get("models", {}) or {}
-                registry = getattr(SpeechRecognition, "_registry", {}) or {}
-                engines = list(registry.keys())
-                try:
-                    from core.installables import ComponentCategory, make_component_id
-                    from installables import get_installable_registry
-
-                    installable_registry = get_installable_registry()
-                except Exception:
-                    installable_registry = None
-                    ComponentCategory = None
-                    make_component_id = None
-
+                result = self._compute_asr_models_glossary()
+            except Exception as exc:
+                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {exc}", exc_info=True)
                 result = []
-                for engine in engines:
-                    engine_settings = models_map.get(engine, {}) or {}
+                error = exc
 
-                    inst = None
-                    try:
-                        inst = SpeechRecognition._new_instance(engine)
-                        if inst and hasattr(inst, "apply_settings"):
-                            inst.apply_settings(engine_settings)
-                    except Exception:
-                        inst = None
+            with self._glossary_lock:
+                self._glossary_cache = [dict(item) for item in result]
+                self._glossary_loading = False
+                callbacks = self._glossary_callbacks
+                self._glossary_callbacks = []
 
-                    meta = {}
-                    try:
-                        cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
-                        if isinstance(cfgs, list):
-                            for c in cfgs:
-                                if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
-                                    meta = c
-                                    break
-                    except Exception:
-                        meta = {}
+            for cb in callbacks:
+                try:
+                    cb([dict(item) for item in result], error)
+                except Exception:
+                    pass
 
-                    reqs = []
-                    try:
-                        if inst and hasattr(inst, "requirements"):
-                            reqs = inst.requirements() or []
-                    except Exception:
-                        reqs = []
+        threading.Thread(
+            target=worker,
+            name="asr-glossary-catalog",
+            daemon=True,
+        ).start()
+        return [] if not callable(callback) else None
 
-                    ctx = {
-                        "device": engine_settings.get("device"),
-                        "gpu_vendor": gpu_vendor,
-                        "engine_settings": engine_settings,
-                    }
+    def _compute_asr_models_glossary(self) -> list[dict]:
+        from core.install_requirements import check_requirements
+        from utils.gpu_utils import check_gpu_provider
 
-                    status = check_requirements(reqs, ctx=ctx) if reqs else {
-                        "ok": True, "missing_required": [], "missing_optional": [], "details": []
-                    }
-                    component_id = ""
-                    component_status = None
-                    if installable_registry is not None and ComponentCategory is not None and make_component_id is not None:
-                        try:
-                            component_id = make_component_id(ComponentCategory.ASR, engine)
-                            component = installable_registry.get(component_id)
-                            if component is not None:
-                                component_status = component.status(ctx)
-                        except Exception:
-                            component_status = None
+        try:
+            gpu_vendor = check_gpu_provider() or "CPU"
+        except Exception:
+            gpu_vendor = "CPU"
 
-                    installed = bool(component_status.ready) if component_status is not None else bool(status.get("ok"))
-                    missing_required = list(status.get("missing_required", []))
-                    details = list(status.get("details", []))
-                    if component_status is not None:
-                        if not component_status.ready and component_status.installed and not component_status.backend_ok:
-                            missing_required = ["backend"]
-                        details.append(component_status.as_dict())
+        if not self._asr_settings or not self._asr_settings.get("models"):
+            self._load_asr_settings()
 
-                    result.append({
-                        "id": engine,
-                        "component_id": component_id,
-                        "name": meta.get("name") or engine,
-                        "description": meta.get("description") or "",
-                        "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
-                        "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
-                        "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
-                        "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
-                        "installed": installed,
-                        "missing_required": missing_required,
-                        "missing_optional": status.get("missing_optional", []),
-                        "details": details,
-                    })
+        models_map = self._asr_settings.get("models", {}) or {}
+        registry = getattr(SpeechRecognition, "_registry", {}) or {}
+        engines = list(registry.keys())
+        try:
+            from core.installables import ComponentCategory, make_component_id
+            from installables import get_installable_registry
 
-                return result
+            installable_registry = get_installable_registry()
+        except Exception:
+            installable_registry = None
+            ComponentCategory = None
+            make_component_id = None
 
-            except Exception as e:
-                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {e}", exc_info=True)
-                return []
+        result: list[dict] = []
+        for engine in engines:
+            engine_settings = models_map.get(engine, {}) or {}
 
-        if not cb:
-            return compute()
-
-        def worker():
             try:
-                res = compute()
-                try:
-                    cb(res, None)
-                except Exception:
-                    pass
-            except Exception as e:
-                try:
-                    cb([], e)
-                except Exception:
-                    pass
+                instance = SpeechRecognition._new_instance(engine)
+                if instance and hasattr(instance, "apply_settings"):
+                    instance.apply_settings(engine_settings)
+            except Exception:
+                instance = None
 
-        threading.Thread(target=worker, daemon=True).start()
-        return None
+            metadata = {}
+            try:
+                configs = (
+                    instance.get_model_configs()
+                    if instance
+                    else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
+                )
+                if isinstance(configs, list):
+                    metadata = next(
+                        (
+                            item
+                            for item in configs
+                            if isinstance(item, dict)
+                            and str(item.get("id") or "") == str(engine)
+                        ),
+                        {},
+                    )
+            except Exception:
+                metadata = {}
+
+            try:
+                requirements = (
+                    instance.requirements()
+                    if instance and hasattr(instance, "requirements")
+                    else []
+                ) or []
+            except Exception:
+                requirements = []
+
+            context = {
+                "device": engine_settings.get("device"),
+                "gpu_vendor": gpu_vendor,
+                "engine_settings": engine_settings,
+            }
+            status = (
+                check_requirements(requirements, ctx=context)
+                if requirements
+                else {
+                    "ok": True,
+                    "missing_required": [],
+                    "missing_optional": [],
+                    "details": [],
+                }
+            )
+
+            component_id = ""
+            component_status = None
+            if (
+                installable_registry is not None
+                and ComponentCategory is not None
+                and make_component_id is not None
+            ):
+                try:
+                    component_id = make_component_id(ComponentCategory.ASR, engine)
+                    component = installable_registry.get(component_id)
+                    if component is not None:
+                        component_status = component.status(context)
+                except Exception:
+                    component_status = None
+
+            installed = (
+                bool(component_status.ready)
+                if component_status is not None
+                else bool(status.get("ok"))
+            )
+            missing_required = list(status.get("missing_required", []))
+            details = list(status.get("details", []))
+            if component_status is not None:
+                if (
+                    not component_status.ready
+                    and component_status.installed
+                    and not component_status.backend_ok
+                ):
+                    missing_required = ["backend"]
+                details.append(component_status.as_dict())
+
+            result.append(
+                {
+                    "id": engine,
+                    "component_id": component_id,
+                    "name": metadata.get("name") or engine,
+                    "description": metadata.get("description") or "",
+                    "languages": metadata.get("languages", [])
+                    if isinstance(metadata.get("languages"), list)
+                    else [],
+                    "gpu_vendor": metadata.get("gpu_vendor", [])
+                    if isinstance(metadata.get("gpu_vendor"), list)
+                    else [],
+                    "tags": metadata.get("tags", [])
+                    if isinstance(metadata.get("tags"), list)
+                    else [],
+                    "links": metadata.get("links", [])
+                    if isinstance(metadata.get("links"), list)
+                    else [],
+                    "installed": installed,
+                    "missing_required": missing_required,
+                    "missing_optional": status.get("missing_optional", []),
+                    "details": details,
+                }
+            )
+
+        return result
+

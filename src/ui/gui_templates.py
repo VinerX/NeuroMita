@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox, 
                              QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSignalBlocker, Qt
 
 from main_logger import logger
 from ui.widgets.settings_sections import CollapsibleSection, InnerCollapsibleSection
@@ -13,6 +13,23 @@ class SettingsBodyWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SettingsBodyWidget")
+
+
+def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
+    if not key:
+        return
+    binding = getattr(gui, "settings_binding", None)
+    if binding is None:
+        return
+
+    def _apply(value):
+        blocker = QSignalBlocker(widget)
+        try:
+            apply_value(value)
+        finally:
+            del blocker
+
+    binding.bind(key, widget, _apply)
 
 
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
@@ -257,6 +274,13 @@ def create_setting_widget(
             lambda w=widget: gui._save_setting(setting_key, w.toPlainText())
         )
 
+        _bind_setting_value(
+            gui,
+            setting_key,
+            widget,
+            lambda value: widget.setPlainText(str(value if value is not None else default)),
+        )
+
         if tooltip:
             _tt = _fmt_tooltip(tooltip)
             lbl.setToolTip(_tt)
@@ -301,6 +325,12 @@ def create_setting_widget(
             _apply_setting_row_disabled(frame, not enabled)
 
         toggle_chk.stateChanged.connect(_toggle_slot)
+        _bind_setting_value(
+            gui,
+            toggle_key,
+            toggle_chk,
+            lambda value: toggle_chk.setChecked(bool(value)),
+        )
 
     if widget_type == 'checkbutton':
         from ui.widgets.toggle_switch import ToggleSwitch
@@ -318,6 +348,12 @@ def create_setting_widget(
                 command(val)
 
         widget.stateChanged.connect(_save_check)
+        _bind_setting_value(
+            gui,
+            setting_key,
+            widget,
+            lambda value: widget.setChecked(bool(value)),
+        )
 
         title_col = QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -351,6 +387,16 @@ def create_setting_widget(
                 command(widget.text())
 
         widget.editingFinished.connect(_save_entry)
+        _bind_setting_value(
+            gui,
+            setting_key,
+            widget,
+            lambda value: (
+                None
+                if widget.hasFocus()
+                else widget.setText(str(value if value is not None else default))
+            ),
+        )
 
         layout.addWidget(lbl)
         if toggle_chk:
@@ -400,6 +446,12 @@ def create_setting_widget(
                 command(val)
 
         widget.currentIndexChanged.connect(_save_combo)
+        _bind_setting_value(
+            gui,
+            setting_key,
+            widget,
+            lambda value: widget.set_current_value(_canon(value)),
+        )
 
         layout.addWidget(lbl)
         if toggle_chk:

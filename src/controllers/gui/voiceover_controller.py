@@ -48,7 +48,13 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_refresh, weak=False)
         eb.subscribe(Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False)
 
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self._subscribe_settings(
+            self._on_setting_changed,
+            keys=(
+                "USE_VOICEOVER", "VOICEOVER_METHOD", "NM_CURRENT_VOICEOVER",
+                "LOCAL_VOICE_LOAD_LAST", "VOICE_LANGUAGE", "TG_AUTOCONNECT",
+            ),
+        )
 
         eb.subscribe(Events.Audio.UPDATE_MODEL_LOADING_STATUS, self._on_loading_status, weak=False)
         eb.subscribe(Events.Audio.FINISH_MODEL_LOADING, self._on_finish_loading, weak=False)
@@ -93,10 +99,9 @@ class VoiceoverGuiController(BaseController):
     def _on_models_changed(self, _event: Event):
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = str(data.get("key") or "").strip()
-        value = data.get("value", None)
+    def _on_setting_changed(self, change):
+        key = str(change.key or "").strip()
+        value = change.value
 
         relevant = {
             "USE_VOICEOVER",
@@ -1355,7 +1360,7 @@ class VoiceoverGuiController(BaseController):
         except Exception:
             pass
 
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
+        super()._save_setting(key, value)
 
     def _get_setting(self, key: str, default=None):
         try:

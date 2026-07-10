@@ -176,6 +176,3 @@ def ensure_protocols_controller() -> ProtocolsController:
         _controller_singleton = ProtocolsController()
         logger.notify("ProtocolsController успешно инициализирован.")
     return _controller_singleton
-
-
-ensure_protocols_controller()

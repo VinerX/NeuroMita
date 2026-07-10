@@ -10,7 +10,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
 from core.request_policy import RequestPolicy
 
@@ -34,7 +34,25 @@ class SettingsService(ABC):
 
     @abstractmethod
     def update(self, key: str, value: Any) -> None:
-        """set + save + Events.Core.SETTING_CHANGED."""
+        """Atomically update the in-memory registry and schedule persistence."""
+
+    def require(self, key: str) -> Any:
+        value = self.get(key, None)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def snapshot(self, keys: Iterable[str] | None = None) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def subscribe(
+        self,
+        callback: Callable[[Any], None],
+        *,
+        keys: Iterable[str] | None = None,
+        replay: bool = False,
+    ) -> Any:
+        raise NotImplementedError
 
 
 class AppVarsService(ABC):
@@ -301,13 +319,15 @@ class AIEngineService(ABC):
 
 
 class EmbeddingPresetService(ABC):
-    """Эффективный конфиг пресета эмбеддингов (провайдер, модель, ключ, url).
-    resolve_full_config зовёт это вместо emit_and_wait; при отсутствии сервиса
-    (субпроцесс воркера / ранний старт) вызывающий сам падает на чтение с диска."""
+    """Application-scoped embedding preset registry."""
 
     @abstractmethod
     def get_full(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         """Разрешённый конфиг пресета или None."""
+
+    @abstractmethod
+    def list_meta(self) -> Dict[str, Any]:
+        """Lightweight metadata for built-in and custom presets."""
 
 
 class EmbeddingService(ABC):

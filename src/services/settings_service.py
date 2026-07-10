@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Iterable
 
-from core.events import Events, get_event_bus
 from services.contracts import AppVarsService, GameLinkService, SettingsService
 
 
@@ -11,7 +10,6 @@ class SettingsManagerService(SettingsService):
 
     def __init__(self, settings_manager) -> None:
         self._settings = settings_manager
-        self._event_bus = get_event_bus()
 
     @property
     def manager(self):
@@ -22,15 +20,28 @@ class SettingsManagerService(SettingsService):
         return self._settings.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        self._settings.set(key, value)
+        self._settings.set(key, value, source="service")
+
+    def require(self, key: str) -> Any:
+        return self._settings.require(key)
+
+    def snapshot(self, keys: Iterable[str] | None = None) -> Dict[str, Any]:
+        return self._settings.snapshot(keys)
+
+    def subscribe(
+        self,
+        callback: Callable[[Any], None],
+        *,
+        keys: Iterable[str] | None = None,
+        replay: bool = False,
+    ):
+        return self._settings.subscribe(callback, keys=keys, replay=replay)
 
     def save_settings(self) -> None:
         self._settings.save_settings()
 
     def update(self, key: str, value: Any) -> None:
-        self._settings.set(key, value)
-        self._settings.save_settings()
-        self._event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
+        self._settings.set(key, value, source="ui")
 
 
 class DefaultAppVarsService(AppVarsService):

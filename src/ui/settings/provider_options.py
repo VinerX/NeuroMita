@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Iterable, Sequence
 
-from core.events import Events, get_event_bus
+from core.services import use
+from services.contracts import ApiPresetService
 from main_logger import logger
 from ui.settings.data_prefetch import (
     API_PROVIDER_NAMES,
@@ -33,8 +34,7 @@ def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: s
         return None
 
     def _worker() -> list[str]:
-        result = get_event_bus().emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        return _provider_names_from_result(result)
+        return _provider_names_from_result([use(ApiPresetService).list_meta()])
 
     def _apply(provider_names: Iterable[str]) -> None:
         _apply_api_provider_options(gui, keys, provider_names)

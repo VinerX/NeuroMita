@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QTimer
 from core.events import get_event_bus
+from core.services import use
+from services.contracts import SettingsService
 from ui.async_bus import emit_and_wait_async, run_async
 
 
@@ -10,6 +12,7 @@ class BaseController:
         self.main_controller = main_controller
         self.view = view
         self.event_bus = get_event_bus()
+        self._settings_subscriptions = []
         self.subscribe_to_events()
 
     def subscribe_to_events(self):
@@ -22,6 +25,23 @@ class BaseController:
         if not self._backend_enabled():
             return None
         return getattr(self.main_controller, name, None)
+
+
+    def _save_setting(self, key: str, value) -> None:
+        use(SettingsService).update(str(key), value)
+
+    def _subscribe_settings(self, callback, *, keys=None, replay: bool = False):
+        subscription = use(SettingsService).subscribe(
+            callback, keys=keys, replay=replay
+        )
+        self._settings_subscriptions.append(subscription)
+        return subscription
+
+    def close(self) -> None:
+        subscriptions = self._settings_subscriptions
+        self._settings_subscriptions = []
+        for subscription in subscriptions:
+            subscription.close()
 
     def _ui(self, fn):
         if not callable(fn):

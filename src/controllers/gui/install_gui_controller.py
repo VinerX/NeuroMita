@@ -224,11 +224,9 @@ class InstallGuiController(BaseController):
         if not self._backend_enabled():
             return None
         try:
-            from controllers.install_controller import InstallController
-            backend = InstallController()
-            self.main_controller.install_controller = backend
-            return backend
-        except Exception:
+            return self.main_controller.ensure_feature("install", timeout=20.0)
+        except Exception as exc:
+            logger.error(f"Install backend is unavailable: {exc}")
             return None
 
     def _finish_install_window(self, win: object, close_now: bool) -> None:

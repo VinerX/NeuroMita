@@ -11,6 +11,9 @@ from PyQt6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from core.services import use
+from services.contracts import EmbeddingPresetService
+
 from core.events import get_event_bus, Events
 from managers.settings_manager import SettingsManager
 from ui.widgets.settings_sections import InnerCollapsibleSection
@@ -303,11 +306,7 @@ class _EmbedProviderWidget(QWidget):
         target_id = select_id if select_id is not None else self._current_preset_id
 
         def _worker():
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_LIST, {}, timeout=2.0
-            )
-            meta = results[0] if results else {}
-            return self._preset_items_from_meta(meta)
+            return self._preset_items_from_meta(use(EmbeddingPresetService).list_meta())
 
         def _apply(items):
             self._preset_combo.blockSignals(True)

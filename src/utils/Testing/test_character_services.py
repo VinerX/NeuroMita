@@ -35,6 +35,7 @@ class _FakeCharacter:
         type(self).created += 1
         self.runtime_loaded = False
         self.resource_manager = None
+        self.reload_count = 0
 
     def bind_resource_manager(self, manager):
         self.resource_manager = manager
@@ -43,6 +44,7 @@ class _FakeCharacter:
         self.runtime_loaded = True
 
     def reload_character_data(self):
+        self.reload_count += 1
         return None
 
     def clear_history(self):
@@ -171,6 +173,25 @@ class CharacterServiceTests(unittest.TestCase):
             self.assertIsNotNone(manager.get_character("B"))
             self.assertEqual(list(manager.characters), ["A", "B"])
             self.assertEqual(_FakeB.created, 1)
+
+    def test_selecting_current_character_is_idempotent(self):
+        _FakeA.created = 0
+        definitions = (CharacterDefinition("A", "A", _FakeA),)
+
+        with patch("managers.character_manager._CHARACTER_DEFINITIONS", definitions):
+            manager = CharacterManager(
+                initial_character_id="A",
+                resources=CharacterResourceManager(),
+            )
+            character = manager.current_character
+            self.assertIsNotNone(character)
+            self.assertEqual(character.reload_count, 0)
+
+            manager.set_character_to_change("A")
+            manager.check_change_current_character()
+
+            self.assertIs(manager.current_character, character)
+            self.assertEqual(character.reload_count, 0)
 
 
 if __name__ == "__main__":

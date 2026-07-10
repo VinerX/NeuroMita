@@ -139,20 +139,27 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.installed_models, {"edge_tts_rvc_cuda"})
 
-    def test_handle_get_installed_models_recovers_empty_cache(self):
+    def test_handle_get_installed_models_returns_snapshot_without_rescan(self):
         controller = VoiceModelController.__new__(VoiceModelController)
         controller._lock = threading.RLock()
         controller.installed_models = set()
-
-        def _refresh():
-            with controller._lock:
-                controller.installed_models = {"high"}
-
-        controller.refresh_installed_models = _refresh
+        refresh_calls = []
+        controller.refresh_installed_models = lambda: refresh_calls.append(True)
 
         result = controller._handle_get_installed_models(Event(name="get_installed_models"))
 
-        self.assertEqual(result, {"high"})
+        self.assertEqual(result, set())
+        self.assertEqual(refresh_calls, [])
+
+    def test_installed_models_snapshot_is_detached(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.installed_models = {"high"}
+
+        result = controller.installed_models_snapshot()
+        result.add("other")
+
+        self.assertEqual(controller.installed_models, {"high"})
 
 
 if __name__ == "__main__":

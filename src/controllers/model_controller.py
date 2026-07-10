@@ -25,6 +25,7 @@ from services.contracts import (
     PromptBuilderService,
     UtilityGenerationRequest,
     UtilityGenerationResult,
+    SettingsService,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -102,6 +103,10 @@ class ModelController(GenerationService):
 
     def __init__(self, settings):
         self.settings = settings
+        self._settings_service = use(SettingsService)
+        self._settings_subscription = self._settings_service.subscribe(
+            self._on_setting_changed
+        )
         self.event_bus = get_event_bus()
 
         # UI history paging
@@ -171,8 +176,6 @@ class ModelController(GenerationService):
     # ---------------------------------------------------------------------
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
 
         self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
@@ -194,9 +197,9 @@ class ModelController(GenerationService):
     # Model settings
     # ---------------------------------------------------------------------
 
-    def _on_setting_changed(self, event: Event):
-        key = (event.data or {}).get("key")
-        value = (event.data or {}).get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "CHARACTER":
             self.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": str(value or "")})
@@ -206,6 +209,12 @@ class ModelController(GenerationService):
 
         if hasattr(self.model, "cfg") and self.model.cfg:
             self.model.cfg.apply_setting(key, value)
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()

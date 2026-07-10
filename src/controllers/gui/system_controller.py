@@ -3,7 +3,6 @@ from pathlib import Path
 from PyQt6.QtCore import QTimer
 from main_logger import logger
 from core.events import Events, Event
-from utils.ffmpeg_installer import install_ffmpeg
 from .base_controller import BaseController
 
 class SystemController(BaseController):
@@ -45,6 +44,8 @@ class SystemController(BaseController):
         #     QTimer.singleShot(0, self.view._show_ffmpeg_installing_popup)
 
         logger.info("Starting FFmpeg installation attempt...")
+        from utils.ffmpeg_installer import install_ffmpeg
+
         success = install_ffmpeg()
         logger.info(f"FFmpeg installation attempt finished. Success: {success}")
 

@@ -3,11 +3,10 @@ from __future__ import annotations
 from threading import RLock
 from typing import Any, Callable
 
-from PyQt6.QtCore import QTimer
 
 from core.events import Events, get_event_bus
 from core.services import use
-from services.contracts import CharacterRegistry
+from services.contracts import ApiPresetService, CharacterRegistry, EmbeddingPresetService
 from main_logger import logger
 from ui.async_bus import dispatch_to_gui, run_async
 from utils import getTranslationVariant as _
@@ -124,13 +123,73 @@ def request_settings_data(
 
 
 def prefetch_settings_data(gui) -> None:
+    """Compatibility entry point.
+
+    Settings data is no longer prefetched globally when the Settings page is
+    created. Callers should use :func:`prefetch_settings_section` so disabled
+    subsystems do not import packages or scan hardware in the background.
+    """
+    return None
+
+
+def prefetch_settings_section(gui, category: str) -> None:
+    category = str(category or "").strip().lower()
     cache = settings_data_cache()
-    cache.request(gui, API_PROVIDER_NAMES, _load_api_provider_names, name="settings-prefetch-api-providers")
-    cache.request(gui, CHARACTER_SETTINGS_SNAPSHOT, _load_character_settings_snapshot, name="settings-prefetch-characters")
-    cache.request(gui, EMBED_PRESET_ITEMS, _load_embed_preset_items, name="settings-prefetch-embed-presets")
-    QTimer.singleShot(650, lambda: cache.request(gui, CAMERA_LIST, _load_camera_list, name="settings-prefetch-cameras"))
-    QTimer.singleShot(1100, lambda: cache.request(gui, RAG_EMBED_STATUS, _load_rag_embed_status, name="settings-prefetch-rag-embed"))
-    QTimer.singleShot(1500, lambda: cache.request(gui, RAG_CE_STATUS, _load_rag_ce_status, name="settings-prefetch-rag-ce"))
+
+    if category == "api":
+        cache.request(
+            gui,
+            API_PROVIDER_NAMES,
+            _load_api_provider_names,
+            name="settings-section-api-providers",
+        )
+        return
+
+    if category == "characters":
+        cache.request(
+            gui,
+            CHARACTER_SETTINGS_SNAPSHOT,
+            _load_character_settings_snapshot,
+            name="settings-section-characters",
+        )
+        return
+
+    if category == "models":
+        cache.request(
+            gui,
+            EMBED_PRESET_ITEMS,
+            _load_embed_preset_items,
+            name="settings-section-embed-presets",
+        )
+        if bool(gui.settings.get("RAG_ENABLED", False)):
+            cache.request(
+                gui,
+                RAG_EMBED_STATUS,
+                _load_rag_embed_status,
+                name="settings-section-rag-embed",
+            )
+            cache.request(
+                gui,
+                RAG_CE_STATUS,
+                _load_rag_ce_status,
+                name="settings-section-rag-ce",
+            )
+        return
+
+    if category == "screen" and bool(gui.settings.get("ENABLE_CAMERA_CAPTURE", False)):
+        try:
+            from importlib.util import find_spec
+
+            if find_spec("cv2") is None:
+                return
+        except (ImportError, AttributeError, ValueError):
+            return
+        cache.request(
+            gui,
+            CAMERA_LIST,
+            _load_camera_list,
+            name="settings-section-cameras",
+        )
 
 
 def api_provider_names_from_result(result) -> list[str]:
@@ -170,8 +229,8 @@ def embed_preset_items_from_meta(meta) -> list[tuple[str, Any]]:
 
 
 def _load_api_provider_names() -> list[str]:
-    result = get_event_bus().emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-    return api_provider_names_from_result(result)
+    meta = use(ApiPresetService).list_meta()
+    return api_provider_names_from_result([meta])
 
 
 def _load_character_settings_snapshot() -> dict[str, Any]:
@@ -186,9 +245,7 @@ def _load_character_settings_snapshot() -> dict[str, Any]:
 
 
 def _load_embed_preset_items() -> list[tuple[str, Any]]:
-    results = get_event_bus().emit_and_wait(Events.EmbeddingPresets.GET_PRESET_LIST, {}, timeout=2.0)
-    meta = results[0] if results else {}
-    return embed_preset_items_from_meta(meta)
+    return embed_preset_items_from_meta(use(EmbeddingPresetService).list_meta())
 
 
 def _load_camera_list() -> list[str]:

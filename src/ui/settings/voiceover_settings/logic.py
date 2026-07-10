@@ -58,8 +58,7 @@ def wire_voiceover_settings_logic(self):
         if _local_model_already_installed():
             return
 
-        self.settings.set("VOICEOVER_LOCAL_AI_HUB_PROMPTED", True)
-        eb.emit(Events.Settings.SAVE_SETTING, {"key": "VOICEOVER_LOCAL_AI_HUB_PROMPTED", "value": True})
+        self._save_setting("VOICEOVER_LOCAL_AI_HUB_PROMPTED", True)
 
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)

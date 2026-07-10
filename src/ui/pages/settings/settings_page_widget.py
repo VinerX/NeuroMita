@@ -15,8 +15,12 @@ from PyQt6.QtWidgets import (
     QWidgetItem,
 )
 
-from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
-from ui.settings.data_prefetch import prefetch_settings_data
+from ui.pages.settings.section_registry import (
+    SettingsSectionSpec,
+    get_settings_section_specs,
+    resolve_settings_builder,
+)
+from ui.settings.data_prefetch import prefetch_settings_section
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
 from localization.live import tr_set
@@ -28,6 +32,21 @@ _MODE_ALIASES = {
     "advanced": {"advanced", "продвинутый", "expanded", "расширенный"},
     "full": {"full", "полный", "maximum", "максимальный"},
 }
+
+_SECTION_FEATURES: dict[str, tuple[str, ...]] = {
+    # Model metadata is supplied by LocalVoiceController; the voice catalog is
+    # built only after that provider is ready. Both import and construction run
+    # in the runtime-feature pool, never on the Qt thread.
+    "voice": ("local_voice", "voice_models"),
+    "microphone": ("speech",),
+}
+
+_SECTION_GUI_FEATURES: dict[str, str] = {
+    "voice": "voice",
+    "microphone": "speech",
+}
+
+_BACKEND_REQUIRED_SECTIONS = frozenset({"api", "characters", "models"})
 
 
 def normalize_mode(value):
@@ -153,7 +172,6 @@ class SettingsPage(QWidget):
         # Сразу применяем карту видимости, иначе до первого клика в «Видимых
         # разделах» показываются все вкладки, включая отключённые.
         self.apply_section_visibility()
-        QTimer.singleShot(0, lambda: prefetch_settings_data(self.gui))
 
     def _sync_host_exports(self):
         self.gui.settings_page = self
@@ -600,7 +618,89 @@ class SettingsPage(QWidget):
         if not background:
             self._pending_section_scroll[category] = (subsection, smooth_scroll)
         self._set_section_placeholder(page, "loading")
-        QTimer.singleShot(35, lambda cat=category: self._build_section_now(cat))
+        prefetch_settings_section(self.gui, category)
+
+        required_features = _SECTION_FEATURES.get(category, ())
+        if required_features or category in _BACKEND_REQUIRED_SECTIONS:
+            self._prepare_section_features(category, required_features)
+        else:
+            QTimer.singleShot(0, lambda cat=category: self._build_section_now(cat))
+
+    def _prepare_section_features(
+        self,
+        category: str,
+        feature_names: tuple[str, ...],
+        *,
+        backend_attempt: int = 0,
+    ) -> None:
+        main_controller = getattr(self.gui, "main_controller", None)
+        feature_manager = getattr(main_controller, "feature_manager", None)
+        if main_controller is None or feature_manager is None:
+            if backend_attempt < 150:
+                QTimer.singleShot(40, lambda: self._prepare_section_features(
+                    category, feature_names, backend_attempt=backend_attempt + 1
+                ))
+                return
+            self._finish_section_feature_error(
+                category, RuntimeError("Backend is not ready")
+            )
+            return
+
+        def start_at(index: int) -> None:
+            if index >= len(feature_names):
+                self._dispatch_gui(lambda: self._finish_section_features(category))
+                return
+
+            feature_name = feature_names[index]
+            future = main_controller.ensure_feature_async(feature_name)
+
+            def done(completed) -> None:
+                try:
+                    completed.result()
+                except BaseException as exc:
+                    self._dispatch_gui(
+                        lambda exc=exc: self._finish_section_feature_error(category, exc)
+                    )
+                    return
+                start_at(index + 1)
+
+            future.add_done_callback(done)
+
+        start_at(0)
+
+    def _finish_section_features(self, category: str) -> None:
+        gui_feature = _SECTION_GUI_FEATURES.get(category)
+        if gui_feature:
+            main_controller = getattr(self.gui, "main_controller", None)
+            gui_controller = getattr(main_controller, "gui_controller", None)
+            if gui_controller is None:
+                self._finish_section_feature_error(
+                    category, RuntimeError("GUI controller is not ready")
+                )
+                return
+            try:
+                gui_controller.ensure_optional_gui(gui_feature)
+            except BaseException as exc:
+                self._finish_section_feature_error(category, exc)
+                return
+        self._build_section_now(category)
+
+    def _dispatch_gui(self, callback) -> None:
+        signal = getattr(self.gui, "run_ui_task_signal", None)
+        if signal is not None:
+            signal.emit(callback)
+            return
+        QTimer.singleShot(0, callback)
+
+    def _finish_section_feature_error(self, category: str, error: BaseException) -> None:
+        page = self.settings_containers.get(category)
+        if page is not None:
+            self._set_section_placeholder(
+                page,
+                "error",
+                _("Компонент недоступен", "Component unavailable") + f": {error}",
+            )
+        self._loading_sections.discard(category)
 
     def _build_section_now(self, category: str):
         page = self.settings_containers.get(category)
@@ -611,10 +711,11 @@ class SettingsPage(QWidget):
 
         try:
             self._clear_layout(page.body_layout)
-            builder = spec.builder_ref
-            if isinstance(builder, str):
-                getattr(self.gui, builder)(page.body_layout)
+            builder_ref = spec.builder_ref
+            if isinstance(builder_ref, str) and ":" not in builder_ref:
+                getattr(self.gui, builder_ref)(page.body_layout)
             else:
+                builder = resolve_settings_builder(builder_ref)
                 builder(self.gui, page.body_layout)
 
             self._promote_first_subsection_header(page)

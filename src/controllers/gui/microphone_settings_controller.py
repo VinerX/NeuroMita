@@ -199,10 +199,7 @@ class MicrophoneSettingsController(BaseController):
             except Exception:
                 pass
 
-        try:
-            self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        except Exception:
-            pass
+        super()._save_setting(key, value)
 
     def _reset_init_status(self):
         v = self.view

@@ -294,10 +294,8 @@ class SandboxPage(QWidget):
     _status_refresh_signal = pyqtSignal()
     # Лёгкая пере-синхронизация тумблеров статуса из настроек на GUI-потоке.
     # Нужна, когда подсистема сама выключает себя (напр. speech_controller
-    # ставит MIC_ACTIVE=False при сбое старта) через settings.set() — это НЕ
-    # эмитит SETTING_CHANGED, поэтому тумблер «Микрофон» рассинхронивался с
-    # реальным состоянием. Зато UPDATE_STATUS_COLORS в таких местах шлётся —
-    # на него и пере-читаем значения тумблеров (фидбэк Винера).
+    # ставит MIC_ACTIVE=False при сбое старта). SettingsViewModel синхронизирует
+    # значения, а UPDATE_STATUS_COLORS просит перечитать состояние runtime.
     _status_values_signal = pyqtSignal()
     _memory_summary_signal = pyqtSignal()
 
@@ -402,14 +400,17 @@ class SandboxPage(QWidget):
         return row
 
     def _on_status_toggle(self, enable_key: str, checked: bool):
-        """Flip a feature on/off. Routed through SAVE_SETTING so the voiceover /
-        ASR / RAG controllers actually start or stop the subsystem."""
+        """Flip a feature through SettingsViewModel/SettingsRegistry.
+
+        RuntimeFeatureManager observes the same registry and starts or stops the
+        corresponding subsystem outside the Qt thread.
+        """
         try:
-            self.gui.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": enable_key, "value": bool(checked)})
+            self.gui._save_setting(enable_key, bool(checked))
         except Exception as exc:
             logger.error(f"Failed to toggle {enable_key}: {exc}")
-        # Optimistic dot feedback; the authoritative refresh happens reactively
-        # when the resulting SETTING_CHANGED comes back (see _on_setting_changed_ui).
+        # Optimistic dot feedback; the authoritative refresh arrives through the
+        # SettingsViewModel change signal and runtime status notifications.
         row = {
             "USE_VOICEOVER": self._voice_status_row,
             "MIC_ACTIVE": self._mic_status_row,
@@ -1907,7 +1908,9 @@ class SandboxPage(QWidget):
             bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_resp_failed_evt, weak=False)
             bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_token_count_evt, weak=False)
             bus.subscribe(Events.GUI.SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False)
-            bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed_evt, weak=False)
+            view_model = getattr(self.gui, "settings_view_model", None)
+            if view_model is not None:
+                view_model.changed.connect(self._on_setting_changed_vm)
             # Пере-синхронизация тумблеров, когда подсистема сама себя выключает
             # (MIC_ACTIVE=False при сбое ASR) — она шлёт UPDATE_STATUS_COLORS.
             bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_status_colors_evt, weak=False)
@@ -1936,11 +1939,10 @@ class SandboxPage(QWidget):
     _BUDGET_KEYS = frozenset({"MAX_MODEL_TOKENS"})
     _MEMORY_KEYS = frozenset({"MODEL_MESSAGE_LIMIT", "MEMORY_CAPACITY"})
 
-    def _on_setting_changed_evt(self, event):
-        data = getattr(event, "data", None) or {}
-        key = str(data.get("key") or "")
-        if key:
-            self._setting_changed_signal.emit(key)
+    def _on_setting_changed_vm(self, key: str, _value=None):
+        normalized = str(key or "")
+        if normalized:
+            self._setting_changed_signal.emit(normalized)
 
     def _on_status_colors_evt(self, event=None):
         # Приходит с шины (в т.ч. из фонового потока) — маршалим в GUI-поток
@@ -2033,7 +2035,7 @@ class SandboxPage(QWidget):
         """Re-sync the capture/display checkboxes from the current settings so a
         change made on the settings page is reflected when the Sandbox is shown.
         (The Voice/Mic/RAG pills are synced separately by _refresh_status_values,
-        and live via the SETTING_CHANGED subscription.)"""
+        and live via the SettingsViewModel subscription.)"""
         get = self.gui._get_setting
         pairs = (
             ("_capture_screen_cb", "ENABLE_SCREEN_ANALYSIS", False),
@@ -2062,11 +2064,10 @@ class SandboxPage(QWidget):
                 self._style_toggle_dot(dot, want)
 
     def _on_capture_toggle(self, key: str, value: bool):
-        # Route through SAVE_SETTING (not a bare settings.set) so the change emits
-        # SETTING_CHANGED — that's what reloads the chat for display toggles, wakes
-        # the capture controllers, and keeps the settings page in sync.
+        # The ViewModel updates the registry immediately; UI bindings and runtime
+        # feature observers receive the same typed change record.
         try:
-            self.gui.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": bool(value)})
+            self.gui._save_setting(key, bool(value))
         except Exception:
             try:
                 self.gui.settings.set(key, bool(value))

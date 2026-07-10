@@ -14,7 +14,6 @@ except Exception:
     qta = None
 
 from core.events import get_event_bus, Events
-from ui.async_bus import run_async
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
 
@@ -90,25 +89,23 @@ class AsrGlossaryView(QWidget):
         ticket = self._refresh_ticket
         self._set_refresh_loading(True)
 
-        def worker():
-            res = self.event_bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=2.0)
-            return res[0] if res and isinstance(res[0], list) else []
+        def callback(models, error=None):
+            def apply():
+                if ticket != self._refresh_ticket:
+                    return
+                self._models = models if isinstance(models, list) else []
+                self._set_refresh_loading(False)
+                self._rebuild_list(keep_selection=True)
 
-        def apply(models: list[dict]):
-            if ticket != self._refresh_ticket:
-                return
-            self._models = models or []
-            self._set_refresh_loading(False)
-            self._rebuild_list(keep_selection=True)
+            self.run_ui_task_signal.emit(apply)
 
-        def fail(_exc: Exception):
-            if ticket != self._refresh_ticket:
-                return
-            self._models = []
-            self._set_refresh_loading(False)
-            self._rebuild_list(keep_selection=True)
-
-        run_async(self, worker, apply, fail, name="asr-glossary-refresh")
+        try:
+            self.event_bus.emit(
+                Events.Speech.GET_ASR_MODELS_GLOSSARY,
+                {"callback": callback, "refresh": True},
+            )
+        except Exception:
+            callback([], RuntimeError("ASR catalog request failed"))
 
     def _run_ui_task(self, fn):
         if callable(fn):

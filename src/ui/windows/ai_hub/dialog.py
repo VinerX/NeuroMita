@@ -55,6 +55,7 @@ class AIHubDialog(QDialog):
         self._refresh_generation = 0
         self._refresh_inflight = False
         self._rendered_language = ""
+        self._main_controller = None
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -626,13 +627,28 @@ class AIHubDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._ensure_install_gui_adapter()
         if not self._loaded_once and not self._refresh_inflight:
-            QTimer.singleShot(0, lambda: self.refresh(force=True))
+            QTimer.singleShot(0, lambda: self.refresh(force=False))
         elif self._loaded_once and self._rendered_language and self._rendered_language != self._current_ui_language():
             # Язык сменился, пока диалог был скрыт — перерисовываем в текущем языке.
             QTimer.singleShot(0, self._refresh_views)
 
-    def refresh(self, *, force: bool = False) -> None:
+    def _ensure_install_gui_adapter(self) -> None:
+        main_controller = self._find_main_controller()
+        self._main_controller = main_controller
+        gui_controller = getattr(main_controller, "gui_controller", None)
+        if gui_controller is None:
+            return
+        try:
+            gui_controller.ensure_optional_gui("install")
+        except Exception as exc:
+            logger.warning(f"AI Hub install GUI adapter is unavailable: {exc}")
+
+    def refresh(self, *, force: bool = False, include_status: bool | None = None) -> None:
+        if include_status is None:
+            include_status = bool(force or self._loaded_once)
+
         self._refresh_generation += 1
         generation = self._refresh_generation
         self._refresh_inflight = True
@@ -650,9 +666,13 @@ class AIHubDialog(QDialog):
             self._set_cards_checking()
 
         def _worker() -> None:
-            rows = self._fetch_rows(force=force)
+            rows = self._fetch_rows(force=force, include_status=bool(include_status))
             checked_at = _dt.datetime.now()
-            self._on_gui_thread(lambda: self._apply_refresh_result(generation, rows, checked_at))
+            self._on_gui_thread(
+                lambda: self._apply_refresh_result(
+                    generation, rows, checked_at, bool(include_status)
+                )
+            )
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -661,6 +681,7 @@ class AIHubDialog(QDialog):
         generation: int,
         rows: list[dict[str, Any]],
         checked_at: _dt.datetime,
+        included_status: bool,
     ) -> None:
         if generation != self._refresh_generation:
             return
@@ -678,6 +699,12 @@ class AIHubDialog(QDialog):
         self._loaded_once = True
         self._last_check_ts = checked_at
         self._refresh_views()
+
+        # First paint uses cheap metadata only. File/package status checks are
+        # a second background phase so opening AI Hub never waits several
+        # seconds before showing the component catalog.
+        if rows and not included_status:
+            QTimer.singleShot(0, lambda: self.refresh(force=False, include_status=True))
 
     def _refresh_views(self) -> None:
         self._rebuild_category_list()
@@ -725,8 +752,28 @@ class AIHubDialog(QDialog):
             self._settings_panel.apply_data(self._rows, self._selected_category)
             self._settings_panel.select_component(component_id)
 
-    def _fetch_rows(self, *, force: bool = False) -> list[dict[str, Any]]:
+    def _find_main_controller(self):
+        current = self.parent()
+        while current is not None:
+            controller = getattr(current, "main_controller", None)
+            if controller is not None:
+                return controller
+            current = current.parent() if hasattr(current, "parent") else None
+        window = self.window()
+        return getattr(window, "main_controller", None) if window is not None else None
+
+    def _fetch_rows(
+        self,
+        *,
+        force: bool = False,
+        include_status: bool = True,
+    ) -> list[dict[str, Any]]:
         try:
+            main_controller = self._main_controller
+            if main_controller is None:
+                raise RuntimeError("Application backend is not ready")
+            main_controller.ensure_feature("installables", timeout=20.0)
+
             # force=True переопрашивает статус КАЖДОГО компонента (pip-метаданные,
             # файлы) — это медленно, особенно сразу после установки. Со старым
             # таймаутом 5с переопрос не успевал → пустой ответ → список «компоненты
@@ -734,7 +781,7 @@ class AIHubDialog(QDialog):
             timeout = 30.0 if force else 8.0
             result = self.event_bus.emit_and_wait(
                 Events.Installable.LIST,
-                {"include_status": True, "refresh": bool(force)},
+                {"include_status": bool(include_status), "refresh": bool(force)},
                 timeout=timeout,
             )
             rows = result[0] if result and isinstance(result[0], list) else []

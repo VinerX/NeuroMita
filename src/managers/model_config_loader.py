@@ -76,7 +76,7 @@ class ModelRuntimeConfig:
 
     def apply_setting(self, key: str, value: Any) -> None:
         """
-        Централизованно обновляем runtime-конфиг при Events.Core.SETTING_CHANGED.
+        Централизованно обновляем runtime-конфиг из SettingsRegistry.
         Это уменьшает ModelController и не раздувает ChatModel.
         """
         try:

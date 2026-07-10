@@ -55,10 +55,7 @@ class LocalVoiceController:
         return use(SettingsService)
 
     def _save_setting(self, key: str, value: Any) -> None:
-        try:
-            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
-        except Exception:
-            pass
+        use(SettingsService).update(key, value)
 
     def _subscribe_to_events(self):
         eb = self.event_bus

@@ -261,29 +261,21 @@ class VoiceModelController:
             return "uninstall"
         return "install"
 
-    def _handle_get_model_data(self, event: Event):
+    def model_catalog_snapshot(self) -> list[dict]:
         with self._lock:
-            have = bool(self.local_voice_models)
-        if not have:
-            try:
-                self.reload()
-            except Exception:
-                pass
-        with self._lock:
-            return self.local_voice_models
+            return copy.deepcopy(self.local_voice_models)
 
-    def _handle_get_installed_models(self, event: Event):
-        with self._lock:
-            installed = self.installed_models.copy()
-        if installed:
-            return installed
-
-        try:
-            self.refresh_installed_models()
-        except Exception:
-            pass
+    def installed_models_snapshot(self) -> set[str]:
         with self._lock:
             return self.installed_models.copy()
+
+    def _handle_get_model_data(self, _event: Event):
+        # Queries must be O(1). Refresh/import work belongs to reload() and the
+        # install lifecycle, both of which run outside the GUI request path.
+        return self.model_catalog_snapshot()
+
+    def _handle_get_installed_models(self, _event: Event):
+        return self.installed_models_snapshot()
 
     def _handle_get_dependencies_status(self, event: Event):
         with self._lock:

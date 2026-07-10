@@ -286,17 +286,34 @@ class EmbeddingPresetsController(EmbeddingPresetService):
     # ── Handlers ─────────────────────────────────────────────────────────────
 
     def _on_get_list(self, event: Event):
+        return self.list_meta()
+
+    def list_meta(self) -> Dict[str, Any]:
         from presets.embedding_provider_presets import list_builtin_presets
-        builtins = [{"id": p["id"], "name": p["name"], "is_builtin": True,
-                     "provider": p["provider"], "is_local": p.get("is_local", False)}
-                    for p in list_builtin_presets()]
+
+        builtins = [
+            {
+                "id": preset["id"],
+                "name": preset["name"],
+                "is_builtin": True,
+                "provider": preset["provider"],
+                "is_local": preset.get("is_local", False),
+            }
+            for preset in list_builtin_presets()
+        ]
         custom = []
-        for pid in self.custom_order:
-            up = self.custom_presets.get(pid)
-            if up:
-                custom.append({"id": up.id, "name": up.name,
-                                "is_builtin": False, "provider": up.provider_name,
-                                "is_local": up.provider_name == "local"})
+        for preset_id in self.custom_order:
+            preset = self.custom_presets.get(preset_id)
+            if preset:
+                custom.append(
+                    {
+                        "id": preset.id,
+                        "name": preset.name,
+                        "is_builtin": False,
+                        "provider": preset.provider_name,
+                        "is_local": preset.provider_name == "local",
+                    }
+                )
         return {"builtin": builtins, "custom": custom}
 
     def _on_get_full(self, event: Event):

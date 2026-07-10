@@ -32,7 +32,7 @@ from core.events import Events, get_event_bus
 from core.services import use
 from localization.live import tr_set
 from main_logger import logger
-from services.contracts import CharacterRegistry, GameLinkService
+from services.contracts import CharacterRegistry, GameLinkService, SettingsService
 from ui.async_bus import run_async
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
@@ -110,6 +110,16 @@ class AppWindowBase(QMainWindow):
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
+        self.settings_view_model = None
+        self.settings_binding = None
+        try:
+            from ui.settings.settings_binding import QtSettingsViewModel
+
+            self.settings_view_model = QtSettingsViewModel(use(SettingsService), self)
+            self.settings_binding = self.settings_view_model
+        except Exception:
+            self.settings_view_model = None
+            self.settings_binding = None
         self.backend_ready = False
         self.backend_startup_error = ""
 
@@ -1083,9 +1093,19 @@ class AppWindowBase(QMainWindow):
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
     def _save_setting(self, key, value):
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {'key': key, 'value': value})
+        binding = getattr(self, "settings_binding", None)
+        if binding is not None:
+            binding.set(key, value)
+            return
+        try:
+            use(SettingsService).update(key, value)
+        except Exception:
+            self.settings.set(key, value)
 
     def _get_setting(self, key, default=None):
+        view_model = getattr(self, "settings_view_model", None)
+        if view_model is not None:
+            return view_model.get(key, default)
         return self.settings.get(key, default)
 
     def _get_character_name(self):
@@ -1116,6 +1136,13 @@ class AppWindowBase(QMainWindow):
                 self.window_manager.close_all(destroy=True)
         except Exception:
             pass
+
+        binding = getattr(self, "settings_binding", None)
+        if binding is not None:
+            try:
+                binding.close()
+            except Exception:
+                pass
 
         logger.info("Закрываемся")
         event.accept()

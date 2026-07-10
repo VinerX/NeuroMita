@@ -2,6 +2,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QFrame, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QFont
 from core.events import get_event_bus, Events
+from core.services import use
+from services.contracts import SettingsService
 from localization import available_languages, language_display_name, translate_for_language
 import sys
 from styles.theme import get_theme
@@ -238,14 +240,9 @@ class EULAWidget(QWidget):
         
     def _on_accept(self):
         # Сохраняем выбранный на стартовом экране язык интерфейса.
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'LANGUAGE',
-            'value': str(self.current_language or "ru").upper(),
-        })
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'EULA_ACCEPTED',
-            'value': True
-        })
+        settings = use(SettingsService)
+        settings.update("LANGUAGE", str(self.current_language or "ru").upper())
+        settings.update("EULA_ACCEPTED", True)
         self.accepted.emit()
 
     def language_changed_on_start(self) -> bool:

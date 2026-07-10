@@ -7,6 +7,7 @@ from typing import List, Optional
 import numpy as np
 
 from core.events import Event, Events, get_event_bus
+from core.services import use
 from handlers.ai_engine.rag_client import (
     get_embeddings as rag_get_embeddings,
     warmup_embeddings as rag_warmup_embeddings,
@@ -17,8 +18,7 @@ from handlers.embedding_presets import (
     resolve_model_settings,
 )
 from main_logger import logger
-from managers.settings_manager import SettingsManager
-from services.contracts import EmbeddingService
+from services.contracts import EmbeddingService, SettingsService
 
 
 EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
@@ -45,17 +45,23 @@ class EmbeddingController(EmbeddingService):
         "HF_TOKEN",
         "RAG_VECTOR_SEARCH_ENABLED",
         "RAG_EMBED_PRESET_ID",
+        "RAG_ENABLED",
+        "RAG_PRELOAD_EMBEDDINGS_MODEL",
     })
 
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
+        self.settings = use(SettingsService)
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._EMBED_SETTING_KEYS
+        )
         self.handler: object | None = None
         self._handler_failed: bool = False
         self._init_lock = Lock()
 
         self._subscribe_to_events()
 
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             logger.info("RAG is disabled in settings. Embedding backend warmup skipped.")
             return
 
@@ -65,12 +71,12 @@ class EmbeddingController(EmbeddingService):
         """Модель эмбеддингов нужна, когда включён векторный поиск (либо явный
         preload). Тогда её стоит грузить в фоне заранее — иначе первый RAG-запрос
         упирается в таймаут на «холодной» загрузке/скачивании весов с HuggingFace."""
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             return False
         if self._provider_name() != "local":
             return False
-        preload = bool(SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
-        vector = bool(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False))
+        preload = bool(self.settings.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
+        vector = bool(self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False))
         return preload or vector
 
     def _maybe_start_warmup(self, *, reason: str) -> None:
@@ -94,7 +100,6 @@ class EmbeddingController(EmbeddingService):
     def _subscribe_to_events(self) -> None:
         self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
         self.event_bus.subscribe(EMBEDS_EVENT_NAME, self._on_get_embeddings, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         self.event_bus.subscribe(Events.RAG.MODEL_CHANGED, self._on_model_changed, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         # Содержимое пресета могло измениться при том же id — сигнатура настроек
@@ -124,9 +129,9 @@ class EmbeddingController(EmbeddingService):
     def _ensure_local_backend(self) -> bool:
         if self._handler_failed:
             return False
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             return False
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+        if not self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False):
             return False
         if self._provider_name() != "local":
             with self._init_lock:
@@ -169,9 +174,8 @@ class EmbeddingController(EmbeddingService):
         invalidate_embedding_config_cache()
         logger.info(f"EmbeddingController: MODEL_CHANGED event received: {data}")
 
-    def _on_setting_changed(self, event: Event) -> None:
-        data = event.data or {}
-        key = data.get("key", "")
+    def _on_setting_changed(self, change) -> None:
+        key = change.key
         if key not in self._EMBED_SETTING_KEYS:
             return
 
@@ -184,12 +188,21 @@ class EmbeddingController(EmbeddingService):
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
             self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
                 "key": key,
-                "value": data.get("value"),
+                "value": change.value,
             })
 
         # Включили векторный поиск / сменили модель — прогреваем в фоне сразу,
         # чтобы первый запрос не ждал холодную загрузку.
         self._maybe_start_warmup(reason=f"setting:{key}")
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        with self._init_lock:
+            self.handler = None
+            self._handler_failed = True
 
     def _on_install_task_finished(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}

@@ -11,7 +11,7 @@ from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
 from core.services import use
-from services.contracts import CharacterRegistry
+from services.contracts import ApiPresetService, CharacterRegistry
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_structured_migration
@@ -388,8 +388,7 @@ def _load_character_provider_items_async(gui) -> None:
         return
 
     def _worker():
-        result = get_event_bus().emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        return api_provider_names_from_result(result)
+        return api_provider_names_from_result([use(ApiPresetService).list_meta()])
 
     def _apply(provider_names: list[str]) -> None:
         _set_character_provider_items(gui, [*_default_provider_items(), *(provider_names or [])])
