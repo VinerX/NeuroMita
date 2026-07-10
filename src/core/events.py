@@ -31,6 +31,55 @@ class Event:
             self.timestamp = time.time()
 
 
+
+
+class EventSubscription:
+    """Идемпотентная подписка, пригодная для lifecycle-owned компонентов."""
+
+    def __init__(
+        self,
+        bus: "EventBus",
+        event_name: str,
+        callback: Callable,
+        *,
+        weak: bool,
+    ) -> None:
+        self._bus_ref = weakref.ref(bus)
+        self._event_name = str(event_name)
+        self._callback = None
+        self._callback_ref = None
+        if weak:
+            try:
+                if getattr(callback, "__self__", None) is not None:
+                    self._callback_ref = weakref.WeakMethod(callback)
+                else:
+                    self._callback_ref = weakref.ref(callback)
+            except TypeError:
+                self._callback = callback
+        else:
+            self._callback = callback
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        bus = self._bus_ref()
+        callback = self._callback
+        if callback is None and self._callback_ref is not None:
+            callback = self._callback_ref()
+        if bus is not None and callback is not None:
+            bus.unsubscribe(self._event_name, callback)
+
+    def __enter__(self) -> "EventSubscription":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+
 class EventBus:
     """Шина однонаправленных уведомлений.
 
@@ -47,29 +96,44 @@ class EventBus:
         self._processor_thread = threading.Thread(target=self._process_events, daemon=True)
         self._processor_thread.start()
     
-    def subscribe(self, event_name: str, callback: Callable, weak: bool = True) -> None:
+    def subscribe(
+        self,
+        event_name: str,
+        callback: Callable,
+        weak: bool = True,
+    ) -> EventSubscription:
+        """Подписаться на notification-событие.
+
+        Для bound-method используется weakref.WeakMethod. Обычный weakref.ref
+        на ``obj.method`` умирает сразу после subscribe(), потому что каждый
+        доступ к методу создаёт временный объект bound-method.
         """
-        Подписаться на событие
-        
-        Args:
-            event_name: Имя события
-            callback: Функция обратного вызова
-            weak: Использовать слабую ссылку (рекомендуется True)
-        """
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+
+        normalized = str(event_name)
         with self._lock:
-            if event_name not in self._subscribers:
-                self._subscribers[event_name] = []
-            
-            if weak:
-                # Используем слабую ссылку для предотвращения циклических ссылок
-                weak_ref = weakref.ref(callback, self._create_cleanup_callback(event_name))
-                self._subscribers[event_name].append(weak_ref)
-            else:
-                # Для статических функций можно использовать сильные ссылки
-                self._subscribers[event_name].append(callback)
-            
-            logger.debug(f"Подписка на событие '{event_name}' добавлена")
-    
+            subscribers = self._subscribers.setdefault(normalized, [])
+            if not any(self._is_same_callback(ref, callback) for ref in subscribers):
+                stored: Any
+                if weak:
+                    cleanup = self._create_cleanup_callback(normalized)
+                    try:
+                        if getattr(callback, "__self__", None) is not None:
+                            stored = weakref.WeakMethod(callback, cleanup)
+                        else:
+                            stored = weakref.ref(callback, cleanup)
+                    except TypeError:
+                        # Некоторые C-callable не поддерживают weakref. Сильная
+                        # ссылка безопаснее, чем молча потерянный subscriber.
+                        stored = callback
+                else:
+                    stored = callback
+                subscribers.append(stored)
+                logger.debug(f"Подписка на событие '{normalized}' добавлена")
+
+        return EventSubscription(self, normalized, callback, weak=weak)
+
     def unsubscribe(self, event_name: str, callback: Callable) -> None:
         """Отписаться от события"""
         with self._lock:
@@ -86,38 +150,55 @@ class EventBus:
             if not self._subscribers[event_name]:
                 del self._subscribers[event_name]
     
-    def emit(self, event_name: str, data: Any = None, sync: bool = False) -> None:
-        """
-        Отправить событие
-        
-        Args:
-            event_name: Имя события
-            data: Данные события
-            sync: Выполнить синхронно (блокирующий вызов)
-        """
-        # После teardown шины ничего не диспетчеризуем — иначе поздние вызовы
-        # плодили бы потоки на завершающемся интерпретаторе (#19).
+    def unsubscribe_owner(self, owner: Any) -> int:
+        """Удалить все bound-method подписки конкретного lifecycle owner."""
+        if owner is None:
+            return 0
+        removed = 0
+        with self._lock:
+            for event_name in tuple(self._subscribers):
+                kept = []
+                for ref in self._subscribers[event_name]:
+                    callback = ref() if isinstance(ref, weakref.ref) else ref
+                    if callback is None:
+                        removed += 1
+                        continue
+                    if getattr(callback, "__self__", None) is owner:
+                        removed += 1
+                        continue
+                    kept.append(ref)
+                if kept:
+                    self._subscribers[event_name] = kept
+                else:
+                    del self._subscribers[event_name]
+        return removed
+
+    def try_emit(
+        self, event_name: str, data: Any = None, sync: bool = False
+    ) -> bool:
+        """Попытаться доставить notification и сообщить, принят ли он шиной."""
         if not self._running:
-            return
+            return False
 
         event = Event(name=event_name, data=data)
-
-        # ВАЖНО: никакого логирования/резолва подписчиков под self._lock здесь.
-        # Раньше emit() держал глобальный лок шины во время logger-вызова (диск!)
-        # и лишний раз резолвил подписчиков — на старте это сериализовало ВЕСЬ
-        # поток событий за скоростью диска и упиралось в тот же глобальный лок. Диспетчер (_emit_sync/_emit_async) сам резолвит
-        # подписчиков один раз и вне лока.
         if sync:
             self._emit_sync(event)
-        else:
-            try:
-                self._event_queue.put(event, timeout=0.5)
-            except Full:
-                logger.error(
-                    "Event queue saturated; dropping event '%s' to protect process memory",
-                    event_name,
-                )
-    
+            return True
+
+        try:
+            self._event_queue.put(event, timeout=0.5)
+            return True
+        except Full:
+            logger.error(
+                "Event queue saturated; dropping event '%s' to protect process memory",
+                event_name,
+            )
+            return False
+
+    def emit(self, event_name: str, data: Any = None, sync: bool = False) -> None:
+        """Отправить notification. Возвращаемое значение намеренно отсутствует."""
+        self.try_emit(event_name, data, sync)
+
     @property
     def is_running(self) -> bool:
         """Жива ли шина. Фоновые демон-циклы проверяют это, чтобы не дёргать
@@ -264,14 +345,21 @@ def shutdown_event_bus() -> None:
 
 
 # Удобные алиасы для быстрого доступа
-def subscribe(event_name: str, callback: Callable, weak: bool = True) -> None:
-    """Подписаться на событие через глобальный EventBus"""
-    get_event_bus().subscribe(event_name, callback, weak)
+def subscribe(
+    event_name: str, callback: Callable, weak: bool = True
+) -> EventSubscription:
+    """Подписаться на событие через глобальный EventBus."""
+    return get_event_bus().subscribe(event_name, callback, weak)
 
 
 def unsubscribe(event_name: str, callback: Callable) -> None:
     """Отписаться от события через глобальный EventBus"""
     get_event_bus().unsubscribe(event_name, callback)
+
+
+def try_emit(event_name: str, data: Any = None, sync: bool = False) -> bool:
+    """Попытаться отправить событие через глобальный EventBus."""
+    return get_event_bus().try_emit(event_name, data, sync)
 
 
 def emit(event_name: str, data: Any = None, sync: bool = False) -> None:

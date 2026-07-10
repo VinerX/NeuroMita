@@ -25,6 +25,7 @@ class TTSService:
         self._current_model_id: Optional[str] = None
 
         self._triton_status_cache = None
+        self._warmup_status: dict[str, str] = {}
 
     def _get_local_voice(self):
         if self._local_voice is None:
@@ -100,11 +101,35 @@ class TTSService:
             self.emit_event("log", f"[tts:init] runtime initialized for model_id={model_id}")
 
             if do_warmup:
-                warm = await self._best_effort_warmup(lv, model_id)
-                if not warm:
-                    self.emit_event("log", f"[tts:init] warmup failed for model_id={model_id}")
-                    return False
-                self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
+                if self._is_network_bound_edge_model(model_id):
+                    self._warmup_status[model_id] = "skipped-network"
+                    self.emit_event(
+                        "log",
+                        f"[tts:init] warmup skipped for model_id={model_id}: "
+                        "Edge-TTS warmup depends on network and is not a runtime readiness check",
+                    )
+                else:
+                    try:
+                        warm = await asyncio.wait_for(
+                            self._best_effort_warmup(lv, model_id),
+                            timeout=120.0,
+                        )
+                    except asyncio.TimeoutError:
+                        warm = False
+                        self.emit_event(
+                            "log",
+                            f"[tts:init] warmup timed out for model_id={model_id}; "
+                            "runtime remains initialized",
+                        )
+                    self._warmup_status[model_id] = "ready" if warm else "failed"
+                    if warm:
+                        self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
+                    else:
+                        self.emit_event(
+                            "log",
+                            f"[tts:init] warmup failed for model_id={model_id}; "
+                            "runtime remains initialized and the first synthesis will retry",
+                        )
 
             return True
 
@@ -139,6 +164,11 @@ class TTSService:
             return st
 
         raise RuntimeError(f"Unknown tts method: {method}")
+
+    @staticmethod
+    def _is_network_bound_edge_model(model_id: str) -> bool:
+        value = str(model_id or "").strip().lower()
+        return value.startswith("edge_tts_rvc") or value.startswith("edge+")
 
     def _compute_triton_status(self) -> dict:
         status = {

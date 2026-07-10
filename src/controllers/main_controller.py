@@ -252,6 +252,7 @@ class MainController:
                 ),
                 enabled=telegram_enabled,
                 factory=self._create_telegram_controller,
+                provided_services=(TelegramService,),
                 priority=20,
                 required_modules=("telethon",),
             )
@@ -343,6 +344,7 @@ class MainController:
                 setting_keys=("RAG_ENABLED",),
                 enabled=enabled("RAG_ENABLED"),
                 factory=self._create_embedding_controller,
+                provided_services=(EmbeddingService,),
                 priority=70,
             )
         )
@@ -396,7 +398,6 @@ class MainController:
 
         controller = TelegramController()
         self.telegram_controller = controller
-        services().register(TelegramService, controller, replace=True)
         return controller
 
     def _create_audio_controller(self):
@@ -457,7 +458,6 @@ class MainController:
 
         controller = EmbeddingController()
         self.embedding_controller = controller
-        services().register(EmbeddingService, controller, replace=True)
         return controller
 
     def _create_graph_controller(self):

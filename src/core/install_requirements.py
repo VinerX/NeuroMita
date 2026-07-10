@@ -54,6 +54,7 @@ def _target_paths(ctx: Optional[dict] = None) -> list[str]:
         ctx.get("libs_dir"),
         ctx.get("lib_dir"),
         ctx.get("target_dir"),
+        *(ctx.get("python_paths") or []),
         os.environ.get("NEUROMITA_LIB_DIR"),
     ]
     result: list[str] = []
@@ -82,11 +83,12 @@ def _check_python_module(module: str, ctx: Optional[dict] = None) -> bool:
                 return True
         except Exception:
             pass
-    try:
-        if importlib.util.find_spec(module) is not None:
-            return True
-    except Exception:
-        pass
+    if not bool((ctx or {}).get("strict_target", False)):
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -146,6 +148,9 @@ def _get_installed_dist_version(dist: str, ctx: Optional[dict] = None) -> Option
                     return str(distribution.version)
         except Exception:
             continue
+
+    if bool((ctx or {}).get("strict_target", False)):
+        return None
 
     seen = set()
     for c in candidates:

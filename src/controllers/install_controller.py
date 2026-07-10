@@ -5,6 +5,7 @@ from typing import Callable, Optional, Any, Iterable
 import os
 import sys
 import time
+import threading
 import urllib.request
 import urllib.error
 
@@ -13,8 +14,11 @@ from core.backends import BackendKind, get_backend_service
 from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
 from core.install_types import InstallCallbacks, InstallAction, InstallPlan
+from core.runtime_environments import EnvironmentTransaction, runtime_environments
+from core.services import services
+from core.install_requirements import missing_pip_specs
 from utils import getTranslationVariant as _
-from services.contracts import InstallService
+from services.contracts import AIEngineService, InstallService
 
 
 from packaging.utils import canonicalize_name
@@ -185,6 +189,9 @@ class InstallController(InstallService):
         self.script_path = os.environ.get("NEUROMITA_PYTHON", sys.executable)
         self.libs_path = os.environ.get("NEUROMITA_LIB_DIR", "Lib")
         self.event_bus = get_event_bus()
+        self.environment_manager = runtime_environments()
+        self._active_installers_lock = threading.RLock()
+        self._active_installers: set[PipInstaller] = set()
         self._subscribe_to_events()
 
     def _subscribe_to_events(self) -> None:
@@ -216,15 +223,47 @@ class InstallController(InstallService):
             timeout_sec=timeout_sec,
         ))
 
-    def _make_pip_installer(self, cb: InstallCallbacks) -> PipInstaller:
-        return PipInstaller(
-            # script_path=self.script_path,
-            # libs_path=self.libs_path,
+    def _make_pip_installer(
+        self,
+        cb: InstallCallbacks,
+        *,
+        target_path: str | os.PathLike[str] | None = None,
+    ) -> PipInstaller:
+        installer = PipInstaller(
             update_status=cb.status,
             update_log=cb.log,
+            update_raw_log=cb.raw_log,
             update_progress=cb.progress,
             progress_window=None,
+            target_path=target_path,
         )
+        with self._active_installers_lock:
+            self._active_installers.add(installer)
+        return installer
+
+    def _release_pip_installer(self, installer: PipInstaller | None) -> None:
+        if installer is None:
+            return
+        lock = getattr(self, "_active_installers_lock", None)
+        active = getattr(self, "_active_installers", None)
+        if lock is None or active is None:
+            return
+        with lock:
+            active.discard(installer)
+
+    def shutdown(self) -> None:
+        with self._active_installers_lock:
+            installers = list(self._active_installers)
+            self._active_installers.clear()
+        for installer in installers:
+            try:
+                installer.cancel()
+            except Exception:
+                pass
+        try:
+            self.event_bus.unsubscribe_owner(self)
+        except Exception:
+            pass
 
     def _emit(self, event_name: str, payload: dict) -> None:
         try:
@@ -566,6 +605,92 @@ class InstallController(InstallService):
             th.join(timeout=1.0)
             cb.status = orig_status
 
+    @staticmethod
+    def _environment_service_name(category: str) -> str | None:
+        mapping = {
+            "tts": "tts",
+            "voice": "tts",
+            "asr": "asr",
+            "rag": "rag",
+            "embedding": "rag",
+            "beats": "beats",
+        }
+        return mapping.get(str(category or "").strip().lower())
+
+    def _quiesce_environment_worker(
+        self,
+        *,
+        category: str,
+        item_id: str,
+        timeout: float,
+    ) -> bool:
+        service_name = self._environment_service_name(category)
+        if service_name is None:
+            return True
+        engine_service = services().get_optional(AIEngineService)
+        if engine_service is None:
+            return True
+        engine = engine_service.get_engine()
+        deactivate = getattr(engine, "deactivate_environment", None)
+        if not callable(deactivate):
+            raise RuntimeError("AI engine does not support managed environment deactivation")
+        return bool(
+            deactivate(
+                service_name,
+                item_id,
+                category=category,
+                timeout=timeout,
+            )
+        )
+
+    @staticmethod
+    def _artifact_cleanup_plan(plan: InstallPlan) -> InstallPlan:
+        actions = [
+            action
+            for action in (plan.actions or [])
+            if str(action.type or "").strip().lower() != "pip"
+            and not bool(action.environment_mutation)
+        ]
+        return InstallPlan(
+            actions=actions,
+            already_installed=False,
+            ok_status=plan.ok_status,
+            already_installed_status=plan.already_installed_status,
+            required_backend=None,
+            backend_context={},
+            environment_id=plan.environment_id,
+            environment_managed=plan.environment_managed,
+        )
+
+    @staticmethod
+    def _collect_pip_specs(plan: InstallPlan) -> list[str]:
+        specs: list[str] = []
+        for action in plan.actions or []:
+            if str(action.type or "").strip().lower() != "pip":
+                continue
+            specs.extend(str(item) for item in (action.packages or []) if str(item).strip())
+        return specs
+
+    @staticmethod
+    def _apply_environment_ctx(
+        ctx: dict,
+        *,
+        target_dir: str,
+        python_paths: Iterable[str],
+        transaction: EnvironmentTransaction | None = None,
+    ) -> None:
+        paths = [str(path) for path in python_paths if str(path).strip()]
+        ctx.update({
+            "libs_dir": str(target_dir),
+            "lib_dir": str(target_dir),
+            "target_dir": str(target_dir),
+            "python_paths": paths,
+            "strict_target": True,
+        })
+        if transaction is not None:
+            ctx["environment_transaction"] = transaction
+            ctx["environment_id"] = transaction.logical_id
+
     def _execute_plan(
         self,
         plan: InstallPlan,
@@ -573,14 +698,15 @@ class InstallController(InstallService):
         pip_installer: PipInstaller,
         callbacks: InstallCallbacks,
         ctx: dict,
+        environment_transaction: EnvironmentTransaction | None = None,
     ) -> bool:
         cb = callbacks
         clean = bool((ctx.get("meta") or {}).get("clean")) if isinstance(ctx, dict) else False
         backend_ctx = dict(ctx or {})
         backend_ctx.update(getattr(plan, "backend_context", {}) or {})
-        backend_actions = self._backend_actions(plan, backend_ctx)
+        backend_actions = [] if environment_transaction is not None else self._backend_actions(plan, backend_ctx)
         backend_requirement = getattr(plan, "required_backend", None)
-        if backend_requirement is not None:
+        if backend_requirement is not None and environment_transaction is None:
             backend_service = get_backend_service()
             backend_requirement = backend_service.build_requirement(backend_requirement)
             if backend_requirement.kind != BackendKind.NONE:
@@ -602,6 +728,21 @@ class InstallController(InstallService):
             return True
 
         actions = backend_actions + (plan.actions or [])
+        overlay_prepared = False
+
+        def prepare_overlay() -> None:
+            nonlocal overlay_prepared
+            if overlay_prepared or environment_transaction is None:
+                return
+            environment_transaction.strip_core_packages()
+            self._apply_environment_ctx(
+                ctx,
+                target_dir=str(environment_transaction.site_packages),
+                python_paths=environment_transaction.validation_paths,
+                transaction=environment_transaction,
+            )
+            overlay_prepared = True
+
         for act in actions:
             atype = (act.type or "").strip().lower()
 
@@ -614,13 +755,22 @@ class InstallController(InstallService):
             if pr > 0:
                 cb.progress(pr)
 
+            if atype != "pip":
+                prepare_overlay()
+
             if atype == "pip":
                 pkgs = act.packages or []
+                if environment_transaction is not None and ctx.get("environment_overlay_resolved"):
+                    if pkgs:
+                        cb.log(f"Resolved environment package set: {', '.join(pkgs)}")
+                    continue
                 if clean:
                     # Clean reinstall: don't skip satisfied packages, force-reinstall.
                     to_install = list(pkgs)
                 else:
-                    if hasattr(pip_installer, "missing_specs"):
+                    if environment_transaction is not None:
+                        to_install = missing_pip_specs(pkgs, ctx=ctx)
+                    elif hasattr(pip_installer, "missing_specs"):
                         to_install = pip_installer.missing_specs(pkgs)
                     else:
                         to_install = self._missing_pip_specs(pkgs)
@@ -636,14 +786,15 @@ class InstallController(InstallService):
                     extra_args.append("--reinstall")
                 
                 # --- ДИНАМИЧЕСКИЙ СБОР СУЩЕСТВУЮЩИХ ПАКЕТОВ ---
-                target_dir = os.environ.get("NEUROMITA_LIB_DIR", self.libs_path)
-                
-                # Сканируем папку Lib на наличие установленных пакетов и версий,
-                # исключая те, что мы устанавливаем прямо сейчас (to_install)
-                detected_constraints = _get_installed_constraints(target_dir, to_install)
-                
-                # Объединяем специфичные оверрайды бэкенда с обнаруженными в системе
-                local_overrides = list(act.uv_overrides or [])
+                target_dir = str(ctx.get("target_dir") or os.environ.get("NEUROMITA_LIB_DIR", self.libs_path))
+
+                if environment_transaction is not None:
+                    detected_constraints = []
+                    local_overrides = list(environment_transaction.core_overrides)
+                    local_overrides.extend(list(act.uv_overrides or []))
+                else:
+                    detected_constraints = _get_installed_constraints(target_dir, to_install)
+                    local_overrides = list(act.uv_overrides or [])
                 combined_overrides = _merge_requirement_specs(
                     local_overrides,
                     detected_constraints,
@@ -651,20 +802,14 @@ class InstallController(InstallService):
                 # ----------------------------------------------
 
                 install_with_overrides = getattr(pip_installer, "install_package_with_overrides", None)
-                if callable(install_with_overrides):
-                    ok = install_with_overrides(
-                        to_install,
-                        description=desc or "Installing...",
-                        extra_args=extra_args or None,
-                        uv_overrides=combined_overrides, # <-- Передаем дополненный список
-                    )
-                else:
-                    # Фолбэк на случай если метод оверрайдов недоступен
-                    ok = pip_installer.install_package(
-                        to_install,
-                        description=desc or "Installing...",
-                        extra_args=extra_args or None,
-                    )
+                if not callable(install_with_overrides):
+                    raise RuntimeError("PipInstaller does not support the required uv override contract")
+                ok = install_with_overrides(
+                    to_install,
+                    description=desc or "Installing...",
+                    extra_args=extra_args or None,
+                    uv_overrides=combined_overrides,
+                )
                 if not ok:
                     cb.status("Failed")
                     cb.log("pip step failed")
@@ -732,6 +877,7 @@ class InstallController(InstallService):
                 cb.status("Failed")
                 return False
 
+        prepare_overlay()
         cb.progress(100)
         cb.status(plan.ok_status or "Done")
         return True
@@ -745,7 +891,7 @@ class InstallController(InstallService):
         meta: Optional[dict] = None,
         timeout_sec: float = 3600.0,
     ) -> bool:
-        meta = meta or {}
+        meta = dict(meta or {})
 
         user_cb = callbacks or InstallCallbacks(
             progress=lambda *_: None,
@@ -756,50 +902,104 @@ class InstallController(InstallService):
         state = {"progress": 0, "status": ""}
 
         def base_payload(extra: Optional[dict] = None) -> dict:
-            p = {
+            payload = {
                 "task_id": str(task_id),
                 "meta": meta,
                 "kind": meta.get("kind"),
                 "item_id": meta.get("item_id"),
             }
             if extra:
-                p.update(extra)
-            return p
+                payload.update(extra)
+            return payload
 
-        def cb_progress(v: int) -> None:
+        def cb_progress(value: int) -> None:
             try:
-                v = int(v)
+                value = int(value)
             except Exception:
-                v = 0
-            v = max(0, min(100, v))
-            state["progress"] = v
+                value = 0
+            value = max(0, min(100, value))
+            state["progress"] = value
             try:
-                user_cb.progress(v)
-            except Exception:
-                pass
-            self._emit(Events.Install.TASK_PROGRESS, base_payload({"progress": v, "status": state.get("status", "")}))
-
-        def cb_status(s: str) -> None:
-            s = "" if s is None else str(s)
-            state["status"] = s
-            try:
-                user_cb.status(s)
+                user_cb.progress(value)
             except Exception:
                 pass
-            self._emit(Events.Install.TASK_PROGRESS, base_payload({"progress": state.get("progress", 0), "status": s}))
+            self._emit(
+                Events.Install.TASK_PROGRESS,
+                base_payload({"progress": value, "status": state.get("status", "")}),
+            )
 
-        def cb_log(m: str) -> None:
-            m = "" if m is None else str(m)
+        def cb_status(message: str) -> None:
+            message = "" if message is None else str(message)
+            state["status"] = message
             try:
-                user_cb.log(m)
+                user_cb.status(message)
             except Exception:
                 pass
-            self._emit(Events.Install.TASK_LOG, base_payload({"message": m}))
+            self._emit(
+                Events.Install.TASK_PROGRESS,
+                base_payload({"progress": state.get("progress", 0), "status": message}),
+            )
 
-        cb = InstallCallbacks(progress=cb_progress, status=cb_status, log=cb_log)
-        pip_installer = self._make_pip_installer(cb)
+        def cb_log(message: str) -> None:
+            message = "" if message is None else str(message)
+            try:
+                user_cb.log(message)
+            except Exception:
+                pass
+            self._emit(Events.Install.TASK_LOG, base_payload({"message": message}))
 
-        self._emit(Events.Install.TASK_STARTED, base_payload({"progress": 0, "status": "Preparing..."}))
+        def cb_raw_log(chunk: str) -> None:
+            raw_cb = user_cb.raw_log
+            if raw_cb is None:
+                return
+            try:
+                raw_cb("" if chunk is None else str(chunk))
+            except Exception:
+                pass
+
+        cb = InstallCallbacks(
+            progress=cb_progress,
+            status=cb_status,
+            log=cb_log,
+            raw_log=cb_raw_log,
+        )
+        created_installers: list[PipInstaller] = []
+
+        def create_installer(target_path: str | os.PathLike[str] | None) -> PipInstaller:
+            try:
+                installer = self._make_pip_installer(cb, target_path=target_path)
+            except TypeError:
+                installer = self._make_pip_installer(cb)
+            created_installers.append(installer)
+            return installer
+
+        environment_manager = getattr(self, "environment_manager", None) or runtime_environments()
+        environment_candidate = environment_manager.should_manage(meta)
+        logical_id, _category, _item_id = environment_manager.logical_id_from_meta(meta)
+        active_environment = environment_manager.active(logical_id) if environment_candidate else None
+
+        if active_environment is not None:
+            initial_target = str(active_environment.site_packages)
+            initial_paths = environment_manager.runtime_paths(active_environment)
+        elif environment_candidate:
+            empty_target = environment_manager.staging_root / "probe-empty" / logical_id
+            empty_target.mkdir(parents=True, exist_ok=True)
+            initial_target = str(empty_target)
+            initial_paths = (initial_target,)
+        else:
+            initial_target = getattr(self, "libs_path", os.environ.get("NEUROMITA_LIB_DIR", "Lib"))
+            initial_paths = (str(initial_target),)
+
+        pip_installer = create_installer(initial_target)
+        if not environment_candidate:
+            actual_target = str(getattr(pip_installer, "libs_path_abs", initial_target))
+            initial_target = actual_target
+            initial_paths = (actual_target,)
+
+        self._emit(
+            Events.Install.TASK_STARTED,
+            base_payload({"progress": 0, "status": "Preparing..."}),
+        )
         cb.status("Preparing...")
         cb.progress(1)
 
@@ -808,35 +1008,144 @@ class InstallController(InstallService):
             "meta": meta,
             "timeout_sec": float(timeout_sec),
             "event_bus": self.event_bus,
-            # Все проверки после установки обязаны смотреть в тот же --target,
-            # куда PipInstaller только что записал пакеты. Без этого финальная
-            # проверка видела лишь окружение embedded Python, возвращала False
-            # при успешном pip exit code 0 и начинала видеть пакет только после
-            # следующего запуска, когда Lib снова добавлялся в sys.path.
-            "libs_dir": pip_installer.libs_path_abs,
-            "lib_dir": pip_installer.libs_path_abs,
-            "target_dir": pip_installer.libs_path_abs,
+            "libs_dir": initial_target,
+            "lib_dir": initial_target,
+            "target_dir": initial_target,
+            "python_paths": list(initial_paths),
+            "strict_target": bool(environment_candidate),
             "python_executable": pip_installer.script_path,
         }
 
+        transaction: EnvironmentTransaction | None = None
         try:
-            result: Any
             try:
                 result = runner(pip_installer=pip_installer, callbacks=cb, ctx=ctx)
             except TypeError:
                 result = runner(pip_installer, cb, ctx)
 
-            if isinstance(result, InstallPlan):
-                ok = self._execute_plan(result, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
-            elif isinstance(result, dict) and "actions" in result:
+            if isinstance(result, dict) and "actions" in result:
                 actions = result.get("actions") or []
-                plan = InstallPlan(
-                    actions=[InstallAction(**a) if isinstance(a, dict) else a for a in actions],
+                result = InstallPlan(
+                    actions=[InstallAction(**action) if isinstance(action, dict) else action for action in actions],
                     already_installed=bool(result.get("already_installed", False)),
                     ok_status=str(result.get("ok_status", "Done") or "Done"),
-                    already_installed_status=str(result.get("already_installed_status", "Already installed") or "Already installed"),
+                    already_installed_status=str(
+                        result.get("already_installed_status", "Already installed") or "Already installed"
+                    ),
+                    required_backend=result.get("required_backend"),
+                    backend_context=dict(result.get("backend_context") or {}),
+                    environment_id=result.get("environment_id"),
+                    environment_managed=bool(result.get("environment_managed", True)),
                 )
-                ok = self._execute_plan(plan, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
+
+            if isinstance(result, InstallPlan):
+                op = str(meta.get("op") or "install").strip().lower()
+                managed = bool(
+                    environment_candidate
+                    and result.environment_managed
+                    and (result.required_backend is not None or active_environment is not None)
+                )
+
+                if managed and result.already_installed and active_environment is not None and op != "uninstall":
+                    cb.status(result.already_installed_status or "Already installed")
+                    cb.progress(100)
+                    ok = True
+                elif managed and op == "install":
+                    requested_specs = self._collect_pip_specs(result)
+                    transaction = environment_manager.begin(
+                        meta={**meta, **({"environment_id": result.environment_id} if result.environment_id else {})},
+                        requested_specs=requested_specs,
+                        required_backend=result.required_backend,
+                        backend_context={**ctx, **dict(result.backend_context or {})},
+                    )
+                    if not transaction.ensure_core_layers(create_installer, log=cb.log):
+                        raise RuntimeError("Failed to prepare shared core runtime layer")
+
+                    pip_installer = create_installer(str(transaction.site_packages))
+                    self._apply_environment_ctx(
+                        ctx,
+                        target_dir=str(transaction.site_packages),
+                        python_paths=transaction.validation_paths,
+                        transaction=transaction,
+                    )
+                    package_actions = [
+                        action
+                        for action in (result.actions or [])
+                        if str(action.type or "").strip().lower() == "pip"
+                    ]
+                    resolver_args: list[str] = []
+                    for action in package_actions:
+                        resolver_args.extend(list(action.extra_args or []))
+                    if requested_specs:
+                        resolve_environment = getattr(
+                            pip_installer, "install_environment_lock", None
+                        )
+                        if not callable(resolve_environment):
+                            raise RuntimeError(
+                                "PipInstaller does not support transactional environment locks"
+                            )
+                        if not resolve_environment(
+                            requested_specs,
+                            core_overrides=list(transaction.core_overrides),
+                            core_packages=list(transaction.core_package_names),
+                            extra_args=resolver_args,
+                        ):
+                            raise RuntimeError("Failed to resolve and install environment overlay")
+                        ctx["environment_overlay_resolved"] = True
+                    ok = self._execute_plan(
+                        result,
+                        pip_installer=pip_installer,
+                        callbacks=cb,
+                        ctx=ctx,
+                        environment_transaction=transaction,
+                    )
+                    if ok:
+                        record = transaction.commit(meta)
+                        cb.log(
+                            f"Activated environment '{record.logical_id}' revision {record.revision_id}."
+                        )
+                    else:
+                        transaction.abort()
+                elif managed and op == "uninstall" and active_environment is not None:
+                    if not self._quiesce_environment_worker(
+                        category=active_environment.category,
+                        item_id=active_environment.item_id,
+                        timeout=min(30.0, max(1.0, float(timeout_sec))),
+                    ):
+                        raise RuntimeError(
+                            f"Failed to stop active worker for environment "
+                            f"'{active_environment.logical_id}'"
+                        )
+
+                    pip_installer = create_installer(str(active_environment.site_packages))
+                    self._apply_environment_ctx(
+                        ctx,
+                        target_dir=str(active_environment.site_packages),
+                        python_paths=environment_manager.runtime_paths(active_environment),
+                    )
+                    cleanup_plan = self._artifact_cleanup_plan(result)
+                    ok = self._execute_plan(
+                        cleanup_plan,
+                        pip_installer=pip_installer,
+                        callbacks=cb,
+                        ctx=ctx,
+                    )
+                    if ok:
+                        environment_manager.deactivate(
+                            active_environment.logical_id,
+                            delete=False,
+                        )
+                        cb.log(
+                            f"Deactivated environment '{active_environment.logical_id}'. "
+                            "Its immutable revision remains available for reuse and garbage collection."
+                        )
+                else:
+                    ok = self._execute_plan(
+                        result,
+                        pip_installer=pip_installer,
+                        callbacks=cb,
+                        ctx=ctx,
+                    )
             else:
                 ok = bool(result)
                 if ok:
@@ -847,13 +1156,28 @@ class InstallController(InstallService):
                 self._emit(Events.Install.TASK_FINISHED, base_payload({"ok": True}))
                 return True
 
+            if transaction is not None:
+                transaction.abort()
             cb.status("Failed")
-            self._emit(Events.Install.TASK_FAILED, base_payload({"ok": False, "error": "Task failed"}))
+            self._emit(
+                Events.Install.TASK_FAILED,
+                base_payload({"ok": False, "error": "Task failed"}),
+            )
             return False
 
-        except Exception as e:
-            err = str(e) or repr(e)
+        except Exception as exc:
+            if transaction is not None:
+                transaction.abort()
+            error = str(exc) or repr(exc)
             cb.status("Failed")
-            cb.log(err)
-            self._emit(Events.Install.TASK_FAILED, base_payload({"ok": False, "error": err}))
+            cb.log(error)
+            self._emit(
+                Events.Install.TASK_FAILED,
+                base_payload({"ok": False, "error": error}),
+            )
             return False
+        finally:
+            release = getattr(self, "_release_pip_installer", None)
+            if callable(release):
+                for installer in created_installers:
+                    release(installer)

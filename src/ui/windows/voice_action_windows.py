@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QProgressBar,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPlainTextEdit, QProgressBar,
     QApplication, QWidget, QPushButton, QFileDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QTime
@@ -32,6 +32,7 @@ class VoiceInstallationWindow(QDialog):
     progress_updated = pyqtSignal(int)
     status_updated = pyqtSignal(str)
     log_updated = pyqtSignal(str)
+    raw_log_updated = pyqtSignal(str)
     window_closed = pyqtSignal()
     minimized = pyqtSignal()
 
@@ -64,7 +65,7 @@ class VoiceInstallationWindow(QDialog):
                 QLabel {
                     color: #f3edf6;
                 }
-                QTextEdit {
+                QTextEdit, QPlainTextEdit {
                     background-color: #07070f;
                     color: #d8d2e4;
                     border: 1px solid #252236;
@@ -101,7 +102,7 @@ class VoiceInstallationWindow(QDialog):
             self.setStyleSheet("""
                 QDialog { background-color: #1e1e1e; }
                 QLabel { color: #ffffff; }
-                QTextEdit {
+                QTextEdit, QPlainTextEdit {
                     background-color: #101010;
                     color: #cccccc;
                     border: 1px solid #333;
@@ -127,6 +128,8 @@ class VoiceInstallationWindow(QDialog):
             """)
 
         self._full_log_lines: list[str] = []
+        self._raw_log_chunks: list[str] = []
+        self._raw_pending_chunks: deque[str] = deque()
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
         self._snapshot_lines: list[str] = []
@@ -224,8 +227,10 @@ class VoiceInstallationWindow(QDialog):
         raw_page = QWidget()
         raw_layout = QVBoxLayout(raw_page)
         raw_layout.setContentsMargins(0, 0, 0, 0)
-        self.log_text = QTextEdit()
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setUndoRedoEnabled(False)
+        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.log_text.setFont(QFont("Consolas", 9))
         raw_layout.addWidget(self.log_text, 1)
         self.install_tabs.addTab(raw_page, _("Raw log", "Raw log"))
@@ -277,6 +282,7 @@ class VoiceInstallationWindow(QDialog):
         self.progress_updated.connect(self._on_progress_update, type=Qt.ConnectionType.QueuedConnection)
         self.status_updated.connect(self._on_status_update, type=Qt.ConnectionType.QueuedConnection)
         self.log_updated.connect(self._on_log_update, type=Qt.ConnectionType.QueuedConnection)
+        self.raw_log_updated.connect(self._on_raw_log_update, type=Qt.ConnectionType.QueuedConnection)
 
         if parent and hasattr(parent, 'geometry'):
             parent_rect = parent.geometry()
@@ -295,6 +301,7 @@ class VoiceInstallationWindow(QDialog):
             self.progress_updated.emit,
             self.status_updated.emit,
             self.log_updated.emit,
+            self.raw_log_updated.emit,
         )
 
     def showEvent(self, event):
@@ -465,32 +472,9 @@ class VoiceInstallationWindow(QDialog):
             return html_escape(plain)
 
     def _render_display_lines(self):
-        scrollbar = self.log_text.verticalScrollBar()
-        old_value = scrollbar.value()
-        stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
-        # Формируем HTML из текущего окна строк
-        snapshot_html = ""
-        if self._snapshot_lines:
-            snapshot_html = (
-                f"<div style='margin:8px 0 0 0; padding:6px; background:{self._snapshot_bg}; "
-                f"border:1px solid {self._snapshot_border}; border-radius:6px;'>"
-                "<pre style='font-family:Consolas,monospace; font-size:9pt; "
-                f"margin:0; color:{self._snapshot_fg};'>"
-                + html_escape("\n".join(self._snapshot_lines))
-                + "</pre></div>"
-            )
-        html = (
-            "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
-            + "<br/>".join(self._display_lines) +
-            "</div>"
-            + snapshot_html
-        )
-        self.log_text.setHtml(html)
-        if stick_to_bottom:
-            self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-            self.log_text.ensureCursorVisible()
-        else:
-            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+        # Raw output has its own exact subprocess stream. Never reconstruct it
+        # from the parsed/normalized semantic log.
+        self._flush_raw_log()
 
     def _render_overview(self):
         activity_html = "".join(
@@ -545,11 +529,17 @@ class VoiceInstallationWindow(QDialog):
             self._raw_flush_timer.start()
 
     def _flush_raw_log(self):
-        # Avoid expensive hidden QTextEdit rebuilds while the visual tab is
-        # active. The full log remains complete and is rendered on demand.
-        if self.install_tabs.currentIndex() != 1:
+        # The raw tab is a literal decoded subprocess stream. It is intentionally
+        # not colorized, normalized, line-split or mixed with __STATS__ protocol
+        # frames used by the visual tab.
+        if self.install_tabs.currentIndex() != 1 or not self._raw_pending_chunks:
             return
-        self._render_display_lines()
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        while self._raw_pending_chunks:
+            cursor.insertText(self._raw_pending_chunks.popleft())
+        self.log_text.setTextCursor(cursor)
+        self.log_text.ensureCursorVisible()
 
     def _render_snapshot(self, lines: list[str]):
         self._snapshot_lines = list(lines)
@@ -578,18 +568,11 @@ class VoiceInstallationWindow(QDialog):
                 self._append_overview_line(plain)
         if contains_error:
             self._show_raw_log()
-        else:
-            self._schedule_raw_flush()
 
     def _rebuild_display_from_full(self):
-        # Берём последние N строк из полного лога и пересобираем окно
-        if not self._full_log_lines:
-            self._display_lines.clear()
-            self._render_display_lines()
-            return
-        last = self._full_log_lines[-self._max_display_blocks:]
-        self._display_lines = deque((self._colorize_line(s) for s in last), maxlen=self._max_display_blocks)
-        self._render_display_lines()
+        # Parsed lines belong to the visual overview only. Raw output is retained
+        # independently in _raw_log_chunks and is never reconstructed here.
+        return
 
     def _on_log_update(self, text: str):
         if text.startswith("__STATS__"):
@@ -617,15 +600,28 @@ class VoiceInstallationWindow(QDialog):
         # Окно показа — только последние строки, но полный лог сохраняем отдельно
         self._append_log_chunk(text)
 
+    def _on_raw_log_update(self, text: str):
+        if text is None:
+            return
+        chunk = str(text)
+        if not chunk:
+            return
+        self._raw_log_chunks.append(chunk)
+        self._raw_pending_chunks.append(chunk)
+        self._schedule_raw_flush()
+
+    def _raw_log_text(self) -> str:
+        return "".join(self._raw_log_chunks)
+
     def _copy_log(self):
-        QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
+        QGuiApplication.clipboard().setText(self._raw_log_text() or "\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
         fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
-                    f.write("\n".join(self._full_log_lines))
+                    f.write(self._raw_log_text() or "\n".join(self._full_log_lines))
             except Exception as ex:
                 logger.error(f"Не удалось сохранить лог: {ex}")
 
@@ -659,6 +655,9 @@ class VoiceInstallationWindow(QDialog):
     def update_log(self, text: str):
         self.log_updated.emit(text)
 
+    def update_raw_log(self, text: str):
+        self.raw_log_updated.emit(text)
+
 
 class VoiceActionWindow(QDialog):
     status_updated = pyqtSignal(str)
@@ -683,7 +682,7 @@ class VoiceActionWindow(QDialog):
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; }
             QLabel { color: #ffffff; }
-            QTextEdit {
+            QTextEdit, QPlainTextEdit {
                 background-color: #101010;
                 color: #cccccc;
                 border: 1px solid #333;

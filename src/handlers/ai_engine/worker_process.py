@@ -18,14 +18,66 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, int(default))
 
 
-def _ensure_lib_on_path() -> None:
-    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
-    sys.path = [
-        p for p in sys.path
-        if os.path.normcase(os.path.abspath(p or "")) != lib_path_norm
+_DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None) -> None:
+    legacy_lib = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
+    explicit_paths = [
+        os.path.abspath(str(path))
+        for path in (python_paths or ())
+        if str(path).strip()
     ]
-    sys.path.insert(0, lib_path)
+    # Managed workers are isolated: overlay + declared core layers only. The
+    # legacy mutable Lib is used exclusively by non-managed workers.
+    ordered = explicit_paths or [os.path.abspath(legacy_lib)]
+    if explicit_paths:
+        os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = ordered[0]
+        os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"] = os.pathsep.join(ordered)
+    else:
+        os.environ.pop("NEUROMITA_RUNTIME_TARGET_DIR", None)
+        os.environ.pop("NEUROMITA_RUNTIME_PYTHON_PATHS", None)
+
+    excluded = {os.path.normcase(path) for path in ordered}
+    if explicit_paths:
+        excluded.add(os.path.normcase(os.path.abspath(legacy_lib)))
+    sys.path = [
+        path for path in sys.path
+        if os.path.normcase(os.path.abspath(path or "")) not in excluded
+    ]
+    sys.path[:0] = ordered
+
+    if os.name == "nt":
+        if explicit_paths:
+            legacy_root = os.path.normcase(os.path.abspath(legacy_lib))
+            inherited_path = []
+            for entry in os.environ.get("PATH", "").split(os.pathsep):
+                normalized_entry = os.path.normcase(os.path.abspath(entry or "."))
+                if normalized_entry == legacy_root or normalized_entry.startswith(
+                    legacy_root + os.sep
+                ):
+                    continue
+                inherited_path.append(entry)
+            os.environ["PATH"] = os.pathsep.join(inherited_path)
+
+        path_entries: list[str] = []
+        for root in ordered:
+            for candidate in (
+                root,
+                os.path.join(root, "torch", "lib"),
+                os.path.join(root, "onnxruntime", "capi"),
+            ):
+                if not os.path.isdir(candidate):
+                    continue
+                path_entries.append(candidate)
+                add_dll_directory = getattr(os, "add_dll_directory", None)
+                if callable(add_dll_directory):
+                    try:
+                        _DLL_DIRECTORY_HANDLES.append(add_dll_directory(candidate))
+                    except OSError:
+                        pass
+        if path_entries:
+            os.environ["PATH"] = os.pathsep.join(path_entries + [os.environ.get("PATH", "")])
 
 
 def _log(log_queue, level: str, message: str) -> None:
@@ -35,7 +87,18 @@ def _log(log_queue, level: str, message: str) -> None:
         pass
 
 
-def _services_for_worker(worker_name: str) -> tuple[str, ...]:
+def _services_for_worker(
+    worker_name: str,
+    explicit_services: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str, ...]:
+    if explicit_services:
+        normalized = tuple(
+            str(service).strip().lower()
+            for service in explicit_services
+            if str(service).strip()
+        )
+        if normalized:
+            return normalized
     wn = str(worker_name or "").strip().lower()
     if wn == _SHARED_WORKER:
         return _SHARED_SERVICES
@@ -44,7 +107,14 @@ def _services_for_worker(worker_name: str) -> tuple[str, ...]:
     raise RuntimeError(f"Unknown worker_name: {worker_name}")
 
 
-def run_worker_process(worker_name: str, cmd_queue, res_queue, log_queue) -> None:
+def run_worker_process(
+    worker_name: str,
+    cmd_queue,
+    res_queue,
+    log_queue,
+    service_names: tuple[str, ...] | list[str] | None = None,
+    python_paths: tuple[str, ...] | list[str] | None = None,
+) -> None:
     """
     Универсальный worker-процесс для AI сервисов.
 
@@ -58,7 +128,7 @@ def run_worker_process(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
         # OMP Error #15 → abort. Ставим до любых тяжёлых импортов. См. __main__.py.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-        _ensure_lib_on_path()
+        _ensure_lib_on_path(python_paths)
 
         try:
             import importlib
@@ -70,7 +140,15 @@ def run_worker_process(worker_name: str, cmd_queue, res_queue, log_queue) -> Non
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(_worker_loop(worker_name, cmd_queue, res_queue, log_queue))
+        loop.run_until_complete(
+            _worker_loop(
+                worker_name,
+                cmd_queue,
+                res_queue,
+                log_queue,
+                service_names=service_names,
+            )
+        )
     except Exception:
         _log(log_queue, "error", f"Worker '{worker_name}' crashed:\n{traceback.format_exc()}")
 
@@ -113,13 +191,20 @@ async def _dispatch_limited(
         await _dispatch(service, service_name, method, payload, req_id, res_queue, log_queue)
 
 
-async def _worker_loop(worker_name: str, cmd_queue, res_queue, log_queue) -> None:
+async def _worker_loop(
+    worker_name: str,
+    cmd_queue,
+    res_queue,
+    log_queue,
+    *,
+    service_names: tuple[str, ...] | list[str] | None = None,
+) -> None:
     services = {
         service_name: _load_service(
             service_name,
             emit_event=lambda ev, data=None, _sn=service_name: _emit_event(res_queue, _sn, ev, data),
         )
-        for service_name in _services_for_worker(worker_name)
+        for service_name in _services_for_worker(worker_name, service_names)
     }
 
     _log(log_queue, "success", f"Worker '{worker_name}' started for services: {', '.join(sorted(services.keys()))}")

@@ -3,7 +3,19 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 """
 
 from __future__ import annotations
-import locale, subprocess, sys, os, queue, threading, time, json, shutil, gc, importlib.util, re, tempfile
+
+import gc
+import json
+import locale
+import os
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, NormalizedName
@@ -174,19 +186,7 @@ class PipInstaller:
         "tts-with-rvc": ("tts_with_rvc",),
         "tts-with-rvc-onnx": ("tts_with_rvc_onnx", "tts_with_rvc"),
     }
-    _UV_PIP_FALLBACK_NAMES = {
-        canonicalize_name(name)
-        for name in (
-            "f5-tts",
-            "tts-with-rvc",
-            "tts-with-rvc-onnx",
-            "fairseq-built",
-            "torchcrepe",
-            "pyarrow",
-            "ruaccent",
-            "cached_path",
-        )
-    }
+
 
     def __init__(
         self,
@@ -194,14 +194,17 @@ class PipInstaller:
         update_log=None,
         progress_window=None,
         update_progress=None,
-        protected_packages: Optional[List[str]] = None
+        update_raw_log=None,
+        protected_packages: Optional[List[str]] = None,
+        target_path: str | os.PathLike[str] | None = None,
     ):
         self.script_path = os.environ.get("NEUROMITA_PYTHON", sys.executable)
-        self.libs_path = os.environ.get("NEUROMITA_LIB_DIR", "Lib")
+        self.libs_path = os.fspath(target_path) if target_path is not None else os.environ.get("NEUROMITA_LIB_DIR", "Lib")
         self.python_root = Path(self.script_path).resolve().parent
         self.libs_path_abs = os.path.abspath(self.libs_path)
         self.update_status = update_status or (lambda m: logger.info(f"STATUS: {m}"))
         self.update_log = update_log or (lambda m: logger.info(f"LOG: {m}"))
+        self.update_raw_log = update_raw_log or (lambda *_: None)
         self.update_progress = update_progress or (lambda *_: None)
         self.progress_window = progress_window
         # Защищенные пакеты по умолчанию
@@ -212,7 +215,11 @@ class PipInstaller:
         self._last_run_uv_cache_access_denied: bool = False
         self._last_run_returncode: int = 0
         self._last_run_recent_lines: List[str] = []
-        # Однократная (best-effort) установка pywinpty для живого PTY-вывода.
+        self._cancel_event = threading.Event()
+        self._active_process_lock = threading.RLock()
+        self._active_process = None
+        self._active_process_killer = None
+        # Однократная проверка доступности pywinpty для живого PTY-вывода.
         self._pty_bootstrap_attempted: bool = False
         self._ensure_libs_path()
 
@@ -257,16 +264,14 @@ class PipInstaller:
     ) -> bool:
         self._maybe_warn_fragile_location()
         self.repair_broken_target_metadata()
-        # Always try uv first. The compatibility list below controls only a
-        # safe pip retry after a real uv resolver/process failure. Earlier code
-        # skipped uv pre-emptively for large TTS stacks, which defeated the
-        # target-aware resolver and made repeated installs unnecessarily slow.
+        # Runtime packages are installed by one resolver only. The embedded
+        # pip is reserved for bootstrapping the private uv executable and is
+        # never a fallback for a failed dependency resolution.
         return self._install_package_attempt(
             package_spec,
             description=description,
             extra_args=extra_args,
             uv_overrides=uv_overrides,
-            force_pip=False,
         )
 
     def _install_package_attempt(
@@ -276,9 +281,8 @@ class PipInstaller:
         description: str,
         extra_args=None,
         uv_overrides: Optional[List[str]] = None,
-        force_pip: bool = False,
     ) -> bool:
-        cmd = self._build_install_command(force_pip=force_pip)
+        cmd = self._build_install_command()
         is_uv = self._is_uv_command(cmd)
         requirement_file_path: str | None = None
         try:
@@ -303,39 +307,99 @@ class PipInstaller:
                 cmd.extend(package_spec)
             else:
                 cmd.append(package_spec)
-            ok = self._run_pip_process(cmd, description)
-            if ok or force_pip or not is_uv:
-                return ok
-            if self._should_retry_failed_uv_with_pip(package_spec):
-                self.update_log(
-                    "uv не смог разрешить compatibility-sensitive dependency-стек. "
-                    "Повторяем установку через встроенный pip с теми же ограничениями ядра."
-                )
-                return self._install_package_attempt(
-                    package_spec,
-                    description=description,
-                    extra_args=extra_args,
-                    uv_overrides=uv_overrides,
-                    force_pip=True,
-                )
-            if not self._last_run_uv_cache_access_denied:
-                return ok
-
-            self.update_log(
-                "uv не смог записать в свой cache (rename/access denied). "
-                "Повторяем установку через встроенный pip."
-            )
-            return self._install_package_attempt(
-                package_spec,
-                description=description,
-                extra_args=extra_args,
-                uv_overrides=uv_overrides,
-                force_pip=True,
-            )
+            return self._run_pip_process(cmd, description)
         finally:
             if requirement_file_path:
                 try:
                     os.unlink(requirement_file_path)
+                except OSError:
+                    pass
+
+    def install_environment_lock(
+        self,
+        direct_specs: List[str],
+        *,
+        core_overrides: Optional[List[str]] = None,
+        core_packages: Optional[List[str]] = None,
+        extra_args: Optional[List[str]] = None,
+        description: str = "Resolving environment dependencies...",
+    ) -> bool:
+        """Resolve once, omit shared core packages, then materialize the overlay.
+
+        The lock contains every non-core transitive dependency with an exact
+        version. Shared torch/ONNX distributions are used only as resolver
+        overrides and are omitted from the overlay output, so large runtimes are
+        neither downloaded nor copied into every feature environment.
+        """
+        specs = [str(item).strip() for item in direct_specs or [] if str(item).strip()]
+        if not specs:
+            return True
+
+        input_path = self._write_requirement_file(specs, prefix="neuromita_environment_in_")
+        lock_fd, lock_path = tempfile.mkstemp(
+            prefix="neuromita_environment_lock_", suffix=".txt", text=True
+        )
+        os.close(lock_fd)
+        override_path: str | None = None
+        try:
+            uv_base = self._resolve_installer_base_cmd()
+            uv_root = list(uv_base[:-1]) if uv_base and uv_base[-1] == "pip" else list(uv_base)
+            compile_cmd = uv_root + [
+                "pip",
+                "compile",
+                input_path,
+                "--output-file",
+                lock_path,
+                "--python",
+                str(self.script_path),
+                "--no-header",
+                "--no-annotate",
+            ]
+            overrides = self._dedupe_overrides(list(core_overrides or []))
+            if overrides:
+                override_path = self._write_requirement_file(
+                    overrides, prefix="neuromita_environment_overrides_"
+                )
+                compile_cmd.extend(["--overrides", override_path])
+
+            for package_name in sorted(
+                {canonicalize_name(str(name)) for name in (core_packages or []) if str(name).strip()}
+            ):
+                compile_cmd.extend(["--no-emit-package", package_name])
+
+            # Only resolver/index options are meaningful during compile. Runtime
+            # flags such as --upgrade are intentionally ignored for immutable
+            # staging environments.
+            allowed_prefixes = (
+                "--index-url",
+                "--extra-index-url",
+                "--find-links",
+                "--no-index",
+                "--prerelease",
+            )
+            raw_extra = list(extra_args or [])
+            index = 0
+            while index < len(raw_extra):
+                value = str(raw_extra[index])
+                if value.startswith(allowed_prefixes):
+                    compile_cmd.append(value)
+                    if "=" not in value and value not in {"--no-index"} and index + 1 < len(raw_extra):
+                        index += 1
+                        compile_cmd.append(str(raw_extra[index]))
+                index += 1
+
+            if not self._run_pip_process(compile_cmd, description):
+                return False
+
+            install_cmd = self._build_install_command()
+            install_cmd.extend(["--no-deps", "-r", lock_path])
+            return self._run_pip_process(install_cmd, "Installing resolved environment...")
+        finally:
+            for path in (input_path, lock_path, override_path):
+                if not path:
+                    continue
+                try:
+                    os.unlink(path)
                 except OSError:
                     pass
 
@@ -376,28 +440,6 @@ class PipInstaller:
             result.append(value)
         return result
 
-    def _should_prefer_pip(self, package_spec) -> bool:
-        requested = self._requested_dist_names(package_spec)
-        return bool(requested & self._UV_PIP_FALLBACK_NAMES)
-
-    def _should_retry_failed_uv_with_pip(self, package_spec) -> bool:
-        if self._last_run_returncode == 0:
-            return False
-        if not self._should_prefer_pip(package_spec):
-            return False
-        if self._last_run_returncode in (1, 2):
-            return True
-
-        recent = " ".join(self._last_run_recent_lines).lower()
-        return any(
-            marker in recent
-            for marker in (
-                "no solution found",
-                "failed to resolve",
-                "unsatisfiable",
-                "resolution impossible",
-            )
-        )
 
     def _is_uv_command(self, cmd: List[str]) -> bool:
         parts = [str(p).lower() for p in cmd]
@@ -579,17 +621,17 @@ class PipInstaller:
             return None
         return None
 
-    def _build_install_command(self, force_pip: bool = False) -> List[str]:
-        base = list(self._pip_base_cmd() if force_pip else self._resolve_installer_base_cmd())
-        base.extend(["install", "--target", str(self.libs_path_abs)])
-        if self._is_uv_command(base):
-            base.extend(["--python", str(self.script_path)])
-        else:
-            # pip --target otherwise leaves existing package directories in
-            # place and merely prints hundreds of "already exists" warnings.
-            # That can report success while old code remains active beside new
-            # dist-info metadata. --upgrade makes the target update coherent.
-            base.append("--upgrade")
+    def _build_install_command(self) -> List[str]:
+        base = list(self._resolve_installer_base_cmd())
+        base.extend(
+            [
+                "install",
+                "--target",
+                str(self.libs_path_abs),
+                "--python",
+                str(self.script_path),
+            ]
+        )
         # Кэш включён по умолчанию: после обрыва (диск/VPN) повторная попытка
         # переиспользует уже скачанное и докачивает, а не качает всё заново.
         # Отключается настройкой INSTALL_USE_CACHE (кэш чистится кнопкой в AI Hub).
@@ -660,8 +702,8 @@ class PipInstaller:
                 shutil.rmtree(target)
             except OSError as exc:
                 self.update_log(
-                    f"Повреждённый приватный uv не удалось очистить ({exc}); "
-                    "используем встроенный pip в этой сессии."
+                    f"Повреждённый приватный uv не удалось очистить ({exc}). "
+                    "Установка остановлена: fallback на другой installer запрещён."
                 )
                 return False
 
@@ -677,7 +719,7 @@ class PipInstaller:
             "uv",
         ]
         if not self._run_pip_process(install_cmd, "Установка uv..."):
-            self.update_log("Не удалось установить uv во встроенный Python, используем обычный pip.")
+            self.update_log("Не удалось подготовить приватный uv. Установка остановлена.")
             return False
         if not uv_exe.is_file() or not self._check_installer_command([str(uv_exe), "--version"]):
             self.update_log("Приватный uv установился некорректно: исполняемый файл недоступен.")
@@ -713,15 +755,10 @@ class PipInstaller:
             self.update_log("Для установки зависимостей выбран uv pip.")
             return list(self._preferred_installer_cmd)
 
-        pip_cmd = self._pip_base_cmd()
-        if self._ensure_pip_available():
-            self._preferred_installer_cmd = pip_cmd
-            self.update_log("uv недоступен, используем встроенный pip.")
-            return list(self._preferred_installer_cmd)
-
-        self._preferred_installer_cmd = pip_cmd
-        self.update_log("Не удалось заранее подготовить uv или pip, последняя попытка будет через встроенный pip.")
-        return list(self._preferred_installer_cmd)
+        raise RuntimeError(
+            "uv is unavailable and automatic installer fallback is disabled. "
+            "Repair the private .bootstrap/uv installation and retry."
+        )
 
     def _check_installer_command(self, cmd: List[str]) -> bool:
         try:
@@ -788,7 +825,6 @@ class PipInstaller:
         main_packages_to_remove = packages.copy()
         self.update_log(f"Запрошено удаление пакетов: {main_packages_to_remove}")
 
-        protected_canon = {canonicalize_name(p) for p in self.protected_packages}
         protected_deps: Set[NormalizedName] = set()
 
         all_installed = resolver.get_all_installed_packages()
@@ -1806,38 +1842,29 @@ class PipInstaller:
         return PtyProcess is not None, PtyProcess
 
     def _ensure_pty_available(self) -> bool:
-        """Best-effort: ставим pywinpty во встроенный Python, чтобы UV/pip шли через
-        настоящий псевдотерминал (живой прогресс/скорость). Пробуем один раз за сессию;
-        флаг ставим ДО вложенной установки, чтобы не уйти в рекурсию через _run_pip_process."""
-        if os.name != "nt":
-            return False
-        if os.environ.get("UV_TTY") == "0":
-            return False
-        if self._pty_bootstrap_attempted:
-            # Уже пробовали — просто сообщаем, доступен ли модуль сейчас.
-            ok, _ = self._detect_pty()
-            return ok
-        self._pty_bootstrap_attempted = True
+        """Use PTY only when it is already part of the application core.
 
+        Runtime dependency installation is uv-only. The installer must not
+        mutate the embedded Python merely to improve its own presentation;
+        when pywinpty is absent the same uv command runs through ordinary
+        stdout/stderr pipes.
+        """
+        if os.name != "nt" or os.environ.get("UV_TTY") == "0":
+            return False
         ok, _ = self._detect_pty()
-        if ok:
-            return True
-
-        try:
-            self.update_log("Устанавливаем pywinpty для интерактивного вывода установки…")
-            if not self._ensure_pip_available():
-                return False
-            install_cmd = self._pip_base_cmd() + ["install", "pywinpty"]
-            # Эта вложенная установка пойдёт через пайпы (pywinpty ещё нет) — это нормально.
-            self._run_pip_process(install_cmd, "Установка pywinpty…")
-        except Exception as e:
-            logger.warning(f"Не удалось поставить pywinpty (не критично): {e}")
-            return False
-
-        ok, _ = self._detect_pty()
-        if ok:
-            self.update_log("pywinpty готов — установка пойдёт с живым выводом.")
+        if not ok and not self._pty_bootstrap_attempted:
+            self._pty_bootstrap_attempted = True
+            self.update_log(
+                "pywinpty is not installed in the application core; "
+                "using raw stdout/stderr pipes."
+            )
         return ok
+
+    def _emit_raw_log(self, chunk: str) -> None:
+        try:
+            self.update_raw_log(chunk)
+        except Exception:
+            logger.debug("Installer raw-log callback failed", exc_info=True)
 
     def _process_line(self, state: _RunState, line: str, transient: bool = False):
         # transient=True — строка пришла с возвратом каретки (\r): это «живая»
@@ -2060,6 +2087,27 @@ class PipInstaller:
         except Exception:
             return
 
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        with self._active_process_lock:
+            killer = self._active_process_killer
+        if callable(killer):
+            try:
+                killer()
+            except Exception:
+                pass
+
+    def _set_active_process(self, process, killer) -> None:
+        with self._active_process_lock:
+            self._active_process = process
+            self._active_process_killer = killer
+
+    def _clear_active_process(self, process) -> None:
+        with self._active_process_lock:
+            if self._active_process is process:
+                self._active_process = None
+                self._active_process_killer = None
+
     def _terminate_process(self, proc, reason: str = ""):
         try:
             if reason:
@@ -2108,6 +2156,10 @@ class PipInstaller:
         Возвращает (False, -1) если пора прерваться (таймаут), иначе None."""
         self._emit_snapshot_if_needed(state)
         self._update_status_if_needed(state)
+        if self._cancel_event.is_set():
+            kill()
+            self.update_status(state.description + " — cancelled.")
+            return False, -1
         aborted = self._check_timeouts(state, kill)
         if aborted is not None:
             return aborted
@@ -2170,12 +2222,13 @@ class PipInstaller:
             self.update_status(state.description + " — ошибка.")
             return False, -1
 
+        self._set_active_process(proc, lambda: self._terminate_process(proc, "Installation cancelled."))
         q_out, q_err = queue.Queue(), queue.Queue()
 
         def _reader(pipe, q):
             try:
                 for line in iter(pipe.readline, ""):
-                    q.put(line.rstrip())
+                    q.put(line)
             finally:
                 try:
                     pipe.close()
@@ -2191,22 +2244,30 @@ class PipInstaller:
             processed_weight = 0.0
             for q in (q_out, q_err):
                 while not q.empty():
-                    self._process_line(state, q.get_nowait())
+                    raw_line = q.get_nowait()
+                    self._emit_raw_log(raw_line)
+                    self._process_line(state, raw_line.rstrip("\r\n"))
                     processed_weight += self._PIPE_LINE_WEIGHT
 
             self._advance_soft_progress(state, processed_weight)
 
             aborted = self._service_tick(state, lambda: self._terminate_process(proc))
             if aborted is not None:
+                self._clear_active_process(proc)
                 return aborted
 
         # Дочистим очереди
         while not q_out.empty():
-            self._process_line(state, q_out.get_nowait())
+            raw_line = q_out.get_nowait()
+            self._emit_raw_log(raw_line)
+            self._process_line(state, raw_line.rstrip("\r\n"))
         while not q_err.empty():
-            self._process_line(state, q_err.get_nowait())
+            raw_line = q_err.get_nowait()
+            self._emit_raw_log(raw_line)
+            self._process_line(state, raw_line.rstrip("\r\n"))
         self._emit_snapshot_if_needed(state, force=True)
 
+        self._clear_active_process(proc)
         return True, (proc.returncode or 0)
 
     def _run_with_winpty(self, cmd: List[str], env: dict, state: _RunState, PtyProcess) -> Tuple[bool, int]:
@@ -2228,6 +2289,7 @@ class PipInstaller:
             logger.warning(f"PTY-режим недоступен или ошибка запуска PTY: {e}")
             return False, -1
 
+        self._set_active_process(pty, lambda: pty.close(force=True))
         buffer = ""
         q_chunks: queue.Queue = queue.Queue()
 
@@ -2265,6 +2327,7 @@ class PipInstaller:
                 chunk += part or ""
 
             if chunk:
+                self._emit_raw_log(chunk)
                 buffer += chunk
                 parts = re.split(r'(\r|\n)', buffer)
                 buffer = ""
@@ -2293,6 +2356,7 @@ class PipInstaller:
 
             aborted = self._service_tick(state, _kill_pty)
             if aborted is not None:
+                self._clear_active_process(pty)
                 return aborted
 
         tail = self._clean_line(buffer.strip())
@@ -2300,23 +2364,24 @@ class PipInstaller:
             self._process_line(state, tail)
         self._emit_snapshot_if_needed(state, force=True)
         ret = pty.exitstatus or 0
+        self._clear_active_process(pty)
         return True, ret
 
     def _run_pip_process(self, cmd: List[str], description: str) -> bool:
         """
         Запуск UV/PIP с подробным прогрессом:
         - под PTY читаем живой UV/pip-вывод и рендерим снапшоты активных задач;
-        - без PTY сохраняем фоллбэк на пайпы и постепенно двигаем верхний progress bar;
+        - без PTY читаем тот же процесс через обычные pipes и двигаем верхний progress bar;
         - статус предпочитает реальную скорость/ETA по байтам, а не грубую оценку по времени.
         """
+        self._cancel_event.clear()
         state = self._RunState(description, cmd)
         state.uv_progress = self._UvProgressAggregator()
 
         self.update_status(description)
         self.update_log("Выполняем: " + " ".join(cmd))
 
-        # Пытаемся обеспечить PTY (pywinpty) по умолчанию — тогда UV даёт живой
-        # прогресс/скорость. Best-effort, не критично если не вышло.
+        # Используем PTY только если pywinpty уже входит в core-зависимости.
         self._ensure_pty_available()
 
         use_pty, PtyProcess = self._detect_pty()
@@ -2326,7 +2391,7 @@ class PipInstaller:
             # Под PTY — окружение с включённым цветом/прогрессом; для пайпов — «dumb».
             ok, ret = self._run_with_winpty(cmd, self._prepare_env(tty=True), state, PtyProcess)
             if not ok:
-                # Фоллбэк на пайпы
+                # Повторяем тот же uv command через обычные pipes.
                 ok, ret = self._run_with_pipes(cmd, self._prepare_env(), state)
         else:
             ok, ret = self._run_with_pipes(cmd, self._prepare_env(), state)

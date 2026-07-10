@@ -75,6 +75,50 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
 
         self.assertIs(resolved, fallback_module.TTS_RVC)
 
+    def test_onnx_rmvpe_predictor_is_cached_without_changing_provider(self):
+        calls: list[dict] = []
+
+        def original(method, *, hop_length, sampling_rate, device, cr_threshold=0.05):
+            calls.append({
+                "method": method,
+                "hop_length": hop_length,
+                "sampling_rate": sampling_rate,
+                "device": device,
+                "cr_threshold": cr_threshold,
+            })
+            return object()
+
+        inference_module = SimpleNamespace(get_f0_predictor=original)
+
+        with patch(
+            "handlers.voice_models.edge_tts_rvc_model.importlib.import_module",
+            return_value=inference_module,
+        ):
+            EdgeTTSRVCOnnxModel._configure_imported_rvc_module(
+                "tts_with_rvc",
+                SimpleNamespace(),
+            )
+
+        first = inference_module.get_f0_predictor(
+            "rmvpe",
+            hop_length=400,
+            sampling_rate=40000,
+            device="dml",
+            cr_threshold=0.05,
+        )
+        second = inference_module.get_f0_predictor(
+            "rmvpe",
+            hop_length=400,
+            sampling_rate=40000,
+            device="dml",
+            cr_threshold=0.05,
+        )
+
+        self.assertIs(first, second)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["device"], "dml")
+
+
     def test_fish_speech_plus_uninstall_removes_runtime_packages(self):
         plan = FishSpeechInstallSpec.build_uninstall_plan("medium+", {})
         calls: list[list[str]] = []

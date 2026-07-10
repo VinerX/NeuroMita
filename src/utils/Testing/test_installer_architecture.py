@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from controllers.install_controller import (
 )
 from core.install_log import classify_install_log
 from core.install_requirements import InstallRequirement, check_requirements
+from core.install_types import InstallAction, InstallPlan
 from handlers.voice_models.edge_tts_rvc_model import (
     EDGE_TTS_RVC_ONNX_ID,
     EdgeTTSRVCOnnxModel,
@@ -271,7 +272,7 @@ def test_compatibility_sensitive_stack_tries_uv_first_with_overrides(tmp_path: P
     assert "--constraint" not in commands[0]
 
 
-def test_pip_target_install_uses_upgrade_to_replace_existing_code(tmp_path: Path) -> None:
+def test_runtime_install_command_is_uv_only(tmp_path: Path) -> None:
     with patch.dict(
         os.environ,
         {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
@@ -279,10 +280,13 @@ def test_pip_target_install_uses_upgrade_to_replace_existing_code(tmp_path: Path
     ):
         installer = PipInstaller(protected_packages=[])
 
-    command = installer._build_install_command(force_pip=True)
+    uv = tmp_path / "uv.exe"
+    with patch.object(installer, "_resolve_installer_base_cmd", return_value=[str(uv), "pip"]):
+        command = installer._build_install_command()
 
-    assert command[:4] == [os.sys.executable, "-m", "pip", "--isolated"]
-    assert "--upgrade" in command
+    assert command[:2] == [str(uv), "pip"]
+    assert "--python" in command
+    assert [os.sys.executable, "-m", "pip"] != command[:3]
 
 
 def test_target_module_detection_uses_wheel_top_level_metadata(tmp_path: Path) -> None:
@@ -303,7 +307,7 @@ def test_target_module_detection_uses_wheel_top_level_metadata(tmp_path: Path) -
     assert installer.is_spec_satisfied_in_target("tts-with-rvc-onnx[dml]") is True
 
 
-def test_uv_resolver_failure_can_fall_back_to_pip_with_constraints(tmp_path: Path) -> None:
+def test_uv_resolver_failure_does_not_fall_back_to_pip(tmp_path: Path) -> None:
     commands: list[list[str]] = []
 
     with patch.dict(
@@ -316,25 +320,20 @@ def test_uv_resolver_failure_can_fall_back_to_pip_with_constraints(tmp_path: Pat
 
         def fake_run(cmd, _description):
             commands.append(list(cmd))
-            installer._last_run_returncode = 1 if len(commands) == 1 else 0
+            installer._last_run_returncode = 1
             installer._last_run_recent_lines = ["No solution found when resolving dependencies"]
-            return len(commands) > 1
+            return False
 
-        with (
-            patch.object(installer, "_should_prefer_pip", return_value=False),
-            patch.object(installer, "_should_retry_failed_uv_with_pip", return_value=True),
-            patch.object(installer, "_run_pip_process", side_effect=fake_run),
-        ):
+        with patch.object(installer, "_run_pip_process", side_effect=fake_run):
             ok = installer.install_package_with_overrides(
                 ["tts-with-rvc-onnx[dml]"],
                 uv_overrides=["torch==2.7.1", "torchaudio==2.7.1"],
             )
 
-    assert ok is True
+    assert ok is False
+    assert len(commands) == 1
     assert commands[0][0].endswith("uv.exe")
     assert "--overrides" in commands[0]
-    assert commands[1][:4] == [os.sys.executable, "-m", "pip", "--isolated"]
-    assert "--constraint" in commands[1]
 
 
 def test_uv_progress_parser_ignores_dependency_solver_prose(tmp_path: Path) -> None:
@@ -410,3 +409,80 @@ def test_structural_install_progress_is_not_classified_as_error(message: str) ->
 )
 def test_human_installer_log_classification(message: str, explicit_level: str, expected: str | None) -> None:
     assert classify_install_log(message, explicit_level) == expected
+
+
+def test_environment_lock_uses_uv_compile_and_omits_shared_core(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[], target_path=tmp_path / "overlay")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, _description):
+        commands.append(list(command))
+        if "compile" in command:
+            output = Path(command[command.index("--output-file") + 1])
+            output.write_text("fish-speech-lib==1.0.0\n", encoding="utf-8")
+        return True
+
+    with patch.object(installer, "_resolve_installer_base_cmd", return_value=[str(tmp_path / "uv.exe"), "pip"]), patch.object(
+        installer, "_run_pip_process", side_effect=fake_run
+    ):
+        ok = installer.install_environment_lock(
+            ["fish-speech-lib", "numpy<2"],
+            core_overrides=["torch==2.7.1", "numpy==1.26.0"],
+            core_packages=["torch", "numpy"],
+        )
+
+    assert ok is True
+    assert len(commands) == 2
+    compile_cmd, install_cmd = commands
+    assert compile_cmd[:3] == [str(tmp_path / "uv.exe"), "pip", "compile"]
+    assert compile_cmd.count("--no-emit-package") == 2
+    assert "torch" in compile_cmd and "numpy" in compile_cmd
+    assert install_cmd[:2] == [str(tmp_path / "uv.exe"), "pip"]
+    assert "--no-deps" in install_cmd
+    assert "-r" in install_cmd
+    assert [os.sys.executable, "-m", "pip"] != install_cmd[:3]
+
+
+def test_managed_uninstall_cleanup_skips_environment_package_mutations() -> None:
+    package_action = InstallAction(
+        type="call",
+        description="remove packages",
+        fn=lambda **_kwargs: True,
+        environment_mutation=True,
+    )
+    artifact_action = InstallAction(
+        type="call",
+        description="remove model files",
+        fn=lambda **_kwargs: True,
+    )
+    plan = InstallPlan(actions=[package_action, artifact_action])
+
+    cleanup = InstallController._artifact_cleanup_plan(plan)
+
+    assert cleanup.actions == [artifact_action]
+    assert cleanup.required_backend is None
+
+
+def test_missing_pywinpty_does_not_install_it_with_embedded_pip(tmp_path: Path) -> None:
+    with patch.dict(
+        os.environ,
+        {"NEUROMITA_LIB_DIR": str(tmp_path / "Lib"), "NEUROMITA_PYTHON": os.sys.executable},
+        clear=False,
+    ):
+        installer = PipInstaller(protected_packages=[])
+
+    with patch("utils.pip_installer.os.name", "nt"), patch.object(
+        installer, "_detect_pty", return_value=(False, None)
+    ), patch.object(installer, "_ensure_pip_available") as ensure_pip, patch.object(
+        installer, "_run_pip_process"
+    ) as run_process:
+        assert installer._ensure_pty_available() is False
+
+    ensure_pip.assert_not_called()
+    run_process.assert_not_called()

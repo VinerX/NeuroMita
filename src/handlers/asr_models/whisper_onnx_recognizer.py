@@ -15,11 +15,11 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
 
 
 class WhisperOnnxRecognizer(SpeechRecognizerInterface):
@@ -187,15 +187,13 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return BackendKind.ONNX
 
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         return bool(st.get("ok"))
     
     def install_manifest(self) -> list[dict]:

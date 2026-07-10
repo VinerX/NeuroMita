@@ -14,11 +14,12 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
+from core.events import Events, get_event_bus
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
 
 
 class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
@@ -193,15 +194,13 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return BackendKind.ONNX
 
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.gigaam_device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         return bool(st.get("ok"))
     
     def install_manifest(self) -> list[dict]:
@@ -319,7 +318,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
                         pct = (min(done * 100.0 / total, 100.0) if total > 0 else 0.0)
                         prog = start_prog + int((end_prog - start_prog) * (pct / 100.0))
-                        self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
+                        get_event_bus().emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
                             "model": "gigaam_onnx",
                             "progress": int(max(0, min(99, prog))),
                             "status": _(f"Загрузка: {pct:.1f}%", f"Downloading: {pct:.1f}%")

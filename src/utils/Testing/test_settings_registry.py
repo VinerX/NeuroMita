@@ -63,3 +63,27 @@ def test_settings_manager_persists_registry_changes(tmp_path: Path):
     finally:
         manager.close()
         SettingsManager.instance = previous
+
+
+def test_broken_settings_observer_does_not_hide_following_observers():
+    registry = SettingsRegistry({"key": 1})
+    seen = []
+
+    def broken(_change):
+        raise RuntimeError("observer failed")
+
+    registry.subscribe(broken, keys=("key",))
+    registry.subscribe(seen.append, keys=("key",))
+
+    assert registry.set("key", 2) is True
+    assert [change.value for change in seen] == [2]
+
+
+def test_broken_replay_observer_does_not_escape_subscribe():
+    registry = SettingsRegistry({"key": 1})
+
+    def broken(_change):
+        raise RuntimeError("replay failed")
+
+    subscription = registry.subscribe(broken, replay=True)
+    subscription.close()

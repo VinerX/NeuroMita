@@ -20,9 +20,15 @@ class _FakeTask:
 
 
 class _FakeEngine:
-    def __init__(self, result_value):
+    def __init__(self, result_value, *, activation_result: bool = True):
         self._result_value = result_value
+        self._activation_result = activation_result
         self.calls: list[tuple[str, str, dict]] = []
+        self.activations: list[tuple[str, str, str | None]] = []
+
+    def activate_environment(self, service, item_id, *, category=None, timeout=0.0):
+        self.activations.append((service, item_id, category))
+        return self._activation_result
 
     def call(self, service, method, payload):
         self.calls.append((service, method, payload))
@@ -57,8 +63,20 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         self.assertFalse(SpeechRecognition._is_running)
         self.assertFalse(SpeechRecognition.active)
         run_local_mock.assert_not_called()
+        self.assertEqual(fake_engine.activations, [("asr", "whisper", "asr")])
         self.assertEqual(fake_engine.calls[0][0], "asr")
         self.assertEqual(fake_engine.calls[0][1], "start_live")
+
+    def test_non_google_requires_managed_environment(self):
+        SpeechRecognition._recognizer_type = "whisper"
+        fake_engine = _FakeEngine(True, activation_result=False)
+
+        with patch.object(SpeechRecognition, "_get_ai_engine", return_value=fake_engine):
+            started = SpeechRecognition.speech_recognition_start(3, object())
+
+        self.assertFalse(started)
+        self.assertEqual(fake_engine.activations, [("asr", "whisper", "asr")])
+        self.assertEqual(fake_engine.calls, [])
 
     def test_google_engine_keeps_local_mode(self):
         SpeechRecognition._recognizer_type = "google"

@@ -154,7 +154,7 @@ class SpeechRecognizerInterface(ABC):
 
         backend = coerce_backend(self.required_backend(run_ctx))
         try:
-            installed = bool(self.is_installed())
+            installed = bool(self.is_installed(run_ctx))
         except Exception as exc:
             return ComponentStatus(
                 id=self.id,
@@ -184,7 +184,7 @@ class SpeechRecognizerInterface(ABC):
         try:
             # Clean reinstall skips this shortcut so a broken/partial install
             # is actually re-fetched instead of being reported "already installed".
-            if self.is_installed() and not run_ctx.get("clean"):
+            if self.is_installed(run_ctx) and not run_ctx.get("clean"):
                 return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
         except Exception:
             pass
@@ -243,17 +243,19 @@ class SpeechRecognizerInterface(ABC):
             )
 
         def _final_check(**_kwargs) -> bool:
+            callbacks = _kwargs.get("callbacks")
+            check_ctx = build_runtime_ctx(_kwargs.get("ctx") or run_ctx)
             try:
-                installed = bool(self.is_installed())
-            except Exception:
-                # Не валим установку из-за сбоя самой проверки — считаем успешной.
-                return True
+                installed = bool(self.is_installed(check_ctx))
+            except Exception as exc:
+                if callbacks is not None and hasattr(callbacks, "log"):
+                    callbacks.log(f"Post-install validation crashed: {exc}")
+                return False
             if not installed:
                 # Раньше шаг просто возвращал False и пользователь видел только
                 # «call step returned False: Finalizing...» без причины (фидбэк Артёма
                 # «даже не понял что произошло»). Теперь пишем, чего не хватает.
-                callbacks = _kwargs.get("callbacks")
-                reason = self._diagnose_install_failure()
+                reason = self._diagnose_install_failure(check_ctx)
                 if callbacks is not None and hasattr(callbacks, "log"):
                     try:
                         callbacks.log(
@@ -281,17 +283,19 @@ class SpeechRecognizerInterface(ABC):
             backend_context=dict(run_ctx),
         )
 
-    def _diagnose_install_failure(self) -> str:
+    def _diagnose_install_failure(self, ctx: dict | None = None) -> str:
         """Человекочитаемая причина, почему is_installed() == False после установки:
         недостающие python-модули/бэкенд из requirements() + отсутствующие файлы
         модели из install_manifest()."""
         parts: list[str] = []
         try:
-            ctx = {
-                "device": getattr(self, "gigaam_device", None) or getattr(self, "device", None),
-                "gpu_vendor": getattr(self, "_current_gpu", None) or "CPU",
-            }
-            st = check_requirements(self.requirements(), ctx=ctx)
+            run_ctx = build_runtime_ctx(ctx)
+            run_ctx.setdefault(
+                "device",
+                getattr(self, "gigaam_device", None) or getattr(self, "device", None),
+            )
+            run_ctx.setdefault("gpu_vendor", getattr(self, "_current_gpu", None) or "CPU")
+            st = check_requirements(self.requirements(), ctx=run_ctx)
             for missing in (st.get("missing_required") or []):
                 parts.append(str(missing))
         except Exception:
@@ -350,6 +354,7 @@ class SpeechRecognizerInterface(ABC):
                 description=_("Удаление пакетов движка...", "Removing engine packages..."),
                 progress=20,
                 fn=_do_uninstall_pkgs,
+                environment_mutation=True,
             ))
 
         if paths:
@@ -400,7 +405,7 @@ class SpeechRecognizerInterface(ABC):
         pass
 
     @abstractmethod
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
         pass
 
     def settings_spec(self) -> List[dict]:

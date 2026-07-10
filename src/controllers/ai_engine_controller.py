@@ -11,6 +11,7 @@ from typing import Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
 from services.contracts import AIEngineService
+from core.runtime_environments import runtime_environments
 from main_logger import logger
 
 
@@ -45,10 +46,22 @@ def _detect_gpu_label() -> str:
 
 
 class _Worker:
-    def __init__(self, ctx: mp.context.BaseContext, worker_name: str, service_names: Sequence[str]):
+    def __init__(
+        self,
+        ctx: mp.context.BaseContext,
+        worker_name: str,
+        service_names: Sequence[str],
+        *,
+        python_paths: Sequence[str] = (),
+    ):
         self.worker_name = str(worker_name or "").strip().lower()
         self.service_names = tuple(str(s or "").strip().lower() for s in (service_names or ()) if str(s or "").strip())
         self.primary_service = self.service_names[0] if self.service_names else self.worker_name
+        self.python_paths = tuple(
+            os.path.abspath(str(path))
+            for path in (python_paths or ())
+            if str(path).strip()
+        )
         self.ctx = ctx
 
         queue_capacity = _env_int("NEUROMITA_AI_COMMAND_QUEUE", 64, minimum=8)
@@ -85,7 +98,14 @@ class _Worker:
 
         self.proc = self.ctx.Process(
             target=run_worker_process,
-            args=(self.worker_name, self.cmd_q, self.res_q, self.log_q),
+            args=(
+                self.worker_name,
+                self.cmd_q,
+                self.res_q,
+                self.log_q,
+                self.service_names,
+                self.python_paths,
+            ),
             daemon=True,
         )
         self.proc.start()
@@ -432,6 +452,7 @@ class AIEngineController(AIEngineService):
 
         self._ctx = mp.get_context("spawn")
         self._lock = threading.RLock()
+        self._environments = runtime_environments()
 
         self.mode = self._resolve_mode()
         self._workers: dict[str, _Worker] = {}
@@ -556,7 +577,7 @@ class AIEngineController(AIEngineService):
             except Exception:
                 pass
 
-            nw = _Worker(self._ctx, s, (s,))
+            nw = _Worker(self._ctx, s, (s,), python_paths=w.python_paths)
             self._workers[s] = nw
             self._service_to_worker[s] = s
             nw.start()
@@ -579,7 +600,12 @@ class AIEngineController(AIEngineService):
             except Exception:
                 pass
 
-            nw = _Worker(self._ctx, worker_name, service_names)
+            nw = _Worker(
+                self._ctx,
+                worker_name,
+                service_names,
+                python_paths=w.python_paths,
+            )
             self._workers[worker_name] = nw
             for service_name in service_names:
                 self._service_to_worker[service_name] = worker_name
@@ -587,6 +613,156 @@ class AIEngineController(AIEngineService):
 
             ready_timeout = max(1.0, float(timeout or 0.0))
             return all(nw.wait_ready(service_name, timeout=ready_timeout) for service_name in service_names)
+
+    @staticmethod
+    def _environment_category_for_service(service: str) -> str:
+        mapping = {
+            "tts": "tts",
+            "asr": "asr",
+            "rag": "rag",
+            "beats": "beats",
+        }
+        return mapping.get(str(service or "").strip().lower(), str(service or "").strip().lower())
+
+    def activate_environment(
+        self,
+        service: str,
+        item_id: str,
+        *,
+        category: str | None = None,
+        timeout: float = 12.0,
+    ) -> bool:
+        service_name = str(service or "").strip().lower()
+        model_id = str(item_id or "").strip()
+        if not service_name or not model_id:
+            return False
+
+        record = self._environments.active_for(
+            category=category or self._environment_category_for_service(service_name),
+            item_id=model_id,
+        )
+        if record is None:
+            logger.error(
+                f"Managed environment is not installed for service={service_name} item={model_id}"
+            )
+            return False
+        python_paths = self._environments.runtime_paths(record)
+
+        with self._lock:
+            current = self._worker_for_service(service_name)
+            if current is None:
+                return False
+            if tuple(current.python_paths) == tuple(python_paths) and current.proc is not None and current.proc.is_alive():
+                return current.wait_ready(service_name, timeout=max(1.0, float(timeout)))
+
+            worker_name = self._service_to_worker.get(service_name) or service_name
+            services = tuple(current.service_names)
+
+            if len(services) > 1:
+                remaining = tuple(name for name in services if name != service_name)
+                try:
+                    current.stop(timeout=timeout)
+                except Exception:
+                    pass
+                self._workers.pop(worker_name, None)
+
+                if remaining:
+                    shared_replacement = _Worker(
+                        self._ctx,
+                        worker_name,
+                        remaining,
+                        python_paths=(),
+                    )
+                    self._workers[worker_name] = shared_replacement
+                    for name in remaining:
+                        self._service_to_worker[name] = worker_name
+                    shared_replacement.start()
+
+                dedicated_name = f"{service_name}-environment"
+                dedicated = _Worker(
+                    self._ctx,
+                    dedicated_name,
+                    (service_name,),
+                    python_paths=python_paths,
+                )
+                self._workers[dedicated_name] = dedicated
+                self._service_to_worker[service_name] = dedicated_name
+                dedicated.start()
+                target = dedicated
+            else:
+                try:
+                    current.stop(timeout=timeout)
+                except Exception:
+                    pass
+                replacement = _Worker(
+                    self._ctx,
+                    worker_name,
+                    (service_name,),
+                    python_paths=python_paths,
+                )
+                self._workers[worker_name] = replacement
+                self._service_to_worker[service_name] = worker_name
+                replacement.start()
+                target = replacement
+
+        ready = target.wait_ready(service_name, timeout=max(1.0, float(timeout)))
+        if ready:
+            logger.info(
+                f"Activated managed environment for service={service_name} item={model_id}: "
+                f"{record.logical_id}@{record.revision_id}"
+            )
+        return ready
+
+    def deactivate_environment(
+        self,
+        service: str,
+        item_id: str,
+        *,
+        category: str | None = None,
+        timeout: float = 12.0,
+    ) -> bool:
+        service_name = str(service or "").strip().lower()
+        model_id = str(item_id or "").strip()
+        if not service_name or not model_id:
+            return False
+
+        record = self._environments.active_for(
+            category=category or self._environment_category_for_service(service_name),
+            item_id=model_id,
+        )
+        if record is None:
+            return True
+        environment_paths = tuple(self._environments.runtime_paths(record))
+
+        with self._lock:
+            current = self._worker_for_service(service_name)
+            if current is None or tuple(current.python_paths) != environment_paths:
+                return True
+
+            worker_name = self._service_to_worker.get(service_name) or service_name
+            if len(current.service_names) != 1:
+                raise RuntimeError(
+                    f"Managed environment worker for '{service_name}' unexpectedly owns "
+                    f"multiple services: {current.service_names}"
+                )
+
+            current.stop(timeout=timeout)
+            replacement = _Worker(
+                self._ctx,
+                worker_name,
+                (service_name,),
+                python_paths=(),
+            )
+            self._workers[worker_name] = replacement
+            self._service_to_worker[service_name] = worker_name
+            replacement.start()
+
+        ready = replacement.wait_ready(service_name, timeout=max(1.0, float(timeout)))
+        if ready:
+            logger.info(
+                f"Deactivated managed environment for service={service_name} item={model_id}"
+            )
+        return ready
 
     def prepare_shutdown(self) -> None:
         with self._lock:

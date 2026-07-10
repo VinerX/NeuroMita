@@ -150,3 +150,107 @@ class EventBusNotificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_weak_bound_method_stays_subscribed_while_receiver_is_alive() -> None:
+    bus = EventBus()
+
+    class Receiver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def on_event(self, _event) -> None:
+            self.calls += 1
+
+    receiver = Receiver()
+    try:
+        bus.subscribe("event", receiver.on_event)
+        gc.collect()
+        bus.emit("event", sync=True)
+        assert receiver.calls == 1
+    finally:
+        bus.shutdown()
+
+
+def test_subscription_handle_does_not_keep_weak_receiver_alive() -> None:
+    bus = EventBus()
+    calls: list[str] = []
+
+    class Receiver:
+        def on_event(self, _event) -> None:
+            calls.append("called")
+
+    receiver = Receiver()
+    handle = bus.subscribe("event", receiver.on_event)
+    del receiver
+    gc.collect()
+    try:
+        bus.emit("event", sync=True)
+        assert calls == []
+        handle.close()
+    finally:
+        bus.shutdown()
+
+
+def test_duplicate_subscription_is_delivered_once() -> None:
+    bus = EventBus()
+    calls: list[str] = []
+
+    def callback(_event) -> None:
+        calls.append("called")
+
+    try:
+        bus.subscribe("event", callback, weak=False)
+        bus.subscribe("event", callback, weak=False)
+        bus.emit("event", sync=True)
+        assert calls == ["called"]
+    finally:
+        bus.shutdown()
+
+
+def test_subscription_handle_unsubscribes_strong_callback() -> None:
+    bus = EventBus()
+    calls: list[str] = []
+
+    def callback(_event) -> None:
+        calls.append("called")
+
+    try:
+        handle = bus.subscribe("event", callback, weak=False)
+        handle.close()
+        handle.close()
+        bus.emit("event", sync=True)
+        assert calls == []
+    finally:
+        bus.shutdown()
+
+
+def test_unsubscribe_owner_removes_strong_bound_methods() -> None:
+    bus = EventBus()
+
+    class Receiver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def first(self, _event) -> None:
+            self.calls += 1
+
+        def second(self, _event) -> None:
+            self.calls += 10
+
+    receiver = Receiver()
+    try:
+        bus.subscribe("first", receiver.first, weak=False)
+        bus.subscribe("second", receiver.second, weak=False)
+        assert bus.unsubscribe_owner(receiver) == 2
+        bus.emit("first", sync=True)
+        bus.emit("second", sync=True)
+        assert receiver.calls == 0
+    finally:
+        bus.shutdown()
+
+
+def test_try_emit_reports_rejection_after_shutdown() -> None:
+    bus = EventBus()
+    bus.shutdown()
+    assert bus.try_emit("late") is False

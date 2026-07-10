@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
+from core.events import get_event_bus
+from core.daemon_executor import DaemonExecutor
+from core.services import ServiceRegistration, services
 from main_logger import logger
-from startup.startup_profiler import startup_trace
-from core.services import services
 from services.contracts import RuntimeFeatureService
+from startup.startup_profiler import startup_trace
 
 
 class FeatureState(str, Enum):
@@ -22,6 +24,7 @@ class FeatureState(str, Enum):
     UNAVAILABLE = "unavailable"
     STOPPING = "stopping"
     STOPPED = "stopped"
+    ABANDONED = "abandoned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +49,17 @@ class _FeatureEntry:
     future: Future | None = None
     error: BaseException | None = None
     stop_requested: bool = False
+    generation: int = 0
+    service_registrations: tuple[ServiceRegistration, ...] = ()
 
 
 class RuntimeFeatureManager(RuntimeFeatureService):
-    """Owns optional runtime controllers and initializes them once.
+    """Owns optional runtime controllers and their service registrations.
 
-    A feature job contains both module import and controller construction. This
-    avoids the old two-stage path where an expensive package was imported on
-    startup and initialized again on first use.
+    Import and construction happen in one background job. Every load receives a
+    generation token, and every published service receives an owner-safe handle.
+    A late completion or shutdown from an old generation therefore cannot
+    resurrect a disabled feature or unregister its replacement.
     """
 
     def __init__(self, settings_service, *, max_workers: int = 2) -> None:
@@ -61,7 +67,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
         self._lock = threading.RLock()
         self._entries: dict[str, _FeatureEntry] = {}
         self._key_index: dict[str, set[str]] = {}
-        self._executor = ThreadPoolExecutor(
+        self._executor = DaemonExecutor(
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="runtime-feature",
         )
@@ -105,6 +111,10 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 return completed
             if entry.state is FeatureState.LOADING and entry.future is not None:
                 return entry.future
+            if entry.state is FeatureState.STOPPING:
+                return self._failed_future(
+                    RuntimeError(f"Feature '{normalized}' is stopping")
+                )
 
             missing = self._missing_modules(entry.spec)
             if missing:
@@ -115,10 +125,12 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 entry.error = error
                 return self._failed_future(error)
 
+            entry.generation += 1
+            generation = entry.generation
             entry.state = FeatureState.LOADING
             entry.error = None
             entry.stop_requested = False
-            entry.future = self._executor.submit(self._build, normalized)
+            entry.future = self._executor.submit(self._build, normalized, generation)
             return entry.future
 
     def ensure(self, name: str, *, timeout: float | None = None) -> Any:
@@ -164,6 +176,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                     "enabled": self._is_enabled(entry.spec),
                     "error": str(entry.error) if entry.error else "",
                     "missing_modules": list(missing),
+                    "generation": entry.generation,
                 }
             return out
 
@@ -179,76 +192,176 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 key=lambda entry: (entry.spec.priority, entry.spec.name),
                 reverse=True,
             )
+            ready: list[
+                tuple[_FeatureEntry, FeatureSpec, Any, tuple[ServiceRegistration, ...]]
+            ] = []
+            for entry in entries:
+                if entry.state is FeatureState.LOADING:
+                    entry.stop_requested = True
+                    entry.generation += 1
+                    entry.state = FeatureState.ABANDONED
+                    if entry.future is not None:
+                        entry.future.cancel()
+                elif entry.state is FeatureState.READY:
+                    entry.state = FeatureState.STOPPING
+                    ready.append(
+                        (
+                            entry,
+                            entry.spec,
+                            entry.instance,
+                            entry.service_registrations,
+                        )
+                    )
+                    entry.service_registrations = ()
 
         if subscription is not None:
             subscription.close()
 
-        for entry in entries:
-            if entry.state is not FeatureState.READY:
-                continue
+        for entry, spec, instance, registrations in ready:
+            self._close_registrations(registrations)
             try:
-                if entry.spec.shutdown is not None:
-                    entry.spec.shutdown(entry.instance)
-                else:
-                    self._default_shutdown(entry.instance)
+                self._shutdown_instance(spec, instance)
             except Exception as exc:
                 logger.error(
-                    f"Failed to stop optional feature '{entry.spec.name}': {exc}",
+                    f"Failed to stop optional feature '{spec.name}': {exc}",
                     exc_info=True,
                 )
-            finally:
-                self._unregister_services(entry.spec)
-                entry.state = FeatureState.STOPPED
-
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
-    def _build(self, name: str) -> Any:
-        with self._lock:
-            entry = self._entries[name]
-            spec = entry.spec
-        startup_trace.mark(f"feature.{name}.start")
-        try:
-            instance = spec.factory()
-        except BaseException as exc:
-            with self._lock:
-                entry.state = FeatureState.FAILED
-                entry.error = exc
-            startup_trace.mark(
-                f"feature.{name}.failed",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            logger.warning(f"Optional feature '{name}' is unavailable: {exc}")
-            raise
-        with self._lock:
-            should_stop = self._closed or entry.stop_requested
-            stop_for_shutdown = self._closed
-
-        if should_stop:
-            try:
-                if spec.shutdown is not None:
-                    spec.shutdown(instance)
-                else:
-                    self._default_shutdown(instance)
             finally:
                 with self._lock:
                     entry.instance = None
                     entry.future = None
-                    entry.stop_requested = False
-                    entry.state = (
-                        FeatureState.STOPPED if stop_for_shutdown else FeatureState.DISABLED
-                    )
-            if stop_for_shutdown:
-                raise RuntimeError(f"Feature '{name}' finished loading after shutdown")
-            startup_trace.mark(f"feature.{name}.disabled_during_load")
-            return None
+                    entry.error = None
+                    entry.state = FeatureState.STOPPED
+
+        self._executor.shutdown(cancel_futures=True)
+
+    def _build(self, name: str, generation: int) -> Any:
+        with self._lock:
+            entry = self._entries[name]
+            spec = entry.spec
+        startup_trace.mark(f"feature.{name}.start", generation=generation)
+
+        try:
+            instance = spec.factory()
+        except BaseException as exc:
+            with self._lock:
+                current = entry.generation == generation
+                if current:
+                    entry.future = None
+                    if self._closed:
+                        entry.state = FeatureState.STOPPED
+                    elif entry.stop_requested:
+                        entry.state = FeatureState.DISABLED
+                        entry.stop_requested = False
+                    else:
+                        entry.state = FeatureState.FAILED
+                        entry.error = exc
+            startup_trace.mark(
+                f"feature.{name}.failed",
+                generation=generation,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            if not self._closed:
+                logger.warning(f"Optional feature '{name}' is unavailable: {exc}")
+            raise
 
         with self._lock:
-            entry.instance = instance
-            entry.state = FeatureState.READY
-            entry.error = None
-        for contract in spec.provided_services:
-            services().register(contract, instance, replace=True)
-        startup_trace.mark(f"feature.{name}.ready")
+            stale = entry.generation != generation
+            should_stop = stale or self._closed or entry.stop_requested
+            stop_for_shutdown = self._closed
+
+        if should_stop:
+            try:
+                self._shutdown_instance(spec, instance)
+            finally:
+                restart = False
+                with self._lock:
+                    if entry.generation == generation:
+                        entry.instance = None
+                        entry.future = None
+                        entry.stop_requested = False
+                        entry.state = (
+                            FeatureState.STOPPED
+                            if stop_for_shutdown
+                            else FeatureState.DISABLED
+                        )
+                        restart = not self._closed and self._is_enabled(spec)
+            if stop_for_shutdown:
+                raise RuntimeError(f"Feature '{name}' finished loading after shutdown")
+            startup_trace.mark(
+                f"feature.{name}.disabled_during_load", generation=generation
+            )
+            if restart:
+                self.ensure_async(name)
+            return None
+
+        registrations: list[ServiceRegistration] = []
+        registration_error: BaseException | None = None
+        with self._lock:
+            if (
+                entry.generation != generation
+                or self._closed
+                or entry.stop_requested
+            ):
+                should_stop = True
+            else:
+                try:
+                    for contract in spec.provided_services:
+                        registrations.append(
+                            services().register_owned(contract, instance, replace=True)
+                        )
+                except BaseException as exc:
+                    registration_error = exc
+                else:
+                    entry.instance = instance
+                    entry.service_registrations = tuple(registrations)
+                    entry.state = FeatureState.READY
+                    entry.error = None
+                    entry.future = None
+                    should_stop = False
+
+        if registration_error is not None:
+            self._close_registrations(tuple(registrations))
+            try:
+                self._shutdown_instance(spec, instance)
+            finally:
+                with self._lock:
+                    if entry.generation == generation:
+                        entry.instance = None
+                        entry.service_registrations = ()
+                        entry.future = None
+                        entry.error = registration_error
+                        entry.state = FeatureState.FAILED
+            startup_trace.mark(
+                f"feature.{name}.failed",
+                generation=generation,
+                error=f"{type(registration_error).__name__}: {registration_error}",
+            )
+            raise registration_error
+
+        if should_stop:
+            self._close_registrations(tuple(registrations))
+            try:
+                self._shutdown_instance(spec, instance)
+            finally:
+                restart = False
+                with self._lock:
+                    if entry.generation == generation:
+                        entry.instance = None
+                        entry.service_registrations = ()
+                        entry.future = None
+                        entry.stop_requested = False
+                        entry.state = (
+                            FeatureState.STOPPED
+                            if self._closed
+                            else FeatureState.DISABLED
+                        )
+                        restart = not self._closed and self._is_enabled(spec)
+            if restart:
+                self.ensure_async(name)
+            return None
+
+        startup_trace.mark(f"feature.{name}.ready", generation=generation)
         logger.info(f"Optional feature ready: {name}")
         return instance
 
@@ -262,16 +375,23 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             for name in names:
                 entry = self._entries[name]
                 enabled = self._is_enabled(entry.spec)
-                if enabled and entry.state in {
-                    FeatureState.REGISTERED,
-                    FeatureState.DISABLED,
-                    FeatureState.FAILED,
-                    FeatureState.UNAVAILABLE,
-                    FeatureState.STOPPED,
-                }:
-                    to_start.append(name)
+                if enabled:
+                    if entry.state is FeatureState.LOADING and entry.stop_requested:
+                        # Disable -> enable while factory is still running: keep
+                        # the same generation instead of throwing it away and
+                        # silently losing the re-enable request.
+                        entry.stop_requested = False
+                    elif entry.state in {
+                        FeatureState.REGISTERED,
+                        FeatureState.DISABLED,
+                        FeatureState.FAILED,
+                        FeatureState.UNAVAILABLE,
+                        FeatureState.STOPPED,
+                    }:
+                        to_start.append(name)
                     continue
-                if enabled or not entry.spec.stop_when_disabled:
+
+                if not entry.spec.stop_when_disabled:
                     continue
                 if entry.state is FeatureState.LOADING:
                     entry.stop_requested = True
@@ -289,36 +409,42 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             entry = self._entries.get(name)
             if entry is None or entry.state is not FeatureState.STOPPING:
                 return
+            generation = entry.generation
             instance = entry.instance
             spec = entry.spec
+            registrations = entry.service_registrations
+            entry.service_registrations = ()
 
+        self._close_registrations(registrations)
         try:
-            if spec.shutdown is not None:
-                spec.shutdown(instance)
-            else:
-                self._default_shutdown(instance)
+            self._shutdown_instance(spec, instance)
         except Exception as exc:
             logger.error(
                 f"Failed to stop disabled feature '{name}': {exc}",
                 exc_info=True,
             )
         finally:
-            self._unregister_services(spec)
+            restart = False
             with self._lock:
-                entry.instance = None
-                entry.future = None
-                entry.error = None
-                entry.state = FeatureState.DISABLED
-                restart = not self._closed and self._is_enabled(spec)
+                if entry.generation == generation:
+                    entry.instance = None
+                    entry.future = None
+                    entry.error = None
+                    entry.state = FeatureState.DISABLED
+                    restart = not self._closed and self._is_enabled(spec)
 
-        startup_trace.mark(f"feature.{name}.disabled")
+        startup_trace.mark(f"feature.{name}.disabled", generation=generation)
         if restart:
             self.ensure_async(name)
 
     def _is_enabled(self, spec: FeatureSpec) -> bool:
         try:
             return bool(spec.enabled(self._settings))
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                f"Failed to evaluate optional feature '{spec.name}' settings: {exc}",
+                exc_info=True,
+            )
             return False
 
     @staticmethod
@@ -332,6 +458,26 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 missing.append(str(module_name))
         return tuple(missing)
 
+    @classmethod
+    def _shutdown_instance(cls, spec: FeatureSpec, instance: Any) -> None:
+        if instance is None:
+            return
+        # Legacy optional controllers still contain strong EventBus bound-method
+        # subscriptions. Remove them centrally so disable/re-enable cannot leave
+        # ghost handlers or keep the old controller alive.
+        try:
+            get_event_bus().unsubscribe_owner(instance)
+        except Exception as exc:
+            logger.error(
+                f"Failed to detach EventBus subscriptions for feature "
+                f"'{spec.name}': {exc}",
+                exc_info=True,
+            )
+        if spec.shutdown is not None:
+            spec.shutdown(instance)
+        else:
+            cls._default_shutdown(instance)
+
     @staticmethod
     def _default_shutdown(instance: Any) -> None:
         for method_name in ("shutdown", "destroy", "close", "stop"):
@@ -341,9 +487,18 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 return
 
     @staticmethod
-    def _unregister_services(spec: FeatureSpec) -> None:
-        for contract in spec.provided_services:
-            services().unregister(contract)
+    def _close_registrations(
+        registrations: tuple[ServiceRegistration, ...],
+    ) -> None:
+        for registration in reversed(registrations):
+            try:
+                registration.close()
+            except Exception as exc:
+                logger.error(
+                    f"Failed to unregister optional service "
+                    f"'{registration.contract.__name__}': {exc}",
+                    exc_info=True,
+                )
 
     @staticmethod
     def _failed_future(error: BaseException) -> Future:

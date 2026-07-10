@@ -16,7 +16,7 @@ from core.install_requirements import InstallRequirement, check_requirements
 
 
 class InstallUiCallbackTests(unittest.TestCase):
-    def test_normalize_callback_triplet_replaces_missing_progress_with_noop(self):
+    def test_normalize_callbacks_accepts_legacy_triplet_and_adds_raw_noop(self):
         statuses: list[str] = []
         logs: list[str] = []
 
@@ -30,7 +30,9 @@ class InstallUiCallbackTests(unittest.TestCase):
         callbacks[0](42)
         callbacks[1]("working")
         callbacks[2]("line")
+        callbacks[3]("raw")
 
+        self.assertEqual(len(callbacks), 4)
         self.assertEqual(statuses, ["working"])
         self.assertEqual(logs, ["line"])
 
@@ -217,7 +219,6 @@ class PipInstallerFallbackTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(ret, 0)
         self.assertGreater(calls["count"], 3)
-
 
 class CheckRequirementsCacheTests(unittest.TestCase):
     """Регресс на ложноотрицательную финальную проверку: пакет, установленный в

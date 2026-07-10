@@ -9,6 +9,15 @@ from collections import deque
 
 import numpy as np
 
+from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
+from core.backends import BackendKind, get_backend_service
+from core.install_requirements import InstallRequirement, check_requirements
+
+from utils import getTranslationVariant as _
+from utils.gpu_utils import check_gpu_provider
+
+
 
 def _normalize_hallucination(text: str) -> str:
     """Нормализация для сравнения с чёрным списком галлюцинаций:
@@ -42,14 +51,6 @@ _WHISPER_HALLUCINATIONS = frozenset(
         "www.amara.org",
     )
 )
-
-from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from core.backends import BackendKind, get_backend_service
-from core.install_requirements import InstallRequirement, check_requirements
-
-from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
-
 
 class WhisperRecognizer(SpeechRecognizerInterface):
     _RUNTIME_PIP_SPECS = (
@@ -250,15 +251,13 @@ class WhisperRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return get_backend_service().preferred_torch_kind(ctx)
 
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.whisper_device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.whisper_device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         ok = bool(st.get("ok"))
         if not ok:
             self._last_requirements_probe_message = self._describe_requirements_failure(st)

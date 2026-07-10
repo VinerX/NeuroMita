@@ -94,13 +94,17 @@ class InstallGuiController(BaseController):
             pass
 
     @staticmethod
-    def _normalize_callback_triplet(callbacks):
-        if not isinstance(callbacks, (tuple, list)) or len(callbacks) != 3:
+    def _normalize_callbacks(callbacks):
+        if not isinstance(callbacks, (tuple, list)) or len(callbacks) not in (3, 4):
             return None
-        normalized = []
-        for cb in callbacks:
-            normalized.append(cb if callable(cb) else (lambda *_: None))
+        normalized = [cb if callable(cb) else (lambda *_: None) for cb in callbacks]
+        if len(normalized) == 3:
+            normalized.append(lambda *_: None)
         return tuple(normalized)
+
+    # Compatibility for older tests/callers. New code uses four callbacks:
+    # progress, status, parsed log, exact raw subprocess stream.
+    _normalize_callback_triplet = _normalize_callbacks
 
     def _worker_loop(self) -> None:
         while True:
@@ -134,11 +138,11 @@ class InstallGuiController(BaseController):
         # Для штатного UI-пути окно создаём в момент СТАРТА задачи (а не при
         # постановке в очередь), чтобы окна ожидающих задач не накладывались.
         if not headless and win is None and cbs is None:
-            win, progress_cb, status_cb, log_cb = self._create_install_window(
+            win, progress_cb, status_cb, log_cb, raw_log_cb = self._create_install_window(
                 job.get("title") or f"Installing {task_id}",
                 job.get("initial_status") or "Preparing...",
             )
-            cbs = (progress_cb, status_cb, log_cb)
+            cbs = (progress_cb, status_cb, log_cb, raw_log_cb)
             job["win"] = win
 
         task_title = str(job.get("title") or task_id)
@@ -155,7 +159,13 @@ class InstallGuiController(BaseController):
                 (cbs[1] if cbs else (lambda *_: None))(message)
 
             log_cb = cbs[2] if cbs else (lambda *_: None)
-            callbacks = InstallCallbacks(progress=progress_cb, status=status_cb, log=log_cb)
+            raw_log_cb = cbs[3] if cbs and len(cbs) > 3 else (lambda *_: None)
+            callbacks = InstallCallbacks(
+                progress=progress_cb,
+                status=status_cb,
+                log=log_cb,
+                raw_log=raw_log_cb,
+            )
 
         ok = False
         try:
@@ -254,7 +264,7 @@ class InstallGuiController(BaseController):
 
     def _create_install_window(self, title: str, initial_status: str):
         if not self.view or not hasattr(self.view, "create_installation_window_signal"):
-            return None, (lambda *_: None), (lambda *_: None), (lambda *_: None)
+            return None, (lambda *_: None), (lambda *_: None), (lambda *_: None), (lambda *_: None)
 
         holder = {"ready_event": threading.Event()}
 
@@ -262,7 +272,7 @@ class InstallGuiController(BaseController):
             self.view.create_installation_window_signal.emit(title, initial_status, holder)
         except Exception as e:
             logger.error(f"Failed to create install window: {e}", exc_info=True)
-            return None, (lambda *_: None), (lambda *_: None), (lambda *_: None)
+            return None, (lambda *_: None), (lambda *_: None), (lambda *_: None), (lambda *_: None)
 
         try:
             holder["ready_event"].wait(5.0)
@@ -272,14 +282,16 @@ class InstallGuiController(BaseController):
         win = holder.get("window")
         cbs = holder.get("callbacks")
 
-        if cbs and isinstance(cbs, (list, tuple)) and len(cbs) == 3:
-            progress_cb, status_cb, log_cb = cbs
+        normalized = self._normalize_callbacks(cbs)
+        if normalized is not None:
+            progress_cb, status_cb, log_cb, raw_log_cb = normalized
         else:
             progress_cb = getattr(win, "update_progress", lambda *_: None) if win else (lambda *_: None)
             status_cb = getattr(win, "update_status", lambda *_: None) if win else (lambda *_: None)
             log_cb = getattr(win, "update_log", lambda *_: None) if win else (lambda *_: None)
+            raw_log_cb = getattr(win, "update_raw_log", lambda *_: None) if win else (lambda *_: None)
 
-        return win, progress_cb, status_cb, log_cb
+        return win, progress_cb, status_cb, log_cb, raw_log_cb
 
     def _on_install_task_log(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
@@ -324,7 +336,7 @@ class InstallGuiController(BaseController):
         if custom_window is not None:
             if custom_callbacks is None and hasattr(custom_window, "get_threadsafe_callbacks"):
                 custom_callbacks = custom_window.get_threadsafe_callbacks()
-            normalized_callbacks = self._normalize_callback_triplet(custom_callbacks)
+            normalized_callbacks = self._normalize_callbacks(custom_callbacks)
             if normalized_callbacks is not None:
                 win = custom_window
                 cbs = normalized_callbacks

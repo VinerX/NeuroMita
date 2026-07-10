@@ -31,7 +31,13 @@ def pip_uninstall_action(packages: list[str], *, description: str, progress: int
                 pass
             return False
 
-    return InstallAction(type="call", description=description, progress=int(progress), fn=_do_uninstall)
+    return InstallAction(
+        type="call",
+        description=description,
+        progress=int(progress),
+        fn=_do_uninstall,
+        environment_mutation=True,
+    )
 
 
 def remove_paths_action(paths: list[str], *, description: str, progress: int = 90) -> InstallAction:

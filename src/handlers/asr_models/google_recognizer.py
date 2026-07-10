@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
 from core.install_requirements import InstallRequirement, check_requirements
 from utils import getTranslationVariant as _
 
@@ -70,8 +71,8 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     def install_manifest(self) -> list[dict]:
         return []
 
-    def is_installed(self) -> bool:
-        st = check_requirements(self.requirements(), ctx={})
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        st = check_requirements(self.requirements(), ctx=build_runtime_ctx(ctx))
         return bool(st.get("ok"))
 
     async def install(self) -> bool:

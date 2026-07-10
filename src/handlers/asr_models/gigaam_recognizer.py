@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind, get_backend_service
 from core.install_requirements import InstallRequirement, check_requirements
 
@@ -205,26 +206,14 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return get_backend_service().preferred_torch_kind(ctx)
 
-    @staticmethod
-    def _sentencepiece_available() -> bool:
-        try:
-            from sentencepiece import SentencePieceProcessor  # noqa: F401
-            return True
-        except Exception:
-            return False
-
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.gigaam_device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         if not bool(st.get("ok")):
-            return False
-        if not self._sentencepiece_available():
             return False
 
         # Неизвестная модель даёт пустой install_manifest — без этой проверки
@@ -330,7 +319,6 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         try:
             import sys
             import torch
-            import torchaudio
             import sounddevice as sd
             import numpy as np
 
@@ -347,7 +335,10 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
         sys.modules["gigaam"] = gigaam
 
         # safe_globals for torch.load(ckpt)
-        import omegaconf, typing, collections
+        import collections
+        import typing
+
+        import omegaconf
         self._torch.serialization.add_safe_globals([
             omegaconf.dictconfig.DictConfig,
             omegaconf.base.ContainerMetadata,

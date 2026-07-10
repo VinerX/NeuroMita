@@ -51,6 +51,8 @@ def _configure_paths(base_dir: str) -> str:
     os.environ["NEUROMITA_BASE_DIR"] = base_dir
     defaults = {
         "NEUROMITA_LIB_DIR": os.path.join(base_dir, "Lib"),
+        "NEUROMITA_CORE_DIR": os.path.join(base_dir, "Lib", "core"),
+        "NEUROMITA_ENVIRONMENT_DIR": os.path.join(base_dir, "Lib", "environment"),
         "NEUROMITA_PROMPTS_DIR": os.path.join(base_dir, "Prompts"),
         "NEUROMITA_HISTORIES_DIR": os.path.join(base_dir, "Histories"),
         "NEUROMITA_MODELS_DIR": os.path.join(base_dir, "Models"),

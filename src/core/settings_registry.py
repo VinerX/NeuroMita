@@ -6,6 +6,8 @@ from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from main_logger import logger
+
 
 @dataclass(frozen=True, slots=True)
 class SettingChange:
@@ -214,14 +216,15 @@ class SettingsRegistry(MutableMapping[str, Any]):
             )
 
         for key, value in replay_values.items():
-            callback(
+            self._notify_listeners(
                 SettingChange(
                     key=key,
                     value=value,
                     previous=None,
                     revision=revision,
                     source="replay",
-                )
+                ),
+                (callback,),
             )
         return SettingsSubscription(self, token)
 
@@ -245,8 +248,11 @@ class SettingsRegistry(MutableMapping[str, Any]):
             return
         try:
             callback()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                f"Settings persistence callback failed: {exc}",
+                exc_info=True,
+            )
 
     @staticmethod
     def _notify_listeners(
@@ -256,9 +262,15 @@ class SettingsRegistry(MutableMapping[str, Any]):
         for callback in tuple(listeners):
             try:
                 callback(change)
-            except Exception:
-                # A settings observer must never make the registry unusable.
-                continue
+            except Exception as exc:
+                callback_name = getattr(callback, "__qualname__", None) or getattr(
+                    callback, "__name__", None
+                ) or repr(callback)
+                logger.error(
+                    f"Settings observer '{callback_name}' failed for "
+                    f"key '{change.key}' at revision {change.revision}: {exc}",
+                    exc_info=True,
+                )
 
     def __getitem__(self, key: str) -> Any:
         return self.require(str(key))

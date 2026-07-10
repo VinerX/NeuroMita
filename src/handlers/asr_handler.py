@@ -5,7 +5,7 @@ import concurrent.futures
 import threading
 from collections import deque
 from threading import Lock, RLock, Event as ThreadEvent
-from typing import Optional, List, Dict
+from typing import TYPE_CHECKING, Optional, List, Dict
 
 from main_logger import logger
 
@@ -18,6 +18,10 @@ from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events, Event
+
+
+if TYPE_CHECKING:
+    from core.install_types import InstallPlan
 
 
 def _on_install_asr_model_event(event: Event):
@@ -320,7 +324,14 @@ class SpeechRecognition:
             pass
 
         try:
-            return inst.is_installed()
+            from core.runtime_environments import runtime_environments
+
+            runtime_ctx = runtime_environments().component_context(
+                category="asr",
+                item_id=engine,
+                ctx={"engine_settings": dict(settings)},
+            )
+            return inst.is_installed(runtime_ctx)
         except Exception as e:
             logger.warning(f"is_installed error: {e}")
             return False
@@ -440,6 +451,18 @@ class SpeechRecognition:
             if not eng:
                 logger.error("ASR engine not available. Local fallback is disabled.")
             else:
+                activate = getattr(eng, "activate_environment", None)
+                if not callable(activate) or not activate(
+                    "asr",
+                    engine_id,
+                    category="asr",
+                    timeout=30.0,
+                ):
+                    logger.error(
+                        f"Managed ASR environment is unavailable for engine '{engine_id}'."
+                    )
+                    return False
+
                 vad = {
                     "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
                     "chunk_size": SpeechRecognition.CHUNK_SIZE,

@@ -53,6 +53,40 @@ class TTSServiceTests(unittest.TestCase):
         joined = "\n".join(logs)
         self.assertIn("[tts:warmup] runtime error for model_id=high+low: hubert timeout", joined)
 
+    def test_edge_model_init_skips_network_warmup(self):
+        logs: list[str] = []
+        service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)
+        service._local_voice = _FakeLocalVoice(
+            init_ok=True,
+            voiceover_result=RuntimeError("must not be called"),
+        )
+
+        ok = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "edge_tts_rvc_onnx", "warmup": True},
+        ))
+
+        self.assertTrue(ok)
+        self.assertEqual(service._warmup_status["edge_tts_rvc_onnx"], "skipped-network")
+        self.assertIn("warmup skipped", "\n".join(logs))
+
+    def test_failed_best_effort_warmup_does_not_invalidate_runtime_init(self):
+        logs: list[str] = []
+        service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)
+        service._local_voice = _FakeLocalVoice(
+            init_ok=True,
+            voiceover_result=RuntimeError("probe failed"),
+        )
+
+        ok = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "silero_rvc_onnx", "warmup": True},
+        ))
+
+        self.assertTrue(ok)
+        self.assertEqual(service._warmup_status["silero_rvc_onnx"], "failed")
+        self.assertIn("runtime remains initialized", "\n".join(logs))
+
 
 if __name__ == "__main__":
     unittest.main()

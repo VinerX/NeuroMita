@@ -155,6 +155,7 @@ class AppWindowBase(QMainWindow):
         self._chat_ui_ready = False
         self._chat_history_load_pending = False
         self._pending_history_payload = None
+        self._token_refresh_pending = False
         self._chat_event_filters_installed = False
         self._history_load_inflight = False
 
@@ -596,6 +597,10 @@ class AppWindowBase(QMainWindow):
         elif self._chat_history_load_pending:
             self._chat_history_load_pending = False
             QTimer.singleShot(0, self.load_chat_history)
+
+        if self._token_refresh_pending:
+            self._token_refresh_pending = False
+            QTimer.singleShot(0, self.update_token_count)
         return True
 
     def load_chat_history(self):
@@ -788,6 +793,13 @@ class AppWindowBase(QMainWindow):
         return str(n)
 
     def update_token_count(self, event=None):
+        # Token UI belongs to the lazy Sandbox page. Backend events may arrive
+        # before that page is created or while it is being destroyed.
+        label = getattr(self, "token_count_label", None)
+        if label is None:
+            self._token_refresh_pending = True
+            return False
+
         # По умолчанию выключено (#7): строка со статистикой токенов/стоимости
         # включается галкой «Показывать статистику токенов/стоимости».
         show_token_info = self._get_setting("SHOW_TOKEN_INFO", False)
@@ -805,6 +817,11 @@ class AppWindowBase(QMainWindow):
 
             def apply(payload: dict):
                 if ticket != self._token_refresh_ticket:
+                    return
+
+                current_label = getattr(self, "token_count_label", None)
+                if current_label is None:
+                    self._token_refresh_pending = True
                     return
 
                 stats = payload.get("stats") or {}
@@ -833,16 +850,17 @@ class AppWindowBase(QMainWindow):
                 else:
                     text = _("Context: {} | Input: {}", "Context: {} | Input: {}").format(ctx_str, est_cost_text)
 
-                self.token_count_label.setText(text)
-                self.token_count_label.setVisible(True)
+                current_label.setText(text)
+                current_label.setVisible(True)
                 self.update_debug_info()
 
             run_async(self, worker, apply, name="app-token-stats")
             return
         else:
-            self.token_count_label.setVisible(False)
-            self.token_count_label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
+            label.setVisible(False)
+            label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
         self.update_debug_info()
+        return True
 
     def update_chat_font_size(self, font_size):
         self._chat_font_size = font_size

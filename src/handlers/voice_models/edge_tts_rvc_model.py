@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import importlib
 import os
@@ -7,6 +8,8 @@ import ntpath
 import re
 import sys
 import tempfile
+import threading
+import time
 import traceback
 from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
@@ -411,12 +414,17 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         raise NotImplementedError
 
     @classmethod
+    def _configure_imported_rvc_module(cls, module_name: str, module: Any) -> None:
+        return
+
+    @classmethod
     def _import_rvc_class(cls):
         errors: list[str] = []
         for module_name in cls.RVC_IMPORT_CANDIDATES:
             try:
                 module = importlib.import_module(module_name)
                 rvc_class = getattr(module, "TTS_RVC")
+                cls._configure_imported_rvc_module(module_name, module)
                 if module_name != cls.RVC_IMPORT_CANDIDATES[0]:
                     logger.warning(
                         f"{cls.__name__}: distribution '{cls.RVC_PACKAGE}' exposes "
@@ -863,16 +871,44 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 f0method=settings.get("f0method", None),
             )
 
+            operation_started = time.monotonic()
+            device = str(settings.get("device", self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
+            f0_method = str(inference_params.get("f0method") or self.RVC_DEFAULT_F0_METHOD)
+            logger.info(
+                f"Edge-TTS + RVC synthesis started: device={device}, "
+                f"f0_method={f0_method}, test_audio={bool(TEST_WITH_DONE_AUDIO)}"
+            )
             if not TEST_WITH_DONE_AUDIO:
                 inference_params["tts_rate"] = int(settings.get("tts_rate", 0)) if config_id != "medium+low" else 0
-                output_file_rvc = self.current_tts_rvc(text=text, **inference_params)
+                output_file_rvc = await asyncio.to_thread(
+                    self.current_tts_rvc,
+                    text=text,
+                    **inference_params,
+                )
             else:
-                output_file_rvc = self.current_tts_rvc.voiceover_file(input_path=TEST_WITH_DONE_AUDIO, **inference_params)
+                output_file_rvc = await asyncio.to_thread(
+                    self.current_tts_rvc.voiceover_file,
+                    input_path=TEST_WITH_DONE_AUDIO,
+                    **inference_params,
+                )
+            logger.info(
+                f"Edge-TTS + RVC synthesis finished in "
+                f"{time.monotonic() - operation_started:.2f}s"
+            )
 
             if not output_file_rvc or not os.path.exists(output_file_rvc) or os.path.getsize(output_file_rvc) == 0:
                 return None
             final_output_path = self._convert_to_stereo(output_file_rvc, str(settings.get("volume", "1.0")))
             return self._maybe_move_to_output(final_output_path, output_file)
+        except TimeoutError as error:
+            traceback.print_exc()
+            logger.error(
+                "Edge-TTS + RVC exceeded the vendor 300-second operation timeout. "
+                "The runtime was initialized successfully; the timeout occurred during synthesis/RVC. "
+                "For DirectML, try the PM F0 method if RMVPE remains too slow. "
+                f"Details: {error}"
+            )
+            return None
         except Exception as error:
             traceback.print_exc()
             logger.info(f"Edge-TTS + RVC voiceover failed: {error}")
@@ -1037,6 +1073,118 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             "settings": _onnx_silero_settings(),
         },
     ]
+
+    @classmethod
+    def _configure_imported_rvc_module(cls, module_name: str, module: Any) -> None:
+        try:
+            inference_module = importlib.import_module(
+                f"{module_name}.lib.infer_pack.onnx_inference"
+            )
+        except Exception:
+            return
+        if getattr(inference_module, "_neuromita_f0_cache_patch", False):
+            return
+
+        original = getattr(inference_module, "get_f0_predictor", None)
+        if not callable(original):
+            return
+
+        cache: dict[tuple[Any, ...], Any] = {}
+        lock = threading.RLock()
+
+        def cached_get_f0_predictor(
+            f0_predictor_str,
+            hop_length,
+            sampling_rate,
+            device,
+            cr_threshold=0.05,
+        ):
+            method = str(f0_predictor_str or "").strip().lower()
+            requested_device = str(device or "cpu").strip().lower()
+            # The vendor code creates a new RMVPE ONNX session for every
+            # utterance. Cache it, but preserve the configured execution
+            # provider. The warning about MelSpectrogram means only that the
+            # preprocessing tensor operations stay on CPU; it is not a reason
+            # to move the RMVPE ONNX graph off DirectML.
+            effective_device = device
+            key = (method, int(hop_length), int(sampling_rate), str(effective_device), float(cr_threshold))
+            if method != "rmvpe":
+                return original(
+                    f0_predictor_str,
+                    hop_length=hop_length,
+                    sampling_rate=sampling_rate,
+                    device=effective_device,
+                    cr_threshold=cr_threshold,
+                )
+            with lock:
+                predictor = cache.get(key)
+                if predictor is None:
+                    if requested_device == "dml":
+                        logger.info(
+                            "ONNX RVC compatibility: caching the DirectML RMVPE F0 session; "
+                            "MelSpectrogram preprocessing remains on CPU by vendor design."
+                        )
+                    predictor = original(
+                        f0_predictor_str,
+                        hop_length=hop_length,
+                        sampling_rate=sampling_rate,
+                        device=effective_device,
+                        cr_threshold=cr_threshold,
+                    )
+                    cache[key] = predictor
+                return predictor
+
+        inference_module.get_f0_predictor = cached_get_f0_predictor
+        inference_module._neuromita_f0_cache_patch = True
+
+        # Add stage timings without changing the vendor pipeline. Its public
+        # TimeoutError covers both Edge-TTS download and synchronous ONNX RVC
+        # inference, which otherwise makes a five-minute timeout impossible to
+        # diagnose from the application log.
+        try:
+            runtime_module = importlib.import_module(f"{module_name}.inference_onnx")
+        except Exception:
+            runtime_module = None
+
+        if runtime_module is not None and not getattr(
+            runtime_module, "_neuromita_stage_logging_patch", False
+        ):
+            original_tts_communicate = getattr(runtime_module, "tts_communicate", None)
+            if callable(original_tts_communicate):
+                async def timed_tts_communicate(*args, **kwargs):
+                    started = time.monotonic()
+                    logger.info("Edge-TTS network stage started.")
+                    try:
+                        return await original_tts_communicate(*args, **kwargs)
+                    finally:
+                        logger.info(
+                            f"Edge-TTS network stage finished in "
+                            f"{time.monotonic() - started:.2f}s."
+                        )
+
+                runtime_module.tts_communicate = timed_tts_communicate
+
+            onnx_rvc_class = getattr(inference_module, "OnnxRVC", None)
+            original_onnx_inference = getattr(onnx_rvc_class, "inference", None)
+            if callable(original_onnx_inference):
+                def timed_onnx_inference(instance, *args, **kwargs):
+                    started = time.monotonic()
+                    f0_method = kwargs.get("f0_method", "unknown")
+                    logger.info(
+                        f"ONNX RVC stage started: device={getattr(instance, 'device', 'unknown')}, "
+                        f"f0_method={f0_method}."
+                    )
+                    try:
+                        return original_onnx_inference(instance, *args, **kwargs)
+                    finally:
+                        logger.info(
+                            f"ONNX RVC stage finished in "
+                            f"{time.monotonic() - started:.2f}s."
+                        )
+
+                onnx_rvc_class.inference = timed_onnx_inference
+
+            runtime_module._neuromita_stage_logging_patch = True
 
     def _load_rvc_class(self):
         _ensure_lib_path()

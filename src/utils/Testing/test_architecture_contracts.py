@@ -267,3 +267,104 @@ def test_service_controller_is_concrete(module_name: str, class_name: str) -> No
 
     cls = getattr(importlib.import_module(module_name), class_name)
     assert cls.__abstractmethods__ == frozenset()
+
+
+def test_owned_service_handle_cannot_remove_newer_replacement() -> None:
+    registry = ServiceRegistry()
+    first = _Implementation("first")
+    second = _Implementation("second")
+
+    old_handle = registry.register_owned(_Contract, first)
+    new_handle = registry.register_owned(_Contract, second, replace=True)
+
+    assert old_handle.close() is False
+    assert registry.get(_Contract) is second
+    assert new_handle.close() is True
+    assert not registry.is_registered(_Contract)
+
+
+def test_runtime_feature_disable_enable_during_load_keeps_request() -> None:
+    settings = SettingsRegistry({"ENABLED": True})
+    entered = threading.Event()
+    release = threading.Event()
+    resource = _Implementation()
+    calls: list[int] = []
+    manager = RuntimeFeatureManager(settings, max_workers=1)
+
+    def factory():
+        calls.append(1)
+        entered.set()
+        release.wait(1.0)
+        return resource
+
+    manager.register(
+        FeatureSpec(
+            name="toggle-during-load",
+            enabled=lambda values: values.get("ENABLED", False),
+            setting_keys=("ENABLED",),
+            factory=factory,
+            provided_services=(_Contract,),
+        )
+    )
+    services().unregister(_Contract)
+    try:
+        future = manager.ensure_async("toggle-during-load")
+        assert entered.wait(1.0)
+        settings.set("ENABLED", False)
+        settings.set("ENABLED", True)
+        release.set()
+
+        assert future.result(timeout=1.0) is resource
+        _wait_until(lambda: manager.is_ready("toggle-during-load"))
+        assert calls == [1]
+        assert services().get(_Contract) is resource
+    finally:
+        release.set()
+        manager.shutdown()
+        services().unregister(_Contract)
+
+
+def test_runtime_feature_shutdown_during_load_never_publishes_service() -> None:
+    settings = SettingsRegistry({"ENABLED": True})
+    entered = threading.Event()
+    release = threading.Event()
+    resource = _Implementation()
+    manager = RuntimeFeatureManager(settings, max_workers=1)
+
+    def factory():
+        entered.set()
+        release.wait(1.0)
+        return resource
+
+    manager.register(
+        FeatureSpec(
+            name="shutdown-during-load",
+            enabled=lambda values: values.get("ENABLED", False),
+            setting_keys=("ENABLED",),
+            factory=factory,
+            provided_services=(_Contract,),
+        )
+    )
+    services().unregister(_Contract)
+    future = manager.ensure_async("shutdown-during-load")
+    assert entered.wait(1.0)
+    manager.shutdown()
+    release.set()
+
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        future.result(timeout=1.0)
+    assert resource.stopped.is_set()
+    assert services().get_optional(_Contract) is None
+
+
+def test_owned_service_restores_permanent_fallback_on_close() -> None:
+    registry = ServiceRegistry()
+    fallback = _Implementation("fallback")
+    active = _Implementation("active")
+    registry.register(_Contract, fallback)
+
+    handle = registry.register_owned(_Contract, active, replace=True)
+    assert registry.get(_Contract) is active
+
+    assert handle.close() is True
+    assert registry.get(_Contract) is fallback

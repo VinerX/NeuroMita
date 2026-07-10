@@ -12,6 +12,7 @@ class InstallCallbacks:
     progress: Callable[[int], None]
     status: Callable[[str], None]
     log: Callable[[str], None]
+    raw_log: Optional[Callable[[str], None]] = None
 
 
 @dataclass
@@ -30,6 +31,7 @@ class InstallAction:
 
     fn: Optional[Callable[..., Any]] = None
     timeout_sec: Optional[float] = None
+    environment_mutation: bool = False
 
 
 @dataclass
@@ -40,3 +42,5 @@ class InstallPlan:
     already_installed_status: str = "Already installed"
     required_backend: Optional["BackendKind"] = None
     backend_context: dict[str, Any] = field(default_factory=dict)
+    environment_id: Optional[str] = None
+    environment_managed: bool = True

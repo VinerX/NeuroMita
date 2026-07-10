@@ -209,8 +209,16 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         def inspect(component_id: str) -> tuple[str, dict[str, Any]]:
             entry = CATALOG_BY_ID[component_id]
             try:
+                from core.runtime_environments import runtime_environments
+
+                metadata = entry.metadata_ru
+                component_ctx = runtime_environments().component_context(
+                    category=str(metadata.get("category") or ""),
+                    item_id=str(metadata.get("item_id") or component_id.split(":", 1)[-1]),
+                    ctx=runtime_ctx,
+                )
                 component = self.require_component(component_id)
-                value = component.status(runtime_ctx)
+                value = component.status(component_ctx)
                 return component_id, value.as_dict()
             except Exception as exc:
                 logger.error(

@@ -83,6 +83,21 @@ class LocalVoiceController(LocalVoiceService):
     def _voice_language(self) -> str:
         return str(self._get_setting("VOICE_LANGUAGE", "ru") or "ru").strip().lower()
 
+    async def _ensure_model_environment(self, model_id: str) -> None:
+        engine = self._get_engine()
+        activate = getattr(engine, "activate_environment", None) if engine is not None else None
+        if not callable(activate):
+            raise RuntimeError("AI engine does not support managed runtime environments")
+        ok = await asyncio.to_thread(
+            activate,
+            "tts",
+            str(model_id),
+            category="tts",
+            timeout=20.0,
+        )
+        if not ok:
+            raise RuntimeError(f"Failed to activate runtime environment for voice model '{model_id}'")
+
     async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: Optional[float] = None):
         eng = self._get_engine()
         if eng is None:
@@ -242,6 +257,7 @@ class LocalVoiceController(LocalVoiceService):
             if progress_callback:
                 progress_callback("status", _("Инициализация модели...", "Initializing model..."))
 
+            await self._ensure_model_environment(model_id)
             ok = await self._engine_call_async(
                 "init_model",
                 {"model_id": model_id, "warmup": True},
@@ -419,6 +435,7 @@ class LocalVoiceController(LocalVoiceService):
 
             model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
 
+            await self._ensure_model_environment(model_id)
             result_path = await self._engine_call_async(
                 "synthesize",
                 {
