@@ -7,6 +7,10 @@ if TYPE_CHECKING:
     from core.backends import BackendKind
 
 
+DEFAULT_INSTALL_TIMEOUT_SEC = 7_200_000.0
+DEFAULT_INSTALL_NO_ACTIVITY_SEC = 3_600_000.0
+
+
 @dataclass
 class InstallCallbacks:
     progress: Callable[[int], None]

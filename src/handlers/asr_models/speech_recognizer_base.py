@@ -8,7 +8,7 @@ import numpy as np
 from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
-from core.install_types import InstallAction, InstallPlan
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallAction, InstallPlan
 from core.installables import (
     ComponentCategory,
     ComponentMetadata,
@@ -191,7 +191,7 @@ class SpeechRecognizerInterface(ABC):
 
         steps = self.pip_install_steps(run_ctx) or []
         required_backend = coerce_backend(self.required_backend(run_ctx))
-        timeout_sec = float(run_ctx.get("timeout_sec", 3600.0) or 3600.0)
+        timeout_sec = float(run_ctx.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
 
         actions: list[InstallAction] = []
         for step in steps:

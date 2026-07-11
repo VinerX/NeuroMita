@@ -2,6 +2,7 @@ from PyQt6.QtCore import QTimer, QEventLoop
 
 from main_logger import logger
 from core.events import Events, Event
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.services import services
 from services.contracts import LocalVoiceService, VoiceModelService
 from .base_controller import BaseController
@@ -155,7 +156,7 @@ class VoiceModelGuiController(BaseController):
         backend.start_install(
             str(model_id),
             with_ui=bool(data.get("with_ui", True)),
-            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
+            timeout_sec=float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC),
         )
 
     def _on_uninstall_model(self, event: Event):
@@ -210,7 +211,7 @@ class VoiceModelGuiController(BaseController):
         backend.start_uninstall(
             str(model_id),
             with_ui=bool(data.get("with_ui", True)),
-            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
+            timeout_sec=float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC),
         )
 
     def _on_install_started(self, event: Event):

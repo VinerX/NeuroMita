@@ -8,7 +8,7 @@ from core.install_log import classify_install_log
 from core.services import ServiceRegistration, services
 from .base_controller import BaseController
 
-from core.install_types import InstallCallbacks
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallCallbacks
 from core.task_supervisor import task_supervisor
 from services.contracts import InstallAdmission, InstallQueueService
 
@@ -279,7 +279,7 @@ class InstallGuiController(BaseController, InstallQueueService):
                 runner=job.get("runner"),
                 meta=job.get("meta"),
                 callbacks=callbacks,
-                timeout_sec=float(job.get("timeout_sec", 3600.0)),
+                timeout_sec=float(job.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC)),
                 cancel_event=job.get("cancel_event"),
             )
         except Exception as e:
@@ -495,7 +495,7 @@ class InstallGuiController(BaseController, InstallQueueService):
             "meta": meta,
             "title": title,
             "initial_status": initial_status,
-            "timeout_sec": float(data.get("timeout_sec", 3600.0)),
+            "timeout_sec": float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC)),
             "win": win,
             "callbacks": cbs,
             "headless": not with_ui,

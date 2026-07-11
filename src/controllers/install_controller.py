@@ -17,7 +17,12 @@ from main_logger import logger
 from core.backends import BackendKind, get_backend_service
 from core.events import get_event_bus, Events, Event
 from utils.pip_installer import PipInstaller
-from core.install_types import InstallCallbacks, InstallAction, InstallPlan
+from core.install_types import (
+    DEFAULT_INSTALL_TIMEOUT_SEC,
+    InstallAction,
+    InstallCallbacks,
+    InstallPlan,
+)
 from core.runtime_environments import EnvironmentTransaction, runtime_environments
 from core.services import services
 from core.install_requirements import missing_pip_specs
@@ -222,7 +227,7 @@ class InstallController(InstallService):
         task_id = data.get("task_id") or f"{kind}:{item_id}"
         meta = data.get("meta") or {"kind": kind, "item_id": item_id}
 
-        timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
+        timeout_sec = float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
 
         return bool(self.run_task(
             task_id=str(task_id),
@@ -1069,7 +1074,7 @@ class InstallController(InstallService):
                 try:
                     import asyncio
 
-                    timeout = float(act.timeout_sec or ctx.get("timeout_sec", 3600.0) or 3600.0)
+                    timeout = float(act.timeout_sec or ctx.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
 
                     async def _await_action():
                         coro = self._call_flex(
@@ -1129,7 +1134,7 @@ class InstallController(InstallService):
         runner: Callable[..., Any],
         callbacks: Optional[InstallCallbacks] = None,
         meta: dict[str, Any] | None = None,
-        timeout_sec: float = 3600.0,
+        timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC,
         cancel_event: threading.Event | None = None,
     ) -> bool:
         meta = dict(meta or {})

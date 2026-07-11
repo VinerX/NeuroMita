@@ -111,6 +111,7 @@ class AIHubDialog(QDialog):
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
         self._refresh_generation = 0
         self._refresh_inflight = False
+        self._checking_component_ids: set[str] = set()
         self._rendered_language = ""
         self._main_controller = None
         self._pending_backend_actions: set[tuple[str, str]] = set()
@@ -753,6 +754,7 @@ class AIHubDialog(QDialog):
         if generation != self._refresh_generation:
             return
         self._refresh_inflight = False
+        self._checking_component_ids.clear()
         self.btn_refresh.setEnabled(True)
         # Пустой ответ при наличии прежних данных — почти всегда таймаут/сбой
         # переопроса (а не реально пустой список: встроенные компоненты есть всегда).
@@ -1040,13 +1042,7 @@ class AIHubDialog(QDialog):
         self._apply_busy_state()
 
     def _set_cards_checking(self) -> None:
-        """#6: пометить все свободные карточки как «Проверка файлов…».
-
-        Карточки, которые прямо сейчас ставятся или стоят в очереди, не трогаем —
-        их состояние важнее (его вернёт _apply_busy_state). По завершении
-        проверки список пересобирается (_rebuild_component_list) и состояния
-        восстанавливаются сами.
-        """
+        """Пометить свободные карточки как проверяемые до нового status snapshot."""
         running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
         pending = self._queue_state.get("pending") if isinstance(self._queue_state, dict) else []
         running_tid = str((running or {}).get("task_id") or "").strip()
@@ -1056,6 +1052,9 @@ class AIHubDialog(QDialog):
                 cid = card._component_id()
                 install_tid = f"{cid}:install"
                 uninstall_tid = f"{cid}:uninstall"
+                if cid in self._checking_component_ids:
+                    card.set_state("checking")
+                    continue
                 if running_tid in (install_tid, uninstall_tid):
                     continue
                 if install_tid in pending_tids or uninstall_tid in pending_tids:
@@ -1082,10 +1081,14 @@ class AIHubDialog(QDialog):
                 # task_id формируется как "{component_id}:{op}" (см. _task_id_for).
                 install_tid = f"{cid}:install"
                 uninstall_tid = f"{cid}:uninstall"
-                if running_tid in (install_tid, uninstall_tid):
+                if cid in self._checking_component_ids:
+                    card.set_state("checking")
+                elif running_tid in (install_tid, uninstall_tid):
                     card.set_state("running")
                 elif install_tid in pending_tids or uninstall_tid in pending_tids:
                     card.set_state("queued")
+                elif self._refresh_inflight:
+                    card.set_state("checking")
                 else:
                     card.set_state("idle")
             except Exception:
@@ -1714,6 +1717,12 @@ class AIHubDialog(QDialog):
         cid = str(meta.get("component_id") or data.get("component_id") or "")
         return ":" in cid
 
+    @staticmethod
+    def _event_component_id(event) -> str:
+        data = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        return str(meta.get("component_id") or data.get("component_id") or "").strip()
+
     def _on_install_started(self, event) -> None:
         if not self._is_installable_task(event):
             return
@@ -1773,12 +1782,17 @@ class AIHubDialog(QDialog):
             return
         done_text = _("Готово", "Done")
 
+        component_id = self._event_component_id(event)
+
         def _apply() -> None:
+            if component_id:
+                self._checking_component_ids.add(component_id)
             self._set_task_status(done_text)
             self._set_install_logs_visible(False)
             self._set_install_bar(visible=True, progress=100, detail=done_text)
+            self.refresh(force=True)
+            self._set_task_status("")
             QTimer.singleShot(900, lambda: self._set_install_bar(visible=False))
-            QTimer.singleShot(250, lambda: (self.refresh(force=True), self._set_task_status("")))
 
         self._on_gui_thread(_apply)
 

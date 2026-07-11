@@ -6,7 +6,7 @@ from unittest.mock import patch
 from controllers.installable_controller import InstallableController
 from core.backends import BackendKind
 from core.events import Event
-from core.install_types import InstallPlan
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallPlan
 from core.installables import ComponentCategory, ComponentMetadata, ComponentStatusCode
 from core.services import services
 from game_connections.services import beat_backend_spec
@@ -178,6 +178,7 @@ class InstallableControllerTests(unittest.TestCase):
         payload, with_ui = queue.payload
         self.assertTrue(with_ui)
         self.assertEqual(payload["task_id"], "tts:direct:install")
+        self.assertEqual(payload["timeout_sec"], DEFAULT_INSTALL_TIMEOUT_SEC)
         self.assertTrue(callable(payload["runner"]))
 
 

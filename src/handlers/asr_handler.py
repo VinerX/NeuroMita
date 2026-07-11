@@ -17,6 +17,7 @@ from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events, Event
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.task_supervisor import task_supervisor
 
 
@@ -34,7 +35,7 @@ def _on_install_asr_model_event(event: Event):
 
     engine_settings = data.get("settings") or data.get("engine_settings") or {}
     with_ui = bool(data.get("with_ui", True))
-    timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
+    timeout_sec = float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
 
     from core.installables import ComponentCategory, make_component_id
 
@@ -222,7 +223,7 @@ class SpeechRecognition:
         pip_installer: PipInstaller,
         engine_settings: Optional[dict] = None,
         callbacks: Optional[object] = None,
-        timeout_sec: float = 3600.0,
+        timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC,
     ) -> "InstallPlan":
         from utils.gpu_utils import check_gpu_provider
 
@@ -252,7 +253,7 @@ class SpeechRecognition:
         recognizer = cls(pip_installer, logger)
         return recognizer.build_install_plan({
             **ctx,
-            "timeout_sec": float(timeout_sec or 3600.0),
+            "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
             "engine_settings": dict(engine_settings or {}),
         })
 

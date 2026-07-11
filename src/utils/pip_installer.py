@@ -25,6 +25,7 @@ from typing import Set, List, Tuple, Optional, Deque
 from collections import deque
 from core.app_paths import base_dir
 from core.task_supervisor import task_supervisor
+from core.install_types import DEFAULT_INSTALL_NO_ACTIVITY_SEC, DEFAULT_INSTALL_TIMEOUT_SEC
 
 
 class DependencyResolver:
@@ -1728,8 +1729,8 @@ class PipInstaller:
     # Настройки времени/таймаутов
     STALL_INFO_SEC = 10
     STALL_HINT_SEC = 60
-    TIMEOUT_SEC = 2 * 60 * 60
-    NO_ACTIVITY_SEC = 60 * 60
+    TIMEOUT_SEC = DEFAULT_INSTALL_TIMEOUT_SEC
+    NO_ACTIVITY_SEC = DEFAULT_INSTALL_NO_ACTIVITY_SEC
 
     # Раннер: период опроса и «мягкий» прогресс, пока реальный % ещё не парсится.
     _POLL_INTERVAL_SEC = 0.03

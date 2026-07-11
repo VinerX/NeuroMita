@@ -14,7 +14,7 @@ from services.contracts import (
     SettingsService,
 )
 from services.installable_catalog_service import DefaultInstallableCatalogService
-from core.install_types import InstallPlan
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallPlan
 from core.installables import make_component_id
 
 
@@ -185,7 +185,7 @@ class InstallableController(InstallableOperationsService):
             )
 
         with_ui = bool(data.get("with_ui", True))
-        timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
+        timeout_sec = float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
         base_ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
         # "Clean" reinstall: ignore the already-installed shortcut, force pip
         # reinstall and re-download artifacts (recovers from a broken/partial

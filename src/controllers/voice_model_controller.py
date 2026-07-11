@@ -13,6 +13,8 @@ from utils import getTranslationVariant as _
 
 from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
+from core.task_supervisor import task_supervisor
 from core.services import services
 from services.contracts import LocalVoiceService, VoiceModelService
 
@@ -346,8 +348,37 @@ class VoiceModelController(VoiceModelService):
                     self.setting_descriptions[key] = help_text.strip()
 
     def get_default_model_structure(self):
-        local_voice = services().get_optional(LocalVoiceService)
-        return local_voice.model_configs() if local_voice is not None else []
+        models: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        try:
+            from core.installables import ComponentCategory
+            from installables import get_installable_registry
+
+            components = get_installable_registry().by_category(ComponentCategory.TTS)
+            for component in components:
+                get_configs = getattr(component, "get_model_configs", None)
+                if not callable(get_configs):
+                    continue
+                for config in get_configs() or ():
+                    if not isinstance(config, dict):
+                        continue
+                    model_id = str(config.get("id") or "").strip()
+                    if not model_id or model_id in seen:
+                        continue
+                    models.append(copy.deepcopy(config))
+                    seen.add(model_id)
+        except Exception as exc:
+            logger.warning(f"Failed to build local voice catalog from installables: {exc}")
+
+        if models:
+            return models
+
+        try:
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
+
+            return copy.deepcopy(LOCAL_VOICE_MODELS)
+        except Exception:
+            return []
 
     def load_settings(self):
         default_model_structure = self.get_default_model_structure()
@@ -613,74 +644,52 @@ class VoiceModelController(VoiceModelService):
 
     def refresh_installed_models(self):
         ctx_base = self._ctx()
-        vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "INTEL", "CPU"]
+        vendors = [
+            self.detected_gpu_vendor
+        ] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "INTEL", "CPU"]
+
         try:
             from core.installables import ComponentCategory
+            from core.runtime_environments import runtime_environments
             from installables import get_installable_registry
 
-            registry = get_installable_registry()
-            components = list(registry.by_category(ComponentCategory.TTS) or [])
-        except Exception:
-            registry = None
+            manager = runtime_environments()
+            components = list(
+                get_installable_registry().by_category(ComponentCategory.TTS) or []
+            )
+        except Exception as exc:
+            logger.error(f"Failed to load TTS installable registry: {exc}", exc_info=True)
             components = []
+            manager = None
 
-        installed = set()
+        installed: set[str] = set()
         for component in components:
-            mid = str(getattr(component, "item_id", "") or "").strip()
-            if not mid:
+            model_id = str(getattr(component, "item_id", "") or "").strip()
+            if not model_id:
                 continue
-            ok = False
-            for v in vendors:
-                ctx = dict(ctx_base)
-                ctx["gpu_vendor"] = v
+
+            for vendor in vendors:
+                component_ctx = dict(ctx_base)
+                component_ctx["gpu_vendor"] = vendor
+                if manager is not None:
+                    component_ctx = manager.component_context(
+                        category="tts",
+                        item_id=model_id,
+                        ctx=component_ctx,
+                    )
                 try:
-                    if component.status(ctx).installed:
-                        ok = True
+                    if component.status(component_ctx).installed:
+                        installed.add(model_id)
                         break
-                except Exception:
-                    continue
-
-            if ok:
-                installed.add(mid)
-
-        # Fallback: if the registry is temporarily unavailable, keep the old
-        # config-driven path so the controller degrades gracefully instead of
-        # dropping the whole installed set.
-        if not installed and registry is None:
-            try:
-                from core.installables import ComponentCategory, make_component_id
-                from installables import get_installable_registry
-
-                registry = get_installable_registry()
-                for m in self.get_default_model_structure():
-                    mid = str(m.get("id") or "").strip()
-                    if not mid:
-                        continue
-
-                    component = registry.get(make_component_id(ComponentCategory.TTS, mid))
-                    if component is None:
-                        continue
-
-                    ok = False
-                    for v in vendors:
-                        ctx = dict(ctx_base)
-                        ctx["gpu_vendor"] = v
-                        try:
-                            if component.status(ctx).installed:
-                                ok = True
-                                break
-                        except Exception:
-                            continue
-
-                    if ok:
-                        installed.add(mid)
-            except Exception:
-                pass
+                except Exception as exc:
+                    logger.debug(
+                        f"Voice model status check failed for '{model_id}' ({vendor}): {exc}"
+                    )
 
         with self._lock:
             self.installed_models = installed
 
-    def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
+    def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
             from core.installables import ComponentCategory, make_component_id
@@ -706,7 +715,7 @@ class VoiceModelController(VoiceModelService):
                 "task_id": f"voice:install:{mid}",
                 "title": title,
                 "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or 3600.0),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
                 "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
@@ -714,7 +723,7 @@ class VoiceModelController(VoiceModelService):
         )
         return True
 
-    def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
+    def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
             from core.installables import ComponentCategory, make_component_id
@@ -739,7 +748,7 @@ class VoiceModelController(VoiceModelService):
                 "task_id": f"voice:uninstall:{mid}",
                 "title": _("Удаление локальной модели: ", "Uninstalling local model: ") + mid,
                 "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or 3600.0),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
                 "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
@@ -747,44 +756,62 @@ class VoiceModelController(VoiceModelService):
         )
         return True
 
+    def _schedule_install_state_refresh(
+        self,
+        *,
+        data: dict[str, Any],
+        success: bool,
+    ) -> None:
+        model_id = self._task_model_id(data)
+        if not model_id:
+            return
+        operation = self._task_op(data)
+        error = str(data.get("error", "") or "")
+        task_id = str(data.get("task_id") or f"{operation}:{model_id}")
+
+        def refresh_state() -> None:
+            self.reload()
+            payload = {
+                "model_id": str(model_id),
+                "success": bool(success),
+            }
+            if error:
+                payload["error"] = error
+
+            if operation == "uninstall":
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_UNINSTALL_FINISHED,
+                    payload,
+                )
+            else:
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_INSTALL_FINISHED,
+                    payload,
+                )
+
+            self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
+            self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+
+        try:
+            task_supervisor().start_thread(
+                self,
+                f"voice-model-state-refresh:{task_id}",
+                refresh_state,
+            )
+        except RuntimeError as exc:
+            logger.debug(f"Voice model state refresh was skipped during shutdown: {exc}")
+
     def _on_install_task_finished(self, event: Event):
-        data = event.data or {}
+        data = event.data if isinstance(event.data, dict) else {}
         if not self._is_voice_task(data):
             return
-        mid = self._task_model_id(data)
-        if not mid:
-            return
-
-        op = self._task_op(data)
-        self.reload()
-
-        if op == "uninstall":
-            self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": True})
-        else:
-            self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": True})
-
-        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
-        self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+        self._schedule_install_state_refresh(data=dict(data), success=True)
 
     def _on_install_task_failed(self, event: Event):
-        data = event.data or {}
+        data = event.data if isinstance(event.data, dict) else {}
         if not self._is_voice_task(data):
             return
-        mid = self._task_model_id(data)
-        if not mid:
-            return
-
-        op = self._task_op(data)
-        self.reload()
-        err = str(data.get("error", "") or "")
-
-        if op == "uninstall":
-            self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
-        else:
-            self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
-
-        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
-        self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+        self._schedule_install_state_refresh(data=dict(data), success=False)
 
     def finalize_model_settings(self, models_list, detected_vendor, cuda_devices):
         import copy as _copy

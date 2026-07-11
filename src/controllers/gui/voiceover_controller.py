@@ -125,6 +125,9 @@ class VoiceoverGuiController(BaseController):
         payload = event.data if isinstance(event.data, dict) else {}
         if "success" in payload and not bool(payload.get("success")):
             return
+        self._installed_models_cache = None
+        self._installed_models_cache_ts = 0.0
+        self._model_id_to_name_ts = 0.0
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
     def _on_setting_changed(self, change):
@@ -567,7 +570,7 @@ class VoiceoverGuiController(BaseController):
 
             local_voice = services().get_optional(LocalVoiceService)
             voice_models = services().get_optional(VoiceModelService)
-            cfgs = local_voice.model_configs() if local_voice is not None else []
+            cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
             installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
             if current_model_id and local_voice is not None:
                 initialized = bool(local_voice.check_initialized(current_model_id))
@@ -1036,8 +1039,8 @@ class VoiceoverGuiController(BaseController):
         if self._model_id_to_name and (now - ts) < 30.0:
             return
 
-        local_voice = services().get_optional(LocalVoiceService)
-        cfgs = local_voice.model_configs() if local_voice is not None else []
+        voice_models = services().get_optional(VoiceModelService)
+        cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
 
         mp: dict[str, str] = {}
         for c in cfgs or []:

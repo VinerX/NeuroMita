@@ -62,12 +62,18 @@ class _Status:
 
 
 class _ComponentStub:
-    def __init__(self, item_id: str, installed: bool):
+    def __init__(self, item_id: str, installed: bool, configs=None):
         self.item_id = item_id
         self._installed = installed
+        self._configs = list(configs or [])
+        self.seen_contexts = []
 
     def status(self, ctx=None):
+        self.seen_contexts.append(dict(ctx or {}))
         return _Status(self._installed)
+
+    def get_model_configs(self):
+        return list(self._configs)
 
 
 class _RegistryStub:
@@ -76,6 +82,18 @@ class _RegistryStub:
 
     def by_category(self, category):
         return list(self._components)
+
+
+class _RuntimeEnvironmentStub:
+    def component_context(self, *, category, item_id, ctx=None):
+        result = dict(ctx or {})
+        result.update(
+            {
+                "target_dir": f"overlay/{category}/{item_id}",
+                "strict_target": True,
+            }
+        )
+        return result
 
 
 class VoiceModelControllerTests(unittest.TestCase):
@@ -127,17 +145,37 @@ class VoiceModelControllerTests(unittest.TestCase):
             AssertionError("config fallback should not be used when registry is available")
         )
 
-        registry = _RegistryStub(
-            [
-                _ComponentStub("edge_tts_rvc_cuda", True),
-                _ComponentStub("high", False),
-            ]
-        )
+        edge = _ComponentStub("edge_tts_rvc_cuda", True)
+        high = _ComponentStub("high", False)
+        registry = _RegistryStub([edge, high])
 
-        with patch("installables.get_installable_registry", return_value=registry):
+        with patch("installables.get_installable_registry", return_value=registry), \
+             patch(
+                 "core.runtime_environments.runtime_environments",
+                 return_value=_RuntimeEnvironmentStub(),
+             ):
             controller.refresh_installed_models()
 
         self.assertEqual(controller.installed_models, {"edge_tts_rvc_cuda"})
+        self.assertEqual(edge.seen_contexts[0]["target_dir"], "overlay/tts/edge_tts_rvc_cuda")
+        self.assertTrue(edge.seen_contexts[0]["strict_target"])
+
+
+    def test_default_model_structure_comes_from_main_process_installable_catalog(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        component = _ComponentStub(
+            "high",
+            True,
+            configs=[{"id": "high", "name": "F5-TTS", "settings": []}],
+        )
+
+        with patch(
+            "installables.get_installable_registry",
+            return_value=_RegistryStub([component]),
+        ):
+            result = controller.get_default_model_structure()
+
+        self.assertEqual(result, [{"id": "high", "name": "F5-TTS", "settings": []}])
 
     def test_handle_get_installed_models_returns_snapshot_without_rescan(self):
         controller = VoiceModelController.__new__(VoiceModelController)
