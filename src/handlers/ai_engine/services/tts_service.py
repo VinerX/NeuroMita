@@ -13,8 +13,7 @@ class TTSService:
     """
     Универсальный TTS service поверх LocalVoice.
     Не знает про конкретные модели (Fish/F5/Edge).
-    Warmup best-effort: если модель требует внешние артефакты (например reference audio)
-    и warmup падает "предсказуемо", считаем warmup skipped, а init успешным.
+    Инициализация завершается только после успешного первого синтеза для модели.
     """
 
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
@@ -100,36 +99,28 @@ class TTSService:
             self._current_model_id = model_id
             self.emit_event("log", f"[tts:init] runtime initialized for model_id={model_id}")
 
-            if do_warmup:
-                if self._is_network_bound_edge_model(model_id):
-                    self._warmup_status[model_id] = "skipped-network"
+            if do_warmup and self._warmup_status.get(model_id) != "ready":
+                try:
+                    warm = await asyncio.wait_for(
+                        self._warmup_model(lv, model_id),
+                        timeout=120.0,
+                    )
+                except asyncio.TimeoutError:
+                    warm = False
                     self.emit_event(
                         "log",
-                        f"[tts:init] warmup skipped for model_id={model_id}: "
-                        "Edge-TTS warmup depends on network and is not a runtime readiness check",
+                        f"[tts:init] warmup timed out for model_id={model_id}",
                     )
-                else:
-                    try:
-                        warm = await asyncio.wait_for(
-                            self._best_effort_warmup(lv, model_id),
-                            timeout=120.0,
-                        )
-                    except asyncio.TimeoutError:
-                        warm = False
-                        self.emit_event(
-                            "log",
-                            f"[tts:init] warmup timed out for model_id={model_id}; "
-                            "runtime remains initialized",
-                        )
-                    self._warmup_status[model_id] = "ready" if warm else "failed"
-                    if warm:
-                        self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
-                    else:
-                        self.emit_event(
-                            "log",
-                            f"[tts:init] warmup failed for model_id={model_id}; "
-                            "runtime remains initialized and the first synthesis will retry",
-                        )
+                self._warmup_status[model_id] = "ready" if warm else "failed"
+                if not warm:
+                    self.emit_event(
+                        "log",
+                        f"[tts:init] warmup failed for model_id={model_id}; initialization rejected",
+                    )
+                    return False
+                self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
+            elif do_warmup:
+                self.emit_event("log", f"[tts:init] warmup already ready for model_id={model_id}")
 
             return True
 
@@ -164,11 +155,6 @@ class TTSService:
             return st
 
         raise RuntimeError(f"Unknown tts method: {method}")
-
-    @staticmethod
-    def _is_network_bound_edge_model(model_id: str) -> bool:
-        value = str(model_id or "").strip().lower()
-        return value.startswith("edge_tts_rvc") or value.startswith("edge+")
 
     def _compute_triton_status(self) -> dict:
         status = {
@@ -219,7 +205,7 @@ class TTSService:
 
         return status
 
-    async def _best_effort_warmup(self, lv, model_id: str) -> bool:
+    async def _warmup_model(self, lv, model_id: str) -> bool:
         tmp_dir = os.path.abspath("temp")
         os.makedirs(tmp_dir, exist_ok=True)
         out = os.path.join(tmp_dir, f"tts_warmup_{model_id}_{uuid.uuid4()}.wav")
@@ -241,16 +227,7 @@ class TTSService:
             self.emit_event("log", f"[tts:warmup] probe generated for model_id={model_id}: {produced}")
             return True
 
-        except FileNotFoundError:
-            # "нет reference" или файлов модели — для warmup это допустимо, init уже прошёл
-            self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: missing reference/model asset")
-            return True
         except RuntimeError as e:
-            msg = str(e).lower()
-            # generic: "requires reference audio" и т.п.
-            if "reference" in msg and ("audio" in msg or "voice" in msg):
-                self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: {e}")
-                return True
             self.emit_event("log", f"[tts:warmup] runtime error for model_id={model_id}: {e}")
             return False
         except Exception as exc:

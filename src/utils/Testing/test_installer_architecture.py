@@ -143,8 +143,10 @@ def test_edge_onnx_final_check_logs_every_missing_requirement(tmp_path: Path) ->
 def test_edge_onnx_final_check_succeeds_from_target_without_restart(tmp_path: Path) -> None:
     (tmp_path / "omegaconf").mkdir()
     (tmp_path / "tts_with_rvc").mkdir()
+    (tmp_path / "edge_tts").mkdir()
     _write_dist(tmp_path, "omegaconf", "2.3.0")
     _write_dist(tmp_path, "tts-with-rvc-onnx", "0.1.0")
+    _write_dist(tmp_path, "edge-tts", "6.1.9")
 
     plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
         EDGE_TTS_RVC_ONNX_ID,
@@ -165,8 +167,10 @@ def test_edge_final_check_prefers_runtime_install_target_over_plan_snapshot(tmp_
     runtime_target.mkdir()
     (runtime_target / "omegaconf").mkdir()
     (runtime_target / "tts_with_rvc").mkdir()
+    (runtime_target / "edge_tts").mkdir()
     _write_dist(runtime_target, "omegaconf", "2.3.0")
     _write_dist(runtime_target, "tts-with-rvc-onnx", "0.1.0")
+    _write_dist(runtime_target, "edge-tts", "6.1.9")
 
     plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
         EDGE_TTS_RVC_ONNX_ID,
@@ -436,6 +440,12 @@ def test_environment_lock_uses_uv_compile_and_omits_shared_core(tmp_path: Path) 
             ["fish-speech-lib", "numpy<2"],
             core_overrides=["torch==2.7.1", "numpy==1.26.0"],
             core_packages=["torch", "numpy"],
+            extra_args=[
+                "--extra-index-url",
+                "https://download.pytorch.org/whl/cu128",
+                "--index-strategy",
+                "unsafe-best-match",
+            ],
         )
 
     assert ok is True
@@ -444,6 +454,10 @@ def test_environment_lock_uses_uv_compile_and_omits_shared_core(tmp_path: Path) 
     assert compile_cmd[:3] == [str(tmp_path / "uv.exe"), "pip", "compile"]
     assert compile_cmd.count("--no-emit-package") == 2
     assert "torch" in compile_cmd and "numpy" in compile_cmd
+    assert "--extra-index-url" in compile_cmd
+    assert "https://download.pytorch.org/whl/cu128" in compile_cmd
+    assert "--index-strategy" in compile_cmd
+    assert "unsafe-best-match" in compile_cmd
     assert install_cmd[:2] == [str(tmp_path / "uv.exe"), "pip"]
     assert "--no-deps" in install_cmd
     assert "-r" in install_cmd

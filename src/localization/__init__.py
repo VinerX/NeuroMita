@@ -261,6 +261,13 @@ class TrStr(str):
         obj.tr_en = en
         return obj
 
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        memo[id(self)] = self
+        return self
+
 
 def translate(ru_str: str, en_str: str = "") -> str:
     """Возвращает перевод ``ru_str`` на текущий язык.

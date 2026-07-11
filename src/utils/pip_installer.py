@@ -378,6 +378,7 @@ class PipInstaller:
                 "--find-links",
                 "--no-index",
                 "--prerelease",
+                "--index-strategy",
             )
             raw_extra = list(extra_args or [])
             index = 0

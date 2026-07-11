@@ -109,6 +109,20 @@ def test_cuda_torch_layer_satisfies_cpu_capability_without_second_copy(tmp_path:
     assert "torch.cpu@2.7.1" in cuda_layer.capabilities
     assert "torch.cuda@2.7.1+cu128" in cuda_layer.capabilities
     assert "https://download.pytorch.org/whl/cu128" in cuda_layer.extra_args
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "edge"},
+        requested_specs=("tts-with-rvc",),
+        required_backend=BackendKind.CUDA,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    transaction.core_layers = [cuda_layer]
+    assert transaction.core_resolver_args == (
+        "--extra-index-url",
+        "https://download.pytorch.org/whl/cu128",
+        "--index-strategy",
+        "unsafe-best-match",
+    )
+    transaction.abort()
 
     cpu_specs = manager.core_layer_specs(BackendKind.CPU, {"gpu_vendor": "CPU"})
     assert len(cpu_specs) == 1

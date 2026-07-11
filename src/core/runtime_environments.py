@@ -20,6 +20,7 @@ from packaging.utils import canonicalize_name
 
 from core.backends import (
     BackendKind,
+    CUDA_INDEX_URL,
     ONNX_DIRECTML_SPEC,
     ONNX_SPEC,
     TORCH_VERSION,
@@ -70,6 +71,18 @@ _IGNORED_PROBE_MODULES = frozenset(
         "test",
     }
 )
+
+
+def _resolver_args_for_core_layers(values: Iterable[str]) -> tuple[str, ...]:
+    args = tuple(str(value).strip() for value in values if str(value).strip())
+    has_cuda_index = any(CUDA_INDEX_URL.casefold() in value.casefold() for value in args)
+    has_index_strategy = any(
+        value == "--index-strategy" or value.startswith("--index-strategy=")
+        for value in args
+    )
+    if has_cuda_index and not has_index_strategy:
+        return (*args, "--index-strategy", "unsafe-best-match")
+    return args
 
 
 def _safe_id(value: str) -> str:
@@ -456,11 +469,10 @@ class EnvironmentTransaction:
 
     @property
     def core_resolver_args(self) -> tuple[str, ...]:
-        return tuple(
-            normalized
+        return _resolver_args_for_core_layers(
+            value
             for layer in self.core_layers
             for value in layer.extra_args
-            if (normalized := str(value).strip())
         )
 
     def ensure_core_layers(

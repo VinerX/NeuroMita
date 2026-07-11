@@ -44,6 +44,7 @@ SILERO_RVC_ONNX_ID = "silero_rvc_onnx"
 # both NVIDIA and AMD/Intel paths.
 _RVC_F0_METHODS = ("pm", "dio", "crepe", "rmvpe", "harvest", "fcpe")
 _RVC_F0_DEFAULT = "rmvpe"
+_EDGE_TTS_COMPATIBILITY_SPEC = "edge-tts>=6.1.9,<8.0.0"
 _RVC_F0_HELP_RU = (
     "Алгоритм извлечения F0 (высоты тона): rmvpe/crepe — точнее, "
     "pm/harvest/dio — быстрее, fcpe — компромисс."
@@ -285,6 +286,12 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             InstallRequirement(id=f"backend_{cls.BACKEND_KIND.value}", kind="backend", backend_kind=cls.BACKEND_KIND, required=True),
             InstallRequirement(id="omegaconf", kind="python_dist", spec="omegaconf", required=True),
             InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec=cls.RVC_PACKAGE, required=True),
+            InstallRequirement(
+                id="edge_tts_compatible_api",
+                kind="python_dist",
+                spec=_EDGE_TTS_COMPATIBILITY_SPEC,
+                required=True,
+            ),
         ]
         if cls.RVC_IMPORT_CANDIDATES:
             req.append(
@@ -351,7 +358,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 already_installed_status=_("Уже установлено", "Already installed"),
             )
 
-        pkgs = ["omegaconf", cls.RVC_PACKAGE]
+        pkgs = ["omegaconf", cls.RVC_PACKAGE, _EDGE_TTS_COMPATIBILITY_SPEC]
         if cls._is_silero_model(mid):
             pkgs.append("silero")
         # Держим scipy на numpy-1.x-совместимой ветке: tts-with-rvc без верхней
@@ -511,12 +518,11 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 
     def _load_settings_for(self, model_id: str) -> dict[str, Any]:
         settings = self.parent.load_model_settings(model_id)
-        if settings:
-            return settings
-        legacy = {"edge": "low", "silero": "low+"}.get(self._runtime_pipeline(model_id))
-        if legacy:
-            return self.parent.load_model_settings(legacy)
-        return {}
+        if not settings:
+            legacy = {"edge": "low", "silero": "low+"}.get(self._runtime_pipeline(model_id))
+            if legacy:
+                settings = self.parent.load_model_settings(legacy)
+        return self.resolve_settings_for_model(model_id, settings)
 
     def _normalize_f0_method(self, value: Optional[str]) -> str:
         method = str(value or self.RVC_DEFAULT_F0_METHOD).strip() or self.RVC_DEFAULT_F0_METHOD
@@ -910,7 +916,8 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             f0_method = str(inference_params.get("f0method") or self.RVC_DEFAULT_F0_METHOD)
             logger.info(
                 f"Edge-TTS + RVC synthesis started: device={device}, "
-                f"f0_method={f0_method}, test_audio={bool(TEST_WITH_DONE_AUDIO)}"
+                f"f0_method={f0_method}, rvc_pitch={pitch}, "
+                f"test_audio={bool(TEST_WITH_DONE_AUDIO)}"
             )
             if not TEST_WITH_DONE_AUDIO:
                 inference_params["tts_rate"] = int(settings.get("tts_rate", 0)) if config_id != "medium+low" else 0

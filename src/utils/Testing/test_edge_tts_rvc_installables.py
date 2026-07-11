@@ -1,4 +1,7 @@
 import unittest
+import asyncio
+import os
+import tempfile
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +47,8 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
 
         self.assertIn("tts-with-rvc", cuda_specs)
         self.assertIn("tts-with-rvc-onnx[dml]", onnx_specs)
+        self.assertIn("edge-tts>=6.1.9,<8.0.0", cuda_specs)
+        self.assertIn("edge-tts>=6.1.9,<8.0.0", onnx_specs)
 
     def test_cuda_settings_keep_full_f0_method_catalog(self):
         config = EdgeTTSRVCCudaModel._find_model_config(EDGE_TTS_RVC_CUDA_ID)
@@ -54,6 +59,50 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
             ["pm", "dio", "crepe", "rmvpe", "harvest", "fcpe"],
         )
         self.assertEqual(f0_setting["options"]["default"], "rmvpe")
+
+    def test_edge_runtime_uses_schema_pitch_default_when_no_values_are_saved(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_CUDA_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        model = EdgeTTSRVCCudaModel(_Parent(), EDGE_TTS_RVC_CUDA_ID)
+
+        self.assertEqual(model._load_settings_for(EDGE_TTS_RVC_CUDA_ID)["pitch"], "6")
+
+    def test_edge_runtime_forwards_effective_pitch_to_tts_with_rvc(self):
+        output = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        output.write(b"test")
+        output.close()
+        captured = {}
+
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_CUDA_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        class _Rvc:
+            def __call__(self, **kwargs):
+                captured.update(kwargs)
+                return output.name
+
+        model = EdgeTTSRVCCudaModel(_Parent(), EDGE_TTS_RVC_CUDA_ID)
+        model.current_tts_rvc = _Rvc()
+        model._update_parent_paths = lambda _character: {"character_name": "CrazyMita"}
+        model._prepare_rvc_target = lambda _character, _use_index_file: None
+        model._convert_to_stereo = lambda path, _volume: path
+
+        try:
+            result = asyncio.run(model._voiceover_edge_tts_rvc("test"))
+        finally:
+            os.unlink(output.name)
+
+        self.assertEqual(result, output.name)
+        self.assertEqual(captured["pitch"], 6.0)
 
     def test_onnx_configs_include_intel_support(self):
         config = EdgeTTSRVCOnnxModel._find_model_config(EDGE_TTS_RVC_ONNX_ID)
