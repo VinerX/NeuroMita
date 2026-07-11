@@ -5,6 +5,7 @@ import importlib
 import inspect
 import json
 import os
+import site
 import sys
 import threading
 import traceback
@@ -24,6 +25,45 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 _DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _activate_site_directories(paths: list[str]) -> list[str]:
+    """Activate `.pth` entries while preserving managed-layer precedence."""
+    activated_by_root: list[tuple[str, list[str]]] = []
+
+    for root in paths:
+        before = {
+            os.path.normcase(os.path.abspath(path))
+            for path in sys.path
+            if path
+        }
+        site.addsitedir(root)
+        additions: list[str] = []
+        for path in sys.path:
+            normalized = os.path.normcase(os.path.abspath(path))
+            if not path or normalized in before:
+                continue
+            additions.append(os.path.abspath(path))
+            before.add(normalized)
+        activated_by_root.append((root, additions))
+
+    managed_paths: list[str] = []
+    managed_normalized: set[str] = set()
+    for root, additions in activated_by_root:
+        for path in (root, *additions):
+            normalized = os.path.normcase(os.path.abspath(path))
+            if normalized in managed_normalized:
+                continue
+            managed_normalized.add(normalized)
+            managed_paths.append(os.path.abspath(path))
+
+    sys.path[:] = [
+        path
+        for path in sys.path
+        if os.path.normcase(os.path.abspath(path)) not in managed_normalized
+    ]
+    sys.path[:0] = managed_paths
+    return managed_paths
 
 
 def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None) -> None:
@@ -74,6 +114,7 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
         path for path in sys.path if should_keep(path)
     ]
     sys.path[:0] = ordered
+    _activate_site_directories(ordered)
 
     if os.name == "nt":
         inherited_path = []

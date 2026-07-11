@@ -73,6 +73,50 @@ def test_runtime_probe_reports_failing_module() -> None:
         _probe_runtime_modules(["broken_backend"])
 
 
+def test_worker_activates_pth_paths_from_managed_layer(tmp_path: Path, monkeypatch) -> None:
+    overlay = tmp_path / "Lib" / "environment" / "tts" / "rev" / "site-packages"
+    win32 = overlay / "win32"
+    pywin32_lib = overlay / "win32" / "lib"
+    pythonwin = overlay / "pythonwin"
+    main_core = tmp_path / "Lib" / "core"
+    pywin32_lib.mkdir(parents=True)
+    pythonwin.mkdir()
+    main_core.mkdir(parents=True)
+    (overlay / "pywin32.pth").write_text(
+        "win32\nwin32\\lib\npythonwin\nimport pywin32_bootstrap\n",
+        encoding="utf-8",
+    )
+    (pywin32_lib / "pywin32_bootstrap.py").write_text(
+        "ACTIVATED = True\n",
+        encoding="utf-8",
+    )
+    (pywin32_lib / "pywintypes.py").write_text("VALUE = 'available'\n", encoding="utf-8")
+    monkeypatch.setenv("NEUROMITA_RUNTIME_ROOT", str(tmp_path / "Lib"))
+    monkeypatch.setenv("NEUROMITA_LIB_DIR", str(main_core))
+    monkeypatch.setenv("NEUROMITA_CORE_DIR", str(main_core))
+    monkeypatch.delitem(sys.modules, "pywintypes", raising=False)
+    monkeypatch.delitem(sys.modules, "pywin32_bootstrap", raising=False)
+
+    old_path = list(sys.path)
+    try:
+        _ensure_lib_on_path([str(overlay)])
+        module = __import__("pywintypes")
+
+        assert module.VALUE == "available"
+        assert sys.modules["pywin32_bootstrap"].ACTIVATED is True
+        assert sys.path[:5] == [
+            str(overlay.resolve()),
+            str(win32.resolve()),
+            str(pywin32_lib.resolve()),
+            str(pythonwin.resolve()),
+            str(main_core.resolve()),
+        ]
+    finally:
+        sys.path[:] = old_path
+        sys.modules.pop("pywintypes", None)
+        sys.modules.pop("pywin32_bootstrap", None)
+
+
 def test_worker_without_ai_environment_uses_only_stable_main_core(
     tmp_path: Path,
     monkeypatch,

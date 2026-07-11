@@ -6,8 +6,9 @@ from typing import Dict, Optional, Any, List
 
 import ffmpeg
 from core.app_paths import settings_path
+from core.installables.helpers import build_runtime_ctx
 from main_logger import logger
-from utils import getTranslationVariant as _, get_character_voice_paths
+from utils import get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
 
 from handlers.voice_models.base_model import IVoiceModel
@@ -133,7 +134,7 @@ class LocalVoice:
             if model is None:
                 return False
 
-            ctx = {"gpu_vendor": self.provider or "CPU"}
+            ctx = build_runtime_ctx({"gpu_vendor": self.provider or "CPU"})
             return bool(model.__class__.is_model_installed(model_id, ctx))
         except Exception:
             return False
