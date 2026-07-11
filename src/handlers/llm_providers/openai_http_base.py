@@ -9,7 +9,13 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from main_logger import logger
-from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from handlers.llm_providers.base import (
+    BaseProvider,
+    LLMRequest,
+    LLMResponse,
+    normalize_usage_payload,
+    resolve_requests_timeout,
+)
 from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
 from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
@@ -208,7 +214,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
-        timeout = float((req.extra or {}).get("http_timeout_seconds") or 120)
+        timeout = resolve_requests_timeout(req)
         return requests.post(request_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
 
     def generate(self, req: LLMRequest) -> LLMResponse:

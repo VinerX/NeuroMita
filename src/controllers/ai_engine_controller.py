@@ -106,12 +106,28 @@ class _Worker:
         self.pending: Dict[str, Future] = {}
         self.pending_deadlines: dict[str, float] = {}
         self.pending_meta: dict[str, tuple[str, str]] = {}
+        self.quarantined_services: dict[str, str] = {}
+        self.recovering_services: set[str] = set()
         self.pending_lock = threading.RLock()
         self.request_timeout = _env_float("NEUROMITA_AI_REQUEST_TIMEOUT", 300.0)
+        self.heartbeat_timeout = _env_float(
+            "NEUROMITA_AI_HEARTBEAT_TIMEOUT",
+            180.0,
+            minimum=15.0,
+        )
+        self.heartbeat_startup_grace = _env_float(
+            "NEUROMITA_AI_HEARTBEAT_STARTUP_GRACE",
+            300.0,
+            minimum=30.0,
+        )
+        self.last_heartbeat: float = 0.0
+        self.hard_failure_triggered = threading.Event()
 
         self.res_thread: Optional[threading.Thread] = None
         self.log_thread: Optional[threading.Thread] = None
         self.watch_thread: Optional[threading.Thread] = None
+        self.heartbeat_watch_thread: Optional[threading.Thread] = None
+        self.deadline_thread: Optional[threading.Thread] = None
         self.started_at: float = 0.0
         self.last_error: str = ""
         self.last_status: str = ""
@@ -127,6 +143,11 @@ class _Worker:
         self.ready.clear()
         for ev in self.ready_by_service.values():
             ev.clear()
+        with self.pending_lock:
+            self.quarantined_services.clear()
+            self.recovering_services.clear()
+        self.hard_failure_triggered.clear()
+        self.last_heartbeat = time.monotonic()
 
         self.proc = self.ctx.Process(
             target=run_worker_process,
@@ -153,7 +174,12 @@ class _Worker:
         self.watch_thread = task_supervisor().start_thread(
             self, f"ai-watch-{self.worker_name}", self._watch_process
         )
-        task_supervisor().start_thread(
+        self.heartbeat_watch_thread = task_supervisor().start_thread(
+            self,
+            f"ai-heartbeat-watch-{self.worker_name}",
+            self._heartbeat_watch_loop,
+        )
+        self.deadline_thread = task_supervisor().start_thread(
             self, f"ai-deadlines-{self.worker_name}", self._deadline_loop
         )
 
@@ -174,6 +200,18 @@ class _Worker:
         if self.stopping.is_set():
             f = Future()
             f.set_exception(RuntimeError(f"Worker '{self.worker_name}' is stopping"))
+            return f
+
+        with self.pending_lock:
+            quarantine_reason = self.quarantined_services.get(target_service)
+        if quarantine_reason:
+            f = Future()
+            f.set_exception(
+                RuntimeError(
+                    f"AI service '{target_service}' is quarantined after a timeout: "
+                    f"{quarantine_reason}"
+                )
+            )
             return f
 
         proc = self.proc
@@ -214,14 +252,13 @@ class _Worker:
         fut.add_done_callback(cleanup_cancelled)
 
         try:
-            self.cmd_q.put(
+            self.cmd_q.put_nowait(
                 {
                     "req_id": req_id,
                     "service": target_service,
                     "method": str(method),
                     "payload": payload or {},
-                },
-                timeout=1.0,
+                }
             )
         except Full:
             e = RuntimeError(f"Worker '{self.worker_name}' command queue is full")
@@ -251,14 +288,13 @@ class _Worker:
             self.pending_meta[req_id] = (target_service, "restart_service")
 
         try:
-            self.cmd_q.put(
+            self.cmd_q.put_nowait(
                 {
                     "req_id": req_id,
                     "control": "restart_service",
                     "service": target_service,
                     "payload": {},
-                },
-                timeout=1.0,
+                }
             )
         except Full:
             self._pop_pending(req_id)
@@ -278,8 +314,11 @@ class _Worker:
 
         if not ok:
             return False
-
-        return bool(ev.wait(timeout=max(1.0, float(timeout or 0.0))))
+        ready = bool(ev.wait(timeout=max(1.0, float(timeout or 0.0))))
+        if ready:
+            with self.pending_lock:
+                self.quarantined_services.pop(target_service, None)
+        return ready
 
     def _pop_pending(self, req_id: str) -> Future | None:
         with self.pending_lock:
@@ -305,24 +344,157 @@ class _Worker:
                         expired.append((req_id, future, meta))
             if not expired:
                 continue
+            quarantined: dict[str, str] = {}
             for req_id, future, (service, method) in expired:
+                reason = f"{service}.{method} exceeded its deadline"
                 if not future.done():
                     future.set_exception(TimeoutError(
                         f"AI request timed out: {service}.{method} ({req_id})"
                     ))
                 logger.error(
-                    f"AI worker '{self.worker_name}' is unresponsive: "
-                    f"{service}.{method} exceeded its deadline"
+                    f"AI service '{service}' timed out inside worker "
+                    f"'{self.worker_name}': {method}"
                 )
-            # A timed-out native call cannot be safely cancelled in-process.
-            # Terminating the isolated worker triggers the normal recovery path.
-            try:
-                proc = self.proc
-                if proc is not None and proc.is_alive():
-                    proc.terminate()
-            except Exception:
-                pass
+                quarantined[service] = reason
+
+            for service, reason in quarantined.items():
+                with self.pending_lock:
+                    self.quarantined_services[service] = reason
+                ready_event = self.ready_by_service.get(service)
+                if ready_event is not None:
+                    ready_event.clear()
+                try:
+                    self.cmd_q.put_nowait(
+                        {
+                            "req_id": f"quarantine:{service}:{uuid.uuid4()}",
+                            "control": "quarantine_service",
+                            "service": service,
+                            "payload": {"reason": reason},
+                        }
+                    )
+                except Exception:
+                    pass
+                try:
+                    get_event_bus().emit(
+                        Events.AI.ENGINE_EVENT,
+                        {
+                            "service": service,
+                            "event": "service_quarantined",
+                            "data": {"worker": self.worker_name, "reason": reason},
+                        },
+                    )
+                except Exception:
+                    pass
+                self._schedule_service_recovery(service, reason)
+
+    def _schedule_service_recovery(self, service: str, reason: str) -> None:
+        target_service = str(service or "").strip().lower()
+        if not target_service or self.stopping.is_set():
             return
+        with self.pending_lock:
+            if target_service in self.recovering_services:
+                return
+            self.recovering_services.add(target_service)
+
+        try:
+            task_supervisor().start_thread(
+                self,
+                f"ai-timeout-recovery-{self.worker_name}-{target_service}",
+                self._recover_timed_out_service,
+                args=(target_service, str(reason or "request timeout")),
+                replace=True,
+            )
+        except Exception:
+            with self.pending_lock:
+                self.recovering_services.discard(target_service)
+            logger.exception(
+                f"Failed to schedule AI service recovery: {self.worker_name}/{target_service}"
+            )
+
+    def _recover_timed_out_service(self, service: str, reason: str) -> None:
+        try:
+            if self.stopping.is_set():
+                return
+
+            drain_timeout = _env_float(
+                "NEUROMITA_AI_SERVICE_DRAIN_TIMEOUT",
+                30.0,
+                minimum=1.0,
+            )
+            restart_timeout = drain_timeout + _env_float(
+                "NEUROMITA_AI_SERVICE_RESTART_GRACE",
+                5.0,
+                minimum=1.0,
+            )
+            if self.restart_service(service, timeout=restart_timeout):
+                logger.warning(
+                    f"AI service '{service}' recovered in worker "
+                    f"'{self.worker_name}' after timeout"
+                )
+                try:
+                    get_event_bus().emit(
+                        Events.AI.ENGINE_EVENT,
+                        {
+                            "service": service,
+                            "event": "service_recovered",
+                            "data": {"worker": self.worker_name, "reason": reason},
+                        },
+                    )
+                except Exception:
+                    pass
+                return
+
+            self._force_worker_restart(
+                f"service '{service}' did not drain after timeout: {reason}"
+            )
+        finally:
+            with self.pending_lock:
+                self.recovering_services.discard(service)
+
+    def _heartbeat_watch_loop(self) -> None:
+        while not self.stopping.wait(1.0):
+            proc = self.proc
+            if proc is None or not proc.is_alive():
+                return
+            now = time.monotonic()
+            if not self.ready.is_set():
+                if now - self.started_at <= self.heartbeat_startup_grace:
+                    continue
+            if now - self.last_heartbeat <= self.heartbeat_timeout:
+                continue
+            self._force_worker_restart(
+                f"heartbeat was silent for {now - self.last_heartbeat:.1f}s"
+            )
+            return
+
+    def _force_worker_restart(self, reason: str) -> None:
+        if self.stopping.is_set() or self.expected_exit.is_set():
+            return
+        if self.hard_failure_triggered.is_set():
+            return
+        self.hard_failure_triggered.set()
+        self.last_error = str(reason)
+        logger.error(
+            f"AI worker '{self.worker_name}' is unresponsive and will be restarted: "
+            f"{reason}"
+        )
+        try:
+            get_event_bus().emit(
+                Events.AI.ENGINE_EVENT,
+                {
+                    "service": self.primary_service,
+                    "event": "worker_unresponsive",
+                    "data": {"worker": self.worker_name, "reason": str(reason)},
+                },
+            )
+        except Exception:
+            pass
+        proc = self.proc
+        try:
+            if proc is not None and proc.is_alive():
+                proc.terminate()
+        except Exception:
+            logger.exception(f"Failed to terminate unresponsive AI worker: {self.worker_name}")
 
     def wait_ready(self, service: str, timeout: float = 3.0) -> bool:
         target_service = str(service or "").strip().lower()
@@ -435,6 +607,8 @@ class _Worker:
             getattr(self, "res_thread", None),
             getattr(self, "log_thread", None),
             getattr(self, "watch_thread", None),
+            getattr(self, "heartbeat_watch_thread", None),
+            getattr(self, "deadline_thread", None),
         ):
             try:
                 if (
@@ -460,11 +634,12 @@ class _Worker:
 
     def _result_loop(self):
         eb = get_event_bus()
-        while not self.stopping.is_set():
+        while True:
             try:
                 msg = self.res_q.get()
             except Exception:
-                if self.stopping.is_set():
+                proc = self.proc
+                if self.stopping.is_set() and (proc is None or not proc.is_alive()):
                     break
                 time.sleep(0.05)
                 continue
@@ -475,12 +650,17 @@ class _Worker:
                 continue
 
             mtype = msg.get("type")
+            if mtype == "heartbeat":
+                self.last_heartbeat = time.monotonic()
+                continue
+
             if mtype == "ready":
                 service = str(msg.get("service") or "").strip().lower()
                 ev = self.ready_by_service.get(service)
                 if ev is not None:
                     ev.set()
                 self.ready.set()
+                self.last_heartbeat = time.monotonic()
                 continue
 
             if mtype == "event":
@@ -510,11 +690,12 @@ class _Worker:
                     pass
 
     def _log_loop(self):
-        while not self.stopping.is_set():
+        while True:
             try:
                 msg = self.log_q.get()
             except Exception:
-                if self.stopping.is_set():
+                proc = self.proc
+                if self.stopping.is_set() and (proc is None or not proc.is_alive()):
                     break
                 time.sleep(0.05)
                 continue

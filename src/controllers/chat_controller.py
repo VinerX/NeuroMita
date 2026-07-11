@@ -425,7 +425,7 @@ class ChatController:
                         "role": "system",
                         "content": system_input,
                         "message_id": f"sys:{uuid.uuid4().hex}",
-                        "time": datetime.datetime.now().strftime("%H:%M"),
+                        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "system",
@@ -1096,7 +1096,7 @@ class ChatController:
             "role": role,
             "content": content,
             "message_id": f"sys:{uuid.uuid4().hex}",
-            "time": datetime.datetime.now().strftime("%H:%M"),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         character.history_manager.append_message(message)
         logger.info(f"[ChatController] Сообщение сохранено, эмитим RELOAD_CHAT_HISTORY")

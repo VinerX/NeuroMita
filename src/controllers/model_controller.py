@@ -244,6 +244,23 @@ class ModelController(GenerationService, ModelStateService):
         with self._temporary_system_infos_lock:
             return list(self._temporary_system_infos.get(character_id, ()))
 
+    def _consume_temporary_system_infos(self, character_id: str, reserved: list[dict]) -> None:
+        if not character_id or not reserved:
+            return
+        with self._temporary_system_infos_lock:
+            current = list(self._temporary_system_infos.get(character_id, ()))
+            if not current:
+                return
+            for used in reserved:
+                for index, candidate in enumerate(current):
+                    if candidate is used or candidate == used:
+                        current.pop(index)
+                        break
+            if current:
+                self._temporary_system_infos[character_id] = current
+            else:
+                self._temporary_system_infos.pop(character_id, None)
+
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
 
@@ -1176,7 +1193,7 @@ class ModelController(GenerationService, ModelStateService):
         game_state = self.game_state.to_prompt_dict()
 
         with self._temporary_system_infos_lock:
-            extra_system_infos = list(self._temporary_system_infos.pop(char_id, ()))
+            extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
 
         cfg = getattr(self.model, "cfg", None)
 
@@ -1433,7 +1450,7 @@ class ModelController(GenerationService, ModelStateService):
 
             if is_structured_output:
                 sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
-                return self._process_structured_output(
+                structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
                     usage=llm_response.usage,
@@ -1463,6 +1480,9 @@ class ModelController(GenerationService, ModelStateService):
                     structured_model_cls=structured_model_cls,
                     sample_id=sample_id,
                 )
+                if structured_result is not None:
+                    self._consume_temporary_system_infos(char_id, extra_system_infos)
+                return structured_result
 
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
@@ -1532,6 +1552,8 @@ class ModelController(GenerationService, ModelStateService):
 
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
+
+            self._consume_temporary_system_infos(char_id, extra_system_infos)
 
             created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {

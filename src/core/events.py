@@ -112,17 +112,17 @@ class EventBus:
         self._critical = SerialDispatcher(
             "event-critical",
             lanes=4,
-            capacity_per_lane=0,
+            capacity_per_lane=4096,
         )
         self._commands = SerialDispatcher(
             "event-command",
             lanes=1,
-            capacity_per_lane=0,
+            capacity_per_lane=512,
         )
         self._ordered = SerialDispatcher(
             "event-ordered",
             lanes=8,
-            capacity_per_lane=0,
+            capacity_per_lane=4096,
         )
         self._dropped = 0
 

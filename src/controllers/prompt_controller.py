@@ -357,7 +357,7 @@ class PromptController(PromptBuilderService):
 
         if user_content_chunks:
             user_message_for_history = {"role": "user", "content": user_content_chunks}
-            user_message_for_history["time"] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+            user_message_for_history["time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if sender:
                 user_message_for_history["sender"] = sender
             if non_player_participants:

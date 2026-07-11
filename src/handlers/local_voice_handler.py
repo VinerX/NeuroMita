@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import traceback
 from typing import Dict, Optional, Any, List
@@ -202,6 +203,29 @@ class LocalVoice:
             except Exception:
                 pass
         self.active_model_instance = None
+
+    def shutdown(self) -> None:
+        seen: set[int] = set()
+        for model in self._registry.values():
+            marker = id(model)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                model.cleanup_state()
+            except Exception as exc:
+                logger.warning(f"Voice model cleanup failed for {type(model).__name__}: {exc}")
+
+        self.active_model_instance = None
+        self.current_model_id = None
+        self.first_compiled = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def load_model_settings(self, model_id: str) -> Dict[str, Any]:
         try:

@@ -24,6 +24,13 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, int(default))
 
 
+def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, float(default))
+
+
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
@@ -299,17 +306,23 @@ def run_worker_process(
         raise
 
 
-def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=None, error=None) -> None:
+async def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=None, error=None) -> None:
+    message = {
+        "type": "response",
+        "service": service_name,
+        "req_id": req_id,
+        "ok": bool(ok),
+        **({"result": result} if ok else {"error": str(error)}),
+    }
+
+    def _put() -> None:
+        try:
+            res_queue.put(message, True, 2.0)
+        except TypeError:
+            res_queue.put(message)
+
     try:
-        res_queue.put(
-            {
-                "type": "response",
-                "service": service_name,
-                "req_id": req_id,
-                "ok": bool(ok),
-                **({"result": result} if ok else {"error": str(error)}),
-            }
-        )
+        await asyncio.to_thread(_put)
     except Exception:
         pass
 
@@ -317,13 +330,13 @@ def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=None, err
 async def _dispatch(service, service_name: str, method: str, payload: dict, req_id, res_queue, log_queue) -> None:
     try:
         result = await service.handle(method, payload)
-        _respond(res_queue, service_name, req_id, ok=True, result=result)
+        await _respond(res_queue, service_name, req_id, ok=True, result=result)
     except asyncio.CancelledError:
-        _respond(res_queue, service_name, req_id, ok=False, error="Request cancelled")
+        await _respond(res_queue, service_name, req_id, ok=False, error="Request cancelled")
         raise
     except Exception as e:
         _log(log_queue, "error", f"[{service_name}.{method}] failed: {e}\n{traceback.format_exc()}")
-        _respond(res_queue, service_name, req_id, ok=False, error=e)
+        await _respond(res_queue, service_name, req_id, ok=False, error=e)
 
 
 async def _dispatch_limited(
@@ -335,8 +348,19 @@ async def _dispatch_limited(
     req_id,
     res_queue,
     log_queue,
+    blocked_reason: Callable[[], str | None] | None = None,
 ) -> None:
     async with semaphore:
+        reason = blocked_reason() if blocked_reason is not None else None
+        if reason:
+            await _respond(
+                res_queue,
+                service_name,
+                req_id,
+                ok=False,
+                error=f"Service '{service_name}' is quarantined: {reason}",
+            )
+            return
         await _dispatch(service, service_name, method, payload, req_id, res_queue, log_queue)
 
 
@@ -362,7 +386,7 @@ async def _worker_loop(
 
     default_limit = _env_int("NEUROMITA_AI_WORKER_CONCURRENCY", 8)
     service_limits = {
-        "tts": _env_int("NEUROMITA_TTS_CONCURRENCY", 2),
+        "tts": _env_int("NEUROMITA_TTS_CONCURRENCY", 1),
         "asr": _env_int("NEUROMITA_ASR_CONCURRENCY", 2),
         "rag": _env_int("NEUROMITA_RAG_CONCURRENCY", 4),
         "beats": _env_int("NEUROMITA_BEATS_CONCURRENCY", 2),
@@ -372,12 +396,29 @@ async def _worker_loop(
         for service_name in services
     }
     max_inflight = max(default_limit, sum(service_limits.get(name, 1) for name in services))
-    inflight: dict[str, asyncio.Task[Any]] = {}
+    inflight: dict[str, tuple[str, asyncio.Task[Any]]] = {}
+    blocked_services: dict[str, str] = {}
+
+    async def _heartbeat_loop() -> None:
+        interval = _env_float("NEUROMITA_AI_HEARTBEAT_INTERVAL", 2.0, minimum=0.5)
+        while True:
+            try:
+                res_queue.put_nowait(
+                    {
+                        "type": "heartbeat",
+                        "worker": str(worker_name),
+                    }
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     async def _drain(timeout: float = 30.0) -> None:
         if not inflight:
             return
-        tasks = list(inflight.values())
+        tasks = [task for _service, task in inflight.values()]
         done, pending = await asyncio.wait(tasks, timeout=max(0.1, timeout))
         if pending:
             for task in pending:
@@ -386,9 +427,27 @@ async def _worker_loop(
         if done:
             await asyncio.gather(*done, return_exceptions=True)
 
+    async def _drain_service(service_name: str, timeout: float = 30.0) -> bool:
+        tasks = [
+            task
+            for task_service, task in inflight.values()
+            if task_service == service_name and not task.done()
+        ]
+        if not tasks:
+            return True
+        done, pending = await asyncio.wait(tasks, timeout=max(0.1, timeout))
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        # A task awaiting a native/to_thread call must not be cancelled: the
+        # underlying thread would continue while the scheduler slot is released.
+        return not pending
+
     while True:
         while len(inflight) >= max_inflight:
-            await asyncio.wait(list(inflight.values()), return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(
+                [task for _service, task in inflight.values()],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         cmd = await asyncio.to_thread(cmd_queue.get)
         if not isinstance(cmd, dict):
             continue
@@ -400,9 +459,15 @@ async def _worker_loop(
         payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
 
         if control == "cancel_request":
-            task = inflight.get(str(req_id))
-            if task is not None and not task.done():
-                task.cancel()
+            # The caller no longer needs the result. Do not cancel a task that
+            # may already be inside a native CUDA/to_thread call.
+            continue
+
+        if control == "quarantine_service":
+            reason = str(payload.get("reason") or "request timeout")
+            if service_name in services:
+                blocked_services[service_name] = reason
+                _log(log_queue, "warning", f"Service '{service_name}' quarantined: {reason}")
             continue
 
         if control == "shutdown" or method == "shutdown":
@@ -413,12 +478,33 @@ async def _worker_loop(
                         await _maybe_await(service.shutdown())
                 except Exception:
                     pass
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
             _log(log_queue, "info", f"Worker '{worker_name}' shutdown")
             return
 
         if control == "restart_service":
-            # Перезапуск сервиса не может ехать параллельно с его же запросами.
-            await _drain()
+            if service_name not in services:
+                await _respond(res_queue, service_name, req_id, ok=False, error=f"Unknown service: {service_name}")
+                continue
+            blocked_services[service_name] = "restart in progress"
+            drained = await _drain_service(
+                service_name,
+                    timeout=_env_float(
+                        "NEUROMITA_AI_SERVICE_DRAIN_TIMEOUT",
+                        30.0,
+                        minimum=1.0,
+                    ),
+            )
+            if not drained:
+                await _respond(
+                    res_queue,
+                    service_name,
+                    req_id,
+                    ok=False,
+                    error=f"Service '{service_name}' is still executing a native request",
+                )
+                continue
             try:
                 services[service_name] = await _restart_service(
                     services,
@@ -426,15 +512,27 @@ async def _worker_loop(
                     res_queue=res_queue,
                     log_queue=log_queue,
                 )
-                _respond(res_queue, service_name, req_id, ok=True, result=True)
+                blocked_services.pop(service_name, None)
+                await _respond(res_queue, service_name, req_id, ok=True, result=True)
             except Exception as e:
                 _log(log_queue, "error", f"[{service_name}] restart failed: {e}\n{traceback.format_exc()}")
-                _respond(res_queue, service_name, req_id, ok=False, error=e)
+                await _respond(res_queue, service_name, req_id, ok=False, error=e)
             continue
 
         service = services.get(service_name)
         if service is None:
-            _respond(res_queue, service_name, req_id, ok=False, error=f"Unknown service: {service_name}")
+            await _respond(res_queue, service_name, req_id, ok=False, error=f"Unknown service: {service_name}")
+            continue
+
+        quarantine_reason = blocked_services.get(service_name)
+        if quarantine_reason:
+            await _respond(
+                res_queue,
+                service_name,
+                req_id,
+                ok=False,
+                error=f"Service '{service_name}' is quarantined: {quarantine_reason}",
+            )
             continue
 
         task = asyncio.create_task(
@@ -447,10 +545,11 @@ async def _worker_loop(
                 req_id,
                 res_queue,
                 log_queue,
+                blocked_reason=lambda sn=service_name: blocked_services.get(sn),
             )
         )
         request_key = str(req_id)
-        inflight[request_key] = task
+        inflight[request_key] = (service_name, task)
         task.add_done_callback(lambda _task, key=request_key: inflight.pop(key, None))
 
 
@@ -475,15 +574,19 @@ async def _restart_service(services: dict[str, Any], service_name: str, *, res_q
 
 
 def _emit_ready(res_queue, service_name: str) -> None:
+    message = {"type": "ready", "service": str(service_name)}
     try:
-        res_queue.put({"type": "ready", "service": str(service_name)})
+        try:
+            res_queue.put(message, True, 1.0)
+        except TypeError:
+            res_queue.put(message)
     except Exception:
         pass
 
 
 def _emit_event(res_queue, service_name: str, event_name: str, data: Any = None) -> None:
     try:
-        res_queue.put(
+        res_queue.put_nowait(
             {
                 "type": "event",
                 "service": str(service_name),

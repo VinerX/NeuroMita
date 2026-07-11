@@ -6,6 +6,40 @@ from abc import ABC, abstractmethod
 from .errors import LLMProviderError
 
 
+def resolve_requests_timeout(
+    req: "LLMRequest",
+    *,
+    default_total: float = 240.0,
+) -> tuple[float, float]:
+    extra = req.extra or {}
+
+    try:
+        total = max(
+            1.0,
+            float(extra.get("http_timeout_seconds") or default_total),
+        )
+    except (TypeError, ValueError):
+        total = max(1.0, float(default_total))
+
+    try:
+        connect = max(
+            1.0,
+            float(extra.get("http_connect_timeout_seconds") or min(15.0, total)),
+        )
+    except (TypeError, ValueError):
+        connect = min(15.0, total)
+
+    try:
+        read = max(
+            1.0,
+            float(extra.get("http_read_timeout_seconds") or total),
+        )
+    except (TypeError, ValueError):
+        read = total
+
+    return connect, read
+
+
 @dataclass
 class LLMRequest:
     model: str

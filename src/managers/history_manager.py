@@ -732,9 +732,8 @@ class HistoryManager(CharacterScopedService):
             return str(raw_content) if raw_content is not None else ""
 
     def _build_history_insert_payload(self, *, msg: dict, is_active: int) -> tuple[str, tuple[Any, ...], str]:
-        target_fmt = "%d.%m.%Y %H:%M:%S"
         raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
-        ts = self.data_mormalization(None, raw_ts, target_fmt)
+        ts = self._storage_timestamp(raw_ts)
 
         db_fields = self._extract_history_db_fields(msg)
         extra_meta = self._build_extra_meta_for_db(msg)
@@ -765,10 +764,10 @@ class HistoryManager(CharacterScopedService):
         self,
         cursor,
         *,
-        dedupe_content: str,
-        ts: str,
+        message_id: str | None,
     ) -> tuple[int, int] | None:
-        if not ts or not str(dedupe_content or "").strip():
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id or "message_id" not in self._history_cols:
             return None
 
         not_deleted_clause = " AND is_deleted = 0 " if "is_deleted" in self._history_cols else ""
@@ -777,15 +776,12 @@ class HistoryManager(CharacterScopedService):
             SELECT id, is_active
             FROM history
             WHERE character_id = ?
-              AND content   = ?
-              AND timestamp = ?
-              AND content   IS NOT NULL AND TRIM(content)   != ''
-              AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
+              AND message_id = ?
               {not_deleted_clause}
             ORDER BY id DESC
             LIMIT 1
             """,
-            (self.storage_key, dedupe_content, ts),
+            (self.storage_key, normalized_message_id),
         )
         row = cursor.fetchone()
         if not row or not row[0]:
@@ -800,15 +796,13 @@ class HistoryManager(CharacterScopedService):
         is_active: int,
         dedupe: bool = True,
     ) -> Optional[int]:
-        sql, vals, ts = self._build_history_insert_payload(msg=msg, is_active=is_active)
-        dedupe_content = self._content_for_dedupe(msg.get("content"))
+        sql, vals, _ts = self._build_history_insert_payload(msg=msg, is_active=is_active)
 
         if dedupe:
             try:
                 existing = self._find_existing_history_row(
                     cursor,
-                    dedupe_content=dedupe_content,
-                    ts=ts,
+                    message_id=self._coerce_text(msg.get("message_id")),
                 )
                 if existing is not None:
                     existing_id, existing_active = existing
@@ -833,9 +827,8 @@ class HistoryManager(CharacterScopedService):
         msg: dict,
         is_active: int,
     ) -> Optional[int]:
-        target_fmt = "%d.%m.%Y %H:%M:%S"
         raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
-        ts = self.data_mormalization(None, raw_ts, target_fmt)
+        ts = self._storage_timestamp(raw_ts)
         extra_meta = self._build_extra_meta_for_db(msg)
         db_content, db_meta = self._prepare_message_for_db(
             msg.get("role"),
@@ -892,28 +885,63 @@ class HistoryManager(CharacterScopedService):
                 except Exception:
                     pass
 
-    def data_mormalization(self, final_ts, raw_ts, target_fmt):
-        if raw_ts:
-            # 1. Если уже в нужном формате - оставляем
-            if re.match(r"^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}$", raw_ts):
-                final_ts = raw_ts
-            else:
-                # 2. Пытаемся распарсить популярные форматы и привести к единому
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+    @staticmethod
+    def _parse_timestamp(raw_ts: Any) -> datetime.datetime | None:
+        if isinstance(raw_ts, datetime.datetime):
+            dt = raw_ts
+        else:
+            raw = str(raw_ts or "").strip()
+            if not raw:
+                return None
+
+            iso_candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+            try:
+                dt = datetime.datetime.fromisoformat(iso_candidate)
+            except ValueError:
+                dt = None
+
+            if dt is None:
+                for fmt in (
+                    "%d.%m.%Y %H:%M:%S",
+                    "%d.%m.%Y %H:%M",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d %H:%M",
+                    "%Y/%m/%d %H:%M:%S",
+                    "%Y/%m/%d %H:%M",
+                ):
                     try:
-                        dt = datetime.datetime.strptime(raw_ts.split(".")[0], fmt)  # отсекаем мс если есть
-                        final_ts = dt.strftime(target_fmt)
+                        dt = datetime.datetime.strptime(raw, fmt)
                         break
                     except ValueError:
                         continue
 
-                # Если не вышло распарсить, но строка есть — сохраняем как есть (лучше, чем ничего)
-                if not final_ts:
-                    final_ts = raw_ts
-        # Если даты вообще нет — ставим текущую
-        if not final_ts:
-            final_ts = datetime.datetime.now().strftime(target_fmt)
-        return final_ts
+            if dt is None and re.fullmatch(r"\d{2}:\d{2}(?::\d{2})?", raw):
+                time_fmt = "%H:%M:%S" if raw.count(":") == 2 else "%H:%M"
+                parsed_time = datetime.datetime.strptime(raw, time_fmt).time()
+                dt = datetime.datetime.combine(datetime.date.today(), parsed_time)
+
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+
+    def _storage_timestamp(self, raw_ts: Any = None) -> str:
+        dt = self._parse_timestamp(raw_ts) or datetime.datetime.now()
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _display_timestamp(self, raw_ts: Any = None) -> str:
+        dt = self._parse_timestamp(raw_ts)
+        if dt is None:
+            return str(raw_ts or "")
+        return dt.strftime("%d.%m.%Y %H:%M:%S")
+
+    def data_mormalization(self, final_ts, raw_ts, target_fmt):
+        """Backward-compatible timestamp normalizer used by legacy callers."""
+        dt = self._parse_timestamp(raw_ts)
+        if dt is not None:
+            return dt.strftime(target_fmt)
+        if final_ts:
+            return str(final_ts)
+        return datetime.datetime.now().strftime(target_fmt)
 
     # ---------------------------------------------------------------------
     # Public API
@@ -961,7 +989,7 @@ class HistoryManager(CharacterScopedService):
                 rd.get("meta_data"),
             )
             msg["_history_row_id"] = rd.get("id")
-            msg["time"] = rd.get("timestamp") or ""
+            msg["time"] = self._display_timestamp(rd.get("timestamp"))
 
             # если колонки есть — дополним из колонок, иначе они уже могут быть в meta_data
             for k in self._HISTORY_DESIRED_COLUMNS.keys():
@@ -1307,7 +1335,7 @@ class HistoryManager(CharacterScopedService):
                 rd.get("meta_data"),
             )
             msg["_history_row_id"] = rd.get("id")
-            msg["time"] = rd.get("timestamp") or ""
+            msg["time"] = self._display_timestamp(rd.get("timestamp"))
 
             for k in self._HISTORY_DESIRED_COLUMNS.keys():
                 if k in rd and rd.get(k) is not None and rd.get(k) != "":

@@ -9,7 +9,13 @@ from handlers.llm_providers.errors import build_provider_error, coerce_provider_
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
 
-from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from .base import (
+    BaseProvider,
+    LLMRequest,
+    LLMResponse,
+    normalize_usage_payload,
+    resolve_requests_timeout,
+)
 
 
 class GeminiProvider(BaseProvider):
@@ -226,7 +232,7 @@ class GeminiProvider(BaseProvider):
                 headers=headers,
                 json=data,
                 stream=need_stream,
-                timeout=120,
+                timeout=resolve_requests_timeout(req),
             )
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=req.api_url)

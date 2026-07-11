@@ -48,8 +48,8 @@ _SPECS: Dict[str, _PoolSpec] = {
     Pools.GENERATION: _PoolSpec(max_workers=3, capacity=6),
     Pools.BACKGROUND_LLM: _PoolSpec(max_workers=1, capacity=4),
     Pools.IO: _PoolSpec(max_workers=6),
-    Pools.LLM_HTTP: _PoolSpec(max_workers=8),
-    Pools.DEBUG_DUMP: _PoolSpec(max_workers=1),
+    Pools.LLM_HTTP: _PoolSpec(max_workers=8, capacity=8),
+    Pools.DEBUG_DUMP: _PoolSpec(max_workers=1, capacity=2),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
     Pools.EVENT_BUS: _PoolSpec(max_workers=8, capacity=512),
 }

@@ -324,7 +324,7 @@ class UtilityGenerationRequest:
     preset_id: Optional[int] = None
     max_attempts: int = 1
     retry_delay: float = 0.0
-    request_timeout: float = 60.0
+    request_timeout: float = 240.0
 
 
 @dataclass(frozen=True)

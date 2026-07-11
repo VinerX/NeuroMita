@@ -1089,19 +1089,42 @@ class RuntimeEnvironmentManager:
 
     def remove_installed(self, logical_id: str, *, delete: bool = True) -> bool:
         normalized = _safe_environment_id(logical_id)
+        logical_root = self.overlay_root / normalized
+        marker_name = ".pending-delete" if delete else ".retired"
+        marked_paths: list[Path] = []
         with self._lock, self.file_lock("environment-registry"):
             data = self._load_registry()
-            entry = (data.get("environments") or {}).pop(normalized, None)
+            environments = data.get("environments") or {}
+            entry = environments.get(normalized)
             if entry is None:
                 return False
+
+            for revision_root in tuple(logical_root.iterdir()) if logical_root.is_dir() else ():
+                if not revision_root.is_dir():
+                    continue
+                marker = revision_root / marker_name
+                try:
+                    marker.write_text("1\n", encoding="ascii")
+                    marked_paths.append(marker)
+                except OSError:
+                    pass
+
+            environments.pop(normalized, None)
             selection = data.setdefault("runtime_selection", {})
             for slot, selected_value in tuple(selection.items()):
                 ref = self._selection_ref(selected_value)
                 if ref is not None and ref.logical_id == normalized:
                     selection.pop(slot, None)
-            _atomic_json(self.registry_path, data)
+            try:
+                _atomic_json(self.registry_path, data)
+            except Exception:
+                for marker in marked_paths:
+                    try:
+                        marker.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
         if delete:
-            logical_root = self.overlay_root / normalized
             try:
                 shutil.rmtree(logical_root)
             except OSError:
@@ -1121,7 +1144,6 @@ class RuntimeEnvironmentManager:
                     except OSError:
                         pass
         else:
-            logical_root = self.overlay_root / normalized
             for revision_root in tuple(logical_root.iterdir()) if logical_root.is_dir() else ():
                 if not revision_root.is_dir():
                     continue

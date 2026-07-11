@@ -33,10 +33,17 @@ class TTSService:
         return self._local_voice
 
     async def shutdown(self):
-        try:
-            self._local_voice = None
-        except Exception:
-            pass
+        local_voice = self._local_voice
+        self._local_voice = None
+        self._current_model_id = None
+        self._warmup_status.clear()
+        if local_voice is not None:
+            shutdown = getattr(local_voice, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    await asyncio.to_thread(shutdown)
+                except Exception:
+                    pass
 
     async def handle(self, method: str, payload: dict):
         m = str(method or "").strip().lower()
@@ -135,16 +142,15 @@ class TTSService:
             if not model_id:
                 raise RuntimeError("No voice model selected")
 
-            lv = await asyncio.to_thread(self._get_local_voice)
-            await asyncio.to_thread(lv.select_model, model_id)
-            self._current_model_id = model_id
-
             out_abs = os.path.abspath(output_file)
             os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
 
-            # Слот устройства держим на весь синтез: иначе он поедет параллельно
-            # с эмбеддингом/реранком и будет драться за VRAM.
+            lv = await asyncio.to_thread(self._get_local_voice)
+            # Выбор модели и синтез являются одной критической секцией. Иначе
+            # параллельный запрос мог сменить mutable active_model_instance.
             async with get_scheduler().slot(Priority.TTS):
+                await asyncio.to_thread(lv.select_model, model_id)
+                self._current_model_id = model_id
                 return await lv.voiceover(text=text, output_file=out_abs, character=character)
 
         if m in ("get_triton_status", "refresh_triton_status"):

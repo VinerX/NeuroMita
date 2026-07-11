@@ -127,7 +127,7 @@ class ConversationEventWriter:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "content": chunks,
         }
         if image_source:
@@ -158,7 +158,7 @@ class ConversationEventWriter:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "content": final_text,
         }
         if structured_data:

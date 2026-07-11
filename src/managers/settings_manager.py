@@ -4,7 +4,9 @@ import atexit
 import json
 import os
 import queue
+import shutil
 import threading
+import time
 from typing import Any, Iterable
 
 from core.app_paths import settings_path
@@ -128,9 +130,23 @@ class SettingsManager:
                 loaded = json.load(source)
             logger.info("Настройки загружены")
             return loaded if isinstance(loaded, dict) else {}
-        except (OSError, json.JSONDecodeError) as exc:
+        except json.JSONDecodeError as exc:
+            logger.error(f"Не удалось загрузить настройки: {exc}")
+            self._backup_corrupt_settings_file()
+            return {}
+        except OSError as exc:
             logger.error(f"Не удалось загрузить настройки: {exc}")
             return {}
+
+    def _backup_corrupt_settings_file(self) -> None:
+        if not os.path.isfile(self.config_path):
+            return
+        backup_path = f"{self.config_path}.corrupt-{int(time.time())}.json"
+        try:
+            shutil.copy2(self.config_path, backup_path)
+            logger.warning(f"Повреждённые настройки сохранены в: {backup_path}")
+        except OSError as exc:
+            logger.error(f"Не удалось сохранить резервную копию настроек: {exc}")
 
     def load_settings(self) -> None:
         self.registry.replace_all(self._read_settings_file(), notify=False)

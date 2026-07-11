@@ -249,6 +249,15 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
     try:
         from updater import check_for_unity_updates, check_for_updates
 
+        def enabled(name: str, fallback: bool = False) -> bool:
+            raw_env = os.environ.get(name)
+            if raw_env is not None:
+                return str(raw_env).strip().lower() in {"1", "true", "yes", "on"}
+            raw_setting = settings.get(name, fallback)
+            if isinstance(raw_setting, str):
+                return raw_setting.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(raw_setting)
+
         settings: dict[str, Any] = {}
         settings_path = os.path.join(base_dir, "Settings", "settings.json")
         try:
@@ -257,26 +266,61 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
         except Exception:
             pass
 
-        if bool(settings.get("AUTO_UPDATE", settings.get("AUTO_UPDATE_CHECK", False))):
-            check_for_updates(
-                base_dir=base_dir,
-                logger=logger,
-                channel=settings.get("UPDATE_CHANNEL", "stable"),
-                tester_code=settings.get("TESTER_CODE") or None,
-                auto_update=True,
-                update_mode=settings.get("UPDATE_MODE", "diff"),
-                preserve_prompts=bool(settings.get("UPDATE_PRESERVE_PROMPTS", True)),
-            )
+        auto_update = enabled("AUTO_UPDATE", False)
+        check_updates = enabled("AUTO_UPDATE_CHECK", auto_update)
 
-        if bool(settings.get("AUTO_UPDATE_UNITY", False)):
-            check_for_unity_updates(
-                base_dir=base_dir,
-                logger=logger,
-                unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
-                channel=settings.get("UPDATE_CHANNEL", "stable"),
-                tester_code=settings.get("TESTER_CODE") or None,
-                auto_update=True,
-            )
+        def run_python_check(*, apply_update: bool) -> None:
+            try:
+                check_for_updates(
+                    base_dir=base_dir,
+                    logger=logger,
+                    channel=settings.get("UPDATE_CHANNEL", "stable"),
+                    tester_code=settings.get("TESTER_CODE") or None,
+                    auto_update=apply_update,
+                    restart_on_success=apply_update,
+                    update_mode=settings.get("UPDATE_MODE", "diff"),
+                    preserve_prompts=bool(settings.get("UPDATE_PRESERVE_PROMPTS", True)),
+                )
+            except SystemExit:
+                raise
+            except Exception as exc:
+                logger.warning(f"Python update check failed: {exc}")
+
+        if auto_update:
+            run_python_check(apply_update=True)
+        elif check_updates:
+            threading.Thread(
+                target=run_python_check,
+                kwargs={"apply_update": False},
+                name="startup-update-check",
+                daemon=True,
+            ).start()
+
+        auto_update_unity = enabled("AUTO_UPDATE_UNITY", False)
+        check_unity = enabled("AUTO_UPDATE_UNITY_CHECK", auto_update_unity)
+
+        def run_unity_check(*, apply_update: bool) -> None:
+            try:
+                check_for_unity_updates(
+                    base_dir=base_dir,
+                    logger=logger,
+                    unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
+                    channel=settings.get("UPDATE_CHANNEL", "stable"),
+                    tester_code=settings.get("TESTER_CODE") or None,
+                    auto_update=apply_update,
+                )
+            except Exception as exc:
+                logger.warning(f"Unity update check failed: {exc}")
+
+        if auto_update_unity:
+            run_unity_check(apply_update=True)
+        elif check_unity:
+            threading.Thread(
+                target=run_unity_check,
+                kwargs={"apply_update": False},
+                name="startup-unity-update-check",
+                daemon=True,
+            ).start()
     except Exception as exc:
         logger.warning(f"Update check failed: {exc}")
 
@@ -356,10 +400,9 @@ def initialize_runtime(
         _load_environment(base_dir, logger)
     with startup_trace.phase("runtime.onnxruntime_import"):
         _prime_onnxruntime(logger)
-    # Update checks stay before GUI imports. Applying a source update after part
-    # of the application has already been imported would create a mixed-version
-    # process. The expensive backend compatibility work can safely happen after
-    # the first GUI paint, but still before backend controllers are imported.
+    # Auto-apply stays before GUI imports: replacing sources after part of the
+    # application has loaded would create a mixed-version process. A check-only
+    # request is started in a daemon thread and cannot delay the first window.
     with startup_trace.phase("runtime.update_checks"):
         _run_update_checks(base_dir, logger)
 

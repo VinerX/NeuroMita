@@ -25,6 +25,18 @@ from core.services import use
 from services.contracts import GameLinkService
 
 
+def _debug_dumps_enabled(settings: Any) -> bool:
+    import os
+
+    env_value = str(os.environ.get("NEUROMITA_DEBUG_DUMPS", "")).strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return bool(settings.get("DEBUG_SAVE_LLM_DUMPS", False))
+    except Exception:
+        return False
+
+
 def _save_last_request_context(req, character_name: str = "") -> None:
     """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
     import json
@@ -205,7 +217,7 @@ class ChatModel:
         request_options = dict(request_options_override or {})
         max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
         retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
-        request_timeout = float(request_options.get("request_timeout", 45) or 45)
+        request_timeout = float(request_options.get("request_timeout", 240) or 240)
         suppress_failure_events = bool(request_options.get("suppress_failure_events", False))
 
         self._log_generation_start(preset_id)
@@ -272,13 +284,16 @@ class ChatModel:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
             _char = getattr(self, "current_character", None)
-            # Диск — вне hot path: дампы пишутся в своём однопоточном пуле.
-            executors().submit(
-                Pools.DEBUG_DUMP,
-                _save_last_request_context,
-                req,
-                character_name=getattr(_char, "name", "") or "",
-            )
+            if _debug_dumps_enabled(self.settings):
+                try:
+                    executors().try_submit(
+                        Pools.DEBUG_DUMP,
+                        _save_last_request_context,
+                        req,
+                        character_name=getattr(_char, "name", "") or "",
+                    )
+                except Exception:
+                    pass
             return req
 
         try:
@@ -325,15 +340,18 @@ class ChatModel:
             cleaned_response = self._clean_response(response_text.text)
             if cleaned_response:
                 response_text.text = cleaned_response
-                if _last_req[0]:
-                    executors().submit(
-                        Pools.DEBUG_DUMP,
-                        _save_last_response_context,
-                        _last_req[0],
-                        response_text,
-                        raw_response_text=raw_response_text,
-                        cleaned_response_text=cleaned_response,
-                    )
+                if _last_req[0] and _debug_dumps_enabled(self.settings):
+                    try:
+                        executors().try_submit(
+                            Pools.DEBUG_DUMP,
+                            _save_last_response_context,
+                            _last_req[0],
+                            response_text,
+                            raw_response_text=raw_response_text,
+                            cleaned_response_text=cleaned_response,
+                        )
+                    except Exception:
+                        pass
                 return response_text, True
             logger.warning("Response became empty after cleaning.")
             response_text.text = None
