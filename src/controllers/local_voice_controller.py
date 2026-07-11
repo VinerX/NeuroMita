@@ -61,17 +61,13 @@ class LocalVoiceController(LocalVoiceService):
         eb = self.event_bus
 
         eb.subscribe(Events.Audio.OPEN_VOICE_MODEL_SETTINGS, self._on_open_voice_model_settings, weak=False)
-        eb.subscribe(Events.Audio.GET_TRITON_STATUS, self._on_get_triton_status, weak=False)
         eb.subscribe(Events.Audio.REFRESH_TRITON_STATUS, self._on_refresh_triton_status, weak=False)
-        eb.subscribe(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, self._on_get_all_local_model_configs, weak=False)
 
         eb.subscribe(Events.Audio.CHECK_MODEL_INSTALLED, self._on_check_model_installed, weak=False)
         eb.subscribe(Events.Audio.CHECK_MODEL_INITIALIZED, self._on_check_model_initialized, weak=False)
         eb.subscribe(Events.Audio.SELECT_VOICE_MODEL, self._on_select_voice_model, weak=False)
-        eb.subscribe(Events.Audio.INIT_VOICE_MODEL, self._on_init_voice_model, weak=False)
         eb.subscribe(Events.Audio.CHANGE_VOICE_LANGUAGE, self._on_change_voice_language, weak=False)
 
-        eb.subscribe(Events.Audio.LOCAL_SEND_VOICE_REQUEST, self._on_local_send_voice_request, weak=False)
         eb.subscribe(Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False)
 
     def _on_open_voice_model_settings(self, _event: Event):
@@ -117,6 +113,12 @@ class LocalVoiceController(LocalVoiceService):
 
     def select_model(self, model_id: str) -> bool:
         return bool(self._on_select_voice_model(Event(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id})))
+
+    def initialize_model(self, model_id: str):
+        normalized = str(model_id or "").strip()
+        if not normalized:
+            raise ValueError("model_id is required")
+        return use(LoopService).run(self._async_init_model(normalized))
 
     def triton_status(self, *, refresh: bool = False) -> dict[str, Any]:
         event = Event(Events.Audio.REFRESH_TRITON_STATUS if refresh else Events.Audio.GET_TRITON_STATUS)
@@ -243,19 +245,13 @@ class LocalVoiceController(LocalVoiceService):
         self._initialized_cache.pop(model_id, None)
         return True
 
-    def _on_init_voice_model(self, event: Event):
-        model_id = str((event.data or {}).get("model_id") or "").strip()
-        progress_callback = (event.data or {}).get("progress_callback")
-        if not model_id:
-            return
-
-        use(LoopService).run(self._async_init_model(model_id, progress_callback))
-
-    async def _async_init_model(self, model_id: str, progress_callback=None):
+    async def _async_init_model(self, model_id: str):
         try:
             logger.info(f"LocalVoiceController init start: model_id='{model_id}'")
-            if progress_callback:
-                progress_callback("status", _("Инициализация модели...", "Initializing model..."))
+            self.event_bus.emit(
+                Events.Audio.UPDATE_MODEL_LOADING_STATUS,
+                {"status": _("Инициализация модели...", "Initializing model...")},
+            )
 
             await self._ensure_model_environment(model_id)
             ok = await self._engine_call_async(
@@ -409,6 +405,43 @@ class LocalVoiceController(LocalVoiceService):
         )
         use(LoopService).run(coro)
 
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        character_id: Optional[str] = None,
+        voice_profile: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
+        registry = use(CharacterRegistry)
+
+        if not resolved_profile and isinstance(character_id, str) and character_id:
+            character = registry.get(character_id)
+            if character is not None and hasattr(character, "to_voice_profile"):
+                resolved_profile = character.to_voice_profile()
+        if not resolved_profile:
+            resolved_profile = registry.current_profile() or None
+
+        output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
+        absolute_audio_path = os.path.abspath(output_file)
+        os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
+        model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
+
+        await self._ensure_model_environment(model_id)
+        result_path = await self._engine_call_async(
+            "synthesize",
+            {
+                "text": text,
+                "output_file": absolute_audio_path,
+                "character": resolved_profile,
+                "model_id": model_id,
+            },
+            timeout=3600.0,
+        )
+        if not result_path:
+            raise RuntimeError("Local voiceover failed: empty result")
+        return str(result_path)
+
     async def _async_local_voiceover(
         self,
         text: str,
@@ -417,45 +450,14 @@ class LocalVoiceController(LocalVoiceService):
         voice_profile: Optional[dict] = None,
     ):
         try:
-            resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
-
-            registry = use(CharacterRegistry)
-
-            if not resolved_profile and isinstance(character_id, str) and character_id:
-                ch = registry.get(character_id)
-                if ch is not None and hasattr(ch, "to_voice_profile"):
-                    resolved_profile = ch.to_voice_profile()
-
-            if not resolved_profile:
-                resolved_profile = registry.current_profile() or None
-
-            output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
-            absolute_audio_path = os.path.abspath(output_file)
-            os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
-
-            model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
-
-            await self._ensure_model_environment(model_id)
-            result_path = await self._engine_call_async(
-                "synthesize",
-                {
-                    "text": text,
-                    "output_file": absolute_audio_path,
-                    "character": resolved_profile,
-                    "model_id": model_id,
-                },
-                timeout=3600.0
+            result = await self.synthesize(
+                text, character_id=character_id, voice_profile=voice_profile
             )
-
             if future and not future.done():
-                if result_path:
-                    future.set_result(result_path)
-                else:
-                    future.set_exception(Exception("Local voiceover failed: empty result"))
-
-        except Exception as e:
+                future.set_result(result)
+        except Exception as exc:
             if future and not future.done():
                 try:
-                    future.set_exception(e)
+                    future.set_exception(exc)
                 except Exception:
                     pass

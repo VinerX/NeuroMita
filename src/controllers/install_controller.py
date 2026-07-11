@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from typing import Callable, Optional, Any, Iterable, Sequence
+import importlib
+import inspect
+import json
 import os
+import subprocess
 import sys
 import time
 import threading
@@ -17,6 +21,7 @@ from core.install_types import InstallCallbacks, InstallAction, InstallPlan
 from core.runtime_environments import EnvironmentTransaction, runtime_environments
 from core.services import services
 from core.install_requirements import missing_pip_specs
+from core.task_supervisor import task_supervisor
 from utils import getTranslationVariant as _
 from services.contracts import AIEngineService, InstallService
 
@@ -42,6 +47,10 @@ _PROTECTED_CONSTRAINT_NAMES = {
         "numpy",
     )
 }
+
+
+class InstallCancelled(RuntimeError):
+    pass
 
 
 def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> list[str]:
@@ -197,7 +206,7 @@ class InstallController(InstallService):
     def _subscribe_to_events(self) -> None:
         self.event_bus.subscribe(Events.Install.RUN_BLOCKING, self._on_run_blocking, weak=False)
 
-    def run_blocking(self, payload: dict) -> bool:
+    def run_blocking(self, payload: dict[str, Any]) -> bool:
         return bool(self._on_run_blocking(Event(Events.Install.RUN_BLOCKING, payload)))
 
     def _on_run_blocking(self, event: Event) -> bool:
@@ -265,7 +274,7 @@ class InstallController(InstallService):
         except Exception:
             pass
 
-    def _emit(self, event_name: str, payload: dict) -> None:
+    def _emit(self, event_name: str, payload: dict[str, Any]) -> None:
         try:
             self.event_bus.emit(event_name, payload)
         except Exception:
@@ -273,9 +282,53 @@ class InstallController(InstallService):
 
     def _call_flex(self, fn: Callable[..., Any], **kwargs) -> Any:
         try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError):
             return fn(**kwargs)
-        except TypeError:
-            return fn()
+        if any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            return fn(**kwargs)
+        accepted = {
+            name: value
+            for name, value in kwargs.items()
+            if name in signature.parameters
+        }
+        return fn(**accepted)
+
+    @staticmethod
+    def _invoke_runner(
+        runner: Callable[..., Any],
+        *,
+        pip_installer: Any,
+        callbacks: InstallCallbacks,
+        ctx: dict[str, Any],
+    ) -> Any:
+        try:
+            signature = inspect.signature(runner)
+        except (TypeError, ValueError):
+            return runner(pip_installer=pip_installer, callbacks=callbacks, ctx=ctx)
+
+        try:
+            signature.bind(
+                pip_installer=pip_installer,
+                callbacks=callbacks,
+                ctx=ctx,
+            )
+        except TypeError as keyword_error:
+            try:
+                signature.bind(pip_installer, callbacks, ctx)
+            except TypeError:
+                raise keyword_error
+            return runner(pip_installer, callbacks, ctx)
+        return runner(pip_installer=pip_installer, callbacks=callbacks, ctx=ctx)
+
+    @staticmethod
+    def _raise_if_cancelled(ctx: dict[str, Any]) -> None:
+        cancel_event = ctx.get("cancel_event")
+        if isinstance(cancel_event, threading.Event) and cancel_event.is_set():
+            raise InstallCancelled("Installation cancelled")
 
     def _dist_exists_and_version(self, dist_name: str) -> tuple[bool, Optional[str]]:
         try:
@@ -346,7 +399,7 @@ class InstallController(InstallService):
                 missing.append(s)
         return missing
 
-    def _backend_actions(self, plan: InstallPlan, ctx: dict) -> list[InstallAction]:
+    def _backend_actions(self, plan: InstallPlan, ctx: dict[str, Any]) -> list[InstallAction]:
         required_backend = getattr(plan, "required_backend", None)
         if required_backend is None:
             return []
@@ -415,18 +468,19 @@ class InstallController(InstallService):
 
     def _download_http_files(
         self,
-        files: list[dict],
+        files: list[dict[str, Any]],
         *,
         cb: InstallCallbacks,
         start_progress: int,
         end_progress: int,
         headers: Optional[dict[str, str]] = None,
         force: bool = False,
+        cancel_event: threading.Event | None = None,
     ) -> bool:
         start_progress = max(0, min(99, int(start_progress)))
         end_progress = max(start_progress, min(99, int(end_progress)))
 
-        filtered: list[dict] = []
+        filtered: list[dict[str, Any]] = []
         for it in files or []:
             url = str(it.get("url") or "").strip()
             dest = str(it.get("dest") or "").strip()
@@ -492,6 +546,8 @@ class InstallController(InstallService):
             cb.progress(int(max(start_progress, min(end_progress, prog))))
 
         for idx, it in enumerate(filtered):
+            if cancel_event is not None and cancel_event.is_set():
+                raise InstallCancelled("Installation cancelled")
             url = it["url"]
             dest = it["dest"]
             tmp = dest + ".part"
@@ -508,6 +564,8 @@ class InstallController(InstallService):
 
                     with open(tmp, "wb") as f:
                         while True:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise InstallCancelled("Installation cancelled")
                             chunk = resp.read(1024 * 1024 * 4)
                             if not chunk:
                                 break
@@ -530,6 +588,12 @@ class InstallController(InstallService):
                         pass
                 os.replace(tmp, dest)
 
+            except InstallCancelled:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
             except urllib.error.HTTPError as e:
                 cb.log(f"HTTP error {e.code} {e.reason} for {url}")
                 cb.status("Failed")
@@ -595,15 +659,112 @@ class InstallController(InstallService):
                 clock = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
                 orig_status(f"{base} — {clock}")
 
-        th = threading.Thread(target=_tick, daemon=True)
+        th = task_supervisor().start_thread(
+            cb,
+            "install-elapsed-timer",
+            _tick,
+        )
         cb.status = wrapped_status
-        th.start()
         try:
             return run()
         finally:
             stop.set()
             th.join(timeout=1.0)
             cb.status = orig_status
+
+    @staticmethod
+    def _is_main_environment_category(category: str) -> bool:
+        return str(category or "").strip().lower() == "dependency"
+
+    @staticmethod
+    def _validate_main_environment(
+        record,
+        *,
+        timeout: float,
+    ) -> bool:
+        modules = tuple(
+            dict.fromkeys(
+                str(module).strip()
+                for module in getattr(record, "probe_modules", ())
+                if str(module).strip()
+            )
+        )
+        if not modules:
+            return True
+
+        python_executable = os.environ.get("NEUROMITA_PYTHON", sys.executable)
+        core_root = os.environ.get("NEUROMITA_CORE_DIR") or os.environ.get("NEUROMITA_LIB_DIR", "")
+        python_paths = [str(record.site_packages)]
+        if core_root:
+            python_paths.append(os.path.abspath(core_root))
+        script = (
+            "import importlib,json; "
+            "mods=json.loads(" + repr(json.dumps(list(modules))) + "); "
+            "[importlib.import_module(name) for name in mods]"
+        )
+        env = os.environ.copy()
+        env.pop("PYTHONHOME", None)
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PYTHONSAFEPATH"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        try:
+            completed = subprocess.run(
+                [python_executable, "-S", "-c", script],
+                cwd=os.environ.get("NEUROMITA_BASE_DIR") or None,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(3.0, float(timeout)),
+                creationflags=(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    if os.name == "nt"
+                    else 0
+                ),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.error("Main dependency validation failed: %s", exc)
+            return False
+        if completed.returncode == 0:
+            return True
+        detail = (completed.stderr or completed.stdout or "").strip()
+        logger.error(
+            "Main dependency validation failed for %s: %s",
+            getattr(record, "logical_id", "dependency"),
+            detail or f"exit code {completed.returncode}",
+        )
+        return False
+
+    @staticmethod
+    def _activate_main_environment(record) -> None:
+        path = os.path.abspath(str(record.site_packages))
+        if path not in sys.path:
+            sys.path.append(path)
+        importlib.invalidate_caches()
+        existing = [
+            item
+            for item in os.environ.get("NEUROMITA_MAIN_ENVIRONMENT_PATHS", "").split(os.pathsep)
+            if item
+        ]
+        if path not in existing:
+            existing.append(path)
+        os.environ["NEUROMITA_MAIN_ENVIRONMENT_PATHS"] = os.pathsep.join(existing)
+
+    @staticmethod
+    def _deactivate_main_environment(record) -> None:
+        target = os.path.normcase(os.path.abspath(str(record.site_packages)))
+        sys.path[:] = [
+            item
+            for item in sys.path
+            if os.path.normcase(os.path.abspath(item or "")) != target
+        ]
+        existing = [
+            item
+            for item in os.environ.get("NEUROMITA_MAIN_ENVIRONMENT_PATHS", "").split(os.pathsep)
+            if item and os.path.normcase(os.path.abspath(item)) != target
+        ]
+        os.environ["NEUROMITA_MAIN_ENVIRONMENT_PATHS"] = os.pathsep.join(existing)
+        importlib.invalidate_caches()
 
     @staticmethod
     def _environment_service_name(category: str) -> str | None:
@@ -693,7 +854,7 @@ class InstallController(InstallService):
 
     @staticmethod
     def _apply_environment_ctx(
-        ctx: dict,
+        ctx: dict[str, Any],
         *,
         target_dir: str,
         python_paths: Iterable[str],
@@ -717,7 +878,7 @@ class InstallController(InstallService):
         *,
         pip_installer: PipInstaller,
         callbacks: InstallCallbacks,
-        ctx: dict,
+        ctx: dict[str, Any],
         environment_transaction: EnvironmentTransaction | None = None,
     ) -> bool:
         cb = callbacks
@@ -764,6 +925,7 @@ class InstallController(InstallService):
             overlay_prepared = True
 
         for act in actions:
+            self._raise_if_cancelled(ctx)
             atype = (act.type or "").strip().lower()
 
             desc = str(act.description or "")
@@ -831,6 +993,7 @@ class InstallController(InstallService):
                     uv_overrides=combined_overrides,
                 )
                 if not ok:
+                    self._raise_if_cancelled(ctx)
                     cb.status("Failed")
                     cb.log("pip step failed")
                     return False
@@ -845,6 +1008,7 @@ class InstallController(InstallService):
                     end_progress=int(end_pr),
                     headers=act.headers,
                     force=clean,
+                    cancel_event=ctx.get("cancel_event"),
                 )
                 if not ok:
                     return False
@@ -854,15 +1018,25 @@ class InstallController(InstallService):
                     cb.status("Failed")
                     cb.log("Invalid plan action: call without fn")
                     return False
+                action_fn = act.fn
                 try:
                     res = self._run_with_heartbeat(
                         cb, desc,
-                        lambda: self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx),
+                        lambda: self._call_flex(
+                            action_fn,
+                            pip_installer=pip_installer,
+                            callbacks=cb,
+                            ctx=ctx,
+                            cancel_event=ctx.get("cancel_event"),
+                        ),
                     )
                     if res is False:
+                        self._raise_if_cancelled(ctx)
                         cb.status("Failed")
                         cb.log(f"call step returned False: {desc or atype}")
                         return False
+                except InstallCancelled:
+                    raise
                 except Exception as e:
                     cb.status("Failed")
                     cb.log(str(e))
@@ -873,20 +1047,48 @@ class InstallController(InstallService):
                     cb.status("Failed")
                     cb.log("Invalid plan action: call_async without fn")
                     return False
+                action_fn = act.fn
                 try:
                     import asyncio
 
                     timeout = float(act.timeout_sec or ctx.get("timeout_sec", 3600.0) or 3600.0)
 
+                    async def _await_action():
+                        coro = self._call_flex(
+                            action_fn,
+                            pip_installer=pip_installer,
+                            callbacks=cb,
+                            ctx=ctx,
+                            cancel_event=ctx.get("cancel_event"),
+                        )
+                        task = asyncio.create_task(coro)
+                        deadline = time.monotonic() + timeout
+                        try:
+                            while not task.done():
+                                self._raise_if_cancelled(ctx)
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise TimeoutError(
+                                        f"Install action timed out after {timeout:.1f}s"
+                                    )
+                                await asyncio.sleep(min(0.1, remaining))
+                            return bool(await task)
+                        finally:
+                            if not task.done():
+                                task.cancel()
+                                await asyncio.gather(task, return_exceptions=True)
+
                     def _run_async():
-                        coro = self._call_flex(act.fn, pip_installer=pip_installer, callbacks=cb, ctx=ctx)
-                        return bool(asyncio.run(asyncio.wait_for(coro, timeout=timeout)))
+                        return asyncio.run(_await_action())
 
                     ok = self._run_with_heartbeat(cb, desc, _run_async)
                     if not ok:
+                        self._raise_if_cancelled(ctx)
                         cb.status("Failed")
                         cb.log("async step returned False")
                         return False
+                except InstallCancelled:
+                    raise
                 except Exception as e:
                     cb.status("Failed")
                     cb.log(str(e))
@@ -908,8 +1110,9 @@ class InstallController(InstallService):
         task_id: str,
         runner: Callable[..., Any],
         callbacks: Optional[InstallCallbacks] = None,
-        meta: Optional[dict] = None,
+        meta: dict[str, Any] | None = None,
         timeout_sec: float = 3600.0,
+        cancel_event: threading.Event | None = None,
     ) -> bool:
         meta = dict(meta or {})
 
@@ -921,7 +1124,7 @@ class InstallController(InstallService):
 
         state = {"progress": 0, "status": ""}
 
-        def base_payload(extra: Optional[dict] = None) -> dict:
+        def base_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
             payload = {
                 "task_id": str(task_id),
                 "meta": meta,
@@ -984,13 +1187,17 @@ class InstallController(InstallService):
             raw_log=cb_raw_log,
         )
         created_installers: list[PipInstaller] = []
+        created_installers_lock = threading.Lock()
+        cancellation = cancel_event or threading.Event()
+        task_finished = threading.Event()
 
         def create_installer(target_path: str | os.PathLike[str] | None) -> PipInstaller:
             try:
                 installer = self._make_pip_installer(cb, target_path=target_path)
             except TypeError:
                 installer = self._make_pip_installer(cb)
-            created_installers.append(installer)
+            with created_installers_lock:
+                created_installers.append(installer)
             return installer
 
         environment_manager = getattr(self, "environment_manager", None) or runtime_environments()
@@ -1034,15 +1241,38 @@ class InstallController(InstallService):
             "python_paths": list(initial_paths),
             "strict_target": bool(environment_candidate),
             "python_executable": pip_installer.script_path,
+            "cancel_event": cancellation,
         }
+
+        def watch_cancellation() -> None:
+            while not task_finished.is_set():
+                if not cancellation.wait(0.1):
+                    continue
+                with created_installers_lock:
+                    installers = tuple(created_installers)
+                for installer in installers:
+                    try:
+                        installer.cancel()
+                    except Exception:
+                        pass
+                return
+
+        cancellation_watcher = task_supervisor().start_thread(
+            ctx,
+            f"install-cancel:{task_id}",
+            watch_cancellation,
+        )
 
         transaction: EnvironmentTransaction | None = None
         quiesced_environment = False
         try:
-            try:
-                result = runner(pip_installer=pip_installer, callbacks=cb, ctx=ctx)
-            except TypeError:
-                result = runner(pip_installer, cb, ctx)
+            self._raise_if_cancelled(ctx)
+            result = self._invoke_runner(
+                runner,
+                pip_installer=pip_installer,
+                callbacks=cb,
+                ctx=ctx,
+            )
 
             if isinstance(result, dict) and "actions" in result:
                 actions = result.get("actions") or []
@@ -1069,28 +1299,30 @@ class InstallController(InstallService):
                     ok = True
                 elif managed and op == "install":
                     requested_specs = self._collect_pip_specs(result)
-                    transaction = environment_manager.begin(
+                    candidate_transaction = environment_manager.begin(
                         meta={**meta, **({"environment_id": result.environment_id} if result.environment_id else {})},
                         requested_specs=requested_specs,
                         required_backend=result.required_backend,
                         backend_context={**ctx, **dict(result.backend_context or {})},
                     )
-                    if not transaction.ensure_core_layers(create_installer, log=cb.log):
+                    transaction = candidate_transaction
+                    if not candidate_transaction.ensure_core_layers(create_installer, log=cb.log):
+                        self._raise_if_cancelled(ctx)
                         raise RuntimeError("Failed to prepare shared AI backend layer")
 
-                    pip_installer = create_installer(str(transaction.site_packages))
+                    pip_installer = create_installer(str(candidate_transaction.site_packages))
                     self._apply_environment_ctx(
                         ctx,
-                        target_dir=str(transaction.site_packages),
-                        python_paths=transaction.validation_paths,
-                        transaction=transaction,
+                        target_dir=str(candidate_transaction.site_packages),
+                        python_paths=candidate_transaction.validation_paths,
+                        transaction=candidate_transaction,
                     )
                     package_actions = [
                         action
                         for action in (result.actions or [])
                         if str(action.type or "").strip().lower() == "pip"
                     ]
-                    resolver_args: list[str] = list(transaction.core_resolver_args)
+                    resolver_args: list[str] = list(candidate_transaction.core_resolver_args)
                     for action in package_actions:
                         resolver_args.extend(list(action.extra_args or []))
                     if requested_specs:
@@ -1103,10 +1335,11 @@ class InstallController(InstallService):
                             )
                         if not resolve_environment(
                             requested_specs,
-                            core_overrides=list(transaction.core_overrides),
-                            core_packages=list(transaction.core_package_names),
+                            core_overrides=list(candidate_transaction.core_overrides),
+                            core_packages=list(candidate_transaction.core_package_names),
                             extra_args=resolver_args,
                         ):
+                            self._raise_if_cancelled(ctx)
                             raise RuntimeError("Failed to resolve and install environment overlay")
                         ctx["environment_overlay_resolved"] = True
                     ok = self._execute_plan(
@@ -1114,38 +1347,53 @@ class InstallController(InstallService):
                         pip_installer=pip_installer,
                         callbacks=cb,
                         ctx=ctx,
-                        environment_transaction=transaction,
+                        environment_transaction=candidate_transaction,
                     )
                     if ok:
-                        record = transaction.commit(meta)
-                        if not self._refresh_ai_runtime(
+                        record = candidate_transaction.commit(meta)
+                        if self._is_main_environment_category(record.category):
+                            if not self._validate_main_environment(
+                                record,
+                                timeout=min(30.0, max(3.0, float(timeout_sec))),
+                            ):
+                                candidate_transaction.rollback_commit()
+                                raise RuntimeError(
+                                    "Installed main-process dependency failed import validation; "
+                                    "the previous runtime was preserved"
+                                )
+                            self._activate_main_environment(record)
+                        elif not self._refresh_ai_runtime(
                             timeout=min(30.0, max(3.0, float(timeout_sec))),
                             preferred_core_layer_ids=tuple(
-                                layer.layer_id for layer in transaction.core_layers
+                                layer.layer_id for layer in candidate_transaction.core_layers
                             ),
                         ):
-                            transaction.rollback_commit()
+                            candidate_transaction.rollback_commit()
                             raise RuntimeError(
                                 "Installed environment failed shared AI worker validation; "
                                 "the previous runtime was preserved"
                             )
-                        transaction.finalize()
+                        candidate_transaction.finalize()
                         cb.log(
                             f"Activated environment '{record.logical_id}' revision {record.revision_id}."
                         )
                     else:
-                        transaction.abort()
+                        candidate_transaction.abort()
                 elif managed and op == "uninstall" and active_environment is not None:
-                    if not self._quiesce_environment_worker(
-                        category=active_environment.category,
-                        item_id=active_environment.item_id,
-                        timeout=min(30.0, max(1.0, float(timeout_sec))),
-                    ):
-                        raise RuntimeError(
-                            f"Failed to stop active worker for environment "
-                            f"'{active_environment.logical_id}'"
-                        )
-                    quiesced_environment = True
+                    main_environment = self._is_main_environment_category(
+                        active_environment.category
+                    )
+                    if not main_environment:
+                        if not self._quiesce_environment_worker(
+                            category=active_environment.category,
+                            item_id=active_environment.item_id,
+                            timeout=min(30.0, max(1.0, float(timeout_sec))),
+                        ):
+                            raise RuntimeError(
+                                f"Failed to stop active worker for environment "
+                                f"'{active_environment.logical_id}'"
+                            )
+                        quiesced_environment = True
 
                     pip_installer = create_installer(str(active_environment.site_packages))
                     self._apply_environment_ctx(
@@ -1161,10 +1409,14 @@ class InstallController(InstallService):
                         ctx=ctx,
                     )
                     if ok:
+                        if main_environment:
+                            self._deactivate_main_environment(active_environment)
                         if not environment_manager.deactivate(
                             active_environment.logical_id,
                             delete=True,
                         ):
+                            if main_environment:
+                                self._activate_main_environment(active_environment)
                             raise RuntimeError(
                                 f"Failed to deactivate environment "
                                 f"'{active_environment.logical_id}'"
@@ -1174,6 +1426,8 @@ class InstallController(InstallService):
                         cb.log(
                             f"Removed environment '{active_environment.logical_id}'."
                         )
+                    elif main_environment:
+                        self._activate_main_environment(active_environment)
                     elif not self._refresh_ai_runtime(
                         timeout=min(30.0, max(3.0, float(timeout_sec))),
                     ):
@@ -1209,6 +1463,17 @@ class InstallController(InstallService):
             )
             return False
 
+        except InstallCancelled as exc:
+            if transaction is not None:
+                transaction.abort()
+            error = str(exc) or "Installation cancelled"
+            cb.status("Cancelled")
+            cb.log(error)
+            self._emit(
+                Events.Install.TASK_FAILED,
+                base_payload({"ok": False, "cancelled": True, "error": error}),
+            )
+            return False
         except Exception as exc:
             if transaction is not None:
                 transaction.abort()
@@ -1238,7 +1503,11 @@ class InstallController(InstallService):
             )
             return False
         finally:
+            task_finished.set()
+            cancellation_watcher.join(timeout=0.5)
             release = getattr(self, "_release_pip_installer", None)
             if callable(release):
-                for installer in created_installers:
+                with created_installers_lock:
+                    installers = tuple(created_installers)
+                for installer in installers:
                     release(installer)

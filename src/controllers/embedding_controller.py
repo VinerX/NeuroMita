@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import time
-from threading import Lock, Thread
+from threading import Lock
 from typing import List, Optional
 
 import numpy as np
 
 from core.events import Event, Events, get_event_bus
 from core.services import use
+from core.task_supervisor import task_supervisor
 from handlers.ai_engine.rag_client import (
     get_embeddings as rag_get_embeddings,
     warmup_embeddings as rag_warmup_embeddings,
@@ -21,17 +22,9 @@ from main_logger import logger
 from services.contracts import EmbeddingService, SettingsService
 
 
-EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
-EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
-
-
 class EmbeddingController(EmbeddingService):
     """
-    EventBus bridge for RAG embeddings.
-
-    The public contract stays the same (`rag_get_embedding(s)`), but the local
-    backend now lives inside `ai_engine` service='rag' instead of the main
-    process.
+    Typed RAG embedding service backed by ``ai_engine`` service='rag'.
     """
 
     # Раньше стояло 3600с: «вечное» ожидание маскировало зависший worker.
@@ -84,11 +77,12 @@ class EmbeddingController(EmbeddingService):
             return
         if self.handler is not None or self._handler_failed:
             return
-        Thread(
-            target=self._warmup_local_backend,
-            name=f"embed-warmup-{reason}",
-            daemon=True,
-        ).start()
+        task_supervisor().start_thread(
+            self,
+            f"embed-warmup-{reason}",
+            self._warmup_local_backend,
+            replace=True,
+        )
 
     def _provider_name(self) -> str:
         try:
@@ -98,17 +92,13 @@ class EmbeddingController(EmbeddingService):
             return "local"
 
     def _subscribe_to_events(self) -> None:
-        self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
-        self.event_bus.subscribe(EMBEDS_EVENT_NAME, self._on_get_embeddings, weak=False)
         self.event_bus.subscribe(Events.RAG.MODEL_CHANGED, self._on_model_changed, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         # Содержимое пресета могло измениться при том же id — сигнатура настроек
         # этого не поймает, поэтому сбрасываем кэш конфига явно.
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_SAVED, self._on_preset_mutated, weak=False)
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_DELETED, self._on_preset_mutated, weak=False)
-        logger.notify(
-            f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
-        )
+        logger.notify("EmbeddingController subscribed to RAG lifecycle facts")
 
     def _warmup_local_backend(self) -> None:
         # AI engine может подняться позже контроллера, а первый запуск модели —
@@ -203,6 +193,7 @@ class EmbeddingController(EmbeddingService):
         with self._init_lock:
             self.handler = None
             self._handler_failed = True
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _on_install_task_finished(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
@@ -218,33 +209,6 @@ class EmbeddingController(EmbeddingService):
 
         # Модель эмбеддингов только что доустановлена — прогреем в фоне.
         self._maybe_start_warmup(reason="install_finished")
-
-    def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
-        data = event.data or {}
-        future = data.get("future")
-        vec = self.embed_one(text=data.get("text") or "", prefix=data.get("prefix") or "")
-        if future is not None:
-            try:
-                future.set_result(vec)
-            except Exception:
-                pass
-        return vec
-
-    def _on_get_embeddings(self, event: Event) -> List[Optional[np.ndarray]]:
-        data = event.data or {}
-        future = data.get("future")
-        results = self.embed_many(
-            texts=data.get("texts") or [],
-            prefix=data.get("prefix") or "",
-            batch_size=data.get("batch_size"),
-            priority=str(data.get("priority") or "hot"),
-        )
-        if future is not None:
-            try:
-                future.set_result(results)
-            except Exception:
-                pass
-        return results
 
     def embed_one(self, text: str, prefix: str = "") -> Optional[np.ndarray]:
         if not text or self._provider_name() != "local":

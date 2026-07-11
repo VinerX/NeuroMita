@@ -4,6 +4,7 @@ from handlers.screen_handler import ScreenCapture
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import services, use
+from core.task_supervisor import task_supervisor
 from services.contracts import CaptureService, GuiInteractionService, SettingsService
 
 
@@ -65,11 +66,8 @@ class CaptureController(CaptureService):
         self.event_bus.subscribe("update_screen_capture_exclusion", self._on_update_screen_capture_exclusion, weak=False)
         self.event_bus.subscribe("check_image_request_timer_running", self._on_check_image_request_timer_running, weak=False)
         self.event_bus.subscribe("trigger_send_interval_image", self._on_trigger_send_interval_image, weak=False)
-        self.event_bus.subscribe(Events.Capture.GET_SCREEN_CAPTURE_STATUS, self._on_get_screen_capture_status, weak=False)
-        self.event_bus.subscribe(Events.Capture.GET_CAMERA_CAPTURE_STATUS, self._on_get_camera_capture_status, weak=False)
         self.event_bus.subscribe(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME, self._on_update_last_image_request_time, weak=False)
         self.event_bus.subscribe(Events.Capture.CAPTURE_SCREEN, self._on_capture_screen, weak=False)
-        self.event_bus.subscribe(Events.Capture.GET_CAMERA_FRAMES, self._on_get_camera_frames, weak=False)
         self.event_bus.subscribe(Events.Capture.STOP_SCREEN_CAPTURE, self._on_stop_screen_capture, weak=False)
         self.event_bus.subscribe(Events.Capture.STOP_CAMERA_CAPTURE, self._on_stop_camera_capture, weak=False)
 
@@ -348,8 +346,12 @@ class CaptureController(CaptureService):
                     logger.error(f"Ошибка в периодической проверке отправки изображений: {e}")
                     time.sleep(5)
         
-        self.image_request_thread = threading.Thread(target=check_loop, daemon=True)
-        self.image_request_thread.start()
+        self.image_request_thread = task_supervisor().start_thread(
+            self,
+            "capture-periodic-image-request",
+            check_loop,
+            replace=True,
+        )
         logger.info("Поток периодической проверки отправки изображений запущен")
             
     def send_interval_image(self):

@@ -1,7 +1,9 @@
 from PyQt6.QtCore import QTimer
 
 from core.events import Events, Event
+from core.services import services
 from main_logger import logger
+from services.contracts import SpeechService
 from .base_controller import BaseController
 
 from ui.windows.asr_glossary_view import AsrGlossaryView
@@ -17,6 +19,7 @@ class AsrGlossaryGuiController(BaseController):
 
         self._glossary_view.request_install.connect(self._request_install)
         self._glossary_view.request_refresh.connect(self._request_refresh)
+        self._glossary_view.request_settings.connect(self._request_settings)
 
     def _register_window_on_ready(self):
         if not self.view or not hasattr(self.view, "window_manager") or self.view.window_manager is None:
@@ -59,8 +62,71 @@ class AsrGlossaryGuiController(BaseController):
         self.event_bus.emit(Events.Speech.INSTALL_ASR_MODEL, {"model": engine_id})
 
     def _request_refresh(self):
-        if self._glossary_view:
-            self._glossary_view.refresh()
+        view = self._glossary_view
+        if view is None:
+            return
+        ticket = view.begin_refresh()
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            view.catalog_loaded_signal.emit(
+                {
+                    "ticket": ticket,
+                    "models": [],
+                    "error": "Speech service is unavailable",
+                }
+            )
+            return
+
+        def callback(models, error=None):
+            view.catalog_loaded_signal.emit(
+                {
+                    "ticket": ticket,
+                    "models": models if isinstance(models, list) else [],
+                    "error": str(error or ""),
+                }
+            )
+
+        try:
+            speech.asr_models_glossary_async(callback, refresh=True)
+        except Exception as exc:
+            callback([], exc)
+
+    def _request_settings(self, engine_id: str, ticket: int) -> None:
+        view = self._glossary_view
+        if view is None:
+            return
+
+        def worker():
+            speech = services().get_optional(SpeechService)
+            if speech is None:
+                raise RuntimeError("Speech service is unavailable")
+            return {
+                "ticket": int(ticket),
+                "engine_id": str(engine_id),
+                "schema": speech.recognizer_settings_schema(str(engine_id)) or [],
+                "values": speech.recognizer_settings(str(engine_id)) or {},
+            }
+
+        def apply(payload: dict) -> None:
+            view.settings_loaded_signal.emit(payload)
+
+        def fail(exc: Exception) -> None:
+            view.settings_loaded_signal.emit(
+                {
+                    "ticket": int(ticket),
+                    "engine_id": str(engine_id),
+                    "schema": [],
+                    "values": {},
+                    "error": str(exc),
+                }
+            )
+
+        self._run_async(
+            worker,
+            apply,
+            fail,
+            name=f"asr-settings:{engine_id}",
+        )
 
     def _is_asr_task(self, data: dict) -> bool:
         if not isinstance(data, dict):

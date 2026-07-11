@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QTimer
 from core.events import get_event_bus
 from core.services import use
+from core.task_supervisor import task_supervisor
 from services.contracts import SettingsService
 from ui.async_bus import run_async
 
@@ -31,8 +32,11 @@ class BaseController:
         use(SettingsService).update(str(key), value)
 
     def _subscribe_settings(self, callback, *, keys=None, replay: bool = False):
+        def dispatch(change):
+            self._ui(lambda current=change: callback(current))
+
         subscription = use(SettingsService).subscribe(
-            callback, keys=keys, replay=replay
+            dispatch, keys=keys, replay=replay
         )
         self._settings_subscriptions.append(subscription)
         return subscription
@@ -42,6 +46,7 @@ class BaseController:
         self._settings_subscriptions = []
         for subscription in subscriptions:
             subscription.close()
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _ui(self, fn):
         if not callable(fn):
@@ -66,5 +71,5 @@ class BaseController:
                 pass
 
     def _run_async(self, worker, on_ok=None, on_error=None, *, name: str = "gui-controller-async"):
-        return run_async(self.view or self, worker, on_ok, on_error, name=name)
+        return run_async(self, worker, on_ok, on_error, name=name)
 

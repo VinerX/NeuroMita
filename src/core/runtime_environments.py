@@ -30,6 +30,8 @@ from core.install_requirements import is_pip_spec_satisfied
 
 
 _LAYOUT_VERSION = 2
+_AI_ENVIRONMENT_CATEGORIES = frozenset({"backend", "tts", "voice", "asr", "rag", "embedding", "beats"})
+_MAIN_ENVIRONMENT_CATEGORIES = frozenset({"dependency"})
 _CORE_DISTRIBUTIONS = frozenset(
     canonicalize_name(name)
     for name in (
@@ -597,7 +599,12 @@ class RuntimeEnvironmentManager:
     def should_manage(meta: dict[str, Any] | None) -> bool:
         data = dict(meta or {})
         category = str(data.get("category") or data.get("kind") or "").strip().lower()
-        return category in {"backend", "tts", "voice", "asr", "rag", "embedding", "beats"}
+        if category in _AI_ENVIRONMENT_CATEGORIES:
+            return True
+        if category in _MAIN_ENVIRONMENT_CATEGORIES:
+            item_id = str(data.get("item_id") or data.get("component_id") or "").strip().lower()
+            return item_id in {"opencv"}
+        return False
 
     def begin(
         self,
@@ -858,7 +865,17 @@ class RuntimeEnvironmentManager:
             _atomic_json(self.registry_path, data)
         if delete:
             root = self.overlay_root / normalized / str(entry.get("revision_id") or "")
-            shutil.rmtree(root, ignore_errors=True)
+            try:
+                shutil.rmtree(root)
+            except OSError:
+                # Native modules can keep .pyd/.dll files locked until process
+                # exit on Windows. Mark only this inactive revision for cleanup
+                # on the next startup instead of deleting arbitrary unregistered
+                # legacy environments.
+                try:
+                    (root / ".pending-delete").write_text("1\n", encoding="ascii")
+                except OSError:
+                    pass
             parent = root.parent
             try:
                 parent.rmdir()
@@ -940,6 +957,48 @@ class RuntimeEnvironmentManager:
                 records.append(record)
         records.sort(key=lambda item: (item.category, item.item_id, item.logical_id))
         return tuple(records)
+
+
+    def main_dependency_records(self) -> tuple[EnvironmentRecord, ...]:
+        return tuple(
+            record
+            for record in self.active_records()
+            if str(record.category or "").strip().lower() in _MAIN_ENVIRONMENT_CATEGORIES
+        )
+
+    def main_runtime_paths(self) -> tuple[str, ...]:
+        return tuple(str(record.site_packages) for record in self.main_dependency_records())
+
+    def cleanup_inactive_overlays(self) -> None:
+        data = self._load_registry()
+        active_roots: set[Path] = set()
+        for logical_id, entry in (data.get("environments") or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            revision_id = str(entry.get("revision_id") or "").strip()
+            if revision_id:
+                active_roots.add(
+                    (self.overlay_root / _safe_id(logical_id) / revision_id).resolve()
+                )
+
+        if not self.overlay_root.is_dir():
+            return
+        for logical_root in tuple(self.overlay_root.iterdir()):
+            if not logical_root.is_dir():
+                continue
+            for revision_root in tuple(logical_root.iterdir()):
+                if not revision_root.is_dir() or not (revision_root / ".pending-delete").is_file():
+                    continue
+                try:
+                    resolved = revision_root.resolve()
+                except OSError:
+                    resolved = revision_root.absolute()
+                if resolved not in active_roots:
+                    shutil.rmtree(revision_root, ignore_errors=True)
+            try:
+                logical_root.rmdir()
+            except OSError:
+                pass
 
     @staticmethod
     def _layer_family(layer: CoreLayer) -> str:
@@ -1040,10 +1099,15 @@ class RuntimeEnvironmentManager:
         exclude_logical_ids: Iterable[str] = (),
         preferred_core_layer_ids: Iterable[str] = (),
     ) -> RuntimeComposition:
-        selected_records = tuple(
+        source_records = tuple(
             records
             if records is not None
             else self.active_records(exclude_logical_ids=exclude_logical_ids)
+        )
+        selected_records = tuple(
+            record
+            for record in source_records
+            if str(record.category or "").strip().lower() in _AI_ENVIRONMENT_CATEGORIES
         )
         self._validate_overlay_compatibility(selected_records)
 
@@ -1132,7 +1196,10 @@ class RuntimeEnvironmentManager:
             data = self._load_registry()
             data["backend_profile"] = {"core_layer_ids": selected_ids}
             for entry in (data.get("environments") or {}).values():
-                if isinstance(entry, dict):
+                if not isinstance(entry, dict):
+                    continue
+                category = str(entry.get("category") or "").strip().lower()
+                if category in _AI_ENVIRONMENT_CATEGORIES:
                     entry["core_layer_ids"] = selected_ids
             _atomic_json(self.registry_path, data)
         if cleanup:

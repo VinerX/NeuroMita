@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import uuid
 from pathlib import Path
@@ -1219,12 +1218,14 @@ class AppWindowBase(QMainWindow):
             pass
 
     def _on_show_tg_code_dialog(self, data: dict):
-        code_future = data.get('future')
-        show_tg_code_dialog(self, code_future, self.event_bus, error=data.get('error', ''))
+        show_tg_code_dialog(
+            self, str(data.get("request_id") or ""), error=data.get("error", "")
+        )
 
     def _on_show_tg_password_dialog(self, data: dict):
-        password_future = data.get('future')
-        show_tg_password_dialog(self, password_future, self.event_bus, error=data.get('error', ''))
+        show_tg_password_dialog(
+            self, str(data.get("request_id") or ""), error=data.get("error", "")
+        )
 
     def _on_chat_anchor_clicked(self, url):
         href = url.toString()

@@ -11,7 +11,6 @@ startup_trace.claim_owner()
 startup_trace.mark("entry.module_loaded")
 
 os.environ.setdefault("QT_API", "pyqt6")
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("UV_LINK_MODE", "copy")
 
 

@@ -10,6 +10,7 @@ from typing import Any, Callable
 from core.events import get_event_bus
 from core.daemon_executor import DaemonExecutor
 from core.services import ServiceRegistration, services
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 from services.contracts import RuntimeFeatureService
 from startup.startup_profiler import startup_trace
@@ -39,6 +40,7 @@ class FeatureSpec:
     required_modules: tuple[str, ...] = ()
     stop_when_disabled: bool = True
     provided_services: tuple[type, ...] = ()
+    depends_on: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -46,7 +48,7 @@ class _FeatureEntry:
     spec: FeatureSpec
     state: FeatureState = FeatureState.REGISTERED
     instance: Any = None
-    future: Future | None = None
+    future: Future[Any] | None = None
     error: BaseException | None = None
     stop_requested: bool = False
     generation: int = 0
@@ -67,6 +69,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
         self._lock = threading.RLock()
         self._entries: dict[str, _FeatureEntry] = {}
         self._key_index: dict[str, set[str]] = {}
+        self._dependents: dict[str, set[str]] = {}
         self._executor = DaemonExecutor(
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="runtime-feature",
@@ -81,32 +84,45 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 raise RuntimeError("RuntimeFeatureManager is closed")
             if name in self._entries:
                 raise ValueError(f"Feature '{name}' is already registered")
+            if name in {str(dep) for dep in spec.depends_on}:
+                raise ValueError(f"Feature '{name}' cannot depend on itself")
             self._entries[name] = _FeatureEntry(spec=spec)
+            for dependency in spec.depends_on:
+                self._dependents.setdefault(str(dependency), set()).add(name)
             for key in spec.setting_keys:
                 self._key_index.setdefault(str(key), set()).add(name)
 
-    def start_enabled(self) -> dict[str, Future]:
+    def start_enabled(self) -> dict[str, Future[Any]]:
         with self._lock:
-            specs = sorted(
-                (
-                    entry.spec
-                    for entry in self._entries.values()
-                    if entry.spec.startup and self._is_enabled(entry.spec)
-                ),
-                key=lambda item: (item.priority, item.name),
-            )
-        return {spec.name: self.ensure_async(spec.name) for spec in specs}
+            self._validate_graph_locked()
+            names = [
+                name
+                for name, entry in self._entries.items()
+                if entry.spec.startup and self._is_effectively_enabled(entry.spec)
+            ]
+            ordered = self._topological_order_locked(names)
+        return {name: self.ensure_async(name) for name in ordered}
 
-    def ensure_async(self, name: str) -> Future:
+    def ensure_async(self, name: str) -> Future[Any]:
+        return self._ensure_async_internal(str(name), stack=())
+
+    def _ensure_async_internal(self, name: str, *, stack: tuple[str, ...]) -> Future[Any]:
         normalized = str(name)
         with self._lock:
             if self._closed:
                 return self._failed_future(RuntimeError("RuntimeFeatureManager is closed"))
+            try:
+                self._validate_graph_locked()
+            except BaseException as exc:
+                return self._failed_future(exc)
+            if normalized in stack:
+                cycle = " -> ".join((*stack, normalized))
+                return self._failed_future(RuntimeError(f"Feature dependency cycle: {cycle}"))
             entry = self._entries.get(normalized)
             if entry is None:
                 return self._failed_future(KeyError(normalized))
             if entry.state is FeatureState.READY:
-                completed = Future()
+                completed: Future[Any] = Future()
                 completed.set_result(entry.instance)
                 return completed
             if entry.state is FeatureState.LOADING and entry.future is not None:
@@ -130,8 +146,104 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             entry.state = FeatureState.LOADING
             entry.error = None
             entry.stop_requested = False
-            entry.future = self._executor.submit(self._build, normalized, generation)
-            return entry.future
+            public_future: Future[Any] = Future()
+            entry.future = public_future
+            dependencies = tuple(str(dep) for dep in entry.spec.depends_on)
+
+        dependency_futures = [
+            self._ensure_async_internal(dep, stack=(*stack, normalized))
+            for dep in dependencies
+        ]
+        if not dependency_futures:
+            self._submit_build(normalized, generation, public_future)
+            return public_future
+
+        barrier_lock = threading.Lock()
+        remaining = len(dependency_futures)
+        failed = False
+
+        def dependency_done(dependency_future: Future[Any]) -> None:
+            nonlocal remaining, failed
+            try:
+                dependency_future.result()
+            except BaseException as exc:
+                with barrier_lock:
+                    if failed:
+                        return
+                    failed = True
+                self._fail_dependency(normalized, generation, public_future, exc)
+                return
+            with barrier_lock:
+                if failed:
+                    return
+                remaining -= 1
+                ready = remaining == 0
+            if ready:
+                self._submit_build(normalized, generation, public_future)
+
+        for dependency_future in dependency_futures:
+            dependency_future.add_done_callback(dependency_done)
+        return public_future
+
+    def _submit_build(self, name: str, generation: int, public_future: Future[Any]) -> None:
+        with self._lock:
+            entry = self._entries.get(name)
+            if (
+                entry is None
+                or entry.generation != generation
+                or entry.future is not public_future
+                or public_future.cancelled()
+                or self._closed
+            ):
+                if not public_future.done():
+                    if self._closed:
+                        public_future.set_exception(
+                            RuntimeError(
+                                f"Feature '{name}' finished loading after shutdown"
+                            )
+                        )
+                    else:
+                        public_future.cancel()
+                return
+        internal = self._executor.submit(self._build, name, generation)
+
+        def complete(done: Future[Any]) -> None:
+            if public_future.done():
+                return
+            try:
+                public_future.set_result(done.result())
+            except BaseException as exc:
+                if self._closed:
+                    public_future.set_exception(
+                        RuntimeError(
+                            f"Feature '{name}' finished loading after shutdown"
+                        )
+                    )
+                else:
+                    public_future.set_exception(exc)
+
+        internal.add_done_callback(complete)
+
+    def _fail_dependency(
+        self,
+        name: str,
+        generation: int,
+        public_future: Future[Any],
+        error: BaseException,
+    ) -> None:
+        wrapped = RuntimeError(f"Feature '{name}' dependency failed: {error}")
+        with self._lock:
+            entry = self._entries.get(name)
+            if (
+                entry is not None
+                and entry.generation == generation
+                and entry.future is public_future
+            ):
+                entry.future = None
+                entry.error = wrapped
+                entry.state = FeatureState.FAILED
+        if not public_future.done():
+            public_future.set_exception(wrapped)
 
     def ensure(self, name: str, *, timeout: float | None = None) -> Any:
         return self.ensure_async(name).result(timeout=timeout)
@@ -156,7 +268,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             if entry.state is FeatureState.REGISTERED:
                 if self._missing_modules(entry.spec):
                     return FeatureState.UNAVAILABLE
-                if not self._is_enabled(entry.spec):
+                if not self._is_effectively_enabled(entry.spec):
                     return FeatureState.DISABLED
             return entry.state
 
@@ -169,11 +281,12 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 if state is FeatureState.REGISTERED:
                     if missing:
                         state = FeatureState.UNAVAILABLE
-                    elif not self._is_enabled(entry.spec):
+                    elif not self._is_effectively_enabled(entry.spec):
                         state = FeatureState.DISABLED
                 out[name] = {
                     "state": state.value,
-                    "enabled": self._is_enabled(entry.spec),
+                    "enabled": self._is_effectively_enabled(entry.spec),
+                    "depends_on": list(entry.spec.depends_on),
                     "error": str(entry.error) if entry.error else "",
                     "missing_modules": list(missing),
                     "generation": entry.generation,
@@ -187,11 +300,22 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             self._closed = True
             subscription = self._subscription
             self._subscription = None
-            entries = sorted(
-                self._entries.values(),
-                key=lambda entry: (entry.spec.priority, entry.spec.name),
-                reverse=True,
-            )
+            try:
+                self._validate_graph_locked()
+                shutdown_order = list(
+                    reversed(self._topological_order_locked(self._entries))
+                )
+                entries = [self._entries[name] for name in shutdown_order]
+            except RuntimeError as exc:
+                logger.error(
+                    f"Invalid feature graph during shutdown: {exc}",
+                    exc_info=True,
+                )
+                entries = sorted(
+                    self._entries.values(),
+                    key=lambda item: (item.spec.priority, item.spec.name),
+                    reverse=True,
+                )
             ready: list[
                 tuple[_FeatureEntry, FeatureSpec, Any, tuple[ServiceRegistration, ...]]
             ] = []
@@ -200,8 +324,6 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                     entry.stop_requested = True
                     entry.generation += 1
                     entry.state = FeatureState.ABANDONED
-                    if entry.future is not None:
-                        entry.future.cancel()
                 elif entry.state is FeatureState.READY:
                     entry.state = FeatureState.STOPPING
                     ready.append(
@@ -267,7 +389,12 @@ class RuntimeFeatureManager(RuntimeFeatureService):
 
         with self._lock:
             stale = entry.generation != generation
-            should_stop = stale or self._closed or entry.stop_requested
+            should_stop = (
+                stale
+                or self._closed
+                or entry.stop_requested
+                or not self._is_effectively_enabled(spec)
+            )
             stop_for_shutdown = self._closed
 
         if should_stop:
@@ -285,7 +412,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                             if stop_for_shutdown
                             else FeatureState.DISABLED
                         )
-                        restart = not self._closed and self._is_enabled(spec)
+                        restart = not self._closed and self._is_effectively_enabled(spec)
             if stop_for_shutdown:
                 raise RuntimeError(f"Feature '{name}' finished loading after shutdown")
             startup_trace.mark(
@@ -302,6 +429,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 entry.generation != generation
                 or self._closed
                 or entry.stop_requested
+                or not self._is_effectively_enabled(spec)
             ):
                 should_stop = True
             else:
@@ -356,7 +484,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                             if self._closed
                             else FeatureState.DISABLED
                         )
-                        restart = not self._closed and self._is_enabled(spec)
+                        restart = not self._closed and self._is_effectively_enabled(spec)
             if restart:
                 self.ensure_async(name)
             return None
@@ -367,19 +495,20 @@ class RuntimeFeatureManager(RuntimeFeatureService):
 
     def _on_setting_changed(self, change) -> None:
         with self._lock:
-            names = tuple(self._key_index.get(str(change.key), ()))
             if self._closed:
                 return
-            to_start: list[str] = []
-            to_stop: list[str] = []
-            for name in names:
+            direct_names = set(self._key_index.get(str(change.key), ()))
+            affected = set(direct_names)
+            for name in tuple(direct_names):
+                affected.update(self._collect_dependents_locked(name))
+
+            to_start: set[str] = set()
+            to_stop: set[str] = set()
+            for name in affected:
                 entry = self._entries[name]
-                enabled = self._is_enabled(entry.spec)
+                enabled = self._is_effectively_enabled(entry.spec)
                 if enabled:
                     if entry.state is FeatureState.LOADING and entry.stop_requested:
-                        # Disable -> enable while factory is still running: keep
-                        # the same generation instead of throwing it away and
-                        # silently losing the re-enable request.
                         entry.stop_requested = False
                     elif entry.state in {
                         FeatureState.REGISTERED,
@@ -388,7 +517,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                         FeatureState.UNAVAILABLE,
                         FeatureState.STOPPED,
                     }:
-                        to_start.append(name)
+                        to_start.add(name)
                     continue
 
                 if not entry.spec.stop_when_disabled:
@@ -397,12 +526,22 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                     entry.stop_requested = True
                 elif entry.state is FeatureState.READY:
                     entry.state = FeatureState.STOPPING
-                    to_stop.append(name)
+                    to_stop.add(name)
 
-        for name in to_start:
+            start_order = self._topological_order_locked(to_start)
+            stop_order = list(reversed(self._topological_order_locked(to_stop)))
+
+        for name in start_order:
             self.ensure_async(name)
-        for name in to_stop:
-            self._executor.submit(self._stop_disabled_feature, name)
+        if stop_order:
+            self._executor.submit(
+                self._stop_features_in_order,
+                tuple(stop_order),
+            )
+
+    def _stop_features_in_order(self, names: tuple[str, ...]) -> None:
+        for name in names:
+            self._stop_disabled_feature(name)
 
     def _stop_disabled_feature(self, name: str) -> None:
         with self._lock:
@@ -431,11 +570,94 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                     entry.future = None
                     entry.error = None
                     entry.state = FeatureState.DISABLED
-                    restart = not self._closed and self._is_enabled(spec)
+                    restart = not self._closed and self._is_effectively_enabled(spec)
 
         startup_trace.mark(f"feature.{name}.disabled", generation=generation)
         if restart:
             self.ensure_async(name)
+
+    def _validate_graph_locked(self) -> None:
+        for name, entry in self._entries.items():
+            for dependency in entry.spec.depends_on:
+                if str(dependency) not in self._entries:
+                    raise RuntimeError(
+                        f"Feature '{name}' depends on unknown feature '{dependency}'"
+                    )
+        self._topological_order_locked(self._entries)
+
+    def _topological_order_locked(self, names) -> list[str]:
+        selected = {str(name) for name in names}
+        expanded = set(selected)
+        stack = list(selected)
+        while stack:
+            name = stack.pop()
+            entry = self._entries.get(name)
+            if entry is None:
+                continue
+            for dependency in entry.spec.depends_on:
+                dep = str(dependency)
+                if dep not in expanded:
+                    expanded.add(dep)
+                    stack.append(dep)
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        ordered: list[str] = []
+
+        def visit(name: str, path: tuple[str, ...]) -> None:
+            if name in visited:
+                return
+            if name in visiting:
+                raise RuntimeError(
+                    f"Feature dependency cycle: {' -> '.join((*path, name))}"
+                )
+            entry = self._entries.get(name)
+            if entry is None:
+                raise RuntimeError(f"Unknown feature dependency '{name}'")
+            visiting.add(name)
+            for dependency in entry.spec.depends_on:
+                visit(str(dependency), (*path, name))
+            visiting.remove(name)
+            visited.add(name)
+            ordered.append(name)
+
+        for name in sorted(
+            expanded,
+            key=lambda item: (
+                self._entries[item].spec.priority if item in self._entries else 0,
+                item,
+            ),
+        ):
+            visit(name, ())
+        return [name for name in ordered if name in selected]
+
+    def _collect_dependents_locked(self, name: str) -> set[str]:
+        collected: set[str] = set()
+        stack = list(self._dependents.get(str(name), ()))
+        while stack:
+            dependent = stack.pop()
+            if dependent in collected:
+                continue
+            collected.add(dependent)
+            stack.extend(self._dependents.get(dependent, ()))
+        return collected
+
+    def _is_effectively_enabled(
+        self,
+        spec: FeatureSpec,
+        _visited: set[str] | None = None,
+    ) -> bool:
+        if not self._is_enabled(spec):
+            return False
+        visited = set() if _visited is None else set(_visited)
+        if spec.name in visited:
+            return False
+        visited.add(spec.name)
+        for dependency in spec.depends_on:
+            entry = self._entries.get(str(dependency))
+            if entry is None or not self._is_effectively_enabled(entry.spec, visited):
+                return False
+        return True
 
     def _is_enabled(self, spec: FeatureSpec) -> bool:
         try:
@@ -473,6 +695,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 f"'{spec.name}': {exc}",
                 exc_info=True,
             )
+        task_supervisor().cancel_owner(instance, timeout=1.0)
         if spec.shutdown is not None:
             spec.shutdown(instance)
         else:
@@ -501,7 +724,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 )
 
     @staticmethod
-    def _failed_future(error: BaseException) -> Future:
-        future = Future()
+    def _failed_future(error: BaseException) -> Future[Any]:
+        future: Future[Any] = Future()
         future.set_exception(error)
         return future

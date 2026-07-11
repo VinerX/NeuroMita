@@ -6,11 +6,14 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
 from controllers.gui.install_gui_controller import InstallGuiController
+from controllers.install_controller import InstallController
+from core.events import Event, Events
 from utils.pip_installer import PipInstaller
 from core.install_requirements import InstallRequirement, check_requirements
 
@@ -36,12 +39,94 @@ class InstallUiCallbackTests(unittest.TestCase):
         self.assertEqual(statuses, ["working"])
         self.assertEqual(logs, ["line"])
 
+    def test_install_queue_worker_runs_the_first_enqueued_job(self):
+        called = threading.Event()
+
+        class Backend:
+            def run_task(self, **_kwargs):
+                called.set()
+                return True
+
+        class Main:
+            backend_enabled = True
+            install_controller = Backend()
+
+        controller = InstallGuiController(Main(), None)
+        try:
+            controller._on_run_with_ui(
+                Event(
+                    Events.Install.RUN_WITH_UI,
+                    {
+                        "task_id": "tts:test:install",
+                        "runner": lambda **_kwargs: None,
+                        "meta": {
+                            "category": "tts",
+                            "component_id": "tts:test",
+                        },
+                        "title": "Test install",
+                        "install_window": object(),
+                        "install_callbacks": (
+                            lambda *_args: None,
+                            lambda *_args: None,
+                            lambda *_args: None,
+                            lambda *_args: None,
+                        ),
+                    },
+                )
+            )
+            self.assertTrue(called.wait(2.0))
+        finally:
+            controller.close()
+
+
+    def test_runner_internal_type_error_is_not_retried_positionally(self):
+        calls = {"count": 0}
+
+        def runner(*, pip_installer, callbacks, ctx):
+            calls["count"] += 1
+            raise TypeError("internal runner bug")
+
+        with self.assertRaisesRegex(TypeError, "internal runner bug"):
+            InstallController._invoke_runner(
+                runner,
+                pip_installer=object(),
+                callbacks=object(),
+                ctx={},
+            )
+
+        self.assertEqual(calls["count"], 1)
+
+    def test_worker_start_failure_does_not_leave_a_zombie_pending_job(self):
+        class Main:
+            backend_enabled = True
+            install_controller = object()
+
+        with patch(
+            "controllers.gui.install_gui_controller.task_supervisor"
+        ) as supervisor_factory:
+            supervisor_factory.return_value.start_thread.side_effect = RuntimeError(
+                "supervisor unavailable"
+            )
+            controller = InstallGuiController(Main(), None)
+            try:
+                accepted = controller._enqueue(
+                    {
+                        "task_id": "tts:test:install",
+                        "title": "Test install",
+                    }
+                )
+                self.assertFalse(accepted)
+                self.assertEqual(controller._queue_snapshot()["pending"], [])
+                self.assertIn("supervisor unavailable", controller._last_enqueue_error)
+            finally:
+                controller.close()
+
 
 class PipInstallerFallbackTests(unittest.TestCase):
-    def test_uv_code_2_retries_f5_stack_with_builtin_pip(self):
+    def test_uv_code_2_preserves_uv_only_runtime_contract(self):
         messages: list[str] = []
         commands: list[list[str]] = []
-        tmp = tempfile.mkdtemp(prefix="pip-installer-fallback-")
+        tmp = tempfile.mkdtemp(prefix="pip-installer-no-fallback-")
         try:
             with patch.dict(
                 os.environ,
@@ -56,20 +141,15 @@ class PipInstallerFallbackTests(unittest.TestCase):
                 )
 
                 def fake_build(force_pip: bool = False):
-                    base = [sys.executable, "-m", "pip"] if force_pip else [sys.executable, "-m", "uv", "--verbose", "pip"]
+                    base = [sys.executable, "-m", "pip"] if force_pip else [sys.executable, "-m", "uv", "pip"]
                     return base + ["install", "--target", tmp]
 
                 def fake_run(cmd, _description):
                     commands.append(list(cmd))
-                    if "uv" in cmd:
-                        installer._last_run_returncode = 2
-                        installer._last_run_recent_lines = ["No solution found when resolving f5-tts"]
-                        installer._last_run_uv_cache_access_denied = False
-                        return False
-                    installer._last_run_returncode = 0
-                    installer._last_run_recent_lines = []
+                    installer._last_run_returncode = 2
+                    installer._last_run_recent_lines = ["No solution found when resolving f5-tts"]
                     installer._last_run_uv_cache_access_denied = False
-                    return True
+                    return False
 
                 with patch.object(installer, "_build_install_command", side_effect=fake_build), patch.object(
                     installer, "_run_pip_process", side_effect=fake_run
@@ -81,14 +161,10 @@ class PipInstallerFallbackTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-        self.assertTrue(ok)
-        self.assertEqual(len(commands), 2)
+        self.assertFalse(ok)
+        self.assertEqual(len(commands), 1)
         self.assertIn("uv", commands[0])
-        self.assertIn("pip", commands[1])
-        self.assertTrue(
-            any("встроенный pip" in msg for msg in messages),
-            f"fallback log message missing: {messages}",
-        )
+        self.assertFalse(any("-m" in cmd and "pip" in cmd and "uv" not in cmd for cmd in commands))
 
     def test_weak_task_percent_does_not_pin_global_progress(self):
         installer = PipInstaller(

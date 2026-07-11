@@ -18,7 +18,7 @@ from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_struct
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
-from ui.async_bus import dispatch_to_gui, run_async
+from ui.async_bus import dispatch_to_gui
 from ui.settings.data_prefetch import (
     API_PROVIDER_NAMES,
     CHARACTER_SETTINGS_SNAPSHOT,
@@ -346,7 +346,6 @@ def _load_character_settings_snapshot_async(gui) -> None:
         return
 
     gui._character_settings_snapshot_loading = True
-    event_bus = get_event_bus()
 
     def _worker():
         registry = use(CharacterRegistry)
@@ -429,7 +428,6 @@ def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
 
 
 def wire_character_settings_logic(self):
-    event_bus = get_event_bus()
 
     initial_characters = _fallback_character_list(self)
     initial_char_id = _fallback_current_character_id(self, initial_characters)
@@ -657,15 +655,14 @@ def _on_character_section_expanded(self, character_id, section):
 
 
 def reload_character_data(gui):
-    event_bus = get_event_bus()
 
     if not hasattr(gui, "prompt_pack_combobox"):
-        event_bus.emit(Events.Character.RELOAD_DATA)
+        get_event_bus().emit(Events.Character.RELOAD_DATA)
         return
 
     character_id = _configured_character_id(gui)
     if not character_id:
-        event_bus.emit(Events.Character.RELOAD_DATA)
+        get_event_bus().emit(Events.Character.RELOAD_DATA)
         _clear_prompt_info_fields(gui)
         return
 
@@ -696,7 +693,7 @@ def reload_character_data(gui):
 
     update_prompt_set_info(gui, character_id=character_id, set_name=chosen)
 
-    event_bus.emit(Events.Character.RELOAD_DATA)
+    get_event_bus().emit(Events.Character.RELOAD_DATA)
 
     if hasattr(gui, "update_debug_info"):
         try:
@@ -720,14 +717,12 @@ def on_prompt_set_changed(gui):
     gui.settings.set(_prompt_set_key(character_id), set_name)
     gui.settings.save_settings()
 
-    event_bus = get_event_bus()
-    event_bus.emit(Events.Character.RELOAD_DATA)
+    get_event_bus().emit(Events.Character.RELOAD_DATA)
 
 
 def change_character_actions(gui, character_id=None):
     """Загрузить конфиг персонажа (набор промптов, провайдер, инфо) в панель
     настроек. НЕ переключает активного персонажа — выбор только в песочнице."""
-    event_bus = get_event_bus()
 
     selected_character = str(character_id or "").strip() or _configured_character_id(gui)
 
@@ -763,7 +758,7 @@ def change_character_actions(gui, character_id=None):
 
     update_prompt_set_info(gui, character_id=selected_character, set_name=chosen)
 
-    event_bus.emit(Events.Character.RELOAD_DATA)
+    get_event_bus().emit(Events.Character.RELOAD_DATA)
 
 
 def apply_prompt_set(gui, force_apply=True):
@@ -788,8 +783,7 @@ def apply_prompt_set(gui, force_apply=True):
     gui.settings.set(_prompt_set_key(character_id), set_name)
     gui.settings.save_settings()
 
-    event_bus = get_event_bus()
-    event_bus.emit(Events.Character.RELOAD_DATA)
+    get_event_bus().emit(Events.Character.RELOAD_DATA)
 
     if force_apply:
         QMessageBox.information(gui, _("Успех", "Success"),
@@ -923,7 +917,6 @@ def purge_deleted_data(gui):
 
 
 def clear_history(gui):
-    event_bus = get_event_bus()
     char_id = _selected_character_id(gui)
     char_name_for_text = char_id or _("(не выбран)", "(not selected)")
 
@@ -935,7 +928,7 @@ def clear_history(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    event_bus.emit(Events.Character.CLEAR_HISTORY)
+    get_event_bus().emit(Events.Character.CLEAR_HISTORY)
     if hasattr(gui, 'clear_chat_display'):
         gui.clear_chat_display()
     if hasattr(gui, 'update_debug_info'):
@@ -951,8 +944,7 @@ def clear_history_all(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    event_bus = get_event_bus()
-    event_bus.emit(Events.Character.CLEAR_ALL_HISTORIES)
+    get_event_bus().emit(Events.Character.CLEAR_ALL_HISTORIES)
     if hasattr(gui, 'clear_chat_display'):
         gui.clear_chat_display()
     if hasattr(gui, 'update_debug_info'):
@@ -1187,7 +1179,6 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
     Мигрирует историю в БД: теги/meta_data.structured_data → колонка structured_data.
     character_id='current' — текущий персонаж, None — все персонажи.
     """
-    event_bus = get_event_bus()
 
     if character_id == "current":
         character_id = _selected_character_id(gui)
@@ -1344,7 +1335,7 @@ def run_history_dedup(gui):
         gui._dedupe_cancelled = False
         # по желанию можно обновить UI/данные
         try:
-            event_bus.emit(Events.Character.RELOAD_DATA)
+            get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
             pass
         if hasattr(gui, 'update_debug_info'):
@@ -1556,7 +1547,6 @@ def run_reindexing(gui):
 
 def _get_all_character_ids() -> list[str]:
     ids: list[str] = []
-    event_bus = get_event_bus()
     ids.extend(str(c or "").strip() for c in use(CharacterRegistry).all_ids() if str(c or "").strip())
     try:
         from managers.database_manager import DatabaseManager
@@ -1770,7 +1760,7 @@ def run_full_reindexing(gui):
         gui._full_reindex_worker = None
         gui._full_reindex_cancelled = False
         try:
-            event_bus.emit(Events.Character.RELOAD_DATA)
+            get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
             pass
         if hasattr(gui, 'update_debug_info'):

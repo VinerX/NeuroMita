@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import qtawesome as qta
 from PyQt6.QtCore import QPoint, QRectF, QSize, QTimer, Qt, pyqtSignal
@@ -29,9 +30,13 @@ from PyQt6.QtWidgets import (
 _UPDATE_CHECK_THROTTLE_SEC = 600
 
 from core.events import Events
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 from utils import _
 from localization.live import tr_set
+
+if TYPE_CHECKING:
+    from ui.widgets.launcher_dashboard_helpers import NewsItem
 
 
 def _strip_v(version: str) -> str:
@@ -342,7 +347,9 @@ class HomePage(LauncherHomeBackground):
             finally:
                 self._update_check_inflight = False
 
-        threading.Thread(target=worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "home-update-check", worker, replace=True
+        )
 
     def _apply_update_state(self, py_info: dict | None, unity_info: dict | None):
         """Применить результат проверки к UI (вызывается на GUI-потоке)."""
@@ -864,7 +871,9 @@ class HomePage(LauncherHomeBackground):
             finally:
                 self._queue_ui_call(lambda: QTimer.singleShot(4000, self.hide_progress))
 
-        threading.Thread(target=check_worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "home-update-manual-check", check_worker, replace=True
+        )
 
     def run_primary_action(self):
         if self._has_pending_python_restart():
@@ -1103,7 +1112,9 @@ class HomePage(LauncherHomeBackground):
 
                 self._queue_ui_call(done)
 
-        threading.Thread(target=worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "home-primary-action", worker, replace=True
+        )
 
     def _prompt_restart_after_update(self) -> bool:
         """Спросить про перезапуск после применения Python-обновления."""
@@ -1311,7 +1322,9 @@ class HomePage(LauncherHomeBackground):
 
                 self._queue_ui_call(done)
 
-        threading.Thread(target=worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "home-update-apply", worker, replace=True
+        )
 
 
 def build_home_page(window) -> QWidget:

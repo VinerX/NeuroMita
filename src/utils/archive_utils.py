@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.task_supervisor import task_supervisor
+
 
 class PasswordError(Exception):
     """Archive is encrypted and the provided password is missing or wrong."""
@@ -366,8 +368,12 @@ def _extract_7z_python(
             log(f"7z extraction still running: {archive.name}, elapsed={elapsed}s")
 
     try:
-        hb = threading.Thread(target=heartbeat, daemon=True)
-        hb.start()
+        task_supervisor().start_thread(
+            stop_event,
+            f"7z-heartbeat:{archive.name}",
+            heartbeat,
+            cancel_event=stop_event,
+        )
         with py7zr.SevenZipFile(archive, mode="r", password=password or None) as zf:
             if zf.needs_password() and not password:
                 raise PasswordError("Archive is password-protected")
@@ -391,6 +397,7 @@ def _extract_7z_python(
         raise ValueError(f"Bad 7z: {archive.name}") from exc
     finally:
         stop_event.set()
+        task_supervisor().cancel_owner(stop_event, timeout=0.5)
 
 
 def _flatten_single_root(dest: Path, logger=None) -> None:

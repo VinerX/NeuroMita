@@ -6,19 +6,23 @@ import importlib
 import os
 import ntpath
 import re
-import sys
 import tempfile
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from .base_model import IVoiceModel
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
+
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
+
 from handlers.voice_models.install_plan_helpers import (
+    patch_tts_with_rvc_audio,
     pip_uninstall_action,
     rvc_python_compat_error,
     warning_action,
@@ -214,9 +218,28 @@ def _onnx_silero_settings() -> list[dict[str, Any]]:
 
 
 def _ensure_lib_path() -> None:
-    libs_path_abs = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    if libs_path_abs not in sys.path:
-        sys.path.insert(0, libs_path_abs)
+    """Validate the worker-owned runtime without mutating import precedence."""
+    if os.environ.get("NEUROMITA_AI_WORKER") != "1":
+        return
+    declared = [
+        os.path.normcase(os.path.abspath(item))
+        for item in os.environ.get("NEUROMITA_RUNTIME_PYTHON_PATHS", "").split(os.pathsep)
+        if item
+    ]
+    if not declared:
+        raise RuntimeError("Voice worker started without a managed runtime environment")
+    runtime_root = os.path.normcase(
+        os.path.abspath(os.environ.get("NEUROMITA_RUNTIME_ROOT", ""))
+    )
+    core_root = os.path.normcase(
+        os.path.abspath(os.environ.get("NEUROMITA_CORE_DIR", ""))
+    )
+    if runtime_root and runtime_root in declared:
+        raise RuntimeError("Voice worker runtime contains the mutable Lib root")
+    if core_root and core_root in declared and declared[-1] != core_root:
+        raise RuntimeError(
+            "Voice worker main core fallback must remain behind managed AI layers"
+        )
 
 
 class EdgeTTSRVCBaseModel(IVoiceModel):
@@ -354,6 +377,17 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     fn=cls._patch_fairseq_configs_call(),
                 )
             )
+        actions.append(
+            InstallAction(
+                type="call",
+                description=_(
+                    "Применение совместимости TTS/RVC...",
+                    "Applying TTS/RVC compatibility patch...",
+                ),
+                progress=94,
+                fn=patch_tts_with_rvc_audio,
+            )
+        )
         def _verify_install(*, callbacks=None, ctx=None, **_kwargs) -> bool:
             # Контекст действия формируется InstallController уже после создания
             # плана и содержит точный --target текущего PipInstaller. Он должен

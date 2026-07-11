@@ -9,6 +9,7 @@ from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ProtocolBuilderService
 from main_logger import logger
+from utils import getTranslationVariant as _
 from ui.settings.api_settings.widgets import CustomPresetListItem
 from .bus_async import bus_call_async
 from .protocols_mixin import ProtocolsMixin

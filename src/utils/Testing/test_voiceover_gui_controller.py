@@ -36,6 +36,8 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller._current_model_id_from_settings = lambda: "high"
         controller._check_installed = lambda _model_id: True
         controller._check_initialized = lambda _model_id: False
+        controller._installed_models_cache = {"high"}
+        controller._initialized_models_cache = {"high"}
         return controller, bus
 
     def test_emit_voice_icon_state_treats_installed_local_tts_as_ready(self):

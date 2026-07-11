@@ -14,6 +14,7 @@ from main_logger import logger
 
 from utils import _
 import threading
+from core.task_supervisor import task_supervisor
 import requests
 
 from presets.provider_host_metadata import infer_provider_currency
@@ -339,8 +340,6 @@ class ApiPresetsController(ApiPresetService):
             logger.error(f"Ошибка при миграции старых ключей API: {e}", exc_info=True)
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_preset_list, weak=False)
-        self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_FULL, self._on_get_preset_full, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_CUSTOM_PRESET, self._on_save_custom_preset, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.DELETE_CUSTOM_PRESET, self._on_delete_custom_preset, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.EXPORT_PRESET, self._on_export_preset, weak=False)
@@ -348,7 +347,6 @@ class ApiPresetsController(ApiPresetService):
         self.event_bus.subscribe(Events.ApiPresets.TEST_CONNECTION, self._on_test_connection, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_PRESET_STATE, self._on_save_preset_state, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.LOAD_PRESET_STATE, self._on_load_preset_state, weak=False)
-        self.event_bus.subscribe(Events.ApiPresets.GET_CURRENT_PRESET_ID, self._on_get_current_preset_id, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SET_CURRENT_PRESET_ID, self._on_set_current_preset_id, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.UPDATE_PRESET_MODELS, self._on_update_preset_models, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_PRESETS_ORDER, self._on_save_presets_order, weak=False)
@@ -1102,11 +1100,13 @@ class ApiPresetsController(ApiPresetService):
         if not key and preset_id and preset_id in self.presets:
             key = str(self.presets[preset_id].key or "").strip()
 
-        threading.Thread(
-            target=self._sync_test_connection,
+        task_supervisor().start_thread(
+            self,
+            "api-preset-connection-test",
+            self._sync_test_connection,
             args=(preset_id or 0, p_tpl, key),
-            daemon=True
-        ).start()
+            replace=True,
+        )
 
     @staticmethod
     def _normalize_test_model_id(raw_model_id: Any) -> str:

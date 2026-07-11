@@ -1,12 +1,9 @@
 import time
 import threading
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 # import win32con
 
-# Добавляем необходимые импорты для PipInstaller
-import sys
-import os
-from utils.pip_installer import PipInstaller
 
 # Функция для перевода
 def getTranslationVariant(ru_str, en_str=""):
@@ -49,46 +46,20 @@ class ScreenCapture:
         self.window_title_to_exclude = None # Заголовок окна, которое нужно исключить
         self.exclude_gui_window = False # Флаг для исключения окна GUI
         
-        # Инициализация PipInstaller
-        try:
-            self._pip_installer = PipInstaller(
-                update_log=logger.info
-            )
-            logger.debug("PipInstaller успешно инициализирован для ScreenCapture.")
-        except Exception as e:
-            logger.error(f"Не удалось инициализировать PipInstaller: {e}", exc_info=True)
-            self._pip_installer = None
-            
+
     def _ensure_pil_installed(self):
-        """Проверяет наличие Pillow и устанавливает при необходимости."""
+        """Pillow is a mandatory Lib/core dependency repaired by run.py."""
         if self._pil_checked:
             return
-        
         try:
-            # Пробуем импортировать, чтобы проверить наличие
-            __import__('PIL.Image')
-            logger.debug("Библиотека Pillow (PIL) уже установлена.")
-        except ImportError:
-            logger.warning("Библиотека Pillow (PIL) не найдена. Попытка автоматической установки...")
-            
-            if self._pip_installer is None:
-                raise RuntimeError("PipInstaller не инициализирован - установку нельзя осуществить")
-            
-            success = self._pip_installer.install_package(
-                "Pillow",
-                description=_("Установка библиотеки Pillow (PIL)...", "Installing Pillow (PIL) library...")
-            )
-            
-            if not success:
-                raise RuntimeError("Не удалось установить Pillow")
-            
-            try:
-                # После установки пытаемся импортировать снова
-                __import__('PIL.Image')
-                logger.info("Библиотека Pillow успешно установлена.")
-            except ImportError:
-                raise RuntimeError("Даже после установки Pillow - не получилось импортировать.")
-        
+            __import__("PIL.Image")
+        except ImportError as exc:
+            raise RuntimeError(
+                _(
+                    "Pillow отсутствует в системном core. Перезапустите NeuroMita через run.py для восстановления зависимостей.",
+                    "Pillow is missing from the system core. Restart NeuroMita through run.py to repair dependencies.",
+                )
+            ) from exc
         self._pil_checked = True
 
     def start_capture(self, interval_seconds: float = 1.0, quality: int = 25, fps: int = 1, max_history_frames: int = 1, max_transfer_frames: int = 1, capture_width: int = 1024, capture_height: int = 768):
@@ -114,8 +85,9 @@ class ScreenCapture:
         self._capture_height = max(1, capture_height) # Минимальная высота 1
 
         self._running = True
-        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._thread.start()
+        self._thread = task_supervisor().start_thread(
+            self, "screen-capture", self._capture_loop, replace=True
+        )
         logger.info(f"Захват экрана запущен с качеством {self._quality}, {self._fps} FPS (интервал {self._interval_seconds} секунд), разрешением {self._capture_width}x{self._capture_height}.")
 
     def stop_capture(self):

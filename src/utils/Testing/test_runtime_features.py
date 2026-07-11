@@ -117,3 +117,106 @@ def test_missing_required_module_skips_factory():
         assert manager.state("feature") is FeatureState.UNAVAILABLE
     finally:
         manager.shutdown()
+
+
+def test_dependency_dag_starts_without_nested_executor_waits():
+    settings = SettingsRegistry({"ENABLED": True})
+    order = []
+    manager = RuntimeFeatureManager(settings, max_workers=1)
+    manager.register(
+        FeatureSpec(
+            name="base",
+            enabled=lambda values: values.get("ENABLED", False),
+            setting_keys=("ENABLED",),
+            factory=lambda: order.append("base") or _Resource(),
+            priority=20,
+        )
+    )
+    manager.register(
+        FeatureSpec(
+            name="dependent",
+            enabled=lambda values: values.get("ENABLED", False),
+            setting_keys=("ENABLED",),
+            factory=lambda: order.append("dependent") or _Resource(),
+            depends_on=("base",),
+            priority=10,
+        )
+    )
+    try:
+        manager.ensure("dependent", timeout=2.0)
+        assert order == ["base", "dependent"]
+        assert manager.is_ready("base")
+        assert manager.is_ready("dependent")
+    finally:
+        manager.shutdown()
+        settings.close()
+
+
+def test_dependency_cycle_is_rejected_before_factory_runs():
+    settings = SettingsRegistry()
+    calls = []
+    manager = RuntimeFeatureManager(settings)
+    manager.register(
+        FeatureSpec(
+            name="a",
+            enabled=lambda _settings: True,
+            factory=lambda: calls.append("a"),
+            depends_on=("b",),
+        )
+    )
+    manager.register(
+        FeatureSpec(
+            name="b",
+            enabled=lambda _settings: True,
+            factory=lambda: calls.append("b"),
+            depends_on=("a",),
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="cycle"):
+            manager.ensure("a", timeout=1.0)
+        assert calls == []
+    finally:
+        manager.shutdown()
+        settings.close()
+
+
+def test_disabling_dependency_stops_dependent_first():
+    settings = SettingsRegistry({"BASE": True, "CHILD": True})
+    stopped = []
+
+    class Resource:
+        def __init__(self, name):
+            self.name = name
+
+        def shutdown(self):
+            stopped.append(self.name)
+
+    manager = RuntimeFeatureManager(settings)
+    manager.register(
+        FeatureSpec(
+            name="base",
+            enabled=lambda values: values.get("BASE", False),
+            setting_keys=("BASE",),
+            factory=lambda: Resource("base"),
+        )
+    )
+    manager.register(
+        FeatureSpec(
+            name="child",
+            enabled=lambda values: values.get("CHILD", False),
+            setting_keys=("CHILD",),
+            factory=lambda: Resource("child"),
+            depends_on=("base",),
+        )
+    )
+    try:
+        manager.ensure("child", timeout=2.0)
+        settings.set("BASE", False)
+        assert settings.flush_notifications(1.0)
+        _wait_until(lambda: manager.state("base") is FeatureState.DISABLED)
+        _wait_until(lambda: manager.state("child") is FeatureState.DISABLED)
+        assert stopped[:2] == ["child", "base"]
+    finally:
+        manager.shutdown()
+        settings.close()

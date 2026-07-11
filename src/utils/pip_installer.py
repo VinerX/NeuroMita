@@ -24,6 +24,7 @@ from main_logger import logger
 from typing import Set, List, Tuple, Optional, Deque
 from collections import deque
 from core.app_paths import base_dir
+from core.task_supervisor import task_supervisor
 
 
 class DependencyResolver:
@@ -1257,6 +1258,7 @@ class PipInstaller:
         RE_TAR = re.compile(r"([A-Za-z0-9_.+-]+-.*?\.(?:tar\.gz|zip|bz2|xz))", re.IGNORECASE)
         RE_PATH = re.compile(r"([A-Za-z]:[^\s]+\.whl|/[^\s]+\.whl)", re.IGNORECASE)
         RE_TOKEN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]{1,})\b")
+        RE_BARE_TOKEN = re.compile(r"^\s*[A-Za-z0-9][A-Za-z0-9_.-]{1,}\s*$")
 
         SPIN_CHARS = "⠋⠙⠚⠞⠖⠦⠴⠲⠶⠇⠧⠹⠼"
         NOISE_TOKENS = {
@@ -1359,7 +1361,8 @@ class PipInstaller:
                 return None
             if tok and (tok[0] in self.SPIN_CHARS or tok in ("i.", ":", ";", ".", "…")):
                 return None
-            return low, tok.replace("_", "-")
+            normalized = low.replace("_", "-")
+            return normalized, tok.replace("_", "-")
 
         @staticmethod
         def canon_name_from_wheel(wheel_path: str) -> tuple[str, str]:
@@ -1451,7 +1454,8 @@ class PipInstaller:
             speed_match = self.RE_SPEED.search(s)
             has_artifact = bool(self.RE_WHL.search(s) or self.RE_TAR.search(s) or self.RE_PATH.search(s))
             has_spinner = any(ch in s for ch in self.SPIN_CHARS)
-            if not (pct_match or pair_match or speed_match or has_artifact or has_spinner):
+            is_bare_package = bool(self.RE_BARE_TOKEN.fullmatch(s))
+            if not (pct_match or pair_match or speed_match or has_artifact or has_spinner or is_bare_package):
                 return
 
             ident_disp = self.ident_and_display(s)
@@ -1472,6 +1476,13 @@ class PipInstaller:
                     "ts": time.time(),
                 }
                 self.tasks[cid] = task
+
+            # uv under a real PTY sometimes emits only the normalized package
+            # name while preparing it. Keep that as an indeterminate task so
+            # the install dialog shows activity instead of an empty raw view.
+            if is_bare_package and not (pct_match or pair_match or speed_match or has_artifact or has_spinner):
+                task["ts"] = time.time()
+                return
 
             if pct_match:
                 try:
@@ -2243,10 +2254,18 @@ class PipInstaller:
                 except Exception:
                     pass
 
-        t_out = threading.Thread(target=_reader, args=(proc.stdout, q_out), daemon=True)
-        t_err = threading.Thread(target=_reader, args=(proc.stderr, q_err), daemon=True)
-        t_out.start()
-        t_err.start()
+        t_out = task_supervisor().start_thread(
+            proc,
+            "pip-stdout-reader",
+            _reader,
+            args=(proc.stdout, q_out),
+        )
+        t_err = task_supervisor().start_thread(
+            proc,
+            "pip-stderr-reader",
+            _reader,
+            args=(proc.stderr, q_err),
+        )
 
         while proc.poll() is None or t_out.is_alive() or t_err.is_alive():
             processed_weight = 0.0
@@ -2262,6 +2281,7 @@ class PipInstaller:
             aborted = self._service_tick(state, lambda: self._terminate_process(proc))
             if aborted is not None:
                 self._clear_active_process(proc)
+                task_supervisor().cancel_owner(proc, timeout=0.5)
                 return aborted
 
         # Дочистим очереди
@@ -2276,6 +2296,7 @@ class PipInstaller:
         self._emit_snapshot_if_needed(state, force=True)
 
         self._clear_active_process(proc)
+        task_supervisor().cancel_owner(proc, timeout=0.5)
         return True, (proc.returncode or 0)
 
     def _run_with_winpty(self, cmd: List[str], env: dict, state: _RunState, PtyProcess) -> Tuple[bool, int]:
@@ -2320,8 +2341,11 @@ class PipInstaller:
                     break
                 time.sleep(0.03)
 
-        reader = threading.Thread(target=_pty_reader, daemon=True)
-        reader.start()
+        reader = task_supervisor().start_thread(
+            pty,
+            "pip-pty-reader",
+            _pty_reader,
+        )
 
         while pty.isalive() or reader.is_alive() or not q_chunks.empty():
             chunk = ""
@@ -2365,6 +2389,7 @@ class PipInstaller:
             aborted = self._service_tick(state, _kill_pty)
             if aborted is not None:
                 self._clear_active_process(pty)
+                task_supervisor().cancel_owner(pty, timeout=0.5)
                 return aborted
 
         tail = self._clean_line(buffer.strip())
@@ -2373,6 +2398,7 @@ class PipInstaller:
         self._emit_snapshot_if_needed(state, force=True)
         ret = pty.exitstatus or 0
         self._clear_active_process(pty)
+        task_supervisor().cancel_owner(pty, timeout=0.5)
         return True, ret
 
     def _run_pip_process(self, cmd: List[str], description: str) -> bool:
@@ -2422,6 +2448,12 @@ class PipInstaller:
             err_msg = f"ОШИБКА: Процесс завершился с кодом {ret}."
             if not state.error_seen:
                 self.update_log(err_msg)
+            if self._is_uv_command(cmd) and ret == 2:
+                self.update_log(
+                    "uv не смог разрешить совместимый набор зависимостей. "
+                    "Автоматический fallback на pip отключён: он мог бы собрать "
+                    "другой, непроверенный runtime. Активная среда не изменена."
+                )
             # Принудительно пишем в основной логгер
             logger.error(f"[installer] pip process failed with code {ret}. Command: {cmd}")
             return False

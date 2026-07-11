@@ -12,6 +12,7 @@ from typing import Callable, Dict, Optional, Sequence
 from core.events import Event, Events, get_event_bus
 from services.contracts import AIEngineService
 from core.runtime_environments import runtime_environments
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 
 
@@ -25,6 +26,13 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, int(os.environ.get(name, str(default))))
     except (TypeError, ValueError):
         return max(minimum, int(default))
+
+
+def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, float(default))
 
 
 def _detect_gpu_vendor() -> str:
@@ -88,7 +96,10 @@ class _Worker:
         self.expected_exit = threading.Event()
 
         self.pending: Dict[str, Future] = {}
+        self.pending_deadlines: dict[str, float] = {}
+        self.pending_meta: dict[str, tuple[str, str]] = {}
         self.pending_lock = threading.RLock()
+        self.request_timeout = _env_float("NEUROMITA_AI_REQUEST_TIMEOUT", 300.0)
 
         self.res_thread: Optional[threading.Thread] = None
         self.log_thread: Optional[threading.Thread] = None
@@ -123,20 +134,27 @@ class _Worker:
         self.proc.start()
         self.started_at = time.monotonic()
 
-        self.res_thread = threading.Thread(
-            target=self._result_loop, name=f"ai-result-{self.worker_name}", daemon=True
+        self.res_thread = task_supervisor().start_thread(
+            self, f"ai-result-{self.worker_name}", self._result_loop
         )
-        self.log_thread = threading.Thread(
-            target=self._log_loop, name=f"ai-log-{self.worker_name}", daemon=True
+        self.log_thread = task_supervisor().start_thread(
+            self, f"ai-log-{self.worker_name}", self._log_loop
         )
-        self.watch_thread = threading.Thread(
-            target=self._watch_process, name=f"ai-watch-{self.worker_name}", daemon=True
+        self.watch_thread = task_supervisor().start_thread(
+            self, f"ai-watch-{self.worker_name}", self._watch_process
         )
-        self.res_thread.start()
-        self.log_thread.start()
-        self.watch_thread.start()
+        task_supervisor().start_thread(
+            self, f"ai-deadlines-{self.worker_name}", self._deadline_loop
+        )
 
-    def call(self, method: str, payload: Optional[dict] = None, *, service: Optional[str] = None) -> Future:
+    def call(
+        self,
+        method: str,
+        payload: Optional[dict] = None,
+        *,
+        service: Optional[str] = None,
+        timeout: float | None = None,
+    ) -> Future:
         target_service = str(service or self.primary_service).strip().lower()
         if target_service not in self.ready_by_service:
             f = Future()
@@ -160,8 +178,30 @@ class _Worker:
         req_id = str(uuid.uuid4())
         fut = Future()
 
+        deadline = time.monotonic() + max(0.1, float(timeout or self.request_timeout))
         with self.pending_lock:
             self.pending[req_id] = fut
+            self.pending_deadlines[req_id] = deadline
+            self.pending_meta[req_id] = (target_service, str(method))
+
+        def cleanup_cancelled(done: Future) -> None:
+            if not done.cancelled():
+                return
+            with self.pending_lock:
+                removed = self.pending.pop(req_id, None)
+                self.pending_deadlines.pop(req_id, None)
+                self.pending_meta.pop(req_id, None)
+            if removed is not None:
+                try:
+                    self.cmd_q.put_nowait({
+                        "req_id": req_id,
+                        "control": "cancel_request",
+                        "service": target_service,
+                    })
+                except Exception:
+                    pass
+
+        fut.add_done_callback(cleanup_cancelled)
 
         try:
             self.cmd_q.put(
@@ -175,12 +215,10 @@ class _Worker:
             )
         except Full:
             e = RuntimeError(f"Worker '{self.worker_name}' command queue is full")
-            with self.pending_lock:
-                self.pending.pop(req_id, None)
+            self._pop_pending(req_id)
             fut.set_exception(e)
         except Exception as e:
-            with self.pending_lock:
-                self.pending.pop(req_id, None)
+            self._pop_pending(req_id)
             fut.set_exception(e)
 
         return fut
@@ -199,6 +237,8 @@ class _Worker:
         fut = Future()
         with self.pending_lock:
             self.pending[req_id] = fut
+            self.pending_deadlines[req_id] = time.monotonic() + max(1.0, float(timeout or 0.0)) + 1.0
+            self.pending_meta[req_id] = (target_service, "restart_service")
 
         try:
             self.cmd_q.put(
@@ -211,21 +251,18 @@ class _Worker:
                 timeout=1.0,
             )
         except Full:
-            with self.pending_lock:
-                self.pending.pop(req_id, None)
+            self._pop_pending(req_id)
             fut.set_exception(RuntimeError(f"Worker '{self.worker_name}' command queue is full"))
             return False
         except Exception as e:
-            with self.pending_lock:
-                self.pending.pop(req_id, None)
+            self._pop_pending(req_id)
             fut.set_exception(e)
             return False
 
         try:
             ok = bool(fut.result(timeout=max(1.0, float(timeout or 0.0)) + 1.0))
         except Exception:
-            with self.pending_lock:
-                self.pending.pop(req_id, None)
+            self._pop_pending(req_id)
             fut.cancel()
             return False
 
@@ -233,6 +270,49 @@ class _Worker:
             return False
 
         return bool(ev.wait(timeout=max(1.0, float(timeout or 0.0))))
+
+    def _pop_pending(self, req_id: str) -> Future | None:
+        with self.pending_lock:
+            future = self.pending.pop(str(req_id), None)
+            getattr(self, "pending_deadlines", {}).pop(str(req_id), None)
+            getattr(self, "pending_meta", {}).pop(str(req_id), None)
+            return future
+
+    def _deadline_loop(self) -> None:
+        while not self.stopping.wait(0.2):
+            now = time.monotonic()
+            expired: list[tuple[str, Future, tuple[str, str]]] = []
+            with self.pending_lock:
+                deadlines = getattr(self, "pending_deadlines", {})
+                metadata = getattr(self, "pending_meta", {})
+                for req_id, deadline in tuple(deadlines.items()):
+                    if deadline > now:
+                        continue
+                    future = self.pending.pop(req_id, None)
+                    deadlines.pop(req_id, None)
+                    meta = metadata.pop(req_id, (self.primary_service, "unknown"))
+                    if future is not None:
+                        expired.append((req_id, future, meta))
+            if not expired:
+                continue
+            for req_id, future, (service, method) in expired:
+                if not future.done():
+                    future.set_exception(TimeoutError(
+                        f"AI request timed out: {service}.{method} ({req_id})"
+                    ))
+                logger.error(
+                    f"AI worker '{self.worker_name}' is unresponsive: "
+                    f"{service}.{method} exceeded its deadline"
+                )
+            # A timed-out native call cannot be safely cancelled in-process.
+            # Terminating the isolated worker triggers the normal recovery path.
+            try:
+                proc = self.proc
+                if proc is not None and proc.is_alive():
+                    proc.terminate()
+            except Exception:
+                pass
+            return
 
     def wait_ready(self, service: str, timeout: float = 3.0) -> bool:
         target_service = str(service or "").strip().lower()
@@ -245,6 +325,8 @@ class _Worker:
         with self.pending_lock:
             pending = list(self.pending.values())
             self.pending.clear()
+            getattr(self, "pending_deadlines", {}).clear()
+            getattr(self, "pending_meta", {}).clear()
         for future in pending:
             try:
                 if not future.done():
@@ -404,8 +486,7 @@ class _Worker:
                 result = msg.get("result")
                 err = msg.get("error")
 
-                with self.pending_lock:
-                    fut = self.pending.pop(str(req_id), None)
+                fut = self._pop_pending(str(req_id))
 
                 if fut is None:
                     continue
@@ -465,7 +546,6 @@ class AIEngineController(AIEngineService):
 
     def __init__(self):
         self.event_bus = get_event_bus()
-        self.event_bus.subscribe(Events.AI.GET_ENGINE, self._on_get_engine, weak=False)
         self.event_bus.subscribe(Events.AI.RESTART_SERVICE, self._on_restart_service, weak=False)
 
         self._ctx = mp.get_context("spawn")
@@ -748,12 +828,13 @@ class AIEngineController(AIEngineService):
     def _on_worker_crash(self, worker: _Worker, exit_code: int | None) -> None:
         if self._shutting_down.is_set():
             return
-        threading.Thread(
-            target=self._recover_worker,
+        task_supervisor().start_thread(
+            self,
+            f"ai-recover-{worker.worker_name}",
+            self._recover_worker,
             args=(worker, exit_code),
-            name=f"ai-recover-{worker.worker_name}",
-            daemon=True,
-        ).start()
+            replace=True,
+        )
 
     def _recover_worker(self, crashed: _Worker, exit_code: int | None) -> None:
         max_attempts = _env_int("NEUROMITA_AI_RESTART_LIMIT", 3, minimum=1)
@@ -873,10 +954,22 @@ class AIEngineController(AIEngineService):
                 },
             )
 
-        threading.Thread(target=worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self,
+            f"ai-restart-{service}",
+            worker,
+            replace=True,
+        )
         return True
 
-    def call(self, service: str, method: str, payload: Optional[dict] = None) -> Future:
+    def call(
+        self,
+        service: str,
+        method: str,
+        payload: Optional[dict] = None,
+        *,
+        timeout: float | None = None,
+    ) -> Future:
         s = str(service or "").strip().lower()
         m = str(method or "").strip()
         if not s or not m:
@@ -890,7 +983,7 @@ class AIEngineController(AIEngineService):
             f.set_exception(RuntimeError(f"Unknown service: {s}"))
             return f
 
-        return w.call(m, payload or {}, service=s)
+        return w.call(m, payload or {}, service=s, timeout=timeout)
 
     def wait_ready(self, service: str, timeout: float = 3.0) -> bool:
         s = str(service or "").strip().lower()

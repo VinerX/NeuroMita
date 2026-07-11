@@ -1,53 +1,75 @@
+from __future__ import annotations
+
 import threading
-from typing import Dict, List, Callable, Any, Optional
+import time
 import weakref
 from dataclasses import dataclass
-from queue import Queue, Empty, Full
-import time
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 
 from core.executors import PoolSaturated, Pools, executors
+from core.serial_dispatcher import SerialDispatcher
 from main_logger import logger
 
 
-_ORDERED_EVENT_NAMES = frozenset({
-    "create_task",
-    "update_task_status",
-    "task_created",
-    "task_status_changed",
-    "notify_task_update",
-})
+_ORDERED_EVENT_NAMES = frozenset(
+    {
+        "create_task",
+        "update_task_status",
+        "task_created",
+        "task_status_changed",
+        "notify_task_update",
+        "prepare_stream_ui",
+        "append_stream_chunk_ui",
+        "finish_stream_ui",
+        "update_chat_ui",
+    }
+)
+
+_COMMAND_EVENT_NAMES = frozenset(
+    {
+        "installable_install",
+        "installable_uninstall",
+        "installable_initialize",
+        "run_install_with_ui",
+        "run_install_headless",
+        "install_cancel_queued",
+        "install_cancel_running",
+    }
+)
 
 
+class EventDelivery(str, Enum):
+    CRITICAL = "critical"
+    COMMAND = "command"
+    ORDERED = "ordered"
+    BEST_EFFORT = "best_effort"
 
-@dataclass
+
+@dataclass(slots=True)
 class Event:
-    """Базовый класс для всех событий"""
     name: str
     data: Any = None
-    timestamp: float = None
-    
-    def __post_init__(self):
+    timestamp: float | None = None
+
+    def __post_init__(self) -> None:
         if self.timestamp is None:
             self.timestamp = time.time()
 
 
-
-
 class EventSubscription:
-    """Идемпотентная подписка, пригодная для lifecycle-owned компонентов."""
-
     def __init__(
         self,
         bus: "EventBus",
         event_name: str,
-        callback: Callable,
+        callback: Callable[..., Any],
         *,
         weak: bool,
     ) -> None:
         self._bus_ref = weakref.ref(bus)
         self._event_name = str(event_name)
-        self._callback = None
-        self._callback_ref = None
+        self._callback: Callable[..., Any] | None = None
+        self._callback_ref: weakref.ReferenceType[Any] | None = None
         if weak:
             try:
                 if getattr(callback, "__self__", None) is not None:
@@ -76,42 +98,49 @@ class EventSubscription:
     def __enter__(self) -> "EventSubscription":
         return self
 
-    def __exit__(self, *_exc) -> None:
+    def __exit__(self, *_exc: Any) -> None:
         self.close()
 
 
 class EventBus:
-    """Шина однонаправленных уведомлений.
+    """Non-blocking fact bus with isolated critical and ordered channels."""
 
-    Запрос/ответ и чтение состояния выполняются через типизированные сервисы.
-    EventBus не возвращает значения обработчиков.
-    """
-
-    def __init__(self):
-        self._subscribers: Dict[str, List[weakref.ref]] = {}
+    def __init__(self) -> None:
+        self._subscribers: Dict[str, List[Any]] = {}
         self._lock = threading.RLock()
-
-        self._event_queue = Queue(maxsize=2048)
         self._running = True
-        self._processor_thread = threading.Thread(target=self._process_events, daemon=True)
-        self._processor_thread.start()
-    
+        self._critical = SerialDispatcher(
+            "event-critical",
+            lanes=4,
+            capacity_per_lane=0,
+        )
+        self._commands = SerialDispatcher(
+            "event-command",
+            lanes=1,
+            capacity_per_lane=0,
+        )
+        self._ordered = SerialDispatcher(
+            "event-ordered",
+            lanes=8,
+            capacity_per_lane=0,
+        )
+        self._dropped = 0
+
     def subscribe(
         self,
         event_name: str,
-        callback: Callable,
+        callback: Callable[..., Any],
         weak: bool = True,
     ) -> EventSubscription:
-        """Подписаться на notification-событие.
-
-        Для bound-method используется weakref.WeakMethod. Обычный weakref.ref
-        на ``obj.method`` умирает сразу после subscribe(), потому что каждый
-        доступ к методу создаёт временный объект bound-method.
-        """
         if not callable(callback):
             raise TypeError("callback must be callable")
-
         normalized = str(event_name)
+        if self._looks_like_query(normalized):
+            raise ValueError(
+                f"'{normalized}' is a query, not a fact event. "
+                "Read state through a typed service instead."
+            )
+
         with self._lock:
             subscribers = self._subscribers.setdefault(normalized, [])
             if not any(self._is_same_callback(ref, callback) for ref in subscribers):
@@ -124,249 +153,308 @@ class EventBus:
                         else:
                             stored = weakref.ref(callback, cleanup)
                     except TypeError:
-                        # Некоторые C-callable не поддерживают weakref. Сильная
-                        # ссылка безопаснее, чем молча потерянный subscriber.
                         stored = callback
                 else:
                     stored = callback
                 subscribers.append(stored)
-                logger.debug(f"Подписка на событие '{normalized}' добавлена")
-
         return EventSubscription(self, normalized, callback, weak=weak)
 
-    def unsubscribe(self, event_name: str, callback: Callable) -> None:
-        """Отписаться от события"""
+    def unsubscribe(self, event_name: str, callback: Callable[..., Any]) -> None:
+        normalized = str(event_name)
         with self._lock:
-            if event_name not in self._subscribers:
+            subscribers = self._subscribers.get(normalized)
+            if not subscribers:
                 return
-            
-            # Удаляем callback из списка подписчиков
-            self._subscribers[event_name] = [
-                ref for ref in self._subscribers[event_name]
-                if not self._is_same_callback(ref, callback)
+            kept = [
+                ref for ref in subscribers if not self._is_same_callback(ref, callback)
             ]
-            
-            # Удаляем пустые списки
-            if not self._subscribers[event_name]:
-                del self._subscribers[event_name]
-    
+            if kept:
+                self._subscribers[normalized] = kept
+            else:
+                self._subscribers.pop(normalized, None)
+
     def unsubscribe_owner(self, owner: Any) -> int:
-        """Удалить все bound-method подписки конкретного lifecycle owner."""
         if owner is None:
             return 0
         removed = 0
         with self._lock:
             for event_name in tuple(self._subscribers):
-                kept = []
+                kept: list[Any] = []
                 for ref in self._subscribers[event_name]:
-                    callback = ref() if isinstance(ref, weakref.ref) else ref
-                    if callback is None:
+                    callback = ref() if isinstance(ref, weakref.ReferenceType) else ref
+                    if callback is None or getattr(callback, "__self__", None) is owner:
                         removed += 1
-                        continue
-                    if getattr(callback, "__self__", None) is owner:
-                        removed += 1
-                        continue
-                    kept.append(ref)
+                    else:
+                        kept.append(ref)
                 if kept:
                     self._subscribers[event_name] = kept
                 else:
-                    del self._subscribers[event_name]
+                    self._subscribers.pop(event_name, None)
         return removed
 
     def try_emit(
-        self, event_name: str, data: Any = None, sync: bool = False
+        self,
+        event_name: str,
+        data: Any = None,
+        sync: bool = False,
+        *,
+        delivery: EventDelivery | str | None = None,
+        order_key: Any = None,
     ) -> bool:
-        """Попытаться доставить notification и сообщить, принят ли он шиной."""
         if not self._running:
             return False
-
-        event = Event(name=event_name, data=data)
-        if sync:
-            self._emit_sync(event)
-            return True
-
-        try:
-            self._event_queue.put(event, timeout=0.5)
-            return True
-        except Full:
-            logger.error(
-                "Event queue saturated; dropping event '%s' to protect process memory",
-                event_name,
+        normalized = str(event_name)
+        if self._looks_like_query(normalized):
+            raise ValueError(
+                f"'{normalized}' is a query, not a fact event. "
+                "Read state through a typed service instead."
             )
-            return False
 
-    def emit(self, event_name: str, data: Any = None, sync: bool = False) -> None:
-        """Отправить notification. Возвращаемое значение намеренно отсутствует."""
-        self.try_emit(event_name, data, sync)
+        event = Event(name=normalized, data=data)
+        with self._lock:
+            subscribers = self._get_active_subscribers(normalized)
+        if not subscribers:
+            return True
+
+        selected = self._delivery_for(normalized, sync=sync, delivery=delivery)
+        if selected is EventDelivery.BEST_EFFORT:
+            pool = executors().pool(Pools.EVENT_BUS)
+            try:
+                pool.try_submit(self._dispatch_event, subscribers, event)
+            except PoolSaturated:
+                self._record_drop(normalized, selected)
+                return False
+            return True
+
+        if selected is EventDelivery.ORDERED:
+            dispatcher = self._ordered
+            key = self._order_key(event, explicit=order_key)
+        elif selected is EventDelivery.COMMAND:
+            dispatcher = self._commands
+            key = "command"
+        else:
+            dispatcher = self._critical
+            key = normalized
+        accepted = dispatcher.submit(
+            self._dispatch_event,
+            subscribers,
+            event,
+            key=key,
+            description=f"{selected.value}:{normalized}",
+        )
+        if not accepted:
+            self._record_drop(normalized, selected)
+        return accepted
+
+    def emit(
+        self,
+        event_name: str,
+        data: Any = None,
+        sync: bool = False,
+        *,
+        delivery: EventDelivery | str | None = None,
+        order_key: Any = None,
+    ) -> None:
+        accepted = self.try_emit(
+            event_name,
+            data,
+            sync,
+            delivery=delivery,
+            order_key=order_key,
+        )
+        selected = self._delivery_for(str(event_name), sync=sync, delivery=delivery)
+        if not accepted and selected is not EventDelivery.BEST_EFFORT and self._running:
+            logger.error(f"Critical event '{event_name}' was rejected")
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self._commands.wait_idle(timeout=max(0.0, deadline - time.monotonic())):
+            return False
+        if not self._critical.wait_idle(timeout=max(0.0, deadline - time.monotonic())):
+            return False
+        return self._ordered.wait_idle(timeout=max(0.0, deadline - time.monotonic()))
 
     @property
     def is_running(self) -> bool:
-        """Жива ли шина. Фоновые демон-циклы проверяют это, чтобы не дёргать
-        emit/native-код во время teardown приложения (защита от access violation)."""
         return self._running
 
+    @property
+    def dropped_events(self) -> int:
+        return self._dropped
+
     def shutdown(self) -> None:
-        """Остановить систему событий"""
         if not self._running:
             return
         self._running = False
-        try:
-            self._event_queue.put(None, timeout=1.0)
-        except Full:
-            try:
-                self._event_queue.get_nowait()
-            except Empty:
-                pass
-            self._event_queue.put_nowait(None)
-        self._processor_thread.join(timeout=5)
-    
-    def _process_events(self) -> None:
-        """Обработчик очереди событий (работает в отдельном потоке)"""
-        while True:
-            try:
-                event = self._event_queue.get(timeout=0.1)
-                if event is None:  # Сигнал остановки
-                    break
-                
-                if event.name in _ORDERED_EVENT_NAMES:
-                    self._emit_sync(event)
-                else:
-                    self._emit_async(event)
-            except Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Ошибка при обработке события: {e}", exc_info=True)
-    
-    def _emit_sync(self, event: Event) -> None:
-        """Синхронная отправка события"""
-        with self._lock:
-            subscribers = self._get_active_subscribers(event.name)
-        
-        for subscriber in subscribers:
-            try:
-                subscriber(event)
-            except Exception as e:
-                logger.error(f"Ошибка при обработке события '{event.name}': {e}", exc_info=True)
-    
-    def _emit_async(self, event: Event) -> None:
-        """Асинхронная отправка события"""
-        with self._lock:
-            subscribers = self._get_active_subscribers(event.name)
+        self._commands.close(drain=True, timeout=3.0)
+        self._critical.close(drain=True, timeout=3.0)
+        self._ordered.close(drain=True, timeout=3.0)
 
-        pool = executors().pool(Pools.EVENT_BUS)
-        for subscriber in subscribers:
-            try:
-                pool.try_submit(self._safe_call, subscriber, event)
-            except PoolSaturated:
-                self._safe_call(subscriber, event)
-    
-    def _safe_call(self, callback: Callable, event: Event) -> None:
-        """Безопасный вызов обработчика"""
+    def _dispatch_event(
+        self,
+        subscribers: tuple[Callable[..., Any], ...] | list[Callable[..., Any]],
+        event: Event,
+    ) -> None:
+        for callback in subscribers:
+            self._safe_call(callback, event)
+
+    def _safe_call(self, callback: Callable[..., Any], event: Event) -> None:
         try:
             callback(event)
-        except Exception as e:
-            logger.error(f"Ошибка при обработке события '{event.name}': {e}", exc_info=True)
-    
-    def _get_active_subscribers(self, event_name: str) -> List[Callable]:
-        """Получить список активных подписчиков"""
-        if event_name not in self._subscribers:
+        except Exception as exc:
+            logger.error(
+                f"Event subscriber failed for '{event.name}': {exc}",
+                exc_info=True,
+            )
+
+    def _get_active_subscribers(self, event_name: str) -> List[Callable[..., Any]]:
+        subscribers = self._subscribers.get(event_name)
+        if not subscribers:
             return []
-        
-        active_subscribers = []
-        dead_refs = []
-        
-        for ref in self._subscribers[event_name]:
-            if isinstance(ref, weakref.ref):
-                callback = ref()
-                if callback is not None:
-                    active_subscribers.append(callback)
-                else:
-                    dead_refs.append(ref)
+        active: list[Callable[..., Any]] = []
+        dead: list[Any] = []
+        for ref in subscribers:
+            callback = ref() if isinstance(ref, weakref.ReferenceType) else ref
+            if callback is None:
+                dead.append(ref)
             else:
-                # Сильная ссылка
-                active_subscribers.append(ref)
-        
-        # Очистка мертвых ссылок
-        if dead_refs:
-            for dead_ref in dead_refs:
-                self._subscribers[event_name].remove(dead_ref)
-        
-        return active_subscribers
-    
-    def _create_cleanup_callback(self, event_name: str):
-        """Создать callback для очистки мертвых ссылок"""
-        def cleanup(weak_ref):
-            with self._lock:
-                if event_name in self._subscribers:
-                    try:
-                        self._subscribers[event_name].remove(weak_ref)
-                        if not self._subscribers[event_name]:
-                            del self._subscribers[event_name]
-                    except ValueError:
-                        pass
+                active.append(callback)
+        if dead:
+            self._subscribers[event_name] = [ref for ref in subscribers if ref not in dead]
+            if not self._subscribers[event_name]:
+                self._subscribers.pop(event_name, None)
+        return active
+
+    def _create_cleanup_callback(self, event_name: str) -> Callable[[Any], None]:
+        bus_ref = weakref.ref(self)
+
+        def cleanup(dead_ref: Any) -> None:
+            bus = bus_ref()
+            if bus is None:
+                return
+            with bus._lock:
+                subscribers = bus._subscribers.get(event_name)
+                if not subscribers:
+                    return
+                try:
+                    subscribers.remove(dead_ref)
+                except ValueError:
+                    return
+                if not subscribers:
+                    bus._subscribers.pop(event_name, None)
+
         return cleanup
-    
-    def _is_same_callback(self, ref: Any, callback: Callable) -> bool:
-        """Проверить, указывает ли ссылка на тот же callback.
 
-        Сравнение через `==`, а не `is`: `obj.method` создаёт новый bound-method
-        на каждое обращение, поэтому `is` здесь всегда False — unsubscribe()
-        для методов не срабатывал вовсе. Bound-методы равны по (__self__, __func__).
-        """
-        target = ref() if isinstance(ref, weakref.ref) else ref
-        if target is None:
-            return False
-        return target == callback
+    @staticmethod
+    def _is_same_callback(ref: Any, callback: Callable[..., Any]) -> bool:
+        target = ref() if isinstance(ref, weakref.ReferenceType) else ref
+        return target is not None and target == callback
+
+    @staticmethod
+    def _looks_like_query(event_name: str) -> bool:
+        normalized = str(event_name).strip().lower()
+        return normalized.startswith("get_") or "_get_" in normalized
+
+    @staticmethod
+    def _delivery_for(
+        event_name: str,
+        *,
+        sync: bool,
+        delivery: EventDelivery | str | None,
+    ) -> EventDelivery:
+        if delivery is not None:
+            return delivery if isinstance(delivery, EventDelivery) else EventDelivery(str(delivery))
+        if event_name in _COMMAND_EVENT_NAMES:
+            return EventDelivery.COMMAND
+        if sync or event_name in _ORDERED_EVENT_NAMES:
+            return EventDelivery.ORDERED
+        return EventDelivery.CRITICAL
+
+    @staticmethod
+    def _order_key(event: Event, *, explicit: Any = None) -> Any:
+        if explicit is not None:
+            return explicit
+        data = event.data if isinstance(event.data, dict) else {}
+        return (
+            data.get("stream_id")
+            or data.get("task_uid")
+            or data.get("uid")
+            or data.get("character_id")
+            or event.name
+        )
+
+    def _record_drop(self, event_name: str, delivery: EventDelivery) -> None:
+        self._dropped += 1
+        logger.error(
+            f"Event channel saturated; rejected '{event_name}' "
+            f"({delivery.value})"
+        )
 
 
-# Глобальный экземпляр для удобства использования
 _global_event_bus: Optional[EventBus] = None
-# После shutdown повторно шину НЕ создаём: иначе поздний демон-поток, дёрнувший
-# get_event_bus() во время teardown, поднял бы новый processor-поток на
-# завершающемся интерпретаторе — классический источник fatal-падений на
-# закрытии (#19). Возвращаем уже остановленную шину (emit на ней — no-op).
 _event_bus_shutdown = False
 
 
 def get_event_bus() -> EventBus:
-    """Получить глобальный экземпляр EventBus"""
     global _global_event_bus
-    if _global_event_bus is None and not _event_bus_shutdown:
+    if _global_event_bus is None:
         _global_event_bus = EventBus()
+        if _event_bus_shutdown:
+            _global_event_bus.shutdown()
     return _global_event_bus
 
 
 def shutdown_event_bus() -> None:
-    """Остановить глобальный EventBus"""
     global _global_event_bus, _event_bus_shutdown
     _event_bus_shutdown = True
     if _global_event_bus is not None:
         _global_event_bus.shutdown()
 
 
-# Удобные алиасы для быстрого доступа
 def subscribe(
-    event_name: str, callback: Callable, weak: bool = True
+    event_name: str,
+    callback: Callable[..., Any],
+    weak: bool = True,
 ) -> EventSubscription:
-    """Подписаться на событие через глобальный EventBus."""
     return get_event_bus().subscribe(event_name, callback, weak)
 
 
-def unsubscribe(event_name: str, callback: Callable) -> None:
-    """Отписаться от события через глобальный EventBus"""
+def unsubscribe(event_name: str, callback: Callable[..., Any]) -> None:
     get_event_bus().unsubscribe(event_name, callback)
 
 
-def try_emit(event_name: str, data: Any = None, sync: bool = False) -> bool:
-    """Попытаться отправить событие через глобальный EventBus."""
-    return get_event_bus().try_emit(event_name, data, sync)
+def try_emit(
+    event_name: str,
+    data: Any = None,
+    sync: bool = False,
+    *,
+    delivery: EventDelivery | str | None = None,
+    order_key: Any = None,
+) -> bool:
+    return get_event_bus().try_emit(
+        event_name,
+        data,
+        sync,
+        delivery=delivery,
+        order_key=order_key,
+    )
 
 
-def emit(event_name: str, data: Any = None, sync: bool = False) -> None:
-    """Отправить событие через глобальный EventBus"""
-    get_event_bus().emit(event_name, data, sync)
-
-
+def emit(
+    event_name: str,
+    data: Any = None,
+    sync: bool = False,
+    *,
+    delivery: EventDelivery | str | None = None,
+    order_key: Any = None,
+) -> None:
+    get_event_bus().emit(
+        event_name,
+        data,
+        sync,
+        delivery=delivery,
+        order_key=order_key,
+    )
 class Events:
     """
     Константы с именами событий, сгруппированные по логическим модулям.
@@ -681,6 +769,7 @@ class Events:
         # CANCEL_QUEUED: запрос отмены ещё не начатой задачи {"task_id": ...}.
         QUEUE_CHANGED = "install_queue_changed"
         CANCEL_QUEUED = "install_cancel_queued"
+        CANCEL_RUNNING = "install_cancel_running"
 
     class Installable:
         LIST = "installable_list"

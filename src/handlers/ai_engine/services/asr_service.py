@@ -90,24 +90,27 @@ class ASRService:
         self._engine_id = engine_id
         self._engine_settings = engine_settings or {}
 
-        rec = self._get_recognizer(engine_id)
+        rec = await asyncio.to_thread(self._get_recognizer, engine_id)
         if rec is None:
             return False
 
         try:
             if hasattr(rec, "apply_settings"):
-                rec.apply_settings(self._engine_settings)
+                await asyncio.to_thread(rec.apply_settings, self._engine_settings)
         except Exception:
             pass
 
         if hasattr(rec, "is_installed"):
             try:
-                if not rec.is_installed():
+                if not await asyncio.to_thread(rec.is_installed):
                     return False
             except Exception:
                 pass
 
-        ok = await rec.init()
+        # Most legacy recognizer ``init`` implementations are declared async but
+        # perform imports, model loading and filesystem/network work
+        # synchronously. Run their private event loop off the shared AI loop.
+        ok = await asyncio.to_thread(lambda: asyncio.run(rec.init()))
         if not ok:
             return False
 
@@ -128,17 +131,21 @@ class ASRService:
 
         async def _runner():
             try:
-                await rec.live_recognition(
-                    mic_index,
-                    _handle_text,
-                    vad_model,
-                    _active_flag,
-                    sample_rate=sample_rate,
-                    chunk_size=chunk_size,
-                    vad_threshold=vad_threshold,
-                    silence_timeout=silence_timeout,
-                    pre_buffer_duration=pre_buffer_duration,
-                    max_speech_duration=max_speech_duration,
+                await asyncio.to_thread(
+                    lambda: asyncio.run(
+                        rec.live_recognition(
+                            mic_index,
+                            _handle_text,
+                            vad_model,
+                            _active_flag,
+                            sample_rate=sample_rate,
+                            chunk_size=chunk_size,
+                            vad_threshold=vad_threshold,
+                            silence_timeout=silence_timeout,
+                            pre_buffer_duration=pre_buffer_duration,
+                            max_speech_duration=max_speech_duration,
+                        )
+                    )
                 )
             except asyncio.CancelledError:
                 raise
@@ -159,12 +166,10 @@ class ASRService:
 
         if self._task is not None:
             try:
-                self._task.cancel()
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=5.0)
             except asyncio.TimeoutError:
-                pass
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
             except Exception:
                 pass
             finally:
@@ -172,7 +177,7 @@ class ASRService:
 
         if self._recognizer is not None:
             try:
-                self._recognizer.cleanup()
+                await asyncio.to_thread(self._recognizer.cleanup)
             except Exception:
                 pass
             finally:
@@ -185,19 +190,22 @@ class ASRService:
         if self._vad_model is not None:
             return self._vad_model
 
-        try:
-            from handlers.embedding_handler import _ensure_torch_and_transformers
-            _ensure_torch_and_transformers()
-            import torch
-        except Exception as e:
-            raise RuntimeError(f"torch not available for VAD: {e}") from None
+        def load() -> Any:
+            try:
+                from handlers.embedding_handler import _ensure_torch_and_transformers
 
-        try:
-            from silero_vad import load_silero_vad
-        except Exception as e:
-            raise RuntimeError(f"silero_vad not available: {e}") from None
+                _ensure_torch_and_transformers()
+                import torch  # noqa: F401
+            except Exception as e:
+                raise RuntimeError(f"torch not available for VAD: {e}") from None
 
-        self._vad_model = load_silero_vad()
+            try:
+                from silero_vad import load_silero_vad
+            except Exception as e:
+                raise RuntimeError(f"silero_vad not available: {e}") from None
+            return load_silero_vad()
+
+        self._vad_model = await asyncio.to_thread(load)
         return self._vad_model
 
     def _unload_vad_model(self):

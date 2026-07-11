@@ -1,19 +1,20 @@
 # Файл с моделью для эмбеддингов
 from __future__ import annotations
 
-import gc
 import os
 import sys
 import time
 from threading import Lock
-from typing import ClassVar, List, Optional, Tuple
+from typing import TYPE_CHECKING, ClassVar, List, Optional, Tuple
 
 import numpy as np
 
 from main_logger import logger
 from managers.settings_manager import SettingsManager
-from core.backends import get_backend_service
-from utils.gpu_utils import check_gpu_provider
+
+if TYPE_CHECKING:
+    import torch
+    from transformers import AutoModel, AutoTokenizer
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -44,58 +45,43 @@ def _ensure_checkpoints_dir() -> str:
 checkpoints_dir = _ensure_checkpoints_dir()
 
 
-def _ensure_lib_on_path():
-    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
-    sys.path = [
-        p for p in sys.path
-        if os.path.normcase(os.path.abspath(p or "")) != lib_path_norm
+def _assert_managed_worker_runtime() -> None:
+    if os.environ.get("NEUROMITA_AI_WORKER") != "1":
+        return
+    declared = [
+        os.path.normcase(os.path.abspath(item))
+        for item in os.environ.get("NEUROMITA_RUNTIME_PYTHON_PATHS", "").split(os.pathsep)
+        if item
     ]
-    sys.path.insert(0, lib_path)
+    if not declared:
+        raise RuntimeError("AI worker started without a managed runtime environment")
+    root = os.path.normcase(os.path.abspath(os.environ.get("NEUROMITA_RUNTIME_ROOT", "")))
+    if root and any(path == root for path in declared):
+        raise RuntimeError("AI worker runtime illegally contains the shared Lib root")
 
 
 def _ensure_torch_and_transformers() -> None:
-    _ensure_lib_on_path()
-
+    _assert_managed_worker_runtime()
     try:
-        gpu = check_gpu_provider() or "CPU"
-    except Exception:
-        gpu = "CPU"
-
-    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    backend_service = get_backend_service()
-    backend_ctx = {"gpu_vendor": gpu, "libs_dir": lib_path}
-    backend_kind = backend_service.preferred_torch_kind(backend_ctx)
-    status = backend_service.get_status(backend_kind, ctx=backend_ctx)
-    installed_variant = backend_service.get_installed_torch_variant(target_dir=lib_path)
-    logger.info(
-        f"torch bootstrap: gpu={gpu}, required_backend={backend_kind.value}, installed_variant={installed_variant}, "
-        f"action={status.action}, torch_in_sys_modules={'torch' in sys.modules}"
-    )
-
-    if not status.ok:
+        import torch
+    except Exception as exc:
         raise RuntimeError(
-            "RAG backend runtime is not installed. Install the RAG component via the installable pipeline first: "
-            + (status.reason or status.action)
-        )
+            "PyTorch is unavailable in the active RAG environment. "
+            "Reinstall the RAG component through AI Hub."
+        ) from exc
 
-    import torch
     torch_cuda_ver = getattr(torch.version, "cuda", None)
     torch_file = getattr(torch, "__file__", "?")
     logger.info(
         f"torch loaded: version={torch.__version__}, cuda_version={torch_cuda_ver}, "
         f"cuda_available={torch.cuda.is_available()}, path={torch_file}"
     )
-    if backend_kind.value == "cuda" and torch_cuda_ver is None:
-        raise RuntimeError(
-            f"CUDA backend is required, but loaded torch has no CUDA runtime. torch.__file__={torch_file}"
-        )
-
     try:
         from transformers import AutoModel, AutoTokenizer  # noqa: F401
     except Exception as exc:
         raise RuntimeError(
-            "transformers is not installed. Install the RAG component via the installable pipeline first."
+            "transformers is unavailable in the active RAG environment. "
+            "Reinstall the RAG component through AI Hub."
         ) from exc
 
 
@@ -151,8 +137,8 @@ class EmbeddingModelHandler:
     @classmethod
     def _unload_shared(cls) -> None:
         """Выгружает текущий shared instance и освобождает память."""
-        import torch
         import gc
+        import torch
 
         inst = cls._shared_instance
         if inst is None:
@@ -165,6 +151,7 @@ class EmbeddingModelHandler:
             pass
         del inst
         gc.collect()
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -177,7 +164,6 @@ class EmbeddingModelHandler:
 
     def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
         _ensure_torch_and_transformers()
-        import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
         self.query_prefix = query_prefix if query_prefix else QUERY_PREFIX
         self.device = self._get_device()
@@ -234,7 +220,6 @@ class EmbeddingModelHandler:
 
     def _load_model_impl(self, *, local_files_only: bool) -> Tuple["AutoTokenizer", "AutoModel"]:
         """Загружает модель и токенизатор с указанными параметрами."""
-        import torch  # локальный импорт
         from transformers import AutoModel, AutoTokenizer  # локальные импорты
 
         logger.info(

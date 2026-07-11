@@ -50,37 +50,37 @@ class TTSService:
             if not lang:
                 return False
             self._voice_language = lang
-            lv = self._get_local_voice()
+            lv = await asyncio.to_thread(self._get_local_voice)
             try:
-                lv.change_voice_language(lang)
+                await asyncio.to_thread(lv.change_voice_language, lang)
             except Exception:
                 pass
             return True
 
         if m == "list_models":
-            lv = self._get_local_voice()
-            return lv.get_all_model_configs() or []
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return await asyncio.to_thread(lv.get_all_model_configs) or []
 
         if m == "check_installed":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            return bool(lv.is_model_installed(model_id))
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return bool(await asyncio.to_thread(lv.is_model_installed, model_id))
 
         if m == "check_initialized":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            return bool(lv.is_model_initialized(model_id))
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return bool(await asyncio.to_thread(lv.is_model_initialized, model_id))
 
         if m == "select_model":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            lv.select_model(model_id)
+            lv = await asyncio.to_thread(self._get_local_voice)
+            await asyncio.to_thread(lv.select_model, model_id)
             self._current_model_id = model_id
             return True
 
@@ -90,7 +90,7 @@ class TTSService:
             if not model_id:
                 return False
 
-            lv = self._get_local_voice()
+            lv = await asyncio.to_thread(self._get_local_voice)
             self.emit_event("log", f"[tts:init] start model_id={model_id} warmup={do_warmup}")
             ok = await get_scheduler().run(Priority.BULK, lv.initialize_model, model_id, init=False)
             if not ok:
@@ -144,8 +144,8 @@ class TTSService:
             if not model_id:
                 raise RuntimeError("No voice model selected")
 
-            lv = self._get_local_voice()
-            lv.select_model(model_id)
+            lv = await asyncio.to_thread(self._get_local_voice)
+            await asyncio.to_thread(lv.select_model, model_id)
             self._current_model_id = model_id
 
             out_abs = os.path.abspath(output_file)

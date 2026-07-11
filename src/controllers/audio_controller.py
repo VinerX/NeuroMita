@@ -1,6 +1,5 @@
 import os
 import glob
-import asyncio
 from typing import Optional
 
 from handlers.audio_handler import AudioHandler
@@ -8,7 +7,13 @@ from main_logger import logger
 from presets.local_voice_models import LOCAL_VOICE_MODELS
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import AudioStateService, GameLinkService, LoopService
+from services.contracts import (
+    AudioStateService,
+    GameLinkService,
+    LocalVoiceService,
+    LoopService,
+    TelegramService,
+)
 from managers.task_manager import TaskStatus
 from utils import process_text_to_voice
 
@@ -46,7 +51,6 @@ class AudioController(AudioStateService):
         eb = self.event_bus
         eb.subscribe(Events.Audio.VOICEOVER_REQUESTED, self._on_voiceover_requested, weak=False)
         eb.subscribe(Events.Audio.DELETE_SOUND_FILES, self._on_delete_sound_files, weak=False)
-        eb.subscribe(Events.Audio.GET_WAITING_ANSWER, self._on_get_waiting_answer, weak=False)
         eb.subscribe(Events.Audio.SET_WAITING_ANSWER, self._on_set_waiting_answer, weak=False)
 
     def _set_mita_speaking(self, active: bool):
@@ -194,20 +198,12 @@ class AudioController(AudioStateService):
     async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None, message_id=None):
         logger.info("Попытка получить фразу (Telegram)")
 
-        future = asyncio.Future()
         logger.notify(f"Отправка на озвучку в Telegram текста: {voice_text[:50]}...")
 
-        self.event_bus.emit(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, {
-            "text": voice_text,
-            "speaker_command": speaker_command,
-            "id": 0,
-            "future": future,
-            "task_uid": task_uid
-        })
-
         try:
-            await future
-            voiceover_path = future.result()
+            voiceover_path = await use(TelegramService).send_voice(
+                voice_text, speaker_command, 0
+            )
             logger.notify(voiceover_path)
 
             # Синтез завершён, файл получен — только теперь показываем «Озвучивает…».
@@ -240,18 +236,12 @@ class AudioController(AudioStateService):
         voice_profile: Optional[dict] = None,
         message_id: Optional[str] = None,
     ):
-        future = asyncio.Future()
-        self.event_bus.emit(Events.Audio.LOCAL_SEND_VOICE_REQUEST, {
-            "text": voice_text,
-            "future": future,
-            "task_uid": task_uid,
-            "character_id": character_id,
-            "voice_profile": voice_profile,
-        })
-
         try:
-            await future
-            result_path = future.result()
+            result_path = await use(LocalVoiceService).synthesize(
+                voice_text,
+                character_id=character_id,
+                voice_profile=voice_profile,
+            )
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {

@@ -8,7 +8,7 @@ import datetime
 from typing import Any
 
 from main_logger import logger
-from core.events import get_event_bus, Events, Event
+from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from managers.task_manager import TaskStatus
@@ -251,7 +251,6 @@ class ChatController:
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Chat.SEND_MESSAGE, self._on_send_message, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_LLM_PROCESSING_STATUS, self._on_get_llm_processing_status, weak=False)
         self.event_bus.subscribe("send_periodic_image_request", self._on_send_periodic_image_request, weak=False)
         self.event_bus.subscribe(Events.Chat.CLEAR_CHAT, self._on_clear_chat, weak=False)
 
@@ -357,7 +356,7 @@ class ChatController:
                         "character_name": effective_character_name,
                         "speaker_name": effective_character_name,
                         "role": "think",
-                    }, sync=True)
+                    }, delivery=EventDelivery.ORDERED)
                     stream_current_role = "think"
                     stream_started = True
 
@@ -365,7 +364,7 @@ class ChatController:
                     "stream_id": stream_id,
                     "chunk": think_chunk,
                     "role": "think",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
             stream_json_filter  = StructuredJsonStreamFilter() if is_streaming else None
@@ -381,14 +380,14 @@ class ChatController:
                         "character_name": effective_character_name,
                         "speaker_name": effective_character_name,
                         "role": "assistant",
-                    }, sync=True)
+                    }, delivery=EventDelivery.ORDERED)
                     stream_current_role = "assistant"
                     stream_started = True
                 self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
                     "stream_id": stream_id,
                     "chunk": text,
                     "role": "assistant",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             def stream_callback_handler(chunk: str):
                 if not eff_policy.echo_to_ui:
@@ -434,7 +433,7 @@ class ChatController:
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             if image_data and eff_policy.echo_to_ui and not images_shown:
                 img_display_role = "assistant" if image_source == "mita_camera" else "user"
@@ -452,7 +451,7 @@ class ChatController:
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             result: ChatGenerationResult | None = use(GenerationService).generate_chat(
                 ChatGenerationRequest(
@@ -572,7 +571,7 @@ class ChatController:
                 finish_payload = {"stream_id": stream_id}
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, sync=True)
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, delivery=EventDelivery.ORDERED)
                 stream_finished = True
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
@@ -590,7 +589,7 @@ class ChatController:
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
                         "speaker_name": effective_character_name or ""
-                    }, sync=True)
+                    }, delivery=EventDelivery.ORDERED)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
@@ -603,7 +602,7 @@ class ChatController:
                     "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
@@ -627,7 +626,7 @@ class ChatController:
                     self.event_bus.emit(
                         Events.GUI.FINISH_STREAM_UI,
                         {"stream_id": stream_id, "aborted": True},
-                        sync=True,
+                        delivery=EventDelivery.ORDERED,
                     )
                 except Exception:
                     pass

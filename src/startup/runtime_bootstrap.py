@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import faulthandler
-import importlib
 import json
 import os
-import re
+import site
 import sys
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,12 +45,62 @@ def _resolve_base_dir(entry_file: str | None = None) -> str:
     return os.path.dirname(os.path.dirname(current_file))
 
 
+def _is_runtime_layer(path: Path) -> bool:
+    return (path / "manifest.json").is_file() and (path / "site-packages").is_dir()
+
+
+def _migrate_legacy_runtime_layout(runtime_root: Path) -> None:
+    core_root = runtime_root / "core"
+    environment_root = runtime_root / "environment"
+    bases_root = environment_root / "bases"
+    overlays_root = environment_root / "overlays"
+
+    core_root.mkdir(parents=True, exist_ok=True)
+    bases_root.mkdir(parents=True, exist_ok=True)
+    overlays_root.mkdir(parents=True, exist_ok=True)
+
+    # A previous environment implementation stored AI base layers in Lib/core.
+    # Move only directories that carry a layer manifest; ordinary application
+    # packages belong to the main-process core and remain in place.
+    for child in tuple(core_root.iterdir()):
+        if not child.is_dir() or not _is_runtime_layer(child):
+            continue
+        target = bases_root / child.name
+        if target.exists():
+            continue
+        child.replace(target)
+
+    # Older overlays lived directly under Lib/environment/<logical>/<revision>.
+    for logical in tuple(environment_root.iterdir()):
+        if not logical.is_dir() or logical.name in {"bases", "overlays", ".staging", ".locks"}:
+            continue
+        target_logical = overlays_root / logical.name
+        target_logical.mkdir(parents=True, exist_ok=True)
+        for revision in tuple(logical.iterdir()):
+            if not revision.is_dir() or not _is_runtime_layer(revision):
+                continue
+            target = target_logical / revision.name
+            if not target.exists():
+                revision.replace(target)
+        try:
+            logical.rmdir()
+        except OSError:
+            pass
+
+
 def _configure_paths(base_dir: str) -> str:
     os.environ["NEUROMITA_BASE_DIR"] = base_dir
+    runtime_root = Path(base_dir, "Lib").resolve()
+    core_root = runtime_root / "core"
+    environment_root = runtime_root / "environment"
+    runtime_paths = {
+        "NEUROMITA_RUNTIME_ROOT": str(runtime_root),
+        "NEUROMITA_LIB_DIR": str(core_root),
+        "NEUROMITA_CORE_DIR": str(core_root),
+        "NEUROMITA_ENVIRONMENT_DIR": str(environment_root),
+    }
+    os.environ.update(runtime_paths)
     defaults = {
-        "NEUROMITA_LIB_DIR": os.path.join(base_dir, "Lib"),
-        "NEUROMITA_CORE_DIR": os.path.join(base_dir, "Lib", "core"),
-        "NEUROMITA_ENVIRONMENT_DIR": os.path.join(base_dir, "Lib", "environment"),
         "NEUROMITA_PROMPTS_DIR": os.path.join(base_dir, "Prompts"),
         "NEUROMITA_HISTORIES_DIR": os.path.join(base_dir, "Histories"),
         "NEUROMITA_MODELS_DIR": os.path.join(base_dir, "Models"),
@@ -61,20 +109,62 @@ def _configure_paths(base_dir: str) -> str:
     for key, value in defaults.items():
         os.environ.setdefault(key, value)
 
-    libs_dir = os.environ["NEUROMITA_LIB_DIR"]
-    os.makedirs(libs_dir, exist_ok=True)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_runtime_layout(runtime_root)
+    core_root.mkdir(parents=True, exist_ok=True)
+    environment_root.mkdir(parents=True, exist_ok=True)
 
     local_python = os.path.join(base_dir, "libs", "python", "python.exe")
-    os.environ["NEUROMITA_PYTHON"] = local_python if os.path.exists(local_python) else sys.executable
+    python_executable = local_python if os.path.exists(local_python) else sys.executable
+    os.environ["NEUROMITA_PYTHON"] = python_executable
 
-    libs_norm = os.path.normcase(os.path.abspath(libs_dir))
+    forbidden = {
+        os.path.normcase(os.path.abspath(str(runtime_root))),
+        os.path.normcase(os.path.abspath(str(environment_root))),
+        os.path.normcase(os.path.abspath(str(core_root))),
+        os.path.normcase(
+            os.path.abspath(
+                os.path.join(os.path.dirname(python_executable), "Lib", "site-packages")
+            )
+        ),
+    }
     sys.path = [
-        item
-        for item in sys.path
-        if os.path.normcase(os.path.abspath(item or "")) != libs_norm
+        item for item in sys.path
+        if os.path.normcase(os.path.abspath(item or "")) not in forbidden
     ]
-    sys.path.insert(0, libs_dir)
-    return libs_dir
+    before = tuple(sys.path)
+    site.addsitedir(str(core_root))
+    added = [item for item in sys.path if item not in before]
+    sys.path = [item for item in sys.path if item not in added]
+    sys.path[:0] = added or [str(core_root)]
+
+    # Optional main-process dependencies are isolated from the immutable core
+    # and from AI workers. They are activated only from ready registry entries.
+    try:
+        from core.runtime_environments import RuntimeEnvironmentManager
+
+        manager = RuntimeEnvironmentManager(runtime_root)
+        manager.cleanup_inactive_overlays()
+        main_paths = manager.main_runtime_paths()
+    except Exception:
+        main_paths = ()
+
+    loaded_main_paths: list[str] = []
+    for dependency_path in main_paths:
+        path = Path(dependency_path).resolve()
+        if not path.is_dir():
+            continue
+        before_dependency = tuple(sys.path)
+        site.addsitedir(str(path))
+        dependency_added = [item for item in sys.path if item not in before_dependency]
+        # Keep Lib/core authoritative; optional layers are lower-priority and
+        # therefore cannot replace main-process packages accidentally.
+        for item in dependency_added or [str(path)]:
+            if item not in loaded_main_paths:
+                loaded_main_paths.append(item)
+
+    os.environ["NEUROMITA_MAIN_ENVIRONMENT_PATHS"] = os.pathsep.join(loaded_main_paths)
+    return str(core_root)
 
 
 def _configure_crash_logging(base_dir: str):
@@ -181,149 +271,16 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
         logger.warning(f"Update check failed: {exc}")
 
 
-def _run_torch_bootstrap(libs_dir: str, logger: Any) -> None:
-    try:
-        from core.backends import get_backend_service
-        from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
-        from utils.pip_installer import PipInstaller
-
-        backend_service = get_backend_service()
-        gpu = check_gpu_provider() or "CPU"
-        gpu_label = format_primary_gpu_label()
-        backend_ctx = {"gpu_vendor": gpu, "libs_dir": libs_dir}
-        backend_kind = backend_service.preferred_torch_kind(backend_ctx)
-        status = backend_service.get_status(backend_kind, ctx=backend_ctx)
-        installed_variant = backend_service.get_installed_torch_variant(target_dir=libs_dir)
-
-        if status.action == "reinstall" and installed_variant is not None:
-            logger.info(
-                f"Torch bootstrap: gpu={gpu_label}, action=reinstall (CPU→CUDA)"
-            )
-            pip_installer = PipInstaller(update_log=logger.info)
-            pip_installer.uninstall_packages(
-                ["torch", "torchaudio"],
-                description="Удаление CPU-варианта PyTorch",
-            )
-            status = backend_service.install_backend(
-                backend_kind,
-                pip_installer=pip_installer,
-                ctx=backend_ctx,
-            )
-            if not status.ok:
-                raise RuntimeError(status.reason)
-        elif status.action != "skip":
-            logger.info(
-                f"Torch bootstrap: gpu={gpu_label}, action={status.action} — "
-                "отложено до первого использования"
-            )
-        else:
-            logger.info(
-                f"Torch bootstrap: gpu={gpu_label}, action=skip — {status.reason or ''}"
-            )
-    except Exception as exc:
-        logger.warning(f"Torch early bootstrap failed: {exc}")
+def _run_torch_bootstrap(_libs_dir: str, logger: Any) -> None:
+    # Heavy AI runtimes are installed transactionally by AI Hub into
+    # Lib/environment. The main process must never mutate or import them.
+    logger.info("AI backend bootstrap is managed by AI Hub and deferred until use")
 
 
-def _atomic_rewrite(path: str, transform: Callable[[str], str], logger: Any) -> bool:
-    if not os.path.isfile(path):
-        return False
-
-    try:
-        with open(path, "r", encoding="utf-8") as source:
-            old_text = source.read()
-        new_text = transform(old_text)
-        if new_text == old_text:
-            return False
-
-        directory = os.path.dirname(path)
-        fd, temp_path = tempfile.mkstemp(prefix=".neuromita-patch-", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as target:
-                target.write(new_text)
-                target.flush()
-                os.fsync(target.fileno())
-            os.replace(temp_path, path)
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-        logger.info(f"Compatibility patch applied: {path}")
-        return True
-    except Exception as exc:
-        logger.warning(f"Compatibility patch failed for {path}: {exc}")
-        return False
-
-
-def _apply_compatibility_patches(libs_dir: str, logger: Any) -> None:
-    fairseq_config = os.path.join(libs_dir, "fairseq", "dataclass", "configs.py")
-    _atomic_rewrite(
-        fairseq_config,
-        lambda text: re.sub(r"metadata=\{(.*?)help:", r'metadata={\1"help":', text),
-        logger,
-    )
-
-    rvc_audio = os.path.join(libs_dir, "tts_with_rvc", "lib", "audio.py")
-    _atomic_rewrite(
-        rvc_audio,
-        lambda text: re.sub(
-            r"\bimport ffmpeg\b",
-            'import importlib\nffmpeg = importlib.import_module("ffmpeg")',
-            text,
-        ),
-        logger,
-    )
-
-    triton_windows_utils = os.path.join(libs_dir, "triton", "windows_utils.py")
-    _atomic_rewrite(
-        triton_windows_utils,
-        lambda text: text.replace(
-            "output = subprocess.check_output(command, text=True).strip()",
-            "output = subprocess.check_output(\n"
-            "            command, text=True, close_fds=True, "
-            "stdin=subprocess.DEVNULL, stderr=subprocess.PIPE\n"
-            "        ).strip()",
-        ),
-        logger,
-    )
-
-    triton_compiler = os.path.join(
-        libs_dir, "triton", "backends", "nvidia", "compiler.py"
-    )
-    _atomic_rewrite(
-        triton_compiler,
-        lambda text: text.replace(
-            '@functools.lru_cache()\ndef get_ptxas_version():\n'
-            '    version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"]).decode("utf-8")\n'
-            "    return version",
-            '@functools.lru_cache()\ndef get_ptxas_version():\n'
-            '    version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"], '
-            'stderr=subprocess.PIPE, close_fds=True, stdin=subprocess.DEVNULL).decode("utf-8")\n'
-            "    return version",
-        ),
-        logger,
-    )
-
-    triton_build = os.path.join(libs_dir, "triton", "runtime", "build.py")
-    escaped_libs = repr(libs_dir)
-
-    def patch_build(text: str) -> str:
-        text = text.replace(
-            'cc = os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")',
-            f'cc = os.path.join({escaped_libs}, "triton", "runtime", "tcc", "tcc.exe")',
-        )
-        return text.replace(
-            'cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", out]',
-            'cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]',
-        )
-
-    _atomic_rewrite(triton_build, patch_build, logger)
-
-    triton_tcc = os.path.join(libs_dir, "triton", "runtime", "tcc", "tcc.exe")
-    if os.path.exists(triton_tcc):
-        os.environ["CC"] = triton_tcc
-    else:
-        configured_cc = str(os.environ.get("CC", "") or "")
-        if configured_cc.replace("/", "\\").lower() == triton_tcc.replace("/", "\\").lower():
-            os.environ.pop("CC", None)
+def _apply_compatibility_patches(_libs_dir: str, _logger: Any) -> None:
+    # Backend-specific compatibility transforms belong to install plans and are
+    # applied to their staging environment before activation.
+    return
 
 
 def _ensure_project_root(base_dir: str, logger: Any) -> None:
@@ -338,13 +295,10 @@ def _ensure_project_root(base_dir: str, logger: Any) -> None:
         logger.warning(f"Не удалось создать project-root marker: {exc}")
 
 
-def _prime_onnxruntime(logger: Any) -> None:
-    # Порядок критичен: onnxruntime должен загрузить свой native runtime раньше
-    # любого кода, который потенциально может импортировать Qt.
-    try:
-        importlib.import_module("onnxruntime")
-    except Exception as exc:
-        logger.warning(f"onnxruntime не импортирован на старте: {exc}")
+def _prime_onnxruntime(_logger: Any) -> None:
+    # ONNX Runtime is an AI backend dependency and must stay out of the main
+    # process. Candidate workers validate their own native runtime before READY.
+    return
 
 
 def _import_gui_runtime():
@@ -362,7 +316,6 @@ def initialize_runtime(
     defer_backend_bootstrap: bool = False,
 ) -> RuntimeContext:
     os.environ.setdefault("QT_API", "pyqt6")
-    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     os.environ.setdefault("UV_LINK_MODE", "copy")
 
     if os.environ.get("VERBOSE_TRITON_LOGS", "0") == "1":

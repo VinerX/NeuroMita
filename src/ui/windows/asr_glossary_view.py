@@ -14,11 +14,8 @@ except Exception:
     qta = None
 
 from core.events import get_event_bus, Events
-from core.services import services
-from services.contracts import SpeechService
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
-from ui.async_bus import run_async
 
 
 class AsrModelListItemWidget(QWidget):
@@ -60,6 +57,10 @@ class AsrGlossaryView(QWidget):
     run_ui_task_signal = pyqtSignal(object)
     request_install = pyqtSignal(str)
     request_refresh = pyqtSignal()
+    request_settings = pyqtSignal(str, int)
+
+    catalog_loaded_signal = pyqtSignal(dict)
+    settings_loaded_signal = pyqtSignal(dict)
 
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
@@ -84,31 +85,35 @@ class AsrGlossaryView(QWidget):
         self.asr_install_finished_signal.connect(self._on_install_finished_internal)
         self.asr_install_failed_signal.connect(self._on_install_failed_internal)
         self.run_ui_task_signal.connect(self._run_ui_task, type=Qt.ConnectionType.QueuedConnection)
+        self.catalog_loaded_signal.connect(
+            self._on_catalog_loaded,
+            type=Qt.ConnectionType.QueuedConnection,
+        )
+        self.settings_loaded_signal.connect(
+            self._on_settings_loaded,
+            type=Qt.ConnectionType.QueuedConnection,
+        )
 
         QTimer.singleShot(0, lambda: self.request_refresh.emit())
 
     def refresh(self):
+        self.request_refresh.emit()
+
+    def begin_refresh(self) -> int:
         self._refresh_ticket += 1
         ticket = self._refresh_ticket
         self._set_refresh_loading(True)
+        return ticket
 
-        def callback(models, error=None):
-            def apply():
-                if ticket != self._refresh_ticket:
-                    return
-                self._models = models if isinstance(models, list) else []
-                self._set_refresh_loading(False)
-                self._rebuild_list(keep_selection=True)
-
-            self.run_ui_task_signal.emit(apply)
-
-        try:
-            self.event_bus.emit(
-                Events.Speech.GET_ASR_MODELS_GLOSSARY,
-                {"callback": callback, "refresh": True},
-            )
-        except Exception:
-            callback([], RuntimeError("ASR catalog request failed"))
+    def _on_catalog_loaded(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get("ticket", -1)) != self._refresh_ticket:
+            return
+        models = payload.get("models")
+        self._models = models if isinstance(models, list) else []
+        self._set_refresh_loading(False)
+        self._rebuild_list(keep_selection=True)
 
     def _run_ui_task(self, fn):
         if callable(fn):
@@ -498,26 +503,22 @@ class AsrGlossaryView(QWidget):
         loading.setObjectName("Subtle")
         self.settings_layout.addWidget(loading)
         self.settings_layout.addStretch()
+        self.request_settings.emit(str(engine_id), ticket)
 
-        def worker():
-            speech = services().get_optional(SpeechService)
-            schema = speech.recognizer_settings_schema(engine_id) if speech is not None else []
-            values = speech.recognizer_settings(engine_id) if speech is not None else {}
-            return {"engine_id": engine_id, "schema": schema or [], "values": values or {}}
-
-        def apply(payload: dict):
-            if ticket != self._settings_ticket:
-                return
-            if str(payload.get("engine_id") or "") != str(self._current_engine or ""):
-                return
-            self._render_settings_fields(payload.get("schema") or [], payload.get("values") or {}, engine_id)
-
-        def fail(_exc: Exception):
-            if ticket != self._settings_ticket:
-                return
-            self._render_settings_fields([], {}, engine_id)
-
-        run_async(self, worker, apply, fail, name=f"asr-settings:{engine_id}")
+    def _on_settings_loaded(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            return
+        ticket = int(payload.get("ticket", -1))
+        engine_id = str(payload.get("engine_id") or "")
+        if ticket != self._settings_ticket:
+            return
+        if engine_id != str(self._current_engine or ""):
+            return
+        self._render_settings_fields(
+            payload.get("schema") or [],
+            payload.get("values") or {},
+            engine_id,
+        )
 
     def _render_settings_fields(self, schema: list[dict], values: dict, engine_id: str):
         self._clear_layout(self.settings_layout)

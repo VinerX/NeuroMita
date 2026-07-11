@@ -106,6 +106,92 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         registry = refresh_installable_registry() if refresh else get_installable_registry()
         return registry.require(normalized)
 
+    def install_preview(
+        self,
+        component_id: str,
+        *,
+        ctx: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from core.backends import BackendKind, get_backend_service
+        from core.runtime_environments import runtime_environments
+        from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
+
+        component = self.require_component(component_id)
+        runtime_ctx = dict(ctx or {})
+        runtime_ctx.setdefault("gpu_vendor", str(check_gpu_provider() or "CPU"))
+        plan = component.build_install_plan(runtime_ctx)
+        backend_kind = get_backend_service().build_requirement(
+            plan.required_backend
+        ).kind
+        backend_ready = True
+        backend_id = ""
+        backend_title = ""
+        backend_packages: list[str] = []
+        backend_size = ""
+        if backend_kind is not BackendKind.NONE:
+            backend_id = f"backend:{backend_kind.value}"
+            backend_title = {
+                BackendKind.CUDA: "PyTorch CUDA (NVIDIA)",
+                BackendKind.CPU: "PyTorch CPU",
+                BackendKind.ONNX: "ONNX Runtime",
+            }.get(backend_kind, backend_kind.value.upper())
+            manager = runtime_environments()
+            specs = manager.core_layer_specs(backend_kind, runtime_ctx)
+            for spec in specs:
+                backend_packages.extend(str(item) for item in spec.packages)
+                if spec.group == "torch-reuse":
+                    installed_layer = manager.find_core_layer(
+                        required_capabilities=spec.capabilities
+                    )
+                else:
+                    installed_layer = manager.get_core_layer(spec.layer_id)
+                if installed_layer is None:
+                    backend_ready = False
+            backend_entry = CATALOG_BY_ID.get(backend_id)
+            if backend_entry is not None:
+                backend_meta = self._metadata(backend_entry)
+                backend_title = str(backend_meta.get("title") or backend_title)
+                backend_size = str(backend_meta.get("size") or "")
+
+        metadata = component.metadata()
+        action_descriptions = [
+            str(action.description or action.type)
+            for action in plan.actions
+            if str(action.description or action.type).strip()
+        ]
+        component_is_backend = str(metadata.category.value) == "backend"
+        backend_will_install = bool(
+            backend_id and not backend_ready and not component_is_backend
+        )
+        additional_components: list[dict[str, Any]] = []
+        if backend_will_install:
+            additional_components.append(
+                {
+                    "id": backend_id,
+                    "title": backend_title,
+                    "size": backend_size,
+                    "packages": list(dict.fromkeys(backend_packages)),
+                    "reason": "required_backend",
+                }
+            )
+
+        return {
+            "component_id": component.id,
+            "component_title": metadata.title,
+            "component_size": metadata.size,
+            "component_is_backend": component_is_backend,
+            "gpu": format_primary_gpu_label(),
+            "backend_kind": backend_kind.value,
+            "backend_id": backend_id,
+            "backend_title": backend_title,
+            "backend_packages": list(dict.fromkeys(backend_packages)),
+            "backend_size": backend_size,
+            "backend_ready": backend_ready,
+            "backend_will_install": backend_will_install,
+            "additional_components": additional_components,
+            "actions": action_descriptions,
+        }
+
     def invalidate(self, component_id: str | None = None) -> None:
         with self._lock:
             if component_id:

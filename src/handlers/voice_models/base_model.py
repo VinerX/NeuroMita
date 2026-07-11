@@ -1,7 +1,7 @@
 import abc
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from core.app_paths import settings_path
 from core.backends import BackendKind
@@ -16,6 +16,9 @@ from core.installables import (
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, status_from_installed
+
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
 
 
 def _voice_settings_path() -> str:

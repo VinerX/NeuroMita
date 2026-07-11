@@ -12,7 +12,7 @@ from typing import Optional, Any
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
 from core.character_locks import character_lock
-from core.events import get_event_bus, Events, Event
+from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services, use
 from main_logger import logger
@@ -179,18 +179,14 @@ class ModelController(GenerationService, ModelStateService):
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
         self.event_bus.subscribe(Events.Server.SET_GAME_DATA, self._on_set_game_data, weak=False)
         self.event_bus.subscribe(Events.Model.ADD_TEMPORARY_SYSTEM_INFO, self._on_add_temporary_system_info, weak=False)
         self.event_bus.subscribe(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, self._on_peek_temporary_system_infos, weak=False)
 
         self.event_bus.subscribe(Events.Model.LOAD_HISTORY, self._on_load_history, weak=False)
         self.event_bus.subscribe(Events.Model.LOAD_MORE_HISTORY, self._on_load_more_history, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_DEBUG_INFO, self._on_get_debug_info, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -2076,7 +2072,7 @@ class ModelController(GenerationService, ModelStateService):
             "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Emit tool executing indicator for UI
         self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
@@ -2105,7 +2101,7 @@ class ModelController(GenerationService, ModelStateService):
             "character_id": "",
             "character_name": "",
             "speaker_name": "",
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Build tool result message(s) for the second LLM call.
         # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:

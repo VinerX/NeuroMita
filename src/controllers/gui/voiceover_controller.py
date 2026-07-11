@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QMessageBox
 from main_logger import logger
 from core.events import Events, Event
 from core.services import services
+from core.task_supervisor import task_supervisor
 from services.contracts import LocalVoiceService, TelegramService, VoiceModelService
 from .base_controller import BaseController
 
@@ -82,6 +83,34 @@ class VoiceoverGuiController(BaseController):
         self._installed_models_cache = installed
         self._installed_models_cache_ts = now
         return set(installed)
+
+    def _initialize_local_model(self, model_id: str) -> None:
+        local_voice = services().get_optional(LocalVoiceService)
+        if local_voice is None:
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {
+                    "title": _("Ошибка", "Error"),
+                    "message": _(
+                        "Сервис локальной озвучки недоступен.",
+                        "Local voice service is unavailable.",
+                    ),
+                },
+            )
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
+            return
+        try:
+            local_voice.initialize_model(model_id)
+        except Exception as exc:
+            logger.error(
+                f"Failed to schedule local voice initialization for '{model_id}': {exc}",
+                exc_info=True,
+            )
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {"title": _("Ошибка", "Error"), "message": str(exc)},
+            )
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def autoload_last_model_on_startup(self):
         if self._autoload_done:
@@ -252,10 +281,15 @@ class VoiceoverGuiController(BaseController):
                     self._ui(lambda: self._sync_tg_button_and_icon_only())
 
                 interval = 1.0 if self._tg_connecting else 5.0
-                time.sleep(interval)
+                if self._tg_poll_stop.wait(interval):
+                    break
 
-        self._tg_poll_thread = threading.Thread(target=worker, daemon=True)
-        self._tg_poll_thread.start()
+        self._tg_poll_thread = task_supervisor().start_thread(
+            self,
+            "telegram-status-poll",
+            worker,
+            replace=True,
+        )
 
     def _sync_tg_button_and_icon_only(self):
         self._update_tg_connect_button()
@@ -363,14 +397,7 @@ class VoiceoverGuiController(BaseController):
                 return
             self._emit_voice_icon_state()
 
-            def progress_callback(status_type: str, message: str):
-                if status_type == "status":
-                    self._ui(lambda: self._set_loading_status(message))
-
-            self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-                "model_id": model_id,
-                "progress_callback": progress_callback,
-            })
+            self._initialize_local_model(model_id)
 
         self._ui(apply)
 
@@ -443,14 +470,7 @@ class VoiceoverGuiController(BaseController):
                 return
             self._emit_voice_icon_state_from_snapshot(state)
 
-            def progress_callback(status_type: str, message: str):
-                if status_type == "status":
-                    self._ui(lambda: self._set_loading_status(message))
-
-            self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-                "model_id": current_id,
-                "progress_callback": progress_callback,
-            })
+            self._initialize_local_model(current_id)
 
         self._run_async(worker, apply, name=f"voiceover-select:{model_id}")
 
@@ -685,14 +705,7 @@ class VoiceoverGuiController(BaseController):
 
         self._emit_voice_icon_state_from_snapshot({**state, "current_model_id": model_id})
 
-        def progress_callback(status_type: str, message: str):
-            if status_type == "status":
-                self._ui(lambda: self._set_loading_status(message))
-
-        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-            "model_id": model_id,
-            "progress_callback": progress_callback,
-        })
+        self._initialize_local_model(model_id)
 
     def _sync_local_model_status_from_snapshot(self, state: dict):
         chip = getattr(self.view, "local_model_status_chip", None)
@@ -914,7 +927,7 @@ class VoiceoverGuiController(BaseController):
             })
             return
 
-        installed_ids = self._installed_models_cache
+        installed_ids = getattr(self, "_installed_models_cache", None)
         if installed_ids is None:
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
                 "category": "voice",
@@ -934,7 +947,7 @@ class VoiceoverGuiController(BaseController):
         # Установлена, но не инициализирована — жёлтый "warn", а не зелёный.
         # Данные об инициализации берём из кэша, который ведёт snapshot-путь
         # (никаких блокирующих CHECK_MODEL_INITIALIZED в пути индикатора).
-        initialized = model_id in self._initialized_models_cache
+        initialized = model_id in getattr(self, "_initialized_models_cache", set())
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
             "state": "green" if initialized else "warn",
@@ -1114,14 +1127,7 @@ class VoiceoverGuiController(BaseController):
             return
         self._emit_voice_icon_state()
 
-        def progress_callback(status_type: str, message: str):
-            if status_type == "status":
-                self._ui(lambda: self._set_loading_status(message))
-
-        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-            "model_id": model_id,
-            "progress_callback": progress_callback,
-        })
+        self._initialize_local_model(model_id)
 
     # ---------- local loading dialog ----------
     def _show_loading_dialog(self, model_id: str) -> bool:

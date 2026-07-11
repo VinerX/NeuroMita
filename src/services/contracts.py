@@ -73,6 +73,14 @@ class InstallableCatalogService(ABC):
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any: ...
 
     @abstractmethod
+    def install_preview(
+        self,
+        component_id: str,
+        *,
+        ctx: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]: ...
+
+    @abstractmethod
     def invalidate(self, component_id: str | None = None) -> None: ...
 
     @abstractmethod
@@ -91,7 +99,7 @@ class RuntimeFeatureService(ABC):
     """Lifecycle optional-компонентов. Не содержит предметной логики feature."""
 
     @abstractmethod
-    def ensure_async(self, name: str) -> Future: ...
+    def ensure_async(self, name: str) -> Future[Any]: ...
 
     @abstractmethod
     def ensure(self, name: str, *, timeout: float | None = None) -> Any: ...
@@ -158,7 +166,7 @@ class LoopService(ABC):
     def is_running(self) -> bool: ...
 
     @abstractmethod
-    def run(self, coro: Coroutine) -> Future:
+    def run(self, coro: Coroutine[Any, Any, Any]) -> Future[Any]:
         """Запустить корутину в loop из любого потока."""
 
 
@@ -351,12 +359,29 @@ class ApiPresetService(ABC):
 
 
 class TelegramService(ABC):
-    """Состояние Telegram/Silero-релея. Игровой сервер (asyncio-loop) читает
-    статус напрямую, без синхронного EventBus-запроса."""
+    """Typed Telegram relay API."""
 
     @abstractmethod
     def is_silero_connected(self) -> bool:
         """Подключён ли Silero-релей озвучки."""
+
+    @abstractmethod
+    async def send_voice(
+        self, text: str, speaker_command: str, message_id: int = 0
+    ) -> str: ...
+
+
+class TelegramAuthService(ABC):
+    @abstractmethod
+    async def request(
+        self, kind: str, *, error: str = "", attempt: int = 1
+    ) -> str: ...
+
+    @abstractmethod
+    def resolve(self, request_id: str, value: str) -> bool: ...
+
+    @abstractmethod
+    def reject(self, request_id: str, reason: str = "Cancelled") -> bool: ...
 
 
 class ModelStateService(ABC):
@@ -403,7 +428,19 @@ class LocalVoiceService(ABC):
     def select_model(self, model_id: str) -> bool: ...
 
     @abstractmethod
+    def initialize_model(self, model_id: str) -> Any: ...
+
+    @abstractmethod
     def triton_status(self, *, refresh: bool = False) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        character_id: Optional[str] = None,
+        voice_profile: Optional[Dict[str, Any]] = None,
+    ) -> str: ...
 
 
 class VoiceModelService(ABC):
@@ -428,11 +465,24 @@ class SpeechService(ABC):
     def mic_active(self) -> bool: ...
 
     @abstractmethod
+    def microphone_list_async(
+        self,
+        callback: Callable[[List[str], BaseException | None], None],
+    ) -> None: ...
+
+    @abstractmethod
     def asr_models_glossary_async(
         self,
         callback: Callable[[List[Dict[str, Any]], BaseException | None], None],
         *,
         refresh: bool = False,
+    ) -> None: ...
+
+    @abstractmethod
+    def asr_model_installed_async(
+        self,
+        engine: str,
+        callback: Callable[[bool, BaseException | None], None],
     ) -> None: ...
 
 

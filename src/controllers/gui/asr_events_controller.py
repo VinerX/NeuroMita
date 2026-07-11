@@ -5,6 +5,9 @@ import time
 
 from main_logger import logger
 from core.events import Events, Event
+from core.services import services
+from core.task_supervisor import task_supervisor
+from services.contracts import SpeechService
 from .base_controller import BaseController
 from utils import getTranslationVariant as _
 
@@ -88,15 +91,26 @@ class AsrEventsController(BaseController):
         # (сам init ждёт до 300 c). Для остальных — короткий страховочный порог.
         grace = 300.0 if (self._init_engine in ("whisper", "gigaam")) else 35.0
 
-        def _timeout_guard():
-            time.sleep(grace)
-            if self._init_token != tok:
-                return
-            if self._asr_initializing:
-                self._asr_initializing = False
-                self._sync_indicator(force=True)
+        cancel_event = threading.Event()
 
-        threading.Thread(target=_timeout_guard, daemon=True).start()
+        def _timeout_guard():
+            if cancel_event.wait(grace):
+                return
+            self._ui(lambda token=tok: self._expire_init_timeout(token))
+
+        task_supervisor().start_thread(
+            self,
+            "asr-init-timeout",
+            _timeout_guard,
+            cancel_event=cancel_event,
+            replace=True,
+        )
+
+    def _expire_init_timeout(self, token: int) -> None:
+        if self._init_token != token or not self._asr_initializing:
+            return
+        self._asr_initializing = False
+        self._sync_indicator(force=True)
 
     def _asr_loading_text(self, engine: str | None) -> str:
         """Понятный текст «что происходит» вместо общего «Инициализация ASR».
@@ -358,13 +372,14 @@ class AsrEventsController(BaseController):
 
             self._ui_safe(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb(False, RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {
-                "model": eng,
-                "callback": cb
-            })
-        except Exception:
-            pass
+            speech.asr_model_installed_async(eng, cb)
+        except Exception as exc:
+            cb(False, exc)
 
     def _get_installed_cached(self, engine: str) -> bool | None:
         eng = str(engine or "").strip()
@@ -394,10 +409,14 @@ class AsrEventsController(BaseController):
 
             self._ui_safe(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb(False, RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_MIC_STATUS, {"callback": cb})
-        except Exception:
-            pass
+            cb(speech.mic_active(), None)
+        except Exception as exc:
+            cb(False, exc)
 
     def _get_ready_cached(self) -> bool | None:
         ok, ts = self._ready_cache

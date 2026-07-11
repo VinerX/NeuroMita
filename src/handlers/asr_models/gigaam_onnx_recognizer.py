@@ -18,6 +18,7 @@ from core.installables.helpers import build_runtime_ctx
 from core.events import Events, get_event_bus
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
+from core.task_supervisor import task_supervisor
 
 from utils import getTranslationVariant as _
 
@@ -563,8 +564,9 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         self._process.start()
 
         self._stop_monitor.clear()
-        self._monitor_thread = Thread(target=self._monitor_process, daemon=True)
-        self._monitor_thread.start()
+        self._monitor_thread = task_supervisor().start_thread(
+            self, "gigaam-onnx-monitor", self._monitor_process, replace=True
+        )
 
         init_options = {
             "device": self.gigaam_device,

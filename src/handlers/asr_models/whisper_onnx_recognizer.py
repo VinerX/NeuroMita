@@ -18,6 +18,7 @@ from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
+from core.task_supervisor import task_supervisor
 
 from utils import getTranslationVariant as _
 
@@ -488,8 +489,9 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
         self._stop_monitor.clear()
         self._process_initialized = False
-        self._monitor_thread = Thread(target=self._monitor_process, daemon=True)
-        self._monitor_thread.start()
+        self._monitor_thread = task_supervisor().start_thread(
+            self, "whisper-onnx-monitor", self._monitor_process, replace=True
+        )
 
         init_options = {
             "device": self.device,

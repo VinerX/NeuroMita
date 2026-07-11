@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+from core.task_supervisor import task_supervisor
 from typing import Callable, Any, Optional
 
 from main_logger import logger
@@ -27,10 +27,14 @@ def bus_call_async(
     def worker():
         try:
             res = fn()
-        except Exception as e:
-            logger.error(f"[API UI] worker failed in {name}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"[API UI] worker failed in {name}: {exc}", exc_info=True)
             if on_fail and dispatch:
-                dispatch(lambda: _safe_call(on_fail, e, where=f"on_fail/{name}"))
+                dispatch(
+                    lambda error=exc: _safe_call(
+                        on_fail, error, where=f"on_fail/{name}"
+                    )
+                )
             return
 
         if dispatch:
@@ -42,4 +46,9 @@ def bus_call_async(
         except Exception as ee:
             logger.error(f"[API UI] callback crashed in {where}: {ee}", exc_info=True)
 
-    threading.Thread(target=worker, daemon=True).start()
+    task_supervisor().start_thread(
+        dispatch if dispatch is not None else bus_call_async,
+        str(name or "bus-call"),
+        worker,
+        replace=True,
+    )

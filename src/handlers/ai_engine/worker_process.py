@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
+import json
 import os
 import sys
+import threading
 import traceback
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -31,28 +35,36 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
     runtime_root = os.path.abspath(
         os.environ.get("NEUROMITA_RUNTIME_ROOT") or os.path.dirname(main_core)
     )
+    embedded_python = os.path.abspath(
+        os.environ.get("NEUROMITA_PYTHON") or sys.executable
+    )
+    embedded_site_packages = os.path.abspath(
+        os.path.join(os.path.dirname(embedded_python), "Lib", "site-packages")
+    )
     explicit_paths = [
         os.path.abspath(str(path))
         for path in (python_paths or ())
         if str(path).strip()
     ]
-    ordered = explicit_paths
+    ordered = list(dict.fromkeys(
+        explicit_paths + ([main_core] if os.path.isdir(main_core) else [])
+    ))
     os.environ["NEUROMITA_AI_WORKER"] = "1"
     if explicit_paths:
-        os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = ordered[0]
-        os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"] = os.pathsep.join(ordered)
+        os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = explicit_paths[0]
     else:
         os.environ.pop("NEUROMITA_RUNTIME_TARGET_DIR", None)
-        os.environ.pop("NEUROMITA_RUNTIME_PYTHON_PATHS", None)
+    os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"] = os.pathsep.join(ordered)
 
     excluded = {os.path.normcase(path) for path in ordered}
     runtime_root_normalized = os.path.normcase(runtime_root)
     runtime_root_prefix = os.path.normcase(runtime_root + os.sep)
+    embedded_site_normalized = os.path.normcase(embedded_site_packages)
 
     def should_keep(path: str) -> bool:
         absolute = os.path.abspath(path or "")
         normalized = os.path.normcase(absolute)
-        if normalized in excluded:
+        if normalized in excluded or normalized == embedded_site_normalized:
             return False
         if normalized == runtime_root_normalized or normalized.startswith(runtime_root_prefix):
             return False
@@ -75,7 +87,10 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
         os.environ["PATH"] = os.pathsep.join(inherited_path)
 
         path_entries: list[str] = []
-        for root in ordered:
+        # Only AI environment roots participate in native DLL lookup. The
+        # stable application core is a Python fallback layer and must not
+        # shadow backend-specific Torch/ONNX DLLs.
+        for root in explicit_paths:
             for candidate in (
                 root,
                 os.path.join(root, "torch", "lib"),
@@ -137,6 +152,42 @@ def _probe_runtime_modules(
             ) from exc
 
 
+def _probe_runtime_capabilities(
+    python_paths: tuple[str, ...] | list[str] | None,
+) -> None:
+    capabilities: set[str] = set()
+    for raw_path in python_paths or ():
+        manifest = Path(str(raw_path)).resolve().parent / "manifest.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        capabilities.update(str(item) for item in data.get("capabilities") or ())
+
+    if any(item.startswith("torch.") for item in capabilities):
+        import torch
+
+        probe = torch.tensor([1.0, 2.0]) + 1.0
+        if probe.tolist() != [2.0, 3.0]:
+            raise RuntimeError("PyTorch CPU execution probe returned an invalid result")
+        if any(item.startswith("torch.cuda") for item in capabilities):
+            if not getattr(torch.version, "cuda", None) or not torch.cuda.is_available():
+                raise RuntimeError("CUDA backend was installed, but CUDA is unavailable")
+            cuda_probe = torch.tensor([1.0], device="cuda") + 1.0
+            torch.cuda.synchronize()
+            if float(cuda_probe.cpu().item()) != 2.0:
+                raise RuntimeError("PyTorch CUDA execution probe returned an invalid result")
+
+    if any(item.startswith("onnx.") for item in capabilities):
+        import onnxruntime
+
+        providers = set(onnxruntime.get_available_providers())
+        if "CPUExecutionProvider" not in providers:
+            raise RuntimeError("ONNX Runtime has no CPUExecutionProvider")
+        if "onnx.dml" in capabilities and "DmlExecutionProvider" not in providers:
+            raise RuntimeError("ONNX DirectML backend has no DmlExecutionProvider")
+
+
 def run_worker_process(
     worker_name: str,
     cmd_queue,
@@ -155,13 +206,9 @@ def run_worker_process(
       - "shared" -> один worker для TTS + ASR
     """
     try:
-        # torch/MKL (libiomp5md) + onnxruntime (libomp140) в одном процессе дают
-        # OMP Error #15 → abort. Ставим до любых тяжёлых импортов. См. __main__.py.
-        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
         _ensure_lib_on_path(python_paths)
-
         _probe_runtime_modules(probe_modules)
+        _probe_runtime_capabilities(python_paths)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -198,6 +245,9 @@ async def _dispatch(service, service_name: str, method: str, payload: dict, req_
     try:
         result = await service.handle(method, payload)
         _respond(res_queue, service_name, req_id, ok=True, result=result)
+    except asyncio.CancelledError:
+        _respond(res_queue, service_name, req_id, ok=False, error="Request cancelled")
+        raise
     except Exception as e:
         _log(log_queue, "error", f"[{service_name}.{method}] failed: {e}\n{traceback.format_exc()}")
         _respond(res_queue, service_name, req_id, ok=False, error=e)
@@ -249,12 +299,12 @@ async def _worker_loop(
         for service_name in services
     }
     max_inflight = max(default_limit, sum(service_limits.get(name, 1) for name in services))
-    inflight: set[asyncio.Task] = set()
+    inflight: dict[str, asyncio.Task[Any]] = {}
 
     async def _drain(timeout: float = 30.0) -> None:
         if not inflight:
             return
-        tasks = list(inflight)
+        tasks = list(inflight.values())
         done, pending = await asyncio.wait(tasks, timeout=max(0.1, timeout))
         if pending:
             for task in pending:
@@ -265,7 +315,7 @@ async def _worker_loop(
 
     while True:
         while len(inflight) >= max_inflight:
-            await asyncio.wait(list(inflight), return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(list(inflight.values()), return_when=asyncio.FIRST_COMPLETED)
         cmd = await asyncio.to_thread(cmd_queue.get)
         if not isinstance(cmd, dict):
             continue
@@ -275,6 +325,12 @@ async def _worker_loop(
         service_name = str(cmd.get("service") or "").strip().lower()
         method = str(cmd.get("method") or "").strip()
         payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
+
+        if control == "cancel_request":
+            task = inflight.get(str(req_id))
+            if task is not None and not task.done():
+                task.cancel()
+            continue
 
         if control == "shutdown" or method == "shutdown":
             await _drain()
@@ -320,8 +376,9 @@ async def _worker_loop(
                 log_queue,
             )
         )
-        inflight.add(task)
-        task.add_done_callback(inflight.discard)
+        request_key = str(req_id)
+        inflight[request_key] = task
+        task.add_done_callback(lambda _task, key=request_key: inflight.pop(key, None))
 
 
 async def _restart_service(services: dict[str, Any], service_name: str, *, res_queue, log_queue):
@@ -376,14 +433,26 @@ class _LazyService:
         self.service_name = str(service_name)
         self.emit_event = emit_event
         self._instance = None
+        self._load_lock = threading.Lock()
 
-    def _get(self):
-        if self._instance is None:
-            self._instance = _load_service(self.service_name, self.emit_event)
+    def _get_sync(self):
+        if self._instance is not None:
+            return self._instance
+        with self._load_lock:
+            if self._instance is None:
+                self._instance = _load_service(self.service_name, self.emit_event)
         return self._instance
 
+    async def _get(self):
+        return await asyncio.to_thread(self._get_sync)
+
     async def handle(self, method: str, payload: dict):
-        return await _maybe_await(self._get().handle(method, payload))
+        instance = await self._get()
+        handler = instance.handle
+        if inspect.iscoroutinefunction(handler):
+            return await handler(method, payload)
+        result = await asyncio.to_thread(handler, method, payload)
+        return await _maybe_await(result)
 
     async def shutdown(self):
         if self._instance is None:
@@ -391,9 +460,11 @@ class _LazyService:
         instance = self._instance
         self._instance = None
         shutdown = getattr(instance, "shutdown", None)
-        if callable(shutdown):
-            return await _maybe_await(shutdown())
-        return None
+        if not callable(shutdown):
+            return None
+        if inspect.iscoroutinefunction(shutdown):
+            return await shutdown()
+        return await asyncio.to_thread(shutdown)
 
 
 def _load_service(service_name: str, emit_event: Callable[[str, Any], None]):

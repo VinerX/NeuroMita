@@ -7,6 +7,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFontMetrics
 
 from core.events import Events, Event
+from core.services import services
+from services.contracts import SpeechService
 from main_logger import logger
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
@@ -295,10 +297,15 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb([_("Микрофоны не найдены", "No microphones found")], RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_MICROPHONE_LIST, {"callback": cb})
+            speech.microphone_list_async(cb)
         except Exception as e:
-            logger.error(f"GET_MICROPHONE_LIST emit error: {e}")
+            logger.error(f"Microphone list request failed: {e}")
+            cb([_("Ошибка загрузки", "Loading error")], e)
 
     def refresh_engines(self, select_engine: str | None = None):
         v = self.view
@@ -375,10 +382,15 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb([], RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": cb})
+            speech.asr_models_glossary_async(cb)
         except Exception as e:
-            logger.error(f"GET_ASR_MODELS_GLOSSARY emit error: {e}")
+            logger.error(f"ASR models glossary request failed: {e}")
+            cb([], e)
 
     def _apply_asr_install_status(self, engine: str):
         v = self.view
@@ -422,10 +434,14 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb(False, RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {"model": engine, "callback": cb})
-        except Exception:
-            self._ui(lambda: v.mic_active_checkbox.setEnabled(False))
+            speech.asr_model_installed_async(engine, cb)
+        except Exception as exc:
+            cb(False, exc)
 
     def _on_mic_changed(self, index: int):
         v = self.view

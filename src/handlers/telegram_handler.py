@@ -1,4 +1,4 @@
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 import os
 import sys
 import time
@@ -21,6 +21,7 @@ from utils import SH, getTranslationVariant
 import platform
 from core.events import get_event_bus, Events
 from core.services import use
+from services.contracts import TelegramAuthService
 from services.contracts import GameLinkService, LoopService, SettingsService
 
 
@@ -322,12 +323,9 @@ class TelegramBotHandler:
 
         last_error = ""
         for attempt in range(1, max_attempts + 1):
-            code_future = loop.create_future()
-            self.event_bus.emit(
-                Events.Telegram.PROMPT_FOR_TG_CODE,
-                {'future': code_future, 'error': last_error, 'attempt': attempt},
+            verification_code = await use(TelegramAuthService).request(
+                "code", error=last_error, attempt=attempt
             )
-            verification_code = await code_future
 
             try:
                 await self.client.sign_in(phone=self.phone, code=verification_code)
@@ -357,12 +355,9 @@ class TelegramBotHandler:
         """Ввод пароля 2FA с повторами при неверном пароле."""
         last_error = ""
         for attempt in range(1, max_attempts + 1):
-            password_future = loop.create_future()
-            self.event_bus.emit(
-                Events.Telegram.PROMPT_FOR_TG_PASSWORD,
-                {'future': password_future, 'error': last_error, 'attempt': attempt},
+            password = await use(TelegramAuthService).request(
+                "password", error=last_error, attempt=attempt
             )
-            password = await password_future
 
             try:
                 await self.client.sign_in(password=password)
@@ -413,7 +408,7 @@ class TelegramBotHandler:
         while attempts < max_attempts:
             attempts += 1
             try:
-                base_id = await self._get_last_chat_message_id()
+                await self._get_last_chat_message_id()
 
                 await self._safe_send_message(command, min_gap=1.2, count=True)
                 await asyncio.sleep(initial_delay)

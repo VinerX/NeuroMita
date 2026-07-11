@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from core.task_supervisor import task_supervisor
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import QTimer
@@ -59,9 +60,12 @@ def run_async(
         if on_ok is not None:
             dispatch_to_gui(target, lambda result=result: on_ok(result))
 
-    thread = threading.Thread(target=_run, name=str(name or "gui-async"), daemon=True)
-    thread.start()
-    return thread
+    return task_supervisor().start_thread(
+        target if target is not None else run_async,
+        str(name or "gui-async"),
+        _run,
+        replace=True,
+    )
 
 
 

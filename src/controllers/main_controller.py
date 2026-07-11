@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from main_logger import logger
-from core.events import get_event_bus, Events, Event, shutdown_event_bus
+from core.events import Event, EventDelivery, Events, get_event_bus, shutdown_event_bus
 from core.app_paths import settings_dir, settings_path
 from core.executors import executors
+from core.task_supervisor import task_supervisor
 from startup.startup_profiler import startup_trace
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
@@ -31,6 +33,7 @@ from services.contracts import (
     ProtocolBuilderService,
     SettingsService,
     TaskService,
+    TelegramAuthService,
     TelegramService,
 )
 from services.game_link_service import DisconnectedGameLinkService, ServerGameLinkService
@@ -39,6 +42,8 @@ from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 from services.runtime_features import FeatureSpec, RuntimeFeatureManager
 
+if TYPE_CHECKING:
+    from controllers.settings_controller import SettingsController
 
 
 class MainController:
@@ -63,7 +68,6 @@ class MainController:
         self.loop_controller = None
         self.gui_controller = None
         self.telegram_controller = None
-        self.pip_installer = None
         self.install_controller = None
         self.installable_controller = None
         self.local_voice_controller = None
@@ -116,6 +120,13 @@ class MainController:
         services().register(
             TelegramService,
             UnavailableTelegramService("Telegram feature is disabled"),
+            replace=True,
+        )
+        from services.telegram_auth_service import DefaultTelegramAuthService
+
+        services().register(
+            TelegramAuthService,
+            DefaultTelegramAuthService(available=not self.headless),
             replace=True,
         )
 
@@ -290,6 +301,7 @@ class MainController:
                 enabled=local_voice_enabled,
                 factory=lambda: self._create_voice_model_controller(target_folder),
                 provided_services=(VoiceModelService,),
+                depends_on=("local_voice",),
                 priority=40,
             )
         )
@@ -416,12 +428,6 @@ class MainController:
         return controller
 
     def _create_voice_model_controller(self, target_folder: str):
-        # VoiceModelController resolves local model metadata during construction.
-        # Ensure the provider exists first so import + initialization remain one
-        # deterministic background pipeline instead of racing through EventBus.
-        if self.feature_manager is not None and not self.feature_manager.is_ready("local_voice"):
-            self.feature_manager.ensure("local_voice", timeout=30.0)
-
         from controllers.voice_model_controller import VoiceModelController
 
         controller = VoiceModelController(config_dir=target_folder)
@@ -488,7 +494,10 @@ class MainController:
         if callable(shutdown):
             shutdown()
             return
-        self.event_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION, sync=True)
+        self.event_bus.emit(
+            Events.Speech.STOP_SPEECH_RECOGNITION,
+            delivery=EventDelivery.CRITICAL,
+        )
 
     @staticmethod
     def _normalize_startup_mode(startup_mode: str | None) -> str:
@@ -542,9 +551,6 @@ class MainController:
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_g4f_update, weak=False)
 
-        self.event_bus.subscribe(Events.Telegram.REQUEST_TG_CODE, self._on_request_tg_code, weak=False)
-        self.event_bus.subscribe(Events.Telegram.REQUEST_TG_PASSWORD, self._on_request_tg_password, weak=False)
-
         self.event_bus.subscribe(Events.GUI.SHOW_LOADING_POPUP, self._on_show_loading_popup, weak=False)
         self.event_bus.subscribe(Events.GUI.CLOSE_LOADING_POPUP, self._on_close_loading_popup, weak=False)
 
@@ -578,6 +584,12 @@ class MainController:
         if feature_manager is not None:
             shutdown_step("optional features", feature_manager.shutdown)
 
+        if services().is_registered(TelegramAuthService):
+            auth_service = services().get(TelegramAuthService)
+            close_auth = getattr(auth_service, "close", None)
+            if callable(close_auth):
+                shutdown_step("Telegram auth prompts", close_auth)
+
         ai_engine = getattr(self, "ai_engine_controller", None)
         if ai_engine is not None:
             shutdown_step("AI engine", lambda: ai_engine.shutdown(timeout=5.0))
@@ -603,55 +615,19 @@ class MainController:
             shutdown_step("settings writer", close_settings)
 
         shutdown_step("EventBus", shutdown_event_bus)
+        shutdown_step("background tasks", lambda: task_supervisor().shutdown(timeout=3.0))
         shutdown_step("executor pools", lambda: executors().shutdown_all(wait=False))
         logger.info("Закрываемся")
 
     def _check_and_perform_pending_update(self):
         update_pending = self.settings.get("G4F_UPDATE_PENDING", False)
         target_version = self.settings.get("G4F_TARGET_VERSION", None)
-
         if update_pending and target_version:
-            if self.pip_installer is None:
-                try:
-                    from utils.pip_installer import PipInstaller
-
-                    self.pip_installer = PipInstaller(update_log=logger.info)
-                except Exception as exc:
-                    logger.error(
-                        f"Не удалось инициализировать PipInstaller для запланированного обновления: {exc}",
-                        exc_info=True,
-                    )
-                    return
-            logger.info(f"Обнаружено запланированное обновление g4f до версии: {target_version}")
-            package_spec = f"g4f=={target_version}" if target_version != "latest" else "g4f"
-            description = f"Запланированное обновление g4f до {target_version}..."
-
-            success = False
-            try:
-                success = self.pip_installer.install_package(
-                    package_spec,
-                    description=description,
-                    extra_args=["--force-reinstall", "--upgrade"]
-                )
-                if success:
-                    logger.success(f"Запланированное обновление g4f до {target_version} успешно завершено.")
-                    try:
-                        import importlib
-                        importlib.invalidate_caches()
-                        logger.info("Кэш импорта очищен после запланированного обновления.")
-                    except Exception as e_invalidate:
-                        logger.error(f"Ошибка при очистке кэша импорта после обновления: {e_invalidate}")
-                else:
-                    logger.error(f"Запланированное обновление g4f до {target_version} не удалось (ошибка pip).")
-            except Exception as e_install:
-                logger.error(f"Исключение во время запланированного обновления g4f: {e_install}", exc_info=True)
-                success = False
-
-            finally:
-                logger.info("Сброс флагов запланированного обновления g4f.")
-                self.settings.set("G4F_UPDATE_PENDING", False)
-                self.settings.set("G4F_TARGET_VERSION", None)
-                self.settings.save_settings()
+            logger.info(
+                "Обновление g4f до версии %s будет транзакционно применено "
+                "launcher-ом к Lib/core при следующем запуске.",
+                target_version,
+            )
         else:
             logger.info("Нет запланированных обновлений g4f.")
 
@@ -669,25 +645,6 @@ class MainController:
             logger.error(f"Ошибка при сохранении настроек для запланированного обновления: {e}", exc_info=True)
             return False
 
-    def _on_request_tg_code(self, event: Event):
-        code_future = event.data.get("future")
-        if not code_future:
-            return
-        if self.headless:
-            if not code_future.done():
-                code_future.set_exception(RuntimeError("Telegram code input is unavailable in headless mode"))
-            return
-        self.event_bus.emit("show_tg_code_dialog", {"future": code_future})
-
-    def _on_request_tg_password(self, event: Event):
-        password_future = event.data.get("future")
-        if not password_future:
-            return
-        if self.headless:
-            if not password_future.done():
-                password_future.set_exception(RuntimeError("Telegram password input is unavailable in headless mode"))
-            return
-        self.event_bus.emit("show_tg_password_dialog", {"future": password_future})
 
     def _on_show_loading_popup(self, event: Event):
         message = event.data.get("message", "Loading...")

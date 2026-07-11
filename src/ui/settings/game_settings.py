@@ -7,6 +7,7 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QLabel, QWidget
 
 from core.events import Events
+from core.task_supervisor import task_supervisor
 from game_connections.services.beat_backend_spec import (
     BACKEND_AUTO,
     BACKEND_BEAT_THIS,
@@ -18,7 +19,7 @@ from game_connections.services.beat_backend_spec import (
 from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
 from ui.async_bus import dispatch_to_gui
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
@@ -165,9 +166,14 @@ def _rebuild_beat_sync_cache(gui) -> None:
                 "message": msg,
             })
         finally:
-            _set_beat_action_buttons_enabled(gui, True)
+            dispatch_to_gui(
+                gui,
+                lambda: _set_beat_action_buttons_enabled(gui, True),
+            )
 
-    threading.Thread(target=_worker, name="beat-sync-cache-build", daemon=True).start()
+    task_supervisor().start_thread(
+        gui, "beat-sync-cache-build", _worker, replace=True
+    )
 
 
 def _open_beat_cache_folder(gui) -> None:

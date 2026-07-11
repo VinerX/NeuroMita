@@ -5,6 +5,8 @@ import threading
 from concurrent.futures import Future
 from typing import Any, Callable, TypeVar
 
+from core.task_supervisor import task_supervisor
+
 
 _T = TypeVar("_T")
 
@@ -22,14 +24,15 @@ class DaemonExecutor:
         self._queue: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
         self._closed = False
+        self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
         for index in range(max(1, int(max_workers))):
-            thread = threading.Thread(
-                target=self._worker,
-                name=f"{thread_name_prefix}-{index}",
-                daemon=True,
+            thread = task_supervisor().start_thread(
+                self,
+                f"{thread_name_prefix}-{index}",
+                self._worker,
+                cancel_event=self._stop_event,
             )
-            thread.start()
             self._threads.append(thread)
 
     def submit(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
@@ -56,8 +59,10 @@ class DaemonExecutor:
                     continue
                 future = item[0]
                 future.cancel()
+        self._stop_event.set()
         for _ in self._threads:
             self._queue.put(None)
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _worker(self) -> None:
         while True:

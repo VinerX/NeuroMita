@@ -4,9 +4,8 @@
 Manages built-in presets (defined in code) and user-defined custom presets
 (persisted in Settings/embedding_presets.json).
 
-Event API (all via EventBus):
-    EmbeddingPresets.GET_PRESET_LIST    → list[dict]  (builtin + custom)
-    EmbeddingPresets.GET_PRESET_FULL    → dict | None  (resolved config)
+Read API is exposed through ``EmbeddingPresetService``. EventBus carries only
+mutation commands and resulting facts:
     EmbeddingPresets.SAVE_CUSTOM_PRESET → int | None   (saved preset id)
     EmbeddingPresets.DELETE_CUSTOM_PRESET → bool
     EmbeddingPresets.RENAME_CUSTOM_PRESET → bool
@@ -24,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from core.app_paths import settings_path
 from core.events import Event, Events, get_event_bus
+from core.task_supervisor import task_supervisor
 from services.contracts import EmbeddingPresetService
 from main_logger import logger
 
@@ -275,8 +275,6 @@ class EmbeddingPresetsController(EmbeddingPresetService):
     def _subscribe(self) -> None:
         E = Events.EmbeddingPresets
         sub = self.event_bus.subscribe
-        sub(E.GET_PRESET_LIST, self._on_get_list, weak=False)
-        sub(E.GET_PRESET_FULL, self._on_get_full, weak=False)
         sub(E.SAVE_CUSTOM_PRESET, self._on_save, weak=False)
         sub(E.DELETE_CUSTOM_PRESET, self._on_delete, weak=False)
         sub(E.RENAME_CUSTOM_PRESET, self._on_rename, weak=False)
@@ -284,9 +282,6 @@ class EmbeddingPresetsController(EmbeddingPresetService):
         sub(E.TEST_PRESET, self._on_test, weak=False)
 
     # ── Handlers ─────────────────────────────────────────────────────────────
-
-    def _on_get_list(self, event: Event):
-        return self.list_meta()
 
     def list_meta(self) -> Dict[str, Any]:
         from presets.embedding_provider_presets import list_builtin_presets
@@ -315,10 +310,6 @@ class EmbeddingPresetsController(EmbeddingPresetService):
                     }
                 )
         return {"builtin": builtins, "custom": custom}
-
-    def _on_get_full(self, event: Event):
-        preset_id = (event.data or {}).get("id")
-        return self._build_full_config(preset_id)
 
     def get_full(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         return self._build_full_config(preset_id)
@@ -476,11 +467,13 @@ class EmbeddingPresetsController(EmbeddingPresetService):
 
     def _on_test(self, event: Event):
         preset_id = (event.data or {}).get("id")
-        threading.Thread(
-            target=self._sync_test,
+        task_supervisor().start_thread(
+            self,
+            "embedding-preset-test",
+            self._sync_test,
             args=(preset_id,),
-            daemon=True,
-        ).start()
+            replace=True,
+        )
 
     def _sync_test(self, preset_id: Any) -> None:
         cfg = self._build_full_config(preset_id)

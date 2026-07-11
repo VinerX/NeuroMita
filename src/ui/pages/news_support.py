@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+from core.task_supervisor import task_supervisor
 from typing import Any, Callable
 
 from PyQt6.QtCore import QUrl
@@ -85,7 +86,9 @@ def load_news_releases_async(gui, on_ready: Callable[[list[dict[str, Any]]], Non
             except Exception:
                 logger.exception("[news] on_ready callback failed")
 
-    threading.Thread(target=worker, daemon=True, name="news-fetch").start()
+    task_supervisor().start_thread(
+        gui, "news-fetch", worker, replace=True
+    )
 
 
 def get_news_releases(gui) -> list[dict[str, Any]]:

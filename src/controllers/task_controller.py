@@ -14,7 +14,6 @@ class TaskController(TaskService):
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Task.CREATE_TASK, self._on_create_task, weak=False)
         self.event_bus.subscribe(Events.Task.UPDATE_TASK_STATUS, self._on_update_task_status, weak=False)
-        self.event_bus.subscribe(Events.Task.GET_TASK, self._on_get_task, weak=False)
         self.event_bus.subscribe(Events.Task.NOTIFY_TASK_UPDATE, self._on_notify_task_update, weak=False)
 
     # ── TaskService (прямой вызов из asyncio-loop сервера) ──────────────────

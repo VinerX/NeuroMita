@@ -7,6 +7,7 @@ import os
 from typing import Optional, Dict, Any, Set, Callable
 from main_logger import logger
 from core.events import get_event_bus, Events
+from core.task_supervisor import task_supervisor
 from managers.task_manager import TaskStatus
 import uuid
 
@@ -126,12 +127,12 @@ class ChatServerNew:
         self._stop_requested.clear()
         self._startup_error = None
         self._loop = asyncio.new_event_loop()
-        self._server_thread = threading.Thread(
-            target=self._run_server_loop,
-            name="neuromita-chat-server",
-            daemon=True,
+        self._server_thread = task_supervisor().start_thread(
+            self,
+            "neuromita-chat-server",
+            self._run_server_loop,
+            cancel_event=self._stop_requested,
         )
-        self._server_thread.start()
         if not self._ready_event.wait(timeout=max(0.1, float(timeout or 0.0))):
             self.stop()
             return False
@@ -326,6 +327,7 @@ class ChatServerNew:
             thread.join(timeout=5)
             if thread.is_alive():
                 logger.warning("Server thread did not stop in time")
+        task_supervisor().cancel_owner(self, timeout=0.5)
 
         self._notify_connection_changed(False, None)
 

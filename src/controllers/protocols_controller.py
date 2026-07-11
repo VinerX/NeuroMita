@@ -59,9 +59,6 @@ class ProtocolsController(ProtocolBuilderService):
         self._subscribe()
 
     def _subscribe(self) -> None:
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_LIST, self._on_get_protocol_list, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_FULL, self._on_get_protocol_full, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_TRANSFORM_LIST, self._on_get_transform_list, weak=False)
         self.event_bus.subscribe(Events.Protocols.BUILD_HTTP_REQUEST, self._on_build_http_request, weak=False)
 
     def _on_get_protocol_list(self, _event: Event) -> List[Dict[str, Any]]:

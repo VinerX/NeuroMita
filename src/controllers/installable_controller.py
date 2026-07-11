@@ -2,21 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.backends import BackendKind
 from main_logger import logger
 
-from core.events import Event, Events, get_event_bus
+from core.events import Event, EventDelivery, Events, get_event_bus
 from core.services import services
 from services.contracts import InstallableCatalogService, SettingsService
 from services.installable_catalog_service import DefaultInstallableCatalogService
 from core.install_types import InstallPlan
-from core.installables import (
-    ComponentCategory,
-    ComponentMetadata,
-    ComponentStatus,
-    ComponentStatusCode,
-    make_component_id,
-)
+from core.installables import make_component_id
 
 
 class InstallableController:
@@ -35,15 +28,9 @@ class InstallableController:
 
     def _subscribe_to_events(self) -> None:
         eb = self.event_bus
-        eb.subscribe(Events.Installable.LIST, self._on_list, weak=False)
-        eb.subscribe(Events.Installable.GET, self._on_get, weak=False)
-        eb.subscribe(Events.Installable.GET_STATUS, self._on_get_status, weak=False)
         eb.subscribe(Events.Installable.INSTALL, self._on_install, weak=False)
         eb.subscribe(Events.Installable.UNINSTALL, self._on_uninstall, weak=False)
         eb.subscribe(Events.Installable.INITIALIZE, self._on_initialize, weak=False)
-        eb.subscribe(Events.Installable.GET_SETTINGS_SCHEMA, self._on_get_settings_schema, weak=False)
-        eb.subscribe(Events.Installable.LOAD_SETTINGS, self._on_load_settings, weak=False)
-        eb.subscribe(Events.Installable.SAVE_SETTINGS, self._on_save_settings, weak=False)
         eb.subscribe(Events.Install.TASK_STARTED, self._on_install_task_mutated, weak=False)
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_mutated, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_mutated, weak=False)
@@ -159,13 +146,13 @@ class InstallableController:
             return {"ok": False, "errors": {"_": str(exc)}}
 
     def _on_install(self, event: Event):
-        self._run(event, op="install")
+        return self._run(event, op="install")
 
     def _on_uninstall(self, event: Event):
-        self._run(event, op="uninstall")
+        return self._run(event, op="uninstall")
 
     def _on_initialize(self, event: Event):
-        self._run(event, op="initialize")
+        return self._run(event, op="initialize")
 
     def _run(self, event: Event, *, op: str) -> bool:
         data = event.data if isinstance(event.data, dict) else {}
@@ -238,8 +225,34 @@ class InstallableController:
         if data.get("install_callbacks") is not None:
             payload["install_callbacks"] = data.get("install_callbacks")
 
-        self.event_bus.emit(Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS, payload)
-        return True
+        event_name = Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS
+        accepted = self.event_bus.try_emit(
+            event_name,
+            payload,
+            delivery=EventDelivery.COMMAND,
+        )
+        if accepted:
+            logger.info(
+                f"Installable {op} request queued: "
+                f"component={component.id}, task_id={payload['task_id']}"
+            )
+            return True
+
+        error = "Installation command queue is unavailable or full"
+        logger.error(
+            f"Installable {op} request rejected: "
+            f"component={component.id}, task_id={payload['task_id']}: {error}"
+        )
+        self.event_bus.emit(
+            Events.Install.TASK_FAILED,
+            {
+                "task_id": payload["task_id"],
+                "component_id": component.id,
+                "meta": meta,
+                "error": error,
+            },
+        )
+        return False
 
     def _title(self, component, op: str) -> str:
         try:

@@ -7,12 +7,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
-    QLabel, QWidget, QVBoxLayout, QHBoxLayout, QFrame,
+    QLabel, QVBoxLayout, QHBoxLayout, QFrame,
     QPushButton, QLineEdit, QFileDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
-import threading
+from core.task_supervisor import task_supervisor
 import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
@@ -344,7 +344,9 @@ class _LiveStatsWidget(QFrame):
         # Парсинг jsonl может быть тяжёлым — считаем в фоне, чтобы не морозить GUI
         # при открытии вкладки. Пока считается — плейсхолдер.
         self._apply_lines([_("Загрузка статистики…", "Loading statistics…")])
-        threading.Thread(target=self._compute_async, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "data-statistics-compute", self._compute_async, replace=True
+        )
 
     def _compute_async(self):
         lines = self._build_lines()
@@ -418,7 +420,9 @@ class _MotivationImage(QLabel):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         # get_stats() дорогой — считаем в фоне, картинку ставим по готовности.
-        threading.Thread(target=self._compute_async, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "finetune-total-compute", self._compute_async, replace=True
+        )
 
     def _compute_async(self):
         total = 0

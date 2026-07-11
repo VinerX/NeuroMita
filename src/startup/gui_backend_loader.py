@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 from startup.startup_profiler import startup_trace
 
@@ -64,14 +65,13 @@ class GuiBackendLoader(QObject):
             if self._started:
                 return
             self._started = True
-            self._thread = threading.Thread(
-                target=self._build_backend,
-                daemon=True,
-                name="gui-backend-startup",
+            self._thread = task_supervisor().start_thread(
+                self,
+                "gui-backend-startup",
+                self._build_backend,
+                cancel_event=self._stop_requested,
             )
-            thread = self._thread
         startup_trace.mark("gui.backend_thread.starting")
-        thread.start()
 
     def _build_backend(self) -> None:
         controller = None
@@ -156,6 +156,7 @@ class GuiBackendLoader(QObject):
                 controller.close_app()
             except Exception:
                 logger.exception("GUI backend shutdown failed")
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def wait(self, timeout: float = 5.0) -> bool:
         with self._lock:

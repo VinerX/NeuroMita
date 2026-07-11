@@ -123,7 +123,6 @@ class ServerController:
         eb = self.event_bus
 
         eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
-        eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
         eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
         eb.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
@@ -137,7 +136,6 @@ class ServerController:
         if self.event_bus and not self._destroyed:
             eb = self.event_bus
             eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
-            eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
             eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
             eb.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)

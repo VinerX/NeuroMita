@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from core.app_paths import settings_path
 from core.settings_registry import SettingChange, SettingsRegistry, SettingsSubscription
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 
 
@@ -39,12 +40,11 @@ class SettingsManager:
         self.settings = self.registry
         SettingsManager.instance = self
 
-        self._writer_thread = threading.Thread(
-            target=self._save_worker,
-            name="SettingsSaver",
-            daemon=True,
+        self._writer_thread = task_supervisor().start_thread(
+            self,
+            "settings-saver",
+            self._save_worker,
         )
-        self._writer_thread.start()
         atexit.register(self._stop_writer)
 
     @staticmethod
@@ -216,3 +216,5 @@ class SettingsManager:
             self._write_file()
         except Exception as exc:
             logger.error(f"Ошибка финального сохранения настроек: {exc}")
+        self.registry.close()
+        task_supervisor().cancel_owner(self, timeout=0.5)

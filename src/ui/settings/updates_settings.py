@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-import threading
+from core.task_supervisor import task_supervisor
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
@@ -751,9 +751,15 @@ def setup_updates_settings_controls(self, parent):
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
         if box.exec() == QMessageBox.StandardButton.Yes:
-            threading.Thread(target=_run_install, daemon=True).start()
+            task_supervisor().start_thread(
+                self, "settings-update-install", _run_install, replace=True
+            )
 
-    btn_check.clicked.connect(lambda: threading.Thread(target=_run_check_only, daemon=True).start())
+    btn_check.clicked.connect(
+        lambda: task_supervisor().start_thread(
+            self, "settings-update-check", _run_check_only, replace=True
+        )
+    )
     btn_install.clicked.connect(_confirm_and_install)
 
     buttons_layout.addWidget(btn_check)

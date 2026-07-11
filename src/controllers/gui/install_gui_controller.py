@@ -1,6 +1,6 @@
 import threading
 from collections import deque
-from typing import Optional
+from typing import Any
 
 from main_logger import logger
 from core.events import Events, Event
@@ -8,6 +8,7 @@ from core.install_log import classify_install_log
 from .base_controller import BaseController
 
 from core.install_types import InstallCallbacks
+from core.task_supervisor import task_supervisor
 
 
 class InstallGuiController(BaseController):
@@ -20,40 +21,67 @@ class InstallGuiController(BaseController):
     отмена ещё не начатых задач через CANCEL_QUEUED.
     """
 
+    def __init__(self, main_controller: Any, view: Any) -> None:
+        self._queue_cond = threading.Condition()
+        self._pending: deque[dict[str, Any]] = deque()
+        self._running: dict[str, Any] | None = None
+        self._worker_thread: threading.Thread | None = None
+        self._worker_stop_event = threading.Event()
+        self._last_enqueue_error = ""
+        super().__init__(main_controller, view)
+        _ = self._ensure_worker()
+
     def subscribe_to_events(self):
         self.event_bus.subscribe(Events.Install.RUN_WITH_UI, self._on_run_with_ui, weak=False)
         self.event_bus.subscribe(Events.Install.RUN_HEADLESS, self._on_run_headless, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_LOG, self._on_install_task_log, weak=False)
         self.event_bus.subscribe(Events.Install.CANCEL_QUEUED, self._on_cancel_queued, weak=False)
-
-        # Очередь и её воркер.
-        self._queue_cond = threading.Condition()
-        self._pending: deque[dict] = deque()
-        self._running: Optional[dict] = None
-        self._worker_started = False
+        self.event_bus.subscribe(Events.Install.CANCEL_RUNNING, self._on_cancel_running, weak=False)
 
     # ------------------------------------------------------------------
     # Очередь
     # ------------------------------------------------------------------
-    def _ensure_worker(self) -> None:
+    def _ensure_worker(self) -> bool:
         with self._queue_cond:
-            if self._worker_started:
-                return
-            self._worker_started = True
-        threading.Thread(target=self._worker_loop, name="install-queue", daemon=True).start()
+            worker = self._worker_thread
+            if worker is not None and worker.is_alive():
+                return True
+            if self._worker_stop_event.is_set():
+                self._last_enqueue_error = "Install queue is shutting down"
+                return False
+            try:
+                worker = task_supervisor().start_thread(
+                    self,
+                    "install-queue",
+                    self._worker_loop,
+                    cancel_event=self._worker_stop_event,
+                )
+            except Exception as exc:
+                self._worker_thread = None
+                self._last_enqueue_error = f"Failed to start install queue: {exc}"
+                logger.error(self._last_enqueue_error, exc_info=True)
+                return False
+            self._worker_thread = worker
+            self._last_enqueue_error = ""
+            return True
 
-    def _enqueue(self, job: dict) -> bool:
+    def _enqueue(self, job: dict[str, Any]) -> bool:
         """Ставит задачу в очередь. Возвращает False, если такая задача уже
         выполняется или стоит в очереди (дедуп по task_id)."""
+        if not self._ensure_worker():
+            return False
+
         task_id = str(job.get("task_id") or "")
         with self._queue_cond:
             active_ids = {str((self._running or {}).get("task_id") or "")}
             active_ids.update(str(j.get("task_id") or "") for j in self._pending)
             if task_id and task_id in active_ids:
+                self._last_enqueue_error = ""
                 return False
+            job.setdefault("cancel_event", threading.Event())
             self._pending.append(job)
             self._queue_cond.notify()
-        self._ensure_worker()
+            self._last_enqueue_error = ""
         self._emit_queue_changed()
         return True
 
@@ -73,13 +101,37 @@ class InstallGuiController(BaseController):
         if removed:
             self._emit_queue_changed()
 
-    def _queue_snapshot(self) -> dict:
+    def _on_cancel_running(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        task_id = str(data.get("task_id") or "")
+        if not task_id:
+            return
+        with self._queue_cond:
+            running = self._running
+            if running is None or str(running.get("task_id") or "") != task_id:
+                return
+            cancel_event = running.get("cancel_event")
+            if not isinstance(cancel_event, threading.Event):
+                return
+            cancel_event.set()
+            running["cancelling"] = True
+        callbacks = running.get("callbacks")
+        if callbacks:
+            try:
+                callbacks[1]("Cancelling...")
+                callbacks[2]("Cancellation requested. Waiting for the current step to stop...")
+            except Exception:
+                pass
+        self._emit_queue_changed()
+
+    def _queue_snapshot(self) -> dict[str, Any]:
         with self._queue_cond:
             running = None
             if self._running is not None:
                 running = {
                     "task_id": self._running.get("task_id"),
                     "title": self._running.get("title"),
+                    "cancelling": bool(self._running.get("cancelling")),
                 }
             pending = [
                 {"task_id": j.get("task_id"), "title": j.get("title")}
@@ -107,26 +159,52 @@ class InstallGuiController(BaseController):
     _normalize_callback_triplet = _normalize_callbacks
 
     def _worker_loop(self) -> None:
-        while True:
+        logger.info("Install queue worker started")
+        while not self._worker_stop_event.is_set():
             with self._queue_cond:
-                while not self._pending:
-                    self._queue_cond.wait()
+                while not self._pending and not self._worker_stop_event.is_set():
+                    self._queue_cond.wait(timeout=0.5)
+                if self._worker_stop_event.is_set():
+                    break
                 job = self._pending.popleft()
                 self._running = job
+            logger.info(
+                f"Install queue starting task "
+                f"'{str(job.get('task_id') or 'task')}' "
+                f"({str(job.get('title') or '')})"
+            )
             self._emit_queue_changed()
             try:
                 self._run_job(job)
             except Exception as e:
                 logger.error(f"Install worker failed: {e}", exc_info=True)
+                self._report_start_failure(
+                    job,
+                    f"Installation worker failed before the task could start: {e}",
+                )
             finally:
                 with self._queue_cond:
                     self._running = None
                 self._emit_queue_changed()
+        logger.info("Install queue worker stopped")
 
-    def _run_job(self, job: dict) -> None:
+    def close(self) -> None:
+        self._worker_stop_event.set()
+        with self._queue_cond:
+            self._queue_cond.notify_all()
+        try:
+            self.event_bus.unsubscribe_owner(self)
+        except Exception:
+            pass
+        super().close()
+
+    def _run_job(self, job: dict[str, Any]) -> None:
         backend = self._get_backend()
         if backend is None:
-            logger.error("InstallController backend not available")
+            self._report_start_failure(
+                job,
+                "Install backend is unavailable or failed to initialize",
+            )
             return
 
         headless = bool(job.get("headless"))
@@ -175,6 +253,7 @@ class InstallGuiController(BaseController):
                 meta=job.get("meta"),
                 callbacks=callbacks,
                 timeout_sec=float(job.get("timeout_sec", 3600.0)),
+                cancel_event=job.get("cancel_event"),
             )
         except Exception as e:
             logger.error(f"Install worker failed: {e}", exc_info=True)
@@ -224,6 +303,34 @@ class InstallGuiController(BaseController):
                 "title": "Installation failed",
                 "message": f"Task '{task_title}' failed.{details} See install window logs.",
             })
+
+    def _report_start_failure(self, job: dict[str, Any], message: str) -> None:
+        task_id = str(job.get("task_id") or "task")
+        raw_meta = job.get("meta")
+        meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+        component_id = str(meta.get("component_id") or "")
+        error = str(message or "Installation task failed to start")
+        logger.error(f"Install task '{task_id}' failed to start: {error}")
+
+        callbacks = job.get("callbacks")
+        if not bool(job.get("headless")) and callbacks:
+            try:
+                callbacks[1]("Failed")
+                callbacks[2](error)
+            except Exception:
+                logger.exception(
+                    f"Failed to report startup error for install task '{task_id}'"
+                )
+
+        self.event_bus.emit(
+            Events.Install.TASK_FAILED,
+            {
+                "task_id": task_id,
+                "component_id": component_id,
+                "meta": meta,
+                "error": error,
+            },
+        )
 
     # ------------------------------------------------------------------
     # backend / окно
@@ -359,6 +466,20 @@ class InstallGuiController(BaseController):
         }
 
         if not self._enqueue(job):
+            if self._last_enqueue_error:
+                logger.error(
+                    f"Install task '{task_id}' was not queued: {self._last_enqueue_error}"
+                )
+                self.event_bus.emit(
+                    Events.Install.TASK_FAILED,
+                    {
+                        "task_id": str(task_id),
+                        "component_id": str(meta.get("component_id") or ""),
+                        "meta": meta,
+                        "error": self._last_enqueue_error,
+                    },
+                )
+                return
             logger.info(f"Install task '{task_id}' already queued/running; ignoring duplicate.")
             # Поднять уже существующее окно, если оно есть.
             if win is not None:
@@ -395,4 +516,18 @@ class InstallGuiController(BaseController):
         }
 
         if not self._enqueue(job):
+            if self._last_enqueue_error:
+                logger.error(
+                    f"Headless install task '{task_id}' was not queued: {self._last_enqueue_error}"
+                )
+                self.event_bus.emit(
+                    Events.Install.TASK_FAILED,
+                    {
+                        "task_id": str(task_id),
+                        "component_id": str(meta.get("component_id") or ""),
+                        "meta": meta,
+                        "error": self._last_enqueue_error,
+                    },
+                )
+                return
             logger.info(f"Headless install task '{task_id}' already queued/running; ignoring duplicate.")

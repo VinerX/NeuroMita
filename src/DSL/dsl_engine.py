@@ -5,8 +5,11 @@ import os
 import re
 import sys
 import traceback
-from typing import List, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, List, Any, Optional, Tuple
 from contextlib import contextmanager
+
+if TYPE_CHECKING:
+    from character import Character
 
 LOG_DIR = "Logs"
 RED = "\033[91m"

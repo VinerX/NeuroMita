@@ -2,6 +2,7 @@ import threading
 
 from core.events import Events, get_event_bus
 from core.services import use
+from core.task_supervisor import task_supervisor
 from main_logger import logger
 from services.contracts import CharacterRegistry
 
@@ -34,12 +35,12 @@ class ReminderController:
                 if self._shutdown_event.wait(max(0.1, float(self.CHECK_INTERVAL_SEC))):
                     return
 
-        self._thread = threading.Thread(
-            target=check_loop,
-            daemon=True,
-            name="ReminderController",
+        self._thread = task_supervisor().start_thread(
+            self,
+            "reminder-loop",
+            check_loop,
+            cancel_event=self._shutdown_event,
         )
-        self._thread.start()
         logger.info("[ReminderController] Periodic check thread started.")
 
     def shutdown(self) -> None:

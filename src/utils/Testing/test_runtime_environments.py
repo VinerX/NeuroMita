@@ -613,7 +613,7 @@ def test_runtime_bootstrap_reserves_lib_core_for_main_process(
         sys.path[:] = previous_path
 
 
-def test_runtime_bootstrap_migrates_legacy_main_and_ai_layout(
+def test_runtime_bootstrap_migrates_only_legacy_ai_layout(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -648,7 +648,8 @@ def test_runtime_bootstrap_migrates_legacy_main_and_ai_layout(
     finally:
         sys.path[:] = previous_path
 
-    assert (runtime / "core" / "example_main_package" / "__init__.py").is_file()
+    assert (runtime / "example_main_package" / "__init__.py").is_file()
+    assert not (runtime / "core" / "example_main_package").exists()
     assert (
         runtime / "environment" / "bases" / "torch-cpu-old" / "manifest.json"
     ).is_file()
@@ -660,4 +661,38 @@ def test_runtime_bootstrap_migrates_legacy_main_and_ai_layout(
         / "revision-a"
         / "manifest.json"
     ).is_file()
-    assert not (runtime / "example_main_package").exists()
+
+
+def test_main_dependency_is_managed_but_excluded_from_ai_composition(tmp_path: Path) -> None:
+    from core.backends import BackendKind
+    from core.runtime_environments import RuntimeEnvironmentManager
+
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    assert manager.should_manage({"category": "dependency", "item_id": "opencv"}) is True
+    assert manager.should_manage({"category": "dependency", "item_id": "ffmpeg"}) is False
+
+    transaction = manager.begin(
+        meta={"category": "dependency", "item_id": "opencv"},
+        requested_specs=("opencv-python",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    assert transaction.site_packages is not None
+    package = transaction.site_packages / "cv2"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    dist_info = transaction.site_packages / "opencv_python-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Name: opencv-python\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "top_level.txt").write_text("cv2\n", encoding="utf-8")
+    (dist_info / "RECORD").write_text("", encoding="utf-8")
+    record = transaction.commit({"category": "dependency", "item_id": "opencv"})
+    transaction.finalize()
+
+    assert manager.main_runtime_paths() == (str(record.site_packages),)
+    composition = manager.runtime_composition()
+    assert record not in composition.records
+    assert str(record.site_packages) not in composition.paths

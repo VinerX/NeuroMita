@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import itertools
 import threading
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from core.serial_dispatcher import SerialDispatcher
 from main_logger import logger
 
 
@@ -62,6 +64,14 @@ class SettingsRegistry(MutableMapping[str, Any]):
             tuple[frozenset[str] | None, Callable[[SettingChange], None]],
         ] = {}
         self._on_mutated = on_mutated
+        self._dispatcher = SerialDispatcher(
+            f"settings-observers-{id(self):x}",
+            lanes=4,
+            capacity_per_lane=0,
+        )
+        self._pending_listener_changes: dict[int, deque[SettingChange]] = {}
+        self._scheduled_listeners: set[int] = set()
+        self._closed = False
 
     @property
     def revision(self) -> int:
@@ -127,7 +137,7 @@ class SettingsRegistry(MutableMapping[str, Any]):
     ) -> tuple[SettingChange, ...]:
         changes: list[SettingChange] = []
         listener_batches: list[
-            tuple[SettingChange, list[Callable[[SettingChange], None]]]
+            tuple[SettingChange, list[tuple[int, Callable[[SettingChange], None]]]]
         ] = []
         missing = object()
 
@@ -170,7 +180,7 @@ class SettingsRegistry(MutableMapping[str, Any]):
             self._values = dict(values or {})
             self._revision += 1
             revision = self._revision
-            listeners = list(self._listeners.values()) if notify else []
+            listeners = dict(self._listeners) if notify else {}
 
         if notify:
             snapshot = self.snapshot()
@@ -183,8 +193,8 @@ class SettingsRegistry(MutableMapping[str, Any]):
                     source=str(source or "reload"),
                 )
                 callbacks = [
-                    callback
-                    for keys, callback in listeners
+                    (token, callback)
+                    for token, (keys, callback) in listeners.items()
                     if keys is None or key in keys
                 ]
                 self._notify_listeners(change, callbacks)
@@ -224,21 +234,23 @@ class SettingsRegistry(MutableMapping[str, Any]):
                     revision=revision,
                     source="replay",
                 ),
-                (callback,),
+                ((token, callback),),
             )
         return SettingsSubscription(self, token)
 
     def _unsubscribe(self, token: int) -> None:
         with self._lock:
             self._listeners.pop(token, None)
+            self._pending_listener_changes.pop(token, None)
+            self._scheduled_listeners.discard(token)
 
     def _matching_listeners_locked(
         self,
         key: str,
-    ) -> list[Callable[[SettingChange], None]]:
+    ) -> list[tuple[int, Callable[[SettingChange], None]]]:
         return [
-            callback
-            for keys, callback in self._listeners.values()
+            (token, callback)
+            for token, (keys, callback) in self._listeners.items()
             if keys is None or key in keys
         ]
 
@@ -254,23 +266,84 @@ class SettingsRegistry(MutableMapping[str, Any]):
                 exc_info=True,
             )
 
-    @staticmethod
     def _notify_listeners(
+        self,
         change: SettingChange,
-        listeners: Iterable[Callable[[SettingChange], None]],
+        listeners: Iterable[tuple[int, Callable[[SettingChange], None]]],
     ) -> None:
-        for callback in tuple(listeners):
-            try:
-                callback(change)
-            except Exception as exc:
-                callback_name = getattr(callback, "__qualname__", None) or getattr(
-                    callback, "__name__", None
-                ) or repr(callback)
+        for token, callback in tuple(listeners):
+            with self._lock:
+                current = self._listeners.get(token)
+                if current is None or current[1] != callback or self._closed:
+                    continue
+                self._pending_listener_changes.setdefault(token, deque()).append(change)
+                if token in self._scheduled_listeners:
+                    continue
+                self._scheduled_listeners.add(token)
+            accepted = self._dispatcher.submit(
+                self._drain_listener,
+                token,
+                callback,
+                key=token,
+                description=f"settings-observer:{token}",
+            )
+            if not accepted:
+                with self._lock:
+                    self._scheduled_listeners.discard(token)
                 logger.error(
-                    f"Settings observer '{callback_name}' failed for "
-                    f"key '{change.key}' at revision {change.revision}: {exc}",
-                    exc_info=True,
+                    f"Settings observer dispatcher is closed; revision "
+                    f"{change.revision} for key '{change.key}' could not be scheduled"
                 )
+
+    def _drain_listener(
+        self,
+        token: int,
+        callback: Callable[[SettingChange], None],
+    ) -> None:
+        while True:
+            with self._lock:
+                current = self._listeners.get(token)
+                if current is None or current[1] != callback:
+                    self._pending_listener_changes.pop(token, None)
+                    self._scheduled_listeners.discard(token)
+                    return
+                pending = self._pending_listener_changes.pop(token, deque())
+                if not pending:
+                    self._scheduled_listeners.discard(token)
+                    return
+            for change in pending:
+                self._invoke_listener(token, callback, change)
+
+    def _invoke_listener(
+        self,
+        token: int,
+        callback: Callable[[SettingChange], None],
+        change: SettingChange,
+    ) -> None:
+        with self._lock:
+            current = self._listeners.get(token)
+            if current is None or current[1] != callback:
+                return
+        try:
+            callback(change)
+        except Exception as exc:
+            callback_name = getattr(callback, "__qualname__", None) or getattr(
+                callback, "__name__", None
+            ) or repr(callback)
+            logger.error(
+                f"Settings observer '{callback_name}' failed for "
+                f"key '{change.key}' at revision {change.revision}: {exc}",
+                exc_info=True,
+            )
+
+    def flush_notifications(self, timeout: float = 5.0) -> bool:
+        return self._dispatcher.wait_idle(timeout=timeout)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._dispatcher.close(drain=True, timeout=2.0)
 
     def __getitem__(self, key: str) -> Any:
         return self.require(str(key))

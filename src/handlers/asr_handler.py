@@ -2,7 +2,6 @@ import time
 import os
 import asyncio
 import concurrent.futures
-import threading
 from collections import deque
 from threading import Lock, RLock, Event as ThreadEvent
 from typing import TYPE_CHECKING, Optional, List, Dict
@@ -18,6 +17,7 @@ from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
 from core.events import get_event_bus, Events, Event
+from core.task_supervisor import task_supervisor
 
 
 if TYPE_CHECKING:
@@ -104,7 +104,12 @@ def _on_ai_engine_event(event: Event):
             except Exception:
                 logger.error("ASR engine failure handling error", exc_info=True)
 
-        threading.Thread(target=_shutdown, daemon=True).start()
+        task_supervisor().start_thread(
+            SpeechRecognition,
+            "asr-engine-failure-shutdown",
+            _shutdown,
+            replace=True,
+        )
 
 
 _ASR_ENGINE_BRIDGE_REGISTERED = False

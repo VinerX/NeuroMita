@@ -5,6 +5,7 @@ import threading
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import services
+from core.task_supervisor import task_supervisor
 from services.contracts import LoopService
 from services.loop_service import AsyncioLoopService
 
@@ -20,8 +21,11 @@ class LoopController:
 
         services().register(LoopService, AsyncioLoopService(lambda: self.loop), replace=True)
 
-        self.asyncio_thread = threading.Thread(target=self.start_asyncio_loop, daemon=True)
-        self.asyncio_thread.start()
+        self.asyncio_thread = task_supervisor().start_thread(
+            self,
+            "application-asyncio-loop",
+            self.start_asyncio_loop,
+        )
 
     def start_asyncio_loop(self):
         try:

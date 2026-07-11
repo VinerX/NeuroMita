@@ -1,13 +1,13 @@
+from __future__ import annotations
+
 import os
 import sys
-import importlib
 import traceback
 import hashlib
 import json
 from datetime import datetime
-import asyncio
 import subprocess
-from typing import Optional, Any, List, Dict
+from typing import TYPE_CHECKING, Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
@@ -18,10 +18,13 @@ from utils import getTranslationVariant as _, get_character_voice_paths
 
 from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
-from core.installables.helpers import patch_tts_with_rvc_audio
 from core.install_requirements import InstallRequirement, check_requirements
 
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
+
 from handlers.voice_models.install_plan_helpers import (
+    patch_tts_with_rvc_audio,
     pip_uninstall_action,
     rvc_python_compat_error,
     warning_action,

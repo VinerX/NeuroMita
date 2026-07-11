@@ -40,7 +40,6 @@ class VoiceModelGuiController(BaseController):
 
         self.event_bus.subscribe(Events.VoiceModel.UPDATE_DESCRIPTION, self._on_update_description, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.CLEAR_DESCRIPTION, self._on_clear_description, weak=False)
-        self.event_bus.subscribe(Events.VoiceModel.GET_SECTION_VALUES, self._on_get_section_values, weak=False)
 
         self.event_bus.subscribe(Events.Audio.SHOW_VC_REDIST_DIALOG, self._on_show_vc_redist_dialog, weak=False)
         self.event_bus.subscribe(Events.Audio.SHOW_TRITON_DIALOG, self._on_show_triton_dialog, weak=False)
