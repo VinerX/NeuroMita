@@ -43,6 +43,22 @@ class BackendInstallableComponent:
     def status(self, ctx: dict[str, Any] | None = None) -> ComponentStatus:
         run_ctx = build_runtime_ctx(ctx)
         try:
+            from core.runtime_environments import runtime_environments
+
+            managed_paths = runtime_environments().core_paths_for_backend(
+                self.backend,
+                run_ctx,
+            )
+            if managed_paths:
+                run_ctx.update(
+                    {
+                        "target_dir": managed_paths[0],
+                        "libs_dir": managed_paths[0],
+                        "lib_dir": managed_paths[0],
+                        "python_paths": list(managed_paths),
+                        "strict_target": True,
+                    }
+                )
             status = get_backend_service().get_status(self.backend, ctx=run_ctx)
             return ComponentStatus(
                 id=self.id,

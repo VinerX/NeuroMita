@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from handlers.ai_engine.worker_process import (
+    _configure_torch_compile_cache,
     _ensure_lib_on_path,
     _probe_runtime_modules,
 )
@@ -71,6 +72,34 @@ def test_runtime_probe_reports_failing_module() -> None:
         side_effect=ImportError("missing native dll"),
     ), pytest.raises(RuntimeError, match="broken_backend"):
         _probe_runtime_modules(["broken_backend"])
+
+
+def test_worker_configures_shared_inductor_and_triton_caches(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "Lib"
+    environment_root = runtime_root / "environment"
+    monkeypatch.setenv("NEUROMITA_ENVIRONMENT_DIR", str(environment_root))
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
+    monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+    monkeypatch.delenv("TORCHINDUCTOR_FX_GRAPH_CACHE", raising=False)
+
+    _configure_torch_compile_cache(str(runtime_root))
+
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(environment_root / "cache" / "torchinductor")
+    assert os.environ["TRITON_CACHE_DIR"] == str(environment_root / "cache" / "triton")
+    assert os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
+    assert (environment_root / "cache").is_dir()
+
+
+def test_worker_preserves_explicit_torch_compile_cache_policy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "custom-inductor"))
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "custom-triton"))
+    monkeypatch.setenv("TORCHINDUCTOR_FX_GRAPH_CACHE", "0")
+
+    _configure_torch_compile_cache(str(tmp_path / "Lib"))
+
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(tmp_path / "custom-inductor")
+    assert os.environ["TRITON_CACHE_DIR"] == str(tmp_path / "custom-triton")
+    assert os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "0"
 
 
 def test_worker_activates_pth_paths_from_managed_layer(tmp_path: Path, monkeypatch) -> None:

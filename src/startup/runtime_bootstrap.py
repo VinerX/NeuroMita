@@ -152,6 +152,8 @@ def _configure_paths(base_dir: str) -> str:
         from core.runtime_environments import RuntimeEnvironmentManager
 
         manager = RuntimeEnvironmentManager(runtime_root)
+        manager.migrate_legacy_environment_ids()
+        manager.recover_unregistered_overlays()
         manager.cleanup_inactive_overlays()
         main_paths = manager.main_runtime_paths()
     except Exception:

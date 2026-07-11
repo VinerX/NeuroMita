@@ -27,6 +27,24 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
+def _configure_torch_compile_cache(runtime_root: str) -> None:
+    """Configure one persistent TorchInductor/Triton cache for all AI overlays."""
+    environment_root = os.path.abspath(
+        os.environ.get("NEUROMITA_ENVIRONMENT_DIR")
+        or os.path.join(runtime_root, "environment")
+    )
+    cache_root = os.path.join(environment_root, "cache")
+
+    try:
+        os.makedirs(cache_root, exist_ok=True)
+    except OSError:
+        return
+
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.join(cache_root, "torchinductor"))
+    os.environ.setdefault("TRITON_CACHE_DIR", os.path.join(cache_root, "triton"))
+    os.environ.setdefault("TORCHINDUCTOR_FX_GRAPH_CACHE", "1")
+
+
 def _activate_site_directories(paths: list[str]) -> list[str]:
     """Activate `.pth` entries while preserving managed-layer precedence."""
     activated_by_root: list[tuple[str, list[str]]] = []
@@ -75,6 +93,7 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
     runtime_root = os.path.abspath(
         os.environ.get("NEUROMITA_RUNTIME_ROOT") or os.path.dirname(main_core)
     )
+    _configure_torch_compile_cache(runtime_root)
     embedded_python = os.path.abspath(
         os.environ.get("NEUROMITA_PYTHON") or sys.executable
     )
@@ -253,6 +272,12 @@ def run_worker_process(
     try:
         _log(log_queue, "info", "Bootstrap: configuring isolated runtime paths")
         _ensure_lib_on_path(python_paths)
+        _log(
+            log_queue,
+            "info",
+            "Bootstrap: using shared TorchInductor cache "
+            f"'{os.environ.get('TORCHINDUCTOR_CACHE_DIR', '')}'",
+        )
         _probe_runtime_modules(probe_modules, log_queue=log_queue)
         _log(log_queue, "info", "Bootstrap: validating backend capabilities")
         _probe_runtime_capabilities(python_paths)

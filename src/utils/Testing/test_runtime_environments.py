@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from core.backends import BackendKind
+from core.backends.installable_component import BackendInstallableComponent
 from core.install_requirements import is_pip_spec_satisfied
 from core.runtime_environments import CoreLayerSpec, RuntimeEnvironmentManager
 
@@ -96,6 +98,16 @@ def test_layout_uses_versioned_core_and_environment_roots(tmp_path: Path) -> Non
     assert "cu128" in spec.layer_id
 
 
+def test_environment_ids_preserve_plus_as_a_distinct_component_key(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    ids = [
+        manager.logical_id_from_meta({"category": "tts", "item_id": item_id})[0]
+        for item_id in ("medium", "medium+", "medium+low")
+    ]
+
+    assert ids == ["tts-medium", "tts-medium-plus", "tts-medium-plus-low"]
+
+
 def test_cuda_torch_layer_satisfies_cpu_capability_without_second_copy(tmp_path: Path) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
     created: list[_FakeInstaller] = []
@@ -137,6 +149,23 @@ def test_cuda_torch_layer_satisfies_cpu_capability_without_second_copy(tmp_path:
     assert cpu_layer.layer_id == cuda_layer.layer_id
     assert cpu_layer.extra_args == cuda_layer.extra_args
     assert len(list(manager.core_root.glob("*/manifest.json"))) == 1
+
+
+def test_backend_card_uses_the_shared_cuda_core_layer(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    spec = manager.core_layer_specs(BackendKind.CUDA, {"gpu_vendor": "NVIDIA"})[0]
+    layer = manager.ensure_core_layer(spec, installer_factory=_factory(created), log=lambda _message: None)
+    assert layer is not None
+    cuda_library = layer.site_packages / "torch" / "lib" / "cudart64_12.dll"
+    cuda_library.parent.mkdir(parents=True)
+    cuda_library.write_bytes(b"cuda")
+
+    with patch("core.runtime_environments.runtime_environments", return_value=manager):
+        status = BackendInstallableComponent(BackendKind.CUDA).status({"gpu_vendor": "NVIDIA"})
+
+    assert status.installed is True
+    assert status.ready is True
 
 
 def test_environment_commit_is_atomic_and_strips_only_core_owned_packages(tmp_path: Path) -> None:
@@ -383,6 +412,75 @@ def test_committed_candidate_can_roll_back_to_previous_revision(tmp_path: Path) 
     assert restored is not None
     assert restored.revision_id == previous.revision_id
     assert not candidate.root.exists()
+
+
+def test_rollback_preserves_a_concurrently_registered_environment(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    candidate = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("demo==1",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    candidate_record = candidate.commit()
+
+    concurrent = manager.begin(
+        meta={"category": "tts", "item_id": "voice-b"},
+        requested_specs=("demo==1",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    concurrent_record = concurrent.commit()
+
+    candidate.rollback_commit()
+
+    assert manager.active(candidate_record.logical_id) is None
+    assert manager.active(concurrent_record.logical_id) is not None
+
+
+def test_recovers_ready_unregistered_overlay_without_accepting_retired_one(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "fish"},
+        requested_specs=("fish-speech-lib==1.0.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(transaction.site_packages, "fish-speech-lib", "1.0.0")
+    record = transaction.commit()
+
+    assert manager.remove_installed(record.logical_id, delete=False) is True
+    assert manager.recover_unregistered_overlays() == ()
+
+    (record.root / ".retired").unlink()
+    recovered = manager.recover_unregistered_overlays()
+
+    assert recovered == (record,)
+    assert manager.active(record.logical_id) is not None
+
+
+def test_migrates_legacy_overlay_that_collapsed_plus_into_medium(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "medium+"},
+        requested_specs=(),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    record = transaction.commit()
+    legacy_id = "tts-medium"
+    legacy_root = manager.overlay_root / legacy_id
+    legacy_root.mkdir()
+    os.replace(record.root, legacy_root / record.revision_id)
+
+    registry = json.loads(manager.registry_path.read_text(encoding="utf-8"))
+    entry = registry["environments"].pop(record.logical_id)
+    registry["environments"][legacy_id] = entry
+    manager.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    assert manager.migrate_legacy_environment_ids() == (record.logical_id,)
+    assert manager.active(record.logical_id) is not None
+    assert (manager.overlay_root / record.logical_id / record.revision_id).is_dir()
 
 
 def test_backend_profile_is_global_without_rewriting_installed_overlays(

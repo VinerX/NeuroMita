@@ -977,8 +977,6 @@ class VoiceModelSettingsView(QWidget):
             row = QHBoxLayout()
             row.setSpacing(16)
             for text, ok in [
-                (_("CUDA Toolkit:", "CUDA Toolkit:"), st.get("cuda_found", False)),
-                (_("Windows SDK:", "Windows SDK:"), st.get("winsdk_found", False)),
                 (_("MSVC:", "MSVC:"), st.get("msvc_found", False))
             ]:
                 sub = QHBoxLayout()
@@ -992,10 +990,10 @@ class VoiceModelSettingsView(QWidget):
             row.addStretch()
             layout.addLayout(row)
 
-            if not (st.get("cuda_found") and st.get("winsdk_found") and st.get("msvc_found")):
+            if not st.get("msvc_found"):
                 warn = QHBoxLayout()
-                wlab = QLabel(_("⚠️ Для моделей Fish Speech+ / +RVC могут потребоваться все компоненты.",
-                                "⚠️ Fish Speech+ / +RVC models may require all components."))
+                wlab = QLabel(_("⚠️ Для Fish Speech+ / +RVC нужен MSVC (VC++ Build Tools).",
+                                "⚠️ Fish Speech+ / +RVC requires MSVC (VC++ Build Tools)."))
                 wlab.setStyleSheet("color: orange; font-weight: bold;")
                 warn.addWidget(wlab)
                 link = QLabel(_("[Документация]", "[Documentation]"))

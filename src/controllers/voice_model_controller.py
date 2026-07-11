@@ -654,6 +654,12 @@ class VoiceModelController(VoiceModelService):
             from installables import get_installable_registry
 
             manager = runtime_environments()
+            migrate_environment_ids = getattr(manager, "migrate_legacy_environment_ids", None)
+            if callable(migrate_environment_ids):
+                migrate_environment_ids()
+            recover_overlays = getattr(manager, "recover_unregistered_overlays", None)
+            if callable(recover_overlays):
+                recover_overlays()
             components = list(
                 get_installable_registry().by_category(ComponentCategory.TTS) or []
             )

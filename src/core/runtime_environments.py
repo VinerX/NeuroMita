@@ -91,6 +91,12 @@ def _safe_id(value: str) -> str:
     return normalized or "environment"
 
 
+def _safe_environment_id(value: str) -> str:
+    """Create a filesystem key for a component identity without losing `+`."""
+    raw = str(value or "").strip().replace("+", "-plus-")
+    return _safe_id(raw)
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -421,7 +427,7 @@ class EnvironmentTransaction:
     _committed_record: EnvironmentRecord | None = None
 
     def __post_init__(self) -> None:
-        self.staging_root = self.manager.staging_root / f"env-{_safe_id(self.logical_id)}-{self.transaction_id}"
+        self.staging_root = self.manager.staging_root / f"env-{_safe_environment_id(self.logical_id)}-{self.transaction_id}"
         self.site_packages = self.staging_root / "site-packages"
         self.site_packages.mkdir(parents=True, exist_ok=False)
 
@@ -536,7 +542,7 @@ class EnvironmentTransaction:
             "platform": _platform_tag(),
         }
         revision_id = _hash_payload(revision_payload, length=20)
-        final_root = self.manager.overlay_root / _safe_id(self.logical_id) / revision_id
+        final_root = self.manager.overlay_root / _safe_environment_id(self.logical_id) / revision_id
         final_site = final_root / "site-packages"
 
         manifest = {
@@ -587,7 +593,10 @@ class EnvironmentTransaction:
         if not self.committed or self.finalized:
             return
         if self._registry_snapshot is not None:
-            self.manager.restore_registry(self._registry_snapshot)
+            self.manager.restore_registration(
+                self._committed_record,
+                self._registry_snapshot,
+            )
         if self._committed_record is not None:
             previous_entry = ((self._registry_snapshot or {}).get("environments") or {}).get(
                 self._committed_record.logical_id
@@ -674,7 +683,7 @@ class RuntimeEnvironmentManager:
         category = str(data.get("category") or data.get("kind") or "component").strip().lower()
         item_id = str(data.get("item_id") or data.get("component_id") or "component").strip()
         logical_id = str(data.get("environment_id") or f"{category}:{item_id}")
-        return _safe_id(logical_id), category, item_id
+        return _safe_environment_id(logical_id), category, item_id
 
     @staticmethod
     def should_manage(meta: dict[str, Any] | None) -> bool:
@@ -957,8 +966,129 @@ class RuntimeEnvironmentManager:
             }
             _atomic_json(self.registry_path, data)
 
+    def restore_registration(
+        self,
+        record: EnvironmentRecord | None,
+        snapshot: Mapping[str, Any],
+    ) -> None:
+        """Undo one committed registration without discarding concurrent installs."""
+        if record is None:
+            return
+
+        logical_id = _safe_environment_id(record.logical_id)
+        previous_environments = (snapshot.get("environments") or {})
+        previous_entry = previous_environments.get(logical_id)
+        previous_selection = snapshot.get("runtime_selection") or {}
+
+        with self._lock, self.file_lock("environment-registry"):
+            data = self._load_registry()
+            environments = data.setdefault("environments", {})
+            current_entry = environments.get(logical_id)
+            current_revision = (
+                str(current_entry.get("revision_id") or "")
+                if isinstance(current_entry, dict)
+                else ""
+            )
+            if current_revision != record.revision_id:
+                return
+
+            if isinstance(previous_entry, dict):
+                environments[logical_id] = dict(previous_entry)
+            else:
+                environments.pop(logical_id, None)
+
+            selection = data.setdefault("runtime_selection", {})
+            for slot, value in tuple(selection.items()):
+                selected = self._selection_ref(value)
+                if selected is None or selected.logical_id != logical_id or selected.revision_id != record.revision_id:
+                    continue
+                old_value = previous_selection.get(slot)
+                if old_value is None:
+                    selection.pop(slot, None)
+                else:
+                    selection[slot] = old_value
+            _atomic_json(self.registry_path, data)
+
+    def migrate_legacy_environment_ids(self) -> tuple[str, ...]:
+        """Move legacy overlay keys that collapsed `+` into their distinct IDs."""
+        migrated: list[str] = []
+        with self._lock, self.file_lock("environment-registry"):
+            data = self._load_registry()
+            environments = data.setdefault("environments", {})
+            selection = data.setdefault("runtime_selection", {})
+            for legacy_id, entry in tuple(environments.items()):
+                if not isinstance(entry, dict):
+                    continue
+                category = str(entry.get("category") or "").strip().lower()
+                item_id = str(entry.get("item_id") or "").strip()
+                revision_id = str(entry.get("revision_id") or "").strip()
+                canonical_id = _safe_environment_id(f"{category}:{item_id}")
+                if not category or not item_id or not revision_id or canonical_id == legacy_id:
+                    continue
+
+                source = self.overlay_root / legacy_id / revision_id
+                destination = self.overlay_root / canonical_id / revision_id
+                if source.is_dir() and not destination.exists():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, destination)
+                if not destination.is_dir():
+                    continue
+
+                environments.pop(legacy_id, None)
+                environments[canonical_id] = dict(entry)
+                for slot, value in tuple(selection.items()):
+                    selected = self._selection_ref(value)
+                    if selected is None or selected.logical_id != legacy_id or selected.revision_id != revision_id:
+                        continue
+                    selection[slot] = RuntimeSelectionRef(canonical_id, revision_id).as_dict()
+                migrated.append(canonical_id)
+            if migrated:
+                _atomic_json(self.registry_path, data)
+        return tuple(migrated)
+
+    def recover_unregistered_overlays(self) -> tuple[EnvironmentRecord, ...]:
+        """Restore ready overlays left unregistered by an interrupted transaction."""
+        recovered: list[EnvironmentRecord] = []
+        with self._lock, self.file_lock("environment-registry"):
+            data = self._load_registry()
+            environments = data.setdefault("environments", {})
+            for logical_root in tuple(self.overlay_root.iterdir()) if self.overlay_root.is_dir() else ():
+                if not logical_root.is_dir():
+                    continue
+                logical_id = _safe_environment_id(logical_root.name)
+                if logical_id in environments:
+                    continue
+
+                candidates: list[EnvironmentRecord] = []
+                for revision_root in tuple(logical_root.iterdir()):
+                    if (
+                        not revision_root.is_dir()
+                        or (revision_root / ".pending-delete").is_file()
+                        or (revision_root / ".retired").is_file()
+                    ):
+                        continue
+                    record = self._record_for_revision(logical_id, revision_root.name)
+                    if record is not None and record.site_packages.is_dir():
+                        candidates.append(record)
+                if not candidates:
+                    continue
+
+                record = max(candidates, key=lambda item: item.root.stat().st_mtime)
+                environments[record.logical_id] = {
+                    "revision_id": record.revision_id,
+                    "category": record.category,
+                    "item_id": record.item_id,
+                    "core_layer_ids": list(record.core_layer_ids),
+                    "required_backend": record.required_backend,
+                    "required_capabilities": list(record.required_capabilities),
+                }
+                recovered.append(record)
+            if recovered:
+                _atomic_json(self.registry_path, data)
+        return tuple(recovered)
+
     def remove_installed(self, logical_id: str, *, delete: bool = True) -> bool:
-        normalized = _safe_id(logical_id)
+        normalized = _safe_environment_id(logical_id)
         with self._lock, self.file_lock("environment-registry"):
             data = self._load_registry()
             entry = (data.get("environments") or {}).pop(normalized, None)
@@ -990,6 +1120,15 @@ class RuntimeEnvironmentManager:
                         )
                     except OSError:
                         pass
+        else:
+            logical_root = self.overlay_root / normalized
+            for revision_root in tuple(logical_root.iterdir()) if logical_root.is_dir() else ():
+                if not revision_root.is_dir():
+                    continue
+                try:
+                    (revision_root / ".retired").write_text("1\n", encoding="ascii")
+                except OSError:
+                    pass
         return True
 
     def _record_required_capabilities(
@@ -1028,7 +1167,7 @@ class RuntimeEnvironmentManager:
         *,
         registry_entry: Mapping[str, Any] | None = None,
     ) -> EnvironmentRecord | None:
-        normalized = _safe_id(logical_id)
+        normalized = _safe_environment_id(logical_id)
         normalized_revision = str(revision_id or "").strip()
         if not normalized_revision:
             return None
@@ -1082,7 +1221,7 @@ class RuntimeEnvironmentManager:
             return None
 
     def active(self, logical_id: str) -> EnvironmentRecord | None:
-        normalized = _safe_id(logical_id)
+        normalized = _safe_environment_id(logical_id)
         data = self._load_registry()
         entry = (data.get("environments") or {}).get(normalized)
         if not isinstance(entry, dict):
@@ -1116,11 +1255,11 @@ class RuntimeEnvironmentManager:
         runtime activation are deliberately separate: a record returned here is
         installed, but it is not necessarily attached to the shared AI worker.
         """
-        excluded = {_safe_id(item) for item in exclude_logical_ids}
+        excluded = {_safe_environment_id(item) for item in exclude_logical_ids}
         data = self._load_registry()
         records: list[EnvironmentRecord] = []
         for logical_id in (data.get("environments") or {}):
-            normalized = _safe_id(logical_id)
+            normalized = _safe_environment_id(logical_id)
             if normalized in excluded:
                 continue
             record = self.active(normalized)
@@ -1140,7 +1279,7 @@ class RuntimeEnvironmentManager:
             revision_id = ""
         if not logical_id:
             return None
-        normalized_id = _safe_id(logical_id)
+        normalized_id = _safe_environment_id(logical_id)
         if not revision_id:
             installed = self.active(normalized_id)
             if installed is None:
@@ -1173,7 +1312,7 @@ class RuntimeEnvironmentManager:
             selection.pop(normalized_slot, None)
         else:
             selection[normalized_slot] = RuntimeSelectionRef(
-                _safe_id(record.logical_id),
+                _safe_environment_id(record.logical_id),
                 str(record.revision_id),
             )
         return selection
@@ -1184,7 +1323,7 @@ class RuntimeEnvironmentManager:
         selection: Mapping[str, Any] | None = None,
         exclude_logical_ids: Iterable[str] = (),
     ) -> tuple[EnvironmentRecord, ...]:
-        excluded = {_safe_id(item) for item in exclude_logical_ids}
+        excluded = {_safe_environment_id(item) for item in exclude_logical_ids}
         selected = dict(selection) if selection is not None else self.runtime_selection()
         ordered_slots: list[str] = list(_RUNTIME_SLOT_ORDER)
         ordered_slots.extend(
@@ -1214,7 +1353,7 @@ class RuntimeEnvironmentManager:
         revision_id: str | None = None,
         slot: str | None = None,
     ) -> bool:
-        normalized = _safe_id(logical_id)
+        normalized = _safe_environment_id(logical_id)
         expected_revision = str(revision_id or "").strip()
         selection = self.runtime_selection()
 
@@ -1249,7 +1388,7 @@ class RuntimeEnvironmentManager:
             revision_id = str(entry.get("revision_id") or "").strip()
             if revision_id:
                 keep_roots.add(
-                    (self.overlay_root / _safe_id(logical_id) / revision_id).resolve()
+                    (self.overlay_root / _safe_environment_id(logical_id) / revision_id).resolve()
                 )
         for ref in self.runtime_selection().values():
             keep_roots.add(
@@ -1259,13 +1398,13 @@ class RuntimeEnvironmentManager:
         if not self.overlay_root.is_dir():
             return
         registered_ids = {
-            _safe_id(logical_id)
+            _safe_environment_id(logical_id)
             for logical_id in (data.get("environments") or {})
         }
         for logical_root in tuple(self.overlay_root.iterdir()):
             if not logical_root.is_dir():
                 continue
-            logical_id = _safe_id(logical_root.name)
+            logical_id = _safe_environment_id(logical_root.name)
             for revision_root in tuple(logical_root.iterdir()):
                 if not revision_root.is_dir():
                     continue
@@ -1611,7 +1750,7 @@ class RuntimeEnvironmentManager:
             self.cleanup_unreferenced_core_layers()
 
     def cleanup_superseded_revisions(self, logical_id: str) -> None:
-        normalized = _safe_id(logical_id)
+        normalized = _safe_environment_id(logical_id)
         installed = self.active(normalized)
         keep: set[str] = set()
         if installed is not None:
@@ -1772,7 +1911,7 @@ class RuntimeEnvironmentManager:
                 return result
 
         if self.should_manage({"category": normalized_category}):
-            probe = self.staging_root / "status-empty" / _safe_id(
+            probe = self.staging_root / "status-empty" / _safe_environment_id(
                 f"{normalized_category}:{normalized_item}"
             )
             result.update(

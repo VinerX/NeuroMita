@@ -1049,12 +1049,14 @@ class TritonDependenciesDialog(QDialog):
         layout.addWidget(self.warning_label)
         
         info_text = _(
-            "Если компоненты не найдены, установите их согласно документации.\n"
-            "Вы также можете попробовать инициализировать модель вручную,\n"
-            "запустив `init_triton.bat` в корневой папке программы.",
-            "If components are not found, install them according to the documentation.\n"
-            "You can also try initializing the model manually\n"
-            "by running `init_triton.bat` in the program's root folder."
+            "Для Fish Speech+ нужен только Microsoft VC++ Build Tools.\n"
+            "Triton Windows уже содержит TinyCC и не требует Windows SDK или CUDA Toolkit.\n"
+            "Установите VC++ Build Tools, затем обновите статус. Если компиляция всё равно не сработает,\n"
+            "попробуйте ручную инициализацию через `init_triton.bat` в корне программы.",
+            "Fish Speech+ only requires Microsoft VC++ Build Tools.\n"
+            "Triton Windows already includes TinyCC and does not require the Windows SDK or CUDA Toolkit.\n"
+            "Install VC++ Build Tools, then refresh the status. If compilation still fails,\n"
+            "try manual initialization with `init_triton.bat` in the program's root folder."
         )
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
@@ -1091,12 +1093,8 @@ class TritonDependenciesDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
         
-        # CUDA убран из обязательных требований (фидбэк Артёма) — для компиляции
-        # ядра Triton нужен только MSVC/VC++. Windows SDK оставляем как
-        # вспомогательную информацию, CUDA больше не показываем.
         items = [
             ("MSVC (VC++):", self.dependencies_status.get('msvc_found', False)),
-            ("Windows SDK:", self.dependencies_status.get('winsdk_found', False)),
         ]
         
         for text, found in items:
