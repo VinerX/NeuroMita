@@ -24,10 +24,22 @@ class _FakeEngine:
         self._result_value = result_value
         self._activation_result = activation_result
         self.calls: list[tuple[str, str, dict]] = []
-        self.activations: list[tuple[str, str, str | None]] = []
+        self.activations: list[tuple[str, str, str | None, str | None]] = []
 
-    def activate_environment(self, service, item_id, *, category=None, timeout=0.0):
-        self.activations.append((service, item_id, category))
+    def activate_environment(
+        self,
+        service,
+        item_id,
+        *,
+        category=None,
+        timeout=0.0,
+        validation_method=None,
+        validation_payload=None,
+        validation_timeout=None,
+    ):
+        self.activations.append((service, item_id, category, validation_method))
+        if validation_method:
+            return self._activation_result and bool(self._result_value)
         return self._activation_result
 
     def call(self, service, method, payload):
@@ -63,9 +75,11 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         self.assertFalse(SpeechRecognition._is_running)
         self.assertFalse(SpeechRecognition.active)
         run_local_mock.assert_not_called()
-        self.assertEqual(fake_engine.activations, [("asr", "whisper", "asr")])
-        self.assertEqual(fake_engine.calls[0][0], "asr")
-        self.assertEqual(fake_engine.calls[0][1], "start_live")
+        self.assertEqual(
+            fake_engine.activations,
+            [("asr", "whisper", "asr", "start_live")],
+        )
+        self.assertEqual(fake_engine.calls, [])
 
     def test_non_google_requires_managed_environment(self):
         SpeechRecognition._recognizer_type = "whisper"
@@ -75,7 +89,10 @@ class SpeechRecognitionStartTests(unittest.TestCase):
             started = SpeechRecognition.speech_recognition_start(3, object())
 
         self.assertFalse(started)
-        self.assertEqual(fake_engine.activations, [("asr", "whisper", "asr")])
+        self.assertEqual(
+            fake_engine.activations,
+            [("asr", "whisper", "asr", "start_live")],
+        )
         self.assertEqual(fake_engine.calls, [])
 
     def test_google_engine_keeps_local_mode(self):

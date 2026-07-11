@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import patch
 
 from core.task_supervisor import TaskSupervisor
+from ui.async_bus import run_async
 
 
 def test_supervisor_tracks_and_cancels_owner_threads():
@@ -78,3 +80,13 @@ def test_supervisor_deadline_requests_cooperative_cancellation():
     thread.join(1.0)
     assert not thread.is_alive()
     supervisor.shutdown()
+
+
+def test_gui_async_late_notification_is_ignored_after_shutdown():
+    supervisor = TaskSupervisor()
+    supervisor.shutdown()
+
+    with patch("ui.async_bus.task_supervisor", return_value=supervisor):
+        thread = run_async(None, lambda: "late", name="late-gui-refresh")
+
+    assert thread is None

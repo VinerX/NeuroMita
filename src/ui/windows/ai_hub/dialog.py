@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import html
 import os
 import shutil
 from typing import Any
@@ -24,7 +25,11 @@ from PyQt6.QtWidgets import (
 from core.events import EventDelivery, Events, get_event_bus
 from core.services import services
 from core.task_supervisor import task_supervisor
-from services.contracts import InstallableCatalogService, SettingsService
+from services.contracts import (
+    InstallableCatalogService,
+    InstallableOperationsService,
+    SettingsService,
+)
 from services.installable_catalog_service import DefaultInstallableCatalogService
 from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
@@ -35,6 +40,48 @@ from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label, get_pr
 from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
 from .widgets import CategoryButton, ModelCard, Stat
+
+
+class _BackendInstallConfirmationDialog(QDialog):
+    """Two-action confirmation with an inline navigation link."""
+
+    def __init__(self, body_html: str, *, parent=None) -> None:
+        super().__init__(parent)
+        self.open_backend_requested = False
+        self.setModal(True)
+        self.setWindowTitle(_("Подтверждение установки", "Confirm installation"))
+        self.setMinimumWidth(620)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(16)
+
+        body = QLabel(body_html, self)
+        body.setWordWrap(True)
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        body.setOpenExternalLinks(False)
+        body.linkActivated.connect(self._on_link_activated)
+        root.addWidget(body)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+
+        install = QPushButton(_("Установить всё", "Install all"), self)
+        install.setDefault(True)
+        install.clicked.connect(self.accept)
+        buttons.addWidget(install)
+
+        cancel = QPushButton(_("Отмена", "Cancel"), self)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        root.addLayout(buttons)
+
+    def _on_link_activated(self, href: str) -> None:
+        if str(href) != "backend":
+            return
+        self.open_backend_requested = True
+        self.reject()
 
 
 class AIHubDialog(QDialog):
@@ -67,7 +114,6 @@ class AIHubDialog(QDialog):
         self._rendered_language = ""
         self._main_controller = None
         self._pending_backend_actions: set[tuple[str, str]] = set()
-        self._pending_queue_acks: dict[str, object] = {}
 
         self._ui_call_requested.connect(self._execute_ui_call)
 
@@ -1188,6 +1234,7 @@ class AIHubDialog(QDialog):
         component = str(preview.get("component_title") or preview.get("component_id") or "model")
         component_size = str(preview.get("component_size") or "").strip()
         gpu = str(preview.get("gpu") or "")
+
         plan_lines = [
             f"• {component}" + (f" ({component_size})" if component_size else "")
         ]
@@ -1197,57 +1244,55 @@ class AIHubDialog(QDialog):
             title = str(item.get("title") or item.get("id") or backend)
             size = str(item.get("size") or "").strip()
             plan_lines.append(f"• {title}" + (f" ({size})" if size else ""))
+
         packages = [
-            str(item) for item in (preview.get("backend_packages") or ())
+            str(item)
+            for item in (preview.get("backend_packages") or ())
             if str(item).strip()
         ]
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(_("Подтверждение установки", "Confirm installation"))
-        box.setText(
-            _("Для «{component}» не установлен требуемый backend.\n\n"
-              "Обнаружено устройство: {gpu}\n"
-              "В рамках этой же транзакции будет установлен: {backend}.\n\n"
-              "План установки:\n{plan}",
-              "The required backend for “{component}” is not installed.\n\n"
-              "Detected device: {gpu}\n"
-              "The same transaction will also install: {backend}.\n\n"
-              "Installation plan:\n{plan}").format(
-                  component=component,
-                  gpu=gpu,
-                  backend=backend,
-                  plan="\n".join(plan_lines),
-              )
-        )
-        box.setInformativeText(
-            _("Переключение произойдёт только после проверки нового runtime. "
-              "При ошибке текущий backend останется активным.\n"
-              "Никакие дополнительные компоненты вне этого списка не будут активированы.",
-              "The switch happens only after the new runtime passes validation. "
-              "If it fails, the current backend remains active.\n"
-              "No additional components outside this list will be activated.")
-        )
+        plan_html = "<br>".join(html.escape(line) for line in plan_lines)
+        packages_html = ""
         if packages:
-            box.setDetailedText(
-                _("Пакеты backend:\n", "Backend packages:\n")
-                + "\n".join(f"• {package}" for package in packages)
+            package_lines = "<br>".join(
+                f"• {html.escape(package)}" for package in packages
             )
-        install_btn = box.addButton(
-            _("Установить всё", "Install all"),
-            QMessageBox.ButtonRole.AcceptRole,
+            packages_html = _(
+                "<br><br><b>Пакеты backend:</b><br>{packages}",
+                "<br><br><b>Backend packages:</b><br>{packages}",
+            ).format(packages=package_lines)
+
+        body_html = _(
+            "Для <b>«{component}»</b> не установлен требуемый backend.<br><br>"
+            "Обнаружено устройство: <b>{gpu}</b><br>"
+            "В рамках этой же транзакции будет установлен: <b>{backend}</b>.<br><br>"
+            "<b>План установки:</b><br>{plan}"
+            "{packages}<br><br>"
+            "Переключение произойдёт только после проверки нового runtime. "
+            "При ошибке текущий backend останется активным.<br>"
+            "<a href=\"backend\">Открыть вкладку «Системное ядро»</a>",
+            "The required backend for <b>“{component}”</b> is not installed.<br><br>"
+            "Detected device: <b>{gpu}</b><br>"
+            "The same transaction will also install: <b>{backend}</b>.<br><br>"
+            "<b>Installation plan:</b><br>{plan}"
+            "{packages}<br><br>"
+            "The switch happens only after the new runtime passes validation. "
+            "If it fails, the current backend remains active.<br>"
+            "<a href=\"backend\">Open the “System Core” tab</a>",
+        ).format(
+            component=html.escape(component),
+            gpu=html.escape(gpu),
+            backend=html.escape(backend),
+            plan=plan_html,
+            packages=packages_html,
         )
-        backend_btn = box.addButton(
-            _("Открыть «Системное ядро»", "Open “System Core”"),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is backend_btn:
-            self._pending_component_id = str(preview.get("backend_id") or "") or None
+
+        dialog = _BackendInstallConfirmationDialog(body_html, parent=self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        if dialog.open_backend_requested:
+            self._set_tab("install")
             self._select_category("backend")
             return False
-        return clicked is install_btn
+        return accepted
 
     def _task_id_for(self, component_id: str, event_name: str) -> str:
         op = "uninstall" if event_name == Events.Installable.UNINSTALL else "install"
@@ -1402,42 +1447,37 @@ class AIHubDialog(QDialog):
         }
         if extra:
             payload.update(extra)
-        token = object()
-        self._pending_queue_acks[task_id] = token
-        accepted = self.event_bus.try_emit(
-            event_name,
-            payload,
-            delivery=EventDelivery.COMMAND,
-        )
-        if not accepted:
-            self._pending_queue_acks.pop(task_id, None)
+        try:
+            operations = services().get(InstallableOperationsService)
+            if event_name == Events.Installable.UNINSTALL:
+                admission = operations.uninstall(payload)
+            elif event_name == Events.Installable.INITIALIZE:
+                admission = operations.initialize(payload)
+            else:
+                admission = operations.install(payload)
+        except Exception as exc:
+            logger.error(
+                f"Install task '{task_id}' admission raised: {exc}",
+                exc_info=True,
+            )
+            self._handle_queue_admission_failure(task_id, str(exc))
+            return
+
+        if not admission.accepted:
             self._handle_queue_admission_failure(
                 task_id,
-                _(
+                admission.error
+                or _(
                     "Очередь установки недоступна. Перезапустите приложение.",
                     "The installation queue is unavailable. Restart the application.",
                 ),
             )
             return
 
-        self._set_task_status(_("Запуск задачи...", "Starting task..."))
-        QTimer.singleShot(
-            10_000,
-            lambda tid=task_id, expected=token: self._verify_task_enqueued(
-                tid, expected
-            ),
-        )
-
-    def _verify_task_enqueued(self, task_id: str, token: object) -> None:
-        if self._pending_queue_acks.get(task_id) is not token:
-            return
-        self._pending_queue_acks.pop(task_id, None)
-        self._handle_queue_admission_failure(
-            task_id,
-            _(
-                "Задача не попала в очередь установки за 10 секунд.",
-                "The task did not enter the installation queue within 10 seconds.",
-            ),
+        self._set_task_status(
+            _("Уже в очереди", "Already queued")
+            if admission.duplicate
+            else _("В очереди", "Queued")
         )
 
     def _handle_queue_admission_failure(self, task_id: str, message: str) -> None:
@@ -1552,16 +1592,6 @@ class AIHubDialog(QDialog):
             "running": running if isinstance(running, dict) else None,
             "pending": [j for j in (pending or []) if isinstance(j, dict)],
         }
-        acknowledged_ids = {
-            str((self._queue_state.get("running") or {}).get("task_id") or "")
-        }
-        acknowledged_ids.update(
-            str((job or {}).get("task_id") or "")
-            for job in self._queue_state.get("pending") or []
-        )
-        for task_id in acknowledged_ids:
-            if task_id:
-                self._pending_queue_acks.pop(task_id, None)
         self._rebuild_queue_panel()
         # Обновить блокировку кнопок установки под новое состояние очереди (#26).
         self._apply_busy_state()
@@ -1688,14 +1718,12 @@ class AIHubDialog(QDialog):
         if not self._is_installable_task(event):
             return
         data = event.data if isinstance(event.data, dict) else {}
-        task_id = str(data.get("task_id") or "")
         text = str(data.get("status") or _("Подготовка...", "Preparing..."))
         title = self._install_bar_component_title(data)
         # Кнопка «Логи установки» должна быть видна на всё время установки,
         # а не только когда окно свёрнуто — иначе её «не найти» (фидбэк #23).
         self._on_gui_thread(
             lambda: (
-                self._pending_queue_acks.pop(task_id, None),
                 self._set_task_status(text),
                 self._set_install_logs_visible(True),
                 self._set_install_bar(
@@ -1743,12 +1771,9 @@ class AIHubDialog(QDialog):
     def _on_install_finished(self, event) -> None:
         if not self._is_installable_task(event):
             return
-        data = event.data if isinstance(event.data, dict) else {}
-        task_id = str(data.get("task_id") or "")
         done_text = _("Готово", "Done")
 
         def _apply() -> None:
-            self._pending_queue_acks.pop(task_id, None)
             self._set_task_status(done_text)
             self._set_install_logs_visible(False)
             self._set_install_bar(visible=True, progress=100, detail=done_text)
@@ -1761,11 +1786,9 @@ class AIHubDialog(QDialog):
         if not self._is_installable_task(event):
             return
         data = event.data if isinstance(event.data, dict) else {}
-        task_id = str(data.get("task_id") or "")
         text = str(data.get("error") or _("Ошибка установки", "Install failed"))
 
         def _apply() -> None:
-            self._pending_queue_acks.pop(task_id, None)
             self._set_task_status(text)
             self._set_install_logs_visible(False)
             self._set_install_bar(visible=False)

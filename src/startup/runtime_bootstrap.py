@@ -90,16 +90,24 @@ def _migrate_legacy_runtime_layout(runtime_root: Path) -> None:
 
 def _configure_paths(base_dir: str) -> str:
     os.environ["NEUROMITA_BASE_DIR"] = base_dir
-    runtime_root = Path(base_dir, "Lib").resolve()
-    core_root = runtime_root / "core"
-    environment_root = runtime_root / "environment"
-    runtime_paths = {
-        "NEUROMITA_RUNTIME_ROOT": str(runtime_root),
-        "NEUROMITA_LIB_DIR": str(core_root),
-        "NEUROMITA_CORE_DIR": str(core_root),
-        "NEUROMITA_ENVIRONMENT_DIR": str(environment_root),
-    }
-    os.environ.update(runtime_paths)
+    default_runtime_root = Path(base_dir, "Lib").resolve()
+    runtime_root = Path(
+        os.environ.get("NEUROMITA_RUNTIME_ROOT") or default_runtime_root
+    ).expanduser().resolve()
+    legacy_core_override = os.environ.get("NEUROMITA_LIB_DIR")
+    core_root = Path(
+        os.environ.get("NEUROMITA_CORE_DIR")
+        or legacy_core_override
+        or runtime_root / "core"
+    ).expanduser().resolve()
+    environment_root = Path(
+        os.environ.get("NEUROMITA_ENVIRONMENT_DIR")
+        or runtime_root / "environment"
+    ).expanduser().resolve()
+    os.environ.setdefault("NEUROMITA_RUNTIME_ROOT", str(runtime_root))
+    os.environ.setdefault("NEUROMITA_CORE_DIR", str(core_root))
+    os.environ.setdefault("NEUROMITA_LIB_DIR", str(core_root))
+    os.environ.setdefault("NEUROMITA_ENVIRONMENT_DIR", str(environment_root))
     defaults = {
         "NEUROMITA_PROMPTS_DIR": os.path.join(base_dir, "Prompts"),
         "NEUROMITA_HISTORIES_DIR": os.path.join(base_dir, "Histories"),

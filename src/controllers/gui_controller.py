@@ -2,6 +2,7 @@ from PyQt6.QtCore import QTimer
 from main_logger import logger
 from core.events import get_event_bus
 from core.services import use
+from core.task_supervisor import task_supervisor
 from services.contracts import GuiInteractionService, SettingsService
 
 from .gui.status_controller import StatusController
@@ -186,6 +187,58 @@ class GuiController(GuiInteractionService):
         self._optional_gui_features[normalized] = created
         logger.info(f"Optional GUI feature ready: {normalized}")
         return created
+
+    def close(self) -> None:
+        subscription = getattr(self, "_settings_subscription", None)
+        self._settings_subscription = None
+        if subscription is not None:
+            try:
+                subscription.close()
+            except Exception:
+                logger.exception("Failed to close GUI settings subscription")
+
+        controllers: list[object] = []
+        for group in self._optional_gui_features.values():
+            controllers.extend(group)
+        controllers.extend(
+            controller
+            for controller in (
+                self.status_controller,
+                self.chat_controller,
+                self.system_controller,
+                self.settings_sidebar_controller,
+                self.dialog_controller,
+                self.settings_controller,
+                self.model_event_controller,
+                self.view_event_controller,
+                self.window_manager_controller,
+                self.protocol_pipeline_gui_controller,
+            )
+            if controller is not None
+        )
+
+        seen: set[int] = set()
+        for controller in reversed(controllers):
+            if id(controller) in seen:
+                continue
+            seen.add(id(controller))
+            close = getattr(controller, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception:
+                logger.exception(
+                    "Failed to close GUI controller %s",
+                    type(controller).__name__,
+                )
+
+        self._optional_gui_features.clear()
+        try:
+            self.event_bus.unsubscribe_owner(self)
+        except Exception:
+            logger.exception("Failed to detach GuiController from EventBus")
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _connect_view_signals(self):
         if self.view:

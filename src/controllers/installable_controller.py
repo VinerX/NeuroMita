@@ -6,13 +6,19 @@ from main_logger import logger
 
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.services import services
-from services.contracts import InstallableCatalogService, SettingsService
+from services.contracts import (
+    InstallAdmission,
+    InstallableCatalogService,
+    InstallableOperationsService,
+    InstallQueueService,
+    SettingsService,
+)
 from services.installable_catalog_service import DefaultInstallableCatalogService
 from core.install_types import InstallPlan
 from core.installables import make_component_id
 
 
-class InstallableController:
+class InstallableController(InstallableOperationsService):
     def __init__(self, catalog: InstallableCatalogService | None = None) -> None:
         self.event_bus = get_event_bus()
         if catalog is None:
@@ -145,22 +151,38 @@ class InstallableController:
             logger.error(f"Installable SAVE_SETTINGS failed: {exc}", exc_info=True)
             return {"ok": False, "errors": {"_": str(exc)}}
 
-    def _on_install(self, event: Event):
-        return self._run(event, op="install")
+    def install(self, payload: dict[str, Any]) -> InstallAdmission:
+        return self._run_payload(payload, op="install")
 
-    def _on_uninstall(self, event: Event):
-        return self._run(event, op="uninstall")
+    def uninstall(self, payload: dict[str, Any]) -> InstallAdmission:
+        return self._run_payload(payload, op="uninstall")
 
-    def _on_initialize(self, event: Event):
-        return self._run(event, op="initialize")
+    def initialize(self, payload: dict[str, Any]) -> InstallAdmission:
+        return self._run_payload(payload, op="initialize")
 
-    def _run(self, event: Event, *, op: str) -> bool:
+    def _on_install(self, event: Event) -> InstallAdmission:
         data = event.data if isinstance(event.data, dict) else {}
+        return self.install(data)
+
+    def _on_uninstall(self, event: Event) -> InstallAdmission:
+        data = event.data if isinstance(event.data, dict) else {}
+        return self.uninstall(data)
+
+    def _on_initialize(self, event: Event) -> InstallAdmission:
+        data = event.data if isinstance(event.data, dict) else {}
+        return self.initialize(data)
+
+    def _run_payload(self, data: dict[str, Any], *, op: str) -> InstallAdmission:
+        requested_task_id = str(data.get("task_id") or "")
         try:
             component = self._get_component(data)
         except Exception as exc:
             logger.error(f"Installable {op}: component not found: {exc}", exc_info=True)
-            return False
+            return InstallAdmission(
+                accepted=False,
+                task_id=requested_task_id,
+                error=str(exc),
+            )
 
         with_ui = bool(data.get("with_ui", True))
         timeout_sec = float(data.get("timeout_sec", 3600.0) or 3600.0)
@@ -225,20 +247,45 @@ class InstallableController:
         if data.get("install_callbacks") is not None:
             payload["install_callbacks"] = data.get("install_callbacks")
 
-        event_name = Events.Install.RUN_WITH_UI if with_ui else Events.Install.RUN_HEADLESS
-        accepted = self.event_bus.try_emit(
-            event_name,
-            payload,
-            delivery=EventDelivery.COMMAND,
-        )
-        if accepted:
-            logger.info(
-                f"Installable {op} request queued: "
-                f"component={component.id}, task_id={payload['task_id']}"
+        queue_service = services().get_optional(InstallQueueService)
+        if queue_service is not None:
+            admission = queue_service.enqueue(payload, with_ui=with_ui)
+        elif with_ui:
+            admission = InstallAdmission(
+                accepted=False,
+                task_id=str(payload["task_id"]),
+                error="Install queue service is unavailable",
             )
-            return True
+        else:
+            event_name = (
+                Events.Install.RUN_WITH_UI
+                if with_ui
+                else Events.Install.RUN_HEADLESS
+            )
+            accepted = self.event_bus.try_emit(
+                event_name,
+                payload,
+                delivery=EventDelivery.COMMAND,
+            )
+            admission = InstallAdmission(
+                accepted=accepted,
+                task_id=str(payload["task_id"]),
+                error=(
+                    "Install queue service is unavailable"
+                    if not accepted
+                    else ""
+                ),
+            )
 
-        error = "Installation command queue is unavailable or full"
+        if admission.accepted:
+            logger.info(
+                f"Installable {op} request admitted: "
+                f"component={component.id}, task_id={payload['task_id']}, "
+                f"duplicate={admission.duplicate}"
+            )
+            return admission
+
+        error = admission.error or "Installation queue is unavailable"
         logger.error(
             f"Installable {op} request rejected: "
             f"component={component.id}, task_id={payload['task_id']}: {error}"
@@ -252,7 +299,11 @@ class InstallableController:
                 "error": error,
             },
         )
-        return False
+        return InstallAdmission(
+            accepted=False,
+            task_id=str(payload["task_id"]),
+            error=error,
+        )
 
     def _title(self, component, op: str) -> str:
         try:

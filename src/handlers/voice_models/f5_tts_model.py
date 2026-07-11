@@ -261,12 +261,19 @@ class F5TTSInstallSpec:
             )
         )
 
+        ctx_outer = dict(ctx or {})
+
+        def _verify_install(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            verify_ctx = dict(ctx_outer)
+            verify_ctx.update(dict(ctx or {}))
+            return cls._final_check(mid, verify_ctx, callbacks=callbacks)
+
         actions.append(
             InstallAction(
                 type="call",
                 description=_("Проверка установки...", "Final check..."),
                 progress=99,
-                fn=lambda callbacks=None, **_k: cls._final_check(mid, ctx, callbacks=callbacks),
+                fn=_verify_install,
             )
         )
 

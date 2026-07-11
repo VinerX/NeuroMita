@@ -79,17 +79,31 @@ class LocalVoiceController(LocalVoiceService):
     def _voice_language(self) -> str:
         return str(self._get_setting("VOICE_LANGUAGE", "ru") or "ru").strip().lower()
 
-    async def _ensure_model_environment(self, model_id: str) -> None:
+    async def _ensure_model_environment(
+        self,
+        model_id: str,
+        *,
+        initialize: bool = False,
+    ) -> None:
         engine = self._get_engine()
         activate = getattr(engine, "activate_environment", None) if engine is not None else None
         if not callable(activate):
             raise RuntimeError("AI engine does not support managed runtime environments")
+        validation_method = "init_model" if initialize else None
+        validation_payload = (
+            {"model_id": str(model_id), "warmup": True}
+            if initialize
+            else None
+        )
         ok = await asyncio.to_thread(
             activate,
             "tts",
             str(model_id),
             category="tts",
             timeout=20.0,
+            validation_method=validation_method,
+            validation_payload=validation_payload,
+            validation_timeout=3600.0 if initialize else 20.0,
         )
         if not ok:
             raise RuntimeError(f"Failed to activate runtime environment for voice model '{model_id}'")
@@ -235,13 +249,6 @@ class LocalVoiceController(LocalVoiceService):
 
         self._save_setting("NM_CURRENT_VOICEOVER", model_id)
 
-        try:
-            eng = self._get_engine()
-            if eng:
-                eng.call("tts", "select_model", {"model_id": model_id})
-        except Exception:
-            pass
-
         self._initialized_cache.pop(model_id, None)
         return True
 
@@ -253,12 +260,8 @@ class LocalVoiceController(LocalVoiceService):
                 {"status": _("Инициализация модели...", "Initializing model...")},
             )
 
-            await self._ensure_model_environment(model_id)
-            ok = await self._engine_call_async(
-                "init_model",
-                {"model_id": model_id, "warmup": True},
-                timeout=3600.0
-            )
+            await self._ensure_model_environment(model_id, initialize=True)
+            ok = True
 
             if ok:
                 logger.info(f"LocalVoiceController init done: model_id='{model_id}'")
@@ -427,7 +430,10 @@ class LocalVoiceController(LocalVoiceService):
         os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
         model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
 
-        await self._ensure_model_environment(model_id)
+        initialize = not bool(self._initialized_cache.get(model_id, False))
+        await self._ensure_model_environment(model_id, initialize=initialize)
+        if initialize:
+            self._initialized_cache[model_id] = True
         result_path = await self._engine_call_async(
             "synthesize",
             {

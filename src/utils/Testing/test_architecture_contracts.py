@@ -69,7 +69,10 @@ def test_production_tree_has_no_legacy_sync_event_rpc_symbol() -> None:
     forbidden = ("emit" + "_and_wait").encode()
     offenders: list[str] = []
     for path in root.rglob("*.py"):
-        if any(part in {".git", "__pycache__"} for part in path.parts):
+        if any(
+            part == "__pycache__" or part.startswith(".")
+            for part in path.relative_to(root).parts
+        ):
             continue
         if forbidden in path.read_bytes():
             offenders.append(str(path.relative_to(root)))

@@ -121,7 +121,10 @@ class VoiceoverGuiController(BaseController):
     def _on_refresh(self, _event: Event):
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
-    def _on_models_changed(self, _event: Event):
+    def _on_models_changed(self, event: Event):
+        payload = event.data if isinstance(event.data, dict) else {}
+        if "success" in payload and not bool(payload.get("success")):
+            return
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
     def _on_setting_changed(self, change):

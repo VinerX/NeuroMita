@@ -456,18 +456,6 @@ class SpeechRecognition:
             if not eng:
                 logger.error("ASR engine not available. Local fallback is disabled.")
             else:
-                activate = getattr(eng, "activate_environment", None)
-                if not callable(activate) or not activate(
-                    "asr",
-                    engine_id,
-                    category="asr",
-                    timeout=30.0,
-                ):
-                    logger.error(
-                        f"Managed ASR environment is unavailable for engine '{engine_id}'."
-                    )
-                    return False
-
                 vad = {
                     "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
                     "chunk_size": SpeechRecognition.CHUNK_SIZE,
@@ -477,43 +465,38 @@ class SpeechRecognition:
                     "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                 }
                 settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
-                # Mirror the in-process path so the GUI gets consistent
-                # init signals. Without these the remote (subprocess) engines
-                # never reported "initialized": asr_is_ready stayed False and
-                # the status pill was stuck on "Инициализация ASR..." forever
-                # (the 35s timeout guard is only armed by INIT_STARTED).
-                eb = get_event_bus()
-                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED, {"engine": engine_id})
-                fut = eng.call("asr", "start_live", {
+                start_payload = {
                     "engine_id": engine_id,
                     "microphone_index": int(device_id or 0),
                     "engine_settings": settings,
                     "vad": vad,
-                })
-                try:
-                    # Загрузка модели на CUDA (GigaAM/Whisper + инициализация
-                    # CUDA-контекста) легко занимает больше 10 c, поэтому ждём
-                    # долго. Вызов выполняется в фоновом потоке (см.
-                    # SpeechController), так что шину событий это не блокирует.
-                    ok = bool(fut.result(timeout=300.0))
-                    if ok:
-                        with SpeechRecognition._start_lock:
-                            SpeechRecognition._is_running = True
-                            SpeechRecognition._running_event.set()
-                            SpeechRecognition._stopped_event.clear()
-                            SpeechRecognition.active = True
-                            SpeechRecognition.microphone_index = device_id or 0
-                        eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
-                        logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
-                        return True
-                    logger.error("ASR engine start failed. Local fallback is disabled.")
-                except concurrent.futures.TimeoutError:
+                }
+                eb = get_event_bus()
+                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED, {"engine": engine_id})
+                activate = getattr(eng, "activate_environment", None)
+                if not callable(activate) or not activate(
+                    "asr",
+                    engine_id,
+                    category="asr",
+                    timeout=30.0,
+                    validation_method="start_live",
+                    validation_payload=start_payload,
+                    validation_timeout=300.0,
+                ):
                     logger.error(
-                        f"ASR engine start timed out (engine:{engine_id}): модель не "
-                        "инициализировалась за 300 c. Попробуйте ещё раз или проверьте лог движка."
+                        f"Managed ASR environment could not be initialized for "
+                        f"engine '{engine_id}'."
                     )
-                except Exception as e:
-                    logger.error(f"ASR engine start exception ({type(e).__name__}): {e}", exc_info=True)
+                    return False
+                with SpeechRecognition._start_lock:
+                    SpeechRecognition._is_running = True
+                    SpeechRecognition._running_event.set()
+                    SpeechRecognition._stopped_event.clear()
+                    SpeechRecognition.active = True
+                    SpeechRecognition.microphone_index = device_id or 0
+                eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
+                logger.info(f"ASR started (engine:{engine_id}) on device {device_id}")
+                return True
             return False
 
         with SpeechRecognition._start_lock:

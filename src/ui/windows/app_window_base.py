@@ -1582,6 +1582,12 @@ class AppWindowBase(QMainWindow):
 
         # ===== Совместимость: обновление индикаторов статуса =====
     def update_status_colors(self):
+        main_controller = getattr(self, "main_controller", None)
+        if bool(getattr(main_controller, "_closing_started", False)):
+            return
+        if QApplication.closingDown():
+            return
+
         self._status_refresh_ticket += 1
         ticket = self._status_refresh_ticket
 

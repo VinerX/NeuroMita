@@ -801,8 +801,26 @@ class InstallController(InstallService):
                 item_id,
                 category=category,
                 timeout=timeout,
+                persist=False,
             )
         )
+
+    @staticmethod
+    def _forget_environment_runtime(
+        *,
+        category: str,
+        item_id: str,
+    ) -> None:
+        service_name = InstallController._environment_service_name(category)
+        if service_name is None:
+            return
+        engine_service = services().get_optional(AIEngineService)
+        if engine_service is None:
+            return
+        engine = engine_service.get_engine()
+        forget = getattr(engine, "forget_environment", None)
+        if callable(forget):
+            forget(service_name, item_id, category=category)
 
     @staticmethod
     def _refresh_ai_runtime(
@@ -1350,33 +1368,35 @@ class InstallController(InstallService):
                         environment_transaction=candidate_transaction,
                     )
                     if ok:
-                        record = candidate_transaction.commit(meta)
-                        if self._is_main_environment_category(record.category):
-                            if not self._validate_main_environment(
-                                record,
-                                timeout=min(30.0, max(3.0, float(timeout_sec))),
-                            ):
-                                candidate_transaction.rollback_commit()
-                                raise RuntimeError(
-                                    "Installed main-process dependency failed import validation; "
-                                    "the previous runtime was preserved"
-                                )
-                            self._activate_main_environment(record)
-                        elif not self._refresh_ai_runtime(
-                            timeout=min(30.0, max(3.0, float(timeout_sec))),
-                            preferred_core_layer_ids=tuple(
-                                layer.layer_id for layer in candidate_transaction.core_layers
-                            ),
-                        ):
-                            candidate_transaction.rollback_commit()
-                            raise RuntimeError(
-                                "Installed environment failed shared AI worker validation; "
-                                "the previous runtime was preserved"
+                        if candidate_transaction.category == "backend":
+                            environment_manager.register_backend_candidates(
+                                layer.layer_id
+                                for layer in candidate_transaction.core_layers
                             )
-                        candidate_transaction.finalize()
-                        cb.log(
-                            f"Activated environment '{record.logical_id}' revision {record.revision_id}."
-                        )
+                            candidate_transaction.abort()
+                            cb.log(
+                                "Installed AI backend. It will be validated and activated "
+                                "when a model is initialized."
+                            )
+                        else:
+                            record = candidate_transaction.commit(meta)
+                            if self._is_main_environment_category(record.category):
+                                if not self._validate_main_environment(
+                                    record,
+                                    timeout=min(30.0, max(3.0, float(timeout_sec))),
+                                ):
+                                    candidate_transaction.rollback_commit()
+                                    raise RuntimeError(
+                                        "Installed main-process dependency failed import validation; "
+                                        "the previous runtime was preserved"
+                                    )
+                                self._activate_main_environment(record)
+                            candidate_transaction.finalize()
+                            cb.log(
+                                f"Installed environment '{record.logical_id}' revision "
+                                f"{record.revision_id}. It will be attached to the AI worker "
+                                "when the model is initialized."
+                            )
                     else:
                         candidate_transaction.abort()
                 elif managed and op == "uninstall" and active_environment is not None:
@@ -1411,7 +1431,7 @@ class InstallController(InstallService):
                     if ok:
                         if main_environment:
                             self._deactivate_main_environment(active_environment)
-                        if not environment_manager.deactivate(
+                        if not environment_manager.remove_installed(
                             active_environment.logical_id,
                             delete=True,
                         ):
@@ -1420,6 +1440,11 @@ class InstallController(InstallService):
                             raise RuntimeError(
                                 f"Failed to deactivate environment "
                                 f"'{active_environment.logical_id}'"
+                            )
+                        if not main_environment:
+                            self._forget_environment_runtime(
+                                category=active_environment.category,
+                                item_id=active_environment.item_id,
                             )
                         quiesced_environment = False
                         environment_manager.cleanup_unreferenced_core_layers()

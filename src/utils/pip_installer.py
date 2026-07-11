@@ -771,7 +771,7 @@ class PipInstaller:
                 encoding="utf-8",
                 errors="ignore",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=3,
+                timeout=10,
             )
             if proc.returncode == 0:
                 return True
@@ -1089,17 +1089,21 @@ class PipInstaller:
         return None
 
     def repair_broken_target_metadata(self) -> int:
-        """Сносит каталоги *.dist-info без читаемого METADATA перед установкой.
+        """Repair confidently broken metadata only inside staging targets.
 
-        uv/pip при разрешении читают METADATA уже «установленных» пакетов и
-        жёстко падают, если каталог dist-info есть, а METADATA нет/битый
-        (прерванная установка, OneDrive-placeholder, ручная чистка). Один такой
-        пакет (напр. torch) роняет установку всего, что от него зависит
-        (torchaudio). Удаляем битый dist-info, чтобы пакет считался не
-        установленным и переустановился начисто. Возвращает число вычищенных.
+        Active immutable environments are never mutated because of a transient
+        antivirus/OneDrive read failure. Staging directories are disposable and
+        may be repaired before a retry.
         """
         libs = self.libs_path_abs
         if not os.path.isdir(libs):
+            return 0
+        target_parts = {part.lower() for part in Path(libs).parts}
+        is_staging = bool(
+            {".staging", ".install-staging"} & target_parts
+            or any(part.startswith(".core-staging-") for part in target_parts)
+        )
+        if not is_staging:
             return 0
         try:
             entries = os.listdir(libs)
@@ -1113,14 +1117,31 @@ class PipInstaller:
             di = os.path.join(libs, item)
             meta = os.path.join(di, "METADATA")
             try:
-                healthy = os.path.isfile(meta) and os.path.getsize(meta) > 0
-            except OSError:
+                healthy = os.stat(meta).st_size > 0
+            except FileNotFoundError:
                 healthy = False
+            except OSError:
+                # Inaccessible is not equivalent to absent. Do not destroy a
+                # healthy package because a scanner temporarily locked it.
+                continue
             if healthy:
                 continue
+            try:
+                age = time.time() - os.stat(di).st_mtime
+            except OSError:
+                continue
+            if age < 0.25:
+                time.sleep(0.25 - max(0.0, age))
+                try:
+                    if os.stat(meta).st_size > 0:
+                        continue
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    continue
             pkg = item.rsplit("-", 1)[0]
             self.update_log(
-                f"Битый пакет (нет METADATA): {item} — удаляю dist-info, чтобы переустановить."
+                f"Битая metadata в staging: {item} — удаляю dist-info перед повторной установкой."
             )
             if self._rmtree_with_retries(di, pkg):
                 repaired += 1
@@ -1707,8 +1728,8 @@ class PipInstaller:
     # Настройки времени/таймаутов
     STALL_INFO_SEC = 10
     STALL_HINT_SEC = 60
-    TIMEOUT_SEC = 7200000   # как было ранее (очень большой общий таймаут)
-    NO_ACTIVITY_SEC = 3600000
+    TIMEOUT_SEC = 2 * 60 * 60
+    NO_ACTIVITY_SEC = 60 * 60
 
     # Раннер: период опроса и «мягкий» прогресс, пока реальный % ещё не парсится.
     _POLL_INTERVAL_SEC = 0.03
@@ -2095,14 +2116,18 @@ class PipInstaller:
 
         state.last_status_emit = now
 
-    def _pump_events(self):
+    def _assert_not_gui_thread(self) -> None:
         try:
             from PyQt6.QtCore import QCoreApplication, QThread
-            from PyQt6.QtWidgets import QApplication
 
             app = QCoreApplication.instance()
             if app and QThread.currentThread() == app.thread():
-                QApplication.processEvents()
+                raise RuntimeError(
+                    "PipInstaller cannot run in the Qt GUI thread; submit it "
+                    "through InstallQueueService/TaskSupervisor"
+                )
+        except RuntimeError:
+            raise
         except Exception:
             return
 
@@ -2182,7 +2207,6 @@ class PipInstaller:
         aborted = self._check_timeouts(state, kill)
         if aborted is not None:
             return aborted
-        self._pump_events()
         time.sleep(self._POLL_INTERVAL_SEC)
         return None
 
@@ -2408,6 +2432,7 @@ class PipInstaller:
         - без PTY читаем тот же процесс через обычные pipes и двигаем верхний progress bar;
         - статус предпочитает реальную скорость/ETA по байтам, а не грубую оценку по времени.
         """
+        self._assert_not_gui_thread()
         self._cancel_event.clear()
         state = self._RunState(description, cmd)
         state.uv_progress = self._UvProgressAggregator()
@@ -2437,12 +2462,6 @@ class PipInstaller:
         elapsed = time.time() - state.start
         self.update_status(f"{description} — завершено за {self._fmt_hms(elapsed)}")
 
-        is_uninstall = any("uninstall" == x for x in cmd) or "uninstall" in " ".join(cmd).lower()
-        if is_uninstall and ret in (1, 2):
-            logger.info(f"[installer] UV returned code {ret} during uninstall; the package may already be absent")
-            self.update_progress(100)
-            return True
-            
         if not ok or ret != 0:
             self._log_failure_context(cmd, state, ret)
             err_msg = f"ОШИБКА: Процесс завершился с кодом {ret}."

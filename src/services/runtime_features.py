@@ -727,4 +727,8 @@ class RuntimeFeatureManager(RuntimeFeatureService):
     def _failed_future(error: BaseException) -> Future[Any]:
         future: Future[Any] = Future()
         future.set_exception(error)
+        # Some lifecycle callers intentionally fire-and-forget the returned
+        # future. Observing the exception here prevents noisy "exception was
+        # never retrieved" diagnostics without changing future.result().
+        future.add_done_callback(lambda completed: completed.exception())
         return future

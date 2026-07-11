@@ -6,9 +6,12 @@ from unittest.mock import patch
 from controllers.installable_controller import InstallableController
 from core.backends import BackendKind
 from core.events import Event
+from core.install_types import InstallPlan
 from core.installables import ComponentCategory, ComponentMetadata, ComponentStatusCode
+from core.services import services
 from game_connections.services import beat_backend_spec
 from installables.registry_builder import LazyInstallableRegistry, build_installable_registry
+from services.contracts import InstallAdmission, InstallQueueService
 from services.installable_catalog_service import DefaultInstallableCatalogService
 
 
@@ -47,6 +50,53 @@ class _BrokenStatusComponent:
 
     def status(self, ctx=None):
         raise RuntimeError("status exploded")
+
+
+class _InstallComponent:
+    category = ComponentCategory.TTS
+    legacy_kind = "tts"
+    item_id = "direct"
+    id = "tts:direct"
+
+    def build_install_plan(self, _ctx):
+        return InstallPlan(actions=[])
+
+    def build_uninstall_plan(self, _ctx):
+        return InstallPlan(actions=[])
+
+    def build_initialize_plan(self, _ctx):
+        return InstallPlan(actions=[])
+
+    def metadata(self):
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title="Direct",
+            description="Direct admission",
+            backend=BackendKind.NONE,
+            legacy_kind=self.legacy_kind,
+        )
+
+
+class _InstallCatalog(_CatalogStub):
+    def __init__(self):
+        super().__init__([])
+        self.component = _InstallComponent()
+
+    def require_component(self, component_id: str, *, refresh: bool = False):
+        if component_id != self.component.id:
+            raise KeyError(component_id)
+        return self.component
+
+
+class _QueueService(InstallQueueService):
+    def __init__(self):
+        self.payload = None
+
+    def enqueue(self, payload, *, with_ui: bool):
+        self.payload = (payload, with_ui)
+        return InstallAdmission(True, str(payload["task_id"]))
 
 
 class InstallableControllerTests(unittest.TestCase):
@@ -103,6 +153,32 @@ class InstallableControllerTests(unittest.TestCase):
 
         self.assertEqual(vendor, "AMD")
         gpu_probe.assert_called_once_with()
+
+    def test_install_uses_typed_queue_service_without_nested_event_command(self):
+        queue = _QueueService()
+        registration = services().register_owned(
+            InstallQueueService,
+            queue,
+            replace=True,
+        )
+        controller = InstallableController(catalog=_InstallCatalog())
+        try:
+            admission = controller.install(
+                {
+                    "component_id": "tts:direct",
+                    "task_id": "tts:direct:install",
+                    "with_ui": True,
+                }
+            )
+        finally:
+            registration.close()
+
+        self.assertTrue(admission.accepted)
+        self.assertIsNotNone(queue.payload)
+        payload, with_ui = queue.payload
+        self.assertTrue(with_ui)
+        self.assertEqual(payload["task_id"], "tts:direct:install")
+        self.assertTrue(callable(payload["runner"]))
 
 
 if __name__ == "__main__":

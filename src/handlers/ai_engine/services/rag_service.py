@@ -26,6 +26,14 @@ class RAGService:
                 Priority.BULK, self._warmup_embeddings_sync, model_name, query_prefix
             )
 
+        if m == "warmup_reranker":
+            model_name = str(payload.get("model_name") or "").strip()
+            return await get_scheduler().run(
+                Priority.BULK,
+                self._warmup_reranker_sync,
+                model_name,
+            )
+
         if m == "get_embeddings":
             texts = payload.get("texts") or []
             model_name = str(payload.get("model_name") or "").strip()
@@ -111,6 +119,14 @@ class RAGService:
             query_prefix=query_prefix,
         )
         return True
+
+    @staticmethod
+    def _warmup_reranker_sync(model_name: str) -> bool:
+        from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
+
+        if not model_name:
+            raise ValueError("RAG reranker model name is required")
+        return bool(WorkerCrossEncoderReranker.get(model_name)._ensure_loaded())
 
     def _get_embeddings_sync(
         self,

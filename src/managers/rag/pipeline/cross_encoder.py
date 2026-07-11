@@ -17,6 +17,7 @@ class CrossEncoderReranker:
         self.model_name = str(model_name or "")
         self._model = None
         self._failed = False
+        self._runtime_ready = False
         self._load_lock = Lock()
 
     @classmethod
@@ -27,6 +28,53 @@ class CrossEncoderReranker:
                 if model_name not in cls._instances:
                     cls._instances[model_name] = cls(model_name)
         return cls._instances[model_name]
+
+    def _ensure_runtime(self) -> bool:
+        if self._runtime_ready:
+            try:
+                from core.services import use
+                from services.contracts import AIEngineService
+
+                engine = use(AIEngineService).get_engine()
+                is_active = getattr(engine, "is_environment_active", None)
+                if callable(is_active) and is_active(
+                    "rag",
+                    "reranker",
+                    category="rag",
+                    runtime_slot="rag:reranker",
+                ):
+                    return True
+            except Exception:
+                pass
+
+        with self._load_lock:
+            try:
+                from core.services import use
+                from services.contracts import AIEngineService
+
+                engine = use(AIEngineService).get_engine()
+                activate = getattr(engine, "activate_environment", None)
+                if not callable(activate):
+                    return False
+                self._runtime_ready = bool(
+                    activate(
+                        "rag",
+                        "reranker",
+                        category="rag",
+                        runtime_slot="rag:reranker",
+                        timeout=30.0,
+                        validation_method="warmup_reranker",
+                        validation_payload={"model_name": self.model_name},
+                        validation_timeout=3600.0,
+                    )
+                )
+                return self._runtime_ready
+            except Exception as exc:
+                logger.warning(
+                    f"[CrossEncoder] RAG runtime activation failed: {exc}"
+                )
+                self._runtime_ready = False
+                return False
 
     def rerank(
         self,
@@ -51,6 +99,11 @@ class CrossEncoderReranker:
                     "debug": dict(getattr(candidate, "debug", {}) or {}),
                 }
             )
+
+        if not self._ensure_runtime():
+            logger.warning("[CrossEncoder] RAG reranker runtime is unavailable")
+            self._failed = True
+            return
 
         try:
             result = rerank_candidates(

@@ -14,8 +14,10 @@ from unittest.mock import patch
 from controllers.gui.install_gui_controller import InstallGuiController
 from controllers.install_controller import InstallController
 from core.events import Event, Events
+from core.services import services
 from utils.pip_installer import PipInstaller
 from core.install_requirements import InstallRequirement, check_requirements
+from services.contracts import InstallQueueService
 
 
 class InstallUiCallbackTests(unittest.TestCase):
@@ -74,6 +76,40 @@ class InstallUiCallbackTests(unittest.TestCase):
                     },
                 )
             )
+            self.assertTrue(called.wait(2.0))
+        finally:
+            controller.close()
+
+    def test_install_queue_is_registered_as_typed_service_and_admits_directly(self):
+        called = threading.Event()
+
+        class Backend:
+            def run_task(self, **_kwargs):
+                called.set()
+                return True
+
+        class Main:
+            backend_enabled = True
+            install_controller = Backend()
+
+        controller = InstallGuiController(Main(), None)
+        try:
+            self.assertIs(services().get(InstallQueueService), controller)
+            admission = controller.enqueue(
+                {
+                    "task_id": "tts:direct:install",
+                    "runner": lambda **_kwargs: None,
+                    "meta": {
+                        "category": "tts",
+                        "component_id": "tts:direct",
+                    },
+                    "title": "Direct install",
+                },
+                with_ui=False,
+            )
+
+            self.assertTrue(admission.accepted)
+            self.assertFalse(admission.duplicate)
             self.assertTrue(called.wait(2.0))
         finally:
             controller.close()

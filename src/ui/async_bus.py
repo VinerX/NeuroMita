@@ -47,7 +47,7 @@ def run_async(
     on_error: Optional[Callback] = None,
     *,
     name: str = "gui-async",
-) -> threading.Thread:
+) -> threading.Thread | None:
     def _run():
         try:
             result = worker()
@@ -60,12 +60,23 @@ def run_async(
         if on_ok is not None:
             dispatch_to_gui(target, lambda result=result: on_ok(result))
 
-    return task_supervisor().start_thread(
-        target if target is not None else run_async,
-        str(name or "gui-async"),
-        _run,
-        replace=True,
-    )
+    supervisor = task_supervisor()
+    if supervisor.is_shutdown:
+        return None
+    try:
+        return supervisor.start_thread(
+            target if target is not None else run_async,
+            str(name or "gui-async"),
+            _run,
+            replace=True,
+        )
+    except RuntimeError:
+        # A Qt timer/signal may fire while the application is between
+        # controller shutdown and widget destruction. That is a normal late
+        # notification, not an uncaught application error.
+        if supervisor.is_shutdown:
+            return None
+        raise
 
 
 

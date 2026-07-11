@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -27,6 +28,7 @@ class TaskSnapshot:
 class _TaskRecord:
     task_id: str
     owner_key: int
+    owner_ref: Callable[[], object | None]
     owner_name: str
     name: str
     kind: str
@@ -85,7 +87,7 @@ class TaskSupervisor:
                 self._finish(task_id)
 
         with self._replacement_lock:
-            previous = self._running_named_record(key)
+            previous = self._running_named_record(key, owner)
             if previous is not None:
                 if not replace:
                     raise RuntimeError(
@@ -107,6 +109,7 @@ class TaskSupervisor:
                 record = _TaskRecord(
                     task_id=task_id,
                     owner_key=owner_key,
+                    owner_ref=self._make_owner_ref(owner),
                     owner_name=owner_name,
                     name=normalized_name,
                     kind="thread",
@@ -163,7 +166,7 @@ class TaskSupervisor:
             return fn(*args, **kwargs)
 
         with self._replacement_lock:
-            previous = self._running_named_record(key)
+            previous = self._running_named_record(key, owner)
             if previous is not None:
                 if not replace:
                     future: Future[Any] = Future()
@@ -195,6 +198,7 @@ class TaskSupervisor:
                 record = _TaskRecord(
                     task_id=task_id,
                     owner_key=owner_key,
+                    owner_ref=self._make_owner_ref(owner),
                     owner_name=owner_name,
                     name=normalized_name,
                     kind="future",
@@ -216,13 +220,32 @@ class TaskSupervisor:
             future.add_done_callback(lambda _future: self._finish(task_id))
             return future
 
-    def _running_named_record(self, key: tuple[int, str]) -> _TaskRecord | None:
+    def _running_named_record(
+        self,
+        key: tuple[int, str],
+        owner: object,
+    ) -> _TaskRecord | None:
         with self._lock:
             task_id = self._named_index.get(key)
             record = self._records.get(task_id) if task_id else None
+            if record is not None and record.owner_ref() is not owner:
+                # Python may reuse id(owner) after GC. The live task belongs to
+                # another owner and must not block or be cancelled by this one.
+                self._named_index.pop(key, None)
+                return None
             if record is None or not self._record_running(record):
                 return None
             return record
+
+    @staticmethod
+    def _make_owner_ref(owner: object) -> Callable[[], object | None]:
+        try:
+            return weakref.ref(owner)
+        except TypeError:
+            # Strings and some extension objects cannot be weak-referenced. A
+            # strong fallback prevents their id from being reused while tasks
+            # are registered.
+            return lambda owner=owner: owner
 
     @staticmethod
     def _request_stop(record: _TaskRecord) -> None:
@@ -251,6 +274,7 @@ class TaskSupervisor:
                 self._records[task_id]
                 for task_id in tuple(self._owner_index.get(owner_key, ()))
                 if task_id in self._records
+                and self._records[task_id].owner_ref() is owner
             ]
         for record in records:
             record.cancel_event.set()
@@ -272,7 +296,9 @@ class TaskSupervisor:
         with self._lock:
             task_id = self._named_index.get((id(owner), str(name)))
             record = self._records.get(task_id) if task_id else None
-            return None if record is None else record.cancel_event
+            if record is None or record.owner_ref() is not owner:
+                return None
+            return record.cancel_event
 
     def snapshot(self) -> tuple[TaskSnapshot, ...]:
         self._cancel_expired()
@@ -300,6 +326,11 @@ class TaskSupervisor:
             )
             for record in records
         )
+
+    @property
+    def is_shutdown(self) -> bool:
+        with self._lock:
+            return self._closed
 
     def shutdown(self, *, timeout: float = 3.0) -> None:
         with self._lock:

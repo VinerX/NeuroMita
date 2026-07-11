@@ -7,7 +7,7 @@ import time
 import uuid
 from queue import Full
 from concurrent.futures import Future
-from typing import Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
 from services.contracts import AIEngineService
@@ -105,6 +105,7 @@ class _Worker:
         self.log_thread: Optional[threading.Thread] = None
         self.watch_thread: Optional[threading.Thread] = None
         self.started_at: float = 0.0
+        self.last_error: str = ""
 
     def supports(self, service: str) -> bool:
         return str(service or "").strip().lower() in self.ready_by_service
@@ -516,6 +517,8 @@ class _Worker:
 
             level = str(msg.get("level") or "info").lower()
             text = str(msg.get("message") or "")
+            if level == "error":
+                self.last_error = text
 
             try:
                 if level == "error":
@@ -554,6 +557,10 @@ class AIEngineController(AIEngineService):
         self._recovery_lock = threading.RLock()
         self._shutting_down = threading.Event()
         self._restart_attempts: dict[str, int] = {}
+        self._runtime_validations: dict[
+            str,
+            tuple[str, str, dict[str, Any], float],
+        ] = {}
         self._environments = runtime_environments()
 
         self.mode = self._resolve_mode()
@@ -638,11 +645,77 @@ class AIEngineController(AIEngineService):
                 return False
         return True
 
+    def _validation_sequence(
+        self,
+        validations: dict[
+            str,
+            tuple[str, str, dict[str, Any], float],
+        ] | None = None,
+    ) -> tuple[tuple[str, str, dict[str, Any], float], ...]:
+        source = validations if validations is not None else self._runtime_validations
+        service_order = {name: index for index, name in enumerate(_DEFAULT_SERVICES)}
+        ordered_slots = sorted(
+            source,
+            key=lambda slot: (
+                service_order.get(source[slot][0], len(service_order)),
+                slot,
+            ),
+        )
+        return tuple(
+            (
+                source[slot][0],
+                source[slot][1],
+                dict(source[slot][2]),
+                float(source[slot][3]),
+            )
+            for slot in ordered_slots
+        )
+
+    def _validate_worker_runtime(
+        self,
+        worker: _Worker,
+        *,
+        ready_timeout: float,
+        validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
+    ) -> bool:
+        if not self._wait_all_ready(worker, ready_timeout):
+            detail = worker.last_error or (
+                f"exitcode={getattr(worker.proc, 'exitcode', None)}"
+            )
+            logger.error(f"Candidate AI runtime did not become ready: {detail}")
+            return False
+
+        for service_name, method, payload, method_timeout in validations:
+            if not worker.supports(service_name):
+                continue
+            try:
+                future = worker.call(
+                    method,
+                    payload,
+                    service=service_name,
+                    timeout=method_timeout,
+                )
+                result = future.result(timeout=max(1.0, method_timeout) + 1.0)
+                if not bool(result):
+                    raise RuntimeError(
+                        f"{service_name}.{method} returned a negative result"
+                    )
+            except Exception as exc:
+                detail = worker.last_error or str(exc)
+                logger.error(
+                    f"Candidate AI runtime validation failed for "
+                    f"{service_name}.{method}: {detail}"
+                )
+                return False
+        return True
+
     def _switch_to_composition(
         self,
         composition,
         *,
         timeout: float,
+        selection: dict[str, Any] | None = None,
+        validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         promote: bool = True,
     ) -> bool:
         target_paths = tuple(composition.paths)
@@ -668,7 +741,13 @@ class AIEngineController(AIEngineService):
             if not promote:
                 return True
             try:
-                self._environments.promote_runtime_composition(
+                runtime_selection = (
+                    dict(selection)
+                    if selection is not None
+                    else dict(self._environments.runtime_selection())
+                )
+                self._environments.promote_runtime_selection(
+                    runtime_selection,
                     composition,
                     cleanup=cleanup,
                 )
@@ -688,26 +767,52 @@ class AIEngineController(AIEngineService):
             except Exception as exc:
                 logger.error(f"Failed to restore AI runtime registry: {exc}")
 
-        def cleanup_backend_layers() -> None:
+        def cleanup_superseded_runtime_artifacts() -> None:
             if not promote:
                 return
-            cleanup = getattr(
+
+            cleanup_revisions = getattr(
+                self._environments,
+                "cleanup_superseded_revisions",
+                None,
+            )
+            if callable(cleanup_revisions):
+                for record in tuple(getattr(composition, "records", ()) or ()):
+                    logical_id = str(getattr(record, "logical_id", "") or "").strip()
+                    if not logical_id:
+                        continue
+                    try:
+                        cleanup_revisions(logical_id)
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to clean superseded revision for '{logical_id}': {exc}"
+                        )
+
+            cleanup_layers = getattr(
                 self._environments,
                 "cleanup_unreferenced_core_layers",
                 None,
             )
-            if not callable(cleanup):
-                return
-            try:
-                cleanup()
-            except Exception as exc:
-                logger.warning(f"Failed to clean superseded AI backend layers: {exc}")
+            if callable(cleanup_layers):
+                try:
+                    cleanup_layers()
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to clean superseded AI backend layers: {exc}"
+                    )
 
         with self._runtime_switch_lock:
             if self.mode == "shared":
                 with self._lock:
                     current = self._workers.get(_SHARED_WORKER)
-                if same_contract(current) and self._wait_all_ready(current, ready_timeout):
+                if same_contract(current):
+                    assert current is not None
+                    if not self._validate_worker_runtime(
+                        current,
+                        ready_timeout=ready_timeout,
+                        validations=validations,
+                    ):
+                        return False
                     return promote_registry(cleanup=True)
 
                 candidate = _Worker(
@@ -718,7 +823,11 @@ class AIEngineController(AIEngineService):
                     probe_modules=target_probes,
                 )
                 candidate.start()
-                if not self._wait_all_ready(candidate, ready_timeout):
+                if not self._validate_worker_runtime(
+                    candidate,
+                    ready_timeout=ready_timeout,
+                    validations=validations,
+                ):
                     candidate.stop(timeout=1.0)
                     return False
 
@@ -747,7 +856,7 @@ class AIEngineController(AIEngineService):
                         previous.stop(timeout=ready_timeout)
                     except Exception as exc:
                         logger.warning(f"Failed to stop superseded shared AI worker: {exc}")
-                cleanup_backend_layers()
+                cleanup_superseded_runtime_artifacts()
                 return True
 
             candidates: dict[str, _Worker] = {}
@@ -756,10 +865,8 @@ class AIEngineController(AIEngineService):
             try:
                 for service_name in _DEFAULT_SERVICES:
                     current = current_workers.get(service_name)
-                    if (
-                        same_contract(current)
-                        and current.wait_ready(service_name, timeout=ready_timeout)
-                    ):
+                    if same_contract(current):
+                        assert current is not None
                         candidates[service_name] = current
                         continue
                     candidate = _Worker(
@@ -770,10 +877,26 @@ class AIEngineController(AIEngineService):
                         probe_modules=target_probes,
                     )
                     candidate.start()
-                    if not candidate.wait_ready(service_name, timeout=ready_timeout):
+                    if not self._wait_all_ready(candidate, ready_timeout):
+                        detail = candidate.last_error or (
+                            f"exitcode={getattr(candidate.proc, 'exitcode', None)}"
+                        )
+                        logger.error(
+                            f"Candidate AI worker '{service_name}' did not become ready: {detail}"
+                        )
                         candidate.stop(timeout=1.0)
                         return False
                     candidates[service_name] = candidate
+
+                for validation in validations:
+                    service_name = validation[0]
+                    candidate = candidates.get(service_name)
+                    if candidate is None or not self._validate_worker_runtime(
+                        candidate,
+                        ready_timeout=ready_timeout,
+                        validations=(validation,),
+                    ):
+                        return False
 
                 snapshot = registry_snapshot()
                 if not promote_registry(cleanup=False):
@@ -801,7 +924,7 @@ class AIEngineController(AIEngineService):
                                 f"Failed to stop superseded AI worker '{service_name}': {exc}"
                             )
                 self._restart_attempts.clear()
-                cleanup_backend_layers()
+                cleanup_superseded_runtime_artifacts()
                 return True
             finally:
                 for service_name, candidate in candidates.items():
@@ -823,7 +946,11 @@ class AIEngineController(AIEngineService):
         except Exception as exc:
             logger.error(f"AI runtime composition rejected: {exc}")
             return False
-        return self._switch_to_composition(composition, timeout=timeout)
+        return self._switch_to_composition(
+            composition,
+            timeout=timeout,
+            validations=self._validation_sequence(),
+        )
 
     def _on_worker_crash(self, worker: _Worker, exit_code: int | None) -> None:
         if self._shutting_down.is_set():
@@ -883,7 +1010,16 @@ class AIEngineController(AIEngineService):
                     probe_modules=crashed.probe_modules,
                 )
                 candidate.start()
-                if self._wait_all_ready(candidate, timeout=20.0):
+                validations = tuple(
+                    item
+                    for item in self._validation_sequence()
+                    if item[0] in candidate.service_names
+                )
+                if self._validate_worker_runtime(
+                    candidate,
+                    ready_timeout=20.0,
+                    validations=validations,
+                ):
                     with self._lock:
                         if self._workers.get(worker_key) is not crashed:
                             candidate.stop(timeout=1.0)
@@ -1061,6 +1197,54 @@ class AIEngineController(AIEngineService):
         }
         return mapping.get(str(service or "").strip().lower(), str(service or "").strip().lower())
 
+    @staticmethod
+    def _runtime_slot_for(
+        service: str,
+        item_id: str,
+        runtime_slot: str | None = None,
+    ) -> str:
+        explicit = str(runtime_slot or "").strip().lower()
+        if explicit:
+            return explicit
+        normalized_service = str(service or "").strip().lower()
+        normalized_item = str(item_id or "").strip().lower()
+        if normalized_service == "rag" and normalized_item:
+            return f"rag:{normalized_item}"
+        return normalized_service
+
+    def is_environment_active(
+        self,
+        service: str,
+        item_id: str,
+        *,
+        category: str | None = None,
+        runtime_slot: str | None = None,
+    ) -> bool:
+        service_name = str(service or "").strip().lower()
+        model_id = str(item_id or "").strip()
+        if not service_name or not model_id:
+            return False
+        record = self._environments.active_for(
+            category=category or self._environment_category_for_service(service_name),
+            item_id=model_id,
+        )
+        if record is None:
+            return False
+        slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
+        if not self._environments.is_runtime_selected(
+            record.logical_id,
+            revision_id=record.revision_id,
+            slot=slot,
+        ):
+            return False
+        worker = self._worker_for_service(service_name)
+        return bool(
+            worker is not None
+            and worker.proc is not None
+            and worker.proc.is_alive()
+            and worker.wait_ready(service_name, timeout=0.0)
+        )
+
     def activate_environment(
         self,
         service: str,
@@ -1068,9 +1252,14 @@ class AIEngineController(AIEngineService):
         *,
         category: str | None = None,
         timeout: float = 12.0,
+        validation_method: str | None = None,
+        validation_payload: dict[str, Any] | None = None,
+        validation_timeout: float | None = None,
+        runtime_slot: str | None = None,
     ) -> bool:
         service_name = str(service or "").strip().lower()
         model_id = str(item_id or "").strip()
+        slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
         if not service_name or not model_id:
             return False
 
@@ -1084,8 +1273,44 @@ class AIEngineController(AIEngineService):
             )
             return False
 
-        if not self.refresh_runtime(timeout=timeout):
+        selection = self._environments.selection_with(slot, record)
+        try:
+            composition = self._environments.runtime_composition(
+                selection=selection,
+            )
+        except Exception as exc:
+            logger.error(
+                f"Cannot compose shared runtime for service={service_name} "
+                f"item={model_id}: {exc}"
+            )
             return False
+
+        candidate_validations = dict(self._runtime_validations)
+        current_selection = self._environments.runtime_selection()
+        if validation_method:
+            candidate_validations[slot] = (
+                service_name,
+                str(validation_method),
+                dict(validation_payload or {}),
+                max(1.0, float(validation_timeout or timeout or 0.0)),
+            )
+        else:
+            current_ref = current_selection.get(slot)
+            current_identity = (
+                getattr(current_ref, "logical_id", ""),
+                getattr(current_ref, "revision_id", ""),
+            )
+            if current_identity != (record.logical_id, record.revision_id):
+                candidate_validations.pop(slot, None)
+
+        if not self._switch_to_composition(
+            composition,
+            timeout=timeout,
+            selection=selection,
+            validations=self._validation_sequence(candidate_validations),
+        ):
+            return False
+        self._runtime_validations = candidate_validations
         worker = self._worker_for_service(service_name)
         ready = bool(
             worker is not None
@@ -1105,9 +1330,12 @@ class AIEngineController(AIEngineService):
         *,
         category: str | None = None,
         timeout: float = 12.0,
+        persist: bool = True,
+        runtime_slot: str | None = None,
     ) -> bool:
         service_name = str(service or "").strip().lower()
         model_id = str(item_id or "").strip()
+        slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
         if not service_name or not model_id:
             return False
 
@@ -1118,9 +1346,18 @@ class AIEngineController(AIEngineService):
         if record is None:
             return True
 
+        if not self._environments.is_runtime_selected(
+            record.logical_id,
+            slot=slot,
+        ):
+            return True
+
+        selection = self._environments.selection_with(slot, None)
+        candidate_validations = dict(self._runtime_validations)
+        candidate_validations.pop(slot, None)
         try:
             composition = self._environments.runtime_composition(
-                exclude_logical_ids=(record.logical_id,)
+                selection=selection,
             )
         except Exception as exc:
             logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {exc}")
@@ -1129,13 +1366,31 @@ class AIEngineController(AIEngineService):
         ready = self._switch_to_composition(
             composition,
             timeout=timeout,
-            promote=False,
+            selection=selection,
+            validations=self._validation_sequence(candidate_validations),
+            promote=persist,
         )
+        if ready and persist:
+            self._runtime_validations = candidate_validations
         if ready:
             logger.info(
                 f"Detached environment from shared runtime: service={service_name} item={model_id}"
             )
         return ready
+
+    def forget_environment(
+        self,
+        service: str,
+        item_id: str,
+        *,
+        category: str | None = None,
+        runtime_slot: str | None = None,
+    ) -> None:
+        del category
+        service_name = str(service or "").strip().lower()
+        slot = self._runtime_slot_for(service_name, item_id, runtime_slot)
+        if slot:
+            self._runtime_validations.pop(slot, None)
 
     def prepare_shutdown(self) -> None:
         self._shutting_down.set()

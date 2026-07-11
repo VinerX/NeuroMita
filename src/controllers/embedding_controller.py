@@ -9,17 +9,14 @@ import numpy as np
 from core.events import Event, Events, get_event_bus
 from core.services import use
 from core.task_supervisor import task_supervisor
-from handlers.ai_engine.rag_client import (
-    get_embeddings as rag_get_embeddings,
-    warmup_embeddings as rag_warmup_embeddings,
-)
+from handlers.ai_engine.rag_client import get_embeddings as rag_get_embeddings
 from handlers.embedding_presets import (
     invalidate_embedding_config_cache,
     resolve_full_config,
     resolve_model_settings,
 )
 from main_logger import logger
-from services.contracts import EmbeddingService, SettingsService
+from services.contracts import AIEngineService, EmbeddingService, SettingsService
 
 
 class EmbeddingController(EmbeddingService):
@@ -135,10 +132,29 @@ class EmbeddingController(EmbeddingService):
             if self.handler is None and not self._handler_failed:
                 try:
                     ms = resolve_model_settings()
-                    rag_warmup_embeddings(
-                        model_name=ms["hf_name"],
-                        query_prefix=ms["query_prefix"],
-                    )
+                    engine_service = use(AIEngineService)
+                    engine = engine_service.get_engine()
+                    if engine is None:
+                        raise RuntimeError("AI engine not available")
+                    activate = getattr(engine, "activate_environment", None)
+                    if not callable(activate):
+                        raise RuntimeError("AI engine not available")
+                    if not activate(
+                        "rag",
+                        "embeddings",
+                        category="rag",
+                        runtime_slot="rag:embeddings",
+                        timeout=30.0,
+                        validation_method="warmup_embeddings",
+                        validation_payload={
+                            "model_name": ms["hf_name"],
+                            "query_prefix": ms["query_prefix"],
+                        },
+                        validation_timeout=3600.0,
+                    ):
+                        raise RuntimeError(
+                            "RAG embeddings environment could not be initialized"
+                        )
                     self.handler = object()
                 except Exception as e:
                     if "AI engine not available" in str(e):

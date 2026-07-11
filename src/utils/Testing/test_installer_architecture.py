@@ -12,6 +12,7 @@ from controllers.install_controller import (
     _get_installed_constraints,
     _merge_requirement_specs,
 )
+from core.backends import BackendKind
 from core.install_log import classify_install_log
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
@@ -486,3 +487,195 @@ def test_missing_pywinpty_does_not_install_it_with_embedded_pip(tmp_path: Path) 
 
     ensure_pip.assert_not_called()
     run_process.assert_not_called()
+
+
+def test_managed_install_registers_overlay_without_refreshing_shared_worker(
+    tmp_path: Path,
+) -> None:
+    class _EventBus:
+        def emit(self, *_args, **_kwargs):
+            return True
+
+    class _Installer:
+        def __init__(self, target: str | Path) -> None:
+            self.libs_path_abs = str(target)
+            self.script_path = os.sys.executable
+
+        def cancel(self) -> None:
+            return None
+
+    record = SimpleNamespace(
+        logical_id="tts-edge",
+        revision_id="revision",
+        category="tts",
+        item_id="edge",
+        site_packages=tmp_path / "overlay",
+    )
+
+    class _Transaction:
+        def __init__(self) -> None:
+            self.logical_id = "tts-edge"
+            self.category = "tts"
+            self.item_id = "edge"
+            self.site_packages = tmp_path / "staging" / "site-packages"
+            self.site_packages.mkdir(parents=True)
+            self.validation_paths = (str(self.site_packages),)
+            self.core_resolver_args = ()
+            self.core_overrides = ()
+            self.core_package_names = ()
+            self.core_layers = []
+            self.finalized = False
+
+        def ensure_core_layers(self, _factory, *, log):
+            return True
+
+        def commit(self, _meta):
+            return record
+
+        def finalize(self):
+            self.finalized = True
+
+        def abort(self):
+            return None
+
+        def rollback_commit(self):
+            raise AssertionError("rollback must not be needed")
+
+    transaction = _Transaction()
+
+    class _EnvironmentManager:
+        staging_root = tmp_path / "staging-root"
+
+        def should_manage(self, _meta):
+            return True
+
+        def logical_id_from_meta(self, _meta):
+            return "tts-edge", "tts", "edge"
+
+        def active(self, _logical_id):
+            return None
+
+        def begin(self, **_kwargs):
+            return transaction
+
+        def promote_backend_profile(self, _layer_ids, *, cleanup=False):
+            assert cleanup is False
+
+        def ensure_backend_profile(self, _layer_ids, *, cleanup=False):
+            assert cleanup is False
+
+    class _Controller(InstallController):
+        def __init__(self) -> None:
+            self.event_bus = _EventBus()
+            self.environment_manager = _EnvironmentManager()
+
+        def _make_pip_installer(self, _callbacks, target_path=None):
+            return _Installer(target_path or tmp_path / "initial")
+
+        def _execute_plan(self, *_args, **_kwargs):
+            return True
+
+        @staticmethod
+        def _refresh_ai_runtime(**_kwargs):
+            raise AssertionError("installation must not refresh the shared worker")
+
+    plan = InstallPlan(actions=[], required_backend=None)
+    result = _Controller().run_task(
+        task_id="tts:edge:install",
+        runner=lambda **_kwargs: plan,
+        meta={"category": "tts", "item_id": "edge", "op": "install"},
+    )
+
+    assert result is True
+    assert transaction.finalized is True
+
+
+def test_backend_install_registers_candidate_without_empty_overlay(
+    tmp_path: Path,
+) -> None:
+    class _EventBus:
+        def emit(self, *_args, **_kwargs):
+            return True
+
+    class _Installer:
+        def __init__(self, target: str | Path) -> None:
+            self.libs_path_abs = str(target)
+            self.script_path = os.sys.executable
+
+        def cancel(self) -> None:
+            return None
+
+    layer = SimpleNamespace(layer_id="torch-cuda")
+
+    class _Transaction:
+        logical_id = "backend-cuda"
+        category = "backend"
+        item_id = "cuda"
+        validation_paths = ()
+        core_resolver_args = ()
+        core_overrides = ()
+        core_package_names = ()
+        core_layers = [layer]
+
+        def __init__(self) -> None:
+            self.site_packages = tmp_path / "staging" / "site-packages"
+            self.site_packages.mkdir(parents=True)
+            self.aborted = False
+
+        def ensure_core_layers(self, _factory, *, log):
+            return True
+
+        def commit(self, _meta):
+            raise AssertionError("backend installation must not register an overlay")
+
+        def abort(self):
+            self.aborted = True
+
+    transaction = _Transaction()
+
+    class _EnvironmentManager:
+        staging_root = tmp_path / "staging-root"
+
+        def __init__(self) -> None:
+            self.candidates = None
+
+        def should_manage(self, _meta):
+            return True
+
+        def logical_id_from_meta(self, _meta):
+            return "backend-cuda", "backend", "cuda"
+
+        def active(self, _logical_id):
+            return None
+
+        def begin(self, **_kwargs):
+            return transaction
+
+        def register_backend_candidates(self, layer_ids):
+            self.candidates = tuple(layer_ids)
+
+    manager = _EnvironmentManager()
+
+    class _Controller(InstallController):
+        def __init__(self) -> None:
+            self.event_bus = _EventBus()
+            self.environment_manager = manager
+
+        def _make_pip_installer(self, _callbacks, target_path=None):
+            return _Installer(target_path or tmp_path / "initial")
+
+        def _execute_plan(self, *_args, **_kwargs):
+            return True
+
+    result = _Controller().run_task(
+        task_id="backend:cuda:install",
+        runner=lambda **_kwargs: InstallPlan(
+            actions=[],
+            required_backend=BackendKind.CUDA,
+        ),
+        meta={"category": "backend", "item_id": "cuda", "op": "install"},
+    )
+
+    assert result is True
+    assert manager.candidates == ("torch-cuda",)
+    assert transaction.aborted is True

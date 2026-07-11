@@ -175,7 +175,10 @@ def test_runtime_composition_probes_direct_overlay_and_backend_imports(
     _write_dist(transaction.site_packages, "fish-speech-lib", "1.0.0")
 
     record = transaction.commit()
-    composition = manager.runtime_composition()
+    assert manager.runtime_composition().records == ()
+    composition = manager.runtime_composition(
+        selection={"tts": record.logical_id},
+    )
 
     assert record.probe_modules == ("fish_speech_lib",)
     assert "fish_speech_lib" in composition.probe_modules
@@ -307,7 +310,7 @@ def test_deactivate_can_retire_revision_without_mutating_or_deleting_it(tmp_path
     marker.write_text("ready", encoding="utf-8")
     record = transaction.commit()
 
-    assert manager.deactivate(record.logical_id, delete=False) is True
+    assert manager.remove_installed(record.logical_id, delete=False) is True
     assert manager.active(record.logical_id) is None
     assert record.root.is_dir()
     assert (record.site_packages / "immutable.txt").read_text(encoding="utf-8") == "ready"
@@ -368,7 +371,7 @@ def test_committed_candidate_can_roll_back_to_previous_revision(tmp_path: Path) 
     assert not candidate.root.exists()
 
 
-def test_cuda_backend_profile_replaces_cpu_layer_for_all_active_environments(
+def test_backend_profile_is_global_without_rewriting_installed_overlays(
     tmp_path: Path,
 ) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
@@ -383,6 +386,7 @@ def test_cuda_backend_profile_replaces_cpu_layer_for_all_active_environments(
     assert cpu_tx.ensure_core_layers(_factory(created), log=lambda _message: None)
     cpu_layer = cpu_tx.core_layers[0]
     cpu_record = cpu_tx.commit()
+    manager.promote_backend_profile((cpu_layer.layer_id,))
 
     cuda_tx = manager.begin(
         meta={"category": "backend", "item_id": "cuda"},
@@ -393,22 +397,24 @@ def test_cuda_backend_profile_replaces_cpu_layer_for_all_active_environments(
     assert cuda_tx.ensure_core_layers(_factory(created), log=lambda _message: None)
     cuda_layer = cuda_tx.core_layers[0]
     cuda_tx.commit()
+    manager.promote_backend_profile((cuda_layer.layer_id,))
 
-    composition = manager.runtime_composition()
+    selection = {"rag": cpu_record.logical_id}
+    composition = manager.runtime_composition(selection=selection)
     assert cuda_layer.layer_id in composition.core_layer_ids
     assert cpu_layer.layer_id not in composition.core_layer_ids
 
-    manager.promote_runtime_composition(composition)
-    rebound = manager.active(cpu_record.logical_id)
+    manager.promote_runtime_selection(selection, composition)
+    installed = manager.active(cpu_record.logical_id)
 
-    assert rebound is not None
-    assert rebound.core_layer_ids == composition.core_layer_ids
+    assert installed is not None
+    assert installed.core_layer_ids == (cpu_layer.layer_id,)
     assert cuda_layer.root.exists()
     assert not cpu_layer.root.exists()
 
 
 
-def test_new_backend_version_is_authoritative_during_candidate_validation(
+def test_selected_overlays_are_tried_against_one_global_backend_revision(
     tmp_path: Path,
 ) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
@@ -452,23 +458,26 @@ def test_new_backend_version_is_authoritative_during_candidate_validation(
         backend_context={},
     )
     candidate_tx.core_layers = [new_layer]
-    candidate_tx.commit()
+    candidate_record = candidate_tx.commit()
+    manager.promote_backend_profile((new_layer.layer_id,))
 
     composition = manager.runtime_composition(
-        preferred_core_layer_ids=(new_layer.layer_id,),
+        selection={"tts": candidate_record.logical_id},
     )
     assert composition.core_layer_ids == (new_layer.layer_id,)
     assert str(new_layer.site_packages) in composition.paths
     assert str(old_layer.site_packages) not in composition.paths
 
-    manager.promote_runtime_composition(composition)
-    candidate_tx.finalize()
-
-    rebound = manager.active(old_record.logical_id)
-    assert rebound is not None
-    assert rebound.core_layer_ids == (new_layer.layer_id,)
-    assert new_layer.root.exists()
-    assert not old_layer.root.exists()
+    combined = manager.runtime_composition(
+        selection={
+            "tts": candidate_record.logical_id,
+            "rag": old_record.logical_id,
+        },
+    )
+    assert combined.core_layer_ids == (new_layer.layer_id,)
+    assert str(candidate_record.site_packages) in combined.paths
+    assert str(old_record.site_packages) in combined.paths
+    assert str(old_layer.site_packages) not in combined.paths
 
 
 def test_pip_installer_never_activates_ai_target_in_main_process(
@@ -696,3 +705,467 @@ def test_main_dependency_is_managed_but_excluded_from_ai_composition(tmp_path: P
     composition = manager.runtime_composition()
     assert record not in composition.records
     assert str(record.site_packages) not in composition.paths
+
+
+def test_selected_overlays_are_composed_even_when_metadata_versions_differ(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+
+    tts = manager.begin(
+        meta={"category": "tts", "item_id": "voice"},
+        requested_specs=("shared-demo==1.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(tts.site_packages, "shared-demo", "1.0")
+    tts_record = tts.commit()
+
+    asr = manager.begin(
+        meta={"category": "asr", "item_id": "speech"},
+        requested_specs=("shared-demo==2.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(asr.site_packages, "shared-demo", "2.0")
+    asr_record = asr.commit()
+
+    composition = manager.runtime_composition(
+        selection={
+            "tts": tts_record.logical_id,
+            "asr": asr_record.logical_id,
+        }
+    )
+
+    assert composition.records == (tts_record, asr_record)
+    assert composition.paths[:2] == (
+        str(tts_record.site_packages),
+        str(asr_record.site_packages),
+    )
+
+
+def test_selected_overlay_keeps_previous_revision_until_runtime_switch(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+
+    first_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==1.0.0",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "CPU"},
+    )
+    assert first_tx.ensure_core_layers(_factory(created), log=lambda _message: None)
+    _write_dist(first_tx.site_packages, "voice-runtime", "1.0.0")
+    first = first_tx.commit()
+    first_selection = manager.selection_with("tts", first)
+    first_composition = manager.runtime_composition(selection=first_selection)
+    manager.promote_runtime_selection(
+        first_selection,
+        first_composition,
+        cleanup=False,
+    )
+    first_tx.finalize()
+
+    second_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==2.0.0",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "CPU"},
+    )
+    assert second_tx.ensure_core_layers(_factory(created), log=lambda _message: None)
+    _write_dist(second_tx.site_packages, "voice-runtime", "2.0.0")
+    second = second_tx.commit()
+    second_tx.finalize()
+
+    assert first.logical_id == second.logical_id
+    assert first.revision_id != second.revision_id
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+
+    running_composition = manager.runtime_composition()
+    assert running_composition.records == (first,)
+    manager.cleanup_superseded_revisions(second.logical_id)
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+
+    second_selection = manager.selection_with("tts", second)
+    second_composition = manager.runtime_composition(selection=second_selection)
+    assert second_composition.records == (second,)
+    manager.promote_runtime_selection(
+        second_selection,
+        second_composition,
+        cleanup=False,
+    )
+    manager.cleanup_superseded_revisions(second.logical_id)
+
+    assert not first.root.exists()
+    assert second.root.is_dir()
+
+
+def test_runtime_selection_supports_multiple_overlays_for_one_service(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+
+    embeddings_tx = manager.begin(
+        meta={"category": "rag", "item_id": "embeddings"},
+        requested_specs=("transformers==4.45.2",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(embeddings_tx.site_packages, "transformers", "4.45.2")
+    embeddings = embeddings_tx.commit()
+    embeddings_tx.finalize()
+
+    reranker_tx = manager.begin(
+        meta={"category": "rag", "item_id": "reranker"},
+        requested_specs=("sentencepiece==0.2.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(reranker_tx.site_packages, "sentencepiece", "0.2.0")
+    reranker = reranker_tx.commit()
+    reranker_tx.finalize()
+
+    selection = {
+        "rag:embeddings": embeddings.logical_id,
+        "rag:reranker": reranker.logical_id,
+    }
+    composition = manager.runtime_composition(selection=selection)
+
+    assert composition.records == (embeddings, reranker)
+    assert composition.paths[:2] == (
+        str(embeddings.site_packages),
+        str(reranker.site_packages),
+    )
+
+
+def test_startup_cleanup_removes_unregistered_overlay_revisions(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+
+    first_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==1.0.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(first_tx.site_packages, "voice-runtime", "1.0.0")
+    first = first_tx.commit()
+
+    second_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==2.0.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(second_tx.site_packages, "voice-runtime", "2.0.0")
+    second = second_tx.commit()
+
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+    manager.cleanup_inactive_overlays()
+
+    assert not first.root.exists()
+    assert second.root.is_dir()
+
+
+def test_core_cleanup_preserves_legacy_layers_until_profile_is_migrated(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=(),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "CPU"},
+    )
+    assert transaction.ensure_core_layers(_factory(created), log=lambda _message: None)
+    layer = transaction.core_layers[0]
+    transaction.commit()
+
+    registry = manager.registry_snapshot()
+    registry["backend_profile"] = {"core_layer_ids": []}
+    manager.restore_registry(registry)
+    manager.cleanup_unreferenced_core_layers()
+
+    assert layer.root.is_dir()
+
+
+def test_model_activation_can_replace_incompatible_preferred_backend(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+
+    cpu_spec = CoreLayerSpec(
+        group="torch-cpu",
+        packages=("torch==2.7.1", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cpu@2.7.1"),
+    )
+    cuda_spec = CoreLayerSpec(
+        group="torch-cu128",
+        packages=("torch==2.7.1+cu128", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cuda", "torch.cuda@2.7.1+cu128"),
+    )
+    cpu_layer = manager.ensure_core_layer(
+        cpu_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    cuda_layer = manager.ensure_core_layer(
+        cuda_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cpu_layer is not None and cuda_layer is not None
+    manager.promote_backend_profile((cpu_layer.layer_id,))
+
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "cuda-voice"},
+        requested_specs=(),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    transaction.core_layers = [cuda_layer]
+    record = transaction.commit()
+
+    selection = manager.selection_with("tts", record)
+    composition = manager.runtime_composition(selection=selection)
+
+    assert composition.core_layer_ids == (cuda_layer.layer_id,)
+    assert str(cuda_layer.site_packages) in composition.paths
+    assert str(cpu_layer.site_packages) not in composition.paths
+
+
+def test_cleanup_keeps_unpromoted_backend_candidate_for_installed_overlay(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+
+    cpu_spec = CoreLayerSpec(
+        group="torch-cpu",
+        packages=("torch==2.7.1", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cpu@2.7.1"),
+    )
+    cuda_spec = CoreLayerSpec(
+        group="torch-cu128",
+        packages=("torch==2.7.1+cu128", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cuda", "torch.cuda@2.7.1+cu128"),
+    )
+    cpu_layer = manager.ensure_core_layer(
+        cpu_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    cuda_layer = manager.ensure_core_layer(
+        cuda_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cpu_layer is not None and cuda_layer is not None
+    manager.promote_backend_profile((cpu_layer.layer_id,))
+
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "cuda-voice"},
+        requested_specs=(),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    transaction.core_layers = [cuda_layer]
+    transaction.commit()
+
+    manager.cleanup_unreferenced_core_layers()
+
+    assert cpu_layer.root.is_dir()
+    assert cuda_layer.root.is_dir()
+
+
+def test_component_context_uses_compatible_profile_after_original_layer_cleanup(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+
+    cpu_spec = CoreLayerSpec(
+        group="torch-cpu",
+        packages=("torch==2.7.1", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cpu@2.7.1"),
+    )
+    cuda_spec = CoreLayerSpec(
+        group="torch-cu128",
+        packages=("torch==2.7.1+cu128", "numpy==1.26.0"),
+        capabilities=("torch.cpu", "torch.cpu@2.7.1", "torch.cuda"),
+    )
+    cpu_layer = manager.ensure_core_layer(
+        cpu_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    cuda_layer = manager.ensure_core_layer(
+        cuda_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cpu_layer is not None and cuda_layer is not None
+
+    transaction = manager.begin(
+        meta={"category": "rag", "item_id": "embeddings"},
+        requested_specs=(),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    transaction.core_layers = [cpu_layer]
+    record = transaction.commit()
+    manager.promote_backend_profile((cuda_layer.layer_id,))
+    manager.cleanup_unreferenced_core_layers()
+
+    assert not cpu_layer.root.exists()
+    context = manager.component_context(category="rag", item_id="embeddings")
+    assert context["python_paths"] == [
+        str(record.site_packages),
+        str(cuda_layer.site_packages),
+    ]
+
+
+def test_startup_cleanup_preserves_selected_revision_after_reinstall(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+
+    first_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==1.0.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(first_tx.site_packages, "voice-runtime", "1.0.0")
+    first = first_tx.commit()
+    first_selection = manager.selection_with("tts", first)
+    manager.promote_runtime_selection(
+        first_selection,
+        manager.runtime_composition(selection=first_selection),
+        cleanup=False,
+    )
+
+    second_tx = manager.begin(
+        meta={"category": "tts", "item_id": "voice-a"},
+        requested_specs=("voice-runtime==2.0.0",),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    _write_dist(second_tx.site_packages, "voice-runtime", "2.0.0")
+    second = second_tx.commit()
+    second_tx.finalize()
+
+    manager.cleanup_inactive_overlays()
+
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+    assert manager.runtime_composition().records == (first,)
+
+
+def test_explicit_backend_candidate_is_used_on_next_runtime_activation(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cpu = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cpu",
+            packages=("torch==2.7.1",),
+            capabilities=("torch.cpu",),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    cuda = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cu128",
+            packages=("torch==2.7.1+cu128",),
+            capabilities=("torch.cpu", "torch.cuda"),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cpu is not None and cuda is not None
+    manager.promote_backend_profile((cpu.layer_id,))
+    manager.register_backend_candidates((cuda.layer_id,))
+
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "cpu-compatible"},
+        requested_specs=(),
+        required_backend=BackendKind.NONE,
+        backend_context={},
+    )
+    transaction.core_layers = [cpu]
+    record = transaction.commit()
+    selection = manager.selection_with("tts", record)
+    composition = manager.runtime_composition(selection=selection)
+
+    assert composition.core_layer_ids == (cuda.layer_id,)
+
+    manager.promote_runtime_selection(selection, composition, cleanup=False)
+    registry = manager.registry_snapshot()
+    assert registry["backend_profile"]["core_layer_ids"] == [cuda.layer_id]
+    assert registry["backend_candidates"]["core_layer_ids"] == []
+
+
+def test_core_cleanup_keeps_pending_backend_candidate_until_activation(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cpu = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cpu",
+            packages=("torch==2.7.1",),
+            capabilities=("torch.cpu",),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    cuda = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cu128",
+            packages=("torch==2.7.1+cu128",),
+            capabilities=("torch.cpu", "torch.cuda"),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cpu is not None and cuda is not None
+    manager.promote_backend_profile((cpu.layer_id,))
+    manager.register_backend_candidates((cuda.layer_id,))
+
+    manager.cleanup_unreferenced_core_layers()
+
+    assert cpu.root.is_dir()
+    assert cuda.root.is_dir()
+
+
+def test_materialized_backend_layer_is_registered_before_gc(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    layer = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cu128",
+            packages=("torch==2.7.1+cu128",),
+            capabilities=("torch.cpu", "torch.cuda"),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+
+    assert layer is not None
+    registry = manager.registry_snapshot()
+    assert layer.layer_id in registry["backend_candidates"]["core_layer_ids"]
+
+    manager.cleanup_unreferenced_core_layers()
+
+    assert layer.root.is_dir()

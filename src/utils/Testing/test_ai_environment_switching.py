@@ -30,7 +30,11 @@ class _EnvironmentRegistry:
         )
         self.paths = paths
         self.probe_modules = probe_modules
+        self.selection = {
+            "tts": SimpleNamespace(logical_id="tts-voice", revision_id="rev")
+        }
         self.promoted = None
+        self.promoted_selection = None
         self.promotion_cleanup = None
         self.excluded = None
         self.preferred = None
@@ -39,25 +43,68 @@ class _EnvironmentRegistry:
         self.cleanup_calls = 0
 
     def active_for(self, *, category: str, item_id: str):
-        assert category == "tts"
-        assert item_id == "voice-a"
-        return self.record
+        if category == "tts" and item_id == "voice-a":
+            return self.record
+        return SimpleNamespace(
+            logical_id=f"{category}-{item_id}",
+            revision_id="rev",
+            category=category,
+            item_id=item_id,
+        )
 
     def runtime_composition(
         self,
         *,
+        selection=None,
         exclude_logical_ids=(),
         preferred_core_layer_ids=(),
     ):
         self.excluded = tuple(exclude_logical_ids)
         self.preferred = tuple(preferred_core_layer_ids)
-        paths = () if self.excluded else self.paths
+        selected = dict(self.selection if selection is None else selection)
+        selected_tts = selected.get("tts")
+        selected_tts_id = getattr(selected_tts, "logical_id", selected_tts)
+        paths = self.paths if selected_tts_id == "tts-voice" else ()
         return SimpleNamespace(
             paths=paths,
             core_layer_ids=self.preferred,
             records=(),
-            probe_modules=() if self.excluded else self.probe_modules,
+            probe_modules=self.probe_modules if paths else (),
         )
+
+    def runtime_selection(self):
+        return dict(self.selection)
+
+    def selection_with(self, slot: str, record):
+        selected = dict(self.selection)
+        if record is None:
+            selected.pop(slot, None)
+        else:
+            selected[slot] = SimpleNamespace(
+                logical_id=record.logical_id,
+                revision_id=record.revision_id,
+            )
+        return selected
+
+    def is_runtime_selected(
+        self,
+        logical_id: str,
+        *,
+        revision_id: str | None = None,
+        slot: str | None = None,
+    ) -> bool:
+        def matches(value) -> bool:
+            return bool(
+                getattr(value, "logical_id", value) == logical_id
+                and (
+                    not revision_id
+                    or getattr(value, "revision_id", "") == revision_id
+                )
+            )
+
+        if slot is not None:
+            return matches(self.selection.get(slot))
+        return any(matches(value) for value in self.selection.values())
 
     def registry_snapshot(self):
         return {"snapshot": True}
@@ -68,9 +115,11 @@ class _EnvironmentRegistry:
     def cleanup_unreferenced_core_layers(self) -> None:
         self.cleanup_calls += 1
 
-    def promote_runtime_composition(self, composition, *, cleanup: bool = True) -> None:
+    def promote_runtime_selection(self, selection, composition, *, cleanup: bool = True) -> None:
         if self.fail_promotion:
             raise RuntimeError("registry write failed")
+        self.selection = dict(selection)
+        self.promoted_selection = dict(selection)
         self.promoted = composition
         self.promotion_cleanup = cleanup
 
@@ -78,6 +127,7 @@ class _EnvironmentRegistry:
 class _Worker:
     created: list["_Worker"] = []
     candidate_ready = True
+    validation_result = True
 
     def __init__(
         self,
@@ -95,8 +145,10 @@ class _Worker:
         self.python_paths = tuple(python_paths)
         self.probe_modules = tuple(probe_modules)
         self.on_crash = on_crash
+        self.last_error = ""
         self.started = False
         self.stopped = False
+        self.calls: list[tuple[str, str, dict]] = []
         self.proc = _Proc()
         self.started_at = 0.0
         self.__class__.created.append(self)
@@ -105,12 +157,23 @@ class _Worker:
         self.started = True
         self.started_at = time.monotonic()
 
+    def supports(self, service: str) -> bool:
+        return service in self.service_names
+
     def wait_ready(self, service: str, timeout: float) -> bool:
         return self.started and service in self.service_names and self.candidate_ready
 
     def stop(self, timeout: float) -> None:
         self.stopped = True
         self.proc.alive = False
+
+    def call(self, method, payload=None, *, service=None, timeout=None):
+        from concurrent.futures import Future
+
+        self.calls.append((str(service), str(method), dict(payload or {})))
+        future = Future()
+        future.set_result(self.validation_result)
+        return future
 
 
 def _controller(current: _Worker, registry: _EnvironmentRegistry) -> AIEngineController:
@@ -122,6 +185,7 @@ def _controller(current: _Worker, registry: _EnvironmentRegistry) -> AIEngineCon
     controller._recovery_lock = threading.RLock()
     controller._shutting_down = threading.Event()
     controller._restart_attempts = {}
+    controller._runtime_validations = {}
     controller._ctx = object()
     controller._workers = {"shared": current}
     controller._service_to_worker = {
@@ -184,6 +248,69 @@ def test_successful_candidate_switches_all_services_atomically() -> None:
     assert set(controller._service_to_worker) == {"tts", "asr", "rag", "beats"}
 
 
+def test_model_initialization_failure_preserves_current_shared_worker() -> None:
+    current = _current_worker(("X:/old-overlay", "X:/old-backend"))
+    registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
+    controller = _controller(current, registry)
+    _Worker.created.clear()
+    _Worker.candidate_ready = True
+    _Worker.validation_result = False
+
+    try:
+        with patch("controllers.ai_engine_controller._Worker", _Worker):
+            result = controller.activate_environment(
+                "tts",
+                "voice-a",
+                category="tts",
+                timeout=1.0,
+                validation_method="init_model",
+                validation_payload={"model_id": "voice-a"},
+                validation_timeout=1.0,
+            )
+    finally:
+        _Worker.validation_result = True
+
+    assert result is False
+    assert controller._workers["shared"] is current
+    assert current.stopped is False
+    assert {
+        slot: (value.logical_id, value.revision_id)
+        for slot, value in registry.selection.items()
+    } == {"tts": ("tts-voice", "rev")}
+    assert registry.promoted is None
+
+
+def test_expanding_shared_runtime_reinitializes_existing_services_before_swap() -> None:
+    current = _current_worker(("X:/old-overlay", "X:/old-backend"))
+    registry = _EnvironmentRegistry(("X:/combined-overlays", "X:/new-backend"))
+    controller = _controller(current, registry)
+    controller._runtime_validations = {
+        "tts": ("tts", "init_model", {"model_id": "voice-a"}, 1.0),
+    }
+    _Worker.created.clear()
+    _Worker.candidate_ready = True
+
+    with patch("controllers.ai_engine_controller._Worker", _Worker):
+        result = controller.activate_environment(
+            "asr",
+            "whisper",
+            category="asr",
+            timeout=1.0,
+            validation_method="start_live",
+            validation_payload={"engine_id": "whisper"},
+            validation_timeout=1.0,
+        )
+
+    assert result is True
+    replacement = controller._workers["shared"]
+    assert replacement.calls == [
+        ("tts", "init_model", {"model_id": "voice-a"}),
+        ("asr", "start_live", {"engine_id": "whisper"}),
+    ]
+    assert current.stopped is True
+    assert controller._runtime_validations.keys() == {"tts", "asr"}
+
+
 def test_deactivate_builds_candidate_without_removed_environment() -> None:
     current = _current_worker(("X:/overlay", "X:/backend"))
     registry = _EnvironmentRegistry(("X:/overlay", "X:/backend"))
@@ -200,8 +327,7 @@ def test_deactivate_builds_candidate_without_removed_environment() -> None:
         )
 
     assert result is True
-    assert registry.excluded == ("tts-voice",)
-    assert registry.promoted is None
+    assert registry.promoted_selection == {}
     replacement = controller._workers["shared"]
     assert replacement.python_paths == ()
     assert current.stopped is True
@@ -313,3 +439,54 @@ def test_repeated_fast_crashes_open_restart_circuit() -> None:
     assert controller._workers["shared"] is third
     assert controller._restart_attempts["shared"] == 2
     assert len(_Worker.created) == created_before_circuit
+
+
+def test_rag_runtime_uses_independent_slots_in_one_shared_worker() -> None:
+    current = _current_worker(("X:/shared",))
+    registry = _EnvironmentRegistry(("X:/shared",))
+    controller = _controller(current, registry)
+    controller._runtime_validations = {
+        "tts": ("tts", "init_model", {"model_id": "voice-a"}, 1.0),
+    }
+
+    embeddings_ok = controller.activate_environment(
+        "rag",
+        "embeddings",
+        category="rag",
+        runtime_slot="rag:embeddings",
+        timeout=1.0,
+        validation_method="warmup_embeddings",
+        validation_payload={"model_name": "embed-model"},
+        validation_timeout=1.0,
+    )
+    reranker_ok = controller.activate_environment(
+        "rag",
+        "reranker",
+        category="rag",
+        runtime_slot="rag:reranker",
+        timeout=1.0,
+        validation_method="warmup_reranker",
+        validation_payload={"model_name": "reranker-model"},
+        validation_timeout=1.0,
+    )
+
+    assert embeddings_ok is True
+    assert reranker_ok is True
+    assert {
+        slot: (value.logical_id, value.revision_id)
+        for slot, value in registry.selection.items()
+    } == {
+        "tts": ("tts-voice", "rev"),
+        "rag:embeddings": ("rag-embeddings", "rev"),
+        "rag:reranker": ("rag-reranker", "rev"),
+    }
+    assert controller._runtime_validations.keys() == {
+        "tts",
+        "rag:embeddings",
+        "rag:reranker",
+    }
+    assert current.calls[-3:] == [
+        ("tts", "init_model", {"model_id": "voice-a"}),
+        ("rag", "warmup_embeddings", {"model_name": "embed-model"}),
+        ("rag", "warmup_reranker", {"model_name": "reranker-model"}),
+    ]

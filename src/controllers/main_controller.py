@@ -29,6 +29,7 @@ from services.contracts import (
     SpeechService,
     VoiceModelService,
     InstallableCatalogService,
+    InstallableOperationsService,
     LoopService,
     ProtocolBuilderService,
     SettingsService,
@@ -372,7 +373,7 @@ class MainController:
         feature_manager.register(
             FeatureSpec(
                 name="install",
-                enabled=lambda _settings: False,
+                enabled=lambda _settings: True,
                 factory=self._create_install_controller,
                 provided_services=(InstallService,),
                 startup=False,
@@ -382,8 +383,9 @@ class MainController:
         feature_manager.register(
             FeatureSpec(
                 name="installables",
-                enabled=lambda _settings: False,
+                enabled=lambda _settings: True,
                 factory=self._create_installable_controller,
+                provided_services=(InstallableOperationsService,),
                 startup=False,
                 priority=95,
             )
@@ -573,6 +575,12 @@ class MainController:
         server_controller = getattr(self, "server_controller", None)
         if server_controller is not None:
             shutdown_step("server", server_controller.destroy)
+
+        gui_controller = getattr(self, "gui_controller", None)
+        if gui_controller is not None:
+            close_gui = getattr(gui_controller, "close", None)
+            if callable(close_gui):
+                shutdown_step("GUI controllers", close_gui)
 
         model_controller = getattr(self, "model_controller", None)
         if model_controller is not None:

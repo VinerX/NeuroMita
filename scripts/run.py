@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ _RUNTIME_RESERVED_NAMES = frozenset({
     ".staging",
     ".locks",
     ".install-staging",
+    ".legacy-runtime",
     "registry.json",
 })
 
@@ -100,23 +102,35 @@ def _legacy_runtime_payloads() -> tuple[Path, ...]:
 
 
 def _cleanup_legacy_runtime_payloads() -> None:
+    """Quarantine the old flat ``Lib`` without blocking application startup."""
     payloads = _legacy_runtime_payloads()
     if not payloads:
         return
     log(
-        "Удаляю устаревшие пакеты из корня Lib: "
+        "Изолирую устаревшие пакеты из корня Lib: "
         + ", ".join(path.name for path in payloads)
     )
+    quarantine = RUNTIME_ROOT / ".legacy-runtime"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    moved_any = False
     for path in payloads:
+        target = quarantine / path.name
+        if target.exists():
+            target = quarantine / f"{path.name}.{uuid.uuid4().hex}"
         try:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
+            os.replace(path, target)
+            moved_any = True
         except OSError as exc:
-            raise RuntimeError(
-                f"Не удалось очистить устаревший runtime-объект '{path}': {exc}"
-            ) from exc
+            log(
+                "Не удалось переместить устаревший runtime-объект "
+                f"'{path.name}': {exc}. Он не входит в sys.path и не мешает запуску; "
+                "очистка будет повторена позже."
+            )
+    if moved_any:
+        log(
+            "Старый runtime сохранён в Lib/.legacy-runtime и не используется. "
+            "Его можно удалить вручную после проверки новых backend/overlay."
+        )
 
 
 def log(msg: str) -> None:
@@ -474,44 +488,74 @@ def _process_is_alive(pid: int | None) -> bool:
 class _CoreInstallLock:
     def __init__(self, *, timeout: float = 900.0, stale_after: float = 1800.0) -> None:
         self.timeout = max(1.0, float(timeout))
+        # Retained for compatibility. Kernel locks are released on process exit,
+        # therefore stale lock-file deletion is no longer required.
         self.stale_after = max(self.timeout, float(stale_after))
         self._fd: int | None = None
+
+    @staticmethod
+    def _try_lock(fd: int) -> bool:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                return False
+
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _unlock(fd: int) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            return
+
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
     def __enter__(self) -> "_CoreInstallLock":
         BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
+        self._fd = os.open(CORE_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+        if os.fstat(self._fd).st_size == 0:
+            os.write(self._fd, b"\0")
         while True:
-            try:
-                self._fd = os.open(
-                    CORE_LOCK_FILE,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                )
-                os.write(
-                    self._fd,
-                    f"pid={os.getpid()} time={time.time()}\n".encode("ascii"),
-                )
+            if self._try_lock(self._fd):
+                os.ftruncate(self._fd, 0)
+                os.lseek(self._fd, 0, os.SEEK_SET)
+                os.write(self._fd, f"pid={os.getpid()} time={time.time()}\n".encode("ascii"))
+                os.fsync(self._fd)
                 return self
-            except FileExistsError:
-                try:
-                    lock_age = time.time() - CORE_LOCK_FILE.stat().st_mtime
-                    owner_alive = _process_is_alive(_read_lock_pid())
-                    if not owner_alive or lock_age > self.stale_after:
-                        CORE_LOCK_FILE.unlink(missing_ok=True)
-                        continue
-                except OSError:
-                    pass
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Истекло время ожидания другой установки core")
-                time.sleep(0.25)
+            if time.monotonic() >= deadline:
+                os.close(self._fd)
+                self._fd = None
+                raise TimeoutError("Истекло время ожидания другой установки core")
+            time.sleep(0.25)
 
     def __exit__(self, *_exc: Any) -> None:
         if self._fd is not None:
+            try:
+                self._unlock(self._fd)
+            except OSError:
+                pass
             try:
                 os.close(self._fd)
             except OSError:
                 pass
             self._fd = None
-        CORE_LOCK_FILE.unlink(missing_ok=True)
 
 
 def install_requirements(target: Path | None = None) -> bool:
@@ -613,11 +657,7 @@ def pywin32_postinstall() -> None:
 
 def ensure_core_ready() -> bool:
     if core_is_healthy():
-        try:
-            _cleanup_legacy_runtime_payloads()
-        except RuntimeError as exc:
-            log(str(exc))
-            return False
+        _cleanup_legacy_runtime_payloads()
         return True
     try:
         with _CoreInstallLock():
@@ -651,7 +691,10 @@ def main() -> None:
         log("Core отсутствует, повреждён или устарел: восстанавливаю зависимости...")
         log("=" * 50)
     if not ensure_core_ready():
-        log("\nНе удалось установить зависимости. Проверь интернет и запусти снова.")
+        log(
+            "\nНе удалось подготовить core-зависимости. Проверь подробности выше: "
+            "причиной может быть сеть, нехватка места, блокировка файлов или антивирус."
+        )
         raise SystemExit(1)
     if core_was_healthy:
         log("Core-зависимости проверены — установка не требуется.")

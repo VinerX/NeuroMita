@@ -9,7 +9,11 @@ from pathlib import Path
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = next(
     candidate
-    for candidate in (SOURCE_ROOT / "run.py", SOURCE_ROOT.parent / "run.py")
+    for candidate in (
+        SOURCE_ROOT / "run.py",
+        SOURCE_ROOT.parent / "run.py",
+        SOURCE_ROOT.parent / "scripts" / "run.py",
+    )
     if candidate.is_file()
 )
 
@@ -205,7 +209,7 @@ def test_application_is_started_without_embedded_site_packages(
     assert env["NEUROMITA_CORE_DIR"] == str(core)
 
 
-def test_launcher_removes_legacy_root_lib_payload_after_core_validation(
+def test_launcher_quarantines_legacy_root_lib_payload_after_core_validation(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -229,6 +233,8 @@ def test_launcher_removes_legacy_root_lib_payload_after_core_validation(
     assert environment.is_dir()
     assert not legacy_package.exists()
     assert not legacy_dist.exists()
+    assert (runtime / ".legacy-runtime" / "old_package").is_dir()
+    assert (runtime / ".legacy-runtime" / "old_package-1.0.dist-info").is_dir()
 
 
 def test_core_health_rejects_ai_runtime_packages(tmp_path, monkeypatch) -> None:
@@ -309,7 +315,7 @@ def test_core_transaction_rejects_ai_runtime_packages(tmp_path, monkeypatch) -> 
     assert any("Lib/environment" in message and "torch" in message for message in logs)
 
 
-def test_core_lock_removes_dead_owner_without_waiting(tmp_path, monkeypatch) -> None:
+def test_core_lock_reuses_persistent_kernel_lock_file(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     bootstrap = tmp_path / ".bootstrap"
     lock_file = bootstrap / "core-install.lock"
@@ -318,13 +324,13 @@ def test_core_lock_removes_dead_owner_without_waiting(tmp_path, monkeypatch) -> 
 
     monkeypatch.setattr(launcher, "BOOTSTRAP_DIR", bootstrap)
     monkeypatch.setattr(launcher, "CORE_LOCK_FILE", lock_file)
-    monkeypatch.setattr(launcher, "_process_is_alive", lambda _pid: False)
-
     with launcher._CoreInstallLock(timeout=1.0, stale_after=10.0):
         assert lock_file.is_file()
         assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
 
-    assert not lock_file.exists()
+    assert lock_file.exists()
+    with launcher._CoreInstallLock(timeout=1.0, stale_after=10.0):
+        assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
 
 
 def test_core_health_rejects_unowned_top_level_payload(tmp_path, monkeypatch) -> None:

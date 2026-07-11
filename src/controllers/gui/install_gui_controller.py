@@ -5,13 +5,15 @@ from typing import Any
 from main_logger import logger
 from core.events import Events, Event
 from core.install_log import classify_install_log
+from core.services import ServiceRegistration, services
 from .base_controller import BaseController
 
 from core.install_types import InstallCallbacks
 from core.task_supervisor import task_supervisor
+from services.contracts import InstallAdmission, InstallQueueService
 
 
-class InstallGuiController(BaseController):
+class InstallGuiController(BaseController, InstallQueueService):
     """Исполняет задачи установки строго по одной за раз (очередь).
 
     Раньше каждая задача стартовала в своём демон-потоке, поэтому два клика
@@ -28,7 +30,13 @@ class InstallGuiController(BaseController):
         self._worker_thread: threading.Thread | None = None
         self._worker_stop_event = threading.Event()
         self._last_enqueue_error = ""
+        self._queue_service_registration: ServiceRegistration | None = None
         super().__init__(main_controller, view)
+        self._queue_service_registration = services().register_owned(
+            InstallQueueService,
+            self,
+            replace=True,
+        )
         _ = self._ensure_worker()
 
     def subscribe_to_events(self):
@@ -65,25 +73,37 @@ class InstallGuiController(BaseController):
             self._last_enqueue_error = ""
             return True
 
-    def _enqueue(self, job: dict[str, Any]) -> bool:
-        """Ставит задачу в очередь. Возвращает False, если такая задача уже
-        выполняется или стоит в очереди (дедуп по task_id)."""
-        if not self._ensure_worker():
-            return False
-
+    def _admit_job(self, job: dict[str, Any]) -> InstallAdmission:
+        """Atomically hand a job to the serialized install queue."""
         task_id = str(job.get("task_id") or "")
+        if not self._ensure_worker():
+            return InstallAdmission(
+                accepted=False,
+                task_id=task_id,
+                error=self._last_enqueue_error or "Install queue is unavailable",
+            )
+
         with self._queue_cond:
             active_ids = {str((self._running or {}).get("task_id") or "")}
             active_ids.update(str(j.get("task_id") or "") for j in self._pending)
             if task_id and task_id in active_ids:
                 self._last_enqueue_error = ""
-                return False
+                return InstallAdmission(
+                    accepted=True,
+                    task_id=task_id,
+                    duplicate=True,
+                )
             job.setdefault("cancel_event", threading.Event())
             self._pending.append(job)
             self._queue_cond.notify()
             self._last_enqueue_error = ""
         self._emit_queue_changed()
-        return True
+        return InstallAdmission(accepted=True, task_id=task_id)
+
+    def _enqueue(self, job: dict[str, Any]) -> bool:
+        """Legacy bool adapter used by older tests/callers."""
+        admission = self._admit_job(job)
+        return bool(admission.accepted and not admission.duplicate)
 
     def _on_cancel_queued(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
@@ -192,6 +212,13 @@ class InstallGuiController(BaseController):
         self._worker_stop_event.set()
         with self._queue_cond:
             self._queue_cond.notify_all()
+        registration = self._queue_service_registration
+        self._queue_service_registration = None
+        if registration is not None:
+            try:
+                registration.close()
+            except Exception:
+                logger.exception("Failed to unregister install queue service")
         try:
             self.event_bus.unsubscribe_owner(self)
         except Exception:
@@ -419,13 +446,21 @@ class InstallGuiController(BaseController):
     # ------------------------------------------------------------------
     # точки входа (постановка в очередь)
     # ------------------------------------------------------------------
-    def _on_run_with_ui(self, event: Event):
-        data = event.data if isinstance(event.data, dict) else {}
-
+    def enqueue(
+        self,
+        payload: dict[str, Any],
+        *,
+        with_ui: bool,
+    ) -> InstallAdmission:
+        data = payload if isinstance(payload, dict) else {}
         runner = data.get("runner")
         if not callable(runner):
-            logger.error("InstallGuiController: missing callable 'runner' in Events.Install.RUN_WITH_UI payload")
-            return
+            task_id = str(data.get("task_id") or "")
+            return InstallAdmission(
+                accepted=False,
+                task_id=task_id,
+                error="Install queue payload has no callable runner",
+            )
 
         kind = data.get("kind") or (data.get("meta") or {}).get("kind") or "install"
         item_id = data.get("item_id") or data.get("engine") or (data.get("meta") or {}).get("item_id") or "task"
@@ -434,24 +469,25 @@ class InstallGuiController(BaseController):
         initial_status = data.get("initial_status") or "Preparing..."
         meta = data.get("meta") or {"kind": kind, "item_id": item_id}
 
-        # Кастомное окно от встроенного установщика (AI Hub). Если его нет —
-        # окно создастся лениво в момент старта задачи (см. _run_job).
         win = None
         cbs = None
-        custom_window = data.get("install_window")
-        custom_callbacks = data.get("install_callbacks")
-        if custom_window is not None:
-            if custom_callbacks is None and hasattr(custom_window, "get_threadsafe_callbacks"):
-                custom_callbacks = custom_window.get_threadsafe_callbacks()
-            normalized_callbacks = self._normalize_callbacks(custom_callbacks)
-            if normalized_callbacks is not None:
-                win = custom_window
-                cbs = normalized_callbacks
-            else:
-                logger.warning(
-                    "InstallGuiController: invalid install_callbacks for custom install window, "
-                    "will create a default window"
-                )
+        if with_ui:
+            # Кастомное окно от встроенного установщика (AI Hub). Если его нет —
+            # окно создастся лениво в момент старта задачи (см. _run_job).
+            custom_window = data.get("install_window")
+            custom_callbacks = data.get("install_callbacks")
+            if custom_window is not None:
+                if custom_callbacks is None and hasattr(custom_window, "get_threadsafe_callbacks"):
+                    custom_callbacks = custom_window.get_threadsafe_callbacks()
+                normalized_callbacks = self._normalize_callbacks(custom_callbacks)
+                if normalized_callbacks is not None:
+                    win = custom_window
+                    cbs = normalized_callbacks
+                else:
+                    logger.warning(
+                        "InstallGuiController: invalid install_callbacks for custom install window, "
+                        "will create a default window"
+                    )
 
         job = {
             "task_id": str(task_id),
@@ -462,72 +498,42 @@ class InstallGuiController(BaseController):
             "timeout_sec": float(data.get("timeout_sec", 3600.0)),
             "win": win,
             "callbacks": cbs,
-            "headless": False,
+            "headless": not with_ui,
         }
-
-        if not self._enqueue(job):
-            if self._last_enqueue_error:
-                logger.error(
-                    f"Install task '{task_id}' was not queued: {self._last_enqueue_error}"
+        admission = self._admit_job(job)
+        if admission.accepted:
+            if admission.duplicate:
+                logger.info(
+                    f"Install task '{task_id}' already queued/running; "
+                    "reusing the active task."
                 )
-                self.event_bus.emit(
-                    Events.Install.TASK_FAILED,
-                    {
-                        "task_id": str(task_id),
-                        "component_id": str(meta.get("component_id") or ""),
-                        "meta": meta,
-                        "error": self._last_enqueue_error,
-                    },
-                )
-                return
-            logger.info(f"Install task '{task_id}' already queued/running; ignoring duplicate.")
-            # Поднять уже существующее окно, если оно есть.
-            if win is not None:
-                try:
-                    win.show()
-                    win.raise_()
-                    win.activateWindow()
-                except Exception:
-                    pass
+                if win is not None:
+                    try:
+                        win.show()
+                        win.raise_()
+                        win.activateWindow()
+                    except Exception:
+                        pass
+            return admission
 
-    def _on_run_headless(self, event: Event):
+        logger.error(
+            f"Install task '{task_id}' was not queued: {admission.error}"
+        )
+        self.event_bus.emit(
+            Events.Install.TASK_FAILED,
+            {
+                "task_id": str(task_id),
+                "component_id": str(meta.get("component_id") or ""),
+                "meta": meta,
+                "error": admission.error,
+            },
+        )
+        return admission
+
+    def _on_run_with_ui(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
+        self.enqueue(data, with_ui=True)
 
-        runner = data.get("runner")
-        if not callable(runner):
-            logger.error("InstallGuiController: missing callable 'runner' in Events.Install.RUN_HEADLESS payload")
-            return
-
-        kind = data.get("kind") or (data.get("meta") or {}).get("kind") or "install"
-        item_id = data.get("item_id") or data.get("engine") or (data.get("meta") or {}).get("item_id") or "task"
-        task_id = data.get("task_id") or f"{kind}:{item_id}"
-        meta = data.get("meta") or {"kind": kind, "item_id": item_id}
-
-        job = {
-            "task_id": str(task_id),
-            "runner": runner,
-            "meta": meta,
-            "title": data.get("title") or f"Installing {item_id}",
-            "initial_status": data.get("initial_status") or "Preparing...",
-            "timeout_sec": float(data.get("timeout_sec", 3600.0)),
-            "win": None,
-            "callbacks": None,
-            "headless": True,
-        }
-
-        if not self._enqueue(job):
-            if self._last_enqueue_error:
-                logger.error(
-                    f"Headless install task '{task_id}' was not queued: {self._last_enqueue_error}"
-                )
-                self.event_bus.emit(
-                    Events.Install.TASK_FAILED,
-                    {
-                        "task_id": str(task_id),
-                        "component_id": str(meta.get("component_id") or ""),
-                        "meta": meta,
-                        "error": self._last_enqueue_error,
-                    },
-                )
-                return
-            logger.info(f"Headless install task '{task_id}' already queued/running; ignoring duplicate.")
+    def _on_run_headless(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        self.enqueue(data, with_ui=False)

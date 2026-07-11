@@ -95,6 +95,41 @@ class InstallableCatalogService(ABC):
     ) -> Dict[str, Any]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class InstallAdmission:
+    """Synchronous result of handing an install operation to its queue."""
+
+    accepted: bool
+    task_id: str
+    duplicate: bool = False
+    error: str = ""
+
+
+class InstallQueueService(ABC):
+    """Owns serialized install execution independently from EventBus delivery."""
+
+    @abstractmethod
+    def enqueue(
+        self,
+        payload: Dict[str, Any],
+        *,
+        with_ui: bool,
+    ) -> InstallAdmission: ...
+
+
+class InstallableOperationsService(ABC):
+    """Typed command boundary for installable component lifecycle operations."""
+
+    @abstractmethod
+    def install(self, payload: Dict[str, Any]) -> InstallAdmission: ...
+
+    @abstractmethod
+    def uninstall(self, payload: Dict[str, Any]) -> InstallAdmission: ...
+
+    @abstractmethod
+    def initialize(self, payload: Dict[str, Any]) -> InstallAdmission: ...
+
+
 class RuntimeFeatureService(ABC):
     """Lifecycle optional-компонентов. Не содержит предметной логики feature."""
 
