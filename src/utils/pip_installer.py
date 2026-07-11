@@ -1166,7 +1166,15 @@ class PipInstaller:
 
     def _ensure_libs_path(self):
         os.makedirs(self.libs_path_abs, exist_ok=True)
-        if self.libs_path_abs not in sys.path:
+        main_core = os.path.abspath(
+            os.environ.get("NEUROMITA_CORE_DIR")
+            or os.environ.get("NEUROMITA_LIB_DIR")
+            or os.path.join("Lib", "core")
+        )
+        if (
+            os.path.normcase(self.libs_path_abs) == os.path.normcase(main_core)
+            and self.libs_path_abs not in sys.path
+        ):
             sys.path.insert(0, self.libs_path_abs)
 
     @staticmethod

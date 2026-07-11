@@ -55,8 +55,9 @@ def _target_paths(ctx: Optional[dict] = None) -> list[str]:
         ctx.get("lib_dir"),
         ctx.get("target_dir"),
         *(ctx.get("python_paths") or []),
-        os.environ.get("NEUROMITA_LIB_DIR"),
     ]
+    if not bool(ctx.get("strict_target", False)):
+        values.append(os.environ.get("NEUROMITA_LIB_DIR"))
     result: list[str] = []
     for value in values:
         path = os.path.abspath(str(value or "").strip()) if value else ""
@@ -205,23 +206,28 @@ def is_pip_spec_satisfied(spec: str, ctx: Optional[dict] = None) -> bool:
     base = _norm_pkg_name(req.name)
     extras_key: Optional[FrozenSet[str]] = frozenset([e.strip().lower() for e in (req.extras or set()) if e.strip()]) or None
 
+    fn = _PIP_CHECKERS.get((base, extras_key))
+    if fn is None:
+        fn = _PIP_CHECKERS.get((base, None))
+
     installed = _get_installed_dist_version(base, ctx)
     if installed:
-        if not req.specifier:
+        if req.specifier:
+            try:
+                if not bool(req.specifier.contains(installed, prereleases=True)):
+                    return False
+            except Exception:
+                return False
+        if fn is None:
             return True
         try:
-            return bool(req.specifier.contains(installed, prereleases=True))
+            return bool(fn(s, ctx))
         except Exception:
             return False
 
     # Some embedded/portable layouts contain importable modules without usable
-    # distribution metadata. Registered module checkers are a fallback for that
-    # case, not a replacement for authoritative *.dist-info metadata. The old
-    # order produced false negatives for distributions whose import package name
-    # differs from the wheel name (for example tts-with-rvc-onnx).
-    fn = _PIP_CHECKERS.get((base, extras_key))
-    if fn is None:
-        fn = _PIP_CHECKERS.get((base, None))
+    # distribution metadata. Registered module checkers also verify that a
+    # matching *.dist-info is not masking a missing or broken import package.
     if fn is not None:
         try:
             return bool(fn(s, ctx))
@@ -341,4 +347,10 @@ register_pip_checker("onnxruntime-directml", module="onnxruntime")
 register_pip_checker("optimum", extras=["onnxruntime"], module="optimum.onnxruntime")
 register_pip_checker("g4f", module="g4f")
 register_pip_checker("tts-with-rvc", module="tts_with_rvc")
-register_pip_checker("tts-with-rvc-onnx", module="tts_with_rvc_onnx")
+register_pip_checker(
+    "tts-with-rvc-onnx",
+    fn=lambda _spec, ctx: _check_any_python_module(
+        ("tts_with_rvc_onnx", "tts_with_rvc"),
+        ctx,
+    ),
+)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import sys
 import traceback
@@ -22,15 +23,21 @@ _DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None) -> None:
-    legacy_lib = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
+    main_core = os.path.abspath(
+        os.environ.get("NEUROMITA_CORE_DIR")
+        or os.environ.get("NEUROMITA_LIB_DIR")
+        or os.path.join("Lib", "core")
+    )
+    runtime_root = os.path.abspath(
+        os.environ.get("NEUROMITA_RUNTIME_ROOT") or os.path.dirname(main_core)
+    )
     explicit_paths = [
         os.path.abspath(str(path))
         for path in (python_paths or ())
         if str(path).strip()
     ]
-    # Managed workers are isolated: overlay + declared core layers only. The
-    # legacy mutable Lib is used exclusively by non-managed workers.
-    ordered = explicit_paths or [os.path.abspath(legacy_lib)]
+    ordered = explicit_paths
+    os.environ["NEUROMITA_AI_WORKER"] = "1"
     if explicit_paths:
         os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = ordered[0]
         os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"] = os.pathsep.join(ordered)
@@ -39,26 +46,33 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
         os.environ.pop("NEUROMITA_RUNTIME_PYTHON_PATHS", None)
 
     excluded = {os.path.normcase(path) for path in ordered}
-    if explicit_paths:
-        excluded.add(os.path.normcase(os.path.abspath(legacy_lib)))
+    runtime_root_normalized = os.path.normcase(runtime_root)
+    runtime_root_prefix = os.path.normcase(runtime_root + os.sep)
+
+    def should_keep(path: str) -> bool:
+        absolute = os.path.abspath(path or "")
+        normalized = os.path.normcase(absolute)
+        if normalized in excluded:
+            return False
+        if normalized == runtime_root_normalized or normalized.startswith(runtime_root_prefix):
+            return False
+        return True
+
     sys.path = [
-        path for path in sys.path
-        if os.path.normcase(os.path.abspath(path or "")) not in excluded
+        path for path in sys.path if should_keep(path)
     ]
     sys.path[:0] = ordered
 
     if os.name == "nt":
-        if explicit_paths:
-            legacy_root = os.path.normcase(os.path.abspath(legacy_lib))
-            inherited_path = []
-            for entry in os.environ.get("PATH", "").split(os.pathsep):
-                normalized_entry = os.path.normcase(os.path.abspath(entry or "."))
-                if normalized_entry == legacy_root or normalized_entry.startswith(
-                    legacy_root + os.sep
-                ):
-                    continue
-                inherited_path.append(entry)
-            os.environ["PATH"] = os.pathsep.join(inherited_path)
+        inherited_path = []
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            normalized_entry = os.path.normcase(os.path.abspath(entry or "."))
+            if normalized_entry == runtime_root_normalized or normalized_entry.startswith(
+                runtime_root_prefix
+            ):
+                continue
+            inherited_path.append(entry)
+        os.environ["PATH"] = os.pathsep.join(inherited_path)
 
         path_entries: list[str] = []
         for root in ordered:
@@ -107,6 +121,22 @@ def _services_for_worker(
     raise RuntimeError(f"Unknown worker_name: {worker_name}")
 
 
+def _probe_runtime_modules(
+    probe_modules: tuple[str, ...] | list[str] | None,
+) -> None:
+    importlib.invalidate_caches()
+    for module_name in tuple(dict.fromkeys(probe_modules or ())):
+        normalized = str(module_name or "").strip()
+        if not normalized:
+            continue
+        try:
+            importlib.import_module(normalized)
+        except Exception as exc:
+            raise RuntimeError(
+                f"AI runtime probe failed while importing '{normalized}': {exc}"
+            ) from exc
+
+
 def run_worker_process(
     worker_name: str,
     cmd_queue,
@@ -114,6 +144,7 @@ def run_worker_process(
     log_queue,
     service_names: tuple[str, ...] | list[str] | None = None,
     python_paths: tuple[str, ...] | list[str] | None = None,
+    probe_modules: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     """
     Универсальный worker-процесс для AI сервисов.
@@ -130,13 +161,7 @@ def run_worker_process(
 
         _ensure_lib_on_path(python_paths)
 
-        try:
-            import importlib
-
-            importlib.invalidate_caches()
-            import onnxruntime  # noqa: F401
-        except Exception:
-            pass
+        _probe_runtime_modules(probe_modules)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -151,6 +176,7 @@ def run_worker_process(
         )
     except Exception:
         _log(log_queue, "error", f"Worker '{worker_name}' crashed:\n{traceback.format_exc()}")
+        raise
 
 
 def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=None, error=None) -> None:
@@ -200,7 +226,7 @@ async def _worker_loop(
     service_names: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     services = {
-        service_name: _load_service(
+        service_name: _LazyService(
             service_name,
             emit_event=lambda ev, data=None, _sn=service_name: _emit_event(res_queue, _sn, ev, data),
         )
@@ -309,7 +335,7 @@ async def _restart_service(services: dict[str, Any], service_name: str, *, res_q
     except Exception as e:
         _log(log_queue, "warning", f"[{service_name}] shutdown before restart failed: {e}")
 
-    new_service = _load_service(
+    new_service = _LazyService(
         service_name,
         emit_event=lambda ev, data=None, _sn=service_name: _emit_event(res_queue, _sn, ev, data),
     )
@@ -343,6 +369,31 @@ async def _maybe_await(x):
     if asyncio.iscoroutine(x):
         return await x
     return x
+
+
+class _LazyService:
+    def __init__(self, service_name: str, emit_event: Callable[[str, Any], None]) -> None:
+        self.service_name = str(service_name)
+        self.emit_event = emit_event
+        self._instance = None
+
+    def _get(self):
+        if self._instance is None:
+            self._instance = _load_service(self.service_name, self.emit_event)
+        return self._instance
+
+    async def handle(self, method: str, payload: dict):
+        return await _maybe_await(self._get().handle(method, payload))
+
+    async def shutdown(self):
+        if self._instance is None:
+            return None
+        instance = self._instance
+        self._instance = None
+        shutdown = getattr(instance, "shutdown", None)
+        if callable(shutdown):
+            return await _maybe_await(shutdown())
+        return None
 
 
 def _load_service(service_name: str, emit_event: Callable[[str, Any], None]):

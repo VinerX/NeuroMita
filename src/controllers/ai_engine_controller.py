@@ -7,7 +7,7 @@ import time
 import uuid
 from queue import Full
 from concurrent.futures import Future
-from typing import Dict, Optional, Sequence
+from typing import Callable, Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
 from services.contracts import AIEngineService
@@ -53,6 +53,8 @@ class _Worker:
         service_names: Sequence[str],
         *,
         python_paths: Sequence[str] = (),
+        probe_modules: Sequence[str] = (),
+        on_crash: Callable[["_Worker", int | None], None] | None = None,
     ):
         self.worker_name = str(worker_name or "").strip().lower()
         self.service_names = tuple(str(s or "").strip().lower() for s in (service_names or ()) if str(s or "").strip())
@@ -62,7 +64,15 @@ class _Worker:
             for path in (python_paths or ())
             if str(path).strip()
         )
+        self.probe_modules = tuple(
+            dict.fromkeys(
+                str(module or "").strip()
+                for module in (probe_modules or ())
+                if str(module or "").strip()
+            )
+        )
         self.ctx = ctx
+        self.on_crash = on_crash
 
         queue_capacity = _env_int("NEUROMITA_AI_COMMAND_QUEUE", 64, minimum=8)
         self.cmd_q = ctx.Queue(maxsize=queue_capacity)
@@ -83,6 +93,7 @@ class _Worker:
         self.res_thread: Optional[threading.Thread] = None
         self.log_thread: Optional[threading.Thread] = None
         self.watch_thread: Optional[threading.Thread] = None
+        self.started_at: float = 0.0
 
     def supports(self, service: str) -> bool:
         return str(service or "").strip().lower() in self.ready_by_service
@@ -105,10 +116,12 @@ class _Worker:
                 self.log_q,
                 self.service_names,
                 self.python_paths,
+                self.probe_modules,
             ),
             daemon=True,
         )
         self.proc.start()
+        self.started_at = time.monotonic()
 
         self.res_thread = threading.Thread(
             target=self._result_loop, name=f"ai-result-{self.worker_name}", daemon=True
@@ -270,6 +283,11 @@ class _Worker:
             )
         except Exception:
             pass
+        if self.on_crash is not None:
+            try:
+                self.on_crash(self, exit_code)
+            except Exception:
+                logger.exception(f"AI worker crash callback failed: {self.worker_name}")
         for queue_obj in (self.res_q, self.log_q):
             try:
                 queue_obj.put(None, timeout=1.0)
@@ -452,6 +470,10 @@ class AIEngineController(AIEngineService):
 
         self._ctx = mp.get_context("spawn")
         self._lock = threading.RLock()
+        self._runtime_switch_lock = threading.RLock()
+        self._recovery_lock = threading.RLock()
+        self._shutting_down = threading.Event()
+        self._restart_attempts: dict[str, int] = {}
         self._environments = runtime_environments()
 
         self.mode = self._resolve_mode()
@@ -473,7 +495,7 @@ class AIEngineController(AIEngineService):
         if raw == "auto":
             gpu_vendor = _detect_gpu_vendor()
             gpu_label = _detect_gpu_label()
-            resolved = "split" if gpu_vendor == "AMD" else "shared"
+            resolved = "shared"
             logger.info(
                 f"AIEngineController auto mode resolved to '{resolved}' "
                 f"(gpu={gpu_label}, gpu_vendor={gpu_vendor})"
@@ -483,13 +505,36 @@ class AIEngineController(AIEngineService):
         return raw
 
     def _init_workers(self) -> None:
+        try:
+            composition = self._environments.runtime_composition()
+            python_paths = composition.paths
+            probe_modules = composition.probe_modules
+        except Exception as exc:
+            logger.error(f"Failed to compose installed AI runtime: {exc}")
+            python_paths = ()
+            probe_modules = ()
+
         if self.mode == "shared":
-            shared = _Worker(self._ctx, _SHARED_WORKER, _DEFAULT_SERVICES)
+            shared = _Worker(
+                self._ctx,
+                _SHARED_WORKER,
+                _DEFAULT_SERVICES,
+                python_paths=python_paths,
+                probe_modules=probe_modules,
+                on_crash=self._on_worker_crash,
+            )
             self._workers = {_SHARED_WORKER: shared}
             self._service_to_worker = {service: _SHARED_WORKER for service in _DEFAULT_SERVICES}
         else:
             self._workers = {
-                service: _Worker(self._ctx, service, (service,))
+                service: _Worker(
+                    self._ctx,
+                    service,
+                    (service,),
+                    python_paths=python_paths,
+                    probe_modules=probe_modules,
+                    on_crash=self._on_worker_crash,
+                )
                 for service in _DEFAULT_SERVICES
             }
             self._service_to_worker = {service: service for service in _DEFAULT_SERVICES}
@@ -503,6 +548,298 @@ class AIEngineController(AIEngineService):
         if not worker_name:
             return None
         return self._workers.get(worker_name)
+
+    @staticmethod
+    def _wait_all_ready(worker: _Worker, timeout: float) -> bool:
+        deadline = time.monotonic() + max(1.0, float(timeout or 0.0))
+        for service_name in worker.service_names:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not worker.wait_ready(service_name, timeout=remaining):
+                return False
+        return True
+
+    def _switch_to_composition(
+        self,
+        composition,
+        *,
+        timeout: float,
+        promote: bool = True,
+    ) -> bool:
+        target_paths = tuple(composition.paths)
+        target_probes = tuple(getattr(composition, "probe_modules", ()) or ())
+        ready_timeout = max(1.0, float(timeout or 0.0))
+
+        def same_contract(worker: _Worker | None) -> bool:
+            return bool(
+                worker is not None
+                and tuple(worker.python_paths) == target_paths
+                and tuple(worker.probe_modules) == target_probes
+                and worker.proc is not None
+                and worker.proc.is_alive()
+            )
+
+        def registry_snapshot():
+            if not promote:
+                return None
+            snapshot = getattr(self._environments, "registry_snapshot", None)
+            return snapshot() if callable(snapshot) else None
+
+        def promote_registry(*, cleanup: bool) -> bool:
+            if not promote:
+                return True
+            try:
+                self._environments.promote_runtime_composition(
+                    composition,
+                    cleanup=cleanup,
+                )
+                return True
+            except Exception as exc:
+                logger.error(f"Failed to promote shared AI runtime contract: {exc}")
+                return False
+
+        def restore_registry(snapshot) -> None:
+            if snapshot is None:
+                return
+            restore = getattr(self._environments, "restore_registry", None)
+            if not callable(restore):
+                return
+            try:
+                restore(snapshot)
+            except Exception as exc:
+                logger.error(f"Failed to restore AI runtime registry: {exc}")
+
+        def cleanup_backend_layers() -> None:
+            if not promote:
+                return
+            cleanup = getattr(
+                self._environments,
+                "cleanup_unreferenced_core_layers",
+                None,
+            )
+            if not callable(cleanup):
+                return
+            try:
+                cleanup()
+            except Exception as exc:
+                logger.warning(f"Failed to clean superseded AI backend layers: {exc}")
+
+        with self._runtime_switch_lock:
+            if self.mode == "shared":
+                with self._lock:
+                    current = self._workers.get(_SHARED_WORKER)
+                if same_contract(current) and self._wait_all_ready(current, ready_timeout):
+                    return promote_registry(cleanup=True)
+
+                candidate = _Worker(
+                    self._ctx,
+                    _SHARED_WORKER,
+                    _DEFAULT_SERVICES,
+                    python_paths=target_paths,
+                    probe_modules=target_probes,
+                )
+                candidate.start()
+                if not self._wait_all_ready(candidate, ready_timeout):
+                    candidate.stop(timeout=1.0)
+                    return False
+
+                snapshot = registry_snapshot()
+                if not promote_registry(cleanup=False):
+                    candidate.stop(timeout=1.0)
+                    return False
+
+                try:
+                    with self._lock:
+                        previous = self._workers.get(_SHARED_WORKER)
+                        candidate.on_crash = self._on_worker_crash
+                        self._workers[_SHARED_WORKER] = candidate
+                        self._service_to_worker = {
+                            service: _SHARED_WORKER for service in _DEFAULT_SERVICES
+                        }
+                except Exception:
+                    restore_registry(snapshot)
+                    candidate.stop(timeout=1.0)
+                    logger.exception("Failed to publish candidate shared AI worker")
+                    return False
+
+                self._restart_attempts.pop(_SHARED_WORKER, None)
+                if previous is not None and previous is not candidate:
+                    try:
+                        previous.stop(timeout=ready_timeout)
+                    except Exception as exc:
+                        logger.warning(f"Failed to stop superseded shared AI worker: {exc}")
+                cleanup_backend_layers()
+                return True
+
+            candidates: dict[str, _Worker] = {}
+            with self._lock:
+                current_workers = dict(self._workers)
+            try:
+                for service_name in _DEFAULT_SERVICES:
+                    current = current_workers.get(service_name)
+                    if (
+                        same_contract(current)
+                        and current.wait_ready(service_name, timeout=ready_timeout)
+                    ):
+                        candidates[service_name] = current
+                        continue
+                    candidate = _Worker(
+                        self._ctx,
+                        service_name,
+                        (service_name,),
+                        python_paths=target_paths,
+                        probe_modules=target_probes,
+                    )
+                    candidate.start()
+                    if not candidate.wait_ready(service_name, timeout=ready_timeout):
+                        candidate.stop(timeout=1.0)
+                        return False
+                    candidates[service_name] = candidate
+
+                snapshot = registry_snapshot()
+                if not promote_registry(cleanup=False):
+                    return False
+
+                try:
+                    with self._lock:
+                        previous_workers = dict(self._workers)
+                        for service_name, candidate in candidates.items():
+                            candidate.on_crash = self._on_worker_crash
+                            self._workers[service_name] = candidate
+                            self._service_to_worker[service_name] = service_name
+                except Exception:
+                    restore_registry(snapshot)
+                    logger.exception("Failed to publish candidate split AI workers")
+                    return False
+
+                for service_name, previous in previous_workers.items():
+                    replacement = candidates.get(service_name)
+                    if previous is not replacement:
+                        try:
+                            previous.stop(timeout=ready_timeout)
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to stop superseded AI worker '{service_name}': {exc}"
+                            )
+                self._restart_attempts.clear()
+                cleanup_backend_layers()
+                return True
+            finally:
+                for service_name, candidate in candidates.items():
+                    if (
+                        candidate is not current_workers.get(service_name)
+                        and self._workers.get(service_name) is not candidate
+                    ):
+                        candidate.stop(timeout=1.0)
+
+    def refresh_runtime(
+        self,
+        timeout: float = 20.0,
+        preferred_core_layer_ids: Sequence[str] = (),
+    ) -> bool:
+        try:
+            composition = self._environments.runtime_composition(
+                preferred_core_layer_ids=preferred_core_layer_ids,
+            )
+        except Exception as exc:
+            logger.error(f"AI runtime composition rejected: {exc}")
+            return False
+        return self._switch_to_composition(composition, timeout=timeout)
+
+    def _on_worker_crash(self, worker: _Worker, exit_code: int | None) -> None:
+        if self._shutting_down.is_set():
+            return
+        threading.Thread(
+            target=self._recover_worker,
+            args=(worker, exit_code),
+            name=f"ai-recover-{worker.worker_name}",
+            daemon=True,
+        ).start()
+
+    def _recover_worker(self, crashed: _Worker, exit_code: int | None) -> None:
+        max_attempts = _env_int("NEUROMITA_AI_RESTART_LIMIT", 3, minimum=1)
+        base_delay = max(
+            0.1,
+            float(os.environ.get("NEUROMITA_AI_RESTART_BACKOFF", "0.5") or 0.5),
+        )
+        reset_after = max(
+            1.0,
+            float(
+                os.environ.get("NEUROMITA_AI_RESTART_RESET_AFTER", "60")
+                or 60.0
+            ),
+        )
+
+        with self._recovery_lock:
+            with self._lock:
+                worker_key = next(
+                    (key for key, value in self._workers.items() if value is crashed),
+                    None,
+                )
+            if worker_key is None or self._shutting_down.is_set():
+                return
+
+            lifetime = max(0.0, time.monotonic() - float(crashed.started_at or 0.0))
+            previous_attempts = (
+                0
+                if lifetime >= reset_after
+                else int(self._restart_attempts.get(worker_key, 0) or 0)
+            )
+            remaining_attempts = max(0, max_attempts - previous_attempts)
+
+            for local_attempt in range(1, remaining_attempts + 1):
+                attempt = previous_attempts + local_attempt
+                if self._shutting_down.wait(base_delay * (2 ** (local_attempt - 1))):
+                    return
+                with self._lock:
+                    if self._workers.get(worker_key) is not crashed:
+                        return
+
+                candidate = _Worker(
+                    self._ctx,
+                    worker_key,
+                    crashed.service_names,
+                    python_paths=crashed.python_paths,
+                    probe_modules=crashed.probe_modules,
+                )
+                candidate.start()
+                if self._wait_all_ready(candidate, timeout=20.0):
+                    with self._lock:
+                        if self._workers.get(worker_key) is not crashed:
+                            candidate.stop(timeout=1.0)
+                            return
+                        candidate.on_crash = self._on_worker_crash
+                        self._workers[worker_key] = candidate
+                        for service_name in candidate.service_names:
+                            self._service_to_worker[service_name] = worker_key
+                    self._restart_attempts[worker_key] = attempt
+                    logger.info(
+                        f"AI worker '{worker_key}' recovered after crash "
+                        f"(exitcode={exit_code}, attempt={attempt})"
+                    )
+                    return
+                candidate.stop(timeout=1.0)
+                self._restart_attempts[worker_key] = attempt
+
+            attempts = int(self._restart_attempts.get(worker_key, previous_attempts) or 0)
+            logger.error(
+                f"AI worker '{worker_key}' restart circuit opened after "
+                f"{attempts} attempts"
+            )
+            try:
+                self.event_bus.emit(
+                    Events.AI.ENGINE_EVENT,
+                    {
+                        "service": crashed.primary_service,
+                        "event": "worker_restart_exhausted",
+                        "data": {
+                            "worker": worker_key,
+                            "exitcode": exit_code,
+                            "attempts": attempts,
+                        },
+                    },
+                )
+            except Exception:
+                pass
 
     def _on_get_engine(self, _event: Event):
         return self
@@ -572,16 +909,22 @@ class AIEngineController(AIEngineService):
             if self.mode == "shared":
                 return bool(w.restart_service(s, timeout=timeout))
 
-            try:
-                w.stop(timeout=timeout)
-            except Exception:
-                pass
-
-            nw = _Worker(self._ctx, s, (s,), python_paths=w.python_paths)
+            nw = _Worker(
+                self._ctx,
+                s,
+                (s,),
+                python_paths=w.python_paths,
+                probe_modules=w.probe_modules,
+            )
+            nw.start()
+            if not nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0))):
+                nw.stop(timeout=1.0)
+                return False
+            nw.on_crash = self._on_worker_crash
             self._workers[s] = nw
             self._service_to_worker[s] = s
-            nw.start()
-            return nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0)))
+            w.stop(timeout=timeout)
+            return True
 
     def restart_worker_for_service(self, service: str, timeout: float = 8.0) -> bool:
         s = str(service or "").strip().lower()
@@ -595,24 +938,25 @@ class AIEngineController(AIEngineService):
             if not service_names:
                 service_names = (s,)
 
-            try:
-                w.stop(timeout=timeout)
-            except Exception:
-                pass
-
             nw = _Worker(
                 self._ctx,
                 worker_name,
                 service_names,
                 python_paths=w.python_paths,
+                probe_modules=w.probe_modules,
             )
-            self._workers[worker_name] = nw
-            for service_name in service_names:
-                self._service_to_worker[service_name] = worker_name
             nw.start()
 
             ready_timeout = max(1.0, float(timeout or 0.0))
-            return all(nw.wait_ready(service_name, timeout=ready_timeout) for service_name in service_names)
+            if not self._wait_all_ready(nw, ready_timeout):
+                nw.stop(timeout=1.0)
+                return False
+            nw.on_crash = self._on_worker_crash
+            self._workers[worker_name] = nw
+            for service_name in service_names:
+                self._service_to_worker[service_name] = worker_name
+            w.stop(timeout=timeout)
+            return True
 
     @staticmethod
     def _environment_category_for_service(service: str) -> str:
@@ -646,69 +990,17 @@ class AIEngineController(AIEngineService):
                 f"Managed environment is not installed for service={service_name} item={model_id}"
             )
             return False
-        python_paths = self._environments.runtime_paths(record)
 
-        with self._lock:
-            current = self._worker_for_service(service_name)
-            if current is None:
-                return False
-            if tuple(current.python_paths) == tuple(python_paths) and current.proc is not None and current.proc.is_alive():
-                return current.wait_ready(service_name, timeout=max(1.0, float(timeout)))
-
-            worker_name = self._service_to_worker.get(service_name) or service_name
-            services = tuple(current.service_names)
-
-            if len(services) > 1:
-                remaining = tuple(name for name in services if name != service_name)
-                try:
-                    current.stop(timeout=timeout)
-                except Exception:
-                    pass
-                self._workers.pop(worker_name, None)
-
-                if remaining:
-                    shared_replacement = _Worker(
-                        self._ctx,
-                        worker_name,
-                        remaining,
-                        python_paths=(),
-                    )
-                    self._workers[worker_name] = shared_replacement
-                    for name in remaining:
-                        self._service_to_worker[name] = worker_name
-                    shared_replacement.start()
-
-                dedicated_name = f"{service_name}-environment"
-                dedicated = _Worker(
-                    self._ctx,
-                    dedicated_name,
-                    (service_name,),
-                    python_paths=python_paths,
-                )
-                self._workers[dedicated_name] = dedicated
-                self._service_to_worker[service_name] = dedicated_name
-                dedicated.start()
-                target = dedicated
-            else:
-                try:
-                    current.stop(timeout=timeout)
-                except Exception:
-                    pass
-                replacement = _Worker(
-                    self._ctx,
-                    worker_name,
-                    (service_name,),
-                    python_paths=python_paths,
-                )
-                self._workers[worker_name] = replacement
-                self._service_to_worker[service_name] = worker_name
-                replacement.start()
-                target = replacement
-
-        ready = target.wait_ready(service_name, timeout=max(1.0, float(timeout)))
+        if not self.refresh_runtime(timeout=timeout):
+            return False
+        worker = self._worker_for_service(service_name)
+        ready = bool(
+            worker is not None
+            and worker.wait_ready(service_name, timeout=max(1.0, float(timeout or 0.0)))
+        )
         if ready:
             logger.info(
-                f"Activated managed environment for service={service_name} item={model_id}: "
+                f"Activated shared runtime for service={service_name} item={model_id}: "
                 f"{record.logical_id}@{record.revision_id}"
             )
         return ready
@@ -732,45 +1024,35 @@ class AIEngineController(AIEngineService):
         )
         if record is None:
             return True
-        environment_paths = tuple(self._environments.runtime_paths(record))
 
-        with self._lock:
-            current = self._worker_for_service(service_name)
-            if current is None or tuple(current.python_paths) != environment_paths:
-                return True
-
-            worker_name = self._service_to_worker.get(service_name) or service_name
-            if len(current.service_names) != 1:
-                raise RuntimeError(
-                    f"Managed environment worker for '{service_name}' unexpectedly owns "
-                    f"multiple services: {current.service_names}"
-                )
-
-            current.stop(timeout=timeout)
-            replacement = _Worker(
-                self._ctx,
-                worker_name,
-                (service_name,),
-                python_paths=(),
+        try:
+            composition = self._environments.runtime_composition(
+                exclude_logical_ids=(record.logical_id,)
             )
-            self._workers[worker_name] = replacement
-            self._service_to_worker[service_name] = worker_name
-            replacement.start()
+        except Exception as exc:
+            logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {exc}")
+            return False
 
-        ready = replacement.wait_ready(service_name, timeout=max(1.0, float(timeout)))
+        ready = self._switch_to_composition(
+            composition,
+            timeout=timeout,
+            promote=False,
+        )
         if ready:
             logger.info(
-                f"Deactivated managed environment for service={service_name} item={model_id}"
+                f"Detached environment from shared runtime: service={service_name} item={model_id}"
             )
         return ready
 
     def prepare_shutdown(self) -> None:
+        self._shutting_down.set()
         with self._lock:
             workers = list(self._workers.values())
         for worker in workers:
             worker.expected_exit.set()
 
     def shutdown(self, timeout: float = 5.0) -> None:
+        self._shutting_down.set()
         with self._lock:
             ws = list(self._workers.values())
         for w in ws:

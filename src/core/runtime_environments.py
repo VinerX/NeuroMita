@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 from core.backends import (
     BackendKind,
@@ -28,7 +29,7 @@ from core.backends import (
 from core.install_requirements import is_pip_spec_satisfied
 
 
-_LAYOUT_VERSION = 1
+_LAYOUT_VERSION = 2
 _CORE_DISTRIBUTIONS = frozenset(
     canonicalize_name(name)
     for name in (
@@ -38,6 +39,27 @@ _CORE_DISTRIBUTIONS = frozenset(
         "onnxruntime",
         "onnxruntime-directml",
     )
+)
+
+_CORE_IMPORT_MODULES = {
+    "torch": "torch",
+    "torchaudio": "torchaudio",
+    "numpy": "numpy",
+    "onnxruntime": "onnxruntime",
+    "onnxruntime-directml": "onnxruntime",
+}
+
+_IGNORED_PROBE_MODULES = frozenset(
+    {
+        "bin",
+        "docs",
+        "doc",
+        "examples",
+        "example",
+        "scripts",
+        "tests",
+        "test",
+    }
 )
 
 
@@ -159,6 +181,97 @@ def _scan_distributions(site_packages: Path) -> dict[str, str]:
     return result
 
 
+def _is_probe_module(value: str) -> bool:
+    parts = tuple(part for part in str(value or "").strip().split(".") if part)
+    return bool(
+        parts
+        and parts[0].lower() not in _IGNORED_PROBE_MODULES
+        and all(part.isidentifier() for part in parts)
+    )
+
+
+def _distribution_name(dist_info: Path) -> str:
+    metadata = dist_info / "METADATA"
+    try:
+        for line in metadata.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.lower().startswith("name:"):
+                return canonicalize_name(line.split(":", 1)[1].strip())
+    except Exception:
+        pass
+    stem = dist_info.name.rsplit(".dist-info", 1)[0]
+    return canonicalize_name(stem.rsplit("-", 1)[0])
+
+
+def _distribution_probe_modules(
+    site_packages: Path,
+    requested_specs: Iterable[str],
+) -> tuple[str, ...]:
+    wanted = {
+        _requirement_name(spec)
+        for spec in requested_specs
+        if str(spec or "").strip()
+    }
+    wanted.difference_update(_CORE_DISTRIBUTIONS)
+    if not wanted or not site_packages.is_dir():
+        return ()
+
+    modules: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> bool:
+        normalized = str(candidate or "").strip()
+        if not _is_probe_module(normalized) or normalized in seen:
+            return False
+        top_level = normalized.split(".", 1)[0]
+        if not (
+            (site_packages / top_level).exists()
+            or (site_packages / f"{top_level}.py").is_file()
+        ):
+            return False
+        seen.add(normalized)
+        modules.append(normalized)
+        return True
+
+    for dist_info in sorted(site_packages.glob("*.dist-info")):
+        if _distribution_name(dist_info) not in wanted:
+            continue
+
+        found = False
+        top_level = dist_info / "top_level.txt"
+        if top_level.is_file():
+            try:
+                for line in top_level.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).splitlines():
+                    found = add(line) or found
+            except OSError:
+                pass
+        if found:
+            continue
+
+        record = dist_info / "RECORD"
+        if not record.is_file():
+            continue
+        try:
+            with record.open(
+                "r", encoding="utf-8", errors="ignore", newline=""
+            ) as source:
+                for row in csv.reader(source):
+                    if not row or not row[0]:
+                        continue
+                    first = Path(row[0]).parts[0]
+                    lowered = first.lower()
+                    if lowered.endswith((".dist-info", ".data")):
+                        continue
+                    if "." in first and not lowered.endswith(".py"):
+                        continue
+                    add(Path(first).stem if lowered.endswith(".py") else first)
+        except OSError:
+            continue
+
+    return tuple(modules)
+
+
 @dataclass(frozen=True, slots=True)
 class CoreLayerSpec:
     group: str
@@ -176,6 +289,7 @@ class CoreLayerSpec:
             "group": self.group,
             "packages": list(self.packages),
             "capabilities": list(self.capabilities),
+            "extra_args": list(self.extra_args),
             "python": _python_tag(),
             "platform": _platform_tag(),
         }
@@ -189,11 +303,13 @@ class CoreLayerSpec:
 @dataclass(frozen=True, slots=True)
 class CoreLayer:
     layer_id: str
+    group: str
     root: Path
     site_packages: Path
     packages: dict[str, str]
     owned_packages: dict[str, str]
     capabilities: tuple[str, ...]
+    extra_args: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +322,15 @@ class EnvironmentRecord:
     category: str
     item_id: str
     packages: dict[str, str]
+    probe_modules: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeComposition:
+    paths: tuple[str, ...]
+    records: tuple[EnvironmentRecord, ...]
+    core_layer_ids: tuple[str, ...]
+    probe_modules: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -223,6 +348,9 @@ class EnvironmentTransaction:
     core_layers: list[CoreLayer] = field(default_factory=list)
     committed: bool = False
     aborted: bool = False
+    finalized: bool = False
+    _registry_snapshot: dict[str, Any] | None = None
+    _committed_record: EnvironmentRecord | None = None
 
     def __post_init__(self) -> None:
         self.staging_root = self.manager.staging_root / f"env-{_safe_id(self.logical_id)}-{self.transaction_id}"
@@ -239,7 +367,7 @@ class EnvironmentTransaction:
         names: list[str] = []
         seen: set[str] = set()
         for layer in self.core_layers:
-            provided_names = set(layer.owned_packages)
+            provided_names = set(layer.packages)
             if "onnx.dml" in layer.capabilities:
                 # DirectML ships the same import runtime as the CPU wheel. A
                 # dependent package may declare both names, but the overlay
@@ -258,7 +386,7 @@ class EnvironmentTransaction:
         specs: list[str] = []
         seen: set[str] = set()
         for layer in self.core_layers:
-            owned = dict(layer.owned_packages)
+            owned = dict(layer.packages)
             if "onnx.dml" in layer.capabilities:
                 directml_version = owned.get("onnxruntime-directml")
                 if directml_version:
@@ -270,6 +398,15 @@ class EnvironmentTransaction:
                 seen.add(normalized)
                 specs.append(f"{normalized}=={version}")
         return tuple(specs)
+
+    @property
+    def core_resolver_args(self) -> tuple[str, ...]:
+        return tuple(
+            normalized
+            for layer in self.core_layers
+            for value in layer.extra_args
+            if (normalized := str(value).strip())
+        )
 
     def ensure_core_layers(
         self,
@@ -291,7 +428,7 @@ class EnvironmentTransaction:
         assert self.site_packages is not None
         provided = set()
         for layer in self.core_layers:
-            provided.update(layer.owned_packages.keys())
+            provided.update(layer.packages.keys())
         self.manager.remove_distributions(self.site_packages, provided)
 
     def commit(self, meta: dict[str, Any] | None = None) -> EnvironmentRecord:
@@ -306,16 +443,21 @@ class EnvironmentTransaction:
         assert self.site_packages is not None
 
         packages = _scan_distributions(self.site_packages)
+        probe_modules = _distribution_probe_modules(
+            self.site_packages,
+            self.requested_specs,
+        )
         revision_payload = {
             "logical_id": self.logical_id,
             "requested_specs": list(self.requested_specs),
             "core_layers": [layer.layer_id for layer in self.core_layers],
             "packages": packages,
+            "probe_modules": list(probe_modules),
             "python": _python_tag(),
             "platform": _platform_tag(),
         }
         revision_id = _hash_payload(revision_payload, length=20)
-        final_root = self.manager.environment_root / _safe_id(self.logical_id) / revision_id
+        final_root = self.manager.overlay_root / _safe_id(self.logical_id) / revision_id
         final_site = final_root / "site-packages"
 
         manifest = {
@@ -330,6 +472,7 @@ class EnvironmentTransaction:
             "requested_specs": list(self.requested_specs),
             "core_layer_ids": [layer.layer_id for layer in self.core_layers],
             "packages": packages,
+            "probe_modules": list(probe_modules),
             "meta": dict(meta or {}),
         }
         _atomic_json(self.staging_root / "manifest.json", manifest)
@@ -349,10 +492,44 @@ class EnvironmentTransaction:
             category=self.category,
             item_id=self.item_id,
             packages=packages,
+            probe_modules=probe_modules,
         )
+        self._registry_snapshot = self.manager.registry_snapshot()
         self.manager.activate(record)
         self.committed = True
+        self._committed_record = record
         return record
+
+    def rollback_commit(self) -> None:
+        if not self.committed or self.finalized:
+            return
+        if self._registry_snapshot is not None:
+            self.manager.restore_registry(self._registry_snapshot)
+        if self._committed_record is not None:
+            previous_entry = ((self._registry_snapshot or {}).get("environments") or {}).get(
+                self._committed_record.logical_id
+            )
+            previous_revision = (
+                str(previous_entry.get("revision_id") or "")
+                if isinstance(previous_entry, dict)
+                else ""
+            )
+            if previous_revision != self._committed_record.revision_id:
+                shutil.rmtree(self._committed_record.root, ignore_errors=True)
+                try:
+                    self._committed_record.root.parent.rmdir()
+                except OSError:
+                    pass
+        self.manager.cleanup_unreferenced_core_layers()
+        self.committed = False
+        self.aborted = True
+
+    def finalize(self) -> None:
+        if not self.committed or self.finalized:
+            return
+        self.finalized = True
+        self.manager.cleanup_superseded_revisions(self.logical_id)
+        self.manager.cleanup_unreferenced_core_layers()
 
     def abort(self) -> None:
         if self.committed or self.aborted:
@@ -363,26 +540,46 @@ class EnvironmentTransaction:
 
 
 class RuntimeEnvironmentManager:
-    """Transactional owner of shared core layers and feature environments.
+    """Transactional owner of AI backend layers and feature environments.
 
-    Core layers are immutable and version-addressed. A CUDA torch layer also
+    Backend layers are immutable and version-addressed. A CUDA torch layer also
     advertises the CPU capability, so a machine never needs a second CPU torch
     copy merely for CPU-only operations. Feature packages live in immutable
-    overlays under ``Lib/environment`` and refer to one or more core layers.
+    overlays under ``Lib/environment/overlays``. ``Lib/core`` belongs to the
+    main process and is never an AI backend storage location.
     """
 
     def __init__(self, lib_root: str | os.PathLike[str] | None = None) -> None:
-        root = Path(lib_root or os.environ.get("NEUROMITA_LIB_DIR") or "Lib").resolve()
+        configured_root = os.environ.get("NEUROMITA_RUNTIME_ROOT")
+        raw_root = Path(lib_root or configured_root or os.environ.get("NEUROMITA_LIB_DIR") or "Lib").resolve()
+        if raw_root.name.lower() == "core":
+            raw_root = raw_root.parent
+        root = raw_root
         self.lib_root = root
-        self.core_root = Path(os.environ.get("NEUROMITA_CORE_DIR") or (root / "core")).resolve()
-        self.environment_root = Path(
-            os.environ.get("NEUROMITA_ENVIRONMENT_DIR") or (root / "environment")
-        ).resolve()
-        self.staging_root = root / ".staging"
-        self.lock_root = root / ".locks"
+        if lib_root is not None:
+            self.main_core_root = (root / "core").resolve()
+            self.environment_root = (root / "environment").resolve()
+        else:
+            self.main_core_root = Path(
+                os.environ.get("NEUROMITA_CORE_DIR") or (root / "core")
+            ).resolve()
+            self.environment_root = Path(
+                os.environ.get("NEUROMITA_ENVIRONMENT_DIR") or (root / "environment")
+            ).resolve()
+        self.core_root = self.environment_root / "bases"
+        self.overlay_root = self.environment_root / "overlays"
+        self.staging_root = self.environment_root / ".staging"
+        self.lock_root = self.environment_root / ".locks"
         self.registry_path = self.environment_root / "registry.json"
         self._lock = threading.RLock()
-        for path in (self.core_root, self.environment_root, self.staging_root, self.lock_root):
+        for path in (
+            self.main_core_root,
+            self.environment_root,
+            self.core_root,
+            self.overlay_root,
+            self.staging_root,
+            self.lock_root,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def file_lock(self, name: str, *, timeout: float = 120.0) -> _FileLock:
@@ -505,6 +702,7 @@ class RuntimeEnvironmentManager:
                 candidates.append(
                     CoreLayer(
                         layer_id=str(data["layer_id"]),
+                        group=str(data.get("group") or ""),
                         root=root,
                         site_packages=root / "site-packages",
                         packages={str(k): str(v) for k, v in (data.get("packages") or {}).items()},
@@ -513,6 +711,7 @@ class RuntimeEnvironmentManager:
                             for k, v in (data.get("owned_packages") or {}).items()
                         },
                         capabilities=capabilities,
+                        extra_args=tuple(str(item) for item in data.get("extra_args") or ()),
                     )
                 )
             except Exception:
@@ -531,6 +730,7 @@ class RuntimeEnvironmentManager:
                 return None
             return CoreLayer(
                 layer_id=str(data["layer_id"]),
+                group=str(data.get("group") or ""),
                 root=root,
                 site_packages=root / "site-packages",
                 packages={str(k): str(v) for k, v in (data.get("packages") or {}).items()},
@@ -539,6 +739,7 @@ class RuntimeEnvironmentManager:
                     for k, v in (data.get("owned_packages") or {}).items()
                 },
                 capabilities=tuple(str(item) for item in data.get("capabilities") or ()),
+                extra_args=tuple(str(item) for item in data.get("extra_args") or ()),
             )
         except Exception:
             return None
@@ -567,10 +768,10 @@ class RuntimeEnvironmentManager:
             site_packages = staging_root / "site-packages"
             site_packages.mkdir(parents=True, exist_ok=False)
             installer = installer_factory(str(site_packages))
-            log(f"Preparing shared core layer: {spec.layer_id}")
+            log(f"Preparing shared AI backend layer: {spec.layer_id}")
             ok = installer.install_package_with_overrides(
                 list(spec.packages),
-                description=f"Installing shared core layer {spec.group}...",
+                description=f"Installing shared AI backend layer {spec.group}...",
                 extra_args=list(spec.extra_args) or None,
                 uv_overrides=list(spec.packages),
             )
@@ -603,6 +804,7 @@ class RuntimeEnvironmentManager:
                 "platform": _platform_tag(),
                 "requested_specs": list(spec.packages),
                 "capabilities": list(spec.capabilities),
+                "extra_args": list(spec.extra_args),
                 "packages": packages,
                 "owned_packages": owned_packages,
             }
@@ -621,7 +823,18 @@ class RuntimeEnvironmentManager:
                 return data
         except Exception:
             pass
-        return {"layout_version": _LAYOUT_VERSION, "environments": {}}
+        return {
+            "layout_version": _LAYOUT_VERSION,
+            "backend_profile": {"core_layer_ids": []},
+            "environments": {},
+        }
+
+    def registry_snapshot(self) -> dict[str, Any]:
+        return json.loads(json.dumps(self._load_registry()))
+
+    def restore_registry(self, snapshot: dict[str, Any]) -> None:
+        with self._lock, self.file_lock("environment-registry"):
+            _atomic_json(self.registry_path, dict(snapshot or {}))
 
     def activate(self, record: EnvironmentRecord) -> None:
         with self._lock, self.file_lock("environment-registry"):
@@ -644,7 +857,7 @@ class RuntimeEnvironmentManager:
                 return False
             _atomic_json(self.registry_path, data)
         if delete:
-            root = self.environment_root / normalized / str(entry.get("revision_id") or "")
+            root = self.overlay_root / normalized / str(entry.get("revision_id") or "")
             shutil.rmtree(root, ignore_errors=True)
             parent = root.parent
             try:
@@ -660,21 +873,40 @@ class RuntimeEnvironmentManager:
         if not isinstance(entry, dict):
             return None
         revision_id = str(entry.get("revision_id") or "")
-        root = self.environment_root / normalized / revision_id
+        root = self.overlay_root / normalized / revision_id
         manifest_path = root / "manifest.json"
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if manifest.get("state") != "ready":
                 return None
+            registered_layers = entry.get("core_layer_ids")
+            layer_ids = (
+                tuple(str(item) for item in registered_layers)
+                if isinstance(registered_layers, list)
+                else tuple(str(item) for item in manifest.get("core_layer_ids") or ())
+            )
+            stored_probe_modules = manifest.get("probe_modules")
+            if isinstance(stored_probe_modules, list):
+                probe_modules = tuple(
+                    str(module)
+                    for module in stored_probe_modules
+                    if _is_probe_module(str(module))
+                )
+            else:
+                probe_modules = _distribution_probe_modules(
+                    root / "site-packages",
+                    manifest.get("requested_specs") or (),
+                )
             return EnvironmentRecord(
                 logical_id=normalized,
                 revision_id=revision_id,
                 root=root,
                 site_packages=root / "site-packages",
-                core_layer_ids=tuple(str(item) for item in manifest.get("core_layer_ids") or ()),
+                core_layer_ids=layer_ids,
                 category=str(manifest.get("category") or entry.get("category") or ""),
                 item_id=str(manifest.get("item_id") or entry.get("item_id") or ""),
                 packages={str(k): str(v) for k, v in (manifest.get("packages") or {}).items()},
+                probe_modules=probe_modules,
             )
         except Exception:
             return None
@@ -690,6 +922,249 @@ class RuntimeEnvironmentManager:
                 continue
             return self.active(logical_id)
         return None
+
+    def active_records(
+        self,
+        *,
+        exclude_logical_ids: Iterable[str] = (),
+    ) -> tuple[EnvironmentRecord, ...]:
+        excluded = {_safe_id(item) for item in exclude_logical_ids}
+        data = self._load_registry()
+        records: list[EnvironmentRecord] = []
+        for logical_id in (data.get("environments") or {}):
+            normalized = _safe_id(logical_id)
+            if normalized in excluded:
+                continue
+            record = self.active(normalized)
+            if record is not None:
+                records.append(record)
+        records.sort(key=lambda item: (item.category, item.item_id, item.logical_id))
+        return tuple(records)
+
+    @staticmethod
+    def _layer_family(layer: CoreLayer) -> str:
+        group = str(layer.group or "").lower()
+        if group.startswith("torch"):
+            return "torch"
+        if group.startswith("onnx"):
+            return "onnx"
+        return group or layer.layer_id
+
+    @staticmethod
+    def _select_family_layer(family: str, layers: Sequence[CoreLayer]) -> CoreLayer:
+        if not layers:
+            raise RuntimeError(f"No layers supplied for backend family '{family}'")
+
+        package_versions: dict[str, set[str]] = {}
+        for layer in layers:
+            for name, version in layer.packages.items():
+                normalized = canonicalize_name(name)
+                if family == "torch" and normalized not in {"torch", "torchaudio", "numpy"}:
+                    continue
+                if family == "onnx" and normalized not in {
+                    "onnxruntime",
+                    "onnxruntime-directml",
+                }:
+                    continue
+                normalized_version = str(version)
+                if family == "torch" and normalized in {"torch", "torchaudio"}:
+                    try:
+                        normalized_version = Version(normalized_version).base_version
+                    except InvalidVersion:
+                        pass
+                package_versions.setdefault(normalized, set()).add(normalized_version)
+
+        conflicts = {
+            name: versions
+            for name, versions in package_versions.items()
+            if len(versions) > 1 and name != "onnxruntime"
+        }
+        if conflicts:
+            detail = ", ".join(
+                f"{name}={sorted(versions)}" for name, versions in sorted(conflicts.items())
+            )
+            raise RuntimeError(
+                f"Incompatible installed AI backend layers for family '{family}': {detail}"
+            )
+
+        def rank(layer: CoreLayer) -> tuple[int, float]:
+            capabilities = set(layer.capabilities)
+            if family == "torch":
+                preferred = 2 if any(item.startswith("torch.cuda") for item in capabilities) else 1
+            elif family == "onnx":
+                preferred = 2 if "onnx.dml" in capabilities else 1
+            else:
+                preferred = 1
+            try:
+                modified = layer.root.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            return preferred, modified
+
+        return max(layers, key=rank)
+
+    @staticmethod
+    def _validate_overlay_compatibility(records: Sequence[EnvironmentRecord]) -> None:
+        versions: dict[str, dict[str, list[str]]] = {}
+        for record in records:
+            for name, version in record.packages.items():
+                normalized = canonicalize_name(name)
+                versions.setdefault(normalized, {}).setdefault(str(version), []).append(
+                    record.logical_id
+                )
+
+        conflicts = {
+            name: value
+            for name, value in versions.items()
+            if len(value) > 1
+        }
+        if not conflicts:
+            return
+
+        details: list[str] = []
+        for name, by_version in sorted(conflicts.items()):
+            variants = "; ".join(
+                f"{version} ({', '.join(sorted(owners))})"
+                for version, owners in sorted(by_version.items())
+            )
+            details.append(f"{name}: {variants}")
+        raise RuntimeError(
+            "Installed AI environments are incompatible with the shared worker: "
+            + " | ".join(details)
+        )
+
+    def runtime_composition(
+        self,
+        *,
+        records: Sequence[EnvironmentRecord] | None = None,
+        exclude_logical_ids: Iterable[str] = (),
+        preferred_core_layer_ids: Iterable[str] = (),
+    ) -> RuntimeComposition:
+        selected_records = tuple(
+            records
+            if records is not None
+            else self.active_records(exclude_logical_ids=exclude_logical_ids)
+        )
+        self._validate_overlay_compatibility(selected_records)
+
+        layers_by_family: dict[str, list[CoreLayer]] = {}
+        for record in selected_records:
+            for layer_id in record.core_layer_ids:
+                layer = self.get_core_layer(layer_id)
+                if layer is None:
+                    raise RuntimeError(
+                        f"AI environment '{record.logical_id}' references missing backend layer "
+                        f"'{layer_id}'"
+                    )
+                layers_by_family.setdefault(self._layer_family(layer), []).append(layer)
+
+        explicit_preferred = tuple(
+            dict.fromkeys(
+                str(layer_id)
+                for layer_id in preferred_core_layer_ids
+                if str(layer_id)
+            )
+        )
+        if explicit_preferred:
+            preferred_ids = explicit_preferred
+        else:
+            profile = self._load_registry().get("backend_profile") or {}
+            preferred_ids = tuple(
+                str(item) for item in profile.get("core_layer_ids") or ()
+            )
+
+        preferred_by_family: dict[str, CoreLayer] = {}
+        for layer_id in preferred_ids:
+            layer = self.get_core_layer(layer_id)
+            if layer is None:
+                continue
+            family = self._layer_family(layer)
+            existing = preferred_by_family.get(family)
+            if existing is not None and existing.layer_id != layer.layer_id:
+                raise RuntimeError(
+                    f"Backend profile contains multiple authoritative layers for family '{family}'"
+                )
+            preferred_by_family[family] = layer
+            layers_by_family.setdefault(family, []).append(layer)
+
+        selected_layers: list[CoreLayer] = []
+        for family, layers in sorted(layers_by_family.items()):
+            selected_layers.append(
+                preferred_by_family.get(family)
+                or self._select_family_layer(family, layers)
+            )
+
+        paths = tuple(
+            [str(record.site_packages) for record in selected_records]
+            + [str(layer.site_packages) for layer in selected_layers]
+        )
+        probe_modules = tuple(
+            dict.fromkeys(
+                [
+                    module
+                    for record in selected_records
+                    for module in record.probe_modules
+                    if _is_probe_module(module)
+                ]
+                + [
+                    module
+                    for layer in selected_layers
+                    for package_name in layer.packages
+                    if (module := _CORE_IMPORT_MODULES.get(package_name)) is not None
+                ]
+            )
+        )
+        return RuntimeComposition(
+            paths=paths,
+            records=selected_records,
+            core_layer_ids=tuple(layer.layer_id for layer in selected_layers),
+            probe_modules=probe_modules,
+        )
+
+    def promote_runtime_composition(
+        self,
+        composition: RuntimeComposition,
+        *,
+        cleanup: bool = True,
+    ) -> None:
+        selected_ids = list(composition.core_layer_ids)
+        with self._lock, self.file_lock("environment-registry"):
+            data = self._load_registry()
+            data["backend_profile"] = {"core_layer_ids": selected_ids}
+            for entry in (data.get("environments") or {}).values():
+                if isinstance(entry, dict):
+                    entry["core_layer_ids"] = selected_ids
+            _atomic_json(self.registry_path, data)
+        if cleanup:
+            self.cleanup_unreferenced_core_layers()
+
+    def cleanup_superseded_revisions(self, logical_id: str) -> None:
+        normalized = _safe_id(logical_id)
+        active = self.active(normalized)
+        parent = self.overlay_root / normalized
+        if not parent.is_dir():
+            return
+        keep = active.revision_id if active is not None else ""
+        for child in parent.iterdir():
+            if child.is_dir() and child.name != keep:
+                shutil.rmtree(child, ignore_errors=True)
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+    def cleanup_unreferenced_core_layers(self) -> None:
+        data = self._load_registry()
+        referenced: set[str] = set()
+        profile = data.get("backend_profile") or {}
+        referenced.update(str(item) for item in profile.get("core_layer_ids") or ())
+        for entry in (data.get("environments") or {}).values():
+            if isinstance(entry, dict):
+                referenced.update(str(item) for item in entry.get("core_layer_ids") or ())
+
+        for child in self.core_root.iterdir() if self.core_root.is_dir() else ():
+            if child.is_dir() and child.name not in referenced:
+                shutil.rmtree(child, ignore_errors=True)
 
     def core_paths_for_backend(
         self,
@@ -843,7 +1318,10 @@ _default_lock = threading.Lock()
 
 def runtime_environments() -> RuntimeEnvironmentManager:
     global _default_manager
-    root = Path(os.environ.get("NEUROMITA_LIB_DIR") or "Lib").resolve()
+    configured = os.environ.get("NEUROMITA_RUNTIME_ROOT")
+    root = Path(configured or os.environ.get("NEUROMITA_LIB_DIR") or "Lib").resolve()
+    if root.name.lower() == "core":
+        root = root.parent
     with _default_lock:
         if _default_manager is None or _default_manager.lib_root != root:
             _default_manager = RuntimeEnvironmentManager(root)

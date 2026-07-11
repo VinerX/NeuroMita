@@ -1,7 +1,7 @@
 # src/controllers/install_controller.py
 from __future__ import annotations
 
-from typing import Callable, Optional, Any, Iterable
+from typing import Callable, Optional, Any, Iterable, Sequence
 import os
 import sys
 import time
@@ -644,6 +644,26 @@ class InstallController(InstallService):
         )
 
     @staticmethod
+    def _refresh_ai_runtime(
+        *,
+        timeout: float,
+        preferred_core_layer_ids: Sequence[str] = (),
+    ) -> bool:
+        engine_service = services().get_optional(AIEngineService)
+        if engine_service is None:
+            return True
+        engine = engine_service.get_engine()
+        refresh = getattr(engine, "refresh_runtime", None)
+        if not callable(refresh):
+            raise RuntimeError("AI engine does not support managed runtime refresh")
+        return bool(
+            refresh(
+                timeout=timeout,
+                preferred_core_layer_ids=tuple(preferred_core_layer_ids),
+            )
+        )
+
+    @staticmethod
     def _artifact_cleanup_plan(plan: InstallPlan) -> InstallPlan:
         actions = [
             action
@@ -1017,6 +1037,7 @@ class InstallController(InstallService):
         }
 
         transaction: EnvironmentTransaction | None = None
+        quiesced_environment = False
         try:
             try:
                 result = runner(pip_installer=pip_installer, callbacks=cb, ctx=ctx)
@@ -1040,11 +1061,7 @@ class InstallController(InstallService):
 
             if isinstance(result, InstallPlan):
                 op = str(meta.get("op") or "install").strip().lower()
-                managed = bool(
-                    environment_candidate
-                    and result.environment_managed
-                    and (result.required_backend is not None or active_environment is not None)
-                )
+                managed = bool(environment_candidate and result.environment_managed)
 
                 if managed and result.already_installed and active_environment is not None and op != "uninstall":
                     cb.status(result.already_installed_status or "Already installed")
@@ -1059,7 +1076,7 @@ class InstallController(InstallService):
                         backend_context={**ctx, **dict(result.backend_context or {})},
                     )
                     if not transaction.ensure_core_layers(create_installer, log=cb.log):
-                        raise RuntimeError("Failed to prepare shared core runtime layer")
+                        raise RuntimeError("Failed to prepare shared AI backend layer")
 
                     pip_installer = create_installer(str(transaction.site_packages))
                     self._apply_environment_ctx(
@@ -1073,7 +1090,7 @@ class InstallController(InstallService):
                         for action in (result.actions or [])
                         if str(action.type or "").strip().lower() == "pip"
                     ]
-                    resolver_args: list[str] = []
+                    resolver_args: list[str] = list(transaction.core_resolver_args)
                     for action in package_actions:
                         resolver_args.extend(list(action.extra_args or []))
                     if requested_specs:
@@ -1101,6 +1118,18 @@ class InstallController(InstallService):
                     )
                     if ok:
                         record = transaction.commit(meta)
+                        if not self._refresh_ai_runtime(
+                            timeout=min(30.0, max(3.0, float(timeout_sec))),
+                            preferred_core_layer_ids=tuple(
+                                layer.layer_id for layer in transaction.core_layers
+                            ),
+                        ):
+                            transaction.rollback_commit()
+                            raise RuntimeError(
+                                "Installed environment failed shared AI worker validation; "
+                                "the previous runtime was preserved"
+                            )
+                        transaction.finalize()
                         cb.log(
                             f"Activated environment '{record.logical_id}' revision {record.revision_id}."
                         )
@@ -1116,6 +1145,7 @@ class InstallController(InstallService):
                             f"Failed to stop active worker for environment "
                             f"'{active_environment.logical_id}'"
                         )
+                    quiesced_environment = True
 
                     pip_installer = create_installer(str(active_environment.site_packages))
                     self._apply_environment_ctx(
@@ -1131,14 +1161,28 @@ class InstallController(InstallService):
                         ctx=ctx,
                     )
                     if ok:
-                        environment_manager.deactivate(
+                        if not environment_manager.deactivate(
                             active_environment.logical_id,
-                            delete=False,
-                        )
+                            delete=True,
+                        ):
+                            raise RuntimeError(
+                                f"Failed to deactivate environment "
+                                f"'{active_environment.logical_id}'"
+                            )
+                        quiesced_environment = False
+                        environment_manager.cleanup_unreferenced_core_layers()
                         cb.log(
-                            f"Deactivated environment '{active_environment.logical_id}'. "
-                            "Its immutable revision remains available for reuse and garbage collection."
+                            f"Removed environment '{active_environment.logical_id}'."
                         )
+                    elif not self._refresh_ai_runtime(
+                        timeout=min(30.0, max(3.0, float(timeout_sec))),
+                    ):
+                        raise RuntimeError(
+                            "Environment artifact cleanup failed and the previous shared AI "
+                            "runtime could not be restored"
+                        )
+                    else:
+                        quiesced_environment = False
                 else:
                     ok = self._execute_plan(
                         result,
@@ -1168,6 +1212,23 @@ class InstallController(InstallService):
         except Exception as exc:
             if transaction is not None:
                 transaction.abort()
+            if quiesced_environment:
+                try:
+                    restored = self._refresh_ai_runtime(
+                        timeout=min(30.0, max(3.0, float(timeout_sec))),
+                    )
+                    if restored:
+                        quiesced_environment = False
+                    else:
+                        cb.log(
+                            "Failed to restore the previous shared AI runtime after an "
+                            "uninstall error"
+                        )
+                except Exception as restore_exc:
+                    cb.log(
+                        "Failed to restore the previous shared AI runtime after an "
+                        f"uninstall error: {restore_exc}"
+                    )
             error = str(exc) or repr(exc)
             cb.status("Failed")
             cb.log(error)

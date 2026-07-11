@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from typing import Any
 
@@ -260,67 +262,96 @@ def ensure_runtime_ready(target: str, *, ctx: dict[str, Any] | None = None) -> N
 
 
 def _snapshot_download_action(repo_id: str, *, description: str, progress: int) -> InstallAction:
-    def _fn(*, callbacks=None, **_kwargs) -> bool:
-        from huggingface_hub import snapshot_download
-
+    def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
+        runtime_ctx = dict(ctx or {})
+        python_paths = [
+            os.path.abspath(str(path))
+            for path in (runtime_ctx.get("python_paths") or [])
+            if str(path).strip()
+        ]
+        python_executable = str(
+            runtime_ctx.get("python_executable")
+            or getattr(pip_installer, "script_path", None)
+            or os.environ.get("NEUROMITA_PYTHON")
+            or sys.executable
+        )
         token = str(SettingsManager.get("HF_TOKEN", "") or "").strip() or None
         cache_dir = _checkpoints_dir()
+        os.makedirs(cache_dir, exist_ok=True)
         if callbacks is not None:
             try:
                 callbacks.log(f"snapshot_download: {repo_id}")
             except Exception:
                 pass
 
-        snapshot_download(repo_id=repo_id, cache_dir=cache_dir, token=token)
-        return True
+        script = (
+            "import json, os, sys\n"
+            "sys.path[:0] = json.loads(sys.argv[1])\n"
+            "from huggingface_hub import snapshot_download\n"
+            "snapshot_download(repo_id=sys.argv[2], cache_dir=sys.argv[3], "
+            "token=(os.environ.get('HF_TOKEN') or None))\n"
+        )
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        if token:
+            env["HF_TOKEN"] = token
+        else:
+            env.pop("HF_TOKEN", None)
+
+        creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+        process = subprocess.Popen(
+            [
+                python_executable,
+                "-c",
+                script,
+                json.dumps(python_paths),
+                str(repo_id),
+                str(cache_dir),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            creationflags=creationflags,
+        )
+        register = getattr(pip_installer, "_set_active_process", None)
+        terminate = getattr(pip_installer, "_terminate_process", None)
+        clear = getattr(pip_installer, "_clear_active_process", None)
+        if callable(register) and callable(terminate):
+            register(
+                process,
+                lambda: terminate(process, "RAG model download cancelled."),
+            )
+        try:
+            timeout = max(1.0, float(runtime_ctx.get("timeout_sec", 3600.0) or 3600.0))
+            try:
+                output, _ = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if callable(terminate):
+                    terminate(process, "RAG model download timed out.")
+                else:
+                    process.kill()
+                output, _ = process.communicate()
+                if callbacks is not None:
+                    callbacks.log("RAG model download timed out.")
+                return False
+
+            if output and callbacks is not None:
+                for line in output.splitlines():
+                    if line.strip():
+                        callbacks.log(line)
+            return process.returncode == 0
+        finally:
+            if callable(clear):
+                clear(process)
 
     return InstallAction(
         type="call",
         description=description,
-        progress=int(progress),
-        fn=_fn,
-    )
-
-
-def _restart_rag_worker_action(*, progress: int = 96) -> InstallAction:
-    def _fn(*, callbacks=None, **_kwargs) -> bool:
-        try:
-            from core.services import use
-            from services.contracts import AIEngineService
-            engine = use(AIEngineService).get_engine()
-        except Exception:
-            engine = None
-
-        if engine is None:
-            return True
-
-        if callbacks is not None:
-            try:
-                callbacks.log("Restarting AI engine worker for RAG...")
-            except Exception:
-                pass
-
-        try:
-            restart_worker = getattr(engine, "restart_worker_for_service", None)
-            if callable(restart_worker):
-                return bool(restart_worker("rag", timeout=20.0))
-
-            restart_service = getattr(engine, "restart_service", None)
-            if callable(restart_service):
-                return bool(restart_service("rag", timeout=20.0))
-        except Exception as exc:
-            if callbacks is not None:
-                try:
-                    callbacks.log(f"AI engine restart skipped: {exc}")
-                except Exception:
-                    pass
-            return False
-
-        return True
-
-    return InstallAction(
-        type="call",
-        description=_("Restarting RAG runtime...", "Restarting RAG runtime..."),
         progress=int(progress),
         fn=_fn,
     )
@@ -387,10 +418,8 @@ def build_install_plan(
             )
         )
 
-    actions.append(_restart_rag_worker_action(progress=95))
-
-    def _final_check(**_kwargs) -> bool:
-        return bool(get_install_status(target, ctx=ctx).get("ok"))
+    def _final_check(*, ctx=None, **_kwargs) -> bool:
+        return bool(get_install_status(target, ctx=_with_gpu_ctx(dict(ctx or {}))).get("ok"))
 
     actions.append(
         InstallAction(
