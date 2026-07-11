@@ -1446,20 +1446,17 @@ class RuntimeEnvironmentManager:
             [str(record.site_packages) for record in selected_records]
             + [str(layer.site_packages) for layer in selected_layers]
         )
+        # Candidate bootstrap validates only the shared backend layers. Importing
+        # arbitrary overlay top-level modules here duplicates model initialization
+        # and can execute expensive package side effects before IPC readiness. The
+        # selected model is imported and validated by its service-specific
+        # initialization call after the worker has become responsive.
         probe_modules = tuple(
             dict.fromkeys(
-                [
-                    module
-                    for record in selected_records
-                    for module in record.probe_modules
-                    if _is_probe_module(module)
-                ]
-                + [
-                    module
-                    for layer in selected_layers
-                    for package_name in layer.packages
-                    if (module := _CORE_IMPORT_MODULES.get(package_name)) is not None
-                ]
+                module
+                for layer in selected_layers
+                for package_name in layer.packages
+                if (module := _CORE_IMPORT_MODULES.get(package_name)) is not None
             )
         )
         return RuntimeComposition(

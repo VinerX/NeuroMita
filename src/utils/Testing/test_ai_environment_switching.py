@@ -156,6 +156,8 @@ class _Worker:
     def start(self) -> None:
         self.started = True
         self.started_at = time.monotonic()
+        if not self.candidate_ready:
+            self.proc.alive = False
 
     def supports(self, service: str) -> bool:
         return service in self.service_names
@@ -490,3 +492,15 @@ def test_rag_runtime_uses_independent_slots_in_one_shared_worker() -> None:
         ("rag", "warmup_embeddings", {"model_name": "embed-model"}),
         ("rag", "warmup_reranker", {"model_name": "reranker-model"}),
     ]
+
+
+def test_candidate_bootstrap_uses_dedicated_timeout_floor() -> None:
+    from controllers.ai_engine_controller import _bootstrap_timeout
+
+    with patch.dict(
+        "os.environ",
+        {"NEUROMITA_AI_BOOTSTRAP_TIMEOUT": "123"},
+        clear=False,
+    ):
+        assert _bootstrap_timeout(1.0) == 123.0
+        assert _bootstrap_timeout(240.0) == 240.0

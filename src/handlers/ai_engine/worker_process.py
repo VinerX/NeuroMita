@@ -138,12 +138,16 @@ def _services_for_worker(
 
 def _probe_runtime_modules(
     probe_modules: tuple[str, ...] | list[str] | None,
+    *,
+    log_queue=None,
 ) -> None:
     importlib.invalidate_caches()
     for module_name in tuple(dict.fromkeys(probe_modules or ())):
         normalized = str(module_name or "").strip()
         if not normalized:
             continue
+        if log_queue is not None:
+            _log(log_queue, "info", f"Bootstrap: importing backend module '{normalized}'")
         try:
             importlib.import_module(normalized)
         except Exception as exc:
@@ -206,9 +210,12 @@ def run_worker_process(
       - "shared" -> один worker для TTS + ASR
     """
     try:
+        _log(log_queue, "info", "Bootstrap: configuring isolated runtime paths")
         _ensure_lib_on_path(python_paths)
-        _probe_runtime_modules(probe_modules)
+        _probe_runtime_modules(probe_modules, log_queue=log_queue)
+        _log(log_queue, "info", "Bootstrap: validating backend capabilities")
         _probe_runtime_capabilities(python_paths)
+        _log(log_queue, "info", "Bootstrap: backend ready, starting IPC services")
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

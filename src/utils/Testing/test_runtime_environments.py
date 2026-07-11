@@ -157,7 +157,7 @@ def test_environment_commit_is_atomic_and_strips_only_core_owned_packages(tmp_pa
     assert manager.runtime_paths(record)[0] == str(record.site_packages)
 
 
-def test_runtime_composition_probes_direct_overlay_and_backend_imports(
+def test_runtime_composition_bootstrap_probes_only_backend_imports(
     tmp_path: Path,
 ) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
@@ -181,7 +181,7 @@ def test_runtime_composition_probes_direct_overlay_and_backend_imports(
     )
 
     assert record.probe_modules == ("fish_speech_lib",)
-    assert "fish_speech_lib" in composition.probe_modules
+    assert "fish_speech_lib" not in composition.probe_modules
     assert "torch" in composition.probe_modules
     assert "torchaudio" in composition.probe_modules
     assert "numpy" in composition.probe_modules

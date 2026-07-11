@@ -53,6 +53,14 @@ def _detect_gpu_label() -> str:
         return "CPU"
 
 
+def _bootstrap_timeout(requested: float | None = None) -> float:
+    return max(
+        10.0,
+        float(requested or 0.0),
+        _env_float("NEUROMITA_AI_BOOTSTRAP_TIMEOUT", 300.0, minimum=10.0),
+    )
+
+
 class _Worker:
     def __init__(
         self,
@@ -106,6 +114,7 @@ class _Worker:
         self.watch_thread: Optional[threading.Thread] = None
         self.started_at: float = 0.0
         self.last_error: str = ""
+        self.last_status: str = ""
 
     def supports(self, service: str) -> bool:
         return str(service or "").strip().lower() in self.ready_by_service
@@ -517,6 +526,7 @@ class _Worker:
 
             level = str(msg.get("level") or "info").lower()
             text = str(msg.get("message") or "")
+            self.last_status = text
             if level == "error":
                 self.last_error = text
 
@@ -639,11 +649,21 @@ class AIEngineController(AIEngineService):
     @staticmethod
     def _wait_all_ready(worker: _Worker, timeout: float) -> bool:
         deadline = time.monotonic() + max(1.0, float(timeout or 0.0))
-        for service_name in worker.service_names:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not worker.wait_ready(service_name, timeout=remaining):
+        while True:
+            if all(
+                worker.wait_ready(service_name, timeout=0.0)
+                for service_name in worker.service_names
+            ):
+                return True
+
+            proc = worker.proc
+            if proc is None or not proc.is_alive():
                 return False
-        return True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
 
     def _validation_sequence(
         self,
@@ -679,7 +699,7 @@ class AIEngineController(AIEngineService):
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
     ) -> bool:
         if not self._wait_all_ready(worker, ready_timeout):
-            detail = worker.last_error or (
+            detail = worker.last_error or getattr(worker, "last_status", "") or (
                 f"exitcode={getattr(worker.proc, 'exitcode', None)}"
             )
             logger.error(f"Candidate AI runtime did not become ready: {detail}")
@@ -720,7 +740,8 @@ class AIEngineController(AIEngineService):
     ) -> bool:
         target_paths = tuple(composition.paths)
         target_probes = tuple(getattr(composition, "probe_modules", ()) or ())
-        ready_timeout = max(1.0, float(timeout or 0.0))
+        operation_timeout = max(1.0, float(timeout or 0.0))
+        bootstrap_timeout = _bootstrap_timeout(operation_timeout)
 
         def same_contract(worker: _Worker | None) -> bool:
             return bool(
@@ -809,7 +830,7 @@ class AIEngineController(AIEngineService):
                     assert current is not None
                     if not self._validate_worker_runtime(
                         current,
-                        ready_timeout=ready_timeout,
+                        ready_timeout=bootstrap_timeout,
                         validations=validations,
                     ):
                         return False
@@ -825,7 +846,7 @@ class AIEngineController(AIEngineService):
                 candidate.start()
                 if not self._validate_worker_runtime(
                     candidate,
-                    ready_timeout=ready_timeout,
+                    ready_timeout=bootstrap_timeout,
                     validations=validations,
                 ):
                     candidate.stop(timeout=1.0)
@@ -853,7 +874,7 @@ class AIEngineController(AIEngineService):
                 self._restart_attempts.pop(_SHARED_WORKER, None)
                 if previous is not None and previous is not candidate:
                     try:
-                        previous.stop(timeout=ready_timeout)
+                        previous.stop(timeout=operation_timeout)
                     except Exception as exc:
                         logger.warning(f"Failed to stop superseded shared AI worker: {exc}")
                 cleanup_superseded_runtime_artifacts()
@@ -877,8 +898,8 @@ class AIEngineController(AIEngineService):
                         probe_modules=target_probes,
                     )
                     candidate.start()
-                    if not self._wait_all_ready(candidate, ready_timeout):
-                        detail = candidate.last_error or (
+                    if not self._wait_all_ready(candidate, bootstrap_timeout):
+                        detail = candidate.last_error or getattr(candidate, "last_status", "") or (
                             f"exitcode={getattr(candidate.proc, 'exitcode', None)}"
                         )
                         logger.error(
@@ -893,7 +914,7 @@ class AIEngineController(AIEngineService):
                     candidate = candidates.get(service_name)
                     if candidate is None or not self._validate_worker_runtime(
                         candidate,
-                        ready_timeout=ready_timeout,
+                        ready_timeout=bootstrap_timeout,
                         validations=(validation,),
                     ):
                         return False
@@ -918,7 +939,7 @@ class AIEngineController(AIEngineService):
                     replacement = candidates.get(service_name)
                     if previous is not replacement:
                         try:
-                            previous.stop(timeout=ready_timeout)
+                            previous.stop(timeout=operation_timeout)
                         except Exception as exc:
                             logger.warning(
                                 f"Failed to stop superseded AI worker '{service_name}': {exc}"
@@ -1017,7 +1038,7 @@ class AIEngineController(AIEngineService):
                 )
                 if self._validate_worker_runtime(
                     candidate,
-                    ready_timeout=20.0,
+                    ready_timeout=_bootstrap_timeout(20.0),
                     validations=validations,
                 ):
                     with self._lock:
