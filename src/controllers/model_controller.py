@@ -758,14 +758,11 @@ class ModelController(GenerationService, ModelStateService):
         return self._build_token_stats()
 
     def schedule_g4f_update(self, version: str = "latest") -> bool:
-        try:
-            self._settings_service.update("G4F_TARGET_VERSION", str(version or "latest"))
-            self._settings_service.update("G4F_UPDATE_PENDING", True)
-            self._settings_service.update("G4F_VERSION", str(version or "latest"))
-            return True
-        except Exception:
-            logger.error("Не удалось запланировать обновление g4f", exc_info=True)
-            return False
+        logger.warning(
+            "g4f automatic installation and update scheduling are disabled; "
+            "an already installed package may still be used"
+        )
+        return False
 
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}

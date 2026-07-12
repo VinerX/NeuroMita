@@ -39,6 +39,7 @@ class DatabaseManager:
         "event_type": "TEXT",
         "req_id": "TEXT",
         "task_uid": "TEXT",
+        "turn_id": "TEXT",
         "is_deleted": "INTEGER DEFAULT 0",
         "structured_data": "TEXT",
         "thinking": "TEXT",

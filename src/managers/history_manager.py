@@ -411,6 +411,7 @@ class HistoryManager(CharacterScopedService):
             "event_type": self._coerce_text(msg.get("event_type")),
             "req_id": self._coerce_text(msg.get("req_id")),
             "task_uid": self._coerce_text(msg.get("task_uid")),
+            "turn_id": self._coerce_text(msg.get("turn_id")),
             "structured_data": structured_data_str,
             "thinking": self._coerce_text(msg.get("thinking")),
             "llm_prompt_tokens": self._coerce_int_or_none(msg.get("llm_prompt_tokens")),
@@ -1103,14 +1104,10 @@ class HistoryManager(CharacterScopedService):
             logger.error(f"[HistoryManager] Не удалось сохранить snapshot: {e}", exc_info=True)
             return ""
 
-    def add_message(self, message: dict):
-        row_id = self._insert_history_row(msg=message, is_active=1)
-
-        # RAG опционален и не должен валить основной флоу
-        if not self.rag or not row_id:
+    def _schedule_message_embedding(self, row_id: int | None, message: dict) -> None:
+        if not row_id or not self.rag:
             return
 
-        # Фоновая векторизация (не блокируем вызывающий поток/GUI).
         content_text = self._extract_text_for_embedding(message.get("content"))
         if not content_text:
             return
@@ -1123,12 +1120,65 @@ class HistoryManager(CharacterScopedService):
             try:
                 rag.update_history_embedding(rid, txt)
             except Exception as e:
-                logger.warning(f"RAG failed to update embedding for new message (ignored): {e}", exc_info=True)
+                logger.warning(
+                    f"RAG failed to update embedding for new message (ignored): {e}",
+                    exc_info=True,
+                )
 
         try:
             self._get_embed_executor().submit(_embed_job)
         except Exception as e:
-            logger.warning(f"[HistoryManager] Failed to schedule embedding for message (ignored): {e}",exc_info=True)
+            logger.warning(
+                f"[HistoryManager] Failed to schedule embedding for message (ignored): {e}",
+                exc_info=True,
+            )
+
+    def add_messages(self, messages: list[dict]) -> list[int]:
+        valid_messages = [msg for msg in messages or [] if isinstance(msg, dict)]
+        if not valid_messages:
+            return []
+        if not self._history_cols:
+            self._ensure_history_schema()
+
+        committed: list[tuple[int, dict]] = []
+        with self._write_lock:
+            conn = self.db.get_connection()
+            try:
+                cursor = conn.cursor()
+                for msg in valid_messages:
+                    row_id = self._insert_history_row_tx(
+                        cursor,
+                        msg=msg,
+                        is_active=1,
+                        dedupe=True,
+                    )
+                    if row_id:
+                        committed.append((int(row_id), msg))
+                conn.commit()
+            except Exception as exc:
+                committed.clear()
+                logger.error(
+                    f"History batch INSERT failed; the complete turn was rolled back: {exc}",
+                    exc_info=True,
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        for row_id, msg in committed:
+            self._schedule_message_embedding(row_id, msg)
+        return [row_id for row_id, _msg in committed]
+
+    def add_message(self, message: dict):
+        row_id = self._insert_history_row(msg=message, is_active=1)
+        self._schedule_message_embedding(row_id, message)
+        return row_id
 
     def update_variable(self, key, value):
         conn = self.db.get_connection()

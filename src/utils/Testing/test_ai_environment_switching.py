@@ -127,7 +127,9 @@ class _EnvironmentRegistry:
 class _Worker:
     created: list["_Worker"] = []
     candidate_ready = True
+    ready_sequence: list[bool] = []
     validation_result = True
+    lifecycle: list[tuple[str, "_Worker"]] = []
 
     def __init__(
         self,
@@ -148,6 +150,7 @@ class _Worker:
         self.last_error = ""
         self.started = False
         self.stopped = False
+        self._ready = bool(self.candidate_ready)
         self.calls: list[tuple[str, str, dict]] = []
         self.proc = _Proc()
         self.started_at = 0.0
@@ -156,18 +159,25 @@ class _Worker:
     def start(self) -> None:
         self.started = True
         self.started_at = time.monotonic()
-        if not self.candidate_ready:
+        self._ready = (
+            bool(self.__class__.ready_sequence.pop(0))
+            if self.__class__.ready_sequence
+            else bool(self.candidate_ready)
+        )
+        self.__class__.lifecycle.append(("start", self))
+        if not self._ready:
             self.proc.alive = False
 
     def supports(self, service: str) -> bool:
         return service in self.service_names
 
     def wait_ready(self, service: str, timeout: float) -> bool:
-        return self.started and service in self.service_names and self.candidate_ready
+        return self.started and service in self.service_names and self._ready
 
     def stop(self, timeout: float) -> None:
         self.stopped = True
         self.proc.alive = False
+        self.__class__.lifecycle.append(("stop", self))
 
     def call(self, method, payload=None, *, service=None, timeout=None):
         from concurrent.futures import Future
@@ -220,14 +230,18 @@ def test_failed_candidate_preserves_current_shared_worker() -> None:
     registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
     controller = _controller(current, registry)
     _Worker.created.clear()
+    _Worker.lifecycle.clear()
     _Worker.candidate_ready = False
+    _Worker.ready_sequence = [False, True]
 
     with patch("controllers.ai_engine_controller._Worker", _Worker):
         result = controller.activate_environment("tts", "voice-a", category="tts", timeout=1.0)
 
     assert result is False
-    assert current.stopped is False
-    assert controller._workers["shared"] is current
+    replacement = controller._workers["shared"]
+    assert current.stopped is True
+    assert replacement is not current
+    assert replacement.python_paths == current.python_paths
     assert registry.promoted is None
 
 
@@ -236,6 +250,8 @@ def test_successful_candidate_switches_all_services_atomically() -> None:
     registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
     controller = _controller(current, registry)
     _Worker.created.clear()
+    _Worker.lifecycle.clear()
+    _Worker.ready_sequence.clear()
     _Worker.candidate_ready = True
 
     with patch("controllers.ai_engine_controller._Worker", _Worker):
@@ -246,6 +262,7 @@ def test_successful_candidate_switches_all_services_atomically() -> None:
     assert replacement is not current
     assert replacement.python_paths == registry.paths
     assert current.stopped is True
+    assert _Worker.lifecycle.index(("stop", current)) < _Worker.lifecycle.index(("start", replacement))
     assert registry.promoted is not None
     assert set(controller._service_to_worker) == {"tts", "asr", "rag", "beats"}
 
@@ -255,6 +272,8 @@ def test_model_initialization_failure_preserves_current_shared_worker() -> None:
     registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
     controller = _controller(current, registry)
     _Worker.created.clear()
+    _Worker.lifecycle.clear()
+    _Worker.ready_sequence.clear()
     _Worker.candidate_ready = True
     _Worker.validation_result = False
 
@@ -273,8 +292,10 @@ def test_model_initialization_failure_preserves_current_shared_worker() -> None:
         _Worker.validation_result = True
 
     assert result is False
-    assert controller._workers["shared"] is current
-    assert current.stopped is False
+    replacement = controller._workers["shared"]
+    assert replacement is not current
+    assert replacement.python_paths == current.python_paths
+    assert current.stopped is True
     assert {
         slot: (value.logical_id, value.revision_id)
         for slot, value in registry.selection.items()
@@ -382,16 +403,21 @@ def test_registry_promotion_failure_preserves_current_worker() -> None:
     registry.fail_promotion = True
     controller = _controller(current, registry)
     _Worker.created.clear()
+    _Worker.lifecycle.clear()
+    _Worker.ready_sequence.clear()
     _Worker.candidate_ready = True
 
     with patch("controllers.ai_engine_controller._Worker", _Worker):
         result = controller.refresh_runtime(timeout=1.0)
 
     assert result is False
-    assert controller._workers["shared"] is current
-    assert current.stopped is False
-    assert len(_Worker.created) == 1
+    replacement = controller._workers["shared"]
+    assert replacement is not current
+    assert replacement.python_paths == current.python_paths
+    assert current.stopped is True
+    assert len(_Worker.created) == 2
     assert _Worker.created[0].stopped is True
+    assert registry.restored == {"snapshot": True}
 
 
 def test_changed_probe_contract_restarts_worker_even_when_paths_match() -> None:

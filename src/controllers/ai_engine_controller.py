@@ -745,6 +745,7 @@ class AIEngineController(AIEngineService):
         self._ctx = mp.get_context("spawn")
         self._lock = threading.RLock()
         self._runtime_switch_lock = threading.RLock()
+        self._runtime_switching = threading.Event()
         self._recovery_lock = threading.RLock()
         self._shutting_down = threading.Event()
         self._restart_attempts: dict[str, int] = {}
@@ -1017,49 +1018,115 @@ class AIEngineController(AIEngineService):
                         return False
                     return promote_registry(cleanup=True)
 
-                candidate = _Worker(
-                    self._ctx,
-                    _SHARED_WORKER,
-                    _DEFAULT_SERVICES,
-                    python_paths=target_paths,
-                    probe_modules=target_probes,
+                previous = current
+                previous_paths = tuple(getattr(previous, "python_paths", ()) or ())
+                previous_probes = tuple(getattr(previous, "probe_modules", ()) or ())
+                previous_services = tuple(
+                    getattr(previous, "service_names", ()) or _DEFAULT_SERVICES
                 )
-                candidate.start()
-                if not self._validate_worker_runtime(
-                    candidate,
-                    ready_timeout=bootstrap_timeout,
-                    validations=validations,
-                ):
-                    candidate.stop(timeout=1.0)
-                    return False
+                previous_validations = self._validation_sequence()
+                switch_event = getattr(self, "_runtime_switching", None)
+                if switch_event is None:
+                    switch_event = threading.Event()
+                    self._runtime_switching = switch_event
 
-                snapshot = registry_snapshot()
-                if not promote_registry(cleanup=False):
-                    candidate.stop(timeout=1.0)
-                    return False
+                def restore_previous_worker() -> bool:
+                    if previous is None:
+                        return False
 
-                try:
+                    rollback = _Worker(
+                        self._ctx,
+                        _SHARED_WORKER,
+                        previous_services,
+                        python_paths=previous_paths,
+                        probe_modules=previous_probes,
+                    )
+                    rollback.start()
+                    if not self._wait_all_ready(rollback, bootstrap_timeout):
+                        detail = rollback.last_error or getattr(rollback, "last_status", "") or (
+                            f"exitcode={getattr(rollback.proc, 'exitcode', None)}"
+                        )
+                        logger.error(
+                            f"Failed to restore previous shared AI runtime: {detail}"
+                        )
+                        rollback.stop(timeout=1.0)
+                        return False
+
+                    if previous_validations and not self._validate_worker_runtime(
+                        rollback,
+                        ready_timeout=bootstrap_timeout,
+                        validations=previous_validations,
+                    ):
+                        logger.error(
+                            "Previous shared AI runtime was restored, but one or more "
+                            "service models could not be reinitialized"
+                        )
+
+                    rollback.on_crash = self._on_worker_crash
                     with self._lock:
-                        previous = self._workers.get(_SHARED_WORKER)
-                        candidate.on_crash = self._on_worker_crash
-                        self._workers[_SHARED_WORKER] = candidate
+                        self._workers[_SHARED_WORKER] = rollback
                         self._service_to_worker = {
                             service: _SHARED_WORKER for service in _DEFAULT_SERVICES
                         }
-                except Exception:
-                    restore_registry(snapshot)
-                    candidate.stop(timeout=1.0)
-                    logger.exception("Failed to publish candidate shared AI worker")
-                    return False
+                    return True
 
-                self._restart_attempts.pop(_SHARED_WORKER, None)
-                if previous is not None and previous is not candidate:
+                switch_event.set()
+                candidate: _Worker | None = None
+                try:
+                    if previous is not None:
+                        try:
+                            previous.stop(timeout=operation_timeout)
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to stop current shared AI worker before switch: {exc}"
+                            )
+
+                    candidate = _Worker(
+                        self._ctx,
+                        _SHARED_WORKER,
+                        _DEFAULT_SERVICES,
+                        python_paths=target_paths,
+                        probe_modules=target_probes,
+                    )
+                    candidate.start()
+                    if not self._validate_worker_runtime(
+                        candidate,
+                        ready_timeout=bootstrap_timeout,
+                        validations=validations,
+                    ):
+                        candidate.stop(timeout=1.0)
+                        candidate = None
+                        restore_previous_worker()
+                        return False
+
+                    snapshot = registry_snapshot()
+                    if not promote_registry(cleanup=False):
+                        restore_registry(snapshot)
+                        candidate.stop(timeout=1.0)
+                        candidate = None
+                        restore_previous_worker()
+                        return False
+
                     try:
-                        previous.stop(timeout=operation_timeout)
-                    except Exception as exc:
-                        logger.warning(f"Failed to stop superseded shared AI worker: {exc}")
-                cleanup_superseded_runtime_artifacts()
-                return True
+                        with self._lock:
+                            candidate.on_crash = self._on_worker_crash
+                            self._workers[_SHARED_WORKER] = candidate
+                            self._service_to_worker = {
+                                service: _SHARED_WORKER for service in _DEFAULT_SERVICES
+                            }
+                    except Exception:
+                        restore_registry(snapshot)
+                        candidate.stop(timeout=1.0)
+                        candidate = None
+                        restore_previous_worker()
+                        logger.exception("Failed to publish candidate shared AI worker")
+                        return False
+
+                    self._restart_attempts.pop(_SHARED_WORKER, None)
+                    cleanup_superseded_runtime_artifacts()
+                    return True
+                finally:
+                    switch_event.clear()
 
             candidates: dict[str, _Worker] = {}
             with self._lock:
@@ -1313,6 +1380,14 @@ class AIEngineController(AIEngineService):
         if not s or not m:
             f = Future()
             f.set_exception(ValueError("Missing service/method"))
+            return f
+
+        switch_event = getattr(self, "_runtime_switching", None)
+        if switch_event is not None and switch_event.is_set():
+            f = Future()
+            f.set_exception(
+                RuntimeError("AI runtime is switching package composition")
+            )
             return f
 
         w = self._worker_for_service(s)

@@ -1095,6 +1095,10 @@ class Character:
         # Но чтобы не ломать старую логику, которая может ожидать messages внутри history_data,
         # оставим всё как есть, просто база обновляется инкрементально.
 
+    def add_messages_to_history(self, messages: List[Dict[str, str]]):
+        """Atomically append one completed dialog turn for this character."""
+        return self.history_manager.add_messages(messages)
+
     # endregion
 
     def current_variables_string(self) -> str:

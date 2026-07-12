@@ -629,29 +629,18 @@ class MainController:
 
     def _check_and_perform_pending_update(self):
         update_pending = self.settings.get("G4F_UPDATE_PENDING", False)
-        target_version = self.settings.get("G4F_TARGET_VERSION", None)
-        if update_pending and target_version:
-            logger.info(
-                "Обновление g4f до версии %s будет транзакционно применено "
-                "launcher-ом к Lib/core при следующем запуске.",
-                target_version,
-            )
-        else:
-            logger.info("Нет запланированных обновлений g4f.")
+        if not update_pending:
+            return
+        self.settings.set("G4F_UPDATE_PENDING", False)
+        self.settings.set("G4F_TARGET_VERSION", None)
+        self.settings.save_settings()
+        logger.warning("Сброшено устаревшее запланированное обновление g4f.")
 
     def _on_schedule_g4f_update(self, event: Event):
-        version = event.data.get('version', 'latest')
-
-        try:
-            self.settings.set("G4F_TARGET_VERSION", version)
-            self.settings.set("G4F_UPDATE_PENDING", True)
-            self.settings.set("G4F_VERSION", version)
-            self.settings.save_settings()
-            logger.info(f"Обновление g4f до версии '{version}' запланировано на следующий запуск.")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении настроек для запланированного обновления: {e}", exc_info=True)
-            return False
+        logger.warning(
+            "Запрос обновления g4f отклонён: автоматическая установка отключена."
+        )
+        return False
 
 
     def _on_show_loading_popup(self, event: Event):
