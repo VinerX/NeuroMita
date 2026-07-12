@@ -891,7 +891,7 @@ class VoiceModelSettingsView(QWidget):
         self._apply_gpu_status()
         self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
-    # ---------- EventBus helpers ----------
+    # ---------- Presentation helpers ----------
     def _get_models_data(self):
         return [mutable_payload(item) for item in self.view_model.state.models]
 

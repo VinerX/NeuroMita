@@ -19,6 +19,28 @@ class FineTuneDataViewModel(IntentViewModel[FineTuneDataState]):
         super().__init__(FineTuneDataState(), parent)
         self._finetune = finetune
 
+    def export_available(self) -> bool:
+        return bool(self._finetune.available())
+
+    def export_stats(self) -> dict[str, Any]:
+        return dict(self._finetune.get_stats() or {}) if self.export_available() else {}
+
+    def export_samples(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        if not self.export_available():
+            return []
+        return list(self._finetune.load_samples(dict(filters)) or [])
+
+    def export_to_file(
+        self,
+        samples: list[dict[str, Any]],
+        path: str,
+        *,
+        sharegpt: bool,
+    ) -> int:
+        if sharegpt:
+            return int(self._finetune.export_sharegpt(list(samples), str(path)))
+        return int(self._finetune.export_raw_jsonl(list(samples), str(path)))
+
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, RefreshFineTuneData):
             self.refresh()

@@ -12,10 +12,6 @@ TextPair = tuple[str, str]
 SectionBuilder = Callable[[object, QVBoxLayout], None]
 
 
-def _build_updates_section(gui: object, parent_layout: QVBoxLayout) -> None:
-    gui.presentation.settings_sections.build_updates(gui, parent_layout)
-
-
 @dataclass(frozen=True, slots=True)
 class SettingsSectionSpec:
     key: str
@@ -146,7 +142,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Manage client and component updates.",
         ),
         min_mode="advanced",
-        builder_ref=_build_updates_section,
+        builder_ref="updates",
     ),
 )
 

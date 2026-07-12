@@ -28,11 +28,8 @@ from utils import getTranslationVariant as _
 from localization.live import tr_set, register_if_tr
 
 
-def setup_data_settings_controls(self, parent):
-    view_model = self.presentation.view_models.finetune_data(self)
-    view_model.setParent(self)
+def setup_data_settings_controls(self, parent, *, view_model):
     self._finetune_data_view_model = view_model
-    self.destroyed.connect(lambda *_: view_model.close())
 
     def _handle_effect(effect) -> None:
         if isinstance(effect, FineTuneDataMessage):
@@ -269,7 +266,7 @@ def setup_data_settings_controls(self, parent):
     export_btn.setIcon(qta.icon("fa6s.file-export", color="#ffffff"))
     tr_set(export_btn, "Открыть диалог экспорта с фильтрацией и выбором формата.",
         "Open export dialog with filtering and format selection.", "setToolTip")
-    export_btn.clicked.connect(lambda: _open_export_dialog(self))
+    export_btn.clicked.connect(lambda: _open_export_dialog(self, view_model))
     btn_row.addWidget(export_btn)
 
     clear_btn = tr_set(QPushButton(), "Очистить данные...", "Clear data...")
@@ -428,10 +425,10 @@ def _clear_all_data(gui, view_model):
         logger.error(f"Failed to clear finetune data: {e}", exc_info=True)
 
 
-def _open_export_dialog(gui):
+def _open_export_dialog(gui, view_model):
     try:
         from ui.dialogs.export_dialog import ExportDialog
-        dlg = ExportDialog(gui.presentation.finetune, gui if hasattr(gui, "isWindow") else None)
+        dlg = ExportDialog(view_model, gui if hasattr(gui, "isWindow") else None)
         dlg.exec()
     except Exception as e:
         from main_logger import logger

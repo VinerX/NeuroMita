@@ -6,9 +6,6 @@ from typing import Any, Callable, Iterable
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 
-from core.settings_registry import SettingChange
-
-
 _MISSING = object()
 
 
@@ -190,12 +187,12 @@ class QtSettingsViewModel(QObject):
         self._owners_connected.clear()
         self._applying.clear()
 
-    def _receive_change(self, change: SettingChange) -> None:
+    def _receive_change(self, change: Any) -> None:
         if not self._closed:
             self._incoming.emit(change)
 
     @pyqtSlot(object)
-    def _on_incoming(self, change: SettingChange) -> None:
+    def _on_incoming(self, change: Any) -> None:
         if self._closed:
             return
         if change.source == "delete":

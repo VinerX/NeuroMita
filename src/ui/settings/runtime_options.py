@@ -10,17 +10,21 @@ from ui.settings.runtime_options_presentation import (
 )
 
 
+def attach_runtime_options_view_model(gui, view_model) -> None:
+    current = getattr(gui, "_settings_runtime_options_view_model", None)
+    if current is view_model:
+        return
+    if current is not None and not current.is_closed:
+        raise RuntimeError("A different runtime-options view model is already attached")
+    gui._settings_runtime_options_view_model = view_model
+    gui._settings_runtime_provider_keys = set()
+    view_model.state_changed.connect(lambda state: _render(gui, state))
+
+
 def ensure_runtime_options_view_model(gui):
     view_model = getattr(gui, "_settings_runtime_options_view_model", None)
     if view_model is None or view_model.is_closed:
-        view_model = gui.presentation.view_models.settings_runtime_options(
-            gui,
-            parent=gui,
-        )
-        gui._settings_runtime_options_view_model = view_model
-        gui._settings_runtime_provider_keys = set()
-        view_model.state_changed.connect(lambda state: _render(gui, state))
-        gui.destroyed.connect(lambda *_: view_model.close())
+        raise RuntimeError("Settings runtime-options view model is not attached")
     return view_model
 
 

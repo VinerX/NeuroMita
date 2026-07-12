@@ -2,7 +2,17 @@ from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
 
 
-def setup_model_interaction_controls(self, parent):
+def setup_model_interaction_controls(
+    self,
+    parent,
+    *,
+    runtime_options_view_model,
+    build_memory_section,
+    build_rag_section,
+):
+    from ui.settings.runtime_options import attach_runtime_options_view_model
+
+    attach_runtime_options_view_model(self, runtime_options_view_model)
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
 
     general_config = [
@@ -295,8 +305,8 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
-    self.presentation.rag.build_memory_section(self, parent, provider_options)
-    self.presentation.rag.build_rag_section(self, parent, provider_options)
+    build_memory_section(self, parent, provider_options)
+    build_rag_section(self, parent, provider_options)
     register_provider_options(
         self,
         ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),

@@ -293,10 +293,22 @@ class _SandboxStatusRow(QWidget):
 
 
 class SandboxPage(QWidget):
-    def __init__(self, gui, view_model):
+    def __init__(
+        self,
+        gui,
+        view_model,
+        *,
+        character_state_view_model,
+        chat_panel_view_model,
+        chat_panel_actions,
+        page_actions,
+    ):
         super().__init__(gui)
-        self.gui = gui
         self._view_model = view_model
+        self._character_state_view_model = character_state_view_model
+        self._chat_panel_view_model = chat_panel_view_model
+        self._chat_panel_actions = chat_panel_actions
+        self._page_actions = page_actions
         self._state: SandboxState = view_model.state
         self._settings_snapshot = dict(self._state.settings)
         self.setObjectName("SandboxPage")
@@ -304,6 +316,9 @@ class SandboxPage(QWidget):
         self._memory_limit_values = {}
         self._debug_summary_values = {}
         self._chat_panel = None
+        self._chat_character_combobox = None
+        self._chat_prompt_pack_combobox = None
+        self._chat_model_combobox = None
         self._inspector_collapsed = False
         self._inspector_widget = None
         self._inspector_stack = None
@@ -338,12 +353,24 @@ class SandboxPage(QWidget):
         self._view_model.state_changed.connect(self.render)
         self._view_model.effect_emitted.connect(self._handle_effect)
         self.destroyed.connect(lambda *_: self._view_model.close())
-        self._sync_host_exports()
         self.render(self._state)
         self._view_model.dispatch(SandboxActivated())
 
-    def _sync_host_exports(self):
-        self.gui.sandbox_page = self
+    @property
+    def chat_character_combobox(self):
+        return self._chat_character_combobox
+
+    @property
+    def chat_prompt_pack_combobox(self):
+        return self._chat_prompt_pack_combobox
+
+    @property
+    def chat_model_combobox(self):
+        return self._chat_model_combobox
+
+    @property
+    def inspector_stack(self):
+        return self._inspector_stack
 
     def render(self, state: SandboxState) -> None:
         self._state = state
@@ -362,7 +389,7 @@ class SandboxPage(QWidget):
     def _handle_effect(self, effect) -> None:
         if isinstance(effect, SandboxHistoryCleared):
             try:
-                self.gui.clear_chat_display()
+                self._chat_panel_actions.clear_chat()
             except Exception:
                 logger.debug("Failed to clear Sandbox chat display", exc_info=True)
             return
@@ -372,7 +399,7 @@ class SandboxPage(QWidget):
             QMessageBox.warning(self, str(effect.title), str(effect.message))
 
     def _render_model_selector(self, state: SandboxState) -> None:
-        combo = getattr(self.gui, "chat_model_combobox", None)
+        combo = self._chat_model_combobox
         if combo is None:
             return
         combo.blockSignals(True)
@@ -404,7 +431,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
     def _render_prompt_selector(self, state: SandboxState) -> None:
-        combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        combo = self._chat_prompt_pack_combobox
         if combo is None:
             return
         combo.blockSignals(True)
@@ -434,7 +461,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
     def _render_character_selector(self, state: SandboxState) -> None:
-        combo = getattr(self.gui, "chat_character_combobox", None)
+        combo = self._chat_character_combobox
         if combo is None:
             return
         combo.blockSignals(True)
@@ -548,13 +575,25 @@ class SandboxPage(QWidget):
     def _setting(self, key: str, default=None):
         return self._settings_snapshot.get(str(key), default)
 
+    def get(self, key: str, default=None):
+        """Read-only settings facade used by passive child controls."""
+        return self._setting(key, default)
+
+    def set(self, key: str, value) -> None:
+        """Forward a child-control edit as a typed Sandbox intent."""
+        self._view_model.dispatch(SandboxSettingChanged(str(key), value))
+
     def _jump_to_settings(self, category: str, subsection=None):
         # Шестерёнка у строки статуса ведёт ИМЕННО в её раздел, даже если подсистема
         # сейчас выключена/скрыта в «Видимых разделах» (фидбэк #14). subsection —
         # вложенная секция (например RAG внутри «Модели»), чтобы попасть сразу к
         # нужным полям, а не в начало длинной страницы (фидбэк Артёма).
-        self.gui.switch_main_page("settings")
-        self.gui.show_settings_category(category, force=True, subsection=subsection)
+        self._page_actions.switch_page("settings")
+        self._page_actions.show_settings_category(
+            category,
+            force=True,
+            subsection=subsection,
+        )
 
     # --------- Status rows (voice / mic / RAG) -----------
     def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,
@@ -570,8 +609,7 @@ class SandboxPage(QWidget):
         # Register under the shared indicator attr so update_status_colors()
         # keeps the dot live alongside the home/header indicators.
         try:
-            from ui.widgets.status_indicators_widget import _register_indicator
-            _register_indicator(self.gui, registry_attr, row)
+            self._page_actions.register_status_indicator(registry_attr, row)
         except Exception:
             pass
         return row
@@ -723,7 +761,7 @@ class SandboxPage(QWidget):
     def _refresh_character_avatar(self):
         if self._character_avatar_label is None:
             return
-        combo = getattr(self.gui, "chat_character_combobox", None)
+        combo = self._chat_character_combobox
         char_id = combo.currentText().strip() if combo is not None else ""
         if not char_id or char_id == "...":
             return
@@ -738,7 +776,7 @@ class SandboxPage(QWidget):
         self._render_model_selector(self._state)
 
     def _on_chat_model_changed(self, index: int):
-        combo = getattr(self.gui, "chat_model_combobox", None)
+        combo = self._chat_model_combobox
         if combo is None or index < 0:
             return
         data = combo.itemData(index)
@@ -754,7 +792,7 @@ class SandboxPage(QWidget):
 
     def _clear_stale_error_status(self):
         try:
-            status = getattr(self.gui, "mita_status", None)
+            status = self._chat_panel.mita_status if self._chat_panel is not None else None
             if status is not None and getattr(status, "current_state", None) == "error":
                 status.hide_animated()
         except Exception:
@@ -778,7 +816,7 @@ class SandboxPage(QWidget):
         self._render_prompt_selector(self._state)
 
     def _on_chat_prompt_pack_changed(self, index: int):
-        combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
+        combo = self._chat_prompt_pack_combobox
         if combo is None or index < 0:
             return
         data = combo.itemData(index)
@@ -801,18 +839,6 @@ class SandboxPage(QWidget):
         if not character_id:
             return
 
-        settings_combo = getattr(self.gui, "character_combobox", None)
-        if settings_combo is not None and settings_combo.currentText() != character_id:
-            index = settings_combo.findText(character_id, Qt.MatchFlag.MatchFixedString)
-            if index >= 0:
-                settings_combo.setCurrentIndex(index)
-                if self._chat_panel is not None:
-                    self._chat_panel.on_activated()
-                self._refresh_character_avatar()
-                self._populate_prompt_pack_combobox()
-                self._refresh_debug_summary()
-                return
-
         self._view_model.dispatch(SandboxCharacterSelected(character_id))
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
@@ -821,7 +847,7 @@ class SandboxPage(QWidget):
         self._refresh_debug_summary()
 
     def _open_selected_character_history(self):
-        combo = getattr(self.gui, "chat_character_combobox", None)
+        combo = self._chat_character_combobox
         character_id = combo.currentText().strip() if combo is not None else ""
         self._view_model.dispatch(SandboxOpenHistoryRequested(character_id))
 
@@ -933,9 +959,9 @@ class SandboxPage(QWidget):
             except Exception:
                 pass
 
-        char_combo = getattr(self.gui, "chat_character_combobox", None)
-        prompt_combo = getattr(self.gui, "chat_prompt_pack_combobox", None)
-        model_combo = getattr(self.gui, "chat_model_combobox", None)
+        char_combo = self._chat_character_combobox
+        prompt_combo = self._chat_prompt_pack_combobox
+        model_combo = self._chat_model_combobox
 
         if "character" in self._debug_summary_values:
             value = char_combo.currentText().strip() if char_combo is not None else ""
@@ -1004,7 +1030,7 @@ class SandboxPage(QWidget):
         def _run():
             if ticket != self._activation_ticket:
                 return
-            if getattr(self.gui, "current_main_page", None) != "sandbox":
+            if not self._page_actions.is_current("sandbox"):
                 return
             try:
                 callback()
@@ -1027,7 +1053,7 @@ class SandboxPage(QWidget):
         self._schedule_activation_step(ticket, 60, self._refresh_memory_summary)
         self._schedule_activation_step(ticket, 75, self._refresh_context_budget)
         self._schedule_activation_step(ticket, 90, self._refresh_debug_summary)
-        self._schedule_activation_step(ticket, 105, lambda: self.gui.update_status_colors())
+        self._schedule_activation_step(ticket, 105, self._page_actions.refresh_status)
         self._schedule_activation_step(
             ticket,
             120,
@@ -1283,22 +1309,24 @@ class SandboxPage(QWidget):
 
         guide_button = tr_set(QPushButton(), "Руководство", "Guide")
         guide_button.setObjectName("SandboxHeaderButton")
-        guide_button.clicked.connect(self.gui._show_guide)
+        guide_button.clicked.connect(self._page_actions.show_guide)
         actions.addWidget(guide_button)
 
         wiki_button = tr_set(QPushButton(), "Вики", "Wiki")
         wiki_button.setObjectName("SandboxHeaderButton")
-        wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
+        wiki_button.clicked.connect(lambda: self._page_actions.switch_page("wiki"))
         actions.addWidget(wiki_button)
 
         settings_button = tr_set(QPushButton(), "Настройки", "Settings")
         settings_button.setObjectName("SandboxHeaderButton")
-        settings_button.clicked.connect(lambda: self.gui.switch_main_page("settings"))
+        settings_button.clicked.connect(
+            lambda: self._page_actions.switch_page("settings")
+        )
         actions.addWidget(settings_button)
 
         home_button = tr_set(QPushButton(), "На главную", "Home")
         home_button.setObjectName("SandboxHeaderPrimaryButton")
-        home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
+        home_button.clicked.connect(lambda: self._page_actions.switch_page("home"))
         actions.addWidget(home_button)
 
         title_layout.addLayout(actions, 0)
@@ -1332,7 +1360,7 @@ class SandboxPage(QWidget):
                 combo.currentTextChanged.connect(change_slot)
             else:
                 combo.currentIndexChanged.connect(change_slot)
-            setattr(self.gui, attr, combo)
+            setattr(self, f"_{attr}", combo)
             return combo
 
         def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None, trailing=None) -> None:
@@ -1515,7 +1543,9 @@ class SandboxPage(QWidget):
 
         full_settings_btn = tr_set(QPushButton(), "Полные настройки", "Full settings")
         full_settings_btn.setObjectName("SandboxQuickAction")
-        full_settings_btn.clicked.connect(lambda: self.gui.switch_main_page("settings"))
+        full_settings_btn.clicked.connect(
+            lambda: self._page_actions.switch_page("settings")
+        )
         actions_layout.addWidget(full_settings_btn)
 
         reset_btn = tr_set(QPushButton(), "Сбросить персонажа", "Reset character")
@@ -1639,9 +1669,7 @@ class SandboxPage(QWidget):
     def _on_view_last_request(self) -> None:
         """Open the last-request context viewer. Reuses the host view's handler
         so the SavedMessages fallback lookup stays in one place."""
-        handler = getattr(self.gui, "_on_debug_view_last_context", None)
-        if callable(handler):
-            handler()
+        self._page_actions.view_last_context()
 
     def _on_reset_character(self) -> None:
         char_id = self._get_current_character_id()
@@ -1663,10 +1691,10 @@ class SandboxPage(QWidget):
 
     def _build_inspector_state_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
-        character_state_vm = self.gui.presentation.view_models.character_state(self.gui)
+        character_state_vm = self._character_state_view_model
         self._character_state_panel = CharacterStatePanel(
-            self.gui,
             character_state_vm,
+            parent=page,
         )
         character_state_vm.setParent(self._character_state_panel)
         layout.addWidget(self._character_state_panel)
@@ -1801,7 +1829,7 @@ class SandboxPage(QWidget):
 
         logs_btn = tr_set(QPushButton(), "Открыть страницу логов", "Open logs page")
         logs_btn.setObjectName("SandboxQuickAction")
-        logs_btn.clicked.connect(lambda: self.gui.switch_main_page("logs"))
+        logs_btn.clicked.connect(lambda: self._page_actions.switch_page("logs"))
         diagnostics_layout.addWidget(logs_btn)
 
         api_btn = tr_set(QPushButton(), "Открыть API-настройки", "Open API settings")
@@ -1814,7 +1842,14 @@ class SandboxPage(QWidget):
         debug_panel_strip, debug_panel_layout = self._make_strip(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
         try:
             from ui.settings.debug_settings import setup_debug_panel_controls
-            setup_debug_panel_controls(self.gui, debug_panel_layout)
+            setup_debug_panel_controls(
+                debug_panel_layout,
+                settings=self,
+                insert_system_message=self._page_actions.insert_debug_message,
+                save_snapshot=self._page_actions.save_debug_snapshot,
+                load_snapshot=self._page_actions.load_debug_snapshot,
+                view_context=self._page_actions.view_debug_context,
+            )
         except Exception as exc:
             err = QLabel(f"[debug_settings error] {exc}")
             err.setWordWrap(True)
@@ -1883,7 +1918,6 @@ class SandboxPage(QWidget):
             "debug": stack.addWidget(debug_page),
         }
         layout.addWidget(stack, 1)
-        self.gui.sandbox_inspector_tabs = stack
         self._inspector_stack = stack
 
         # Collapsed-state rail lives in the same layout, hidden until folded.
@@ -1997,8 +2031,12 @@ class SandboxPage(QWidget):
 
         shell_layout.addWidget(self._build_title_bar(), 0, 0, 1, 2)
 
-        chat_view_model = self.gui.presentation.view_models.chat_panel(self.gui)
-        self._chat_panel = ChatPanel(self.gui, chat_view_model)
+        chat_view_model = self._chat_panel_view_model
+        self._chat_panel = ChatPanel(
+            self,
+            chat_view_model,
+            self._chat_panel_actions,
+        )
         chat_view_model.setParent(self._chat_panel)
         chat_host = QFrame()
         chat_host.setObjectName("SandboxChatHost")
@@ -2012,8 +2050,22 @@ class SandboxPage(QWidget):
         page_layout.addWidget(workspace_shell, 1)
 
 
-def build_sandbox_page(window) -> QWidget:
-    view_model = window.presentation.view_models.sandbox(window)
-    page = SandboxPage(window, view_model)
+def build_sandbox_page(
+    window,
+    view_model,
+    *,
+    character_state_view_model,
+    chat_panel_view_model,
+    chat_panel_actions,
+    page_actions,
+) -> QWidget:
+    page = SandboxPage(
+        window,
+        view_model,
+        character_state_view_model=character_state_view_model,
+        chat_panel_view_model=chat_panel_view_model,
+        chat_panel_actions=chat_panel_actions,
+        page_actions=page_actions,
+    )
     view_model.setParent(page)
     return page

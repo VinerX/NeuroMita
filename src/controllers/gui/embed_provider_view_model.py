@@ -6,7 +6,7 @@ from PyQt6.QtCore import QTimer
 
 from controllers.gui.intent_view_model import IntentViewModel
 from ui.mvvm import immutable_payload, mutable_payload
-from ui.presentation import UiSettingsDataKey, UiTopic
+from controllers.gui.presentation_contracts import UiSettingsDataKey, UiTopic
 from ui.settings.embed_provider_presentation import (
     ActivateEmbedProvider,
     AddEmbedPreset,

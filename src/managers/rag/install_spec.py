@@ -142,6 +142,29 @@ def required_model_targets(settings: Any | None = None) -> list[str]:
     return targets
 
 
+def missing_model_targets(
+    settings: Any | None = None,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Return enabled RAG targets whose model files are still missing.
+
+    Python/package requirements intentionally do not participate in this
+    result. The caller uses it only to offer downloads for concrete model
+    artifacts selected by the effective RAG configuration.
+    """
+
+    missing: list[tuple[str, tuple[str, ...]]] = []
+    for target in required_model_targets(settings=settings):
+        status = get_install_status(target)
+        models = tuple(
+            str(model)
+            for model in status.get("download_models", ())
+            if str(model).strip()
+        )
+        if models:
+            missing.append((str(target), models))
+    return tuple(missing)
+
+
 def _current_targets() -> list[str]:
     return required_model_targets()
 

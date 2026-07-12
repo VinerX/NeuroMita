@@ -87,10 +87,10 @@ class LauncherHomeBackground(QWidget):
 class HomePage(LauncherHomeBackground):
     """Passive launcher home view: intents in, immutable state/effects out."""
 
-    def __init__(self, gui, view_model):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions):
+        super().__init__(parent)
         self.view_model = view_model
+        self._page_actions = page_actions
         self._state = HomeState()
         self._rendered_news: tuple[HomeNewsItemState, ...] = ()
         self._backend_status_value: QLabel | None = None
@@ -107,11 +107,6 @@ class HomePage(LauncherHomeBackground):
         self._cancel_button: QPushButton | None = None
 
         self._build_ui()
-        self.gui.home_page = self
-        self.gui.home_primary_button = self.primary_button
-        self.gui.home_progress_bar = self.progress_bar
-        self.gui.home_progress_label = self.progress_label
-
         self.view_model.state_changed.connect(self.render)
         self.view_model.effect_emitted.connect(self.handle_effect)
         self.destroyed.connect(lambda *_args: self.view_model.close())
@@ -286,7 +281,7 @@ class HomePage(LauncherHomeBackground):
         header.addStretch(1)
         all_news = tr_set(QPushButton(), "Все релизы", "All releases")
         all_news.setObjectName("LauncherHomeLinkButton")
-        all_news.clicked.connect(lambda: self.gui.switch_main_page("news"))
+        all_news.clicked.connect(lambda: self._page_actions.switch_page("news"))
         header.addWidget(all_news)
         layout.addLayout(header)
         divider = QFrame()
@@ -479,15 +474,10 @@ class HomePage(LauncherHomeBackground):
             QMessageBox.warning(self, effect.title, effect.message)
             return
         if isinstance(effect, HomeOpenRelease):
-            if hasattr(self.gui, "open_release_page"):
-                self.gui.open_release_page(effect.release_id)
-            else:
-                self.gui.switch_main_page("news")
+            self._page_actions.open_release_page(effect.release_id)
             return
         if isinstance(effect, HomeRefreshSidebar):
-            sidebar = getattr(self.gui, "shell_sidebar", None)
-            if sidebar is not None and hasattr(sidebar, "refresh_version_label"):
-                sidebar.refresh_version_label()
+            self._page_actions.refresh_sidebar_version()
 
     def show_extra_menu(self, anchor_widget) -> None:
         menu = QMenu(self)
@@ -498,7 +488,7 @@ class HomePage(LauncherHomeBackground):
         )
         menu.addAction(
             _("Настройки обновлений", "Update settings"),
-            lambda: self.gui.show_settings_category("updates"),
+            lambda: self._page_actions.show_settings_category("updates"),
         )
         menu.addAction(
             _("Открыть папку Unity", "Open Unity folder"),
@@ -557,8 +547,7 @@ class HomePage(LauncherHomeBackground):
         self.dispatch_intent(HomeLanguageChanged())
 
 
-def build_home_page(window) -> QWidget:
-    view_model = window.presentation.view_models.home(window)
-    page = HomePage(window, view_model)
+def build_home_page(parent, view_model, page_actions) -> QWidget:
+    page = HomePage(parent, view_model, page_actions)
     view_model.setParent(page)
     return page

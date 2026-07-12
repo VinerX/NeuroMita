@@ -70,6 +70,7 @@ class LauncherSidebarWidget(QFrame):
         sections: Iterable[SidebarSection] | None = None,
         initial_page: str = "home",
         on_page_requested: Callable[[str], None] | None = None,
+        version_provider: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("LauncherShellSidebar")
@@ -80,6 +81,7 @@ class LauncherSidebarWidget(QFrame):
             self.page_requested.connect(on_page_requested)
 
         self._sections = list(sections or DEFAULT_SIDEBAR_SECTIONS)
+        self._version_provider = version_provider
         self._nav_buttons: dict[str, QPushButton] = {}
         self._active_page = ""
         self._active_language = "ru"
@@ -314,10 +316,10 @@ class LauncherSidebarWidget(QFrame):
         return wrapper
 
     def _read_version_string(self) -> str:
-        presentation = getattr(self.window(), "presentation", None)
-        pending_version = (
-            presentation.app.pending_restart_version if presentation is not None else ""
-        )
+        try:
+            pending_version = str(self._version_provider() or "") if self._version_provider else ""
+        except Exception:
+            pending_version = ""
         if pending_version:
             return f"v{pending_version} ↻"
         try:

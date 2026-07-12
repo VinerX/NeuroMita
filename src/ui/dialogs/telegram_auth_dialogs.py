@@ -156,7 +156,9 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
     return dialog, entry, submit_button
 
 
-def show_tg_code_dialog(parent, auth_controller, request_id: str, *, error: str = ""):
+def show_tg_code_dialog(parent, actions, request_id: str, *, error: str = ""):
+    from ui.dialogs.telegram_auth_presentation import RejectTelegramAuth, SubmitTelegramAuth
+
     dialog, code_entry, submit_button = _build_auth_dialog(
         _("Подтверждение Telegram", "Telegram confirmation"),
         "TELEGRAM LOGIN",
@@ -173,12 +175,18 @@ def show_tg_code_dialog(parent, auth_controller, request_id: str, *, error: str 
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
                                   _("Введите код подтверждения", "Enter the confirmation code"))
             return
-        submitted["value"] = auth_controller.resolve(request_id, code)
+        actions.dispatch(SubmitTelegramAuth(str(request_id), code))
+        submitted["value"] = True
         dialog.accept()
 
     def on_reject():
         if not submitted["value"]:
-            auth_controller.reject(request_id, _("Ввод кода отменён", "Code entry cancelled"))
+            actions.dispatch(
+                RejectTelegramAuth(
+                    str(request_id),
+                    _("Ввод кода отменён", "Code entry cancelled"),
+                )
+            )
 
     submit_button.clicked.connect(submit_code)
     code_entry.returnPressed.connect(submit_code)
@@ -186,7 +194,9 @@ def show_tg_code_dialog(parent, auth_controller, request_id: str, *, error: str 
     dialog.exec()
 
 
-def show_tg_password_dialog(parent, auth_controller, request_id: str, *, error: str = ""):
+def show_tg_password_dialog(parent, actions, request_id: str, *, error: str = ""):
+    from ui.dialogs.telegram_auth_presentation import RejectTelegramAuth, SubmitTelegramAuth
+
     dialog, password_entry, submit_button = _build_auth_dialog(
         _("Двухфакторная аутентификация", "Two-factor authentication"),
         "ACCOUNT SECURITY",
@@ -204,12 +214,18 @@ def show_tg_password_dialog(parent, auth_controller, request_id: str, *, error: 
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
                                   _("Введите пароль", "Enter the password"))
             return
-        submitted["value"] = auth_controller.resolve(request_id, password)
+        actions.dispatch(SubmitTelegramAuth(str(request_id), password))
+        submitted["value"] = True
         dialog.accept()
 
     def on_reject():
         if not submitted["value"]:
-            auth_controller.reject(request_id, _("Ввод пароля отменён", "Password entry cancelled"))
+            actions.dispatch(
+                RejectTelegramAuth(
+                    str(request_id),
+                    _("Ввод пароля отменён", "Password entry cancelled"),
+                )
+            )
 
     submit_button.clicked.connect(submit_password)
     password_entry.returnPressed.connect(submit_password)

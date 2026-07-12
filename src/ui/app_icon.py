@@ -14,9 +14,9 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
-from core.app_paths import base_dir as project_base_dir
 from main_logger import logger
 
 # Приоритет: .ico (родной формат иконок Windows) → .png (то, что реально есть).
@@ -26,17 +26,25 @@ _APP_USER_MODEL_ID = "NeuroMita.App"
 
 def _base_dir() -> Path:
     """Return the application root without falling back to the process cwd."""
-    return project_base_dir()
+    configured = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(__file__).resolve().parents[2]
 
 
 def app_icon_path() -> str | None:
-    """Абсолютный путь к файлу иконки приложения или None, если не найден."""
+    """Return a cwd-independent icon path.
+
+    ``Icon.png`` is the packaged fallback. Returning its deterministic path
+    even in source-only/test layouts keeps callers independent from cwd;
+    ``QIcon`` safely handles a missing file in an incomplete checkout.
+    """
     base = _base_dir()
     for name in _ICON_CANDIDATES:
         candidate = base / name
         if candidate.is_file():
             return str(candidate)
-    return None
+    return str(base / "Icon.png")
 
 
 def application_icon():

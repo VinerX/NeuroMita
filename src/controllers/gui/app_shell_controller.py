@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import uuid
 from typing import Any, Callable
 
@@ -345,6 +346,23 @@ class AppShellController:
             Events.Chat.LOAD_SNAPSHOT,
             {"file_path": str(file_path), "character_id": str(character_id)},
         )
+
+    @staticmethod
+    def snapshot_start_directory(character_id: str) -> str:
+        histories_root = os.environ.get(
+            "NEUROMITA_HISTORIES_DIR",
+            os.path.join(os.getcwd(), "Histories"),
+        )
+        candidate = (
+            os.path.join(histories_root, str(character_id), "Saved")
+            if str(character_id or "").strip()
+            else histories_root
+        )
+        if os.path.isdir(candidate):
+            return candidate
+        if os.path.isdir(histories_root):
+            return histories_root
+        return "."
 
     def voice_model_state(self, model_id: str) -> tuple[bool, bool]:
         local_voice = services().get_optional(LocalVoiceService)

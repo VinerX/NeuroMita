@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import weakref
+from dataclasses import dataclass
 from core.task_supervisor import task_supervisor
 from typing import Any, Callable, Optional
 
@@ -13,8 +14,15 @@ Callback = Callable[[Any], None]
 
 
 _state_lock = threading.RLock()
-_generations: dict[tuple[int, str], int] = {}
-_exclusive: set[tuple[int, str]] = set()
+@dataclass(slots=True)
+class _OperationState:
+    next_generation: int = 0
+    current_generation: int = 0
+    active_count: int = 0
+    exclusive: bool = False
+
+
+_operations: dict[tuple[int, str], _OperationState] = {}
 _tracked_owner_ids: set[int] = set()
 
 
@@ -23,10 +31,8 @@ def _purge_owner_state(owner_id: int) -> None:
     очистки новый объект унаследовал бы чужие счётчики поколений."""
     with _state_lock:
         _tracked_owner_ids.discard(owner_id)
-        for key in [k for k in _generations if k[0] == owner_id]:
-            del _generations[key]
-        for key in [k for k in _exclusive if k[0] == owner_id]:
-            _exclusive.discard(key)
+        for key in [k for k in _operations if k[0] == owner_id]:
+            del _operations[key]
 
 
 def _track_owner(owner: Any) -> None:
@@ -105,28 +111,34 @@ def run_async(
     owner_ref = _owner_ref(owner)
     _track_owner(owner)
     with _state_lock:
+        state = _operations.setdefault(key, _OperationState())
         if normalized_policy == "exclusive":
-            if key in _exclusive:
+            if state.exclusive or state.active_count:
                 return None
-            _exclusive.add(key)
-            generation = _generations.get(key, 0) + 1
-            _generations[key] = generation
-        else:
-            generation = _generations.get(key, 0) + 1
-            _generations[key] = generation
+            state.exclusive = True
+        state.next_generation += 1
+        generation = state.next_generation
+        state.current_generation = generation
+        state.active_count += 1
 
     def current() -> bool:
         current_owner = owner_ref()
         if current_owner is None or _target_closed(current_owner):
             return False
         with _state_lock:
-            return _generations.get(key, 0) == generation
+            state = _operations.get(key)
+            return state is not None and state.current_generation == generation
 
     def finish() -> None:
-        if normalized_policy != "exclusive":
-            return
         with _state_lock:
-            _exclusive.discard(key)
+            state = _operations.get(key)
+            if state is None:
+                return
+            state.active_count = max(0, state.active_count - 1)
+            if normalized_policy == "exclusive":
+                state.exclusive = False
+            if state.active_count == 0:
+                _operations.pop(key, None)
 
     def _run():
         # Для policy="exclusive" слот освобождается только после того, как

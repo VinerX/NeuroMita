@@ -20,7 +20,7 @@ from services.contracts import (
     TelegramAuthService,
     VoiceModelService,
 )
-from ui.presentation import UiEvent, UiSettingsDataKey, UiTopic
+from controllers.gui.presentation_contracts import UiEvent, UiSettingsDataKey, UiTopic
 
 
 class _SettingsDataController:
@@ -93,6 +93,152 @@ class _ProviderOptionsController:
 
 
 class _SettingsSectionsController:
+    def __init__(self, presentation: "UiPresentationHub") -> None:
+        self._presentation = presentation
+
+    def build_section(self, gui: Any, category: str, parent: Any) -> None:
+        key = str(category or "").strip().lower()
+        if key == "general":
+            from ui.settings.general_settings import setup_general_settings_controls
+
+            setup_general_settings_controls(gui, parent)
+            return
+        if key == "language":
+            from ui.settings.language_settings import setup_language_settings_controls
+
+            setup_language_settings_controls(gui, parent)
+            return
+        if key == "api":
+            from ui.settings.api_settings import setup_api_controls
+
+            setup_api_controls(gui, parent, wire_api=self.wire_api)
+            return
+        if key == "characters":
+            from ui.settings.character_settings import setup_mita_controls
+
+            setup_mita_controls(
+                gui,
+                parent,
+                wire_characters=self.wire_characters,
+            )
+            return
+        if key == "voice":
+            from ui.settings.voiceover_settings import setup_voiceover_controls
+
+            owner = self._section_owner(gui, parent)
+            actions = self._own_view_model(
+                self._presentation.view_models.voiceover_settings(gui),
+                owner,
+            )
+            setup_voiceover_controls(
+                gui,
+                parent,
+                actions=actions,
+                wire_voiceover=self.wire_voiceover,
+            )
+            return
+        if key == "microphone":
+            from ui.settings.microphone_settings import setup_microphone_controls
+
+            setup_microphone_controls(
+                gui,
+                parent,
+                wire_microphone=self.wire_microphone,
+            )
+            return
+        if key == "game":
+            from ui.settings.game_settings import setup_game_controls
+
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(
+                self._presentation.view_models.beat_settings(gui),
+                owner,
+            )
+            setup_game_controls(gui, parent, beat_view_model=view_model)
+            return
+        if key == "models":
+            from PyQt6.QtWidgets import QMessageBox
+            from ui.settings.model_interaction_settings import (
+                setup_model_interaction_controls,
+            )
+            from ui.settings.rag_install_presentation import RagInstallShowError
+
+            owner = self._section_owner(gui, parent)
+            runtime_options = self._runtime_options_view_model(gui)
+            embed_provider = self._own_view_model(
+                self._presentation.view_models.embed_provider(gui),
+                owner,
+            )
+            rag_preset = self._own_view_model(
+                self._presentation.view_models.rag_preset(gui),
+                owner,
+            )
+            rag_install = self._own_view_model(
+                self._presentation.view_models.rag_install(gui),
+                owner,
+            )
+
+            def show_rag_error(effect) -> None:
+                if isinstance(effect, RagInstallShowError):
+                    QMessageBox.critical(gui, effect.title, effect.message)
+
+            rag_install.effect_emitted.connect(show_rag_error)
+            setup_model_interaction_controls(
+                gui,
+                parent,
+                runtime_options_view_model=runtime_options,
+                build_memory_section=self._presentation.rag.build_memory_section,
+                build_rag_section=lambda target, layout, providers: self._presentation.rag.build_rag_section(
+                    target,
+                    layout,
+                    providers,
+                    rag_preset_view_model=rag_preset,
+                    embed_provider_view_model=embed_provider,
+                    rag_install_view_model=rag_install,
+                ),
+            )
+            return
+        if key == "screen":
+            from ui.settings.screen_analysis_settings import (
+                setup_screen_analysis_controls,
+            )
+
+            setup_screen_analysis_controls(
+                gui,
+                parent,
+                runtime_options_view_model=self._runtime_options_view_model(gui),
+            )
+            return
+        if key == "updates":
+            self.build_updates(gui, parent)
+            return
+        raise KeyError(f"Unknown settings section: {category}")
+
+    @staticmethod
+    def _section_owner(gui: Any, parent: Any):
+        try:
+            owner = parent.parentWidget()
+        except Exception:
+            owner = None
+        return owner or getattr(gui, "settings_page", None) or gui
+
+    @staticmethod
+    def _own_view_model(view_model, owner):
+        view_model.setParent(owner)
+        owner.destroyed.connect(lambda *_args, vm=view_model: vm.close())
+        return view_model
+
+    def _runtime_options_view_model(self, gui: Any):
+        page = getattr(gui, "settings_page", None) or gui
+        view_model = getattr(page, "runtime_options_view_model", None)
+        if view_model is None or view_model.is_closed:
+            view_model = self._own_view_model(
+                self._presentation.view_models.settings_runtime_options(gui),
+                page,
+            )
+            page.runtime_options_view_model = view_model
+        return view_model
+
     def wire_api(self, gui: Any):
         from controllers.gui.api_settings import ApiSettingsController
 
@@ -127,15 +273,32 @@ class _SettingsSectionsController:
 
 
 class _RagController:
+    def __init__(self) -> None:
+        from controllers.gui.rag_memory_controller import RagSettingsCoordinator
+
+        self._coordinator = RagSettingsCoordinator()
+
     def build_memory_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
-        from controllers.gui.rag_memory_controller import build_memory_section
+        self._coordinator.build_memory_section(gui, parent, provider_options)
 
-        build_memory_section(gui, parent, provider_options)
-
-    def build_rag_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
-        from controllers.gui.rag_memory_controller import build_rag_section
-
-        build_rag_section(gui, parent, provider_options)
+    def build_rag_section(
+        self,
+        gui: Any,
+        parent: Any,
+        provider_options: list[Any],
+        *,
+        rag_preset_view_model,
+        embed_provider_view_model,
+        rag_install_view_model,
+    ) -> None:
+        self._coordinator.build_rag_section(
+            gui,
+            parent,
+            provider_options,
+            rag_preset_view_model=rag_preset_view_model,
+            embed_provider_view_model=embed_provider_view_model,
+            rag_install_view_model=rag_install_view_model,
+        )
 
     def download_embed_model(self) -> None:
         from controllers.gui.rag_install_view_model import open_rag_ai_hub
@@ -239,6 +402,7 @@ class _ViewModelFactory:
 
         return ChatMessageActionsViewModel(
             events=self._presentation.events,
+            finetune=self._presentation.finetune,
             parent=parent,
         )
 
@@ -280,6 +444,14 @@ class _ViewModelFactory:
             parent=parent,
         )
 
+    def rag_preset(self, host: Any, *, parent: Any = None):
+        from controllers.gui.rag_preset_view_model import RagPresetViewModel
+
+        return RagPresetViewModel(
+            settings=use(SettingsService),
+            parent=parent,
+        )
+
     def settings_page(self, host: Any, *, parent: Any = None):
         from controllers.gui.settings_page_view_model import SettingsPageViewModel
 
@@ -289,6 +461,11 @@ class _ViewModelFactory:
             settings_data=self._presentation.settings_data,
             parent=parent,
         )
+
+    def logs_page(self, host: Any, *, parent: Any = None):
+        from controllers.gui.logs_page_view_model import LogsPageViewModel
+
+        return LogsPageViewModel(parent=parent)
 
 
 class _NewsController:
@@ -702,10 +879,11 @@ class _ApplicationController:
 
 
 class UiPresentationHub:
-    """Application-facing controllers injected into passive Qt views.
+    """Application-facing controllers owned by the GUI composition root.
 
-    The hub belongs to the composition root. Views may use these controllers,
-    but never resolve EventBus, service implementations, managers or databases.
+    Coordinators and ViewModel factories use this hub to assemble passive Qt
+    views. Views receive only their narrow state/action dependencies and never
+    resolve this hub, EventBus, service implementations, managers or databases.
     """
 
     def __init__(self) -> None:
@@ -714,7 +892,7 @@ class UiPresentationHub:
         self.app = _ApplicationController()
         self.settings_data = _SettingsDataController()
         self.providers = _ProviderOptionsController(self.settings_data)
-        self.settings_sections = _SettingsSectionsController()
+        self.settings_sections = _SettingsSectionsController(self)
         self.rag = _RagController()
         self.view_models = _ViewModelFactory(self)
 

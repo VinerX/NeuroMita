@@ -8,7 +8,7 @@ from PyQt6.QtCore import QTimer
 
 from controllers.gui.intent_view_model import IntentViewModel
 from ui.mvvm import immutable_payload, mutable_payload
-from ui.presentation import UiTopic
+from controllers.gui.presentation_contracts import UiTopic
 from ui.windows.ai_hub.constants import CATEGORY_ORDER, ROW_CATEGORY_MAP
 from ui.windows.ai_hub.helpers import meta_from_row
 from ui.windows.ai_hub.presentation import (

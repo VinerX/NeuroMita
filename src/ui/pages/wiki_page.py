@@ -153,9 +153,10 @@ def _markdown_to_html(markdown_text: str) -> str:
 
 
 class WikiPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, page_actions, settings):
+        super().__init__(parent)
+        self._page_actions = page_actions
+        self._settings = settings
         self.setObjectName("WikiPage")
 
         self._history: list[_WikiLocation] = []
@@ -168,12 +169,8 @@ class WikiPage(QWidget):
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
 
-        self._sync_host_exports()
         self._build_ui()
         self.open_target("index.md", push_history=True)
-
-    def _sync_host_exports(self) -> None:
-        self.gui.wiki_page = self
 
     def _build_ui(self) -> None:
         root, content_layout = create_shell_page_container()
@@ -295,7 +292,7 @@ class WikiPage(QWidget):
     def _get_requested_language(self) -> str:
         try:
             return str(
-                get_setting(self.gui, "LANGUAGE", _DEFAULT_DOC_LANGUAGE)
+                get_setting(self._settings, "LANGUAGE", _DEFAULT_DOC_LANGUAGE)
                 or _DEFAULT_DOC_LANGUAGE
             ).strip().lower()
         except Exception:
@@ -473,18 +470,19 @@ class WikiPage(QWidget):
                     section = unquote(kv.split("=", 1)[1]).strip() or None
 
         page_key = parts[0].lower()
-        gui = self.gui
-
         if page_key == "settings":
             category = parts[1].lower() if len(parts) > 1 else None
-            if category and hasattr(gui, "show_settings_category"):
-                gui.show_settings_category(category, force=True, subsection=section)
-            elif hasattr(gui, "switch_main_page"):
-                gui.switch_main_page("settings")
+            if category:
+                self._page_actions.show_settings_category(
+                    category,
+                    force=True,
+                    subsection=section,
+                )
+            else:
+                self._page_actions.switch_page("settings")
             return True
 
-        if hasattr(gui, "switch_main_page"):
-            gui.switch_main_page(page_key)
+        self._page_actions.switch_page(page_key)
         return True
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
@@ -532,5 +530,5 @@ class WikiPage(QWidget):
         pass
 
 
-def build_wiki_page(window) -> QWidget:
-    return WikiPage(window)
+def build_wiki_page(parent, page_actions, settings) -> QWidget:
+    return WikiPage(parent, page_actions, settings)

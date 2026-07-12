@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from controllers.gui.intent_view_model import IntentViewModel
-from ui.presentation import UiTopic
+from controllers.gui.presentation_contracts import UiTopic
 from ui.settings.voiceover_settings.presentation import (
     OpenVoiceAIHub,
     RestartVoiceService,

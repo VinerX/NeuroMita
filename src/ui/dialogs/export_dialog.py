@@ -20,14 +20,14 @@ from main_logger import logger
 
 
 class ExportDialog(QDialog):
-    def __init__(self, finetune_controller, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
-        self._finetune = finetune_controller
+        self._view_model = view_model
         self.setWindowTitle(tr("Экспорт данных дообучения", "Export Finetune Data"))
         self.setMinimumWidth(500)
         self.setModal(True)
 
-        self._collector_available = self._finetune.available()
+        self._collector_available = self._view_model.export_available()
 
         self._build_ui()
         self._populate_characters()
@@ -156,7 +156,7 @@ class ExportDialog(QDialog):
         if not self._collector_available:
             return
         try:
-            stats = self._finetune.get_stats()
+            stats = self._view_model.export_stats()
             for char_id, count in sorted(stats.get("by_character", {}).items()):
                 item = QListWidgetItem(f"{char_id}  ({count} {tr('записей', 'records')})")
                 item.setData(Qt.ItemDataRole.UserRole, char_id)
@@ -202,7 +202,7 @@ class ExportDialog(QDialog):
             return
         try:
             filters = self._build_filters()
-            samples = self._finetune.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             n = len(samples)
             self._count_label.setText(tr("Записей подходит: ", "Records matched: ") + str(n))
             self._export_btn.setEnabled(n > 0)
@@ -217,7 +217,7 @@ class ExportDialog(QDialog):
 
         try:
             filters = self._build_filters()
-            samples = self._finetune.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             if not samples:
                 QMessageBox.information(
                     self,
@@ -241,10 +241,11 @@ class ExportDialog(QDialog):
             if not path:
                 return
 
-            if is_sharegpt:
-                count = self._finetune.export_sharegpt(samples, path)
-            else:
-                count = self._finetune.export_raw_jsonl(samples, path)
+            count = self._view_model.export_to_file(
+                samples,
+                path,
+                sharegpt=is_sharegpt,
+            )
 
             QMessageBox.information(
                 self,

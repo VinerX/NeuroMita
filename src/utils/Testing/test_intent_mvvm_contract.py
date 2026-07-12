@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from ui.mvvm import FrozenMapping, immutable_payload, mutable_payload
+from ui.mvvm import FrozenList, FrozenMapping, immutable_payload, mutable_payload
 
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -17,16 +17,20 @@ class IntentMvvmContractTests(unittest.TestCase):
     def test_immutable_payload_preserves_mapping_and_pair_list_shapes(self) -> None:
         mapping = immutable_payload({"first": 1, "second": [2, 3]})
         pairs = immutable_payload([("first", 1), ("second", 2)])
+        original_tuple = ("tuple", [1, 2])
+        frozen_tuple = immutable_payload(original_tuple)
 
         self.assertIsInstance(mapping, FrozenMapping)
+        self.assertIsInstance(pairs, FrozenList)
         self.assertEqual(
             {"first": 1, "second": [2, 3]},
             mutable_payload(mapping),
         )
         self.assertEqual(
-            [["first", 1], ["second", 2]],
+            [("first", 1), ("second", 2)],
             mutable_payload(pairs),
         )
+        self.assertEqual(original_tuple, mutable_payload(frozen_tuple))
 
     def test_views_do_not_use_event_topics_or_async_runner(self) -> None:
         violations: list[str] = []

@@ -102,14 +102,18 @@ class WindowCompositionController:
     def _factory_vc_redist(self, parent, _payload: dict):
         from ui.windows.voice_action_windows import VCRedistWarningDialog
 
-        return VCRedistWarningDialog(self._presentation.voice, parent=parent)
+        return VCRedistWarningDialog(
+            self._presentation.voice.open_documentation,
+            parent=parent,
+        )
 
     def _factory_triton(self, parent, payload: dict):
         from ui.windows.voice_action_windows import TritonDependenciesDialog
 
         deps = payload.get("dependencies_status") or payload.get("deps") or {}
         return TritonDependenciesDialog(
-            self._presentation.voice,
+            open_documentation=self._presentation.voice.open_documentation,
+            refresh_status=lambda: self._presentation.voice.triton_status(refresh=True),
             parent=parent,
             dependencies_status=deps,
         )

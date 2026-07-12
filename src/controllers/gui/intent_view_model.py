@@ -101,7 +101,11 @@ class IntentViewModel(QObject, Generic[StateT]):
             get_event_bus().unsubscribe_owner(self)
         except Exception:
             logger.debug("Failed to unsubscribe view model from EventBus", exc_info=True)
-        task_supervisor().cancel_owner(self, timeout=0.1)
+        # Closing a Qt object must never join worker threads on the GUI thread.
+        # Results are already generation-gated and `_closed` rejects queued
+        # callbacks, so cooperative cancellation is sufficient here. The
+        # application shutdown path performs the bounded wait centrally.
+        task_supervisor().cancel_owner(self, timeout=0.0)
         self._inflight.clear()
         self._coalesced_pending.clear()
         self._coalesced_specs.clear()

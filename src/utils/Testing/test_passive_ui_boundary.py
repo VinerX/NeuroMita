@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +29,7 @@ _FORBIDDEN_MODULES = {
     "controllers.gui.presentation_hub",
 }
 _REMOVED_UI_INFRASTRUCTURE = {
+    Path("presentation.py"),
     Path("async_bus.py"),
     Path("task_worker.py"),
     Path("pages/news_support.py"),
@@ -106,13 +106,162 @@ class PassiveUiBoundaryTests(unittest.TestCase):
                     violations.append(f"{relative}:{node.lineno}: .{node.attr}")
         self.assertEqual([], violations, "Views reach composition backend state:\n" + "\n".join(violations))
 
+    def test_views_do_not_use_presentation_service_locator(self) -> None:
+        violations: list[str] = []
+        for path in sorted(_UI_ROOT.rglob("*.py")):
+            relative = path.relative_to(_UI_ROOT)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr == "presentation":
+                    violations.append(f"{relative}:{node.lineno}: .presentation")
+        self.assertEqual(
+            [],
+            violations,
+            "Views use the presentation service locator:\n" + "\n".join(violations),
+        )
+
+    def test_views_do_not_store_concrete_composition_controllers(self) -> None:
+        forbidden_attributes = {
+            "presentation",
+            "shell_controller",
+            "window_controller",
+            "page_coordinator",
+            "main_controller",
+        }
+        violations: list[str] = []
+        for path in sorted(_UI_ROOT.rglob("*.py")):
+            relative = path.relative_to(_UI_ROOT)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in forbidden_attributes:
+                    violations.append(f"{relative}:{node.lineno}: .{node.attr}")
+        self.assertEqual(
+            [],
+            violations,
+            "Views retain composition/controller objects:\n" + "\n".join(violations),
+        )
+
+    def test_views_do_not_construct_application_view_models(self) -> None:
+        violations: list[str] = []
+        for path in sorted(_UI_ROOT.rglob("*.py")):
+            relative = path.relative_to(_UI_ROOT)
+            if relative == Path("settings/settings_binding.py"):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                name = (
+                    function.id
+                    if isinstance(function, ast.Name)
+                    else function.attr
+                    if isinstance(function, ast.Attribute)
+                    else ""
+                )
+                if str(name).endswith("ViewModel"):
+                    violations.append(f"{relative}:{node.lineno}: {name}()")
+        self.assertEqual(
+            [],
+            violations,
+            "Views construct application ViewModels instead of receiving them:\n"
+            + "\n".join(violations),
+        )
+
+    def test_views_do_not_retain_main_window_as_gui_service_locator(self) -> None:
+        violations: list[str] = []
+        for path in sorted(_UI_ROOT.rglob("*.py")):
+            relative = path.relative_to(_UI_ROOT)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute) or node.attr != "gui":
+                    continue
+                if isinstance(node.value, ast.Name) and node.value.id == "self":
+                    violations.append(f"{relative}:{node.lineno}: self.gui")
+        self.assertEqual(
+            [],
+            violations,
+            "Views retain the main window as a mutable service locator:\n"
+            + "\n".join(violations),
+        )
+
+    def test_stateful_pages_do_not_call_shell_business_methods(self) -> None:
+        forbidden = {
+            "switch_main_page",
+            "show_settings_category",
+            "open_release_page",
+            "update_debug_info",
+            "send_message",
+            "load_chat_history",
+            "clear_chat_display",
+            "update_status_colors",
+            "_show_guide",
+        }
+        roots = (_UI_ROOT / "pages", _UI_ROOT / "widgets" / "chat_panel.py")
+        paths = list(roots[0].rglob("*.py")) + [roots[1]]
+        violations: list[str] = []
+        for path in sorted(paths):
+            relative = path.relative_to(_UI_ROOT)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr not in forbidden:
+                        continue
+                    base = node.func.value
+                    direct_host = isinstance(base, ast.Name) and base.id in {"gui", "window"}
+                    self_gui = (
+                        isinstance(base, ast.Attribute)
+                        and isinstance(base.value, ast.Name)
+                        and base.value.id == "self"
+                        and base.attr == "gui"
+                    )
+                    if direct_host or self_gui:
+                        violations.append(f"{relative}:{node.lineno}: {node.func.attr}()")
+        self.assertEqual(
+            [],
+            violations,
+            "Stateful Views call shell business methods instead of action ports:\n"
+            + "\n".join(violations),
+        )
+
+    def test_shell_views_do_not_read_runtime_state_files(self) -> None:
+        files = (
+            Path("windows/app_window_base.py"),
+            Path("pages/logs_page.py"),
+        )
+        forbidden_calls = {"open", "json.load"}
+        violations: list[str] = []
+        for relative in files:
+            path = _UI_ROOT / relative
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                if isinstance(function, ast.Name):
+                    name = function.id
+                elif isinstance(function, ast.Attribute):
+                    if isinstance(function.value, ast.Name):
+                        name = f"{function.value.id}.{function.attr}"
+                    else:
+                        name = function.attr
+                else:
+                    name = ""
+                if name in forbidden_calls or name == "Path.open":
+                    violations.append(f"{relative}:{node.lineno}: {name}()")
+        self.assertEqual(
+            [],
+            violations,
+            "Shell views read runtime files directly:\n" + "\n".join(violations),
+        )
+
     def test_composition_root_is_outside_ui(self) -> None:
         self.assertFalse((_UI_ROOT / "composition_root.py").exists())
         self.assertTrue((_SRC_ROOT / "controllers" / "gui" / "composition_root.py").exists())
 
     def test_ui_topics_match_registered_backend_events(self) -> None:
         from core.events import Events
-        from ui.presentation import UiTopic
+        from controllers.gui.presentation_contracts import UiTopic
 
         registered: set[str] = set()
         for group_name in dir(Events):
@@ -130,15 +279,6 @@ class PassiveUiBoundaryTests(unittest.TestCase):
 
         missing = sorted(topic.value for topic in UiTopic if topic.value not in registered)
         self.assertEqual([], missing)
-
-    def test_detached_view_resolves_explicitly_injected_presentation(self) -> None:
-        from ui.presentation import resolve_presentation
-
-        presentation = object()
-        detached_view = SimpleNamespace(presentation=presentation)
-
-        self.assertIs(presentation, resolve_presentation(detached_view))
-
 
 if __name__ == "__main__":
     unittest.main()

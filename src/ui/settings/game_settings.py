@@ -60,13 +60,14 @@ def _format_beat_status_text(state: BeatSettingsState) -> str:
 def _beat_view_model(gui):
     view_model = getattr(gui, "_beat_settings_view_model", None)
     if view_model is None:
-        view_model = gui.presentation.view_models.beat_settings(gui)
-        view_model.setParent(gui)
-        view_model.state_changed.connect(lambda state: _render_beat_state(gui, state))
-        view_model.effect_emitted.connect(lambda effect: _handle_beat_effect(gui, effect))
-        gui._beat_settings_view_model = view_model
-        gui.destroyed.connect(lambda *_: view_model.close())
+        raise RuntimeError("Beat settings view model is not attached")
     return view_model
+
+
+def _attach_beat_view_model(gui, view_model) -> None:
+    gui._beat_settings_view_model = view_model
+    view_model.state_changed.connect(lambda state: _render_beat_state(gui, state))
+    view_model.effect_emitted.connect(lambda effect: _handle_beat_effect(gui, effect))
 
 
 def _render_beat_state(gui, state: BeatSettingsState) -> None:
@@ -187,8 +188,8 @@ def _create_beat_status_label_widget(gui) -> QWidget:
     return frame
 
 
-def setup_game_controls(self, parent) -> None:
-    beat_view_model = _beat_view_model(self)
+def setup_game_controls(self, parent, *, beat_view_model) -> None:
+    _attach_beat_view_model(self, beat_view_model)
 
     dialogue_config = [
         {

@@ -1,14 +1,20 @@
-import json
 import os
 import threading
 
-from PyQt6.QtWidgets import (
-    QLineEdit, QCheckBox, QComboBox, QInputDialog, QMessageBox,
-    QProgressDialog, QLabel, QHBoxLayout, QWidget, QPushButton,
-)
-from PyQt6.QtCore import Qt
+try:
+    from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+    from PyQt6.QtCore import Qt
+except ModuleNotFoundError:  # Headless contract tests import non-Qt helpers.
+    QMessageBox = None
+    QProgressDialog = None
 
-from ui.gui_templates import create_settings_section
+    class _QtFallback:
+        class WindowModality:
+            NonModal = None
+            WindowModal = None
+
+    Qt = _QtFallback()
+
 from controllers.gui.async_runner import run_async
 from main_logger import logger
 from utils import getTranslationVariant as _
@@ -20,19 +26,13 @@ from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
     get_install_status,
-    required_model_targets,
-    start_install,
 )
 from managers.rag.pipeline.config import RAG_DEFAULTS
 from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
-from managers.rag.pipeline.config import (
-    RAG_PIPELINE_PRESETS, list_pipeline_preset_names, get_pipeline_preset_settings,
-)
 from handlers.embedding_presets import (
     list_preset_names,
     resolve_model_settings,
     resolve_full_config,
-    sync_legacy_settings_to_preset,
 )
 
 # Module-level state for the running extraction (survives dialog close).
@@ -40,11 +40,13 @@ _extr_state: dict = {'worker': None, 'stop': None, 'total': 0, 'last_status': ''
 
 
 def _selected_character_id(gui) -> str:
-    for attr in ("_configured_char_id", "_active_character_id", "current_character_id", "_current_char_id"):
-        value = str(getattr(gui, attr, "") or "").strip()
-        if value:
-            return value
-    return ""
+    getter = getattr(gui, "current_character_id", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter() or "").strip()
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -643,8 +645,10 @@ def _run_entity_gc(gui, dry_run: bool = False) -> None:
     worker.error_signal.connect(on_error)
     progress.canceled.connect(lambda: worker.requestInterruption())
 
-    # Публичная ссылка: QThread нельзя отпускать в GC, пока он работает.
-    gui.rag_entity_gc_worker = worker
+    # QObject-parent owns the running worker without storing task state on the
+    # View. The worker deletes itself after the thread finishes.
+    worker.setParent(gui)
+    worker.finished.connect(worker.deleteLater)
     progress.show()
     worker.start()
 
@@ -713,244 +717,18 @@ def _delete_all_graph_data(gui) -> None:
 # ---------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────
-# Pipeline preset helpers
+# Pipeline preset presentation
 # ─────────────────────────────────────────────────────────────────
 
-def _load_user_presets() -> dict:
-    from managers.settings_manager import SettingsManager
-    try:
-        raw = SettingsManager.get("RAG_PIPELINE_USER_PRESETS", "{}") or "{}"
-        return json.loads(raw)
-    except Exception:
-        return {}
+def _build_pipeline_preset_config(view_model) -> list:
+    from ui.settings.rag_preset_widget import create_rag_preset_widget
 
-
-def _save_user_presets(presets: dict) -> None:
-    from managers.settings_manager import SettingsManager
-    SettingsManager.set("RAG_PIPELINE_USER_PRESETS", json.dumps(presets, ensure_ascii=False))
-
-
-def _persist_setting(gui, key: str, value) -> None:
-    """Записать настройку через binding-мост (держит виджеты в синхроне)."""
-    binding = getattr(gui, "settings_binding", None)
-    if binding is not None:
-        binding.set(key, value)
-        return
-    gui.presentation.settings.set(key, value)
-
-
-def _update_preset_delete_btn(gui, name: str) -> None:
-    btn = getattr(gui, 'rag_preset_delete_btn', None)
-    if btn is not None:
-        btn.setEnabled(name not in RAG_PIPELINE_PRESETS and name != "Custom")
-
-
-def _refresh_preset_combo(gui) -> None:
-    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
-    if combo is None:
-        return
-    user_presets = _load_user_presets()
-    current = combo.currentText()
-    combo.blockSignals(True)
-    combo.clear()
-    combo.addItems(list_pipeline_preset_names(user_presets))
-    if combo.findText(current) >= 0:
-        combo.setCurrentText(current)
-    else:
-        combo.setCurrentText("Custom")
-    combo.blockSignals(False)
-    _update_preset_delete_btn(gui, combo.currentText())
-
-
-def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
-    """Return enabled RAG targets whose selected model is absent locally.
-
-    The install status is also responsible for checking Python dependencies, but
-    this helper deliberately reports only model artifacts: the user should not
-    get a download prompt merely because a package needs an update.
-    """
-    settings = use(SettingsService)
-    targets = required_model_targets(settings=settings)
-
-    missing: list[tuple[str, list[str]]] = []
-    for target in targets:
-        status = get_install_status(target)
-        models = [str(model) for model in status.get("download_models", []) if str(model).strip()]
-        if models:
-            missing.append((target, models))
-    return missing
-
-
-def _show_missing_preset_models(gui, missing: list[tuple[str, list[str]]]) -> None:
-    """Offer to enqueue downloads after background status inspection."""
-    if not missing:
-        return
-
-    model_names = "\n".join(
-        f"• {model}" for _target, models in missing for model in models
-    )
-    answer = QMessageBox.question(
-        gui,
-        _("Необходима загрузка моделей", "Model download required"),
-        _(
-            "Для выбранного пресета RAG отсутствуют модели:\n{models}\n\nДобавить их в очередь загрузки?",
-            "The selected RAG preset needs these models:\n{models}\n\nAdd them to the download queue?",
-        ).format(models=model_names),
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes,
-    )
-    if answer != QMessageBox.StandardButton.Yes:
-        return
-
-    for target, _models in missing:
-        start_install(target, with_ui=True)
-
-
-def _offer_missing_preset_models(gui) -> None:
-    """Inspect preset model artifacts without blocking the settings window."""
-    run_async(
-        gui,
-        _missing_preset_model_targets,
-        lambda missing: _show_missing_preset_models(gui, missing),
-        name="rag-preset-model-status",
-    )
-
-
-def _on_apply_preset(gui) -> None:
-    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
-    if combo is None:
-        return
-    name = combo.currentText()
-    if name == "Custom":
-        return
-
-    msg = QMessageBox(gui)
-    msg.setWindowTitle(_("Применить пресет", "Apply preset"))
-    msg.setText(
-        _("Применить пресет «{n}»?\nТекущие настройки RAG будут заменены.",
-          "Apply preset «{n}»?\nCurrent RAG settings will be replaced.").format(n=name)
-    )
-    save_btn   = msg.addButton(
-        _("Сохранить текущие и применить", "Save current & Apply"),
-        QMessageBox.ButtonRole.AcceptRole,
-    )
-    apply_btn  = msg.addButton(_("Применить", "Apply"), QMessageBox.ButtonRole.DestructiveRole)
-    cancel_btn = msg.addButton(_("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
-    msg.setDefaultButton(cancel_btn)
-    msg.exec()
-
-    clicked = msg.clickedButton()
-    if clicked is cancel_btn:
-        return
-    if clicked is save_btn:
-        if not _on_save_preset(gui):
-            return  # user cancelled save
-
-    user_presets = _load_user_presets()
-    settings = get_pipeline_preset_settings(name, user_presets)
-    if settings is None:
-        return
-    for k, v in settings.items():
-        _persist_setting(gui, k, v)
-        widget = getattr(gui, k, None)
-        if widget is None:
-            continue
-        if isinstance(widget, QCheckBox):
-            widget.setChecked(bool(v))
-        elif isinstance(widget, QComboBox):
-            widget.setCurrentText(str(v))
-        elif isinstance(widget, QLineEdit):
-            widget.setText(str(v))
-    if any(k in settings for k in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX")):
-        sync_legacy_settings_to_preset(log_migration=False, force=True)
-    _offer_missing_preset_models(gui)
-
-
-def _on_save_preset(gui) -> bool:
-    """Save current RAG settings as a named preset. Returns True if saved."""
-    name, ok = QInputDialog.getText(
-        gui,
-        _("Сохранить пресет", "Save preset"),
-        _("Название пресета:", "Preset name:"),
-    )
-    if not ok or not str(name or "").strip():
-        return False
-    name = str(name).strip()
-
-    if name in RAG_PIPELINE_PRESETS:
-        QMessageBox.warning(
-            gui,
-            _("Ошибка", "Error"),
-            _("Нельзя перезаписать встроенный пресет «{n}».",
-              "Cannot overwrite built-in preset «{n}».").format(n=name),
-        )
-        return False
-
-    snapshot = {k: gui.settings.get(k, RAG_DEFAULTS[k]) for k in RAG_DEFAULTS}
-    user_presets = _load_user_presets()
-    user_presets[name] = snapshot
-    _save_user_presets(user_presets)
-    _persist_setting(gui, "RAG_PIPELINE_PRESET", name)
-    _refresh_preset_combo(gui)
-    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
-    if combo is not None:
-        combo.blockSignals(True)
-        combo.setCurrentText(name)
-        combo.blockSignals(False)
-    return True
-
-
-def _on_delete_preset(gui) -> None:
-    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
-    if combo is None:
-        return
-    name = combo.currentText()
-    if name in RAG_PIPELINE_PRESETS or name == "Custom":
-        return
-
-    reply = QMessageBox.question(
-        gui,
-        _("Удалить пресет", "Delete preset"),
-        _("Удалить пресет «{n}»?", "Delete preset «{n}»?").format(n=name),
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-    )
-    if reply != QMessageBox.StandardButton.Yes:
-        return
-
-    user_presets = _load_user_presets()
-    user_presets.pop(name, None)
-    _save_user_presets(user_presets)
-    _persist_setting(gui, "RAG_PIPELINE_PRESET", "Custom")
-    _refresh_preset_combo(gui)
-    combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
-    if combo is not None:
-        combo.blockSignals(True)
-        combo.setCurrentText("Custom")
-        combo.blockSignals(False)
-
-
-def _build_pipeline_preset_config(gui) -> list:
-    user_presets = _load_user_presets()
     return [
         {'label': _('Пресет пайплайна', 'Pipeline Preset'), 'type': 'subsection'},
-        {'label': _('Пресет', 'Preset'),
-         'key': 'RAG_PIPELINE_PRESET', 'type': 'combobox',
-         'options': list_pipeline_preset_names(user_presets),
-         'default': 'Keyword+FTS only',
-         'command': lambda text: _update_preset_delete_btn(gui, text),
-         'tooltip': _(
-             'Выберите пресет и нажмите «Применить». Custom — ручная настройка.',
-             'Select a preset and click «Apply». Custom — manual configuration.',
-         )},
-        {'type': 'button_group', 'buttons': [
-            {'label': _('Применить', 'Apply'),
-             'command': lambda: _on_apply_preset(gui)},
-            {'label': _('Сохранить как...', 'Save as...'),
-             'command': lambda: _on_save_preset(gui)},
-            {'label': _('Удалить', 'Delete'),
-             'command': lambda: _on_delete_preset(gui),
-             'widget_name': 'rag_preset_delete_btn'},
-        ]},
+        {
+            'type': 'widget',
+            'factory': lambda _gui: create_rag_preset_widget(view_model),
+        },
         {'type': 'end'},
     ]
 
@@ -1193,7 +971,7 @@ def _build_rag_core_config(self) -> list:
     ]
 
 
-def _build_embed_config(self) -> list:
+def _build_embed_config(self, embed_provider_view_model, rag_install_view_model) -> list:
     """Embedding section — vector search toggle + HF token (provider UI added separately)."""
     return [
         {'label': _('Векторный поиск и эмбеддинги', 'Vector search and embeddings'), 'type': 'subsection',
@@ -1205,22 +983,28 @@ def _build_embed_config(self) -> list:
                       'Enables vector search. Disable to use FTS/keyword only.'),
          'depends_on': 'RAG_ENABLED'},
 
-        {'type': 'widget', 'factory': _build_embed_provider_widget},
+        {
+            'type': 'widget',
+            'factory': lambda gui: _build_embed_provider_widget(
+                gui,
+                embed_provider_view_model,
+            ),
+        },
 
         {'type': 'button_group', 'buttons': [
             {'label': _('Индекс нового', 'Index new'),
              'command': lambda: _reindex_embeddings(self)},
             {'label': _('Обновить статус', 'Refresh status'),
-             'command': lambda: _refresh_rag_install_status(self)},
+             'command': lambda: _refresh_rag_install_status(rag_install_view_model)},
         ]},
 
         {'type': 'end'},
     ]
 
 
-def _build_embed_provider_widget(gui):
+def _build_embed_provider_widget(gui, view_model):
     from ui.settings.embed_provider_settings import build_embed_provider_widget
-    return build_embed_provider_widget(gui)
+    return build_embed_provider_widget(gui, view_model)
 
 
 def _build_graph_config(self, hc_provider_names) -> list:
@@ -1761,31 +1545,10 @@ def _sync_memory_profile(gui) -> None:
 # Install helpers (InstallController-based RAG backend setup)
 # ---------------------------------------------------------------------------
 
-def _refresh_rag_install_status(gui) -> None:
+def _refresh_rag_install_status(view_model) -> None:
     from ui.settings.rag_install_presentation import RefreshRagInstall
 
-    _ensure_rag_install_view_model(gui).dispatch(RefreshRagInstall(force=True))
-
-
-def _ensure_rag_install_view_model(gui):
-    """Единая view model статусов установки RAG (эмбеддинги + реранкер).
-
-    Хранится публичным атрибутом: это осознанный экспорт вьюхи, как
-    gui.settings_page, а не приватное состояние виджетов."""
-    view_model = getattr(gui, "rag_install_view_model", None)
-    if view_model is None or view_model.is_closed:
-        view_model = gui.presentation.view_models.rag_install(gui, parent=gui)
-        gui.rag_install_view_model = view_model
-        gui.destroyed.connect(lambda *_, vm=view_model: vm.close())
-
-        def _show_error(effect) -> None:
-            from ui.settings.rag_install_presentation import RagInstallShowError
-
-            if isinstance(effect, RagInstallShowError):
-                QMessageBox.critical(gui, effect.title, effect.message)
-
-        view_model.effect_emitted.connect(_show_error)
-    return view_model
+    view_model.dispatch(RefreshRagInstall(force=True))
 
 
 def _get_embed_backend_status() -> str:
@@ -1852,110 +1615,26 @@ def _find_inner_section(section, *title_needles: str):
     return section
 
 
-def _loading_text() -> str:
-    return _("Загрузка...", "Loading...")
-
-
-def _status_line(prefix_ru: str, prefix_en: str, value: str, loading: bool) -> str:
-    return _(prefix_ru, prefix_en) + " " + (value if not loading else _loading_text())
-
-
-def _bind_install_button(button, view_model, target_state) -> None:
-    button.setVisible(bool(target_state.button_visible))
-    button.setEnabled(not target_state.button_busy)
-    button.setText(
-        _("Открытие AI Hub...", "Opening AI Hub...")
-        if target_state.button_busy
-        else _("Открыть AI Hub", "Open AI Hub")
-    )
-
-
-def _connect_render(view_model, render) -> None:
-    """Подключить рендер к state_changed с автоотпиской при смерти виджетов."""
-
-    def _safe_render(state) -> None:
-        try:
-            render(state)
-        except RuntimeError:
-            try:
-                view_model.state_changed.disconnect(_safe_render)
-            except Exception:
-                pass
-
-    view_model.state_changed.connect(_safe_render)
-    _safe_render(view_model.state)
-
-
-def _attach_embed_downloader(gui, section) -> None:
+def _attach_embed_downloader(gui, section, view_model) -> None:
     try:
-        view_model = _ensure_rag_install_view_model(gui)
-        from ui.settings.rag_install_presentation import ActivateRagInstall, OpenRagAiHub
-
-        parent = getattr(section, "content", None) or section
-        backend_label = QLabel("", parent)
-        backend_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        index_label = QLabel("", parent)
-        index_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        button = QPushButton("", parent)
-        button.setVisible(False)
-        button.clicked.connect(
-            lambda: view_model.dispatch(OpenRagAiHub(TARGET_EMBEDDINGS))
-        )
+        from ui.settings.rag_install_widget import create_rag_install_status_widget
 
         target_section = _find_inner_section(section, "эмбеддинг", "mbedding")
-        target_section.add_widget(backend_label)
-        target_section.add_widget(index_label)
-        target_section.add_widget(button)
-
-        def render(state) -> None:
-            embed = state.embeddings
-            backend_label.setText(_status_line("Backend:", "Backend:", embed.backend, embed.loading))
-            index_label.setText(_status_line("Индекс:", "Index:", embed.index, embed.loading))
-            _bind_install_button(button, view_model, embed)
-
-        _connect_render(view_model, render)
-        view_model.dispatch(ActivateRagInstall())
+        target_section.add_widget(
+            create_rag_install_status_widget(view_model, TARGET_EMBEDDINGS)
+        )
     except Exception:
         logger.warning("[rag_ui] Failed to attach embeddings install widgets", exc_info=True)
 
 
-def _attach_ce_downloader(gui, section) -> None:
+def _attach_ce_downloader(gui, section, view_model) -> None:
     try:
-        view_model = _ensure_rag_install_view_model(gui)
-        from ui.settings.rag_install_presentation import ActivateRagInstall, OpenRagAiHub
-
-        parent = getattr(section, "content", None) or section
-        backend_label = QLabel("", parent)
-        backend_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        model_label = QLabel("", parent)
-        model_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        loaded_label = QLabel("", parent)
-        loaded_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        # Одна кнопка «Открыть AI Hub»: и backend (PyTorch), и сама модель
-        # реранкера ставятся через одну и ту же категорию AI Hub, поэтому две
-        # одинаковые кнопки были дублем (фидбэк vinerx). Показываем, если не
-        # хватает чего-либо из двух.
-        button = QPushButton("", parent)
-        button.setVisible(False)
-        button.clicked.connect(
-            lambda: view_model.dispatch(OpenRagAiHub(TARGET_RERANKER))
-        )
+        from ui.settings.rag_install_widget import create_rag_install_status_widget
 
         target_section = _find_inner_section(section, "ross-encoder", "реранкер")
-        target_section.add_widget(backend_label)
-        target_section.add_widget(model_label)
-        target_section.add_widget(loaded_label)
-        target_section.add_widget(button)
-
-        def render(state) -> None:
-            reranker = state.reranker
-            backend_label.setText(_status_line("Backend:", "Backend:", reranker.backend, reranker.loading))
-            model_label.setText(_status_line("Модель:", "Model:", reranker.model, reranker.loading))
-            loaded_label.setText(_status_line("Статус:", "Status:", reranker.loaded, reranker.loading))
-            _bind_install_button(button, view_model, reranker)
-
-        _connect_render(view_model, render)
-        view_model.dispatch(ActivateRagInstall())
+        target_section.add_widget(
+            create_rag_install_status_widget(view_model, TARGET_RERANKER)
+        )
     except Exception:
         logger.warning("[rag_ui] Failed to attach reranker install widgets", exc_info=True)
 
@@ -1966,6 +1645,8 @@ def _attach_ce_downloader(gui, section) -> None:
 
 def build_memory_section(self, parent, hc_provider_names) -> None:
     """Секция «Память»: лимиты, TTL, сжатие истории."""
+    from ui.gui_templates import create_settings_section
+
     config = (
         [{
             'label': _('Лимиты памяти, TTL-забывание и сжатие истории чата.',
@@ -1982,17 +1663,31 @@ def build_memory_section(self, parent, hc_provider_names) -> None:
                             icon_name='fa5s.brain')
 
 
-def build_rag_section(self, parent, hc_provider_names) -> None:
+def build_rag_section(
+    self,
+    parent,
+    hc_provider_names,
+    *,
+    rag_preset_view_model,
+    embed_provider_view_model,
+    rag_install_view_model,
+) -> None:
     """Секция «RAG»: pipeline preset, поиск, эмбеддинги, граф, веса."""
+    from ui.gui_templates import create_settings_section
+
     config = (
         [{
             'label': _('Поиск по памяти (RAG): пресеты пайплайна, эмбеддинги, граф знаний и веса.',
                        'Memory retrieval (RAG): pipeline presets, embeddings, knowledge graph and weights.'),
             'type': 'text',
         }] +
-        _build_pipeline_preset_config(self) +
+        _build_pipeline_preset_config(rag_preset_view_model) +
         _build_rag_core_config(self) +
-        _build_embed_config(self) +
+        _build_embed_config(
+            self,
+            embed_provider_view_model,
+            rag_install_view_model,
+        ) +
         _build_graph_config(self, hc_provider_names) +
         _build_graph_ttl_config(self) +
         _build_query_tail_config(self) +
@@ -2008,20 +1703,56 @@ def build_rag_section(self, parent, hc_provider_names) -> None:
                                           config,
                                           icon_name='fa5s.search')
 
-    _attach_embed_downloader(self, rag_section)
-    _attach_ce_downloader(self, rag_section)
-
-    # Init delete button state (disabled for built-in presets / Custom)
-    try:
-        _update_preset_delete_btn(
-            self,
-            self.settings.get("RAG_PIPELINE_PRESET", "Keyword+FTS only") or "Keyword+FTS only",
-        )
-    except Exception:
-        pass
+    _attach_embed_downloader(self, rag_section, rag_install_view_model)
+    _attach_ce_downloader(self, rag_section, rag_install_view_model)
 
 
-def build_rag_memory_section(self, parent, hc_provider_names) -> None:
+def build_rag_memory_section(
+    self,
+    parent,
+    hc_provider_names,
+    *,
+    rag_preset_view_model,
+    embed_provider_view_model,
+    rag_install_view_model,
+) -> None:
     """Обратная совместимость: вызывает build_memory_section + build_rag_section."""
     build_memory_section(self, parent, hc_provider_names)
-    build_rag_section(self, parent, hc_provider_names)
+    build_rag_section(
+        self,
+        parent,
+        hc_provider_names,
+        rag_preset_view_model=rag_preset_view_model,
+        embed_provider_view_model=embed_provider_view_model,
+        rag_install_view_model=rag_install_view_model,
+    )
+
+
+class RagSettingsCoordinator:
+    """Own the remaining one-shot RAG settings composition.
+
+    Preset/install/status state is handled by dedicated ViewModels. This class
+    only assembles widgets and wires explicit action ports.
+    """
+
+    def build_memory_section(self, host, parent, provider_names) -> None:
+        build_memory_section(host, parent, provider_names)
+
+    def build_rag_section(
+        self,
+        host,
+        parent,
+        provider_names,
+        *,
+        rag_preset_view_model,
+        embed_provider_view_model,
+        rag_install_view_model,
+    ) -> None:
+        build_rag_section(
+            host,
+            parent,
+            provider_names,
+            rag_preset_view_model=rag_preset_view_model,
+            embed_provider_view_model=embed_provider_view_model,
+            rag_install_view_model=rag_install_view_model,
+        )

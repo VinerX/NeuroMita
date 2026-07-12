@@ -80,11 +80,9 @@ def test_news_page_shows_loading_message_while_background_fetch_runs(monkeypatch
         view_model_box["vm"] = view_model
         return view_model
 
-    host.presentation = SimpleNamespace(
-        view_models=SimpleNamespace(news_page=_make_view_model)
-    )
-
-    page = NewsPage(host)
+    view_model = _make_view_model(host)
+    actions = SimpleNamespace(refresh_home_news=lambda: None)
+    page = NewsPage(host, view_model, actions)
     app.processEvents()
 
     assert view_model_box["vm"].state.loading is True

@@ -104,9 +104,8 @@ def apply_interface_mode(gui, mode_value=None):
     apply_section_visibility(gui)
 
 
-def create_settings_page(gui) -> QWidget:
-    view_model = gui.presentation.view_models.settings_page(gui)
-    page = SettingsPage(gui, view_model)
+def create_settings_page(gui, view_model, section_builder) -> QWidget:
+    page = SettingsPage(gui, view_model, section_builder)
     view_model.setParent(page)
     gui.settings_page = page
     return page

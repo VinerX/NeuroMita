@@ -154,9 +154,8 @@ class CharacterStatePanel(QWidget):
     a mood label, and a collapsible textarea with all variables.
     """
 
-    def __init__(self, gui, view_model, parent: QWidget | None = None):
+    def __init__(self, view_model, parent: QWidget | None = None):
         super().__init__(parent)
-        self.gui = gui
         self._view_model = view_model
         self.setObjectName("SandboxStatePanel")
 
