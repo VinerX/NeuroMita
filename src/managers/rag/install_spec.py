@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from typing import Any
 
 from core.backends import BackendKind, get_backend_service
@@ -39,6 +40,11 @@ _LM_RERANKER_PATTERNS = (
     "qwen3-reranker",
     "qwen/qwen3-reranker",
 )
+
+# Windows cannot pass arbitrarily large timeouts to the thread wait used by
+# subprocess.communicate().  Keep each individual wait comfortably below that
+# platform limit while preserving the installation's overall timeout.
+_SUBPROCESS_WAIT_SLICE_SEC = 86_400.0
 
 
 def _target_title(target: str) -> str:
@@ -328,17 +334,29 @@ def _snapshot_download_action(repo_id: str, *, description: str, progress: int) 
             )
         try:
             timeout = max(1.0, float(runtime_ctx.get("timeout_sec", 3600.0) or 3600.0))
-            try:
-                output, _ = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                if callable(terminate):
-                    terminate(process, "RAG model download timed out.")
-                else:
-                    process.kill()
-                output, _ = process.communicate()
-                if callbacks is not None:
-                    callbacks.log("RAG model download timed out.")
-                return False
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if callable(terminate):
+                        terminate(process, "RAG model download timed out.")
+                    else:
+                        process.kill()
+                    output, _ = process.communicate()
+                    if callbacks is not None:
+                        callbacks.log("RAG model download timed out.")
+                    return False
+
+                try:
+                    output, _ = process.communicate(
+                        timeout=min(remaining, _SUBPROCESS_WAIT_SLICE_SEC)
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    # A slice elapsed, but the overall installation timeout has
+                    # not: keep waiting without passing an oversized timeout to
+                    # the Windows thread primitive.
+                    continue
 
             if output and callbacks is not None:
                 for line in output.splitlines():

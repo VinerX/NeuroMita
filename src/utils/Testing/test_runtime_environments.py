@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -702,6 +703,27 @@ def test_rag_snapshot_download_uses_isolated_environment(
     ).read_text(encoding="utf-8") == "no-token"
     assert installer.active is None
     assert str(overlay) not in sys.path
+
+
+def test_rag_snapshot_download_splits_oversized_process_timeout(monkeypatch) -> None:
+    from managers.rag import install_spec
+
+    process = MagicMock()
+    process.returncode = 0
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("snapshot_download", install_spec._SUBPROCESS_WAIT_SLICE_SEC),
+        ("download complete\n", None),
+    ]
+    monkeypatch.setattr(install_spec.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    action = install_spec._snapshot_download_action(
+        "owner/model",
+        description="download",
+        progress=50,
+    )
+
+    assert action.fn(ctx={"timeout_sec": 7_200_000.0})
+    assert process.communicate.call_args_list[0].kwargs["timeout"] == install_spec._SUBPROCESS_WAIT_SLICE_SEC
 
 def test_runtime_bootstrap_reserves_lib_core_for_main_process(
     tmp_path: Path,
