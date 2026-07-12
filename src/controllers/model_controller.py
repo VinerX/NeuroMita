@@ -21,6 +21,7 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    GameLinkService,
     ModelStateService,
     PromptBuildRequest,
     PromptBuilderService,
@@ -52,6 +53,14 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
+
+# Поля сегмента, которые не имеют смысла без подключённого игрового runtime.
+# Список намеренно вынесен в одно место: при расширении sandbox-режима сюда
+# можно добавить commands/movement_modes и другие игровые действия.
+_REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset({
+    "animations",
+    "idle_animations",
+})
 
 
 def _render_tools_for_prompt(schema: list) -> str:
@@ -264,6 +273,35 @@ class ModelController(GenerationService, ModelStateService):
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
 
+    @staticmethod
+    def _remote_only_structured_segment_fields() -> list[str]:
+        game_link = services().get_optional(GameLinkService)
+        if game_link is None:
+            return []
+        try:
+            if not game_link.is_connected():
+                return sorted(_REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS)
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:
+        excluded = {
+            str(name).strip()
+            for name in (capabilities or {}).get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        if not excluded:
+            return
+
+        for segment in getattr(structured, "segments", ()) or ():
+            for field_name in excluded:
+                if not hasattr(segment, field_name):
+                    continue
+                current = getattr(segment, field_name, None)
+                setattr(segment, field_name, [] if isinstance(current, list) else None)
+
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
         summary_items: list[dict[str, Any]] = []
@@ -335,6 +373,7 @@ class ModelController(GenerationService, ModelStateService):
                 "event_type": prompt_request.event_type,
                 "user_input": prompt_request.user_input,
                 "system_input": prompt_request.system_input,
+                "rag_context": prompt_request.rag_context,
                 "hidden_user_context": prompt_request.hidden_user_context,
                 "memory_limit": prompt_request.memory_limit,
                 "is_game_master": prompt_request.is_game_master,
@@ -1183,9 +1222,10 @@ class ModelController(GenerationService, ModelStateService):
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
+        rag_context = ""
         if bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
             prompt_set_path = getattr(char, "base_data_path", None)
-            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+            rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         game_state = self.game_state.to_prompt_dict()
 
@@ -1232,6 +1272,10 @@ class ModelController(GenerationService, ModelStateService):
             )
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+
+        remote_only_segment_fields = self._remote_only_structured_segment_fields()
+        if remote_only_segment_fields:
+            effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
@@ -1343,6 +1387,7 @@ class ModelController(GenerationService, ModelStateService):
             policy=policy,
             user_input=user_input,
             system_input=system_input,
+            rag_context=rag_context,
             hidden_user_context=hidden_user_context,
             image_data=image_data,
             memory_limit=memory_limit,
@@ -1592,7 +1637,9 @@ class ModelController(GenerationService, ModelStateService):
     def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
         # ---------------------------------------------------------------------
         # RAG выполняется ДО BUILD_PROMPT
-        # результаты кладутся в system prompt
+        # Возвращает готовый RAG-блок отдельным сообщением. Исходный
+        # system_input (событие или служебная инструкция) не изменяется:
+        # актуальная инструкция должна оставаться после справочного контекста.
         # Templates can be customized per prompt set via Structural/ files:
         #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
         from utils.template_loader import load_optional_template
@@ -1700,14 +1747,13 @@ class ModelController(GenerationService, ModelStateService):
                         if forgotten_count > 0:
                             rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
-                        separator = "\n\n" if system_input else ""
-                        system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
-                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"[{char_id}] RAG blocks built as separate message "
                             f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
+                        return rag_block
             except Exception as e:
                 logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
-        return system_input
+        return ""
 
     # ---------------------------------------------------------------------
     # Structured Output processing
@@ -1789,6 +1835,8 @@ class ModelController(GenerationService, ModelStateService):
                 targets=fallback_targets,
                 think=think_text or None,
             )
+
+        self._sanitize_structured_segment_fields(structured, capabilities)
 
         # Apply structured response processing (behavior changes, memory, game tags)
         char.process_structured_response(

@@ -248,6 +248,7 @@ class PromptBuildRequest:
     policy: RequestPolicy
     user_input: str = ""
     system_input: str = ""
+    rag_context: str = ""
     hidden_user_context: str = ""
     image_data: List[Any] = field(default_factory=list)
     memory_limit: int = 40

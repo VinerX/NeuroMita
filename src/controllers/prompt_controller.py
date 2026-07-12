@@ -8,6 +8,7 @@ from core.services import services, use
 from main_logger import logger
 from services.contracts import (
     AppVarsService,
+    GameLinkService,
     HistoryService,
     PromptBuildRequest,
     PromptBuildResult,
@@ -47,6 +48,73 @@ class PromptController(PromptBuilderService):
 
     def _get_setting(self, key: str, default=None):
         return use(SettingsService).get(key, default)
+
+    @staticmethod
+    def _format_system_state_message(
+        *,
+        remote_only: bool | None,
+        voice_enabled: bool,
+        voice_method: str,
+        microphone_enabled: bool,
+        image_status: str,
+    ) -> Dict[str, str]:
+        """Собирает служебное состояние, не попадающее в историю диалога."""
+        lines = ["[System State]"]
+
+        if remote_only is True:
+            lines.append(
+                "You are currently communicating with the Player online through the NeuroMita computer program. "
+                "The Player is not physically with you right now, but they may come to your home later. "
+                "If you want to see them, do not hesitate to invite them."
+            )
+        elif remote_only is False:
+            lines.append(
+                "You are currently communicating with the Player through the NeuroMita computer program "
+                "while the game runtime is connected."
+            )
+        else:
+            lines.append("You are currently communicating with the Player through the NeuroMita computer program.")
+
+        if voice_enabled:
+            method = voice_method.strip() or "configured method"
+            lines.append(f"Your voice (TTS): enabled; method: {method}. This is your voice.")
+        else:
+            lines.append("Your voice (TTS): disabled. The Player can only receive your written replies.")
+
+        lines.append(
+            "The Player's voice (microphone): enabled. This is how you hear the Player."
+            if microphone_enabled
+            else "The Player's voice (microphone): disabled. You cannot hear the Player's voice."
+        )
+        lines.append(
+            "Your sight (image recognition): enabled. You can use screenshots and images as visual information."
+            if image_status == "enabled"
+            else "Your sight (image recognition): disabled. You cannot see screenshots or images."
+        )
+        return {"role": "system", "content": "\n".join(lines)}
+
+    def _build_system_state_message(self) -> Dict[str, str]:
+        game_link = services().get_optional(GameLinkService)
+        remote_only: bool | None = None
+        if game_link is not None:
+            try:
+                remote_only = not bool(game_link.is_connected())
+            except Exception:
+                remote_only = None
+
+        image_status = (
+            "enabled"
+            if bool(self._get_setting("ENABLE_IMAGE_ANALYSIS", False))
+            else "disabled"
+        )
+
+        return self._format_system_state_message(
+            remote_only=remote_only,
+            voice_enabled=bool(self._get_setting("USE_VOICEOVER", False)),
+            voice_method=str(self._get_setting("VOICEOVER_METHOD", "Local") or "Local"),
+            microphone_enabled=bool(self._get_setting("MIC_ACTIVE", False)),
+            image_status=image_status,
+        )
 
     def _setup_character_for_prompt(self, character, event_type: str):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
@@ -212,6 +280,7 @@ class PromptController(PromptBuilderService):
         extra_system_infos = request.extra_system_infos or []
         game_state = request.game_state or {}
         capabilities = request.capabilities or {}
+        rag_context = request.rag_context or ""
         policy = request.policy
 
         try:
@@ -296,6 +365,14 @@ class PromptController(PromptBuilderService):
                 f"Day of week: {current_time.strftime('%A')}"
             )
         })
+
+        messages.append(self._build_system_state_message())
+
+        # RAG-контекст (воспоминания/past_context/граф) — отдельным сообщением
+        # перед событием/репликой. Так актуальная инструкция не смешивается со
+        # справочным фоном и остаётся ближе к концу контекста.
+        if rag_context:
+            messages.append({"role": "system", "content": rag_context})
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 
