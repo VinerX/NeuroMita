@@ -65,7 +65,9 @@ class PromptController(PromptBuilderService):
             lines.append(
                 "You are currently communicating with the Player online through the NeuroMita computer program. "
                 "The Player is not physically with you right now, but they may come to your home later. "
-                "If you want to see them, do not hesitate to invite them."
+                "If you want to see them, do not hesitate to invite them. "
+                "Do not use world or game commands such as switching lights or moving around. "
+                "The commands field may still be used for program-level commands when genuinely needed."
             )
         elif remote_only is False:
             lines.append(

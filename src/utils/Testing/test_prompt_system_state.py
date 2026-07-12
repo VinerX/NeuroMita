@@ -43,6 +43,8 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertIn("Your voice (TTS): enabled; method: Local. This is your voice.", content)
         self.assertIn("The Player's voice (microphone): disabled.", content)
         self.assertIn("Your sight (image recognition): disabled.", content)
+        self.assertIn("Do not use world or game commands such as switching lights or moving around.", content)
+        self.assertIn("program-level commands", content)
         self.assertNotIn("Structured output", content)
 
     def test_connected_state_does_not_claim_remote_only(self):

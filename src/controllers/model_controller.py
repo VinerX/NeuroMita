@@ -60,6 +60,7 @@ _DEFAULT_TOOL_ENABLED = {
 _REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset({
     "animations",
     "idle_animations",
+    "emotions",
 })
 
 

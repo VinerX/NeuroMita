@@ -15,9 +15,9 @@ from schemas.structured_response import StructuredResponse
 
 
 class StructuredResponseSandboxTests(unittest.TestCase):
-    _EXCLUDED = {"animations", "idle_animations"}
+    _EXCLUDED = {"animations", "idle_animations", "emotions"}
 
-    def test_default_schema_keeps_animation_fields(self):
+    def test_default_schema_keeps_remote_excluded_fields(self):
         schema = StructuredResponse.openai_response_format()["json_schema"]["schema"]
         segment_properties = schema["$defs"]["ResponseSegment"]["properties"]
 
@@ -30,7 +30,6 @@ class StructuredResponseSandboxTests(unittest.TestCase):
         segment_properties = schema["$defs"]["ResponseSegment"]["properties"]
 
         self.assertTrue(self._EXCLUDED.isdisjoint(segment_properties))
-        self.assertIn("emotions", segment_properties)
         self.assertIn("commands", segment_properties)
 
     def test_gemini_schema_excludes_only_selected_segment_fields(self):
@@ -40,12 +39,12 @@ class StructuredResponseSandboxTests(unittest.TestCase):
         segment_properties = schema["properties"]["segments"]["items"]["properties"]
 
         self.assertTrue(self._EXCLUDED.isdisjoint(segment_properties))
-        self.assertIn("emotions", segment_properties)
         self.assertIn("commands", segment_properties)
 
-    def test_legacy_animation_fields_are_cleared_after_parsing(self):
+    def test_legacy_remote_excluded_fields_are_cleared_after_parsing(self):
         structured = StructuredResponse.model_validate(json.loads(
-            '{"segments": [{"text": "Привет", "animations": ["Wave"], '
+            '{"segments": [{"text": "Привет", "emotions": ["smile"], '
+            '"animations": ["Wave"], '
             '"idle_animations": ["Idle"]}]}'
         ))
 
@@ -56,6 +55,7 @@ class StructuredResponseSandboxTests(unittest.TestCase):
 
         self.assertEqual(structured.segments[0].animations, [])
         self.assertEqual(structured.segments[0].idle_animations, [])
+        self.assertEqual(structured.segments[0].emotions, [])
         self.assertEqual(structured.segments[0].text, "Привет")
 
 
