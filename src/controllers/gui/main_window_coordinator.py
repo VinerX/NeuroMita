@@ -203,10 +203,10 @@ class MainWindowCoordinator:
             page.refresh_content()
 
     def news_content(self) -> str:
-        return self._presentation.news.get_content(self._view)
+        return self._presentation.news.get_content()
 
     def news_releases(self):
-        return self._presentation.news.get_releases(self._view)
+        return self._presentation.news.get_releases()
 
     def refresh_home_primary_label(self) -> None:
         page = getattr(self._view, "home_page", None)

@@ -26,15 +26,27 @@ _ORDERED_RE = re.compile(r"^\s*(\d+)\.\s+")
 _MD_DECORATION_RE = re.compile(r"[*_~`>#]")
 
 
-_fetch_lock = threading.Lock()
+class NewsReleasesStore:
+    """Кэш ленты релизов. Владелец — presentation-хаб (`presentation.news`);
+    раньше это состояние жило атрибутами на главном окне."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.releases: list[dict[str, Any]] | None = None
+        self.cards: list[dict[str, Any]] | None = None
+        self.waiters: list[Callable[[list[dict[str, Any]]], None]] = []
+        self.inflight = False
+
+    def invalidate(self) -> None:
+        self.releases = None
+        self.cards = None
 
 
-def invalidate_news_releases(gui) -> None:
-    gui._news_releases_cache = None
-    gui._news_release_cards_cache = None
-
-
-def load_news_releases_async(gui, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
+def load_news_releases_async(
+    store: NewsReleasesStore,
+    target,
+    on_ready: Callable[[list[dict[str, Any]]], None],
+) -> None:
     """Неблокирующая загрузка ленты релизов с GitHub.
 
     `on_ready(releases)` вызывается ВСЕГДА:
@@ -49,48 +61,41 @@ def load_news_releases_async(gui, on_ready: Callable[[list[dict[str, Any]]], Non
     `requests.get(timeout=10)` прямо в GUI-потоке (кнопка «Обновить», старт
     главной страницы) и при недоступном GitHub морозил окно на ~10 секунд.
     """
-    cached = getattr(gui, "_news_releases_cache", None)
-    if cached is not None:
-        on_ready(cached)
+    if store.releases is not None:
+        on_ready(store.releases)
         return
 
-    waiters = getattr(gui, "_news_releases_waiters", None)
-    if waiters is None:
-        waiters = []
-        gui._news_releases_waiters = waiters
-
     start_worker = False
-    with _fetch_lock:
+    with store.lock:
         # Кэш мог наполниться, пока ждали лок — проверяем ещё раз под локом.
-        cached = getattr(gui, "_news_releases_cache", None)
-        if cached is not None:
-            on_ready(cached)
+        if store.releases is not None:
+            on_ready(store.releases)
             return
-        waiters.append(on_ready)
-        if not getattr(gui, "_news_releases_inflight", False):
-            gui._news_releases_inflight = True
+        store.waiters.append(on_ready)
+        if not store.inflight:
+            store.inflight = True
             start_worker = True
 
     if not start_worker:
         return
 
     def worker():
-        releases = get_news_releases(gui)
-        with _fetch_lock:
-            pending = list(waiters)
-            waiters.clear()
-            gui._news_releases_inflight = False
+        releases = get_news_releases(store)
+        with store.lock:
+            pending = list(store.waiters)
+            store.waiters.clear()
+            store.inflight = False
         for callback in pending:
             try:
                 callback(releases)
             except Exception:
                 logger.exception("[news] on_ready callback failed")
 
-    run_async(gui, worker, name="news-fetch")
+    run_async(target, worker, name="news-fetch")
 
 
-def get_news_releases(gui) -> list[dict[str, Any]]:
-    cached = getattr(gui, "_news_releases_cache", None)
+def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
+    cached = store.releases
     if cached is not None:
         return cached
 
@@ -104,24 +109,24 @@ def get_news_releases(gui) -> list[dict[str, Any]]:
         )
         if response.status_code != 200:
             logger.info(f"[news] Failed to fetch releases: HTTP {response.status_code}")
-            gui._news_releases_cache = []
-            gui._news_release_cards_cache = []
+            store.releases = []
+            store.cards = []
             return []
 
         raw_data = response.json() or []
         data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
-        gui._news_releases_cache = data
-        gui._news_release_cards_cache = _prepare_release_cards(data)
+        store.releases = data
+        store.cards = _prepare_release_cards(data)
         return data
     except Exception as exc:
         logger.info(f"[news] Failed to fetch releases: {exc}")
-        gui._news_releases_cache = []
-        gui._news_release_cards_cache = []
+        store.releases = []
+        store.cards = []
         return []
 
 
-def get_news_content(gui) -> str:
-    releases = get_news_releases(gui)
+def get_news_content(store: NewsReleasesStore) -> str:
+    releases = get_news_releases(store)
     if not releases:
         return _("Не удалось загрузить новости", "Failed to load news")
 
@@ -190,13 +195,13 @@ def _prepare_release_cards(releases: list[dict[str, Any]]) -> list[dict[str, Any
     return prepared
 
 
-def _get_prepared_release_cards(gui) -> list[dict[str, Any]]:
-    cached = getattr(gui, "_news_release_cards_cache", None)
+def _get_prepared_release_cards(store: NewsReleasesStore) -> list[dict[str, Any]]:
+    cached = store.cards
     if cached is not None:
         return cached
-    releases = get_news_releases(gui)
+    releases = get_news_releases(store)
     prepared = _prepare_release_cards(releases)
-    gui._news_release_cards_cache = prepared
+    store.cards = prepared
     return prepared
 
 
@@ -321,8 +326,8 @@ def parse_news_items(raw_text: str) -> list[NewsItem]:
     return items[:6]
 
 
-def build_release_news_items(gui, *, limit: int | None = 8) -> list[NewsItem]:
-    prepared_cards = _get_prepared_release_cards(gui)
+def build_release_news_items(store: NewsReleasesStore, *, limit: int | None = 8) -> list[NewsItem]:
+    prepared_cards = _get_prepared_release_cards(store)
     if not prepared_cards:
         return [
             NewsItem(

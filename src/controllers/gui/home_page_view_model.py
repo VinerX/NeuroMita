@@ -654,7 +654,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def _on_news_ready(self, _releases: list[dict[str, Any]]) -> None:
         try:
-            items = self._news.build_items(self._host, limit=3)
+            items = self._news.build_items(limit=3)
             news = tuple(
                 HomeNewsItemState(
                     title=str(item.title),

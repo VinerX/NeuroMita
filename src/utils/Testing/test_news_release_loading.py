@@ -11,8 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
-import ui.pages.news_page as news_page_module
-from controllers.gui.news_controller import _build_release_preview, build_release_news_items
+from controllers.gui.news_controller import (
+    NewsReleasesStore,
+    _build_release_preview,
+    build_release_news_items,
+)
+from controllers.gui.news_page_view_model import NewsPageViewModel
+from ui.pages.news_page import NewsPage
 
 
 def _app() -> QApplication:
@@ -40,21 +45,19 @@ def test_build_release_preview_keeps_summary_short():
 
 
 def test_build_release_news_items_uses_prepared_cache():
-    gui = SimpleNamespace(
-        _news_releases_cache=None,
-        _news_release_cards_cache=[
-            {
-                "name": "v1.2.3",
-                "tag_name": "v1.2.3",
-                "summary": "Fast release summary",
-                "published": "2026-07-04",
-                "tag": "RELEASE",
-                "url": "https://example.com/release",
-            }
-        ],
-    )
+    store = NewsReleasesStore()
+    store.cards = [
+        {
+            "name": "v1.2.3",
+            "tag_name": "v1.2.3",
+            "summary": "Fast release summary",
+            "published": "2026-07-04",
+            "tag": "RELEASE",
+            "url": "https://example.com/release",
+        }
+    ]
 
-    items = build_release_news_items(gui, limit=None)
+    items = build_release_news_items(store, limit=None)
 
     assert len(items) == 1
     assert items[0].title == "v1.2.3"
@@ -65,16 +68,25 @@ def test_build_release_news_items_uses_prepared_cache():
 def test_news_page_shows_loading_message_while_background_fetch_runs(monkeypatch):
     app = _app()
     host = QWidget()
-    host._news_releases_cache = None
-    host._news_release_cards_cache = None
 
-    def _fake_async(gui, on_ready):
-        return None
+    stub_news = SimpleNamespace(repository="Atm4x/NeuroMita")
+    view_model_box = {}
 
-    monkeypatch.setattr(news_page_module, "load_news_releases_async", _fake_async)
+    def _make_view_model(_host, parent=None):
+        view_model = NewsPageViewModel(host=_host, news=stub_news, parent=parent)
+        # Фоновая загрузка «никогда не завершается» — страница обязана
+        # показывать состояние загрузки, а не пустую ленту.
+        monkeypatch.setattr(view_model, "run_coalesced", lambda *a, **k: True)
+        view_model_box["vm"] = view_model
+        return view_model
 
-    page = news_page_module.NewsPage(host)
+    host.presentation = SimpleNamespace(
+        view_models=SimpleNamespace(news_page=_make_view_model)
+    )
+
+    page = NewsPage(host)
     app.processEvents()
 
+    assert view_model_box["vm"].state.loading is True
     texts = [label.text() for label in page.findChildren(QLabel)]
     assert any("Релизы ещё загружаются" in text for text in texts)

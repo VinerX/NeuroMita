@@ -283,36 +283,41 @@ class _ViewModelFactory:
 
 
 class _NewsController:
+    """Владелец кэша ленты релизов (NewsReleasesStore)."""
+
+    def __init__(self) -> None:
+        from controllers.gui.news_controller import NewsReleasesStore
+
+        self._store = NewsReleasesStore()
+
     @property
     def repository(self) -> str:
         from controllers.gui.news_controller import NEWS_REPO
 
         return str(NEWS_REPO)
 
-    def invalidate(self, gui: Any) -> None:
-        from controllers.gui.news_controller import invalidate_news_releases
+    def invalidate(self) -> None:
+        self._store.invalidate()
 
-        invalidate_news_releases(gui)
-
-    def load_async(self, gui: Any, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
+    def load_async(self, target: Any, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
         from controllers.gui.news_controller import load_news_releases_async
 
-        load_news_releases_async(gui, on_ready)
+        load_news_releases_async(self._store, target, on_ready)
 
-    def get_releases(self, gui: Any) -> list[dict[str, Any]]:
+    def get_releases(self) -> list[dict[str, Any]]:
         from controllers.gui.news_controller import get_news_releases
 
-        return list(get_news_releases(gui))
+        return list(get_news_releases(self._store))
 
-    def get_content(self, gui: Any) -> str:
+    def get_content(self) -> str:
         from controllers.gui.news_controller import get_news_content
 
-        return str(get_news_content(gui))
+        return str(get_news_content(self._store))
 
-    def build_items(self, gui: Any, *, limit: int | None = 8):
+    def build_items(self, *, limit: int | None = 8):
         from controllers.gui.news_controller import build_release_news_items
 
-        return list(build_release_news_items(gui, limit=limit))
+        return list(build_release_news_items(self._store, limit=limit))
 
 
 class _EventsController:
