@@ -1092,6 +1092,27 @@ class AIHubDialog(QDialog):
         except Exception as exc:
             logger.info(f"AI Hub: не удалось открыть папку моделей: {exc}")
 
+    # Порядок и подписи групп внутри категории RAG.
+    _GROUP_ORDER = {"embeddings": 0, "reranker": 1, "other": 2}
+
+    def _grouping_key(self, row: dict[str, Any]) -> str:
+        item = str(meta_from_row(row).get("item_id") or "").strip().lower()
+        return item if item in ("embeddings", "reranker") else "other"
+
+    def _group_title(self, key: str) -> str:
+        titles = {
+            "embeddings": _("Эмбеддинги", "Embeddings"),
+            "reranker": _("Реранкеры", "Rerankers"),
+            "other": _("Прочее", "Other"),
+        }
+        return titles.get(key, key)
+
+    def _insert_section_header(self, title: str, *, first: bool = False) -> None:
+        header = QLabel(title)
+        header.setObjectName("AIHubSectionHeader")
+        header.setProperty("first", "true" if first else "false")
+        self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, header)
+
     def _rebuild_component_list(self) -> None:
         if hasattr(self, "_open_models_btn"):
             self._open_models_btn.setVisible(self._selected_category == "voices")
@@ -1114,7 +1135,22 @@ class AIHubDialog(QDialog):
 
         gpu_vendor = self._detect_gpu_vendor()
         self._component_cards = []
+
+        # Внутри категории RAG модели делятся на эмбеддинги и реранкеры —
+        # показываем их сгруппированно с заголовком-разделителем.
+        grouped = self._selected_category == "rag"
+        if grouped:
+            rows = sorted(rows, key=lambda r: self._GROUP_ORDER.get(self._grouping_key(r), 99))
+
+        last_group: str | None = None
+        first_header = True
         for row in rows:
+            if grouped:
+                group = self._grouping_key(row)
+                if group != last_group:
+                    self._insert_section_header(self._group_title(group), first=first_header)
+                    first_header = False
+                    last_group = group
             card = ModelCard(
                 row,
                 on_install=lambda cid: self._emit_component_action_by_id(cid, Events.Installable.INSTALL),

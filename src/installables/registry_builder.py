@@ -5,7 +5,7 @@ import threading
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from installables.catalog_manifest import CATALOG_BY_ID, CATALOG_ENTRIES, entries_for_category
+from installables.catalog_manifest import catalog_by_id, catalog_entries, entries_for_category
 from main_logger import logger
 
 
@@ -92,7 +92,7 @@ class LazyInstallableRegistry:
             cached = self._components.get(component_id)
             if cached is not None:
                 return cached
-            entry = CATALOG_BY_ID.get(component_id)
+            entry = catalog_by_id().get(component_id)
         if entry is None:
             return None
         self._load_group(entry.loader)
@@ -102,7 +102,7 @@ class LazyInstallableRegistry:
     def require(self, component_id: str):
         component = self.get(component_id)
         if component is None:
-            entry = CATALOG_BY_ID.get(str(component_id or "").strip())
+            entry = catalog_by_id().get(str(component_id or "").strip())
             if entry is not None:
                 error = self._failed_groups.get(entry.loader)
                 if error is not None:
@@ -113,12 +113,13 @@ class LazyInstallableRegistry:
         return component
 
     def all(self) -> list[Any]:
-        for entry in CATALOG_ENTRIES:
+        entries = catalog_entries()
+        for entry in entries:
             self._load_group(entry.loader)
         with self._lock:
             return [
                 self._components[entry.id]
-                for entry in CATALOG_ENTRIES
+                for entry in entries
                 if entry.id in self._components
             ]
 
@@ -137,13 +138,13 @@ class LazyInstallableRegistry:
     def invalidate(self, *, component_id: str | None = None) -> None:
         with self._lock:
             if component_id:
-                entry = CATALOG_BY_ID.get(str(component_id))
+                entry = catalog_by_id().get(str(component_id))
                 if entry is None:
                     return
                 loader_path = entry.loader
                 self._loaded_groups.discard(loader_path)
                 self._failed_groups.pop(loader_path, None)
-                for spec in CATALOG_ENTRIES:
+                for spec in catalog_entries():
                     if spec.loader == loader_path:
                         self._components.pop(spec.id, None)
                 return

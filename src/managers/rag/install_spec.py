@@ -192,8 +192,8 @@ def _embed_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
     ]
 
 
-def _reranker_requirements(ctx: dict[str, Any]) -> list[InstallRequirement]:
-    ce_model = resolve_ce_model()
+def _reranker_requirements(ctx: dict[str, Any], ce_model: str | None = None) -> list[InstallRequirement]:
+    ce_model = str(ce_model or "").strip() or resolve_ce_model()
     reqs = [
         _backend_requirement(ctx),
         InstallRequirement(id="transformers", kind="python_dist", spec=TRANSFORMERS_SPEC, required=True),
@@ -283,7 +283,11 @@ def get_install_status(target: str, *, ctx: dict[str, Any] | None = None) -> dic
 
 
 def ensure_runtime_ready(target: str, *, ctx: dict[str, Any] | None = None) -> None:
-    status = get_install_status(target, ctx=ctx)
+    # Проверка готовности выполняется внутри worker-процесса, где реальные
+    # пакеты бэкенда лежат в разделённом runtime-слое (NEUROMITA_RUNTIME_*),
+    # а не в NEUROMITA_LIB_DIR (Lib/core). Без build_runtime_ctx проверка
+    # смотрела в core и ложно сообщала «backend_cuda is not installed».
+    status = get_install_status(target, ctx=build_runtime_ctx(ctx))
     if not status.get("required"):
         return
     if status.get("ok"):
@@ -489,6 +493,199 @@ def build_install_plan(
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-model install path (AI Hub «список моделей»).
+#
+# В отличие от target-based пути (который резолвит АКТИВНУЮ модель из настроек
+# RAG), эти функции работают с ЯВНО заданной моделью — карточка в AI Hub ставит
+# именно ту модель, что на ней написана. Все embed/reranker модели используют
+# общее окружение (torch + transformers), а веса лежат в отдельном кэше
+# checkpoints, поэтому item_id окружения остаётся "embeddings"/"reranker".
+# ---------------------------------------------------------------------------
+
+
+def model_install_status(kind: str, hf_id: str, *, ctx: dict[str, Any] | None = None) -> dict[str, Any]:
+    ctx = _with_gpu_ctx(ctx)
+    kind = str(kind or "").strip().lower()
+    hf_id = str(hf_id or "").strip()
+
+    summary: dict[str, Any] = {
+        "target": kind,
+        "model": hf_id,
+        "required": bool(hf_id),
+        "ok": True,
+        "missing_required": [],
+        "details": [],
+        "download_models": [],
+        "needs_local_runtime": bool(hf_id),
+        "needs_bitsandbytes": False,
+        "required_backend": _required_backend(ctx).value if hf_id else None,
+        "gpu_vendor": ctx.get("gpu_vendor"),
+    }
+    if not hf_id:
+        return summary
+
+    if not os.path.isdir(_cache_marker_path(hf_id)):
+        summary["ok"] = False
+        marker = "reranker_model" if kind == TARGET_RERANKER else "embedding_model"
+        summary["missing_required"].append(marker)
+        summary["download_models"].append(hf_id)
+
+    if kind == TARGET_RERANKER:
+        checked = check_requirements(_reranker_requirements(ctx, ce_model=hf_id), ctx=ctx)
+        use_int8 = bool(SettingsManager.get("RAG_CE_INT8", False))
+        if use_int8 and (not _is_lm_reranker_model(hf_id)) and str(ctx.get("gpu_vendor") or "").upper() == "NVIDIA":
+            summary["needs_bitsandbytes"] = True
+    else:
+        checked = check_requirements(_embed_requirements(ctx), ctx=ctx)
+
+    _merge_requirement_status(summary, checked)
+    if not checked.get("ok"):
+        summary["ok"] = False
+
+    return summary
+
+
+def build_model_install_plan(
+    kind: str,
+    hf_id: str,
+    *,
+    pip_installer=None,
+    callbacks=None,
+    timeout_sec: float = 3600.0,
+) -> InstallPlan:
+    ctx = _with_gpu_ctx({
+        "timeout_sec": float(timeout_sec or 3600.0),
+        "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
+    })
+    status = model_install_status(kind, hf_id, ctx=ctx)
+
+    if not status.get("required"):
+        return InstallPlan(actions=[], already_installed=True,
+                           already_installed_status=_("Not required", "Not required"))
+    if status.get("ok"):
+        return InstallPlan(actions=[], already_installed=True,
+                           already_installed_status=_("Already installed", "Already installed"))
+
+    actions: list[InstallAction] = []
+    if status.get("needs_local_runtime"):
+        actions.append(
+            InstallAction(
+                type="pip",
+                description=_("Installing local RAG dependencies...", "Installing local RAG dependencies..."),
+                progress=35,
+                packages=[TRANSFORMERS_SPEC, HF_HUB_SPEC],
+            )
+        )
+    if status.get("needs_bitsandbytes"):
+        actions.append(
+            InstallAction(
+                type="pip",
+                description=_("Installing INT8 reranker support...", "Installing INT8 reranker support..."),
+                progress=50,
+                packages=[BITSANDBYTES_SPEC],
+            )
+        )
+
+    downloads = list(status.get("download_models") or [])
+    total_downloads = max(1, len(downloads))
+    for idx, repo_id in enumerate(downloads):
+        start_progress = 65 + int((idx * 25) / total_downloads)
+        actions.append(
+            _snapshot_download_action(
+                repo_id,
+                description=_("Downloading model: {name}", "Downloading model: {name}").format(name=repo_id),
+                progress=start_progress,
+            )
+        )
+
+    def _final_check(*, ctx=None, **_kwargs) -> bool:
+        return bool(model_install_status(kind, hf_id, ctx=_with_gpu_ctx(dict(ctx or {}))).get("ok"))
+
+    actions.append(
+        InstallAction(
+            type="call",
+            description=_("Finalizing RAG backend...", "Finalizing RAG backend..."),
+            progress=99,
+            fn=_final_check,
+        )
+    )
+
+    required_backend = _required_backend(ctx) if status.get("needs_local_runtime") else None
+    return InstallPlan(
+        actions=actions,
+        ok_status=_("Done", "Done"),
+        required_backend=required_backend,
+        backend_context=dict(ctx),
+    )
+
+
+class RagModelInstallableComponent:
+    """AI Hub карточка конкретной RAG-модели (embed или reranker).
+
+    id уникален на модель (`rag:embeddings:<slug>`), но item_id = вид
+    ("embeddings"/"reranker"), чтобы все модели вида делили одно runtime-
+    окружение (torch/transformers). Отличается только скачиваемая модель.
+    """
+
+    category = ComponentCategory.RAG
+    legacy_kind = "rag"
+
+    def __init__(self, kind: str, hf_id: str, display: str = "") -> None:
+        from managers.rag.model_catalog import component_id_for, slugify_model
+
+        self.kind = str(kind or "").strip().lower()
+        self.hf_id = str(hf_id or "").strip()
+        self.display = str(display or self.hf_id)
+        self.item_id = self.kind
+        self.slug = slugify_model(self.hf_id)
+        self.id = component_id_for(self.kind, self.slug)
+
+    def metadata(self) -> ComponentMetadata:
+        run_ctx = build_runtime_ctx({})
+        status = model_install_status(self.kind, self.hf_id, ctx=run_ctx)
+        backend = coerce_backend(status.get("required_backend"))
+        return ComponentMetadata(
+            id=self.id,
+            item_id=self.item_id,
+            category=self.category,
+            title=self.hf_id,
+            description=self.display,
+            backend=backend,
+            legacy_kind=self.legacy_kind,
+            tags=("rag", self.kind),
+        )
+
+    def status(self, ctx: dict[str, Any] | None = None):
+        run_ctx = build_runtime_ctx(ctx)
+        data = model_install_status(self.kind, self.hf_id, ctx=run_ctx)
+        backend = coerce_backend(data.get("required_backend"))
+        installed = bool(data.get("ok", False))
+        return status_from_installed(
+            component_id=self.id,
+            installed=installed,
+            backend=backend,
+            ctx=run_ctx,
+            details=dict(data or {}),
+        )
+
+    def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        run_ctx = build_runtime_ctx(ctx)
+        return build_model_install_plan(
+            self.kind,
+            self.hf_id,
+            pip_installer=run_ctx.get("pip_installer"),
+            callbacks=run_ctx.get("callbacks"),
+            timeout_sec=float(run_ctx.get("timeout_sec", 3600.0) or 3600.0),
+        )
+
+    def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
+        return noop_plan("RAG uninstall is not implemented yet.")
+
+    def build_initialize_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan | None:
+        return None
+
+
 class RagInstallableComponent:
     category = ComponentCategory.RAG
     legacy_kind = "rag"
@@ -542,11 +739,32 @@ class RagInstallableComponent:
         return None
 
 
-def create_rag_installable_components() -> list[RagInstallableComponent]:
-    return [
+def create_rag_installable_components() -> list[Any]:
+    # Агрегатные компоненты (rag:embeddings / rag:reranker) остаются для
+    # settings-driven установки АКТИВНОЙ (в т.ч. кастомной) модели. Плюс
+    # по компоненту на каждую конкретную модель пресета — их AI Hub выводит
+    # отдельными карточками (что написано, то и качается).
+    components: list[Any] = [
         RagInstallableComponent(TARGET_EMBEDDINGS),
         RagInstallableComponent(TARGET_RERANKER),
     ]
+    try:
+        from managers.rag.model_catalog import all_model_specs, custom_active_model_specs
+
+        seen_ids: set[str] = set()
+        for spec in list(all_model_specs()) + list(custom_active_model_specs()):
+            if spec["id"] in seen_ids:
+                continue
+            seen_ids.add(spec["id"])
+            components.append(
+                RagModelInstallableComponent(spec["kind"], spec["hf_id"], spec["display"])
+            )
+    except Exception:
+        # Список моделей — необязательная надстройка над агрегатами: если
+        # пресеты не читаются, AI Hub просто не покажет карточки моделей, но
+        # settings-путь и рантайм продолжат работать.
+        pass
+    return components
 
 
 def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> None:
@@ -562,8 +780,23 @@ def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 360
         TARGET_CURRENT: _("Installing current RAG backend", "Installing current RAG backend"),
     }
 
+    # По возможности ставим карточку КОНКРЕТНОЙ активной модели (что выбрано в
+    # настройках RAG), а не агрегат — тогда заголовок окна и то, что качается,
+    # совпадают. Кастомные модели (нет в пресетах) идут через агрегат.
+    component_id = make_component_id(ComponentCategory.RAG, normalized)
+    if normalized in (TARGET_EMBEDDINGS, TARGET_RERANKER):
+        try:
+            from managers.rag.model_catalog import spec_for_hf
+
+            active_hf = _local_embed_model_name() if normalized == TARGET_EMBEDDINGS else resolve_ce_model()
+            spec = spec_for_hf(normalized, active_hf) if active_hf else None
+            if spec:
+                component_id = spec["id"]
+        except Exception:
+            pass
+
     payload = {
-        "component_id": make_component_id(ComponentCategory.RAG, normalized),
+        "component_id": component_id,
         "kind": "rag",
         "item_id": normalized,
         "task_id": f"rag:install:{normalized}",

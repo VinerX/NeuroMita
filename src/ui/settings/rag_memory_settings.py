@@ -2038,13 +2038,34 @@ def _refresh_embed_status(gui, *, force: bool = False) -> None:
 
 def _open_rag_ai_hub(gui, target: str) -> None:
     try:
+        # AI Hub теперь показывает модели отдельными карточками — подсвечиваем
+        # карточку АКТИВНОЙ модели (что выбрано в настройках RAG). Для кастомной
+        # модели (нет в пресетах) просто открываем категорию RAG.
+        component_id = ""
+        try:
+            from managers.rag.model_catalog import spec_for_hf
+            from handlers.embedding_presets import resolve_full_config
+            from managers.rag.pipeline.config import resolve_ce_model
+
+            if target == TARGET_EMBEDDINGS:
+                active_hf = str(resolve_full_config().get("hf_name") or "").strip()
+            elif target == TARGET_RERANKER:
+                active_hf = str(resolve_ce_model() or "").strip()
+            else:
+                active_hf = ""
+            spec = spec_for_hf(target, active_hf) if active_hf else None
+            if spec:
+                component_id = spec["id"]
+        except Exception:
+            component_id = ""
+
         gui.event_bus.emit(
             Events.GUI.SHOW_WINDOW,
             {
                 "window_id": "ai_hub",
                 "payload": {
                     "category": "rag",
-                    "component_id": f"rag:{target}",
+                    "component_id": component_id,
                 },
             },
         )
