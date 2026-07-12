@@ -18,6 +18,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from main_logger import logger
+
 from core.backends import (
     BackendKind,
     CUDA_INDEX_URL,
@@ -664,6 +666,7 @@ class RuntimeEnvironmentManager:
         self.lock_root = self.environment_root / ".locks"
         self.registry_path = self.environment_root / "registry.json"
         self._lock = threading.RLock()
+        self._warned_distribution_conflicts: set[tuple[tuple[str, tuple[str, ...]], ...]] = set()
         for path in (
             self.main_core_root,
             self.environment_root,
@@ -676,6 +679,68 @@ class RuntimeEnvironmentManager:
 
     def file_lock(self, name: str, *, timeout: float = 120.0) -> _FileLock:
         return _FileLock(self.lock_root / f"{_safe_id(name)}.lock", timeout=timeout)
+
+    def _warn_distribution_conflicts(
+        self,
+        records: Sequence[EnvironmentRecord],
+        layers: Sequence[CoreLayer],
+    ) -> None:
+        versions_by_distribution: dict[str, dict[str, list[str]]] = {}
+
+        sources: list[tuple[str, Mapping[str, str]]] = [
+            (
+                f"overlay {record.logical_id}@{record.revision_id[:8]}",
+                record.packages,
+            )
+            for record in records
+        ]
+        sources.extend(
+            (f"backend {layer.layer_id}", layer.packages)
+            for layer in layers
+        )
+
+        for source_name, packages in sources:
+            for raw_name, raw_version in packages.items():
+                distribution = canonicalize_name(str(raw_name))
+                version = str(raw_version or "").strip() or "<unknown>"
+                versions_by_distribution.setdefault(distribution, {}).setdefault(
+                    version,
+                    [],
+                ).append(source_name)
+
+        conflicts = {
+            distribution: versions
+            for distribution, versions in versions_by_distribution.items()
+            if len(versions) > 1
+        }
+        if not conflicts:
+            return
+
+        conflict_key = tuple(
+            (distribution, tuple(sorted(versions)))
+            for distribution, versions in sorted(conflicts.items())
+        )
+        if conflict_key in self._warned_distribution_conflicts:
+            return
+        self._warned_distribution_conflicts.add(conflict_key)
+
+        details = []
+        sorted_conflicts = sorted(conflicts.items())
+        for distribution, versions in sorted_conflicts[:20]:
+            version_details = ", ".join(
+                f"{version} [{', '.join(sorted(owners))}]"
+                for version, owners in sorted(versions.items())
+            )
+            details.append(f"{distribution}: {version_details}")
+        if len(sorted_conflicts) > 20:
+            details.append(f"... and {len(sorted_conflicts) - 20} more conflicts")
+
+        logger.warning(
+            "Runtime composition contains conflicting distribution versions. "
+            "Import precedence follows the configured runtime path order, so one "
+            "copy will shadow the others: "
+            + "; ".join(details)
+        )
 
     @staticmethod
     def logical_id_from_meta(meta: dict[str, Any] | None) -> tuple[str, str, str]:
@@ -1614,6 +1679,8 @@ class RuntimeEnvironmentManager:
                     f"{sorted(required)}"
                 )
             selected_layers.append(self._select_family_layer(family, candidates))
+
+        self._warn_distribution_conflicts(selected_records, selected_layers)
 
         paths = tuple(
             [str(record.site_packages) for record in selected_records]

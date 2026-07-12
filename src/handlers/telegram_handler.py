@@ -17,7 +17,7 @@ from telethon.errors import (
 from utils.audio_converter import AudioConverter
 from handlers.audio_handler import AudioHandler
 from main_logger import logger
-from utils import SH, getTranslationVariant
+from utils import getTranslationVariant
 import platform
 from core.events import get_event_bus, Events
 from core.services import use
@@ -70,9 +70,7 @@ class TelegramBotHandler:
                 app_version=app_version,
             )
         except Exception as e:
-            logger.info(f"Проблема в ините тг: {e}")
-            logger.info(SH(self.api_id))
-            logger.info(SH(self.api_hash))
+            logger.error(f"Проблема в ините Telegram-клиента: {e}")
 
     def reset_message_count(self):
         if time.time() - self.start_time > 60:

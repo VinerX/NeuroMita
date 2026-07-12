@@ -1,4 +1,5 @@
 # File: src/controllers/server_controller.py
+import ipaddress
 import os
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
@@ -85,6 +86,16 @@ class ServerEchoSuppressor:
         return True
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]")
+    if normalized.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 class ServerController:
     def __init__(self, game_link):
         self.event_bus = get_event_bus()
@@ -165,6 +176,13 @@ class ServerController:
         if not 1 <= port <= 65535:
             logger.warning(f"SERVER_PORT out of range: {port}; using 12345")
             port = 12345
+
+        if not _is_loopback_host(host):
+            logger.warning(
+                f"Server is binding to non-loopback address {host}:{port}. "
+                "The game protocol has no network authentication; expose it only "
+                "on a trusted network or behind an authenticated tunnel."
+            )
 
         self.server = ChatServerNew(host=host, port=port)
         try:
