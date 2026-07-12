@@ -314,7 +314,10 @@ class LauncherSidebarWidget(QFrame):
         return wrapper
 
     def _read_version_string(self) -> str:
-        pending_version = str(getattr(self.window(), "_pending_python_restart_version", "") or "").strip()
+        presentation = getattr(self.window(), "presentation", None)
+        pending_version = (
+            presentation.app.pending_restart_version if presentation is not None else ""
+        )
         if pending_version:
             return f"v{pending_version} ↻"
         try:

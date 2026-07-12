@@ -150,6 +150,7 @@ class _ViewModelFactory:
 
         return HomePageViewModel(
             host=host,
+            app=self._presentation.app,
             home_controller=self._presentation.home,
             news_controller=self._presentation.news,
             settings=self._presentation.settings,
@@ -612,10 +613,29 @@ class _InstallableController:
 class _ApplicationController:
     _main_controller: Any = None
     _startup_error: str = ""
+    # Единый источник истины для «Python обновлён, нужен перезапуск» и
+    # троттлинга проверки обновлений. Раньше это состояние жило атрибутами
+    # на окне (_pending_python_restart_version) и читалось тремя слоями.
+    _pending_restart_version: str = ""
+    _last_update_check_ts: float = 0.0
 
     @property
     def main_controller(self):
         return self._main_controller
+
+    @property
+    def pending_restart_version(self) -> str:
+        return self._pending_restart_version
+
+    def set_pending_restart_version(self, version: str | None) -> None:
+        self._pending_restart_version = str(version or "").strip()
+
+    @property
+    def last_update_check_ts(self) -> float:
+        return self._last_update_check_ts
+
+    def mark_update_check(self, timestamp: float) -> None:
+        self._last_update_check_ts = float(timestamp)
 
     @property
     def backend_ready(self) -> bool:

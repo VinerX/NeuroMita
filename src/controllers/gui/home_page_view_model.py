@@ -79,6 +79,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self,
         *,
         host: Any,
+        app: Any,
         home_controller: Any,
         news_controller: Any,
         settings: Any,
@@ -86,12 +87,11 @@ class HomePageViewModel(IntentViewModel[HomeState]):
     ) -> None:
         super().__init__(HomeState(), parent)
         self._host = host
+        self._app = app
         self._home = home_controller
         self._news = news_controller
         self._settings = settings
-        self._last_update_check = float(
-            getattr(host, "_home_update_check_ts", 0.0) or 0.0
-        )
+        self._last_update_check = float(app.last_update_check_ts)
         self._cancel_event: threading.Event | None = None
         self._pending_continuation: str | None = None
 
@@ -172,7 +172,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 return
 
         self._last_update_check = time.monotonic()
-        setattr(self._host, "_home_update_check_ts", self._last_update_check)
+        self._app.mark_update_check(self._last_update_check)
         if show_result:
             self._set_progress(
                 _("Проверка обновлений…", "Checking for updates…"),
@@ -773,13 +773,11 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         return bool(self._pending_restart_version())
 
     def _pending_restart_version(self) -> str:
-        return str(
-            getattr(self._host, "_pending_python_restart_version", "") or ""
-        ).strip()
+        return self._app.pending_restart_version
 
     def _mark_python_restart_required(self, version: str | None) -> None:
         normalized = str(version or "").strip()
-        setattr(self._host, "_pending_python_restart_version", normalized or None)
+        self._app.set_pending_restart_version(normalized)
         self.update_state(
             pending_restart_version=normalized,
             python_update=HomeUpdateState(),

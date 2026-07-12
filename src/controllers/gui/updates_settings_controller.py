@@ -72,13 +72,13 @@ def setup_updates_settings_controls(self, parent):
         return "?"
 
     def _pending_python_restart_version() -> str:
-        return str(getattr(self, "_pending_python_restart_version", "") or "").strip()
+        return self.presentation.app.pending_restart_version
 
     def _has_pending_python_restart() -> bool:
         return bool(_pending_python_restart_version())
 
     def _mark_python_restart_required(version: str | None) -> None:
-        self._pending_python_restart_version = str(version or "").strip() or None
+        self.presentation.app.set_pending_restart_version(version)
         sidebar = getattr(self, "shell_sidebar", None)
         if sidebar is not None and hasattr(sidebar, "refresh_version_label"):
             try:
