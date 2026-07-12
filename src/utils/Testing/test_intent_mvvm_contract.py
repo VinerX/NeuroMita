@@ -103,7 +103,7 @@ class IntentMvvmContractTests(unittest.TestCase):
         """
         allowed_counts = {
             "character_settings_logic.py": 187,
-            "rag_memory_controller.py": 44,
+            "rag_memory_controller.py": 32,
         }
         controllers_root = _SRC_ROOT / "controllers" / "gui"
         actual_counts: dict[str, int] = {}

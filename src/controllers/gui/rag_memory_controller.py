@@ -15,7 +15,6 @@ from controllers.gui.settings_data_prefetch import (
     RAG_EMBED_STATUS,
 )
 from utils import getTranslationVariant as _
-from localization.live import tr_set
 from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ApiPresetService, GenerationService, SettingsService, UtilityGenerationRequest
@@ -114,23 +113,6 @@ def _get_embed_status_text() -> str:
         return "?"
 
 
-def _get_model_download_status() -> str:
-    """Check if current model is cached locally."""
-    try:
-        cfg = resolve_full_config()
-        hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
-        provider = str(cfg.get("provider_name") or "local").strip().lower()
-        if provider != "local" or not hf_name:
-            return _("Не требуется", "Not required")
-        checkpoints_dir = _get_checkpoints_dir()
-        cache_dir_name = "models--" + hf_name.replace("/", "--")
-        if os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name)):
-            return _("Скачана", "Downloaded")
-        return _("Не скачана", "Not downloaded")
-    except Exception:
-        return "?"
-
-
 def _get_ce_download_status() -> str:
     """Check if the selected cross-encoder model is cached locally."""
     try:
@@ -169,32 +151,6 @@ def _get_ce_loaded_status() -> str:
         return _("Не загружена", "Not loaded")
     except Exception:
         return "?"
-
-
-def _refresh_ce_status(gui) -> None:
-    """Refresh cross-encoder status labels."""
-    try:
-        if hasattr(gui, '_ce_dl_label'):
-            gui._ce_dl_label.setText(_("Модель:", "Model:") + " " + _get_ce_download_status())
-        if hasattr(gui, '_ce_loaded_label'):
-            gui._ce_loaded_label.setText(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
-        if hasattr(gui, '_ce_dl_btn'):
-            gui._ce_dl_btn.setVisible(not _is_ce_model_downloaded())
-    except Exception:
-        pass
-
-
-def _refresh_embed_status(gui) -> None:
-    """Refresh embedding status labels."""
-    try:
-        if hasattr(gui, '_embed_dl_label'):
-            gui._embed_dl_label.setText(_("Модель:", "Model:") + " " + _get_model_download_status())
-        if hasattr(gui, '_embed_status_label'):
-            gui._embed_status_label.setText(_("Индекс:", "Index:") + " " + _get_embed_status_text())
-        if hasattr(gui, '_embed_dl_btn'):
-            gui._embed_dl_btn.setVisible(not _is_embed_model_downloaded())
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1794,76 +1750,6 @@ def _sync_memory_profile(gui) -> None:
         pass
 
 
-def _attach_embed_downloader(gui, section) -> None:
-    """Вставить download-виджеты эмбеддинга в нужную InnerCollapsibleSection секции RAG."""
-    try:
-        from ui.widgets.settings_sections import InnerCollapsibleSection
-        _dl_label = QLabel(_("Модель:", "Model:") + " " + _get_model_download_status())
-        _dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _idx_label = QLabel(_("Индекс:", "Index:") + " " + _get_embed_status_text())
-        _idx_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _embed_dl_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
-        _embed_dl_btn.setVisible(not _is_embed_model_downloaded())
-        _embed_dl_btn.clicked.connect(lambda: _download_embed_model(gui))
-        gui._embed_status_label = _idx_label
-        gui._embed_dl_label = _dl_label
-        gui._embed_dl_btn = _embed_dl_btn
-
-        _content = getattr(section, 'content', None)
-        if _content:
-            _content_layout = _content.layout()
-            if _content_layout:
-                for i in range(_content_layout.count()):
-                    _item = _content_layout.itemAt(i)
-                    if _item and _item.widget():
-                        _w = _item.widget()
-                        if isinstance(_w, InnerCollapsibleSection):
-                            _tl = getattr(_w, 'title_label', None)
-                            _title = _tl.text() if _tl else ''
-                            if 'мбеддинг' in _title.lower() or 'mbedding' in _title.lower():
-                                _w.add_widget(_dl_label)
-                                _w.add_widget(_idx_label)
-                                _w.add_widget(_embed_dl_btn)
-                                break
-    except Exception:
-        pass
-
-
-def _attach_ce_downloader(gui, section) -> None:
-    """Вставить download-виджеты cross-encoder в нужную InnerCollapsibleSection секции RAG."""
-    try:
-        from ui.widgets.settings_sections import InnerCollapsibleSection
-        _ce_dl_label = QLabel(_("Модель:", "Model:") + " " + _get_ce_download_status())
-        _ce_dl_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_ld_label = QLabel(_("Статус:", "Status:") + " " + _get_ce_loaded_status())
-        _ce_ld_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        _ce_dl_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
-        _ce_dl_btn.setVisible(not _is_ce_model_downloaded())
-        _ce_dl_btn.clicked.connect(lambda: _download_ce_model(gui))
-        gui._ce_dl_label = _ce_dl_label
-        gui._ce_loaded_label = _ce_ld_label
-        gui._ce_dl_btn = _ce_dl_btn
-
-        _content = getattr(section, 'content', None)
-        if _content:
-            _content_layout = _content.layout()
-            if _content_layout:
-                for i in range(_content_layout.count()):
-                    _item = _content_layout.itemAt(i)
-                    if _item and _item.widget():
-                        _w = _item.widget()
-                        if isinstance(_w, InnerCollapsibleSection):
-                            _tl = getattr(_w, 'title_label', None)
-                            _title = _tl.text() if _tl else ''
-                            if 'ross-encoder' in _title or 'реранкер' in _title.lower():
-                                _w.add_widget(_ce_dl_label)
-                                _w.add_widget(_ce_ld_label)
-                                _w.add_widget(_ce_dl_btn)
-                                break
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Install helpers (InstallController-based RAG backend setup)
 # ---------------------------------------------------------------------------
@@ -2110,18 +1996,6 @@ def _download_embed_model(gui) -> None:
             _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
         )
         _refresh_embed_status(gui)
-
-
-def _download_ce_model(gui) -> None:
-    try:
-        _open_rag_ai_hub(gui, TARGET_RERANKER)
-    except Exception as exc:
-        QMessageBox.critical(
-            gui,
-            _("Ошибка", "Error"),
-            _("Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}").format(e=exc),
-        )
-        _refresh_ce_status(gui)
 
 
 def _attach_embed_downloader(gui, section) -> None:
