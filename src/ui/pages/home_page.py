@@ -222,6 +222,11 @@ class HomePage(LauncherHomeBackground):
 
         self.progress_label = QLabel("")
         self.progress_label.setObjectName("LauncherHomeProgressLabel")
+        self.progress_label.setMinimumWidth(0)
+        self.progress_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         self.progress_label.setVisible(False)
         _progress_row.addWidget(self.progress_label, 1)
 

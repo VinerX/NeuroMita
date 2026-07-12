@@ -267,7 +267,7 @@ def _published_sort_key(release: dict) -> str:
 
 
 def _select_release(repo: str, channel: str) -> Optional[Release]:
-    """Return newest release suitable for the given channel as a Release.
+    """Return newest release with a Python update for the given channel.
 
     stable: последний опубликованный НЕ-prerelease (GitHub /releases/latest).
     beta:   то же самое, но с учётом prerelease — берём самый свежий по
@@ -275,10 +275,14 @@ def _select_release(repo: str, channel: str) -> Optional[Release]:
             created_at (дата тега), из-за чего более старый по публикации
             релиз может оказаться первым; поэтому пересортировываем сами.
     """
-    raws = [
-        r for r in _fetch_releases(repo)
-        if not r.get("draft") and raw_release_has_launcher_assets(r)
-    ]
+    raws = []
+    for raw in _fetch_releases(repo):
+        if raw.get("draft") or not raw_release_has_launcher_assets(raw):
+            continue
+        release = parse_release(raw)
+        picked = pick_from_release(release)
+        if picked.python_full is not None or picked.python_patch is not None:
+            raws.append(raw)
     if channel == "stable":
         raws = [r for r in raws if not r.get("prerelease")]
     if not raws:
@@ -523,7 +527,7 @@ def check_for_updates(
         log("Auto-update is disabled (AUTO_UPDATE=0). Set AUTO_UPDATE=1 in features.env to enable.")
         return
 
-    # Select best Python asset
+    # _select_release only returns releases with a Python archive.
     picked = pick_from_release(release)
     is_patch = False
     python_asset = None
@@ -535,14 +539,8 @@ def check_for_updates(
         python_asset = picked.python_full
 
     if python_asset is None:
-        # Plain fallback: first .zip in assets
-        python_asset = next(
-            (a for a in release.assets if a.name.lower().endswith(".zip")),
-            None,
-        )
-        if python_asset is None:
-            log("No suitable Python asset found in release", "warning")
-            return
+        log("No suitable Python asset found in release", "warning")
+        return
 
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
