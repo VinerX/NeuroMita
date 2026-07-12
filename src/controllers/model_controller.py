@@ -274,8 +274,10 @@ class ModelController(GenerationService, ModelStateService):
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
 
-    @staticmethod
-    def _remote_only_structured_segment_fields() -> list[str]:
+    def _remote_only_structured_segment_fields(self) -> list[str]:
+        if not bool(self.settings.get("REMOTE_ONLY_STRUCTURED_FIELDS_EXCLUSION_ENABLED", True)):
+            return []
+
         game_link = services().get_optional(GameLinkService)
         if game_link is None:
             return []

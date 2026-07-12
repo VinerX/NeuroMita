@@ -12,10 +12,34 @@ if str(PROJECT_SRC) not in sys.path:
 
 from controllers.model_controller import ModelController
 from schemas.structured_response import StructuredResponse
+from services.game_link_service import DisconnectedGameLinkService
+from services.contracts import GameLinkService
+from core.services import services
 
 
 class StructuredResponseSandboxTests(unittest.TestCase):
     _EXCLUDED = {"animations", "idle_animations", "emotions"}
+
+    def test_debug_setting_can_disable_remote_exclusions(self):
+        controller = object.__new__(ModelController)
+
+        class _Settings:
+            enabled = True
+
+            def get(self, key, default=None):
+                return {
+                    "REMOTE_ONLY_STRUCTURED_FIELDS_EXCLUSION_ENABLED": self.enabled,
+                }.get(key, default)
+
+        controller.settings = _Settings()
+        services().register(GameLinkService, DisconnectedGameLinkService(), replace=True)
+
+        self.assertEqual(
+            set(controller._remote_only_structured_segment_fields()),
+            self._EXCLUDED,
+        )
+        controller.settings.enabled = False
+        self.assertEqual(controller._remote_only_structured_segment_fields(), [])
 
     def test_default_schema_keeps_remote_excluded_fields(self):
         schema = StructuredResponse.openai_response_format()["json_schema"]["schema"]
