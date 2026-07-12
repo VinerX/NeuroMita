@@ -15,6 +15,32 @@ Callback = Callable[[Any], None]
 _state_lock = threading.RLock()
 _generations: dict[tuple[int, str], int] = {}
 _exclusive: set[tuple[int, str]] = set()
+_tracked_owner_ids: set[int] = set()
+
+
+def _purge_owner_state(owner_id: int) -> None:
+    """Убрать все записи владельца: id() переиспользуется после GC, и без
+    очистки новый объект унаследовал бы чужие счётчики поколений."""
+    with _state_lock:
+        _tracked_owner_ids.discard(owner_id)
+        for key in [k for k in _generations if k[0] == owner_id]:
+            del _generations[key]
+        for key in [k for k in _exclusive if k[0] == owner_id]:
+            _exclusive.discard(key)
+
+
+def _track_owner(owner: Any) -> None:
+    owner_id = id(owner)
+    with _state_lock:
+        if owner_id in _tracked_owner_ids:
+            return
+        _tracked_owner_ids.add(owner_id)
+    try:
+        weakref.finalize(owner, _purge_owner_state, owner_id)
+    except TypeError:
+        # Не-weakref-able владелец (например, сам модульный fallback) живёт
+        # до конца процесса — его записи чистить не нужно.
+        pass
 
 
 def _target_closed(target: Any) -> bool:
@@ -77,6 +103,7 @@ def run_async(
     owner = target if target is not None else run_async
     key = (id(owner), str(name or "gui-async"))
     owner_ref = _owner_ref(owner)
+    _track_owner(owner)
     with _state_lock:
         if normalized_policy == "exclusive":
             if key in _exclusive:
@@ -102,24 +129,42 @@ def run_async(
             _exclusive.discard(key)
 
     def _run():
+        # Для policy="exclusive" слот освобождается только после того, как
+        # колбэк реально выполнен в GUI-потоке (или отброшен): иначе следующий
+        # «эксклюзивный» запуск мог бы стартовать, пока прежний on_ok ещё
+        # висит в очереди Qt, и их колбэки перемешались бы.
         try:
             result = worker()
         except Exception as exc:
             logger.error(f"Async GUI worker failed: {name}: {exc}", exc_info=True)
-            if on_error is not None:
-                dispatch_to_gui(
-                    target,
-                    lambda exc=exc: on_error(exc) if current() else None,
-                )
+            if on_error is None:
+                finish()
+                return
+
+            def _apply_error(exc=exc) -> None:
+                try:
+                    if current():
+                        on_error(exc)
+                finally:
+                    finish()
+
+            if not dispatch_to_gui(target, _apply_error):
+                finish()
+            return
+
+        if on_ok is None:
             finish()
             return
 
-        if on_ok is not None:
-            dispatch_to_gui(
-                target,
-                lambda result=result: on_ok(result) if current() else None,
-            )
-        finish()
+        def _apply_result(result=result) -> None:
+            try:
+                if current():
+                    on_ok(result)
+            finally:
+                finish()
+
+        if not dispatch_to_gui(target, _apply_result):
+            finish()
 
     supervisor = task_supervisor()
     if supervisor.is_shutdown:
