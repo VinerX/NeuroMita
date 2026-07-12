@@ -310,7 +310,7 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
 
         def applied(saved_id: Any) -> None:
             self.update_state(operation=None)
-            self._presentation.rag.download_embed_model(self._host)
+            self._presentation.rag.download_embed_model()
             self.refresh_presets(
                 saved_id if saved_id is not None else self.state.selected_preset_id,
                 force=True,

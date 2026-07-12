@@ -782,12 +782,6 @@ class AppWindowBase(QMainWindow):
         return str(self._get_setting("CHARACTER_NAME", "Assistant") or "Assistant")
 
     def closeEvent(self, event):
-        for subscription in list(getattr(self, "_rag_install_subscriptions", []) or []):
-            try:
-                subscription.close()
-            except Exception:
-                pass
-        self._rag_install_subscriptions = []
         try:
             if self.shell_controller is not None:
                 self.shell_controller.close_application()

@@ -137,10 +137,11 @@ class _RagController:
 
         build_rag_section(gui, parent, provider_options)
 
-    def download_embed_model(self, gui: Any) -> None:
-        from controllers.gui.rag_memory_controller import _download_embed_model
+    def download_embed_model(self) -> None:
+        from controllers.gui.rag_install_view_model import open_rag_ai_hub
+        from managers.rag.install_spec import TARGET_EMBEDDINGS
 
-        _download_embed_model(gui)
+        open_rag_ai_hub(TARGET_EMBEDDINGS)
 
     def is_embed_model_downloaded(self) -> bool:
         from controllers.gui.rag_memory_controller import _is_embed_model_downloaded
@@ -268,6 +269,14 @@ class _ViewModelFactory:
         return SettingsRuntimeOptionsViewModel(
             providers=self._presentation.providers,
             settings=self._presentation.settings,
+            parent=parent,
+        )
+
+    def rag_install(self, host: Any, *, parent: Any = None):
+        from controllers.gui.rag_install_view_model import RagInstallViewModel
+
+        return RagInstallViewModel(
+            settings_data=self._presentation.settings_data,
             parent=parent,
         )
 
