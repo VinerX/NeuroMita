@@ -169,14 +169,30 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         except Exception as exc:
             self.emit_effect(ChatShowError("History", str(exc)))
 
+    _MAX_STAGED_FILE_BYTES = 32 * 1024 * 1024
+
     def _stage_files(self, paths: tuple[str, ...]) -> None:
         normalized = tuple(str(path) for path in paths if str(path).strip())
         if not normalized:
             return
 
         def worker() -> tuple[bytes, ...]:
+            import os
+
             images: list[bytes] = []
             for path in normalized:
+                size = os.path.getsize(path)
+                if size > self._MAX_STAGED_FILE_BYTES:
+                    raise ValueError(
+                        _(
+                            "Файл слишком большой для вложения: {name} ({size:.1f} МБ, лимит {limit} МБ)",
+                            "File is too large to attach: {name} ({size:.1f} MB, limit {limit} MB)",
+                        ).format(
+                            name=os.path.basename(path),
+                            size=size / (1024 * 1024),
+                            limit=self._MAX_STAGED_FILE_BYTES // (1024 * 1024),
+                        )
+                    )
                 with open(path, "rb") as stream:
                     images.append(stream.read())
             return tuple(images)
