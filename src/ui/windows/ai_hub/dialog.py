@@ -42,6 +42,12 @@ from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_ro
 from .widgets import CategoryButton, ModelCard, Stat
 
 
+# Status inspection runs outside Qt and can touch third-party packages or the
+# network.  A worker that stops responding must never keep install controls
+# disabled indefinitely.
+STATUS_REFRESH_TIMEOUT_MS = 20_000
+
+
 class _BackendInstallConfirmationDialog(QDialog):
     """Two-action confirmation with an inline navigation link."""
 
@@ -111,6 +117,11 @@ class AIHubDialog(QDialog):
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
         self._refresh_generation = 0
         self._refresh_inflight = False
+        self._refresh_timeout_generation = 0
+        self._refresh_timeout_reported = False
+        self._refresh_timeout_timer = QTimer(self)
+        self._refresh_timeout_timer.setSingleShot(True)
+        self._refresh_timeout_timer.timeout.connect(self._on_refresh_timeout)
         self._checking_component_ids: set[str] = set()
         self._rendered_language = ""
         self._main_controller = None
@@ -150,6 +161,14 @@ class AIHubDialog(QDialog):
         self.setObjectName("AIHubDialog")
         self.setWindowTitle(_("AI Hub", "AI Hub"))
         self.setModal(False)
+        # Кнопка сворачивания: у QDialog её в заголовке по умолчанию нет.
+        # WindowSystemMenuHint нужен, чтобы системные кнопки вообще появились;
+        # заодно убираем бесполезную контекстную «?»-кнопку.
+        flags = self.windowFlags()
+        flags |= Qt.WindowType.WindowMinimizeButtonHint
+        flags |= Qt.WindowType.WindowSystemMenuHint
+        flags &= ~Qt.WindowType.WindowContextHelpButtonHint
+        self.setWindowFlags(flags)
         # Размеры под экран: на узких/масштабированных дисплеях жёсткие 1280×820 и
         # min 1100×700 уводили контент (сайдбар + панель настроек) за левую кромку
         # окна — «интерфейс поехал» (#21). Клампим к доступной геометрии экрана и
@@ -709,9 +728,14 @@ class AIHubDialog(QDialog):
         if include_status is None:
             include_status = bool(force or self._loaded_once)
 
+        if self._refresh_timeout_reported:
+            self._refresh_timeout_reported = False
+            self._set_task_status("")
         self._refresh_generation += 1
         generation = self._refresh_generation
         self._refresh_inflight = True
+        self._refresh_timeout_generation = generation
+        self._refresh_timeout_timer.start(STATUS_REFRESH_TIMEOUT_MS)
         self.btn_refresh.setEnabled(False)
         # Пока данных ещё нет (первое открытие) — показываем индикатор загрузки
         # вместо пустого списка (иначе 1-3 сек видно «0 моделей»). Если карточки
@@ -741,7 +765,37 @@ class AIHubDialog(QDialog):
             )
 
         task_supervisor().start_thread(
-            self, "ai-hub-refresh", _worker, replace=True
+            self,
+            "ai-hub-refresh",
+            _worker,
+            replace=True,
+            # Python cannot forcibly stop a status probe stuck in a foreign
+            # library.  The UI timeout below releases the user; allowing the
+            # next probe avoids making the Refresh button unusable until the
+            # abandoned daemon thread eventually returns.
+            allow_overlap=True,
+        )
+
+    def _on_refresh_timeout(self) -> None:
+        """Release the UI when a status probe exceeded its response budget."""
+        generation = self._refresh_timeout_generation
+        if generation != self._refresh_generation or not self._refresh_inflight:
+            return
+
+        logger.warning("AI Hub status refresh timed out after %d ms", STATUS_REFRESH_TIMEOUT_MS)
+        # A late worker result belongs to an expired snapshot and must not
+        # overwrite a newer user-initiated refresh.
+        self._refresh_generation += 1
+        self._refresh_inflight = False
+        self._refresh_timeout_reported = True
+        self._checking_component_ids.clear()
+        self.btn_refresh.setEnabled(True)
+        self._apply_busy_state()
+        self._set_task_status(
+            _(
+                "Проверка файлов не завершилась. Проверьте подключение к интернету и обновите список.",
+                "Checking files did not finish. Check your internet connection and refresh the list.",
+            )
         )
 
     def _apply_refresh_result(
@@ -753,7 +807,9 @@ class AIHubDialog(QDialog):
     ) -> None:
         if generation != self._refresh_generation:
             return
+        self._refresh_timeout_timer.stop()
         self._refresh_inflight = False
+        self._refresh_timeout_reported = False
         self._checking_component_ids.clear()
         self.btn_refresh.setEnabled(True)
         # Пустой ответ при наличии прежних данных — почти всегда таймаут/сбой
@@ -1011,6 +1067,11 @@ class AIHubDialog(QDialog):
         if hasattr(self, "_open_models_btn"):
             self._open_models_btn.setVisible(self._selected_category == "voices")
         rows = self._filtered_rows()
+        # Первичная загрузка ещё идёт (данных нет) — держим индикатор загрузки,
+        # а не подменяем его на «ничего не найдено» при переключении категории.
+        if not rows and self._refresh_inflight and not self._rows:
+            self._show_scroll_loading()
+            return
         self._clear_scroll()
         if not rows:
             empty = QLabel(
@@ -1625,9 +1686,41 @@ class AIHubDialog(QDialog):
             chip.setToolTip("")
             return
         chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
-        titles = [str((j or {}).get("title") or (j or {}).get("task_id") or "") for j in pending]
-        chip.setToolTip("\n".join(t for t in titles if t))
+        chip.setToolTip(self._queue_tooltip_html())
         chip.setVisible(True)
+
+    def _queue_tooltip_html(self) -> str:
+        """Read-only сводка очереди для всплывающей подсказки: что ставится
+        сейчас + список ожидающих. Без кнопок отмены — только просмотр
+        (редактирование остаётся в панели «АКТИВНОСТЬ» слева)."""
+        running = self._queue_state.get("running") or {}
+        pending = self._queue_state.get("pending") or []
+
+        def _job_title(job: dict[str, Any]) -> str:
+            return str((job or {}).get("title") or (job or {}).get("task_id") or "").strip()
+
+        parts: list[str] = []
+        run_title = _job_title(running)
+        if run_title:
+            parts.append(
+                "<b>{label}</b><br>{title}".format(
+                    label=html.escape(_("Устанавливается сейчас:", "Installing now:")),
+                    title=html.escape(run_title),
+                )
+            )
+        rows = "".join(
+            "&nbsp;•&nbsp;{t}<br>".format(t=html.escape(_job_title(job)))
+            for job in pending
+            if _job_title(job)
+        )
+        if rows:
+            parts.append(
+                "<b>{label}</b><br>{rows}".format(
+                    label=html.escape(_("В очереди:", "Queued:")),
+                    rows=rows,
+                )
+            )
+        return "<div style='line-height:140%;'>" + "<br>".join(parts) + "</div>"
 
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()
