@@ -314,8 +314,11 @@ class _EventsController:
         topic: UiTopic,
         callback: Callable[[UiEvent], None],
         *,
-        weak: bool = True,
+        weak: bool = False,
     ):
+        # weak=True опасен для лямбд и локальных замыканий: weakref умирает
+        # сразу после подписки, и колбэк молча перестаёт получать события.
+        # Слабую подписку нужно запрашивать явно и только для bound-методов.
         normalized = UiTopic(topic)
         callback_ref = None
         strong_callback = callback
@@ -505,7 +508,7 @@ class _FineTuneController:
     def enforce_limit(self) -> None:
         collector = self._instance()
         if collector is not None:
-            collector._enforce_limit()
+            collector.enforce_limit()
 
     def set_data_directory(self, path: str) -> None:
         from pathlib import Path
@@ -558,15 +561,9 @@ class _VoiceController:
 
 class _InstallableController:
     def __init__(self) -> None:
-        registry = services()
-        if registry.is_registered(InstallableCatalogService):
-            self._catalog = registry.get(InstallableCatalogService)
-        else:
-            from services.installable_catalog_service import DefaultInstallableCatalogService
-
-            settings = registry.get_optional(SettingsService)
-            self._catalog = DefaultInstallableCatalogService(settings)
-            registry.register(InstallableCatalogService, self._catalog)
+        # Владелец сервиса — композиционный корень (__main__ / main_controller);
+        # хаб только потребляет. Отсутствие — ошибка порядка старта.
+        self._catalog = use(InstallableCatalogService)
 
     def list_rows(self, **kwargs):
         return self._catalog.list_rows(**kwargs)
