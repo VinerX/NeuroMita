@@ -21,6 +21,7 @@ from localization.live import tr_set
 from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ApiPresetService, GenerationService, SettingsService, UtilityGenerationRequest
+from managers.settings_manager import SettingsManager
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
@@ -799,6 +800,61 @@ def _refresh_preset_combo(gui) -> None:
     _update_preset_delete_btn(gui, combo.currentText())
 
 
+def _as_bool(value: object) -> bool:
+    """Interpret settings values consistently for the preset-install prompt."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
+    """Return enabled RAG targets whose selected model is absent locally.
+
+    The install status is also responsible for checking Python dependencies, but
+    this helper deliberately reports only model artifacts: the user should not
+    get a download prompt merely because a package needs an update.
+    """
+    targets: list[str] = []
+    if _as_bool(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False)):
+        targets.append(TARGET_EMBEDDINGS)
+    if _as_bool(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False)):
+        targets.append(TARGET_RERANKER)
+
+    missing: list[tuple[str, list[str]]] = []
+    for target in targets:
+        status = get_install_status(target)
+        models = [str(model) for model in status.get("download_models", []) if str(model).strip()]
+        if models:
+            missing.append((target, models))
+    return missing
+
+
+def _offer_missing_preset_models(gui) -> None:
+    """Offer to enqueue downloads required by the RAG preset just applied."""
+    missing = _missing_preset_model_targets()
+    if not missing:
+        return
+
+    model_names = "\n".join(
+        f"• {model}" for _target, models in missing for model in models
+    )
+    answer = QMessageBox.question(
+        gui,
+        _("Необходима загрузка моделей", "Model download required"),
+        _(
+            "Для выбранного пресета RAG отсутствуют модели:\n{models}\n\nДобавить их в очередь загрузки?",
+            "The selected RAG preset needs these models:\n{models}\n\nAdd them to the download queue?",
+        ).format(models=model_names),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+
+    for target, _models in missing:
+        start_install(target, with_ui=True)
+
+
 def _on_apply_preset(gui) -> None:
     combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
     if combo is None:
@@ -846,6 +902,7 @@ def _on_apply_preset(gui) -> None:
             widget.setText(str(v))
     if any(k in settings for k in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX")):
         sync_legacy_settings_to_preset(log_migration=False, force=True)
+    _offer_missing_preset_models(gui)
 
 
 def _on_save_preset(gui) -> bool:
