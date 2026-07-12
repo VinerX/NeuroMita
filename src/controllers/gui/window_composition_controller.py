@@ -75,7 +75,7 @@ class WindowCompositionController:
         return dialog
 
     def _factory_ai_hub(self, parent, _payload: dict):
-        from ui.windows.ai_hub_window import AIHubDialog
+        from ui.windows.ai_hub import AIHubDialog
 
         return AIHubDialog(
             self._ai_hub_view_model,
