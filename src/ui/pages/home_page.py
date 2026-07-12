@@ -38,6 +38,7 @@ from ui.pages.home_presentation import (
     HomePrimaryRequested,
     HomePromptRestart,
     HomePromptTesterCode,
+    HomeRefreshNews,
     HomeRefreshSidebar,
     HomeRefreshUpdates,
     HomeRestartDecision,

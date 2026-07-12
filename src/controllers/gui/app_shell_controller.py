@@ -74,6 +74,14 @@ class AppShellController:
         self._closed = True
         controller = self._main_controller
         try:
+            # Page ViewModels must stop accepting refreshes before the backend
+            # shutdown reaches the global TaskSupervisor. The composition
+            # root also closes them from aboutToQuit, but that signal arrives
+            # too late for the normal window-close path.
+            page_coordinator = getattr(self._view, "page_coordinator", None)
+            close_pages = getattr(page_coordinator, "close", None)
+            if callable(close_pages):
+                close_pages()
             if controller is not None:
                 controller.close_app()
             else:

@@ -252,6 +252,28 @@ class MainWindowCoordinator:
             return
         self._closed = True
         view = self._view
+
+        # Page widgets outlive this coordinator until Qt destroys the main
+        # window. Close their presentation models explicitly before the global
+        # TaskSupervisor is shut down; otherwise queued refreshes can race with
+        # application shutdown and attempt to start new worker threads.
+        pages = getattr(view, "page_map", {})
+        closed_models: set[int] = set()
+        for page in tuple(pages.values()) if isinstance(pages, dict) else ():
+            for attribute in ("view_model", "_view_model"):
+                model = getattr(page, attribute, None)
+                close_model = getattr(model, "close", None)
+                if not callable(close_model) or id(model) in closed_models:
+                    continue
+                try:
+                    close_model()
+                except Exception as exc:
+                    logger.debug(
+                        "Page presentation model close failed during shutdown: %s",
+                        exc,
+                    )
+                closed_models.add(id(model))
+
         page = None
         if hasattr(view, "page_stack"):
             page = view.page_stack.currentWidget()
