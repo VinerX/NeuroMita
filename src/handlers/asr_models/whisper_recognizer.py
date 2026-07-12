@@ -61,7 +61,25 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         "transformers",
         "pyyaml>=5.1",
     )
-    
+
+    # Веса CT2-модели качаем прямыми HTTP-ссылками (как ONNX/GigaAM), а НЕ через
+    # WhisperModel(...) на этапе установки: скачивание идёт в основном процессе
+    # приложения, где faster_whisper/torch недоступны (они в изолированной среде
+    # движка). Репозитории — из faster_whisper._MODELS, файлы — из allow_patterns
+    # download_model(). vocabulary.* в обоих репах — vocabulary.json.
+    _MODEL_REPOS = {
+        "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        "large-v3": "Systran/faster-whisper-large-v3",
+    }
+    _MODEL_FILES = (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "vocabulary.json",
+        "model.bin",
+    )
+
+
     MODEL_CONFIGS = [
         {
             "id": "whisper",
@@ -262,13 +280,36 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         if not ok:
             self._last_requirements_probe_message = self._describe_requirements_failure(st)
             self._last_requirements_probe_status = st
-        else:
-            self._last_requirements_probe_message = None
-            self._last_requirements_probe_status = None
-        return ok
-        
+            return False
+        self._last_requirements_probe_message = None
+        self._last_requirements_probe_status = None
+
+        # Пакеты на месте — но модель установлена только когда веса реально
+        # скачаны (иначе after-install check «проходил» на пустой папке, а init
+        # падал). Проверяем файлы из манифеста, как ONNX/GigaAM.
+        manifest = self.install_manifest()
+        if not manifest:
+            return False
+        for item in manifest:
+            dest = str(item.get("dest") or "").strip()
+            if not dest or not os.path.exists(dest) or os.path.getsize(dest) <= 0:
+                return False
+        return True
+
+    def _model_local_dir(self) -> str:
+        """Каталог с весами текущей модели, напр. SpeechRecognitionModels/WhisperFW/large-v3-turbo."""
+        return os.path.join(self.model_download_root, self.whisper_model)
+
     def install_manifest(self) -> list[dict]:
-        return []
+        repo = self._MODEL_REPOS.get(self.whisper_model)
+        if not repo:
+            return []
+        base = f"https://huggingface.co/{repo}/resolve/main"
+        model_dir = self._model_local_dir()
+        return [
+            {"url": f"{base}/{fname}", "dest": os.path.join(model_dir, fname)}
+            for fname in self._MODEL_FILES
+        ]
 
     def uninstall_pip_packages(self) -> list[str]:
         # Только эксклюзивные для Whisper пакеты. sounddevice/silero-vad/transformers/
@@ -282,30 +323,10 @@ class WhisperRecognizer(SpeechRecognizerInterface):
 
     # ---------- artifacts install ----------
     async def install(self) -> bool:
-        if not self.is_installed():
-            raise RuntimeError(self._describe_requirements_failure(self._last_requirements_probe_status or {}))
-
-        try:
-            from faster_whisper import WhisperModel
-
-            os.makedirs(self.model_download_root, exist_ok=True)
-
-            device = self._resolve_device_for_runtime()
-            compute_type = self._resolve_compute_type(device)
-
-            _m = WhisperModel(
-                self.whisper_model,
-                device=device,
-                compute_type=compute_type,
-                download_root=self.model_download_root
-            )
-            del _m
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Whisper install failed: {e}", exc_info=True)
-            return False
+        # Веса качает base-план через download_http (install_manifest непустой) —
+        # прямыми ссылками, без импорта faster_whisper в основном процессе.
+        # Метод оставлен для совместимости контракта и в этот путь не попадает.
+        return True
 
     # ---------- runtime ----------
     def _resolve_device_for_runtime(self) -> str:
@@ -376,9 +397,22 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             device = self._resolve_device_for_runtime()
             compute_type = self._resolve_compute_type(device)
 
-            self.logger.info(f"Whisper init: model={self.whisper_model}, device={device}, compute_type={compute_type}")
+            # Грузим из локального каталога с заранее скачанными весами (их кладёт
+            # download_http на этапе установки). Так faster_whisper не обращается к
+            # своему репо-маппингу и не пытается доскачивать. Фолбэк на имя модели —
+            # если каталога нет (напр. старая установка через кэш download_root).
+            model_dir = self._model_local_dir()
+            if os.path.isfile(os.path.join(model_dir, "model.bin")):
+                model_ref = model_dir
+            else:
+                model_ref = self.whisper_model
+
+            self.logger.info(
+                f"Whisper init: model={self.whisper_model}, source={model_ref}, "
+                f"device={device}, compute_type={compute_type}"
+            )
             self._model = WhisperModel(
-                self.whisper_model,
+                model_ref,
                 device=device,
                 compute_type=compute_type,
                 download_root=self.model_download_root
