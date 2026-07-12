@@ -285,6 +285,10 @@ class IntentViewModel(QObject, Generic[StateT]):
         current = self._generations.get(name, 0) == generation
         rerun = name in self._coalesced_pending
         self._coalesced_pending.discard(name)
+        if not rerun:
+            # Спека хранит замыкания worker/колбэков со всеми захваченными
+            # данными — без очистки они жили бы до close() view model.
+            self._coalesced_specs.pop(name, None)
         if not self._closed and current and not rerun:
             if error is None:
                 self._invoke_success(on_success, result, on_error)
