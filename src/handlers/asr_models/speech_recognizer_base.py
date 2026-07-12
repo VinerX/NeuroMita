@@ -146,6 +146,28 @@ class SpeechRecognizerInterface(ABC):
 
     def status(self, ctx: dict | None = None) -> ComponentStatus:
         run_ctx = build_runtime_ctx(ctx)
+        # Глоссарий движков (список моделей в UI) считается в основном GUI-процессе,
+        # где зависимости движка (faster_whisper, torch, ctranslate2, …) лежат в
+        # изолированном оверлее resolved-среды и НЕ видны через sys.path. Без путей
+        # среды is_installed()/бэкенд-проверка ложно считают установленный движок
+        # «не установленным», и он пропадает из выбора. Подставляем пути закоммиченной
+        # среды этого компонента. В AI-воркере пути уже приходят через
+        # NEUROMITA_RUNTIME_* (python_paths заполнен) — там ничего не трогаем.
+        if not run_ctx.get("python_paths"):
+            try:
+                from core.runtime_environments import runtime_environments
+
+                mgr = runtime_environments()
+                category = getattr(self.category, "value", self.category)
+                record = mgr.active_for(category=str(category), item_id=self.item_id)
+                env_paths = mgr.runtime_paths(record) if record is not None else ()
+                if env_paths:
+                    run_ctx["python_paths"] = list(env_paths)
+                    run_ctx.setdefault("target_dir", env_paths[0])
+                    run_ctx["strict_target"] = True
+            except Exception:
+                pass
+
         settings = run_ctx.get("engine_settings") if isinstance(run_ctx.get("engine_settings"), dict) else self.load_settings()
         try:
             self.apply_settings(settings)
