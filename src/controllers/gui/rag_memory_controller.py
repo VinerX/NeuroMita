@@ -9,8 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ui.gui_templates import create_settings_section
-from ui.async_bus import run_async
-from ui.settings.data_prefetch import (
+from controllers.gui.async_runner import run_async
+from controllers.gui.settings_data_prefetch import (
     RAG_CE_STATUS,
     RAG_EMBED_STATUS,
     get_cached_settings_data,
@@ -236,7 +236,7 @@ def _is_ce_model_downloaded() -> bool:
 
 def _reindex_embeddings(gui) -> None:
     """Run missing-only reindex of embeddings for all characters with progress dialog."""
-    from ui.settings.character_settings.logic import run_reindexing_all
+    from controllers.gui.character_settings_logic import run_reindexing_all
     run_reindexing_all(gui)
 
 
@@ -245,7 +245,7 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
     from managers.database_manager import DatabaseManager
     from managers.rag.graph.graph_store import GraphStore
     from managers.rag.graph.entity_extractor import parse_extraction_response, store_extraction
-    from ui.task_worker import TaskWorker
+    from controllers.gui.task_worker import TaskWorker
 
     db = DatabaseManager()
     if mode == "current":
@@ -617,7 +617,7 @@ def _run_entity_gc(gui, dry_run: bool = False) -> None:
     """Run entity GC for all characters (dry-run shows plan, apply executes it)."""
     from managers.database_manager import DatabaseManager
     from managers.rag.graph.entity_gc import EntityGC
-    from ui.task_worker import TaskWorker
+    from controllers.gui.task_worker import TaskWorker
 
     db = DatabaseManager()
     with db.connection() as conn:

@@ -15,11 +15,7 @@ def _on_language_changed(gui, value=None):
     """Живая смена языка: применяем сразу, без перезапуска."""
     code = str(value or "").strip().upper()
     if not code:
-        try:
-            from managers.settings_manager import SettingsManager
-            code = str(SettingsManager.get("LANGUAGE", "RU") or "RU").upper()
-        except Exception:
-            code = "RU"
+        code = str(gui.presentation.settings.get("LANGUAGE", "RU") or "RU").upper()
     try:
         from localization.live import set_language
         set_language(code)

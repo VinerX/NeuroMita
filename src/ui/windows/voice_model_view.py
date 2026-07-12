@@ -12,10 +12,7 @@ from PyQt6.QtGui import QCursor
 
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
-from core.events import get_event_bus, Events
-from core.services import services
-from services.contracts import VoiceModelService
-from ui.async_bus import run_async
+from ui.presentation import run_ui_async as run_async
 from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
 
 from main_logger import logger
@@ -667,16 +664,16 @@ class VoiceModelSettingsView(QWidget):
     open_vc_redist_dialog = pyqtSignal(object)            # result_holder
     open_triton_dialog = pyqtSignal(dict, object)         # deps, result_holder
 
-    def __init__(self, auto_initialize: bool = True):
+    def __init__(self, controller, *, presentation, auto_initialize: bool = True):
         super().__init__()
+        self.controller = controller
+        self.presentation = presentation
 
         self.setWindowTitle(_("Настройки и Установка Локальных Моделей", "Settings and Installation of Local Models"))
         self.setMinimumSize(900, 650)
         self.resize(1100, 720)
 
         self.setStyleSheet(get_stylesheet())
-
-        self.event_bus = get_event_bus()
 
         self._cached_dependencies_status = None
         self.models_data = []
@@ -856,8 +853,8 @@ class VoiceModelSettingsView(QWidget):
         self.detail.set_settings_changed_callback(self._on_current_setting_changed)
         # description hover callbacks
         self.detail.set_description_callbacks(
-            lambda key: self.event_bus.emit(Events.VoiceModel.UPDATE_DESCRIPTION, key),
-            lambda: self.event_bus.emit(Events.VoiceModel.CLEAR_DESCRIPTION)
+            self.controller.update_description,
+            self.controller.clear_description
         )
         # wiring install/uninstall
         self.detail.install_clicked.connect(self._on_install_clicked)
@@ -924,16 +921,13 @@ class VoiceModelSettingsView(QWidget):
 
     # ---------- EventBus helpers ----------
     def _get_models_data(self):
-        service = services().get_optional(VoiceModelService)
-        return service.model_catalog_snapshot() if service is not None else []
+        return self.controller.model_catalog_snapshot()
 
     def _get_installed_models(self):
-        service = services().get_optional(VoiceModelService)
-        return service.installed_models_snapshot() if service is not None else set()
+        return self.controller.installed_models_snapshot()
 
     def _get_dependencies_status(self):
-        service = services().get_optional(VoiceModelService)
-        return service.dependencies_status() if service is not None else {}
+        return self.controller.dependencies_status()
 
     def _apply_gpu_status(self):
         st = self._cached_dependencies_status or {}
@@ -999,7 +993,7 @@ class VoiceModelSettingsView(QWidget):
                 link = QLabel(_("[Документация]", "[Documentation]"))
                 link.setObjectName("Link")
                 link.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                link.mousePressEvent = lambda e: self.event_bus.emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html")
+                link.mousePressEvent = lambda e: self.controller.open_documentation("installation_guide.html")
                 warn.addWidget(link)
                 warn.addStretch()
                 layout.addLayout(warn)
@@ -1152,26 +1146,20 @@ class VoiceModelSettingsView(QWidget):
         if not model_data:
             return
 
-        self.event_bus.emit(Events.VoiceModel.INSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.controller.request_install(model_id)
 
     def _on_uninstall_clicked(self, model_id: str):
-        self.event_bus.emit(Events.VoiceModel.UNINSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.controller.request_uninstall(model_id)
 
     def _on_save_clicked(self):
         if not self._dirty_keys:
             return
         logger.info(f"Voice settings changed: {len(self._dirty_keys)} keys: {sorted(self._dirty_keys)}")
-        self.event_bus.emit(Events.VoiceModel.SAVE_SETTINGS)
+        self.controller.save_view_settings()
         QTimer.singleShot(0, self._capture_baseline)
 
     def _on_close_clicked(self):
-        self.event_bus.emit(Events.VoiceModel.CLOSE_DIALOG)
+        self.controller.close_view()
 
     # ---------- Install/Uninstall UI state ----------
     def _on_install_started(self, model_id):
@@ -1283,13 +1271,13 @@ class VoiceModelSettingsView(QWidget):
     # ---------- Deps Windows ----------
     @pyqtSlot(object)
     def _slot_open_vc_redist_dialog(self, result_holder: dict):
-        dlg = VCRedistWarningDialog(parent=self.window() or self)
+        dlg = VCRedistWarningDialog(self.controller, parent=self.window() or self)
         dlg.exec()
         result_holder["choice"] = dlg.get_choice()  # 'retry' | 'close'
 
     @pyqtSlot(dict, object)
     def _slot_open_triton_dialog(self, deps: dict, result_holder: dict):
-        dlg = TritonDependenciesDialog(parent=self.window() or self, dependencies_status=deps)
+        dlg = TritonDependenciesDialog(self.controller, parent=self.window() or self, dependencies_status=deps)
         dlg.exec()
         result_holder["choice"] = dlg.get_choice()  # 'continue' | 'skip'
         

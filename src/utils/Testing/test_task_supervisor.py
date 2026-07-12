@@ -5,7 +5,7 @@ import time
 from unittest.mock import patch
 
 from core.task_supervisor import TaskSupervisor
-from ui.async_bus import run_async
+from controllers.gui.async_runner import run_async
 
 
 def test_supervisor_tracks_and_cancels_owner_threads():
@@ -86,7 +86,7 @@ def test_gui_async_late_notification_is_ignored_after_shutdown():
     supervisor = TaskSupervisor()
     supervisor.shutdown()
 
-    with patch("ui.async_bus.task_supervisor", return_value=supervisor):
+    with patch("controllers.gui.async_runner.task_supervisor", return_value=supervisor):
         thread = run_async(None, lambda: "late", name="late-gui-refresh")
 
     assert thread is None

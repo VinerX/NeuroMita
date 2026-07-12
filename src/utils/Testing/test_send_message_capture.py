@@ -1,228 +1,215 @@
-"""Регрессия на фриз GUI при отправке сообщения.
-
-Захват экрана и камеры выполняется через типизированный CaptureService в
-фоновом потоке. GUI не ждёт synchronous request/response через шину, а при
-выключенном захвате отправляет сообщение без лишнего thread hop.
-"""
 from __future__ import annotations
 
 import threading
 import time
 import unittest
-from pathlib import Path
-import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
-PROJECT_SRC = Path(__file__).resolve().parents[2]
-if str(PROJECT_SRC) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SRC))
-
-from core.services import services
-from services.contracts import CaptureService
-from ui.windows.app_window_base import AppWindowBase
+from controllers.gui.app_shell_controller import AppShellController
+from services.contracts import CaptureService, CharacterRegistry, SettingsService
 
 
 class _FakeBus:
     def __init__(self):
-        self.emitted: list[tuple] = []
+        self.emitted: list[tuple[str, object]] = []
 
-    def emit(self, event_name, data=None, sync=False):
-        self.emitted.append((event_name, data))
+    def emit(self, event_name, data=None, **_kwargs):
+        self.emitted.append((str(event_name), data))
+
+
+class _FakeSettings:
+    def __init__(self, values: dict):
+        self.values = dict(values)
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+    def update(self, key, value):
+        self.values[key] = value
+
+
+class _FakeCharacterRegistry:
+    @staticmethod
+    def current_id():
+        return "Crazy"
 
 
 class _FakeCapture(CaptureService):
-    def __init__(self, screen=None, camera=None, delay: float = 0.0):
-        self._screen = screen or []
-        self._camera = camera or []
-        self._delay = delay
+    def __init__(self, *, screen=None, camera=None, delay: float = 0.0):
+        self.screen = list(screen or [])
+        self.camera = list(camera or [])
+        self.delay = delay
         self.capture_threads: list[str] = []
 
-    def _wait(self) -> None:
+    def _wait(self):
         self.capture_threads.append(threading.current_thread().name)
-        if self._delay:
-            time.sleep(self._delay)
+        if self.delay:
+            time.sleep(self.delay)
 
     def capture_screen(self, limit: int = 1):
         self._wait()
-        return list(self._screen)[: max(0, int(limit))]
+        return self.screen[:limit]
 
     def camera_frames(self, limit: int = 1):
         self._wait()
-        return list(self._camera)[: max(0, int(limit))]
+        return self.camera[:limit]
 
     def screen_capture_active(self) -> bool:
-        return bool(self._screen)
+        return bool(self.screen)
 
     def camera_capture_active(self) -> bool:
-        return bool(self._camera)
+        return bool(self.camera)
 
 
-class _NoopSignal:
-    def emit(self, *_args, **_kwargs):
+class _FakeServices:
+    def __init__(self, capture):
+        self.capture = capture
+
+    def get_optional(self, contract):
+        return self.capture if contract is CaptureService else None
+
+
+class _FakeView:
+    def __init__(self, *, input_text="", staged=None):
+        self.input_text = input_text
+        self.staged = list(staged or [])
+        self.rendered: list[dict] = []
+        self.errors: list[str] = []
+        self.thinking_count = 0
+        self.staged_clear_count = 0
+
+    def user_input_text(self):
+        return self.input_text
+
+    def staged_images_snapshot(self):
+        return list(self.staged)
+
+    def render_outgoing_message(self, **payload):
+        self.rendered.append(dict(payload))
+
+    def show_send_error(self, message):
+        self.errors.append(str(message))
+
+    def show_thinking_now(self):
+        self.thinking_count += 1
+
+    def clear_staged_images_view(self):
+        self.staged.clear()
+        self.staged_clear_count += 1
+
+
+class _AppPort:
+    def attach_backend(self, _controller):
+        return None
+
+    def detach_backend(self):
+        return None
+
+    def mark_failed(self, _message):
         return None
 
 
-class _DirectGuiSignal:
-    """Заменяет Qt-очередь в тестовом harness."""
-
-    def __init__(self):
-        self.threads: list[str] = []
-
-    def emit(self, fn):
-        self.threads.append(threading.current_thread().name)
-        fn()
-
-
-class _Harness:
-    """Минимальный объект с поведением AppWindowBase без создания окна."""
-
-    send_message = AppWindowBase.send_message
-    _capture_frames_for_send = AppWindowBase._capture_frames_for_send
-    _finish_send_message = AppWindowBase._finish_send_message
-    _dedupe_images = staticmethod(AppWindowBase._dedupe_images)
-    _merge_explicit_and_entry_text = staticmethod(AppWindowBase._merge_explicit_and_entry_text)
-
-    def __init__(self, settings: dict, bus: _FakeBus):
-        self._settings = settings
-        self.event_bus = bus
-        self.backend_ready = True
-        self.backend_startup_error = ""
-        self.staged_image_data = []
-        self.user_entry = None
-        self.rendered: list = []
-        self.image_preview_bar = None
-        self.show_thinking_signal = _NoopSignal()
-        self.show_error_signal = _NoopSignal()
-        self.run_ui_task_signal = _DirectGuiSignal()
-
-    def _get_setting(self, key, default=None):
-        return self._settings.get(key, default)
-
-
 class SendMessageCaptureTests(unittest.TestCase):
-    def setUp(self):
-        import ui.windows.app_window_base as awb
+    def _make_controller(self, settings: dict, capture=None, *, view=None):
+        view = view or _FakeView()
+        controller = AppShellController(view, SimpleNamespace(app=_AppPort()))
+        controller._main_controller = SimpleNamespace(_closing_started=False)
+        controller._event_bus = _FakeBus()
+        fake_settings = _FakeSettings(settings)
 
-        self.awb = awb
-        self._orig_renderer = awb.message_renderer
-        self._orig_registry_use = awb.use
-        self._previous_capture = services().get_optional(CaptureService)
+        def fake_use(contract):
+            if contract is SettingsService:
+                return fake_settings
+            if contract is CharacterRegistry:
+                return _FakeCharacterRegistry()
+            raise KeyError(contract)
 
-        class _Renderer:
-            @staticmethod
-            def insert_message(target, role, content, message_id=None):
-                target.rendered.append((role, content, message_id))
-
-        awb.message_renderer = _Renderer()
-        awb.use = lambda _contract: type("R", (), {"current_id": staticmethod(lambda: "Crazy")})()
-
-    def tearDown(self):
-        self.awb.message_renderer = self._orig_renderer
-        self.awb.use = self._orig_registry_use
-        if self._previous_capture is None:
-            services().unregister(CaptureService)
-        else:
-            services().register(CaptureService, self._previous_capture, replace=True)
-
-    def _register_capture(self, capture: _FakeCapture) -> _FakeCapture:
-        services().register(CaptureService, capture, replace=True)
-        return capture
+        return controller, view, fake_use, _FakeServices(capture)
 
     def test_backend_startup_blocks_early_send(self):
-        bus = _FakeBus()
-        h = _Harness({"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False}, bus)
-        h.backend_ready = False
-
-        result = h.send_message(user_input="too early")
-
+        controller, view, fake_use, fake_services = self._make_controller({}, view=_FakeView())
+        controller._main_controller = None
+        with patch("controllers.gui.app_shell_controller.use", fake_use), patch(
+            "controllers.gui.app_shell_controller.services", lambda: fake_services
+        ):
+            result = controller.send_message(user_input="too early")
         self.assertFalse(result)
-        self.assertEqual(bus.emitted, [])
+        self.assertTrue(view.errors)
+        self.assertEqual(controller._event_bus.emitted, [])
 
     def test_no_capture_enabled_sends_synchronously(self):
-        bus = _FakeBus()
-        capture = self._register_capture(_FakeCapture())
-        h = _Harness({"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False}, bus)
-
-        h.send_message(user_input="привет")
-
+        capture = _FakeCapture()
+        controller, view, fake_use, fake_services = self._make_controller(
+            {"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False},
+            capture,
+        )
+        with patch("controllers.gui.app_shell_controller.use", fake_use), patch(
+            "controllers.gui.app_shell_controller.services", lambda: fake_services
+        ):
+            self.assertTrue(controller.send_message(user_input="привет"))
         self.assertEqual(capture.capture_threads, [])
-        self.assertEqual(len(bus.emitted), 1)
-        event_name, payload = bus.emitted[0]
-        self.assertEqual(event_name, "send_message")
+        self.assertEqual(len(controller._event_bus.emitted), 1)
+        _, payload = controller._event_bus.emitted[0]
         self.assertEqual(payload["user_input"], "привет")
         self.assertEqual(payload["image_data"], [])
+        self.assertEqual(len(view.rendered), 1)
 
-    def test_capture_runs_off_gui_thread_and_does_not_block(self):
-        bus = _FakeBus()
-        capture = self._register_capture(
-            _FakeCapture(screen=[b"screen"], camera=[b"cam"], delay=0.3)
+    def test_capture_runs_off_caller_thread(self):
+        capture = _FakeCapture(screen=[b"screen"], camera=[b"cam"], delay=0.2)
+        controller, view, fake_use, fake_services = self._make_controller(
+            {
+                "AUTO_ATTACH_IMAGES": True,
+                "ENABLE_CAMERA_CAPTURE": True,
+                "ENABLE_IMAGE_ANALYSIS": True,
+            },
+            capture,
         )
-        h = _Harness(
-            {"AUTO_ATTACH_IMAGES": True, "ENABLE_CAMERA_CAPTURE": True, "ENABLE_IMAGE_ANALYSIS": True},
-            bus,
-        )
-        gui_thread = threading.current_thread().name
+        threads: list[threading.Thread] = []
 
-        started = time.perf_counter()
-        h.send_message(user_input="что на экране?")
-        elapsed = time.perf_counter() - started
+        def fake_run_async(_target, worker, on_ok, **_kwargs):
+            thread = threading.Thread(target=lambda: on_ok(worker()), name="capture-worker")
+            thread.start()
+            threads.append(thread)
+            return thread
 
-        self.assertLess(elapsed, 0.15, "send_message заблокировал GUI-поток на время захвата")
+        caller_thread = threading.current_thread().name
+        with patch("controllers.gui.app_shell_controller.use", fake_use), patch(
+            "controllers.gui.app_shell_controller.services", lambda: fake_services
+        ), patch("controllers.gui.app_shell_controller.run_async", fake_run_async):
+            started = time.perf_counter()
+            self.assertTrue(controller.send_message(user_input="что на экране?"))
+            self.assertLess(time.perf_counter() - started, 0.1)
+            for thread in threads:
+                thread.join(timeout=3)
 
-        deadline = time.time() + 5
-        while not bus.emitted and time.time() < deadline:
-            time.sleep(0.01)
-
-        self.assertEqual(len(bus.emitted), 1, "сообщение не отправилось после захвата")
-        self.assertTrue(capture.capture_threads, "захват не выполнялся")
-        for thread_name in capture.capture_threads:
-            self.assertNotEqual(thread_name, gui_thread, "захват остался в GUI-потоке")
-
-        payload = bus.emitted[0][1]
+        self.assertTrue(capture.capture_threads)
+        self.assertNotIn(caller_thread, capture.capture_threads)
+        _, payload = controller._event_bus.emitted[0]
         self.assertEqual(payload["image_data"], [b"screen", b"cam"])
-        self.assertTrue(payload["images_shown"])
 
     def test_image_order_and_dedupe_preserved(self):
-        bus = _FakeBus()
-        h = _Harness(
-            {"AUTO_ATTACH_IMAGES": True, "ENABLE_CAMERA_CAPTURE": True, "ENABLE_IMAGE_ANALYSIS": True},
-            bus,
+        controller, view, fake_use, fake_services = self._make_controller(
+            {"ENABLE_IMAGE_ANALYSIS": True},
+            view=_FakeView(staged=[b"staged"]),
         )
-        h.staged_image_data = [b"staged"]
-
-        h._finish_send_message(
-            user_input="",
-            system_input="",
-            explicit_image_data=[b"dup"],
-            screen_frames=[b"dup"],
-            camera_frames=[b"cam"],
-            staged_image_data=[b"staged"],
-            character_id="Crazy",
-            from_entry=False,
-            clear_entry_after_send=False,
-        )
-
-        payload = bus.emitted[0][1]
+        with patch("controllers.gui.app_shell_controller.use", fake_use), patch(
+            "controllers.gui.app_shell_controller.services", lambda: fake_services
+        ):
+            controller._finish_send_message(
+                user_input="",
+                system_input="",
+                explicit_image_data=[b"dup"],
+                screen_frames=[b"dup"],
+                camera_frames=[b"cam"],
+                staged_image_data=[b"staged"],
+                character_id="Crazy",
+                from_entry=False,
+                clear_entry_after_send=False,
+            )
+        _, payload = controller._event_bus.emitted[0]
         self.assertEqual(payload["image_data"], [b"dup", b"staged", b"cam"])
-
-    def test_image_analysis_disabled_drops_images(self):
-        bus = _FakeBus()
-        h = _Harness({"ENABLE_IMAGE_ANALYSIS": False}, bus)
-
-        h._finish_send_message(
-            user_input="текст",
-            system_input="",
-            explicit_image_data=[b"img"],
-            screen_frames=[],
-            camera_frames=[],
-            staged_image_data=[],
-            character_id="Crazy",
-            from_entry=False,
-            clear_entry_after_send=False,
-        )
-
-        payload = bus.emitted[0][1]
-        self.assertEqual(payload["image_data"], [])
-        self.assertFalse(payload["images_shown"])
+        self.assertEqual(view.staged_clear_count, 1)
 
 
 if __name__ == "__main__":

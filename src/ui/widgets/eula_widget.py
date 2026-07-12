@@ -1,9 +1,6 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QFrame, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QFont
-from core.events import get_event_bus, Events
-from core.services import use
-from services.contracts import SettingsService
 from localization import available_languages, language_display_name, translate_for_language
 import sys
 from styles.theme import get_theme
@@ -14,17 +11,15 @@ class EULAWidget(QWidget):
     accepted = pyqtSignal()
     rejected = pyqtSignal()
     
-    def __init__(self, parent=None):
+    def __init__(self, presentation, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
+        self.presentation = presentation
         self.setObjectName("EULAWidget")
         self.current_language = "ru"
         self._lang_buttons: dict[str, QRadioButton] = {}
-        try:
-            from managers.settings_manager import SettingsManager
-            self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
-        except Exception:
-            pass
+        self.current_language = str(
+            self.presentation.settings.get("LANGUAGE", "RU") or "RU"
+        ).strip().lower()
         # Язык, с которым уже построен интерфейс под оверлеем: если на старте
         # пользователь выберет другой — после принятия предложим перезапуск.
         self._initial_language = self.current_language
@@ -240,9 +235,8 @@ class EULAWidget(QWidget):
         
     def _on_accept(self):
         # Сохраняем выбранный на стартовом экране язык интерфейса.
-        settings = use(SettingsService)
-        settings.update("LANGUAGE", str(self.current_language or "ru").upper())
-        settings.update("EULA_ACCEPTED", True)
+        self.presentation.settings.set("LANGUAGE", str(self.current_language or "ru").upper())
+        self.presentation.settings.set("EULA_ACCEPTED", True)
         self.accepted.emit()
 
     def language_changed_on_start(self) -> bool:

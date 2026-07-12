@@ -146,12 +146,13 @@ def _run_gui(runtime, startup_mode: str) -> int:
         )
 
     with startup_trace.phase("gui.window_import"):
-        from ui.windows.main_window import MainWindow
+        from controllers.gui.composition_root import GuiCompositionRoot
 
-    logger.info("Создаю MainWindow...")
+    logger.info("Создаю GUI composition root...")
     with startup_trace.phase("gui.window_create"):
-        main_window = MainWindow(shell_settings_controller.settings)
-    logger.info("MainWindow создан")
+        gui_root = GuiCompositionRoot(shell_settings_controller)
+        main_window = gui_root.window
+    logger.info("GUI composition root создан")
 
     main_window.show()
     startup_trace.mark("gui.window_shown")
@@ -165,7 +166,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
     def on_backend_ready(controller) -> None:
         try:
             with startup_trace.phase("gui.controller_attach"):
-                controller.update_view(main_window)
+                gui_root.attach_backend(controller)
             QTimer.singleShot(0, main_window.load_chat_history)
             startup_trace.mark("gui.backend_attached")
             startup_trace.write()
@@ -183,15 +184,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
     def on_backend_failed(error: BaseException) -> None:
         message = f"Backend startup failed: {type(error).__name__}: {error}"
         logger.error(message)
-        main_window.backend_ready = False
-        main_window.backend_startup_error = message
-        try:
-            from ui.widgets.chat_panel import update_send_button_state
-
-            update_send_button_state(main_window)
-            main_window._set_home_progress(message, 0, 1, busy=False)
-        except Exception:
-            pass
+        gui_root.backend_failed(error)
 
     backend_loader = GuiBackendLoader(
         runtime=runtime,
@@ -203,6 +196,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
     )
     main_window.backend_loader = backend_loader
     app.aboutToQuit.connect(backend_loader.request_shutdown)
+    app.aboutToQuit.connect(gui_root.close)
 
     try:
         from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync

@@ -5,7 +5,7 @@ from core.events import get_event_bus
 from core.services import use
 from core.task_supervisor import task_supervisor
 from services.contracts import SettingsService
-from ui.async_bus import run_async
+from controllers.gui.async_runner import run_async
 
 
 class BaseController:

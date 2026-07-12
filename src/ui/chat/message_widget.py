@@ -358,7 +358,7 @@ class MessageWidget(QWidget):
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
                  message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None,
-                 show_rating_controls=False, parent=None):
+                 show_rating_controls=False, rating_callback=None, parent=None):
         super().__init__(parent)
         self._role = role
         self._speaker_name = speaker_name
@@ -369,6 +369,7 @@ class MessageWidget(QWidget):
         self._sample_id = sample_id
         self._message_id = message_id
         self._show_rating_controls = bool(show_rating_controls)
+        self._rating_callback = rating_callback
 
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -523,10 +524,10 @@ class MessageWidget(QWidget):
 
     def _on_rate(self, sample_id: str, rating: int):
         try:
-            from managers.finetune_collector import FineTuneCollector
             import qtawesome as qta
-            fc = FineTuneCollector.instance
-            if fc: fc.update_rating(sample_id, rating)
+            if self._rating_callback is None:
+                raise RuntimeError("MessageWidget rating callback is not configured")
+            self._rating_callback(sample_id, rating)
 
             _ACTIVE_UP   = "QPushButton { background: #10B981; border-radius: 4px; border: none; }"
             _ACTIVE_DOWN = "QPushButton { background: #EF4444; border-radius: 4px; border: none; }"

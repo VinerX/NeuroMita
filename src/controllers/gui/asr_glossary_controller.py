@@ -20,6 +20,7 @@ class AsrGlossaryGuiController(BaseController):
         self._glossary_view.request_install.connect(self._request_install)
         self._glossary_view.request_refresh.connect(self._request_refresh)
         self._glossary_view.request_settings.connect(self._request_settings)
+        self._glossary_view.setting_changed.connect(self._set_recognizer_option)
 
     def _register_window_on_ready(self):
         if not self.view or not hasattr(self.view, "window_manager") or self.view.window_manager is None:
@@ -90,6 +91,13 @@ class AsrGlossaryGuiController(BaseController):
             speech.asr_models_glossary_async(callback, refresh=True)
         except Exception as exc:
             callback([], exc)
+
+
+    def _set_recognizer_option(self, engine_id: str, key: str, value) -> None:
+        self.event_bus.emit(
+            Events.Speech.SET_RECOGNIZER_OPTION,
+            {"engine": str(engine_id), "key": str(key), "value": value},
+        )
 
     def _request_settings(self, engine_id: str, ticket: int) -> None:
         view = self._glossary_view

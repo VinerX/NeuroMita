@@ -1,7 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QScrollArea
 from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
-from managers.settings_manager import SettingsManager
 from styles.theme import get_theme
 
 
@@ -107,7 +106,10 @@ class SettingsOverlay(QWidget):
         parent = self.parentWidget()
         if parent is not None and hasattr(parent, "SETTINGS_PANEL_WIDTH"):
             parent.SETTINGS_PANEL_WIDTH = int(new_width)
-        SettingsManager.set("SETTINGS_PANEL_WIDTH", int(new_width))
+        parent = self.parentWidget()
+        if parent is None or not hasattr(parent, "presentation"):
+            raise RuntimeError("SettingsOverlay requires a composed presentation controller")
+        parent.presentation.settings.set("SETTINGS_PANEL_WIDTH", int(new_width))
 
     def finish_resizing(self):
         self.setMinimumWidth(0)

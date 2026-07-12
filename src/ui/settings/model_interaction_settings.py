@@ -1,11 +1,5 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
-from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
-from ui.settings.rag_memory_settings import (
-    build_memory_section,
-    build_rag_section,
-    build_rag_memory_section,  # обратная совместимость
-)
 
 
 def setup_model_interaction_controls(self, parent):
@@ -229,7 +223,7 @@ def setup_model_interaction_controls(self, parent):
         icon_name='fa5s.cogs'
     )
 
-    provider_options = current_provider_options()
+    provider_options = self.presentation.providers.current()
 
     react_settings_config = [
         {
@@ -299,9 +293,9 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
-    build_memory_section(self, parent, provider_options)
-    build_rag_section(self, parent, provider_options)
-    load_api_provider_options_async(
+    self.presentation.rag.build_memory_section(self, parent, provider_options)
+    self.presentation.rag.build_rag_section(self, parent, provider_options)
+    self.presentation.providers.load_async(
         self,
         ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
         name="model-interaction-provider-options",

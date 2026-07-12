@@ -9,7 +9,7 @@ from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W
 from ui.chat.structured_panel import StructuredOutputPanel
-from core.events import get_event_bus, Events
+from ui.presentation import UiTopic
 
 def _strip_hidden_image_descriptions(text: str) -> str:
     import re
@@ -83,12 +83,10 @@ STRUCTURED_MODE_JSON  = "JSON"
 _STRUCTURED_MODE_OFF_EN   = "Off"
 _STRUCTURED_MODE_BRIEF_EN = "Brief"
 
-def _pop_sample_id_if_collecting() -> str | None:
+def _pop_sample_id_if_collecting(gui) -> str | None:
     try:
-        from managers.finetune_collector import FineTuneCollector
-        fc = FineTuneCollector.instance
-        if fc and fc.is_enabled():
-            return fc.pop_pending_sample_id()
+        if gui.presentation.finetune.enabled():
+            return gui.presentation.finetune.pop_pending_sample_id()
     except Exception:
         pass
     return None
@@ -97,9 +95,7 @@ def _should_show_rating_controls(gui) -> bool:
     try:
         if not bool(gui._get_setting("SHOW_MESSAGE_RATING_CONTROLS", False)):
             return False
-        from managers.finetune_collector import FineTuneCollector
-        fc = FineTuneCollector.instance
-        return bool(fc and fc.is_enabled())
+        return gui.presentation.finetune.enabled()
     except Exception:
         return False
 
@@ -148,15 +144,15 @@ def _group_segments_by_target(segments: list) -> list:
     groups.append((cur_target, cur_texts))
     return groups
 
-def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id: str):
-    bus = get_event_bus()
+def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, character_id: str):
+    events = gui.presentation.events
 
     def on_delete(mid):
-        bus.emit(Events.Chat.DELETE_MESSAGE, {"message_id": mid, "character_id": character_id})
+        events.publish(UiTopic.CHAT_DELETE_MESSAGE, {"message_id": mid, "character_id": character_id})
     def on_edit(mid):
-        bus.emit(Events.Chat.DELETE_MESSAGES_FROM, {"message_id": mid, "character_id": character_id, "edit_mode": True})
+        events.publish(UiTopic.CHAT_DELETE_MESSAGES_FROM, {"message_id": mid, "character_id": character_id, "edit_mode": True})
     def on_regenerate(mid):
-        bus.emit(Events.Chat.REGENERATE, {"character_id": character_id})
+        events.publish(UiTopic.CHAT_REGENERATE, {"character_id": character_id})
     def on_regenerate_from(mid):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         dlg = QDialog()
@@ -188,7 +184,7 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         btn_row.addWidget(yes_btn)
         lay.addLayout(btn_row)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            bus.emit(Events.Chat.REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
+            events.publish(UiTopic.CHAT_REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
 
     def on_view_context(sample_id: str, initial_tab: str = "request"):
         import json
@@ -202,11 +198,8 @@ def _connect_widget_signals(widget: MessageWidget, message_id: str, character_id
         # 1. Пробуем finetune JSONL по sample_id
         if sample_id:
             try:
-                from managers.finetune_collector import FineTuneCollector
-                fc = FineTuneCollector.instance
-                if fc:
-                    samples = fc.load_samples()
-                    data = next((s for s in samples if s.get("id") == sample_id), None)
+                samples = gui.presentation.finetune.load_samples()
+                data = next((s for s in samples if s.get("id") == sample_id), None)
             except Exception as e:
                 show_styled_message(widget, _("Ошибка", "Error"), str(e), level="error")
                 return
@@ -390,7 +383,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     _ft_sample_id = sample_id
     if role == "assistant" and not _ft_sample_id:
-        _ft_sample_id = _pop_sample_id_if_collecting()
+        _ft_sample_id = _pop_sample_id_if_collecting(gui)
     _show_rating_controls = role == "assistant" and _should_show_rating_controls(gui)
 
     segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
@@ -423,10 +416,11 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 sample_id=_ft_sample_id if is_last else None,
                 message_id=message_id if is_last else None,
                 show_rating_controls=_show_rating_controls if is_last else False,
+                rating_callback=gui.presentation.finetune.update_rating,
                 parent=chat_parent
             )
             if message_id and is_last:
-                _connect_widget_signals(w, message_id, character_id or "")
+                _connect_widget_signals(gui, w, message_id, character_id or "")
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
@@ -436,10 +430,12 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             show_avatar=(role not in ("system", "event", "think", "structured")),
             font_size=font_size, message_time=message_time, show_timestamp=show_ts,
             max_bubble_width=max_bw, sample_id=_ft_sample_id, message_id=message_id,
-            show_rating_controls=_show_rating_controls, parent=chat_parent
+            show_rating_controls=_show_rating_controls,
+            rating_callback=gui.presentation.finetune.update_rating,
+            parent=chat_parent
         )
         if message_id:
-            _connect_widget_signals(msg_widget, message_id, character_id or "")
+            _connect_widget_signals(gui, msg_widget, message_id, character_id or "")
         if _pending_struct_panel is not None:
             msg_widget.set_structured_ref(_pending_struct_panel)
         gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
@@ -564,7 +560,7 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         name = _("Вы", "You")
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-    sample_id = _pop_sample_id_if_collecting() if role == "assistant" else None
+    sample_id = _pop_sample_id_if_collecting(gui) if role == "assistant" else None
     message = MessageWidget(
         role=role,
         speaker_name=name,
@@ -577,6 +573,7 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         show_rating_controls=(
             role == "assistant" and _should_show_rating_controls(gui)
         ),
+        rating_callback=gui.presentation.finetune.update_rating,
         parent=chat_parent,
     )
     state["message"] = message
@@ -688,6 +685,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
                 show_rating_controls=(
                     _should_show_rating_controls(gui) and is_last
                 ),
+                rating_callback=gui.presentation.finetune.update_rating,
                 parent=chat_parent,
             )
             if is_last:

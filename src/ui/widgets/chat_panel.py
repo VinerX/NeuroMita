@@ -15,11 +15,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import Events
-from core.services import services, use
-from services.contracts import ApiPresetService, CaptureService, CharacterRegistry
+from ui.presentation import UiTopic
 from main_logger import logger
-from ui.async_bus import run_async
+from ui.presentation import run_ui_async as run_async
 from ui.chat.chat_widget import ChatWidget
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.image_viewer_widget import ImageViewerWidget
@@ -40,7 +38,7 @@ class ChatPanel(QWidget):
         self.gui.chat_panel = self
 
     def _get_current_character_id(self) -> str:
-        return use(CharacterRegistry).current_id()
+        return self.gui.presentation.characters.current_id()
 
     def _refresh_conversation_title(self):
         if self._conversation_title_label is None:
@@ -121,9 +119,8 @@ class ChatPanel(QWidget):
             combo = getattr(self.gui, "chat_character_combobox", None)
             character_id = combo.currentText().strip() if combo is not None else ""
             if character_id:
-                self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
-            from ui.settings.character_settings.logic import open_db_viewer
-            open_db_viewer(self.gui)
+                self.gui.presentation.events.publish(UiTopic.CHARACTER_SET_CURRENT, {"character_id": character_id})
+            self.gui.presentation.characters.open_db_viewer(self.gui)
         except Exception as exc:
             logger.error(f"Failed to open character history: {exc}", exc_info=True)
 
@@ -298,8 +295,7 @@ def _send_block_reason(gui):
     (текст_предупреждения, категория_настроек_для_перехода)."""
     # 1) API-пресет: не выбран никто и в списке пусто (не создавался).
     try:
-        preset_service = services().get_optional(ApiPresetService)
-        m = preset_service.list_meta() if preset_service is not None else {}
+        m = gui.presentation.api_presets.list_meta()
         custom = (m or {}).get("custom") or []
         has_selected = bool(gui._get_setting("LAST_API_PRESET_ID", 0))
         if not custom and not has_selected:
@@ -315,9 +311,8 @@ def _send_block_reason(gui):
 
     # 2) Набор промптов текущего персонажа.
     try:
-        from managers.prompt_catalogue_manager import list_prompt_sets
-        char_id = use(CharacterRegistry).current_id()
-        if char_id and not list_prompt_sets("Prompts", char_id):
+        char_id = gui.presentation.characters.current_id()
+        if char_id and not gui.presentation.prompts.list_sets("Prompts", char_id):
             return (
                 _("Нельзя отправлять сообщения: у персонажа нет набора промптов "
                   "(папка Prompts). Восстановите промпты.",
@@ -393,7 +388,7 @@ def update_send_button_state(gui):
     if not getattr(gui, "user_entry", None) or not getattr(gui, "send_button", None):
         return
 
-    if not getattr(gui, "backend_ready", False):
+    if not gui.presentation.app.backend_ready:
         gui.send_button.setEnabled(False)
         return
 
@@ -496,7 +491,7 @@ def clipboard_image_to_controller(gui) -> bool:
     qimg.save(buf, "PNG")
     img_bytes = buf.data().data()
     gui.staged_image_data.append(img_bytes)
-    gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": img_bytes})
+    gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": img_bytes})
     show_image_preview_bar(gui)
     gui.image_preview_bar.add_image(img_bytes)
     update_send_button_state(gui)
@@ -514,7 +509,7 @@ def attach_images(gui):
         return
 
     for file_path in file_paths:
-        gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": file_path})
+        gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": file_path})
 
     for file_path in file_paths:
         try:
@@ -531,7 +526,7 @@ def attach_images(gui):
 
 
 def clear_staged_images(gui):
-    gui.event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
+    gui.presentation.events.publish(UiTopic.CHAT_CLEAR_STAGED_IMAGES)
     gui.staged_image_data.clear()
     if getattr(gui, "image_preview_bar", None):
         gui.image_preview_bar.clear()
@@ -542,8 +537,7 @@ def clear_staged_images(gui):
 def send_screen_capture(gui):
     logger.info("Запрошена отправка скриншота.")
     # Запас времени на one-shot захват экрана.
-    capture = services().get_optional(CaptureService)
-    frames = capture.capture_screen(1) if capture is not None else []
+    frames = gui.presentation.capture.capture_screen(1)
     if not frames:
         from PyQt6.QtWidgets import QMessageBox
 
@@ -559,7 +553,7 @@ def send_screen_capture(gui):
 
     for frame_data in frames[0]:
         gui.staged_image_data.append(frame_data)
-        gui.event_bus.emit(Events.Chat.STAGE_IMAGE, {"image_data": frame_data})
+        gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": frame_data})
         show_image_preview_bar(gui)
         gui.image_preview_bar.add_image(frame_data)
 

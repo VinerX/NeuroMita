@@ -6,30 +6,14 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QLabel, QWidget
 
-from core.events import Events
-from core.task_supervisor import task_supervisor
-from game_connections.services.beat_backend_spec import (
-    BACKEND_AUTO,
-    BACKEND_BEAT_THIS,
-    BACKEND_DSP,
-    BACKEND_LIBROSA,
-    backend_display_name,
-    normalize_backend_choice,
-)
-from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
-from ui.async_bus import dispatch_to_gui
+from ui.presentation import dispatch_ui as dispatch_to_gui, run_ui_async as run_async
 from ui.gui_templates import create_settings_section
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
 
-_BEAT_BACKEND_OPTIONS = (
-    (BACKEND_AUTO, _("Авто", "Auto")),
-    (BACKEND_BEAT_THIS, "Beat This"),
-    (BACKEND_LIBROSA, "Librosa"),
-    (BACKEND_DSP, _("DSP fallback", "DSP fallback")),
-)
+_BEAT_BACKEND_OPTIONS = ("auto", "beat_this", "librosa", "dsp_fallback")
 
 
 def _format_beat_cache_size(total_bytes: int) -> str:
@@ -40,12 +24,12 @@ def _format_beat_cache_size(total_bytes: int) -> str:
     return f"{total_bytes / (1024.0 * 1024.0):.1f} MB"
 
 
-def _format_beat_status_text(status, extra_message: str | None = None) -> str:
+def _format_beat_status_text(gui, status, extra_message: str | None = None) -> str:
     selected_line = _("Режим: {}", "Mode: {}").format(
-        backend_display_name(status.preferred_backend)
+        gui.presentation.beats.backend_label(status.preferred_backend)
     )
     active_line = _("Активен: {}", "Active: {}").format(
-        backend_display_name(status.resolved_backend)
+        gui.presentation.beats.backend_label(status.resolved_backend)
     )
     cache_line = _("Кеш: {} файлов, {}", "Cache: {} files, {}").format(
         status.cache_entries,
@@ -97,10 +81,10 @@ def _refresh_beat_sync_status(gui, extra_message: str | None = None) -> None:
     # from another thread" and randomly corrupts widget state.
     def _apply():
         try:
-            status = get_beat_service().get_backend_status()
+            status = gui.presentation.beats.state()
             _update_beat_backend_combo(gui, status)
             _sync_beat_buttons(gui, status)
-            _set_beat_status_label(gui, _format_beat_status_text(status, extra_message))
+            _set_beat_status_label(gui, _format_beat_status_text(gui, status, extra_message))
         except Exception as exc:
             logger.error(f"[BeatSync] status refresh failed: {exc}", exc_info=True)
 
@@ -141,60 +125,49 @@ def _rebuild_beat_sync_cache(gui) -> None:
 
     def _worker():
         try:
-            summary = get_beat_service().build_cache_for_directory(selected_dir, auto_install=False)
+            summary = gui.presentation.beats.build_cache(selected_dir)
             msg = _(
                 "Обработано: {}/{} | Уже в кеше: {} | Построено: {} | Ошибок: {}",
                 "Processed: {}/{} | Cached: {} | Built: {} | Errors: {}",
             ).format(
-                summary.scanned_files - summary.failed,
-                summary.scanned_files,
-                summary.cache_hits,
-                summary.generated,
-                summary.failed,
+                summary["scanned_files"] - summary["failed"],
+                summary["scanned_files"],
+                summary["cache_hits"],
+                summary["generated"],
+                summary["failed"],
             )
             _refresh_beat_sync_status(gui, msg)
-            gui.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
-                "title": _("Beat Sync", "Beat Sync"),
-                "message": msg,
-            })
+            gui.presentation.beats.show_info(_("Beat Sync", "Beat Sync"), msg)
         except Exception as exc:
             logger.error(f"[BeatSync] cache rebuild failed: {exc}", exc_info=True)
             msg = _("Не удалось построить кеш битов:\n{}", "Failed to build beat cache:\n{}").format(exc)
             _refresh_beat_sync_status(gui, msg)
-            gui.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
-                "title": _("Beat Sync", "Beat Sync"),
-                "message": msg,
-            })
+            gui.presentation.beats.show_error(_("Beat Sync", "Beat Sync"), msg)
         finally:
             dispatch_to_gui(
                 gui,
                 lambda: _set_beat_action_buttons_enabled(gui, True),
             )
 
-    task_supervisor().start_thread(
-        gui, "beat-sync-cache-build", _worker, replace=True
+    run_async(
+        gui,
+        _worker,
+        lambda _result: None,
+        lambda exc: logger.error(f"[BeatSync] cache worker failed: {exc}", exc_info=True),
+        name="beat-sync-cache-build",
     )
 
 
 def _open_beat_cache_folder(gui) -> None:
-    cache_dir = get_beat_service().get_backend_status().cache_dir
-    path = Path(cache_dir)
-    path.mkdir(parents=True, exist_ok=True)
-    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+    cache_dir = gui.presentation.beats.cache_directory()
+    QDesktopServices.openUrl(QUrl.fromLocalFile(cache_dir))
 
 
 def _open_beat_ai_hub(gui) -> None:
-    preferred = normalize_backend_choice(gui._get_setting("BEAT_SYNC_BACKEND", BACKEND_AUTO))
-    gui.event_bus.emit(
-        Events.GUI.SHOW_WINDOW,
-        {
-            "window_id": "ai_hub",
-            "payload": {
-                "category": "beats",
-                "component_id": f"beats:{preferred}",
-            },
-        },
+    preferred = gui.presentation.beats.normalize_backend(
+        gui._get_setting("BEAT_SYNC_BACKEND", "auto")
     )
+    gui.presentation.beats.open_hub(preferred)
 
 
 def _create_beat_backend_selector(gui) -> QWidget:
@@ -212,9 +185,8 @@ def _create_beat_backend_selector(gui) -> QWidget:
     combo = QComboBox()
 
     def _save_backend(_index: int) -> None:
-        backend_id = normalize_backend_choice(combo.currentData())
+        backend_id = gui.presentation.beats.set_backend(combo.currentData())
         gui._save_setting("BEAT_SYNC_BACKEND", backend_id)
-        get_beat_service().reset_runtime_state()
         _refresh_beat_sync_status(gui)
 
     combo.currentIndexChanged.connect(_save_backend)
@@ -252,19 +224,7 @@ def _create_beat_status_label_widget(gui) -> QWidget:
 
 
 def _combo_backend_ids_for_status(status) -> list[str]:
-    backend_ids = [BACKEND_AUTO]
-    backends = status.backends if isinstance(status.backends, dict) else {}
-
-    beat_this_state = backends.get(BACKEND_BEAT_THIS) if isinstance(backends.get(BACKEND_BEAT_THIS), dict) else {}
-    if beat_this_state.get("installed"):
-        backend_ids.append(BACKEND_BEAT_THIS)
-
-    librosa_state = backends.get(BACKEND_LIBROSA) if isinstance(backends.get(BACKEND_LIBROSA), dict) else {}
-    if librosa_state.get("installed"):
-        backend_ids.append(BACKEND_LIBROSA)
-
-    backend_ids.append(BACKEND_DSP)
-    return backend_ids
+    return list(status.available_backends)
 
 
 def _sync_beat_buttons(gui, status) -> None:
@@ -272,8 +232,7 @@ def _sync_beat_buttons(gui, status) -> None:
     uninstall_button = getattr(gui, "beat_sync_uninstall_button", None)
     initialize_button = getattr(gui, "beat_sync_initialize_button", None)
 
-    beat_this_state = status.backends.get(BACKEND_BEAT_THIS) if isinstance(status.backends, dict) else None
-    beat_this_installed = bool(beat_this_state.get("installed")) if isinstance(beat_this_state, dict) else False
+    beat_this_installed = bool(status.beat_this_installed)
 
     def _apply():
         if install_button is not None:
@@ -295,20 +254,18 @@ def _update_beat_backend_combo(gui, status) -> None:
         return
 
     available_backend_ids = _combo_backend_ids_for_status(status)
-    current_backend = normalize_backend_choice(status.preferred_backend)
+    current_backend = gui.presentation.beats.normalize_backend(status.preferred_backend)
     if current_backend not in available_backend_ids:
-        current_backend = BACKEND_AUTO
+        current_backend = "auto"
         gui._save_setting("BEAT_SYNC_BACKEND", current_backend)
 
     combo.blockSignals(True)
     try:
         combo.clear()
-        for backend_id, default_label in _BEAT_BACKEND_OPTIONS:
+        for backend_id in _BEAT_BACKEND_OPTIONS:
             if backend_id not in available_backend_ids:
                 continue
-            # backend_display_name переводит вживую (для всех языков), в отличие от
-            # default_label, замороженного на языке момента импорта модуля.
-            combo.addItem(backend_display_name(backend_id), backend_id)
+            combo.addItem(gui.presentation.beats.backend_label(backend_id), backend_id)
 
         selected_index = combo.findData(current_backend)
         if selected_index >= 0:
@@ -322,65 +279,41 @@ def _ensure_beat_install_hooks(gui) -> None:
         return
 
     gui._beat_sync_install_hooks_bound = True
-    gui.event_bus.subscribe(Events.Install.TASK_FINISHED, lambda event: _on_beat_install_finished(gui, event), weak=False)
-    gui.event_bus.subscribe(Events.Install.TASK_FAILED, lambda event: _on_beat_install_failed(gui, event), weak=False)
 
+    def _finished(op: str) -> None:
+        msg_map = {
+            "install": _("Beat backend установлен", "Beat backend installed"),
+            "initialize": _("Beat backend инициализирован", "Beat backend initialized"),
+            "uninstall": _("Beat backend удалён", "Beat backend uninstalled"),
+        }
+        msg = msg_map.get(op, _("Beat backend обновлён", "Beat backend updated"))
 
-def _on_beat_install_finished(gui, event) -> None:
-    data = event.data if isinstance(event.data, dict) else {}
-    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-    if meta.get("kind") != "beats":
-        return
+        def _apply():
+            _set_beat_action_buttons_enabled(gui, True)
+            _refresh_beat_sync_status(gui, msg)
+            gui.presentation.beats.show_info(_("Beat Sync", "Beat Sync"), msg)
 
-    op = str(meta.get("op") or "install")
-    msg_map = {
-        "install": _("Beat backend установлен", "Beat backend installed"),
-        "initialize": _("Beat backend инициализирован", "Beat backend initialized"),
-        "uninstall": _("Beat backend удалён", "Beat backend uninstalled"),
-    }
-    msg = msg_map.get(op, _("Beat backend обновлён", "Beat backend updated"))
+        dispatch_to_gui(gui, _apply)
 
-    def _apply():
-        get_beat_service().reset_runtime_state()
-        _set_beat_action_buttons_enabled(gui, True)
-        _refresh_beat_sync_status(gui, msg)
-        gui.event_bus.emit(
-            Events.GUI.SHOW_INFO_MESSAGE,
-            {
-                "title": _("Beat Sync", "Beat Sync"),
-                "message": msg,
-            },
-        )
+    def _failed(op: str) -> None:
+        msg_map = {
+            "install": _("Ошибка установки Beat backend", "Beat backend installation failed"),
+            "initialize": _("Ошибка инициализации Beat backend", "Beat backend initialization failed"),
+            "uninstall": _("Ошибка удаления Beat backend", "Beat backend removal failed"),
+        }
+        msg = msg_map.get(op, _("Ошибка операции Beat backend", "Beat backend operation failed"))
 
-    dispatch_to_gui(gui, _apply)
+        def _apply():
+            _set_beat_action_buttons_enabled(gui, True)
+            _refresh_beat_sync_status(gui, msg)
+            gui.presentation.beats.show_error(_("Beat Sync", "Beat Sync"), msg)
 
-def _on_beat_install_failed(gui, event) -> None:
-    data = event.data if isinstance(event.data, dict) else {}
-    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-    if meta.get("kind") != "beats":
-        return
+        dispatch_to_gui(gui, _apply)
 
-    op = str(meta.get("op") or "install")
-    msg_map = {
-        "install": _("Ошибка установки Beat backend", "Beat backend installation failed"),
-        "initialize": _("Ошибка инициализации Beat backend", "Beat backend initialization failed"),
-        "uninstall": _("Ошибка удаления Beat backend", "Beat backend removal failed"),
-    }
-    msg = msg_map.get(op, _("Ошибка операции Beat backend", "Beat backend operation failed"))
+    gui._beat_sync_install_subscriptions = gui.presentation.beats.subscribe_install_results(
+        _finished, _failed
+    )
 
-    def _apply():
-        get_beat_service().reset_runtime_state()
-        _set_beat_action_buttons_enabled(gui, True)
-        _refresh_beat_sync_status(gui, msg)
-        gui.event_bus.emit(
-            Events.GUI.SHOW_ERROR_MESSAGE,
-            {
-                "title": _("Beat Sync", "Beat Sync"),
-                "message": msg,
-            },
-        )
-
-    dispatch_to_gui(gui, _apply)
 
 def setup_game_controls(self, parent) -> None:
     _ensure_beat_install_hooks(self)

@@ -4,11 +4,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLab
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
-from core.events import get_event_bus, Events
-from core.services import use
 from localization import available_languages, language_display_name, translate_for_language
 from main_logger import logger
-from services.contracts import SettingsService
 import os
 from styles.theme import get_theme
 from utils import render_qss
@@ -42,27 +39,25 @@ class IGuidePage(ABC):
 class GuideWidget(QWidget):
     closed = pyqtSignal()
     
-    def __init__(self, parent=None):
+    def __init__(self, presentation, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
+        self.presentation = presentation
         self.pages = []
         self.current_page_index = 0
         self.current_language = "ru"
         self._guide_level = "basic"
         self._filtered_pages = []
         self._lang_buttons: dict[str, QRadioButton] = {}
-        try:
-            from managers.settings_manager import SettingsManager
-            from ui.widgets.settings_panel import normalize_mode
-            saved = SettingsManager.get("GUIDE_LEVEL")
-            if saved in ("basic", "advanced", "full"):
-                self._guide_level = saved
-            else:
-                iface = SettingsManager.get("INTERFACE_MODE")
-                self._guide_level = normalize_mode(iface)
-            self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
-        except Exception:
-            pass
+        from ui.widgets.settings_panel import normalize_mode
+        saved = self.presentation.settings.get("GUIDE_LEVEL")
+        if saved in ("basic", "advanced", "full"):
+            self._guide_level = saved
+        else:
+            iface = self.presentation.settings.get("INTERFACE_MODE")
+            self._guide_level = normalize_mode(iface)
+        self.current_language = str(
+            self.presentation.settings.get("LANGUAGE", "RU") or "RU"
+        ).strip().lower()
         self.setObjectName("GuideWidget")
         self.setup_ui()
         self._init_pages()
@@ -429,7 +424,7 @@ class GuideWidget(QWidget):
         # то есть уровень гайда молча не сохранялся и никто о смене не узнавал.
         # SettingsService.update() сразу обновляет реестр и планирует запись на диск.
         try:
-            use(SettingsService).update("GUIDE_LEVEL", level)
+            self.presentation.settings.set("GUIDE_LEVEL", level)
         except Exception as e:
             logger.warning(f"[GuideWidget] Не удалось сохранить GUIDE_LEVEL: {e}")
 

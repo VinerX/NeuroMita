@@ -22,8 +22,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.services import use
-from services.contracts import InstallableCatalogService
 from main_logger import logger
 from utils import getTranslationVariant as _
 
@@ -36,9 +34,9 @@ class SettingsPanel(QWidget):
 
     request_install_view = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, installables_controller, parent=None):
         super().__init__(parent)
-        self.catalog = use(InstallableCatalogService)
+        self.catalog = installables_controller
         self._rows: list[dict[str, Any]] = []
         self._category: str | None = None
         self._current_id: str | None = None
@@ -271,7 +269,7 @@ class SettingsPanel(QWidget):
         return self.catalog.load_settings(component_id)
 
     def _save_values(self, component_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        return self.catalog.save_component_settings(component_id, values)
+        return self.catalog.save_settings(component_id, values)
 
     # ---------------------------------------------------------- actions
     def _on_save(self) -> None:

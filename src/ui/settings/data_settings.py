@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from core.task_supervisor import task_supervisor
+from ui.presentation import run_ui_async as run_async
 import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
@@ -88,13 +88,6 @@ def setup_data_settings_controls(self, parent):
             self._save_setting("FINETUNE_COLLECTION_ENABLED", val)
         except Exception:
             pass
-        try:
-            from managers.finetune_collector import FineTuneCollector
-            fc = FineTuneCollector.instance
-            if fc:
-                fc.set_enabled(val)
-        except Exception:
-            pass
 
     chk.stateChanged.connect(_on_toggle)
     parent.addWidget(chk)
@@ -160,10 +153,7 @@ def setup_data_settings_controls(self, parent):
 
     def _apply_limit_now():
         try:
-            from managers.finetune_collector import FineTuneCollector
-            fc = FineTuneCollector.instance
-            if fc:
-                fc._enforce_limit()
+            self.presentation.finetune.enforce_limit()
         except Exception:
             pass
 
@@ -203,7 +193,7 @@ def setup_data_settings_controls(self, parent):
     path_lbl.setFixedWidth(60)
     path_row.addWidget(path_lbl)
 
-    path_edit = QLineEdit(_get_current_data_dir())
+    path_edit = QLineEdit(_get_current_data_dir(self.presentation.settings))
     path_edit.setReadOnly(True)
     path_edit.setStyleSheet(
         "QLineEdit { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
@@ -229,17 +219,9 @@ def setup_data_settings_controls(self, parent):
             return
         new_data_dir = str(Path(chosen) / "FineTuneData")
         path_edit.setText(new_data_dir)
+        self.presentation.settings.set("FINETUNE_DATA_DIR", chosen)
         try:
-            from managers.settings_manager import SettingsManager
-            SettingsManager.set("FINETUNE_DATA_DIR", chosen)
-        except Exception:
-            pass
-        try:
-            from managers.finetune_collector import FineTuneCollector
-            fc = FineTuneCollector.instance
-            if fc is not None:
-                fc.data_dir = Path(new_data_dir)
-                fc.data_dir.mkdir(parents=True, exist_ok=True)
+            self.presentation.finetune.set_data_directory(new_data_dir)
         except Exception:
             pass
 
@@ -257,7 +239,7 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(sep1)
 
     # ── Stats section ─────────────────────────────────────────────────────────
-    parent.addWidget(_LiveStatsWidget())
+    parent.addWidget(_LiveStatsWidget(self.presentation.finetune, parent=self))
 
     # ── Separator ─────────────────────────────────────────────────────────────
     sep2 = QFrame()
@@ -289,7 +271,7 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(btn_container)
 
     # ── Motivation image ──────────────────────────────────────────────────────
-    parent.addWidget(_MotivationImage())
+    parent.addWidget(_MotivationImage(self.presentation.finetune, parent=self))
 
 
 # ── Live stats widget ─────────────────────────────────────────────────────────
@@ -299,8 +281,9 @@ class _LiveStatsWidget(QFrame):
 
     _lines_ready = pyqtSignal(list)
 
-    def __init__(self, parent=None):
+    def __init__(self, finetune_controller, parent=None):
         super().__init__(parent)
+        self._finetune = finetune_controller
         self._lines_ready.connect(self._apply_lines)
         self.setStyleSheet(
             "QFrame { background: transparent; border: none; }"
@@ -344,9 +327,7 @@ class _LiveStatsWidget(QFrame):
         # Парсинг jsonl может быть тяжёлым — считаем в фоне, чтобы не морозить GUI
         # при открытии вкладки. Пока считается — плейсхолдер.
         self._apply_lines([_("Загрузка статистики…", "Loading statistics…")])
-        task_supervisor().start_thread(
-            self, "data-statistics-compute", self._compute_async, replace=True
-        )
+        run_async(self, self._compute_async, name="data-statistics-compute")
 
     def _compute_async(self):
         lines = self._build_lines()
@@ -370,15 +351,12 @@ class _LiveStatsWidget(QFrame):
             lbl.setWordWrap(True)
             self._stats_layout.addWidget(lbl)
 
-    @staticmethod
-    def _build_lines() -> list:
+    def _build_lines(self) -> list:
         try:
-            from managers.finetune_collector import FineTuneCollector
-            fc = FineTuneCollector.instance
-            if fc is None:
+            if not self._finetune.available():
                 return [_("Сборщик не инициализирован", "Collector not initialized")]
 
-            stats = fc.get_stats()
+            stats = self._finetune.get_stats()
             total    = stats.get("total", 0)
             rated    = stats.get("rated", 0)
             positive = stats.get("positive", 0)
@@ -411,8 +389,9 @@ class _MotivationImage(QLabel):
 
     _total_ready = pyqtSignal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, finetune_controller, parent=None):
         super().__init__(parent)
+        self._finetune = finetune_controller
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background: transparent; border: none; margin-top: 8px;")
         self._total_ready.connect(self._apply_total)
@@ -420,17 +399,12 @@ class _MotivationImage(QLabel):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         # get_stats() дорогой — считаем в фоне, картинку ставим по готовности.
-        task_supervisor().start_thread(
-            self, "finetune-total-compute", self._compute_async, replace=True
-        )
+        run_async(self, self._compute_async, name="finetune-total-compute")
 
     def _compute_async(self):
         total = 0
         try:
-            from managers.finetune_collector import FineTuneCollector
-            fc = FineTuneCollector.instance
-            if fc:
-                total = fc.get_stats().get("total", 0)
+            total = self._finetune.get_stats().get("total", 0)
         except Exception:
             pass
         try:
@@ -450,14 +424,10 @@ class _MotivationImage(QLabel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_current_data_dir() -> str:
-    try:
-        from managers.settings_manager import SettingsManager
-        saved = SettingsManager.get("FINETUNE_DATA_DIR")
-        if saved:
-            return str(Path(saved) / "FineTuneData")
-    except Exception:
-        pass
+def _get_current_data_dir(settings) -> str:
+    saved = settings.get("FINETUNE_DATA_DIR")
+    if saved:
+        return str(Path(saved) / "FineTuneData")
     base = os.environ.get("NEUROMITA_BASE_DIR", os.getcwd())
     return os.path.join(base, "FineTuneData")
 
@@ -477,10 +447,8 @@ def _clear_all_data(gui):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        from managers.finetune_collector import FineTuneCollector
-        fc = FineTuneCollector.instance
-        if fc:
-            count = fc.clear_all()
+        if gui.presentation.finetune.available():
+            count = gui.presentation.finetune.clear_all()
             QMessageBox.information(
                 None,
                 _("Готово", "Done"),
@@ -494,7 +462,7 @@ def _clear_all_data(gui):
 def _open_export_dialog(gui):
     try:
         from ui.dialogs.export_dialog import ExportDialog
-        dlg = ExportDialog(gui if hasattr(gui, "isWindow") else None)
+        dlg = ExportDialog(gui.presentation.finetune, gui if hasattr(gui, "isWindow") else None)
         dlg.exec()
     except Exception as e:
         from main_logger import logger

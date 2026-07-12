@@ -637,7 +637,7 @@ class VoiceoverGuiController(BaseController):
             return mp
 
         try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
             for m in LOCAL_VOICE_MODELS:
                 mid = str(m.get("id") or "").strip()
                 name = str(m.get("name") or mid).strip()
@@ -1053,7 +1053,7 @@ class VoiceoverGuiController(BaseController):
 
         if not mp:
             try:
-                from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+                from presets.local_voice_models import LOCAL_VOICE_MODELS
                 for m in LOCAL_VOICE_MODELS:
                     mid = str(m.get("id") or "").strip()
                     name = str(m.get("name") or mid).strip()
@@ -1227,7 +1227,7 @@ class VoiceoverGuiController(BaseController):
 
     def _model_gpu_vendors(self, model_id: str) -> list[str]:
         try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
             for m in LOCAL_VOICE_MODELS:
                 if str(m.get("id") or "") == model_id:
                     return [str(v).upper() for v in (m.get("gpu_vendor") or [])]

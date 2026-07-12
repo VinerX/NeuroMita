@@ -13,7 +13,6 @@ try:
 except Exception:
     qta = None
 
-from core.events import get_event_bus, Events
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
 
@@ -58,6 +57,7 @@ class AsrGlossaryView(QWidget):
     request_install = pyqtSignal(str)
     request_refresh = pyqtSignal()
     request_settings = pyqtSignal(str, int)
+    setting_changed = pyqtSignal(str, str, object)
 
     catalog_loaded_signal = pyqtSignal(dict)
     settings_loaded_signal = pyqtSignal(dict)
@@ -68,7 +68,6 @@ class AsrGlossaryView(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.event_bus = get_event_bus()
 
         self._models: list[dict] = []
         self._current_engine: str | None = None
@@ -566,9 +565,7 @@ class AsrGlossaryView(QWidget):
                 if idx >= 0:
                     w.setCurrentIndex(idx)
                 w.currentTextChanged.connect(
-                    lambda v, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": v}
-                    )
+                    lambda v, e=engine_id, k=key: self.setting_changed.emit(e, k, v)
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -576,9 +573,7 @@ class AsrGlossaryView(QWidget):
                 w = QCheckBox()
                 w.setChecked(bool(val))
                 w.toggled.connect(
-                    lambda state, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": bool(state)}
-                    )
+                    lambda state, e=engine_id, k=key: self.setting_changed.emit(e, k, bool(state))
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
                 rl.addStretch()
@@ -586,9 +581,7 @@ class AsrGlossaryView(QWidget):
             else:
                 w = QLineEdit("" if val is None else str(val))
                 w.editingFinished.connect(
-                    lambda ww=w, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": ww.text().strip()}
-                    )
+                    lambda ww=w, e=engine_id, k=key: self.setting_changed.emit(e, k, ww.text().strip())
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
 

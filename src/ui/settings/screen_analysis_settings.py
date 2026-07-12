@@ -1,8 +1,7 @@
 from ui.gui_templates import create_settings_section, create_section_header
+from ui.presentation import UiSettingsDataKey
 from utils import getTranslationVariant as _
 from main_logger import logger
-from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
-from ui.settings.data_prefetch import CAMERA_LIST, get_cached_settings_data, request_settings_data
 
 def get_camera_list():
     try:
@@ -42,14 +41,14 @@ def update_camera_list(gui, *, force: bool = False):
             if combo is not None:
                 combo.setEnabled(True)
 
-        cached = get_cached_settings_data(CAMERA_LIST, None)
+        cached = gui.presentation.settings_data.get(UiSettingsDataKey.CAMERA_LIST, None)
         if cached is not None and not force:
             _apply(cached)
             return
 
-        request_settings_data(
+        gui.presentation.settings_data.request(
             gui,
-            CAMERA_LIST,
+            UiSettingsDataKey.CAMERA_LIST,
             get_camera_list,
             _apply,
             _error,
@@ -156,7 +155,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
     create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config, icon_name="fa6s.hourglass-half")
 
     # Четвёртая CollapsibleSection — описание изображений
-    _vision_provider_names = current_provider_options()
+    _vision_provider_names = gui.presentation.providers.current()
 
     image_description_config = [
         {
@@ -225,7 +224,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         },
     ]
     create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config, icon_name="fa6s.comment-dots")
-    load_api_provider_options_async(
+    gui.presentation.providers.load_async(
         gui,
         ("IMAGE_DESCRIPTION_PROVIDER",),
         name="screen-analysis-provider-options",

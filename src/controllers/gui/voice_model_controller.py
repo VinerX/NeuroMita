@@ -14,10 +14,53 @@ from ui.windows.voice_model_view import VoiceModelSettingsView
 class VoiceModelGuiController(BaseController):
     def __init__(self, main_controller, view):
         self._dialog = None
-        self._vm_view: VoiceModelSettingsView | None = VoiceModelSettingsView(auto_initialize=False)
+        self._vm_view: VoiceModelSettingsView | None = VoiceModelSettingsView(
+            self,
+            presentation=view.presentation,
+            auto_initialize=False,
+        )
         super().__init__(main_controller, view)
 
         self._register_window_on_ready()
+
+
+    # Passive-view command/data boundary.
+    def model_catalog_snapshot(self):
+        service = services().get_optional(VoiceModelService)
+        return service.model_catalog_snapshot() if service is not None else []
+
+    def installed_models_snapshot(self):
+        service = services().get_optional(VoiceModelService)
+        return service.installed_models_snapshot() if service is not None else set()
+
+    def dependencies_status(self):
+        service = services().get_optional(VoiceModelService)
+        return service.dependencies_status() if service is not None else {}
+
+    def request_install(self, model_id: str) -> None:
+        self._on_install_model(Event(Events.VoiceModel.INSTALL_MODEL, {"model_id": str(model_id), "with_ui": True}))
+
+    def request_uninstall(self, model_id: str) -> None:
+        self._on_uninstall_model(Event(Events.VoiceModel.UNINSTALL_MODEL, {"model_id": str(model_id), "with_ui": True}))
+
+    def save_view_settings(self) -> None:
+        self._on_save_settings(Event(Events.VoiceModel.SAVE_SETTINGS))
+
+    def close_view(self) -> None:
+        self._on_close_dialog(Event(Events.VoiceModel.CLOSE_DIALOG))
+
+    def update_description(self, key: str) -> None:
+        self._on_update_description(Event(Events.VoiceModel.UPDATE_DESCRIPTION, str(key)))
+
+    def clear_description(self) -> None:
+        self._on_clear_description(Event(Events.VoiceModel.CLEAR_DESCRIPTION))
+
+    def open_documentation(self, path: str) -> None:
+        self.event_bus.emit(Events.VoiceModel.OPEN_DOC, str(path))
+
+    def triton_status(self, *, refresh: bool = False) -> dict:
+        service = services().get_optional(LocalVoiceService)
+        return dict(service.triton_status(refresh=refresh) or {}) if service is not None else {}
 
     def _register_window_on_ready(self):
         if not self.view or not hasattr(self.view, "window_manager") or self.view.window_manager is None:

@@ -5,14 +5,6 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 
-from ui.pages.news_support import (
-    NEWS_REPO,
-    build_release_news_items,
-    get_news_content,
-    get_news_releases,
-    invalidate_news_releases,
-    load_news_releases_async,
-)
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem, create_news_page
 from utils import _
 
@@ -43,7 +35,8 @@ class NewsPage(QWidget):
         self.gui.news_page = self
 
     def _build_page_widget(self, *, loading: bool = False) -> QWidget:
-        repo_url = f"https://github.com/{NEWS_REPO}/releases"
+        repository = self.gui.presentation.news.repository
+        repo_url = f"https://github.com/{repository}/releases"
         if loading:
             items = [
                 NewsItem(
@@ -57,13 +50,13 @@ class NewsPage(QWidget):
             ]
         else:
             # Кэш уже прогрет фоновой загрузкой — build не ходит в сеть.
-            items = build_release_news_items(self.gui)
+            items = self.gui.presentation.news.build_items(self.gui)
         return create_news_page(
             title=_("Релизы NeuroMita", "NeuroMita releases"),
             subtitle=_(
                 "Лента публичных релизов с GitHub ({repo}): changelog, бета-сборки и ссылки на полные заметки.",
                 "GitHub release feed ({repo}): changelog, beta builds and links to full notes.",
-            ).format(repo=NEWS_REPO),
+            ).format(repo=repository),
             items=items,
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self.refresh_content, icon_name="fa6s.rotate-right"),
@@ -85,7 +78,7 @@ class NewsPage(QWidget):
 
     def refresh_content(self):
         # Кнопка «Обновить»: принудительно сбрасываем кэш и тянем ленту заново.
-        invalidate_news_releases(self.gui)
+        self.gui.presentation.news.invalidate(self.gui)
         self._load_content()
 
     def _load_content(self):
@@ -93,7 +86,13 @@ class NewsPage(QWidget):
         # в фоне (из кэша, если он уже прогрет). Готовый список придёт сигналом
         # _releases_ready на GUI-поток.
         self._set_page_widget(self._build_page_widget(loading=True))
-        QTimer.singleShot(0, lambda: load_news_releases_async(self.gui, lambda releases: self._releases_ready.emit(releases)))
+        QTimer.singleShot(
+            0,
+            lambda: self.gui.presentation.news.load_async(
+                self.gui,
+                lambda releases: self._releases_ready.emit(releases),
+            ),
+        )
 
     def _on_releases_ready(self, releases):
         self._set_page_widget(self._build_page_widget())
@@ -134,10 +133,10 @@ class NewsPage(QWidget):
         return True
 
     def get_news_releases(self):
-        return get_news_releases(self.gui)
+        return self.gui.presentation.news.get_releases(self.gui)
 
     def get_news_content(self) -> str:
-        return get_news_content(self.gui)
+        return self.gui.presentation.news.get_content(self.gui)
 
 
 def build_news_page(window) -> QWidget:

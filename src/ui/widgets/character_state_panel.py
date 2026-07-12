@@ -17,11 +17,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import Events
-from core.services import use
-from services.contracts import CharacterRegistry
+from ui.presentation import UiTopic
 from main_logger import logger
-from ui.async_bus import run_async
+from ui.presentation import run_ui_async as run_async
 from utils import _
 from localization.live import register_if_tr, tr_set
 
@@ -257,21 +255,20 @@ class CharacterStatePanel(QWidget):
 
         # Subscribe to events
         try:
-            eb = self.gui.event_bus
-            eb.subscribe(Events.Character.CURRENT_CHANGED, lambda e: self._schedule_refresh(rebuild=True), weak=False)
-            try:
-                eb.subscribe(Events.Character.RELOAD_DATA, lambda e: self._schedule_refresh(rebuild=True), weak=False)
-            except Exception:
-                pass
-            try:
-                from core.events import Events as _Ev
-                def _on_response(e):
-                    self._schedule_refresh(rebuild=False)
-                    if self._all_text.isVisible():
-                        QTimer.singleShot(100, self._refresh_all_text)
-                eb.subscribe(_Ev.LLM.ON_SUCCESSFUL_RESPONSE, _on_response, weak=False)
-            except Exception:
-                pass
+            events = self.gui.presentation.events
+            self._subscriptions = [
+                events.subscribe(UiTopic.CHARACTER_CURRENT_CHANGED, lambda e: self._schedule_refresh(rebuild=True), weak=False),
+                events.subscribe(UiTopic.CHARACTER_RELOAD_DATA, lambda e: self._schedule_refresh(rebuild=True), weak=False),
+            ]
+
+            def _on_response(_event):
+                self._schedule_refresh(rebuild=False)
+                if self._all_text.isVisible():
+                    QTimer.singleShot(100, self._refresh_all_text)
+
+            self._subscriptions.append(
+                events.subscribe(UiTopic.MODEL_SUCCESS, _on_response, weak=False)
+            )
         except Exception:
             pass
 
@@ -289,7 +286,7 @@ class CharacterStatePanel(QWidget):
 
     # ─────────────────────────────────────────────────────────────
     def _get_current_character(self):
-        return use(CharacterRegistry).current()
+        return self.gui.presentation.characters.current()
 
     def _bounds_for(self, character, key: str, default_min: float, default_max: float) -> tuple[float, float]:
         try:

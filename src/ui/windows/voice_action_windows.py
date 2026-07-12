@@ -12,8 +12,6 @@ import json
 import shutil
 from html import escape as html_escape
 from main_logger import logger
-from core.services import services
-from services.contracts import LocalVoiceService
 from collections import deque
 
 # Широкий регэксп: чистит и CSI-последовательности (\x1b[...),
@@ -916,8 +914,9 @@ class VoiceActionWindow(QDialog):
 
 
 class VCRedistWarningDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, voice_controller, parent=None):
         super().__init__(parent)
+        self.voice_controller = voice_controller
         self.setWindowTitle(_("⚠️ Ошибка загрузки Triton", "⚠️ Triton Load Error"))
         self.setModal(True)
         self.setMinimumSize(500, 250)
@@ -980,8 +979,7 @@ class VCRedistWarningDialog(QDialog):
         layout.addLayout(button_layout)
     
     def _on_docs_clicked(self):
-        from core.events import get_event_bus, Events
-        get_event_bus().emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html#vc_redist")
+        self.voice_controller.open_documentation("installation_guide.html#vc_redist")
     
     def _set_choice_and_accept(self, choice):
         self.choice = choice
@@ -992,8 +990,9 @@ class VCRedistWarningDialog(QDialog):
 
 
 class TritonDependenciesDialog(QDialog):
-    def __init__(self, parent=None, dependencies_status=None):
+    def __init__(self, voice_controller, parent=None, dependencies_status=None):
         super().__init__(parent)
+        self.voice_controller = voice_controller
         self.setWindowTitle(_("⚠️ Зависимости Triton", "⚠️ Triton Dependencies"))
         self.setModal(True)
         self.setMinimumSize(700, 350)
@@ -1122,14 +1121,11 @@ class TritonDependenciesDialog(QDialog):
             self.warning_label.setVisible(not msvc_found)
     
     def _on_refresh_status(self):
-        local_voice = services().get_optional(LocalVoiceService)
-        if local_voice is not None:
-            self.dependencies_status = local_voice.triton_status(refresh=True)
-            self._update_status_display()
+        self.dependencies_status = self.voice_controller.triton_status(refresh=True)
+        self._update_status_display()
     
     def _on_docs_clicked(self):
-        from core.events import get_event_bus, Events
-        get_event_bus().emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html")
+        self.voice_controller.open_documentation("installation_guide.html")
     
     def _set_choice_and_accept(self, choice):
         self.choice = choice

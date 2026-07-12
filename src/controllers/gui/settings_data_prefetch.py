@@ -8,7 +8,7 @@ from core.events import Events, get_event_bus
 from core.services import use
 from services.contracts import ApiPresetService, CharacterRegistry, EmbeddingPresetService
 from main_logger import logger
-from ui.async_bus import dispatch_to_gui, run_async
+from controllers.gui.async_runner import dispatch_to_gui, run_async
 from utils import getTranslationVariant as _
 
 
@@ -259,7 +259,7 @@ def _load_camera_list() -> list[str]:
 
 
 def _load_rag_embed_status() -> dict[str, Any]:
-    from ui.settings import rag_memory_settings as rag
+    from controllers.gui import rag_memory_controller as rag
 
     return {
         "backend": rag._get_embed_backend_status(),
@@ -269,7 +269,7 @@ def _load_rag_embed_status() -> dict[str, Any]:
 
 
 def _load_rag_ce_status() -> dict[str, Any]:
-    from ui.settings import rag_memory_settings as rag
+    from controllers.gui import rag_memory_controller as rag
 
     return {
         "backend": rag._get_ce_backend_status(),

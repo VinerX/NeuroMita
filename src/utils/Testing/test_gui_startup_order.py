@@ -29,21 +29,25 @@ class _Trace:
 
 class GuiStartupOrderTests(unittest.TestCase):
     def test_home_is_the_initial_main_page(self):
-        source = (PROJECT_SRC / "ui" / "windows" / "main_window.py").read_text(
+        window_source = (PROJECT_SRC / "ui" / "windows" / "main_window.py").read_text(
             encoding="utf-8"
         )
-        tree = ast.parse(source)
+        coordinator_source = (
+            PROJECT_SRC / "controllers" / "gui" / "main_window_coordinator.py"
+        ).read_text(encoding="utf-8")
+        window_tree = ast.parse(window_source)
+        coordinator_tree = ast.parse(coordinator_source)
         initial_page_values = []
         initial_switches = []
-        for node in ast.walk(tree):
+        for node in ast.walk(window_tree):
             if isinstance(node, ast.Call):
                 for keyword in node.keywords:
                     if keyword.arg == "initial_page" and isinstance(keyword.value, ast.Constant):
                         initial_page_values.append(keyword.value.value)
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "switch_main_page":
-                    if node.args and isinstance(node.args[0], ast.Constant):
-                        initial_switches.append(node.args[0].value)
-
+        for node in ast.walk(coordinator_tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "switch_page" and node.args and isinstance(node.args[0], ast.Constant):
+                    initial_switches.append(node.args[0].value)
         self.assertIn("home", initial_page_values)
         self.assertIn("home", initial_switches)
 
@@ -113,6 +117,20 @@ class GuiStartupOrderTests(unittest.TestCase):
 
                 def activate_current_main_page(self):
                     events.append("home_activated")
+
+            class GuiCompositionRoot:
+                def __init__(self, settings_controller):
+                    events.append("composition_root_created")
+                    self.window = MainWindow(settings_controller.settings)
+
+                def attach_backend(self, controller):
+                    controller.update_view(self.window)
+
+                def backend_failed(self, _error):
+                    events.append("backend_failed")
+
+                def close(self):
+                    events.append("composition_root_closed")
 
             created_settings_controller = None
 
@@ -227,9 +245,9 @@ class GuiStartupOrderTests(unittest.TestCase):
                     "services.installable_catalog_service",
                     DefaultInstallableCatalogService=lambda *_args: object(),
                 ),
-                "ui.windows.main_window": fake_module(
-                    "ui.windows.main_window",
-                    MainWindow=MainWindow,
+                "controllers.gui.composition_root": fake_module(
+                    "controllers.gui.composition_root",
+                    GuiCompositionRoot=GuiCompositionRoot,
                 ),
                 "controllers.main_controller": fake_module(
                     "controllers.main_controller",

@@ -82,6 +82,7 @@ class LauncherSidebarWidget(QFrame):
         self._sections = list(sections or DEFAULT_SIDEBAR_SECTIONS)
         self._nav_buttons: dict[str, QPushButton] = {}
         self._active_page = ""
+        self._active_language = "ru"
 
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
@@ -101,13 +102,10 @@ class LauncherSidebarWidget(QFrame):
             pass
 
     def _on_language_changed(self, code: str = "") -> None:
+        normalized = str(code or self._active_language or "ru").lower()
+        self._active_language = normalized
         self._rebuild_lang_pills()
-        try:
-            from managers.settings_manager import SettingsManager
-            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
-        except Exception:
-            current = "ru"
-        self.set_active_language(current)
+        self.set_active_language(normalized)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -343,11 +341,7 @@ class LauncherSidebarWidget(QFrame):
             available = {c.lower() for c in available_languages("full")}
         except Exception:
             available = {"ru", "en"}
-        try:
-            from managers.settings_manager import SettingsManager
-            current = str(SettingsManager.get("LANGUAGE", "RU") or "RU").lower()
-        except Exception:
-            current = "ru"
+        current = str(self._active_language or "ru").lower()
         second = "en" if (current in ("ru", "en") or current not in available) else current
 
         for code in ("ru", second):
@@ -383,6 +377,7 @@ class LauncherSidebarWidget(QFrame):
 
     def set_active_language(self, code: str) -> None:
         code = (code or "").lower()
+        self._active_language = code
         for key, button in self._lang_buttons.items():
             is_active = key == code
             button.blockSignals(True)

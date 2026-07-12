@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 import ui.pages.news_page as news_page_module
-from ui.pages.news_support import _build_release_preview, build_release_news_items
+from controllers.gui.news_controller import _build_release_preview, build_release_news_items
 
 
 def _app() -> QApplication:

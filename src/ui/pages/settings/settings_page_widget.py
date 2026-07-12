@@ -20,7 +20,6 @@ from ui.pages.settings.section_registry import (
     get_settings_section_specs,
     resolve_settings_builder,
 )
-from ui.settings.data_prefetch import prefetch_settings_section
 from ui.widgets.settings_icon_button import SettingsIconButton
 from utils import _
 from localization.live import tr_set
@@ -211,7 +210,7 @@ class SettingsPage(QWidget):
         try:
             from ui.widgets.settings_panel import is_section_enabled
 
-            return is_section_enabled(category)
+            return is_section_enabled(category, self.gui.presentation.settings)
         except Exception:
             return True
 
@@ -618,7 +617,7 @@ class SettingsPage(QWidget):
         if not background:
             self._pending_section_scroll[category] = (subsection, smooth_scroll)
         self._set_section_placeholder(page, "loading")
-        prefetch_settings_section(self.gui, category)
+        self.gui.presentation.settings_data.prefetch_section(self.gui, category)
 
         required_features = _SECTION_FEATURES.get(category, ())
         if required_features or category in _BACKEND_REQUIRED_SECTIONS:
@@ -633,9 +632,8 @@ class SettingsPage(QWidget):
         *,
         backend_attempt: int = 0,
     ) -> None:
-        main_controller = getattr(self.gui, "main_controller", None)
-        feature_manager = getattr(main_controller, "feature_manager", None)
-        if main_controller is None or feature_manager is None:
+        app = self.gui.presentation.app
+        if not app.backend_ready:
             if backend_attempt < 150:
                 QTimer.singleShot(40, lambda: self._prepare_section_features(
                     category, feature_names, backend_attempt=backend_attempt + 1
@@ -652,7 +650,7 @@ class SettingsPage(QWidget):
                 return
 
             feature_name = feature_names[index]
-            future = main_controller.ensure_feature_async(feature_name)
+            future = app.ensure_feature_async(feature_name)
 
             def done(completed) -> None:
                 try:
@@ -671,15 +669,8 @@ class SettingsPage(QWidget):
     def _finish_section_features(self, category: str) -> None:
         gui_feature = _SECTION_GUI_FEATURES.get(category)
         if gui_feature:
-            main_controller = getattr(self.gui, "main_controller", None)
-            gui_controller = getattr(main_controller, "gui_controller", None)
-            if gui_controller is None:
-                self._finish_section_feature_error(
-                    category, RuntimeError("GUI controller is not ready")
-                )
-                return
             try:
-                gui_controller.ensure_optional_gui(gui_feature)
+                self.gui.presentation.app.ensure_optional_gui(gui_feature)
             except BaseException as exc:
                 self._finish_section_feature_error(category, exc)
                 return
@@ -785,23 +776,13 @@ class SettingsPage(QWidget):
         header.style().polish(header)
 
     def _collapsed_state_map(self) -> dict:
-        try:
-            from managers.settings_manager import SettingsManager
-
-            value = SettingsManager.get(self._COLLAPSE_STATE_KEY, {})
-            return dict(value) if isinstance(value, dict) else {}
-        except Exception:
-            return {}
+        value = self.gui.presentation.settings.get(self._COLLAPSE_STATE_KEY, {})
+        return dict(value) if isinstance(value, dict) else {}
 
     def _persist_collapsed_state(self, section_id: str, collapsed: bool) -> None:
-        try:
-            from managers.settings_manager import SettingsManager
-
-            state = self._collapsed_state_map()
-            state[section_id] = bool(collapsed)
-            SettingsManager.set(self._COLLAPSE_STATE_KEY, state)
-        except Exception:
-            pass
+        state = self._collapsed_state_map()
+        state[section_id] = bool(collapsed)
+        self.gui.presentation.settings.set(self._COLLAPSE_STATE_KEY, state)
 
     def _prepare_settings_subsections(self, page: SettingsSectionPage):
         """Keep the in-page subsections collapsible so long pages (e.g. Models)

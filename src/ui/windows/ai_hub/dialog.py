@@ -22,15 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import EventDelivery, Events, get_event_bus
-from core.services import services
-from core.task_supervisor import task_supervisor
-from services.contracts import (
-    InstallableCatalogService,
-    InstallableOperationsService,
-    SettingsService,
-)
-from services.installable_catalog_service import DefaultInstallableCatalogService
+from ui.presentation import run_ui_async as run_async
+from ui.presentation import UiTopic
 from main_logger import logger
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
@@ -89,16 +82,10 @@ class AIHubDialog(QDialog):
     # connected slot runs it on the GUI thread (QueuedConnection by default).
     _ui_call_requested = pyqtSignal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, presentation, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
-        registry = services()
-        if registry.is_registered(InstallableCatalogService):
-            self.catalog = registry.get(InstallableCatalogService)
-        else:
-            settings = registry.get(SettingsService) if registry.is_registered(SettingsService) else None
-            self.catalog = DefaultInstallableCatalogService(settings)
-            registry.register(InstallableCatalogService, self.catalog)
+        self.presentation = presentation
+        self.catalog = presentation.installables
         self._rows: list[dict[str, Any]] = []
         self._selected_category = "tts"
         self._pending_category: str | None = None
@@ -113,7 +100,6 @@ class AIHubDialog(QDialog):
         self._refresh_inflight = False
         self._checking_component_ids: set[str] = set()
         self._rendered_language = ""
-        self._main_controller = None
         self._pending_backend_actions: set[tuple[str, str]] = set()
 
         self._ui_call_requested.connect(self._execute_ui_call)
@@ -414,8 +400,7 @@ class AIHubDialog(QDialog):
         def _worker():
             ok = False
             try:
-                from utils.pip_installer import PipInstaller
-                ok = bool(PipInstaller(update_log=logger.info).purge_cache())
+                ok = bool(self.catalog.purge_cache())
             except Exception as exc:
                 logger.error(f"AI Hub: clear cache failed: {exc}", exc_info=True)
             msg = _("Кэш очищен", "Cache cleared") if ok else _("Не удалось очистить кэш", "Failed to clear cache")
@@ -424,9 +409,7 @@ class AIHubDialog(QDialog):
                 QTimer.singleShot(2500, lambda: self._set_task_status("")),
             ))
 
-        task_supervisor().start_thread(
-            self, "ai-hub-cache-clear", _worker, replace=True
-        )
+        run_async(self, _worker, name="ai-hub-cache-clear")
 
     def _build_main_column(self) -> QVBoxLayout:
         from PyQt6.QtWidgets import QStackedWidget
@@ -453,7 +436,7 @@ class AIHubDialog(QDialog):
         self._stack.addWidget(install_page)
 
         # settings page
-        self._settings_panel = SettingsPanel()
+        self._settings_panel = SettingsPanel(self.catalog)
         self._stack.addWidget(self._settings_panel)
 
         col.addWidget(self._stack, 1)
@@ -644,11 +627,11 @@ class AIHubDialog(QDialog):
 
     # ----------------------------------------------------------- events
     def _bind_events(self) -> None:
-        self.event_bus.subscribe(Events.Install.TASK_STARTED, self._on_install_started, weak=False)
-        self.event_bus.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
-        self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
-        self.event_bus.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
-        self.event_bus.subscribe(Events.Install.QUEUE_CHANGED, self._on_queue_changed, weak=False)
+        self.presentation.events.subscribe(UiTopic.INSTALL_TASK_STARTED, self._on_install_started, weak=False)
+        self.presentation.events.subscribe(UiTopic.INSTALL_TASK_PROGRESS, self._on_install_progress, weak=False)
+        self.presentation.events.subscribe(UiTopic.INSTALL_TASK_FINISHED, self._on_install_finished, weak=False)
+        self.presentation.events.subscribe(UiTopic.INSTALL_TASK_FAILED, self._on_install_failed, weak=False)
+        self.presentation.events.subscribe(UiTopic.INSTALL_QUEUE_CHANGED, self._on_queue_changed, weak=False)
 
     def apply_payload(self, payload: dict[str, Any] | None) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -695,13 +678,10 @@ class AIHubDialog(QDialog):
             QTimer.singleShot(0, self._refresh_views)
 
     def _ensure_install_gui_adapter(self) -> None:
-        main_controller = self._find_main_controller()
-        self._main_controller = main_controller
-        gui_controller = getattr(main_controller, "gui_controller", None)
-        if gui_controller is None:
+        if not self.presentation.app.backend_ready:
             return
         try:
-            gui_controller.ensure_optional_gui("install")
+            self.presentation.app.ensure_optional_gui("install")
         except Exception as exc:
             logger.warning(f"AI Hub install GUI adapter is unavailable: {exc}")
 
@@ -740,9 +720,7 @@ class AIHubDialog(QDialog):
                 )
             )
 
-        task_supervisor().start_thread(
-            self, "ai-hub-refresh", _worker, replace=True
-        )
+        run_async(self, _worker, name="ai-hub-refresh")
 
     def _apply_refresh_result(
         self,
@@ -820,16 +798,6 @@ class AIHubDialog(QDialog):
         if hasattr(self, "_settings_panel"):
             self._settings_panel.apply_data(self._rows, self._selected_category)
             self._settings_panel.select_component(component_id)
-
-    def _find_main_controller(self):
-        current = self.parent()
-        while current is not None:
-            controller = getattr(current, "main_controller", None)
-            if controller is not None:
-                return controller
-            current = current.parent() if hasattr(current, "parent") else None
-        window = self.window()
-        return getattr(window, "main_controller", None) if window is not None else None
 
     def _fetch_rows(
         self,
@@ -1027,13 +995,13 @@ class AIHubDialog(QDialog):
         for row in rows:
             card = ModelCard(
                 row,
-                on_install=lambda cid: self._emit_component_action_by_id(cid, Events.Installable.INSTALL),
-                on_uninstall=lambda cid: self._emit_component_action_by_id(cid, Events.Installable.UNINSTALL),
+                on_install=lambda cid: self._emit_component_action_by_id(cid, UiTopic.INSTALLABLE_INSTALL),
+                on_uninstall=lambda cid: self._emit_component_action_by_id(cid, UiTopic.INSTALLABLE_UNINSTALL),
                 on_open_settings=self._open_component_settings,
                 gpu_vendor=gpu_vendor,
                 parent=self._scroll_content,
                 on_reinstall=lambda cid: self._emit_component_action_by_id(
-                    cid, Events.Installable.INSTALL, extra={"clean": True}
+                    cid, UiTopic.INSTALLABLE_INSTALL, extra={"clean": True}
                 ),
             )
             self._component_cards.append(card)
@@ -1167,7 +1135,7 @@ class AIHubDialog(QDialog):
     def _install_cuda_backend(self) -> None:
         self._pending_category = "backend"
         self._pending_component_id = "backend:cuda"
-        self._emit_component_action_by_id("backend:cuda", Events.Installable.INSTALL)
+        self._emit_component_action_by_id("backend:cuda", UiTopic.INSTALLABLE_INSTALL)
 
     def _row_by_id(self, component_id: str) -> dict[str, Any] | None:
         for row in self._rows:
@@ -1194,16 +1162,10 @@ class AIHubDialog(QDialog):
             pass
 
         try:
-            from managers.settings_manager import SettingsManager
+            if bool(self.presentation.settings.get("VOICES_HINT_SHOWN", False)):
+                return
         except Exception:
-            SettingsManager = None  # type: ignore[assignment]
-
-        if SettingsManager is not None:
-            try:
-                if bool(SettingsManager.get("VOICES_HINT_SHOWN", False)):
-                    return
-            except Exception:
-                pass
+            pass
 
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
@@ -1222,12 +1184,11 @@ class AIHubDialog(QDialog):
         box.addButton(_("Понятно", "Got it"), QMessageBox.ButtonRole.RejectRole)
         box.exec()
 
-        if SettingsManager is not None:
-            try:
-                SettingsManager.set("VOICES_HINT_SHOWN", True)
-                SettingsManager.save()
-            except Exception:
-                pass
+        try:
+            self.presentation.settings.set("VOICES_HINT_SHOWN", True)
+            self.presentation.settings.save()
+        except Exception:
+            pass
 
         if box.clickedButton() is open_btn:
             self._select_category("voices")
@@ -1298,7 +1259,7 @@ class AIHubDialog(QDialog):
         return accepted
 
     def _task_id_for(self, component_id: str, event_name: str) -> str:
-        op = "uninstall" if event_name == Events.Installable.UNINSTALL else "install"
+        op = "uninstall" if event_name == UiTopic.INSTALLABLE_UNINSTALL else "install"
         return f"{component_id}:{op}"
 
     def _is_task_active(self, task_id: str) -> bool:
@@ -1327,8 +1288,7 @@ class AIHubDialog(QDialog):
         if attempt == 0 and key in self._pending_backend_actions:
             self._set_task_status(_("Backend уже подготавливается…", "Backend is already preparing…"))
             return
-        main_controller = self._main_controller or self._find_main_controller()
-        if main_controller is None:
+        if not self.presentation.app.backend_ready:
             self._pending_backend_actions.add(key)
             if attempt >= 100:
                 self._pending_backend_actions.discard(key)
@@ -1340,10 +1300,9 @@ class AIHubDialog(QDialog):
             ))
             return
 
-        self._main_controller = main_controller
         self._pending_backend_actions.discard(key)
         try:
-            future = main_controller.ensure_feature_async("installables")
+            future = self.presentation.app.ensure_feature_async("installables")
         except Exception as exc:
             self._pending_backend_actions.discard(key)
             logger.error(f"AI Hub installable backend failed to start: {exc}", exc_info=True)
@@ -1401,7 +1360,7 @@ class AIHubDialog(QDialog):
             return
 
         preview: dict[str, Any] | None = None
-        if event_name == Events.Installable.INSTALL:
+        if event_name == UiTopic.INSTALLABLE_INSTALL:
             try:
                 preview = self.catalog.install_preview(component_id)
             except Exception as exc:
@@ -1451,13 +1410,12 @@ class AIHubDialog(QDialog):
         if extra:
             payload.update(extra)
         try:
-            operations = services().get(InstallableOperationsService)
-            if event_name == Events.Installable.UNINSTALL:
-                admission = operations.uninstall(payload)
-            elif event_name == Events.Installable.INITIALIZE:
-                admission = operations.initialize(payload)
-            else:
-                admission = operations.install(payload)
+            action = (
+                "uninstall" if event_name == UiTopic.INSTALLABLE_UNINSTALL
+                else "initialize" if event_name == UiTopic.INSTALLABLE_INITIALIZE
+                else "install"
+            )
+            admission = self.catalog.admit(action, payload)
         except Exception as exc:
             logger.error(
                 f"Install task '{task_id}' admission raised: {exc}",
@@ -1527,7 +1485,7 @@ class AIHubDialog(QDialog):
             or row.get("name")
             or component_id
         )
-        if event_name == Events.Installable.UNINSTALL:
+        if event_name == UiTopic.INSTALLABLE_UNINSTALL:
             return _("Удаление: {name}", "Removing: {name}").format(name=component_title)
         if isinstance(extra, dict) and extra.get("clean"):
             return _("Переустановка: {name}", "Reinstalling: {name}").format(name=component_title)
@@ -1698,16 +1656,12 @@ class AIHubDialog(QDialog):
     def _cancel_queued(self, task_id: str) -> None:
         if not task_id:
             return
-        self.event_bus.emit(Events.Install.CANCEL_QUEUED, {"task_id": task_id})
+        self.catalog.cancel_queued(task_id)
 
     def _cancel_running(self, task_id: str) -> None:
         if not task_id:
             return
-        self.event_bus.emit(
-            Events.Install.CANCEL_RUNNING,
-            {"task_id": task_id},
-            delivery=EventDelivery.COMMAND,
-        )
+        self.catalog.cancel_running(task_id)
 
     def _is_installable_task(self, event) -> bool:
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}

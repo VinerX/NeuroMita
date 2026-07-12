@@ -11,20 +11,10 @@ from PyQt6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
-from core.services import use
-from services.contracts import EmbeddingPresetService
-
-from core.events import get_event_bus, Events
-from managers.settings_manager import SettingsManager
+from ui.presentation import UiSettingsDataKey, UiTopic
 from ui.widgets.settings_sections import InnerCollapsibleSection
-from ui.async_bus import dispatch_to_gui, run_async
+from ui.presentation import dispatch_ui as dispatch_to_gui, run_ui_async as run_async
 from ui.gui_templates import SettingsBodyWidget
-from ui.settings.data_prefetch import (
-    EMBED_PRESET_ITEMS,
-    embed_preset_items_from_meta,
-    get_cached_settings_data,
-    request_settings_data,
-)
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
@@ -46,7 +36,7 @@ class _EmbedProviderWidget(QWidget):
     def __init__(self, gui):
         super().__init__()
         self._gui = gui
-        self._bus = get_event_bus()
+        self._presentation = gui.presentation
         self._current_preset_id: Optional[Any] = None
         self._is_loading = False
         self._test_timer: Optional[QTimer] = None
@@ -54,11 +44,13 @@ class _EmbedProviderWidget(QWidget):
         self._load_ticket = 0
 
         self._setup_ui()
-        saved = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
+        saved = self._presentation.settings.get("RAG_EMBED_PRESET_ID", None)
         self._status_label.setText(_("Загрузка пресетов...", "Loading presets..."))
         self._load_presets(select_id=saved if saved is not None else "local_hf")
 
-        self._bus.subscribe(Events.EmbeddingPresets.TEST_RESULT, self._on_test_result, weak=False)
+        self._test_subscription = self._presentation.events.subscribe(
+            UiTopic.EMBEDDING_PRESET_TEST_RESULT, self._on_test_result, weak=False
+        )
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -306,7 +298,7 @@ class _EmbedProviderWidget(QWidget):
         target_id = select_id if select_id is not None else self._current_preset_id
 
         def _worker():
-            return self._preset_items_from_meta(use(EmbeddingPresetService).list_meta())
+            return self._preset_items_from_meta(self._presentation.embeddings.list_meta())
 
         def _apply(items):
             self._preset_combo.blockSignals(True)
@@ -328,14 +320,14 @@ class _EmbedProviderWidget(QWidget):
             items = self._preset_items_from_meta({})
             _apply(items)
 
-        cached = get_cached_settings_data(EMBED_PRESET_ITEMS, None)
+        cached = self._presentation.settings_data.get(UiSettingsDataKey.EMBED_PRESET_ITEMS, None)
         if cached is not None and not force:
             _apply(cached)
             return
 
-        request_settings_data(
+        self._presentation.settings_data.request(
             self._gui,
-            EMBED_PRESET_ITEMS,
+            UiSettingsDataKey.EMBED_PRESET_ITEMS,
             _worker,
             _apply,
             _error,
@@ -344,7 +336,7 @@ class _EmbedProviderWidget(QWidget):
         )
 
     def _preset_items_from_meta(self, meta) -> list[tuple[str, Any]]:
-        return embed_preset_items_from_meta(meta)
+        return self._presentation.settings_data.embed_preset_items_from_meta(meta)
 
     def _select_preset(self, preset_id: Any):
         idx = self._find_combo_index(preset_id)
@@ -399,7 +391,7 @@ class _EmbedProviderWidget(QWidget):
             if not cfg:
                 return
             self._current_preset_id = preset_id
-            SettingsManager.set("RAG_EMBED_PRESET_ID", preset_id)
+            self._presentation.settings.set("RAG_EMBED_PRESET_ID", preset_id)
 
             provider = cfg.get("provider_name") or "local"
             idx = self._provider_combo.findData(provider)
@@ -415,8 +407,7 @@ class _EmbedProviderWidget(QWidget):
             known = list(cfg.get("known_models") or [])
             if is_local:
                 try:
-                    from handlers.embedding_presets import list_preset_names
-                    known = [x for x in list_preset_names() if x != "Custom"]
+                    known = self._presentation.embeddings.local_model_names()
                 except Exception:
                     pass
             manual_path = bool((cfg.get("extra") or {}).get("manual_path"))
@@ -463,7 +454,7 @@ class _EmbedProviderWidget(QWidget):
 
             self._key_url = cfg.get("key_url") or ""
             self._key_url_btn.setVisible(bool(self._key_url) and not is_local)
-            self._hf_edit.setText(str(SettingsManager.get("HF_TOKEN", "") or ""))
+            self._hf_edit.setText(str(self._presentation.settings.get("HF_TOKEN", "") or ""))
             self._refresh_download_btn()
 
             self._provider_combo.setEnabled(not is_builtin)
@@ -480,7 +471,7 @@ class _EmbedProviderWidget(QWidget):
 
     def _fetch_cfg(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         try:
-            cfg = use(EmbeddingPresetService).get_full(preset_id)
+            cfg = self._presentation.embeddings.get_full(preset_id)
             if cfg and isinstance(cfg, dict):
                 return cfg
         except Exception:
@@ -537,8 +528,7 @@ class _EmbedProviderWidget(QWidget):
             self._model_label.setText(_("Модель / путь:", "Model / path:"))
         else:
             try:
-                from handlers.embedding_presets import list_preset_names
-                names = [x for x in list_preset_names() if x != "Custom"]
+                names = self._presentation.embeddings.local_model_names()
             except Exception:
                 names = []
             self._model_combo.addItems(names)
@@ -637,19 +627,19 @@ class _EmbedProviderWidget(QWidget):
             "query_prefix": prefix,
             "extra": extra,
         }
-        SettingsManager.set("HF_TOKEN", hf_token)
+        self._presentation.settings.set("HF_TOKEN", hf_token)
 
         self._save_btn.setEnabled(False)
         self._status_label.setStyleSheet("")
         self._status_label.setText(_("Сохранение...", "Saving..."))
 
         def _worker():
-            return use(EmbeddingPresetService).save(data)
+            return self._presentation.embeddings.save(data)
 
         def _apply(saved_id):
             self._save_btn.setEnabled(True)
             if saved_id is not None:
-                SettingsManager.set("RAG_EMBED_PRESET_ID", saved_id)
+                self._presentation.settings.set("RAG_EMBED_PRESET_ID", saved_id)
                 self._current_preset_id = saved_id
                 self._save_btn.setStyleSheet("")
                 self._load_presets(select_id=saved_id, force=True)
@@ -677,7 +667,7 @@ class _EmbedProviderWidget(QWidget):
         self._status_label.setText(_("Создание пресета...", "Creating preset..."))
 
         def _worker():
-            return use(EmbeddingPresetService).save(data)
+            return self._presentation.embeddings.save(data)
 
         def _apply(new_id):
             self._add_btn.setEnabled(True)
@@ -699,7 +689,7 @@ class _EmbedProviderWidget(QWidget):
         self._del_btn.setEnabled(False)
 
         def _worker():
-            return use(EmbeddingPresetService).delete(pid)
+            return self._presentation.embeddings.delete(pid)
 
         def _apply(_ok):
             self._del_btn.setEnabled(True)
@@ -733,7 +723,7 @@ class _EmbedProviderWidget(QWidget):
         self._down_btn.setEnabled(False)
 
         def _worker():
-            return use(EmbeddingPresetService).reorder(custom_ids)
+            return self._presentation.embeddings.reorder(custom_ids)
 
         def _apply(_ok):
             self._up_btn.setEnabled(True)
@@ -750,7 +740,9 @@ class _EmbedProviderWidget(QWidget):
         self._status_label.setStyleSheet("")
         self._status_label.setText(_("Тестирование...", "Testing..."))
         self._test_btn.setEnabled(False)
-        self._bus.emit(Events.EmbeddingPresets.TEST_PRESET, {"id": self._current_preset_id})
+        self._presentation.events.publish(
+            UiTopic.EMBEDDING_PRESET_TEST, {"id": self._current_preset_id}
+        )
         if self._test_timer:
             self._test_timer.stop()
         self._test_timer = QTimer(singleShot=True)
@@ -783,8 +775,7 @@ class _EmbedProviderWidget(QWidget):
     def _on_download_local_model(self):
         try:
             self._on_save()
-            from ui.settings.rag_memory_settings import _download_embed_model
-            _download_embed_model(self._gui)
+            self._presentation.rag.download_embed_model(self._gui)
         except Exception as e:
             self._status_label.setStyleSheet("color: red;")
             self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
@@ -798,8 +789,7 @@ class _EmbedProviderWidget(QWidget):
         if not is_local or manual:
             return
         try:
-            from ui.settings.rag_memory_settings import _is_embed_model_downloaded
-            if _is_embed_model_downloaded():
+            if self._presentation.rag.is_embed_model_downloaded():
                 self._download_btn.setText(_("Скачать заново", "Download again"))
             else:
                 self._download_btn.setText(_("Скачать модель", "Download model"))
@@ -811,8 +801,7 @@ class _EmbedProviderWidget(QWidget):
 
     def _refresh_index_status_async(self):
         def _worker():
-            from ui.settings.rag_memory_settings import _get_embed_status_text
-            return _get_embed_status_text()
+            return self._presentation.rag.embed_status_text()
 
         def _apply(text):
             self._status_label.setStyleSheet("")

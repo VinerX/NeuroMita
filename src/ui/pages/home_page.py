@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -29,8 +27,8 @@ from PyQt6.QtWidgets import (
 # дёргать GitHub на каждой активации главной страницы.
 _UPDATE_CHECK_THROTTLE_SEC = 600
 
-from core.events import Events
-from core.task_supervisor import task_supervisor
+from ui.presentation import run_ui_async as run_async
+from ui.presentation import UiTopic
 from main_logger import logger
 from utils import _
 from localization.live import tr_set
@@ -222,11 +220,6 @@ class HomePage(LauncherHomeBackground):
 
         self.progress_label = QLabel("")
         self.progress_label.setObjectName("LauncherHomeProgressLabel")
-        self.progress_label.setMinimumWidth(0)
-        self.progress_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Preferred,
-        )
         self.progress_label.setVisible(False)
         _progress_row.addWidget(self.progress_label, 1)
 
@@ -255,18 +248,16 @@ class HomePage(LauncherHomeBackground):
         if getattr(self.gui, "_home_install_signals_connected", False):
             return
         try:
-            self.gui.event_bus.subscribe(Events.Install.TASK_STARTED, self._on_install_started, weak=False)
-            self.gui.event_bus.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
-            self.gui.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
-            self.gui.event_bus.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
+            self.gui.presentation.events.subscribe(UiTopic.INSTALL_TASK_STARTED, self._on_install_started, weak=False)
+            self.gui.presentation.events.subscribe(UiTopic.INSTALL_TASK_PROGRESS, self._on_install_progress, weak=False)
+            self.gui.presentation.events.subscribe(UiTopic.INSTALL_TASK_FINISHED, self._on_install_finished, weak=False)
+            self.gui.presentation.events.subscribe(UiTopic.INSTALL_TASK_FAILED, self._on_install_failed, weak=False)
             self.gui._home_install_signals_connected = True
         except Exception as exc:
             logger.info(f"Install signals subscribe skipped: {exc}")
 
     def _get_release_news_items(self, limit: int = 3):
-        from ui.pages.news_support import build_release_news_items
-
-        return build_release_news_items(self.gui, limit=limit)
+        return self.gui.presentation.news.build_items(self.gui, limit=limit)
 
     def _build_home_update_chip(self) -> QFrame:
         card = QFrame()
@@ -339,22 +330,18 @@ class HomePage(LauncherHomeBackground):
 
         def worker():
             try:
-                from updater import get_python_update_info, get_unity_update_info
                 channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
-                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
                 unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
-
-                py_info = get_python_update_info(base_dir=base_dir, channel=channel)
-                unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+                py_info, unity_info = self.gui.presentation.home.update_info(
+                    channel=channel, unity_dir=unity_dir
+                )
                 self._queue_ui_call(lambda: self._apply_update_state(py_info, unity_info))
             except Exception as exc:
                 logger.warning(f"[home_update] background check failed: {exc}")
             finally:
                 self._update_check_inflight = False
 
-        task_supervisor().start_thread(
-            self, "home-update-check", worker, replace=True
-        )
+        run_async(self, worker, name="home-update-check")
 
     def _apply_update_state(self, py_info: dict | None, unity_info: dict | None):
         """Применить результат проверки к UI (вызывается на GUI-потоке)."""
@@ -545,37 +532,14 @@ class HomePage(LauncherHomeBackground):
             return _("Установлен", "Installed")
 
     def _get_unity_install_dir(self) -> Path:
-        unity_dir_setting = str(self.gui.settings.get("UNITY_INSTALL_DIR", "") or "")
-        if unity_dir_setting:
-            return Path(unity_dir_setting)
-
-        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
-        if base_dir:
-            return Path(base_dir) / "NeuroMita-Unity"
-        return Path(sys.argv[0]).resolve().parent / "NeuroMita-Unity"
+        return self.gui.presentation.home.unity_install_dir(
+            self.gui.settings.get("UNITY_INSTALL_DIR") or None
+        )
 
     def find_unity_executable(self) -> Path | None:
-        unity_dir = self._get_unity_install_dir()
-        if not unity_dir.exists() or not unity_dir.is_dir():
-            return None
-
-        # Ищем в корне и на один уровень вглубь (например UnityBuild/).
-        exe_files = list(unity_dir.glob("*.exe")) + list(unity_dir.glob("*/*.exe"))
-        if not exe_files:
-            return None
-
-        preferred = ("NeuroMita.exe", "NeuroMita-Unity.exe", "Unity.exe")
-        lower_map = {path.name.lower(): path for path in exe_files}
-        for name in preferred:
-            hit = lower_map.get(name.lower())
-            if hit is not None:
-                return hit
-
-        for path in exe_files:
-            low = path.name.lower()
-            if "neuromita" in low or "unity" in low:
-                return path
-        return exe_files[0]
+        return self.gui.presentation.home.find_unity_executable(
+            self.gui.settings.get("UNITY_INSTALL_DIR") or None
+        )
 
     def _get_unity_status(self) -> str:
         exe = self.find_unity_executable()
@@ -686,14 +650,15 @@ class HomePage(LauncherHomeBackground):
         return qta.icon(icon_name, color="#ffffff")
 
     def refresh_news_content(self):
-        from ui.pages.news_support import load_news_releases_async
-
         # Лента релизов грузится в фоне (load_news_releases_async), чтобы старт
         # главной страницы и кнопка обновления не морозили GUI при недоступном
         # GitHub. Перерисовка панели — в GUI-потоке через _queue_ui_call.
         if self._news_items_layout is None:
             return
-        load_news_releases_async(self.gui, lambda _releases: self._queue_ui_call(self._render_news_items))
+        self.gui.presentation.news.load_async(
+            self.gui,
+            lambda _releases: self._queue_ui_call(self._render_news_items),
+        )
 
     def _render_news_items(self):
         if self._news_items_layout is None:
@@ -819,15 +784,10 @@ class HomePage(LauncherHomeBackground):
             self.progress_label.setText(_("Отмена…", "Cancelling…"))
 
     def _open_unity_folder(self):
-        """Открывает папку установки Unity в проводнике."""
-        unity_dir = self._get_unity_install_dir()
         try:
-            unity_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        try:
-            import subprocess
-            subprocess.Popen(["explorer", str(unity_dir)])
+            self.gui.presentation.home.open_unity_folder(
+                self.gui.settings.get("UNITY_INSTALL_DIR") or None
+            )
         except Exception as exc:
             logger.error(f"Не удалось открыть папку Unity: {exc}")
 
@@ -839,13 +799,11 @@ class HomePage(LauncherHomeBackground):
 
         def check_worker():
             try:
-                from updater import get_python_update_info, get_unity_update_info
                 channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
-                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
                 unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
-
-                py_info = get_python_update_info(base_dir=base_dir, channel=channel)
-                unity_info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
+                py_info, unity_info = self.gui.presentation.home.update_info(
+                    channel=channel, unity_dir=unity_dir
+                )
 
                 # Обновляем чекбоксы на карточках и баннер-обнову.
                 self.gui._home_update_check_ts = time.monotonic()
@@ -876,9 +834,7 @@ class HomePage(LauncherHomeBackground):
             finally:
                 self._queue_ui_call(lambda: QTimer.singleShot(4000, self.hide_progress))
 
-        task_supervisor().start_thread(
-            self, "home-update-manual-check", check_worker, replace=True
-        )
+        run_async(self, check_worker, name="home-update-manual-check")
 
     def run_primary_action(self):
         if self._has_pending_python_restart():
@@ -896,14 +852,10 @@ class HomePage(LauncherHomeBackground):
             return
 
         try:
-            import subprocess
-
-            subprocess.Popen(
-                [str(exe)],
-                cwd=str(exe.parent),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            launched = self.gui.presentation.home.launch_unity(
+                self.gui.settings.get("UNITY_INSTALL_DIR") or None
             )
-            logger.info(f"Запущен Unity: {exe}")
+            logger.info(f"Запущен Unity: {launched}")
         except Exception as exc:
             logger.error(f"Не удалось запустить Unity: {exc}")
             QMessageBox.warning(
@@ -1041,23 +993,21 @@ class HomePage(LauncherHomeBackground):
         def worker():
             logger.info("[home_install] Unity install action started")
             try:
-                from updater import check_for_unity_updates, get_unity_update_info
-
                 channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
                 tester_code = self.gui.settings.get("TESTER_CODE") or None
-                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
                 unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
 
-                logger.info(
-                    f"[home_install] params: channel={channel}, base_dir={base_dir}, "
-                    f"unity_dir={unity_dir}, tester_code={'set' if tester_code else 'empty'}"
+                result = self.gui.presentation.home.install_unity(
+                    channel=channel,
+                    tester_code=tester_code,
+                    unity_dir=unity_dir,
+                    logger_adapter=ui_log,
+                    on_progress=on_progress,
+                    on_extract_progress=on_extract_progress,
+                    stop_event=cancel_event,
                 )
-
-                info = get_unity_update_info(base_dir=base_dir, unity_dir=unity_dir, channel=channel)
-                logger.info(f"[home_install] update info: {info}")
-                if not info or not info.get("ok"):
-                    err = (info or {}).get("error") or _("неизвестная ошибка", "unknown error")
-                    logger.warning(f"[home_install] check failed: {err}")
+                if not result.get("ok"):
+                    err = result.get("error") or _("неизвестная ошибка", "unknown error")
                     self._queue_ui_call(
                         lambda e=err: self.set_progress(
                             _("Ошибка проверки: {err}", "Check error: {err}").format(err=e),
@@ -1065,29 +1015,13 @@ class HomePage(LauncherHomeBackground):
                         )
                     )
                     return
-
-                if not info.get("available") and self.find_unity_executable() is not None:
-                    logger.info("[home_install] Unity already up-to-date and installed")
+                if result.get("already_installed"):
                     self._queue_ui_call(
                         lambda: self.set_progress(_("Unity уже установлен.", "Unity already installed."), 100, 100, busy=False)
                     )
                     return
 
-                logger.info("[home_install] Calling check_for_unity_updates(auto_update=True)")
-                check_for_unity_updates(
-                    base_dir=base_dir,
-                    logger=ui_log,
-                    unity_dir=unity_dir,
-                    channel=channel,
-                    tester_code=tester_code,
-                    on_progress=on_progress,
-                    on_extract_progress=on_extract_progress,
-                    auto_update=True,
-                    stop_event=cancel_event,
-                )
-                logger.info("[home_install] check_for_unity_updates finished")
-
-                if cancel_event.is_set():
+                if result.get("cancelled"):
                     self._queue_ui_call(
                         lambda: self.set_progress(_("Установка отменена.", "Installation cancelled."), 0, 100, busy=False)
                     )
@@ -1117,14 +1051,10 @@ class HomePage(LauncherHomeBackground):
 
                 self._queue_ui_call(done)
 
-        task_supervisor().start_thread(
-            self, "home-primary-action", worker, replace=True
-        )
+        run_async(self, worker, name="home-primary-action")
 
     def _prompt_restart_after_update(self) -> bool:
         """Спросить про перезапуск после применения Python-обновления."""
-        from utils.app_restart import restart_app
-
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(_("Обновление установлено", "Update installed"))
@@ -1139,7 +1069,7 @@ class HomePage(LauncherHomeBackground):
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() == QMessageBox.StandardButton.Yes:
-            return bool(restart_app())
+            return bool(self.gui.presentation.home.restart_application())
         return False
 
     def run_selective_update(self):
@@ -1247,46 +1177,32 @@ class HomePage(LauncherHomeBackground):
             logger.info(f"[home_update] selective update started: py={want_py}, unity={want_unity}")
             py_applied = False
             try:
-                from updater import check_for_unity_updates, check_for_updates
-
                 channel = self.gui.settings.get("UPDATE_CHANNEL", "stable")
-                base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
                 unity_dir = self.gui.settings.get("UNITY_INSTALL_DIR") or None
-
-                # Python — первым: лёгкий и требует перезапуска, не ждём Unity.
                 if want_py:
                     self._queue_ui_call(
                         lambda: self.set_progress(_("Обновление Python…", "Updating Python…"), 0, 0, busy=True)
                     )
-                    py_applied = bool(check_for_updates(
-                        base_dir=base_dir,
-                        logger=ui_log,
-                        channel=channel,
-                        tester_code=tester_code,
-                        on_progress=on_progress,
-                        auto_update=True,
-                        restart_on_success=False,
-                        update_mode=(self.gui.settings.get("UPDATE_MODE", "diff") or "diff"),
-                        preserve_prompts=bool(self.gui.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
-                    ))
-
-                if want_unity and not cancel_event.is_set():
+                elif want_unity:
                     self._queue_ui_call(
                         lambda: self.set_progress(_("Обновление Unity…", "Updating Unity…"), 0, 0, busy=True)
                     )
-                    check_for_unity_updates(
-                        base_dir=base_dir,
-                        logger=ui_log,
-                        unity_dir=unity_dir,
-                        channel=channel,
-                        tester_code=tester_code,
-                        on_progress=on_progress,
-                        on_extract_progress=on_extract_progress,
-                        auto_update=True,
-                        stop_event=cancel_event,
-                    )
+                result = self.gui.presentation.home.apply_updates(
+                    update_python=want_py,
+                    update_unity=want_unity,
+                    channel=channel,
+                    tester_code=tester_code,
+                    unity_dir=unity_dir,
+                    update_mode=(self.gui.settings.get("UPDATE_MODE", "diff") or "diff"),
+                    preserve_prompts=bool(self.gui.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
+                    logger_adapter=ui_log,
+                    on_progress=on_progress,
+                    on_extract_progress=on_extract_progress,
+                    stop_event=cancel_event,
+                )
+                py_applied = bool(result.get("python_applied"))
 
-                if cancel_event.is_set():
+                if result.get("cancelled"):
                     self._queue_ui_call(
                         lambda: self.set_progress(_("Установка отменена.", "Installation cancelled."), 0, 100, busy=False)
                     )
@@ -1327,9 +1243,7 @@ class HomePage(LauncherHomeBackground):
 
                 self._queue_ui_call(done)
 
-        task_supervisor().start_thread(
-            self, "home-update-apply", worker, replace=True
-        )
+        run_async(self, worker, name="home-update-apply")
 
 
 def build_home_page(window) -> QWidget:

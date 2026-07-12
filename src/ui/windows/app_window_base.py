@@ -1,6 +1,4 @@
-import base64
 import os
-import uuid
 from pathlib import Path
 
 from PyQt6.QtCore import (
@@ -15,7 +13,6 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QDesktopServices, QIcon, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
-    QDialog,
     QFileDialog,
     QFrame,
     QLabel,
@@ -27,30 +24,15 @@ from PyQt6.QtWidgets import (
 )
 
 import ui.gui_templates as gui_templates
-from core.events import Events, get_event_bus
-from core.services import services, use
 from localization.live import tr_set
 from main_logger import logger
-from services.contracts import (
-    CaptureService,
-    CharacterRegistry,
-    GameLinkService,
-    LocalVoiceService,
-    ModelStateService,
-    SettingsService,
-    SpeechService,
-    TelegramService,
-)
-from ui.async_bus import run_async
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
 from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
-from ui.window_manager import WindowManager
 from ui.widgets import chat_panel
 from ui.widgets.chat_panel import hide_image_preview_bar
 from ui.widgets.overlay_widget import OverlayWidget
-from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
 
 
@@ -115,21 +97,14 @@ class AppWindowBase(QMainWindow):
     # microphone_settings.py
     asr_set_pill = pyqtSignal(dict)
 
-    def __init__(self, settings):
+    def __init__(self, settings, *, presentation):
         super().__init__()
         self.settings = settings
+        self.presentation = presentation
         self.settings_view_model = None
         self.settings_binding = None
-        try:
-            from ui.settings.settings_binding import QtSettingsViewModel
-
-            self.settings_view_model = QtSettingsViewModel(use(SettingsService), self)
-            self.settings_binding = self.settings_view_model
-        except Exception:
-            self.settings_view_model = None
-            self.settings_binding = None
-        self.backend_ready = False
-        self.backend_startup_error = ""
+        self.shell_controller = None
+        self.window_controller = None
 
         try:
             self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
@@ -137,9 +112,7 @@ class AppWindowBase(QMainWindow):
             self.SETTINGS_PANEL_WIDTH = 520
         self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
 
-        self.event_bus = get_event_bus()
         self._connect_signals()
-        self._init_window_manager()
 
         self.voice_language_var = None
         self.local_voice_combobox = None
@@ -202,9 +175,7 @@ class AppWindowBase(QMainWindow):
         init_image_preview(self)
 
         try:
-            from ui.settings import microphone_settings
-
-            microphone_settings.load_mic_settings(self)
+            self.presentation.settings_sections.load_microphone(self)
         except Exception as e:
             logger.info(f"Не удалось удачно получить настройки микрофона: {e}")
 
@@ -238,43 +209,6 @@ class AppWindowBase(QMainWindow):
             self.settings_animation.setTargetObject(target)
         return self.settings_animation
 
-    def _window_specs(self) -> dict:
-        return {
-            "ai_hub": {
-                "factory": self._factory_ai_hub_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False,
-                "on_ready": self._on_ai_hub_dialog_ready,
-            },
-            "voice_models": {
-                "factory": self._factory_voice_models_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False
-            },
-            "asr_glossary": {
-                "factory": self._factory_asr_glossary_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False,
-            },
-
-            # Blocking dialogs (used by VoiceModelGuiController via show_dialog_blocking)
-            "vc_redist_dialog": {
-                "factory": self._factory_vc_redist_dialog,
-                "singleton": False,
-                "hide_on_close": False,
-                "modal": True,
-            },
-            "triton_deps_dialog": {
-                "factory": self._factory_triton_deps_dialog,
-                "singleton": False,
-                "hide_on_close": False,
-                "modal": True,
-            },
-        }
-
     def _connect_signals(self):
         self.history_loaded_signal.connect(self._on_history_loaded)
         self.more_history_loaded_signal.connect(self._on_more_history_loaded)
@@ -299,191 +233,53 @@ class AppWindowBase(QMainWindow):
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
-
-        self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
-
         self.run_ui_task_signal.connect(
             self._run_ui_task_slot,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
-
-        # Окно установки.
-        self.create_installation_window_signal.connect(
-            self._on_create_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        self.close_installation_window_signal.connect(
-            self._on_close_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        self.finalize_installation_window_signal.connect(
-            self._on_finalize_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        # Текущее окно установки (живёт, пока задача не завершена; может быть
-        # свёрнуто пользователем и открыто снова через сайдбар).
-        self._active_install_window = None
-
         self.asr_install_progress_signal.connect(
             self._on_asr_install_progress,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
         self.asr_install_finished_signal.connect(
             self._on_asr_install_finished,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
         self.asr_install_failed_signal.connect(
             self._on_asr_install_failed,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
 
     def _run_ui_task_slot(self, fn):
         try:
             if callable(fn):
                 fn()
-        except Exception as e:
-            logger.error(f"_run_ui_task_slot error: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"_run_ui_task_slot error: {exc}", exc_info=True)
 
-    def _init_window_manager(self):
-        self.window_manager = WindowManager(parent=self)
+    def attach_shell_controller(self, controller) -> None:
+        self.shell_controller = controller
 
-        for window_id, spec in self._window_specs().items():
-            self.window_manager.register_dialog(
-                window_id,
-                factory=spec["factory"],
-                singleton=spec.get("singleton", True),
-                hide_on_close=spec.get("hide_on_close", True),
-                modal=spec.get("modal", False),
-                on_ready=spec.get("on_ready", None),
-            )
+    def attach_window_controller(self, controller) -> None:
+        self.window_controller = controller
 
-    def _factory_voice_models_dialog(self, parent, payload: dict):
-        dialog = QDialog(parent)
-        dialog.setWindowTitle(_("Управление локальными моделями", "Manage Local Models"))
-        dialog.setModal(False)
-        dialog.resize(875, 800)
+    def attach_settings_binding(self, binding) -> None:
+        self.settings_view_model = binding
+        self.settings_binding = binding
 
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(0, 0, 0, 0)
-        dialog_layout.setSpacing(0)
-
-        return dialog
-
-    def _factory_ai_hub_dialog(self, parent, payload: dict):
-        from ui.windows.ai_hub_window import AIHubDialog
-
-        return AIHubDialog(parent)
-
-    def _on_ai_hub_dialog_ready(self, dialog, payload: dict):
-        if hasattr(dialog, "apply_payload"):
-            dialog.apply_payload(payload if isinstance(payload, dict) else {})
-
-    def _factory_asr_glossary_dialog(self, parent, payload: dict):
-        dialog = QDialog(parent)
-        dialog.setWindowTitle(_("ASR модели", "ASR Models"))
-        dialog.setModal(False)
-        dialog.resize(900, 650)
-        lay = QVBoxLayout(dialog)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        return dialog
-
-    def _factory_vc_redist_dialog(self, parent, payload: dict):
-        from ui.windows.voice_action_windows import VCRedistWarningDialog
-        return VCRedistWarningDialog(parent=parent)
-
-    def _factory_triton_deps_dialog(self, parent, payload: dict):
-        from ui.windows.voice_action_windows import TritonDependenciesDialog
-        deps = payload.get("dependencies_status") or payload.get("deps") or {}
-        return TritonDependenciesDialog(parent=parent, dependencies_status=deps)
-
-    def _create_dialog_for_voice_model(self, data):
-        if not hasattr(self, "window_manager") or self.window_manager is None:
-            return
-        payload = data if isinstance(data, dict) else {}
-        payload = dict(payload)
-        payload.setdefault("category", "tts")
-        self.window_manager.show_dialog("ai_hub", payload)
-
-    def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
-        win = VoiceInstallationWindow(self, title, initial_status)
-        self._active_install_window = win
-
+    def refresh_backend_state(self) -> None:
         try:
-            win.minimized.connect(lambda: self._set_install_logs_button_visible(True))
-            win.window_closed.connect(lambda w=win: self._on_install_window_closed(w))
+            chat_panel.update_send_button_state(self)
         except Exception:
             pass
-
-        # Кнопка «Логи установки» в сайдбаре — чтобы вернуться к окну,
-        # если пользователь его закрыл (свернул).
-        self._set_install_logs_button_visible(True)
-
-        win.show()
-
-        holder["window"] = win
-        if hasattr(win, "get_threadsafe_callbacks"):
-            holder["callbacks"] = win.get_threadsafe_callbacks()
-        else:
-            holder["callbacks"] = (win.update_progress, win.update_status, win.update_log)
-
-        ev = holder.get("ready_event")
-        if ev is not None and hasattr(ev, "set"):
-            try:
-                ev.set()
-            except Exception:
-                pass
-
-    def _on_close_installation_window(self, win_obj: object):
-        try:
-            if win_obj is None:
-                return
-            if hasattr(win_obj, "finalize"):
-                win_obj.finalize()
-            win_obj.close()
-        except Exception:
-            pass
-
-    def _on_finalize_installation_window(self, win_obj: object, close_now: bool):
-        try:
-            if win_obj is None:
-                return
-            if hasattr(win_obj, "finalize"):
-                win_obj.finalize()
-            if close_now:
-                win_obj.close()
-        except Exception:
-            pass
-
-    def _on_install_window_closed(self, win_obj: object):
-        # Окно действительно закрыто (задача завершена) — убираем ссылку и
-        # прячем кнопку повторного открытия.
-        if win_obj is self._active_install_window:
-            self._active_install_window = None
-            self._set_install_logs_button_visible(False)
+        app = self.presentation.app
+        if not app.backend_ready and app.startup_error and hasattr(self, "_set_home_progress"):
+            self._set_home_progress(app.startup_error, 0, 1, busy=False)
 
     def _on_reopen_install_logs(self):
-        win = getattr(self, "_active_install_window", None)
-        if win is None:
-            self._set_install_logs_button_visible(False)
-            return
-        try:
-            win.show()
-            win.raise_()
-            win.activateWindow()
-        except Exception:
-            pass
-
-    def _set_install_logs_button_visible(self, visible: bool):
-        sidebar = getattr(self, "shell_sidebar", None)
-        if sidebar is not None and hasattr(sidebar, "set_install_logs_visible"):
-            try:
-                sidebar.set_install_logs_visible(bool(visible))
-            except Exception:
-                pass
+        controller = self.window_controller
+        if controller is not None:
+            controller.reopen_install_logs()
 
     def setup_ui(self):
         raise NotImplementedError("AppWindowBase.setup_ui() must be implemented by a concrete window class.")
@@ -618,7 +414,9 @@ class AppWindowBase(QMainWindow):
         try:
             self.clear_chat_display()
             logger.debug("[Load] Эмитим LOAD_HISTORY")
-            self.event_bus.emit(Events.Model.LOAD_HISTORY)
+            if self.shell_controller is None:
+                raise RuntimeError("Shell controller is not attached")
+            self.shell_controller.load_history()
             QTimer.singleShot(15000, self._recover_stalled_history_load)
             logger.debug("[Load] load_chat_history: конец")
             return True
@@ -762,10 +560,6 @@ class AppWindowBase(QMainWindow):
         self._debug_refresh_ticket += 1
         ticket = self._debug_refresh_ticket
 
-        def worker():
-            model = services().get_optional(ModelStateService)
-            return model.debug_info() if model is not None else "Debug info not available"
-
         def apply(debug_info):
             if ticket != self._debug_refresh_ticket:
                 return
@@ -773,7 +567,8 @@ class AppWindowBase(QMainWindow):
                 self.debug_window.clear()
                 self.debug_window.insertPlainText(str(debug_info or "Debug info not available"))
 
-        run_async(self, worker, apply, name="app-debug-info")
+        if self.shell_controller is not None:
+            self.shell_controller.request_debug_info(apply)
 
         # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
         # а не "Debug info not available". См. _refresh_logs_view().
@@ -806,15 +601,11 @@ class AppWindowBase(QMainWindow):
             self._token_refresh_ticket += 1
             ticket = self._token_refresh_ticket
 
-            def worker():
-                model = services().get_optional(ModelStateService)
-                stats = model.token_stats() if model is not None else {}
-                return {
-                    "stats": stats,
+            def apply(stats: dict):
+                payload = {
+                    "stats": stats or {},
                     "max_model_tokens": int(self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000),
                 }
-
-            def apply(payload: dict):
                 if ticket != self._token_refresh_ticket:
                     return
 
@@ -853,7 +644,8 @@ class AppWindowBase(QMainWindow):
                 current_label.setVisible(True)
                 self.update_debug_info()
 
-            run_async(self, worker, apply, name="app-token-stats")
+            if self.shell_controller is not None:
+                self.shell_controller.request_token_stats(apply)
             return
         else:
             label.setVisible(False)
@@ -865,234 +657,75 @@ class AppWindowBase(QMainWindow):
         self._chat_font_size = font_size
 
     def clear_chat_display(self):
-        chat_window = getattr(self, "chat_window", None)
-        if chat_window is None:
+        if self.shell_controller is None:
             return False
-        logger.debug("[Clear] clear_chat_display: начало")
-        logger.debug(f"[Clear] chat_window.message_count: {chat_window.message_count()}")
-        chat_window.clear_messages()
-        logger.debug("[Clear] Сообщения очищены")
-        self.event_bus.emit(Events.Chat.CLEAR_CHAT)
-        logger.debug("[Clear] clear_chat_display: конец")
+        self.shell_controller.clear_chat()
         return True
 
-    @staticmethod
-    def _dedupe_images(image_list):
-        """Убрать дубли изображений по содержимому, сохранив порядок (#14).
+    def render_chat_cleared(self) -> None:
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            return
+        logger.debug("[Clear] chat_window.message_count: %s", chat_window.message_count())
+        chat_window.clear_messages()
 
-        Одно и то же изображение могло прийти из нескольких источников
-        (прикреплённое вручную + авто-кадр экрана/камеры) и попадало в чат
-        дважды. Сравниваем по байтам (bytes хешируемы), не-байтовые элементы
-        пропускаем как есть.
-        """
-        seen = set()
-        result = []
-        for img in image_list or []:
-            if isinstance(img, (bytes, bytearray)):
-                key = bytes(img)
-                if key in seen:
-                    continue
-                seen.add(key)
-            result.append(img)
-        return result
+    def user_input_text(self) -> str:
+        entry = getattr(self, "user_entry", None)
+        return entry.toPlainText().strip() if entry is not None else ""
 
-    @staticmethod
-    def _merge_explicit_and_entry_text(explicit_text: str, entry_text: str, *, merge_with_entry: bool) -> tuple[str, bool]:
-        explicit = str(explicit_text or "").strip()
-        draft = str(entry_text or "").strip()
-        if not merge_with_entry or not draft:
-            return explicit, False
-        if not explicit:
-            return draft, True
-        return f"{explicit}\n{draft}", True
+    def staged_images_snapshot(self) -> list:
+        return list(self.staged_image_data)
+
+    def show_send_error(self, message: str) -> None:
+        logger.info(message)
+        self.show_error_signal.emit(str(message))
+
+    def render_outgoing_message(
+        self,
+        *,
+        user_input: str,
+        image_content: list,
+        message_id: str,
+        clear_entry: bool,
+    ) -> None:
+        if user_input:
+            message_renderer.insert_message(self, "user", user_input, message_id=message_id)
+        if image_content:
+            message_renderer.insert_message(self, "user", image_content, message_id=message_id)
+        if clear_entry and self.user_entry is not None:
+            self.user_entry.clear()
+
+    def show_thinking_now(self) -> None:
+        self.show_thinking_signal.emit(self._get_character_name())
+
+    def clear_staged_images_view(self) -> None:
+        self.staged_image_data.clear()
+        if self.image_preview_bar:
+            self.image_preview_bar.clear()
+            hide_image_preview_bar(self)
 
     def send_message(
         self,
         system_input: str = "",
-        image_data: list[bytes] = None,
-        user_input: str = None,
+        image_data: list[bytes] | None = None,
+        user_input: str | None = None,
         merge_input_from_entry: bool = False,
     ):
-        if not self.backend_ready:
-            message = self.backend_startup_error or _(
-                "Backend ещё запускается. Повторите отправку после завершения инициализации.",
-                "The backend is still starting. Retry after initialization completes.",
-            )
-            logger.info(message)
-            self.show_error_signal.emit(message)
+        if self.shell_controller is None:
+            self.show_send_error(_("Backend недоступен.", "Backend is unavailable."))
             return False
-
-        # user_input=None → берём из поля ввода (обычная отправка). Задан явно
-        # (напр. мгновенная отправка из ASR) — используем его и не трогаем поле.
-        from_entry = user_input is None
-        clear_entry_after_send = False
-        if from_entry:
-            user_input = self.user_entry.toPlainText().strip()
-            clear_entry_after_send = bool(user_input)
-        else:
-            entry_text = self.user_entry.toPlainText().strip() if self.user_entry else ""
-            user_input, clear_entry_after_send = self._merge_explicit_and_entry_text(
-                user_input,
-                entry_text,
-                merge_with_entry=merge_input_from_entry,
-            )
-        staged_image_data = self.staged_image_data.copy()
-        character_id = use(CharacterRegistry).current_id()
-
-        auto_screen = bool(self._get_setting("AUTO_ATTACH_IMAGES", False))
-        auto_camera = bool(self._get_setting("ENABLE_CAMERA_CAPTURE", False))
-
-        if not (auto_screen or auto_camera):
-            # Захватывать нечего — не платим за поток и не откладываем отрисовку.
-            self._finish_send_message(
-                user_input=user_input,
-                system_input=system_input,
-                explicit_image_data=list(image_data or []),
-                screen_frames=[],
-                camera_frames=[],
-                staged_image_data=staged_image_data,
-                character_id=character_id,
-                from_entry=from_entry,
-                clear_entry_after_send=clear_entry_after_send,
-            )
-            return
-
-        # Захват экрана/камеры делался прямо в GUI-потоке с таймаутами 5с и 2с:
-        # до семи секунд замороженного интерфейса на каждую отправку.
-        def worker():
-            return self._capture_frames_for_send(auto_screen, auto_camera)
-
-        def apply(frames):
-            screen_frames, camera_frames = frames
-            self._finish_send_message(
-                user_input=user_input,
-                system_input=system_input,
-                explicit_image_data=list(image_data or []),
-                screen_frames=screen_frames,
-                camera_frames=camera_frames,
-                staged_image_data=staged_image_data,
-                character_id=character_id,
-                from_entry=from_entry,
-                clear_entry_after_send=clear_entry_after_send,
-            )
-
-        run_async(self, worker, apply, name="app-send-capture")
-
-    def _capture_frames_for_send(self, auto_screen: bool, auto_camera: bool):
-        """Собрать кадры экрана/камеры. Вызывается вне GUI-потока."""
-        screen_frames: list = []
-        camera_frames: list = []
-
-        if auto_screen:
-            history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
-            # Запас времени на one-shot захват экрана (grab+resize+JPEG).
-            capture = services().get_optional(CaptureService)
-            frames = capture.capture_screen(history_limit) if capture is not None else []
-            if frames:
-                screen_frames.extend(frames)
-            else:
-                logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
-
-        if auto_camera:
-            history_limit = int(self._get_setting("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
-            capture = services().get_optional(CaptureService)
-            frames = capture.camera_frames(history_limit) if capture is not None else []
-            if frames:
-                camera_frames.extend(frames)
-                logger.info(f"Добавлено {len(frames)} кадров с камеры для отправки.")
-            else:
-                logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
-
-        return screen_frames, camera_frames
-
-    def _finish_send_message(
-        self,
-        *,
-        user_input: str,
-        system_input: str,
-        explicit_image_data: list,
-        screen_frames: list,
-        camera_frames: list,
-        staged_image_data: list,
-        character_id: str,
-        from_entry: bool,
-        clear_entry_after_send: bool,
-    ):
-        """Отрисовка сообщения и отправка. Всегда в GUI-потоке."""
-        image_data = explicit_image_data
-        current_image_data = list(screen_frames)
-        all_image_data = list(image_data) + current_image_data + staged_image_data + list(camera_frames)
-
-        if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
-            all_image_data = []
-            logger.info("ENABLE_IMAGE_ANALYSIS отключен — изображения не отправляются.")
-
-        # #14: одно изображение могло попасть в список дважды (напр. и как
-        # прикреплённое вручную, и как авто-кадр экрана) и рисовалось в чате
-        # два раза, хотя в истории сохранялась одна копия. Дедупим по
-        # содержимому, сохраняя порядок — одна копия и в UI, и в отправке.
-        all_image_data = self._dedupe_images(all_image_data)
-
-        if not user_input and not system_input and not all_image_data:
-            return
-
-        # Generate req_id now so we can pre-compute the user message_id for the widget
-        req_id = uuid.uuid4().hex
-        user_message_id = f"in:{req_id}"
-
-        if user_input:
-            message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
-            if from_entry or clear_entry_after_send:
-                self.user_entry.clear()
-
-        if all_image_data:
-            image_content_for_display = [{"type": "image_url", "image_url": {
-                "url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"}} for img in all_image_data]
-
-            if not user_input:
-                label = _("<Изображения>", "<Images>")
-                if staged_image_data and not current_image_data and not (image_data or []):
-                    label = _("<Прикрепленные изображения>", "<Attached Images>")
-                elif (current_image_data or (image_data or [])) and not staged_image_data:
-                    label = _("<Изображение экрана>", "<Screen Image>")
-
-                image_content_for_display.insert(0, {"type": "text", "content": label + "\n"})
-
-            message_renderer.insert_message(self, "user", image_content_for_display,
-                                            message_id=user_message_id)
-
-        self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-            "user_input": user_input,
-            "system_input": system_input,
-            "image_data": all_image_data,
-            "character_id": character_id,
-            "sender": "Player",
-            "req_id": req_id,
-            # Изображения уже показаны в чате выше — не дублировать эхом в
-            # async_send_message (иначе картинка рисуется дважды).
-            "images_shown": bool(all_image_data),
-        })
-
-        # #10: показываем «думает» сразу при отправке, не дожидаясь конца
-        # подготовки контекста (RAG/промпт), из-за которой ON_STARTED прилетает
-        # с заметной задержкой — казалось, что запрос не ушёл. Повторный
-        # ON_STARTED с тем же именем безопасен (show_thinking его гасит).
-        try:
-            self.show_thinking_signal.emit(self._get_character_name())
-        except Exception:
-            pass
-
-        if staged_image_data:
-            self.event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
-            self.staged_image_data.clear()
-            if self.image_preview_bar:
-                self.image_preview_bar.clear()
-                hide_image_preview_bar(self)
+        return self.shell_controller.send_message(
+            system_input=system_input,
+            image_data=image_data,
+            user_input=user_input,
+            merge_input_from_entry=merge_input_from_entry,
+        )
 
     def load_more_history(self):
         if getattr(self, "chat_window", None) is None:
             return False
-        self.event_bus.emit(Events.Model.LOAD_MORE_HISTORY)
+        if self.shell_controller is not None:
+            self.shell_controller.load_more_history()
         return True
 
     def _on_more_history_loaded(self, data: dict):
@@ -1126,7 +759,7 @@ class AppWindowBase(QMainWindow):
             binding.set(key, value)
             return
         try:
-            use(SettingsService).update(key, value)
+            self.presentation.settings.set(key, value)
         except Exception:
             self.settings.set(key, value)
 
@@ -1148,29 +781,16 @@ class AppWindowBase(QMainWindow):
 
     def closeEvent(self, event):
         try:
-            main_controller = getattr(self, "main_controller", None)
-            if main_controller is not None:
-                main_controller.close_app()
-            else:
-                self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)
-                self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
-                self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
-                self.event_bus.emit(Events.Server.STOP_SERVER)
+            if self.shell_controller is not None:
+                self.shell_controller.close_application()
         except Exception as exc:
             logger.error(f"Ошибка при закрытии приложения: {exc}", exc_info=True)
 
         try:
-            if hasattr(self, "window_manager") and self.window_manager:
-                self.window_manager.close_all(destroy=True)
+            if self.window_controller is not None:
+                self.window_controller.close()
         except Exception:
             pass
-
-        binding = getattr(self, "settings_binding", None)
-        if binding is not None:
-            try:
-                binding.close()
-            except Exception:
-                pass
 
         logger.info("Закрываемся")
         event.accept()
@@ -1219,12 +839,18 @@ class AppWindowBase(QMainWindow):
 
     def _on_show_tg_code_dialog(self, data: dict):
         show_tg_code_dialog(
-            self, str(data.get("request_id") or ""), error=data.get("error", "")
+            self,
+            self.presentation.telegram,
+            str(data.get("request_id") or ""),
+            error=data.get("error", ""),
         )
 
     def _on_show_tg_password_dialog(self, data: dict):
         show_tg_password_dialog(
-            self, str(data.get("request_id") or ""), error=data.get("error", "")
+            self,
+            self.presentation.telegram,
+            str(data.get("request_id") or ""),
+            error=data.get("error", ""),
         )
 
     def _on_chat_anchor_clicked(self, url):
@@ -1256,8 +882,7 @@ class AppWindowBase(QMainWindow):
             self.mita_status.pulse_error_animation()
 
     def _show_voicing_slot(self, payload=None):
-        # Keep the signal wired for compatibility; voicing is rendered on the
-        # message bubble instead of the global status bar.
+        # Voicing is rendered on the message bubble rather than the global status bar.
         # Подсветить конкретный пузырь, который сейчас озвучивается.
         message_id = payload.get("message_id") if isinstance(payload, dict) else None
         if message_id and getattr(self, "chat_window", None):
@@ -1282,8 +907,7 @@ class AppWindowBase(QMainWindow):
         pass
 
     def _on_stream_finish(self, _data=None):
-        print("[DEBUG] Стрим завершен, скрываем статус")
-        self.event_bus.emit(Events.GUI.HIDE_MITA_STATUS)
+        self._hide_status_slot()
 
     def _on_reload_prompts_success(self):
         QMessageBox.information(self, _("Успешно", "Success"),
@@ -1300,7 +924,7 @@ class AppWindowBase(QMainWindow):
                   "Failed to download prompts from GitHub. Check your internet connection."))
 
     def _show_loading_popup(self, message):
-        self.event_bus.emit(Events.GUI.SHOW_LOADING_POPUP, {"message": message})
+        self._on_display_loading_popup({"message": message})
 
     def _on_display_loading_popup(self, data: dict):
         message = data.get('message', 'Loading...')
@@ -1316,7 +940,7 @@ class AppWindowBase(QMainWindow):
         self.loading_popup.show()
 
     def _close_loading_popup(self):
-        self.event_bus.emit(Events.GUI.CLOSE_LOADING_POPUP)
+        self._on_hide_loading_popup()
 
     def _on_hide_loading_popup(self):
         if hasattr(self, 'loading_popup') and self.loading_popup:
@@ -1360,17 +984,19 @@ class AppWindowBase(QMainWindow):
         if not text:
             return
         character_id = self._get_current_character_id_for_debug()
-        self.event_bus.emit(Events.Chat.INSERT_SYSTEM_MESSAGE, {
-            "text": text,
-            "character_id": character_id,
-            "as_user": self._debug_as_user_cb.isChecked(),
-        })
+        if self.shell_controller is not None:
+            self.shell_controller.insert_debug_message(
+                text=text,
+                character_id=character_id,
+                as_user=self._debug_as_user_cb.isChecked(),
+            )
         self._debug_system_input.clear()
 
     def _on_debug_save_snapshot(self):
         character_id = self._get_current_character_id_for_debug()
-        self.event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": character_id})
-        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+        if self.shell_controller is not None:
+            self.shell_controller.save_snapshot(character_id)
+        self._on_show_info_message({
             "title": _("Snapshot", "Snapshot"),
             "message": _("Snapshot сохранён в папку Histories/.../Saved/",
                          "Snapshot saved to Histories/.../Saved/"),
@@ -1403,10 +1029,8 @@ class AppWindowBase(QMainWindow):
         # ChatController reads the JSON and saves history, then emits RELOAD_CHAT_HISTORY.
         # SettingsController catches that and calls load_chat_history_signal.emit(),
         # which safely returns execution to the main thread — no 0xC0000409 crashes.
-        self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
-            "file_path": file_path,
-            "character_id": character_id,
-        })
+        if self.shell_controller is not None:
+            self.shell_controller.load_snapshot(file_path=file_path, character_id=character_id)
 
     def _on_debug_view_last_context(self, initial_tab: str = "request"):
         import json
@@ -1448,7 +1072,7 @@ class AppWindowBase(QMainWindow):
         self._on_debug_view_last_context(initial_tab="response")
 
     def _get_current_character_id_for_debug(self) -> str:
-        return use(CharacterRegistry).current_id()
+        return self.shell_controller.current_character_id() if self.shell_controller else ""
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)
@@ -1504,7 +1128,7 @@ class AppWindowBase(QMainWindow):
 
     def _show_eula_dialog(self):
         from ui.widgets.eula_widget import EULAWidget
-        eula_widget = EULAWidget()
+        eula_widget = EULAWidget(self.presentation)
         eula_widget.accepted.connect(lambda: self._on_eula_accepted(eula_widget))
         eula_widget.rejected.connect(lambda: self._on_eula_rejected(eula_widget))
         self.overlay.set_content(eula_widget, locked=True)
@@ -1533,7 +1157,7 @@ class AppWindowBase(QMainWindow):
 
     def _show_guide(self):
         from ui.widgets.guide_widget import GuideWidget
-        guide_widget = GuideWidget()
+        guide_widget = GuideWidget(self.presentation)
         guide_widget.closed.connect(lambda: self._on_guide_closed(guide_widget))
         self.overlay.set_content(guide_widget)
         self.overlay.show_animated()
@@ -1580,46 +1204,15 @@ class AppWindowBase(QMainWindow):
                 lambda: self.settings_buttons.get("debug") if hasattr(self, 'settings_buttons') else None
             )
 
-        # ===== Совместимость: обновление индикаторов статуса =====
+        # ===== Обновление индикаторов статуса =====
     def update_status_colors(self):
-        main_controller = getattr(self, "main_controller", None)
-        if bool(getattr(main_controller, "_closing_started", False)):
+        if self.shell_controller is not None and self.shell_controller.is_closing:
             return
         if QApplication.closingDown():
             return
 
         self._status_refresh_ticket += 1
         ticket = self._status_refresh_ticket
-
-        def worker():
-            from managers.settings_manager import SettingsManager
-
-            use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
-            method = str(SettingsManager.get("VOICEOVER_METHOD", "Local") or "Local")
-            model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
-            local_voice = services().get_optional(LocalVoiceService)
-            telegram = services().get_optional(TelegramService)
-            speech = services().get_optional(SpeechService)
-            capture = services().get_optional(CaptureService)
-            voice_initialized = bool(
-                local_voice is not None
-                and use_voice
-                and method == "Local"
-                and model_id
-                and local_voice.check_initialized(model_id)
-            )
-
-            return {
-                "game_connected": bool(use(GameLinkService).is_connected()),
-                "silero_connected": bool(telegram and telegram.is_silero_connected()),
-                "mic_active": bool(speech and speech.mic_active()),
-                "screen_capture_active": bool(capture and capture.screen_capture_active()),
-                "camera_capture_active": bool(capture and capture.camera_capture_active()),
-                "rag_enabled": bool(SettingsManager.get("RAG_ENABLED", False)),
-                "use_voice": use_voice,
-                "method": method,
-                "voice_initialized": voice_initialized,
-            }
 
         def apply(state):
             if ticket != self._status_refresh_ticket:
@@ -1657,37 +1250,10 @@ class AppWindowBase(QMainWindow):
             apply_to("screen_capture_status_checkbox", checked=bool(state.get("screen_capture_active")))
             apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))
 
-        run_async(self, worker, apply, name="app-status-colors")
+        if self.shell_controller is not None:
+            self.shell_controller.request_status(apply)
 
-    # ===== Совместимость: диалоги g4f =====
-    def trigger_g4f_reinstall_schedule(self):
-        logger.info("Запрос на планирование обновления g4f...")
-        target_version = None
-        if hasattr(self, 'g4f_version_entry') and self.g4f_version_entry:
-            target_version = self.g4f_version_entry.text().strip()
-            if not target_version:
-                QMessageBox.critical(self, _("Ошибка", "Error"),
-                    _("Пожалуйста, введите версию g4f или 'latest'.", "Please enter a g4f version or 'latest'."))
-                return
-        else:
-            logger.error("Виджет entry для версии g4f не найден.")
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                _("Не найден элемент интерфейса для ввода версии.", "UI element for version input not found."))
-            return
-
-        model = services().get_optional(ModelStateService)
-        success = bool(model and model.schedule_g4f_update(target_version))
-        if success:
-            QMessageBox.information(self, _("Запланировано", "Scheduled"),
-                _("Версия g4f '{version}' будет установлена/обновлена при следующем запуске программы.",
-                  "g4f version '{version}' will be installed/updated the next time the program starts.").format(
-                    version=target_version))
-        else:
-            QMessageBox.critical(self, _("Ошибка сохранения", "Save Error"),
-                _("Не удалось сохранить настройки для обновления. Пожалуйста, проверьте логи.",
-                  "Failed to save settings for the update. Please check the logs."))
-
-    # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
+    # ===== Рендер сообщений и streaming-слоты =====
     def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
         """Slot for update_chat_signal — picks up pending structured_data and message_id if available."""
         # Only assistant messages consume _pending_structured_data / _pending_message_id.
@@ -1704,24 +1270,13 @@ class AppWindowBase(QMainWindow):
                                         structured_data=structured_data, message_id=message_id)
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
-        return self.insert_message(role, content, insert_at_start, message_time)
-
-    def insert_message(self, role, content, insert_at_start=False, message_time="", structured_data=None):
-        from ui.chat import message_renderer
-        return message_renderer.insert_message(self, role, content, insert_at_start, message_time,
-                                               structured_data=structured_data)
-
-    def insert_message_end(self, cursor=None, role="assistant"):
-        from ui.chat import message_renderer
-        return message_renderer.insert_message_end(self, cursor, role)
-
-    def insert_speaker_name(self, cursor=None, role="assistant"):
-        from ui.chat import message_renderer
-        return message_renderer.insert_speaker_name(self, cursor, role)
-
-    def _insert_formatted_text(self, cursor, text, color=None, bold=False, italic=False):
-        from ui.chat import message_renderer
-        return message_renderer._insert_formatted_text(self, cursor, text, color, bold, italic)
+        return message_renderer.insert_message(
+            self,
+            role,
+            content,
+            insert_at_start,
+            message_time,
+        )
 
     def _on_prepare_stream_signal(self, data=None):
         from ui.chat import message_renderer
@@ -1752,62 +1307,6 @@ class AppWindowBase(QMainWindow):
             message_renderer.attach_structured_to_stream(self, structured, stream_id=stream_id)
         message_renderer.finish_stream_slot(self, stream_id=stream_id)
 
-    def process_image_for_chat(self, has_image_content, item, processed_content_parts):
-        from ui.chat import message_renderer
-        return message_renderer.process_image_for_chat(self, has_image_content, item, processed_content_parts)
-
-    # ===== Совместимость: методы панели чата (обёртки к chat_panel) =====
-    def _create_scroll_to_bottom_button(self):
-        return chat_panel.create_scroll_to_bottom_button(self)
-
-    def _handle_chat_scroll(self):
-        return chat_panel.handle_chat_scroll(self)
-
-    def _fade_in_scroll_button(self):
-        return chat_panel.fade_in_scroll_button(self)
-
-    def _fade_out_scroll_button(self):
-        return chat_panel.fade_out_scroll_button(self)
-
-    def _reposition_scroll_button(self):
-        return chat_panel.reposition_scroll_button(self)
-
-    def _adjust_input_height(self):
-        return chat_panel.adjust_input_height(self)
-
-    def _update_send_button_state(self):
-        return chat_panel.update_send_button_state(self)
-
-    def _init_image_preview(self):
-        return chat_panel.init_image_preview(self)
-
-    def _show_image_preview_bar(self):
-        return chat_panel.show_image_preview_bar(self)
-
-    def _remove_staged_image(self, index):
-        return chat_panel.remove_staged_image(self, index)
-
-    def _hide_image_preview_bar(self):
-        return chat_panel.hide_image_preview_bar(self)
-
-    def _show_full_image(self, image_data):
-        return chat_panel.show_full_image(self, image_data)
-
-    def _clipboard_image_to_controller(self):
-        return chat_panel.clipboard_image_to_controller(self)
-
-    def attach_images(self):
-        return chat_panel.attach_images(self)
-
-    def send_screen_capture(self):
-        return chat_panel.send_screen_capture(self)
-
-    def _clear_staged_images(self):
-        return chat_panel.clear_staged_images(self)
-
-    def _position_mita_status(self):
-        return chat_panel.position_mita_status(self)
-
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====
     def _on_asr_install_progress(self, data: dict):
         if hasattr(self, 'install_model_button'):
@@ -1824,16 +1323,6 @@ class AppWindowBase(QMainWindow):
         if hasattr(self, 'install_model_button'):
             self.install_model_button.setText(_("Ошибка установки", "Installation failed"))
             self.install_model_button.setEnabled(True)
-
-    # ===== Совместимость: упрощённая вставка диалога =====
-    def insert_dialog(self, input_text="", response="", system_text=""):
-        MitaName = self._get_character_name()
-        if input_text:
-            self.insert_message("user", input_text)
-        if system_text:
-            self.insert_message("system", system_text)
-        if response:
-            self.insert_message("assistant", response)
 
     def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)
@@ -1875,8 +1364,11 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        local_voice = services().get_optional(LocalVoiceService)
-        is_installed = bool(local_voice and local_voice.is_installed(model_id))
+        is_installed, is_initialized = (
+            self.shell_controller.voice_model_state(model_id)
+            if self.shell_controller is not None
+            else (False, False)
+        )
         if not is_installed:
             self.set_settings_icon_indicator(
                 "voice",
@@ -1885,7 +1377,6 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        is_initialized = bool(local_voice and local_voice.check_initialized(model_id))
         if not is_initialized:
             self.set_settings_icon_indicator(
                 "voice",

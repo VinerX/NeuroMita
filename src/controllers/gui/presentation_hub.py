@@ -1,0 +1,621 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import cached_property
+import weakref
+from typing import Any, Callable
+
+from core.events import Event, get_event_bus
+from core.services import services, use
+from services.contracts import (
+    ApiPresetService,
+    CaptureService,
+    CharacterRegistry,
+    EmbeddingPresetService,
+    HistoryService,
+    InstallableCatalogService,
+    InstallableOperationsService,
+    LocalVoiceService,
+    SettingsService,
+    TelegramAuthService,
+    VoiceModelService,
+)
+from ui.presentation import UiEvent, UiSettingsDataKey, UiTopic
+
+
+class _TaskController:
+    def run(
+        self,
+        target: Any,
+        worker: Callable[[], Any],
+        on_ok: Callable[[Any], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+        *,
+        name: str = "gui-async",
+    ):
+        from controllers.gui.async_runner import run_async
+
+        return run_async(target, worker, on_ok, on_error, name=name)
+
+    def dispatch(self, target: Any, callback: Callable[[], None]) -> bool:
+        from controllers.gui.async_runner import dispatch_to_gui
+
+        return bool(dispatch_to_gui(target, callback))
+
+
+class _SettingsDataController:
+    def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
+        from controllers.gui.settings_data_prefetch import get_cached_settings_data
+
+        return get_cached_settings_data(str(key), default)
+
+    def request(
+        self,
+        target: Any,
+        key: UiSettingsDataKey | str,
+        worker: Callable[[], Any],
+        on_ready: Callable[[Any], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+        *,
+        name: str | None = None,
+        force: bool = False,
+    ):
+        from controllers.gui.settings_data_prefetch import request_settings_data
+
+        return request_settings_data(
+            target,
+            str(key),
+            worker,
+            on_ready,
+            on_error,
+            name=name,
+            force=force,
+        )
+
+    def prefetch_section(self, gui: Any, category: str) -> None:
+        from controllers.gui.settings_data_prefetch import prefetch_settings_section
+
+        prefetch_settings_section(gui, str(category))
+
+    def embed_preset_items_from_meta(self, meta: Any) -> list[tuple[str, Any]]:
+        from controllers.gui.settings_data_prefetch import embed_preset_items_from_meta
+
+        return list(embed_preset_items_from_meta(meta))
+
+
+class _ProviderOptionsController:
+    def current(self) -> list[Any]:
+        from controllers.gui.provider_options import current_provider_options
+
+        return list(current_provider_options())
+
+    def load_async(self, gui: Any, setting_keys: tuple[str, ...], *, name: str):
+        from controllers.gui.provider_options import load_api_provider_options_async
+
+        return load_api_provider_options_async(gui, setting_keys, name=name)
+
+
+class _SettingsSectionsController:
+    def wire_api(self, gui: Any):
+        from controllers.gui.api_settings import ApiSettingsController
+
+        controller = ApiSettingsController(gui)
+        setattr(gui, "api_settings_logic", controller)
+        return controller
+
+    def wire_characters(self, gui: Any):
+        from controllers.gui.character_settings_logic import wire_character_settings_logic
+
+        return wire_character_settings_logic(gui)
+
+    def wire_microphone(self, gui: Any):
+        from controllers.gui.microphone_settings_logic import wire_microphone_settings_logic
+
+        return wire_microphone_settings_logic(gui)
+
+    def load_microphone(self, gui: Any) -> None:
+        from controllers.gui.microphone_settings_logic import load_mic_settings
+
+        load_mic_settings(gui)
+
+    def wire_voiceover(self, gui: Any):
+        from controllers.gui.voiceover_settings_logic import wire_voiceover_settings_logic
+
+        return wire_voiceover_settings_logic(gui)
+
+    def build_updates(self, gui: Any, parent: Any) -> None:
+        from controllers.gui.updates_settings_controller import setup_updates_settings_controls
+
+        setup_updates_settings_controls(gui, parent)
+
+
+class _RagController:
+    def build_memory_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
+        from controllers.gui.rag_memory_controller import build_memory_section
+
+        build_memory_section(gui, parent, provider_options)
+
+    def build_rag_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
+        from controllers.gui.rag_memory_controller import build_rag_section
+
+        build_rag_section(gui, parent, provider_options)
+
+    def download_embed_model(self, gui: Any) -> None:
+        from controllers.gui.rag_memory_controller import _download_embed_model
+
+        _download_embed_model(gui)
+
+    def is_embed_model_downloaded(self) -> bool:
+        from controllers.gui.rag_memory_controller import _is_embed_model_downloaded
+
+        return bool(_is_embed_model_downloaded())
+
+    def embed_status_text(self) -> str:
+        from controllers.gui.rag_memory_controller import _get_embed_status_text
+
+        return str(_get_embed_status_text())
+
+
+class _NewsController:
+    @property
+    def repository(self) -> str:
+        from controllers.gui.news_controller import NEWS_REPO
+
+        return str(NEWS_REPO)
+
+    def invalidate(self, gui: Any) -> None:
+        from controllers.gui.news_controller import invalidate_news_releases
+
+        invalidate_news_releases(gui)
+
+    def load_async(self, gui: Any, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
+        from controllers.gui.news_controller import load_news_releases_async
+
+        load_news_releases_async(gui, on_ready)
+
+    def get_releases(self, gui: Any) -> list[dict[str, Any]]:
+        from controllers.gui.news_controller import get_news_releases
+
+        return list(get_news_releases(gui))
+
+    def get_content(self, gui: Any) -> str:
+        from controllers.gui.news_controller import get_news_content
+
+        return str(get_news_content(gui))
+
+    def build_items(self, gui: Any, *, limit: int | None = 8):
+        from controllers.gui.news_controller import build_release_news_items
+
+        return list(build_release_news_items(gui, limit=limit))
+
+
+class _EventsController:
+    def __init__(self) -> None:
+        self._bus = get_event_bus()
+
+    def publish(self, topic: UiTopic, data: Any = None) -> None:
+        self._bus.emit(str(topic), data)
+
+    def subscribe(
+        self,
+        topic: UiTopic,
+        callback: Callable[[UiEvent], None],
+        *,
+        weak: bool = True,
+    ):
+        normalized = UiTopic(topic)
+        callback_ref = None
+        strong_callback = callback
+        if weak:
+            try:
+                callback_ref = (
+                    weakref.WeakMethod(callback)
+                    if getattr(callback, "__self__", None) is not None
+                    else weakref.ref(callback)
+                )
+                strong_callback = None
+            except TypeError:
+                callback_ref = None
+
+        subscription_box: dict[str, Any] = {}
+
+        def forward(event: Event) -> None:
+            target = callback_ref() if callback_ref is not None else strong_callback
+            if target is None:
+                subscription = subscription_box.get("subscription")
+                if subscription is not None:
+                    subscription.close()
+                return
+            target(UiEvent(normalized, event.data, event.timestamp))
+
+        subscription = self._bus.subscribe(str(normalized), forward, weak=False)
+        subscription_box["subscription"] = subscription
+        return subscription
+
+
+class _SettingsController:
+    def __init__(self) -> None:
+        self._service = use(SettingsService)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._service.get(str(key), default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._service.update(str(key), value)
+
+    def save(self) -> None:
+        self._service.save_settings()
+
+    def snapshot(self, keys: tuple[str, ...] | None = None) -> dict[str, Any]:
+        return dict(self._service.snapshot(keys))
+
+    def subscribe(self, callback, *, keys=None, replay: bool = False):
+        return self._service.subscribe(callback, keys=keys, replay=replay)
+
+
+class _ApiPresetController:
+    @staticmethod
+    def _service() -> ApiPresetService:
+        return use(ApiPresetService)
+
+    def list_meta(self):
+        return self._service().list_meta()
+
+    def get_full(self, preset_id: int):
+        return self._service().get_full(int(preset_id))
+
+    def set_current(self, preset_id: int) -> None:
+        self._service().set_current(int(preset_id))
+
+    def save_custom(self, payload: dict[str, Any]):
+        return self._service().save_custom(dict(payload))
+
+    def delete(self, preset_id: int):
+        return self._service().delete_custom(int(preset_id))
+
+    def reorder(self, order: list[int]):
+        return self._service().save_order([int(item) for item in order])
+
+
+class _EmbeddingPresetController:
+    @staticmethod
+    def _service() -> EmbeddingPresetService:
+        return use(EmbeddingPresetService)
+
+    def list_meta(self):
+        return self._service().list_meta()
+
+    def get_full(self, preset_id: str):
+        return self._service().get_full(str(preset_id))
+
+    def save(self, payload: dict[str, Any]):
+        return self._service().save(dict(payload))
+
+    def delete(self, preset_id: str):
+        return self._service().delete(str(preset_id))
+
+    def reorder(self, custom_ids: list[str]):
+        return self._service().reorder([str(item) for item in custom_ids])
+
+    def local_model_names(self) -> list[str]:
+        from handlers.embedding_presets import list_preset_names
+
+        return [str(item) for item in list_preset_names() if str(item) != "Custom"]
+
+
+class _CharacterController:
+    @staticmethod
+    def _service() -> CharacterRegistry:
+        return use(CharacterRegistry)
+
+    def current_id(self) -> str:
+        return str(self._service().current_id() or "")
+
+    def current(self):
+        return self._service().current()
+
+    def current_profile(self) -> dict[str, Any]:
+        return dict(self._service().current_profile() or {})
+
+    def all_ids(self) -> list[str]:
+        return [str(item) for item in self._service().all_ids()]
+
+    def get(self, character_id: str):
+        return self._service().get(str(character_id))
+
+    def name_of(self, character_id: str) -> str:
+        return self._service().name_of(str(character_id))
+
+    def prepare_history(self, **kwargs):
+        return use(HistoryService).prepare_for_prompt(**kwargs)
+
+    def open_db_viewer(self, gui: Any) -> None:
+        from controllers.gui.character_settings_logic import open_db_viewer
+
+        open_db_viewer(gui)
+
+
+class _CaptureController:
+    def capture_screen(self, count: int = 1) -> list[Any]:
+        service = services().get_optional(CaptureService)
+        if service is None:
+            return []
+        return list(service.capture_screen(int(count)) or [])
+
+
+class _FineTuneController:
+    @staticmethod
+    def _instance():
+        from managers.finetune_collector import FineTuneCollector
+
+        return FineTuneCollector.instance
+
+    def available(self) -> bool:
+        return self._instance() is not None
+
+    def enabled(self) -> bool:
+        collector = self._instance()
+        return bool(collector and collector.is_enabled())
+
+    def pop_pending_sample_id(self) -> str | None:
+        collector = self._instance()
+        return collector.pop_pending_sample_id() if collector else None
+
+    def update_rating(self, sample_id: str, rating: int) -> bool:
+        collector = self._instance()
+        return bool(collector and collector.update_rating(str(sample_id), int(rating)))
+
+    def get_stats(self) -> dict[str, Any]:
+        collector = self._instance()
+        return dict(collector.get_stats()) if collector else {}
+
+    def load_samples(self, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        collector = self._instance()
+        return list(collector.load_samples(filters) or []) if collector else []
+
+    def export_sharegpt(self, samples: list[dict[str, Any]], path: str) -> int:
+        collector = self._instance()
+        if collector is None:
+            raise RuntimeError("Fine-tune collector is unavailable")
+        return int(collector.export_sharegpt(samples, str(path)))
+
+    def export_raw_jsonl(self, samples: list[dict[str, Any]], path: str) -> int:
+        collector = self._instance()
+        if collector is None:
+            raise RuntimeError("Fine-tune collector is unavailable")
+        return int(collector.export_raw_jsonl(samples, str(path)))
+
+    def clear_all(self) -> int:
+        collector = self._instance()
+        return int(collector.clear_all()) if collector else 0
+
+    def enforce_limit(self) -> None:
+        collector = self._instance()
+        if collector is not None:
+            collector._enforce_limit()
+
+    def set_data_directory(self, path: str) -> None:
+        from pathlib import Path
+
+        collector = self._instance()
+        if collector is None:
+            return
+        collector.data_dir = Path(path)
+        collector.data_dir.mkdir(parents=True, exist_ok=True)
+
+
+class _PromptController:
+    def list_sets(self, *args, **kwargs):
+        from managers.prompt_catalogue_manager import list_prompt_sets
+
+        return list_prompt_sets(*args, **kwargs)
+
+    def read_info(self, *args, **kwargs):
+        from managers.prompt_catalogue_manager import read_info_json
+
+        return read_info_json(*args, **kwargs)
+
+
+class _TelegramController:
+    @staticmethod
+    def _service() -> TelegramAuthService:
+        return use(TelegramAuthService)
+
+    def resolve(self, request_id: str, value: str) -> bool:
+        return bool(self._service().resolve(str(request_id), str(value)))
+
+    def reject(self, request_id: str, reason: str) -> None:
+        self._service().reject(str(request_id), str(reason))
+
+
+class _VoiceController:
+    def voice_models(self) -> VoiceModelService | None:
+        return services().get_optional(VoiceModelService)
+
+    def local_voice(self) -> LocalVoiceService | None:
+        return services().get_optional(LocalVoiceService)
+
+    def triton_status(self, *, refresh: bool = False) -> dict[str, Any]:
+        service = self.local_voice()
+        return dict(service.triton_status(refresh=refresh) or {}) if service is not None else {}
+
+    def open_documentation(self, path: str) -> None:
+        get_event_bus().emit("open_voice_model_doc", str(path))
+
+
+class _InstallableController:
+    def __init__(self) -> None:
+        registry = services()
+        if registry.is_registered(InstallableCatalogService):
+            self._catalog = registry.get(InstallableCatalogService)
+        else:
+            from services.installable_catalog_service import DefaultInstallableCatalogService
+
+            settings = registry.get_optional(SettingsService)
+            self._catalog = DefaultInstallableCatalogService(settings)
+            registry.register(InstallableCatalogService, self._catalog)
+
+    def list_rows(self, **kwargs):
+        return self._catalog.list_rows(**kwargs)
+
+    def install_preview(self, component_id: str):
+        return self._catalog.install_preview(str(component_id))
+
+    def settings_schema(self, component_id: str):
+        return self._catalog.settings_schema(str(component_id))
+
+    def load_settings(self, component_id: str):
+        return self._catalog.load_settings(str(component_id))
+
+    def save_settings(self, component_id: str, values: dict[str, Any]):
+        return self._catalog.save_component_settings(str(component_id), dict(values))
+
+    def admit(self, action: str, payload: dict[str, Any]):
+        operations = services().get(InstallableOperationsService)
+        normalized = str(action).strip().lower()
+        if normalized == "uninstall":
+            return operations.uninstall(dict(payload))
+        if normalized == "initialize":
+            return operations.initialize(dict(payload))
+        return operations.install(dict(payload))
+
+    def cancel_queued(self, task_id: str) -> None:
+        get_event_bus().emit("install_cancel_queued", {"task_id": str(task_id)})
+
+    def cancel_running(self, task_id: str) -> None:
+        from core.events import EventDelivery
+
+        get_event_bus().emit(
+            "install_cancel_running",
+            {"task_id": str(task_id)},
+            delivery=EventDelivery.COMMAND,
+        )
+
+    def purge_cache(self) -> bool:
+        from utils.pip_installer import PipInstaller
+        from main_logger import logger
+
+        return bool(PipInstaller(update_log=logger.info).purge_cache())
+
+
+@dataclass(slots=True)
+class _ApplicationController:
+    _main_controller: Any = None
+    _startup_error: str = ""
+
+    @property
+    def main_controller(self):
+        return self._main_controller
+
+    @property
+    def backend_ready(self) -> bool:
+        return self._main_controller is not None and not bool(
+            getattr(self._main_controller, "_closing_started", False)
+        )
+
+    @property
+    def startup_error(self) -> str:
+        return self._startup_error
+
+    def attach_backend(self, controller: Any) -> None:
+        self._main_controller = controller
+        self._startup_error = ""
+
+    def detach_backend(self) -> None:
+        self._main_controller = None
+
+    def mark_failed(self, message: str) -> None:
+        self._main_controller = None
+        self._startup_error = str(message or "")
+
+    def gui_controller(self):
+        controller = self._main_controller
+        return getattr(controller, "gui_controller", None) if controller is not None else None
+
+    def ensure_feature_async(self, feature: str):
+        controller = self._main_controller
+        if controller is None:
+            raise RuntimeError(self._startup_error or "Main controller is not ready")
+        return controller.ensure_feature_async(str(feature))
+
+    def ensure_optional_gui(self, feature: str) -> None:
+        gui_controller = self.gui_controller()
+        if gui_controller is None:
+            raise RuntimeError(self._startup_error or "GUI controller is not ready")
+        gui_controller.ensure_optional_gui(str(feature))
+
+
+class UiPresentationHub:
+    """Application-facing controllers injected into passive Qt views.
+
+    The hub belongs to the composition root. Views may use these controllers,
+    but never resolve EventBus, service implementations, managers or databases.
+    """
+
+    def __init__(self) -> None:
+        self.events = _EventsController()
+        self.settings = _SettingsController()
+        self.app = _ApplicationController()
+        self.tasks = _TaskController()
+        self.settings_data = _SettingsDataController()
+        self.providers = _ProviderOptionsController()
+        self.settings_sections = _SettingsSectionsController()
+        self.rag = _RagController()
+
+    @cached_property
+    def api_presets(self):
+        return _ApiPresetController()
+
+    @cached_property
+    def embeddings(self):
+        return _EmbeddingPresetController()
+
+    @cached_property
+    def characters(self):
+        return _CharacterController()
+
+    @cached_property
+    def capture(self):
+        return _CaptureController()
+
+    @cached_property
+    def finetune(self):
+        return _FineTuneController()
+
+    @cached_property
+    def prompts(self):
+        return _PromptController()
+
+    @cached_property
+    def telegram(self):
+        return _TelegramController()
+
+    @cached_property
+    def voice(self):
+        return _VoiceController()
+
+    @cached_property
+    def installables(self):
+        return _InstallableController()
+
+    @cached_property
+    def beats(self):
+        from controllers.gui.beat_settings_controller import BeatSettingsController
+
+        return BeatSettingsController()
+
+    @cached_property
+    def home(self):
+        from controllers.gui.home_page_controller import HomePageController
+
+        return HomePageController()
+
+    @cached_property
+    def sandbox(self):
+        from controllers.gui.sandbox_page_controller import SandboxPageController
+
+        return SandboxPageController()
+
+    @cached_property
+    def news(self):
+        return _NewsController()

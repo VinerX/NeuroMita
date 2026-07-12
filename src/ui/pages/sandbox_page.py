@@ -22,11 +22,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import Events
-from core.services import services, use
-from services.contracts import ApiPresetService, CharacterRegistry, HistoryService, ModelStateService
+from ui.presentation import UiTopic
 from main_logger import logger
-from ui.async_bus import run_async
+from ui.presentation import run_ui_async as run_async
 from ui.chat.message_widget import AVATAR_MAP, _get_avatar_dir
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.character_state_panel import CharacterStatePanel
@@ -345,10 +343,10 @@ class SandboxPage(QWidget):
         self.gui.sandbox_page = self
 
     def _get_current_character_id(self) -> str:
-        return use(CharacterRegistry).current_id()
+        return self.gui.presentation.sandbox.current_character_id()
 
     def _get_current_character_ref(self):
-        return use(CharacterRegistry).current()
+        return self.gui.presentation.sandbox.current_character()
 
     def _get_effective_prompt_history_count(self, character_ref, dialog_limit: int):
         if character_ref is None:
@@ -359,14 +357,9 @@ class SandboxPage(QWidget):
             return None
 
         try:
-            prepared = use(HistoryService).prepare_for_prompt(
-                character=character_ref,
-                memory_limit=int(dialog_limit or 0),
-                is_game_master=False,
-                save_missed_history=False,
-                image_quality={},
+            return self.gui.presentation.sandbox.effective_prompt_history_count(
+                character_ref, int(dialog_limit or 0)
             )
-            return len(prepared.messages)
         except Exception as exc:
             logger.debug(f"Sandbox effective prompt history count failed: {exc}")
             return None
@@ -524,17 +517,14 @@ class SandboxPage(QWidget):
             self.gui.update_status_colors()
         except Exception:
             pass
-        bus = getattr(self.gui, "event_bus", None)
-        if bus is not None:
-            for evt in (Events.GUI.VOICEOVER_REFRESH, Events.VoiceModel.REFRESH_MODEL_PANELS):
-                try:
-                    bus.emit(evt)
-                except Exception as exc:
-                    logger.debug(f"status refresh emit {evt} failed: {exc}")
+        try:
+            self.gui.presentation.sandbox.refresh_voice_panels()
+        except Exception as exc:
+            logger.debug(f"status refresh failed: {exc}")
 
     def _local_voice_name(self, model_id: str) -> str:
         try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
             for model in LOCAL_VOICE_MODELS:
                 if str(model.get("id") or "") == model_id:
                     return str(model.get("name") or model_id)
@@ -581,8 +571,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            service = services().get_optional(ApiPresetService)
-            return (service.list_meta(), service.current_id()) if service is not None else ({}, None)
+            return self.gui.presentation.sandbox.model_snapshot()
 
         def apply(payload):
             if ticket != self._activation_ticket:
@@ -627,8 +616,7 @@ class SandboxPage(QWidget):
         if combo is None:
             return
 
-        service = services().get_optional(ApiPresetService)
-        meta = service.list_meta() if service is not None else {}
+        meta, current_id = self.gui.presentation.sandbox.model_snapshot()
 
         customs = list((meta or {}).get("custom", []))
 
@@ -652,8 +640,6 @@ class SandboxPage(QWidget):
 
             combo.add_tr_item("Настроить…", "Configure…", value=_MODEL_CONFIGURE_SENTINEL)
 
-            current_id = service.current_id() if service is not None else None
-
             if current_id is not None:
                 for index in range(combo.count()):
                     if combo.itemData(index) == int(current_id):
@@ -674,7 +660,7 @@ class SandboxPage(QWidget):
         if data is None:
             return
         try:
-            use(ApiPresetService).set_current(int(data))
+            self.gui.presentation.sandbox.select_model(int(data))
         except Exception as exc:
             logger.error(f"Failed to switch preset: {exc}")
         self._clear_stale_error_status()
@@ -692,16 +678,9 @@ class SandboxPage(QWidget):
 
     def _current_preset_name(self) -> str:
         try:
-            service = use(ApiPresetService)
-            cur_id = service.current_id()
-            meta = service.list_meta()
-            for preset in (meta or {}).get("custom", []) or []:
-                pid = getattr(preset, "id", None)
-                if pid is not None and cur_id is not None and int(pid) == int(cur_id):
-                    return str(getattr(preset, "name", "") or "")
+            return self.gui.presentation.sandbox.current_model_name()
         except Exception:
-            pass
-        return ""
+            return ""
 
     # --------- Prompt set -----------
     def _populate_prompt_pack_combobox(self):
@@ -723,20 +702,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            current_char_id = char_id or use(CharacterRegistry).current_id()
-
-            try:
-                from managers.prompt_catalogue_manager import list_prompt_sets
-                options = list_prompt_sets("Prompts", current_char_id) or []
-            except Exception:
-                options = []
-
-            try:
-                current = str(self.gui._get_setting(f"PROMPT_SET_{current_char_id}", "") or "") if current_char_id else ""
-            except Exception:
-                current = ""
-
-            return current_char_id, options, current
+            return self.gui.presentation.sandbox.prompt_snapshot(char_id)
 
         def apply(payload):
             if ticket != self._activation_ticket:
@@ -776,17 +742,9 @@ class SandboxPage(QWidget):
                 char_id = char_combo.currentText().strip()
 
         try:
-            from managers.prompt_catalogue_manager import list_prompt_sets
-            options = list_prompt_sets("Prompts", char_id) or []
+            char_id, options, current = self.gui.presentation.sandbox.prompt_snapshot(char_id)
         except Exception:
-            options = []
-
-        current = ""
-        if char_id:
-            try:
-                current = str(self.gui._get_setting(f"PROMPT_SET_{char_id}", "") or "")
-            except Exception:
-                current = ""
+            options, current = [], ""
 
         combo.blockSignals(True)
         try:
@@ -825,12 +783,7 @@ class SandboxPage(QWidget):
         if not char_id:
             return
         try:
-            self.gui.settings.set(f"PROMPT_SET_{char_id}", str(data))
-            try:
-                self.gui.settings.save_settings()
-            except Exception:
-                pass
-            self.gui.event_bus.emit(Events.Character.RELOAD_DATA)
+            self.gui.presentation.sandbox.select_prompt(char_id, str(data))
         except Exception as exc:
             logger.error(f"Failed to switch prompt set: {exc}")
         self._refresh_debug_summary()
@@ -850,10 +803,7 @@ class SandboxPage(QWidget):
             combo.blockSignals(False)
 
         def worker():
-            registry = use(CharacterRegistry)
-            character_list = registry.all_ids() or ["Crazy"]
-            current_char_id = registry.current_id()
-            return character_list, (current_char_id or character_list[0])
+            return self.gui.presentation.sandbox.character_snapshot()
 
         def apply(payload):
             if ticket != self._activation_ticket:
@@ -893,8 +843,7 @@ class SandboxPage(QWidget):
                 self._refresh_debug_summary()
                 return
 
-        self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
-        self.gui.event_bus.emit(Events.Character.RELOAD_DATA)
+        self.gui.presentation.sandbox.select_character(character_id)
         if self._chat_panel is not None:
             self._chat_panel.on_activated()
         self._refresh_character_avatar()
@@ -905,10 +854,9 @@ class SandboxPage(QWidget):
         combo = getattr(self.gui, "chat_character_combobox", None)
         character_id = combo.currentText().strip() if combo is not None else ""
         if character_id:
-            self.gui.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": character_id})
+            self.gui.presentation.sandbox.select_character(character_id, reload_data=False)
         try:
-            from ui.settings.character_settings.logic import open_db_viewer
-            open_db_viewer(self.gui)
+            self.gui.presentation.characters.open_db_viewer(self.gui)
         except Exception as exc:
             logger.error(f"Failed to open character history: {exc}", exc_info=True)
 
@@ -919,42 +867,13 @@ class SandboxPage(QWidget):
         return KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
 
     def _rag_preset_name(self) -> str:
-        """Name of the active RAG *pipeline* preset — what/how RAG retrieves
-        (Keyword+FTS, Vector+FTS, …). The embedding model is appended only when
-        vector search is on, since that's the only mode where it's actually used.
-        (Not the memory profile, which is a separate memory-window concept.)"""
         try:
-            from managers.settings_manager import SettingsManager
-            from managers.rag.pipeline.config import (
-                RAG_PIPELINE_PRESETS, match_pipeline_preset, _b,
-            )
-            try:
-                from ui.settings.rag_memory_settings import _load_user_presets
-                user_presets = _load_user_presets() or {}
-            except Exception:
-                user_presets = {}
-
-            name = str(SettingsManager.get("RAG_PIPELINE_PRESET", "Keyword+FTS only") or "").strip()
-            known = set(RAG_PIPELINE_PRESETS) | set(user_presets)
-            if name in ("", "Custom") or name not in known:
-                # Stored selection is 'Custom' (or unknown) — try to recognise the
-                # current settings as a built-in/user preset before giving up.
-                name = match_pipeline_preset(user_presets) or _("Custom", "Custom")
-
-            if _b(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False), False):
-                from handlers.embedding_presets import resolve_full_config
-                cfg = resolve_full_config() or {}
-                model_name = self._short_rag_model_name(
-                    cfg.get("model") or cfg.get("hf_name") or cfg.get("db_model_key") or ""
-                )
-                if model_name:
-                    name = f"{name} · {model_name}"
-
-            # Компактная подпись для узкого статус-чипа: суффикс « only» в
-            # названиях пресетов («Keyword+FTS only») лишь съедает место и
-            # обрезается до невнятного «Keyword+FT…». Полный текст остаётся в тултипе.
-            name = name.replace(" only", "")
-            return name or _("Включён", "Enabled")
+            status = self.gui.presentation.sandbox.rag_status()
+            name = str(status.get("preset_name") or _("Custom", "Custom"))
+            model_name = self._short_rag_model_name(status.get("model_name") or "")
+            if model_name:
+                name = f"{name} · {model_name}"
+            return name.replace(" only", "") or _("Включён", "Enabled")
         except Exception:
             return _("Включён", "Enabled")
 
@@ -976,102 +895,13 @@ class SandboxPage(QWidget):
 
         return normalized
 
-    def _refresh_memory_summary(self):
-        if not self._memory_limit_values:
-            return
-
-        ticket = self._activation_ticket
-        for label in self._memory_limit_values.values():
-            try:
-                label.setText("...")
-            except Exception:
-                pass
-
-        def worker():
-            get = self.gui._get_setting
-            msg_limit = get("MODEL_MESSAGE_LIMIT", 35)
-            mem_limit = get("MEMORY_CAPACITY", 50)
-            cid = self._get_current_character_id()
-            character_ref = self._get_current_character_ref()
-
-            try:
-                from managers.database_manager import DatabaseManager
-                db = DatabaseManager()
-                stats = db.get_world_stats(cid)
-            except Exception:
-                db = None
-                stats = {}
-
-            miss_h = miss_m = None
-            if db is not None and cid:
-                try:
-                    miss_h, miss_m = db.count_missing_embeddings(cid)
-                except Exception:
-                    miss_h = miss_m = None
-
-            def _fmt(count, limit=None):
-                if count is None:
-                    return "—"
-                return f"{count} / {limit}" if limit is not None else str(count)
-
-            def _pair(a, b):
-                if a is None and b is None:
-                    return "—"
-                return f"{a or 0} / {b or 0}"
-
-            effective_history_count = self._get_effective_prompt_history_count(character_ref, msg_limit)
-            return {
-                "messages": _fmt(
-                    effective_history_count if effective_history_count is not None else stats.get("history_active"),
-                    msg_limit,
-                ),
-                "memories": _fmt(stats.get("memories_active"), mem_limit),
-                "forgotten": _fmt(stats.get("memories_forgotten")),
-                "missing": _pair(miss_h, miss_m),
-                "trash": _pair(stats.get("history_deleted"), stats.get("memories_deleted")),
-                "last": self._fmt_timestamp(stats.get("last_activity")),
-                "dbsize": self._fmt_bytes(stats.get("db_size_bytes")),
-            }
-
-        def apply(mapping):
-            if ticket != self._activation_ticket:
-                return
-            if getattr(self.gui, "current_main_page", None) != "sandbox":
-                return
-            for stat_key, text in (mapping or {}).items():
-                label = self._memory_limit_values.get(stat_key)
-                if label is not None:
-                    label.setText(str(text))
-
-        run_async(self.gui, worker, apply, name="sandbox-memory-summary")
-
-    def _refresh_memory_summary_sync_legacy(self):
-        """Live mini-stats for the current character: real counts vs. limits,
-        plus the forgotten-memory count (RAG keeps these retrievable)."""
-        if not self._memory_limit_values:
-            return
-
+    def _memory_summary_mapping(self) -> dict[str, str]:
         get = self.gui._get_setting
-        msg_limit = get("MODEL_MESSAGE_LIMIT", 35)
-        mem_limit = get("MEMORY_CAPACITY", 50)
-        cid = self._get_current_character_id()
-        character_ref = self._get_current_character_ref()
-
-        try:
-            from managers.database_manager import DatabaseManager
-            db = DatabaseManager()
-            stats = db.get_world_stats(cid)
-        except Exception:
-            db = None
-            stats = {}
-
-        # Missing embeddings for the current model (stale-index indicator).
-        miss_h = miss_m = None
-        if db is not None and cid:
-            try:
-                miss_h, miss_m = db.count_missing_embeddings(cid)
-            except Exception:
-                miss_h = miss_m = None
+        msg_limit = int(get("MODEL_MESSAGE_LIMIT", 35) or 35)
+        mem_limit = int(get("MEMORY_CAPACITY", 50) or 50)
+        raw = self.gui.presentation.sandbox.memory_summary(
+            message_limit=msg_limit, memory_limit=mem_limit
+        )
 
         def _fmt(count, limit=None):
             if count is None:
@@ -1083,24 +913,59 @@ class SandboxPage(QWidget):
                 return "—"
             return f"{a or 0} / {b or 0}"
 
-        effective_history_count = self._get_effective_prompt_history_count(character_ref, msg_limit)
-
-        mapping = {
+        effective = raw.get("effective_history")
+        return {
             "messages": _fmt(
-                effective_history_count if effective_history_count is not None else stats.get("history_active"),
+                effective if effective is not None else raw.get("history_active"),
                 msg_limit,
             ),
-            "memories": _fmt(stats.get("memories_active"), mem_limit),
-            "forgotten": _fmt(stats.get("memories_forgotten")),
-            "missing": _pair(miss_h, miss_m),
-            "trash": _pair(stats.get("history_deleted"), stats.get("memories_deleted")),
-            "last": self._fmt_timestamp(stats.get("last_activity")),
-            "dbsize": self._fmt_bytes(stats.get("db_size_bytes")),
+            "memories": _fmt(raw.get("memories_active"), mem_limit),
+            "forgotten": _fmt(raw.get("memories_forgotten")),
+            "missing": _pair(raw.get("missing_history"), raw.get("missing_memory")),
+            "trash": _pair(raw.get("history_deleted"), raw.get("memories_deleted")),
+            "last": self._fmt_timestamp(raw.get("last_activity")),
+            "dbsize": self._fmt_bytes(raw.get("db_size_bytes")),
         }
+
+    def _refresh_memory_summary(self):
+        if not self._memory_limit_values:
+            return
+
+        ticket = self._activation_ticket
+        for label in self._memory_limit_values.values():
+            try:
+                label.setText("...")
+            except Exception:
+                pass
+
+        def apply(mapping):
+            if ticket != self._activation_ticket:
+                return
+            if getattr(self.gui, "current_main_page", None) != "sandbox":
+                return
+            for stat_key, text in (mapping or {}).items():
+                label = self._memory_limit_values.get(stat_key)
+                if label is not None:
+                    label.setText(str(text))
+
+        run_async(
+            self.gui,
+            self._memory_summary_mapping,
+            apply,
+            name="sandbox-memory-summary",
+        )
+
+    def _refresh_memory_summary_sync_legacy(self):
+        if not self._memory_limit_values:
+            return
+        try:
+            mapping = self._memory_summary_mapping()
+        except Exception:
+            mapping = {}
         for stat_key, text in mapping.items():
             label = self._memory_limit_values.get(stat_key)
             if label is not None:
-                label.setText(text)
+                label.setText(str(text))
 
     @staticmethod
     def _fmt_timestamp(value) -> str:
@@ -1766,7 +1631,7 @@ class SandboxPage(QWidget):
             return
         for key, widget in self._panels.items():
             if widget is not None:
-                widget.setVisible(is_panel_enabled(key))
+                widget.setVisible(is_panel_enabled(key, self.gui.presentation.settings))
 
     # --------- Context budget panel -----------
     def _build_context_budget_strip(self) -> QWidget:
@@ -1804,8 +1669,7 @@ class SandboxPage(QWidget):
             # CALCULATE_COST: раньше это были ДВА полных прохода tiktoken (~38мс
             # каждый) прямо в GUI-потоке — заметный хитч песочницы после каждого
             # сообщения. Теперь один проход и вне GUI-потока.
-            model = services().get_optional(ModelStateService)
-            stats = model.token_stats() if model is not None else {}
+            stats = self.gui.presentation.sandbox.token_stats()
             try:
                 max_tokens = int(self.gui._get_setting("MAX_MODEL_TOKENS", 32000) or 32000)
             except Exception:
@@ -1879,26 +1743,22 @@ class SandboxPage(QWidget):
         self._status_values_signal.connect(self._refresh_status_values)
         self._memory_summary_signal.connect(self._refresh_memory_summary)
 
-        bus = getattr(self.gui, "event_bus", None)
-        if bus is None:
-            return
         try:
-            bus.subscribe(Events.Model.ON_STARTED_RESPONSE_GENERATION, self._on_resp_started_evt, weak=False)
-            bus.subscribe(Events.Model.ON_SUCCESSFUL_RESPONSE, self._on_resp_success_evt, weak=False)
-            bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_resp_failed_evt, weak=False)
-            bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_token_count_evt, weak=False)
-            bus.subscribe(Events.GUI.SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False)
+            events = self.gui.presentation.events
+            self._diagnostic_subscriptions = [
+                events.subscribe(UiTopic.MODEL_STARTED, self._on_resp_started_evt, weak=False),
+                events.subscribe(UiTopic.MODEL_SUCCESS, self._on_resp_success_evt, weak=False),
+                events.subscribe(UiTopic.MODEL_FAILED, self._on_resp_failed_evt, weak=False),
+                events.subscribe(UiTopic.GUI_UPDATE_TOKEN_COUNT, self._on_token_count_evt, weak=False),
+                events.subscribe(UiTopic.GUI_SET_SETTINGS_ICON_INDICATOR, self._on_indicator_evt, weak=False),
+                events.subscribe(UiTopic.GUI_UPDATE_STATUS_COLORS, self._on_status_colors_evt, weak=False),
+                events.subscribe(UiTopic.INSTALL_TASK_FINISHED, self._on_install_finished_evt, weak=False),
+                events.subscribe(UiTopic.VOICE_MODEL_INSTALL_FINISHED, self._on_install_finished_evt, weak=False),
+                events.subscribe(UiTopic.HISTORY_COMPRESSED, self._on_history_compressed_evt, weak=False),
+            ]
             view_model = getattr(self.gui, "settings_view_model", None)
             if view_model is not None:
                 view_model.changed.connect(self._on_setting_changed_vm)
-            # Пере-синхронизация тумблеров, когда подсистема сама себя выключает
-            # (MIC_ACTIVE=False при сбое ASR) — она шлёт UPDATE_STATUS_COLORS.
-            bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_status_colors_evt, weak=False)
-            # Авто-обновление блока «Статус» по завершении установок (задача #7).
-            bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished_evt, weak=False)
-            bus.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_install_finished_evt, weak=False)
-            # После фактического сжатия истории — обновить счётчик «сообщений в окне».
-            bus.subscribe(Events.History.COMPRESSED, self._on_history_compressed_evt, weak=False)
         except Exception as exc:
             logger.debug(f"Sandbox diagnostics wiring failed: {exc}")
 
@@ -2080,7 +1940,7 @@ class SandboxPage(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            self.gui.event_bus.emit(Events.Character.CLEAR_HISTORY)
+            self.gui.presentation.sandbox.clear_current_history()
         except Exception as exc:
             logger.error(f"Failed to reset character: {exc}", exc_info=True)
             return

@@ -74,8 +74,7 @@ def sync_profile_label(gui) -> None:
     """
     try:
         key = detect_memory_profile(gui)
-        from managers.settings_manager import SettingsManager
-        lang = SettingsManager.get('LANGUAGE', 'RU')
+        lang = gui.presentation.settings.get('LANGUAGE', 'RU')
         label = KEY_TO_LABEL_EN[key] if lang == 'EN' else KEY_TO_LABEL_RU[key]
         combo = getattr(gui, 'MEMORY_PROFILE', None)
         if combo is not None and hasattr(combo, 'currentText'):

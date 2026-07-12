@@ -53,7 +53,7 @@ def apply_capture_visibility(gui, mode=None):
     try:
         from ui.widgets.settings_panel import is_section_enabled
 
-        visible = is_section_enabled("screen")
+        visible = is_section_enabled("screen", gui.presentation.settings)
     except Exception:
         visible = False
 

@@ -525,29 +525,16 @@ class MainController:
     def update_view(self, view):
         if self.headless:
             raise RuntimeError("Headless runtime does not support GUI attachment")
-        if not self.gui_controller:
+        if self.gui_controller is None:
             from controllers.gui_controller import GuiController
 
             self.view = view
-            try:
-                setattr(view, "main_controller", self)
-                setattr(view, "backend_enabled", bool(self.backend_enabled))
-                setattr(view, "startup_mode", self.startup_mode)
-            except Exception:
-                pass
             self.gui_controller = GuiController(self, view)
             services().register(GuiInteractionService, self.gui_controller, replace=True)
-            setattr(view, "backend_ready", True)
-            setattr(view, "backend_startup_error", "")
-            try:
-                from ui.widgets.chat_panel import update_send_button_state
-
-                update_send_button_state(view)
-            except Exception:
-                pass
             logger.notify("GuiController успешно инициализирован.")
             if self.feature_manager is not None and self.feature_manager.is_ready("voice_models"):
                 self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+        return self.gui_controller
 
 
     def _subscribe_to_events(self):

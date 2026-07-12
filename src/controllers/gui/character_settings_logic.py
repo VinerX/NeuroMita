@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import QMessageBox, QDialog
 from PyQt6.QtCore import QUrl, Qt, QTimer
 from PyQt6.QtGui import QDesktopServices
 
-from ui.task_worker import TaskWorker
+from controllers.gui.task_worker import TaskWorker
 from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -18,8 +18,8 @@ from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_struct
 from ui.dialogs.db_viewer import DbViewerDialog
 from PyQt6.QtWidgets import QProgressDialog,QFileDialog
 from ui.dialogs.db_export_dialog import DbExportDialog
-from ui.async_bus import dispatch_to_gui
-from ui.settings.data_prefetch import (
+from controllers.gui.async_runner import dispatch_to_gui
+from controllers.gui.settings_data_prefetch import (
     API_PROVIDER_NAMES,
     CHARACTER_SETTINGS_SNAPSHOT,
     api_provider_names_from_result,
@@ -42,14 +42,6 @@ def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWork
         return method(progress_callback=progress_callback)
 
     return TaskWorker(_do_reindex, use_progress=True)
-
-
-# Backward-compatible aliases
-def ReindexWorker(character_id: str) -> TaskWorker:
-    return _create_reindex_worker(character_id, full=False)
-
-def FullReindexWorker(character_id: str) -> TaskWorker:
-    return _create_reindex_worker(character_id, full=True)
 
 
 class ReindexAllCharactersWorker(TaskWorker):
@@ -1480,7 +1472,7 @@ def run_reindexing(gui):
         logger.warning(f"Skipping pre-check due to error: {e}")
 
     # Запуск воркера
-    gui._reindex_worker = ReindexWorker(character_id)
+    gui._reindex_worker = _create_reindex_worker(character_id, full=False)
     gui._reindex_cancelled = False
 
     progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0, 100,
@@ -1721,7 +1713,7 @@ def run_full_reindexing(gui):
         total_count = 0  # unknown; proceed
 
     # Запуск воркера
-    gui._full_reindex_worker = FullReindexWorker(character_id)
+    gui._full_reindex_worker = _create_reindex_worker(character_id, full=True)
     gui._full_reindex_cancelled = False
 
     progress = QProgressDialog(

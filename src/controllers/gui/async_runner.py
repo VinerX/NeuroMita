@@ -4,7 +4,6 @@ import threading
 from core.task_supervisor import task_supervisor
 from typing import Any, Callable, Optional
 
-from PyQt6.QtCore import QTimer
 
 from main_logger import logger
 
@@ -29,6 +28,8 @@ def dispatch_to_gui(target: Any, fn: Callable[[], None]) -> bool:
             continue
 
     try:
+        from PyQt6.QtCore import QTimer
+
         QTimer.singleShot(0, fn)
         return True
     except Exception:

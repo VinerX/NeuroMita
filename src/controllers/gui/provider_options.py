@@ -5,7 +5,7 @@ from typing import Iterable, Sequence
 from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
-from ui.settings.data_prefetch import (
+from controllers.gui.settings_data_prefetch import (
     API_PROVIDER_NAMES,
     api_provider_names_from_result,
     get_cached_settings_data,
