@@ -12,7 +12,7 @@ from PyQt6.QtCore import (
     Qt,
     pyqtSignal,
 )
-from PyQt6.QtGui import QDesktopServices, QIcon, QKeyEvent
+from PyQt6.QtGui import QDesktopServices, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -159,7 +159,8 @@ class AppWindowBase(QMainWindow):
         self._history_load_inflight = False
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
-        self.setWindowIcon(QIcon('Icon.png'))
+        from ui.app_icon import application_icon
+        self.setWindowIcon(application_icon())
 
         self.staged_image_data = []
 

@@ -32,7 +32,7 @@ from utils.release_assets import (
     find_latest_unity_asset,
     parse_release,
     pick_from_release,
-    raw_release_has_launcher_assets,
+    raw_release_has_python_assets,
 )
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
@@ -266,10 +266,14 @@ def _published_sort_key(release: dict) -> str:
     return str(release.get("published_at") or release.get("created_at") or "")
 
 
-def _select_release(repo: str, channel: str) -> Optional[Release]:
-    """Return newest release suitable for the given channel as a Release.
+def _select_python_release(repo: str, channel: str) -> Optional[Release]:
+    """Return newest release that actually ships a Python build for the channel.
 
-    stable: последний опубликованный НЕ-prerelease (GitHub /releases/latest).
+    Судим по РЕАЛЬНОМУ наличию Python-ассета (full/patch), а не по любому
+    launcher-ассету: Unity-only релиз (напр. v2026.07.12 с единственным
+    UnityBuild) не должен восприниматься как доступное Python-обновление.
+
+    stable: последний опубликованный НЕ-prerelease с Python-сборкой.
     beta:   то же самое, но с учётом prerelease — берём самый свежий по
             published_at. Список из /releases GitHub отдаёт в порядке
             created_at (дата тега), из-за чего более старый по публикации
@@ -277,7 +281,7 @@ def _select_release(repo: str, channel: str) -> Optional[Release]:
     """
     raws = [
         r for r in _fetch_releases(repo)
-        if not r.get("draft") and raw_release_has_launcher_assets(r)
+        if not r.get("draft") and raw_release_has_python_assets(r)
     ]
     if channel == "stable":
         raws = [r for r in raws if not r.get("prerelease")]
@@ -380,7 +384,7 @@ def get_python_update_info(
     local_version = _get_current_version()
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
 
-    release = _select_release(repo, channel)
+    release = _select_python_release(repo, channel)
     if release is None:
         return {
             "ok": False,
@@ -504,7 +508,7 @@ def check_for_updates(
 
     log(f"Checking for updates ({repo}, channel={channel}, mode={update_mode}) ...")
 
-    release = _select_release(repo, channel)
+    release = _select_python_release(repo, channel)
     if release is None:
         log("Could not reach GitHub to check for updates", "warning")
         return
@@ -535,9 +539,13 @@ def check_for_updates(
         python_asset = picked.python_full
 
     if python_asset is None:
-        # Plain fallback: first .zip in assets
+        # Plain fallback: first .zip that не является Unity-сборкой (иначе можно
+        # ошибочно скачать 300+ МБ UnityBuild как Python-обновление).
         python_asset = next(
-            (a for a in release.assets if a.name.lower().endswith(".zip")),
+            (
+                a for a in release.assets
+                if a.name.lower().endswith(".zip") and "unitybuild" not in a.name.lower()
+            ),
             None,
         )
         if python_asset is None:

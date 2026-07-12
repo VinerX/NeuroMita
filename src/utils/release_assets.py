@@ -94,6 +94,25 @@ def raw_release_has_launcher_assets(item: dict) -> bool:
         return False
 
 
+def has_python_release_assets(release: "Release") -> bool:
+    """True когда релиз реально несёт Python-сборку (full или patch).
+
+    В отличие от has_launcher_release_assets (любой launcher-ассет, включая
+    Unity), судим строго по наличию Python-файла: Unity-only релиз (например
+    v2026.07.12 с одним UnityBuild) не должен считаться доступным Python-
+    обновлением.
+    """
+    picked = pick_from_release(release)
+    return bool(picked.python_full or picked.python_patch)
+
+
+def raw_release_has_python_assets(item: dict) -> bool:
+    try:
+        return has_python_release_assets(parse_release(item))
+    except Exception:
+        return False
+
+
 # ── Core selection logic ──────────────────────────────────────────────────────
 
 def pick_from_release(release: Release) -> PickedAssets:
