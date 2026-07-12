@@ -571,6 +571,9 @@ def start_install(target: str, *, with_ui: bool = True, timeout_sec: float = 360
         "initial_status": _("Preparing...", "Preparing..."),
         "timeout_sec": float(timeout_sec or 3600.0),
         "with_ui": bool(with_ui),
+        # The request originates from RAG settings but uses the same visual
+        # language as the AI Hub install flow.
+        "install_style_variant": "ai_hub",
         "meta": {
             "kind": "rag",
             "item_id": normalized,

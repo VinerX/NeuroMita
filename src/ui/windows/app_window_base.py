@@ -410,7 +410,8 @@ class AppWindowBase(QMainWindow):
         self.window_manager.show_dialog("ai_hub", payload)
 
     def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
-        win = VoiceInstallationWindow(self, title, initial_status)
+        style_variant = str(holder.get("style_variant") or "default")
+        win = VoiceInstallationWindow(self, title, initial_status, style_variant=style_variant)
         self._active_install_window = win
 
         try:

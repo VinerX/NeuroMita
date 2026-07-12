@@ -246,6 +246,7 @@ class InstallGuiController(BaseController, InstallQueueService):
             win, progress_cb, status_cb, log_cb, raw_log_cb = self._create_install_window(
                 job.get("title") or f"Installing {task_id}",
                 job.get("initial_status") or "Preparing...",
+                job.get("install_style_variant") or "default",
             )
             cbs = (progress_cb, status_cb, log_cb, raw_log_cb)
             job["win"] = win
@@ -396,11 +397,14 @@ class InstallGuiController(BaseController, InstallQueueService):
         except Exception:
             pass
 
-    def _create_install_window(self, title: str, initial_status: str):
+    def _create_install_window(self, title: str, initial_status: str, style_variant: str = "default"):
         if not self.view or not hasattr(self.view, "create_installation_window_signal"):
             return None, (lambda *_: None), (lambda *_: None), (lambda *_: None), (lambda *_: None)
 
-        holder = {"ready_event": threading.Event()}
+        holder = {
+            "ready_event": threading.Event(),
+            "style_variant": str(style_variant or "default"),
+        }
 
         try:
             self.view.create_installation_window_signal.emit(title, initial_status, holder)
@@ -498,6 +502,7 @@ class InstallGuiController(BaseController, InstallQueueService):
             "timeout_sec": float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC)),
             "win": win,
             "callbacks": cbs,
+            "install_style_variant": str(data.get("install_style_variant") or "default"),
             "headless": not with_ui,
         }
         admission = self._admit_job(job)
