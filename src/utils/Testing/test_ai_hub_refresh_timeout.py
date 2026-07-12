@@ -26,6 +26,7 @@ class _TimedOutRefreshDialog:
         self._refresh_timeout_generation = 3
         self._refresh_generation = 3
         self._refresh_inflight = True
+        self._refresh_worker_active = True
         self._refresh_timeout_reported = False
         self._checking_component_ids = {"tts:edge"}
         self.btn_refresh = _Button()
@@ -45,6 +46,9 @@ def test_status_refresh_timeout_releases_cards_and_ignores_late_worker_result():
     AIHubDialog._on_refresh_timeout(dialog)
 
     assert dialog._refresh_inflight is False
+    # The UI is released, but the still-running worker remains accounted for;
+    # a subsequent refresh must not create another orphaned probe.
+    assert dialog._refresh_worker_active is True
     assert dialog._refresh_timeout_reported is True
     assert dialog._checking_component_ids == set()
     assert dialog.btn_refresh.enabled is True

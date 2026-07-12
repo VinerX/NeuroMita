@@ -8,7 +8,6 @@ from core.services import services, use
 from main_logger import logger
 from services.contracts import (
     AppVarsService,
-    GameLinkService,
     HistoryService,
     PromptBuildRequest,
     PromptBuildResult,
@@ -17,6 +16,7 @@ from services.contracts import (
 )
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
+from services.runtime_capabilities import runtime_capabilities
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
              "bool": "boolean", "str": "string", "string": "string"}
@@ -96,13 +96,7 @@ class PromptController(PromptBuilderService):
         return {"role": "system", "content": "\n".join(lines)}
 
     def _build_system_state_message(self) -> Dict[str, str]:
-        game_link = services().get_optional(GameLinkService)
-        remote_only: bool | None = None
-        if game_link is not None:
-            try:
-                remote_only = not bool(game_link.is_connected())
-            except Exception:
-                remote_only = None
+        remote_only = runtime_capabilities().remote_only
 
         image_status = (
             "enabled"

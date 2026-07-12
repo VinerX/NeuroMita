@@ -117,6 +117,10 @@ class AIHubDialog(QDialog):
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
         self._refresh_generation = 0
         self._refresh_inflight = False
+        # A timed-out foreign/library call cannot be forcefully interrupted.
+        # Keep its worker accounted for so repeated refreshes never create an
+        # unbounded chain of orphaned status probes.
+        self._refresh_worker_active = False
         self._refresh_timeout_generation = 0
         self._refresh_timeout_reported = False
         self._refresh_timeout_timer = QTimer(self)
@@ -725,6 +729,16 @@ class AIHubDialog(QDialog):
             logger.warning(f"AI Hub install GUI adapter is unavailable: {exc}")
 
     def refresh(self, *, force: bool = False, include_status: bool | None = None) -> None:
+        if self._refresh_worker_active:
+            logger.debug("AI Hub: status refresh is still running; skipping overlap")
+            self._set_task_status(
+                _(
+                    "Предыдущая проверка ещё выполняется. Повторите позже.",
+                    "The previous check is still running. Try again later.",
+                )
+            )
+            return
+
         if include_status is None:
             include_status = bool(force or self._loaded_once)
 
@@ -752,29 +766,44 @@ class AIHubDialog(QDialog):
         status_category = self._selected_category if include_status else None
 
         def _worker() -> None:
-            rows = self._fetch_rows(
-                force=force,
-                include_status=bool(include_status),
-                status_category=status_category,
+            try:
+                rows = self._fetch_rows(
+                    force=force,
+                    include_status=bool(include_status),
+                    status_category=status_category,
+                )
+                checked_at = _dt.datetime.now()
+                self._on_gui_thread(
+                    lambda: self._apply_refresh_result(
+                        generation, rows, checked_at, bool(include_status)
+                    )
+                )
+            finally:
+                # This runs only when the foreign call really returned. A UI
+                # timeout therefore releases the controls but not this guard.
+                self._refresh_worker_active = False
+
+        self._refresh_worker_active = True
+        try:
+            task_supervisor().start_thread(
+                self,
+                "ai-hub-refresh",
+                _worker,
+                replace=True,
             )
-            checked_at = _dt.datetime.now()
-            self._on_gui_thread(
-                lambda: self._apply_refresh_result(
-                    generation, rows, checked_at, bool(include_status)
+        except Exception as exc:
+            self._refresh_worker_active = False
+            self._refresh_inflight = False
+            self._refresh_timeout_timer.stop()
+            self.btn_refresh.setEnabled(True)
+            self._apply_busy_state()
+            logger.error(f"AI Hub: failed to start status refresh: {exc}", exc_info=True)
+            self._set_task_status(
+                _(
+                    "Не удалось начать проверку файлов. Повторите позже.",
+                    "Could not start the file check. Try again later.",
                 )
             )
-
-        task_supervisor().start_thread(
-            self,
-            "ai-hub-refresh",
-            _worker,
-            replace=True,
-            # Python cannot forcibly stop a status probe stuck in a foreign
-            # library.  The UI timeout below releases the user; allowing the
-            # next probe avoids making the Refresh button unusable until the
-            # abandoned daemon thread eventually returns.
-            allow_overlap=True,
-        )
 
     def _on_refresh_timeout(self) -> None:
         """Release the UI when a status probe exceeded its response budget."""

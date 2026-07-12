@@ -21,7 +21,6 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
-    GameLinkService,
     ModelStateService,
     PromptBuildRequest,
     PromptBuilderService,
@@ -38,6 +37,7 @@ from managers.history_ui_projector import HistoryUiProjector
 from managers.model_pricing_manager import ModelPricingManager
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
+from services.runtime_capabilities import runtime_capabilities
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -53,16 +53,6 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
-
-# Поля сегмента, которые не имеют смысла без подключённого игрового runtime.
-# Список намеренно вынесен в одно место: при расширении sandbox-режима сюда
-# можно добавить commands/movement_modes и другие игровые действия.
-_REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset({
-    "animations",
-    "idle_animations",
-    "emotions",
-})
-
 
 def _render_tools_for_prompt(schema: list) -> str:
     """Format tool JSON schema list into a human-readable prompt block."""
@@ -275,18 +265,8 @@ class ModelController(GenerationService, ModelStateService):
         return self.game_state.to_prompt_dict()
 
     def _remote_only_structured_segment_fields(self) -> list[str]:
-        if not bool(self.settings.get("REMOTE_ONLY_STRUCTURED_FIELDS_EXCLUSION_ENABLED", True)):
-            return []
-
-        game_link = services().get_optional(GameLinkService)
-        if game_link is None:
-            return []
-        try:
-            if not game_link.is_connected():
-                return sorted(_REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS)
-        except Exception:
-            pass
-        return []
+        capabilities = runtime_capabilities(settings=self.settings)
+        return list(capabilities.structured_segment_exclude_fields)
 
     @staticmethod
     def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:

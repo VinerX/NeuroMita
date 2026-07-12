@@ -7,16 +7,16 @@
 в обход `Launcher.exe`, и без явного AppUserModelID панель задач Windows
 берёт иконку самого `python.exe` — окно оказывается «без иконки».
 
-Здесь иконка резолвится по АБСОЛЮТНОМУ пути от `NEUROMITA_BASE_DIR` (как и
-остальные ресурсы приложения), а на Windows закрепляется собственный
-AppUserModelID.
+Здесь иконка резолвится по АБСОЛЮТНОМУ пути от `NEUROMITA_BASE_DIR` или от
+корня проекта, вычисленного относительно самого модуля. На Windows также
+закрепляется собственный AppUserModelID.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
+from core.app_paths import base_dir as project_base_dir
 from main_logger import logger
 
 # Приоритет: .ico (родной формат иконок Windows) → .png (то, что реально есть).
@@ -25,8 +25,8 @@ _APP_USER_MODEL_ID = "NeuroMita.App"
 
 
 def _base_dir() -> Path:
-    base = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
-    return Path(base) if base else Path(os.getcwd())
+    """Return the application root without falling back to the process cwd."""
+    return project_base_dir()
 
 
 def app_icon_path() -> str | None:

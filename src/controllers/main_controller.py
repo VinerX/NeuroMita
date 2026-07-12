@@ -26,6 +26,7 @@ from services.contracts import (
     LocalVoiceService,
     ModelStateService,
     RuntimeFeatureService,
+    RuntimeCapabilitiesService,
     SpeechService,
     VoiceModelService,
     InstallableCatalogService,
@@ -42,6 +43,7 @@ from services.loop_service import NoLoopService
 from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 from services.runtime_features import FeatureSpec, RuntimeFeatureManager
+from services.runtime_capabilities import DefaultRuntimeCapabilitiesService
 
 if TYPE_CHECKING:
     from controllers.settings_controller import SettingsController
@@ -107,6 +109,11 @@ class MainController:
         else:
             self.game_link = DisconnectedGameLinkService()
         services().register(GameLinkService, self.game_link, replace=True)
+        services().register(
+            RuntimeCapabilitiesService,
+            DefaultRuntimeCapabilitiesService(settings_service, self.game_link),
+            replace=True,
+        )
         services().register(
             AppVarsService, DefaultAppVarsService(settings_service, self.game_link), replace=True
         )
