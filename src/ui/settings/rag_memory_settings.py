@@ -26,6 +26,7 @@ from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
     get_install_status,
+    required_model_targets,
     start_install,
 )
 from managers.rag.pipeline.config import RAG_DEFAULTS
@@ -800,13 +801,6 @@ def _refresh_preset_combo(gui) -> None:
     _update_preset_delete_btn(gui, combo.currentText())
 
 
-def _as_bool(value: object) -> bool:
-    """Interpret settings values consistently for the preset-install prompt."""
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
 def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
     """Return enabled RAG targets whose selected model is absent locally.
 
@@ -814,11 +808,8 @@ def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
     this helper deliberately reports only model artifacts: the user should not
     get a download prompt merely because a package needs an update.
     """
-    targets: list[str] = []
-    if _as_bool(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False)):
-        targets.append(TARGET_EMBEDDINGS)
-    if _as_bool(SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False)):
-        targets.append(TARGET_RERANKER)
+    settings = use(SettingsService)
+    targets = required_model_targets(settings=settings)
 
     missing: list[tuple[str, list[str]]] = []
     for target in targets:
@@ -829,9 +820,8 @@ def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
     return missing
 
 
-def _offer_missing_preset_models(gui) -> None:
-    """Offer to enqueue downloads required by the RAG preset just applied."""
-    missing = _missing_preset_model_targets()
+def _show_missing_preset_models(gui, missing: list[tuple[str, list[str]]]) -> None:
+    """Offer to enqueue downloads after background status inspection."""
     if not missing:
         return
 
@@ -853,6 +843,16 @@ def _offer_missing_preset_models(gui) -> None:
 
     for target, _models in missing:
         start_install(target, with_ui=True)
+
+
+def _offer_missing_preset_models(gui) -> None:
+    """Inspect preset model artifacts without blocking the settings window."""
+    run_async(
+        gui,
+        _missing_preset_model_targets,
+        lambda missing: _show_missing_preset_models(gui, missing),
+        name="rag-preset-model-status",
+    )
 
 
 def _on_apply_preset(gui) -> None:

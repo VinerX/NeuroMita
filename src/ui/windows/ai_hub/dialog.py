@@ -822,8 +822,8 @@ class AIHubDialog(QDialog):
         self._apply_busy_state()
         self._set_task_status(
             _(
-                "Проверка файлов не завершилась. Проверьте подключение к интернету и обновите список.",
-                "Checking files did not finish. Check your internet connection and refresh the list.",
+                "Проверка файлов не завершилась. Новая проверка будет доступна после завершения текущей. Если состояние не изменится, перезапустите приложение.",
+                "The file check did not finish. A new check will be available after the current one ends. If the state does not change, restart the application.",
             )
         )
 

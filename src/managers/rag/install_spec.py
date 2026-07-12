@@ -102,19 +102,48 @@ def _local_provider_enabled() -> bool:
     return str(cfg.get("provider_name") or "local").strip().lower() == "local"
 
 
-def _current_targets() -> list[str]:
-    if not SettingsManager.get("RAG_ENABLED", False):
+def _setting_value(settings: Any | None, key: str, default: Any = None) -> Any:
+    if settings is not None:
+        try:
+            return settings.get(key, default)
+        except Exception:
+            pass
+    return SettingsManager.get(key, default)
+
+
+def _setting_enabled(settings: Any | None, key: str, default: bool = False) -> bool:
+    value = _setting_value(settings, key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def required_model_targets(settings: Any | None = None) -> list[str]:
+    """Return the model targets required by the effective RAG configuration.
+
+    The optional settings service is used by UI callers; installation and
+    status paths without an explicit service retain the SettingsManager-backed
+    application behavior. Keeping this decision here prevents the UI and
+    installer from developing different interpretations of enabled RAG.
+    """
+    if not _setting_enabled(settings, "RAG_ENABLED"):
         return []
 
     targets: list[str] = []
-    if _local_provider_enabled() and SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+    if _local_provider_enabled() and _setting_enabled(
+        settings, "RAG_VECTOR_SEARCH_ENABLED"
+    ):
         targets.append(TARGET_EMBEDDINGS)
 
     ce_model = resolve_ce_model()
-    if SettingsManager.get("RAG_CROSS_ENCODER_ENABLED", False) and ce_model:
+    if _setting_enabled(settings, "RAG_CROSS_ENCODER_ENABLED") and ce_model:
         targets.append(TARGET_RERANKER)
 
     return targets
+
+
+def _current_targets() -> list[str]:
+    return required_model_targets()
 
 
 def _resolve_targets(target: str) -> list[str]:

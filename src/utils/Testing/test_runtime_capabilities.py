@@ -26,6 +26,19 @@ class _Settings:
 
 
 class RuntimeCapabilitiesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._previous = services().get_optional(RuntimeCapabilitiesService)
+
+    def tearDown(self) -> None:
+        if self._previous is None:
+            services().unregister(RuntimeCapabilitiesService)
+        else:
+            services().register(
+                RuntimeCapabilitiesService,
+                self._previous,
+                replace=True,
+            )
+
     def test_snapshot_is_shared_policy_for_remote_prompt_and_schema(self):
         service = DefaultRuntimeCapabilitiesService(
             _Settings(), DisconnectedGameLinkService()

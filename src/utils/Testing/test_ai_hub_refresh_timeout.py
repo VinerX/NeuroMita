@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -53,6 +54,16 @@ def test_status_refresh_timeout_releases_cards_and_ignores_late_worker_result():
     assert dialog._checking_component_ids == set()
     assert dialog.btn_refresh.enabled is True
     assert dialog.busy_state_applied is True
-    assert "Проверка файлов" in dialog.status
+    assert "Новая проверка будет доступна" in dialog.status
     # The generation bump makes the late background result stale.
     assert dialog._refresh_generation == 4
+
+
+def test_refresh_does_not_start_another_worker_while_timed_out_worker_is_alive():
+    dialog = _TimedOutRefreshDialog()
+
+    with patch("ui.windows.ai_hub.dialog.task_supervisor") as supervisor:
+        AIHubDialog.refresh(dialog)
+
+    supervisor.assert_not_called()
+    assert "Предыдущая проверка ещё выполняется" in dialog.status
