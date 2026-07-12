@@ -10,9 +10,41 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.prompt_controller import PromptController
+from core.request_policy import RequestPolicy
+from services.contracts import PromptBuildRequest
 
 
 class PromptSystemStateTests(unittest.TestCase):
+    def test_relevant_memories_follow_active_memory(self):
+        class _Character:
+            char_id = "Test"
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: (
+            [],
+            [{"role": "system", "content": "[active memory]"}],
+            [],
+        )
+        controller._build_system_state_message = lambda: {
+            "role": "system",
+            "content": "[system state]",
+        }
+
+        result = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            system_input="[event]",
+            rag_context="[relevant memories]",
+        ))
+        contents = [message.get("content") for message in result.messages]
+
+        self.assertLess(contents.index("[active memory]"), contents.index("[relevant memories]"))
+        self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
+
     def test_unity_actual_info_is_added_as_a_system_message(self):
         message = PromptController._build_unity_actual_info_message(
             {"actualInfo": "The player is holding the key."}

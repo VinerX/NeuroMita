@@ -349,6 +349,11 @@ class PromptController(PromptBuilderService):
 
         messages.extend(volatile_system_messages)
 
+        # Relevant memories (RAG) идут отдельным сообщением сразу после
+        # обычного active memory/reminders-блока, не смешиваясь с ним.
+        if rag_context:
+            messages.append({"role": "system", "content": rag_context})
+
         behavior_state_message = self._build_behavior_state_message(character)
         if behavior_state_message:
             messages.append(behavior_state_message)
@@ -371,12 +376,6 @@ class PromptController(PromptBuilderService):
         })
 
         messages.append(self._build_system_state_message())
-
-        # RAG-контекст (воспоминания/past_context/граф) — отдельным сообщением
-        # перед событием/репликой. Так актуальная инструкция не смешивается со
-        # справочным фоном и остаётся ближе к концу контекста.
-        if rag_context:
-            messages.append({"role": "system", "content": rag_context})
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 
