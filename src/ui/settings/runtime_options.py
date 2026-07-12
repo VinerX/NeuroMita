@@ -20,6 +20,7 @@ def ensure_runtime_options_view_model(gui):
         gui._settings_runtime_options_view_model = view_model
         gui._settings_runtime_provider_keys = set()
         view_model.state_changed.connect(lambda state: _render(gui, state))
+        gui.destroyed.connect(lambda *_: view_model.close())
     return view_model
 
 

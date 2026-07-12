@@ -163,6 +163,7 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     if actions is None or actions.is_closed:
         actions = gui.presentation.view_models.chat_message_actions(gui, parent=gui)
         gui._chat_message_actions_view_model = actions
+        gui.destroyed.connect(lambda *_, vm=actions: vm.close())
 
     def on_delete(mid):
         actions.dispatch(DeleteChatMessage(str(mid), str(character_id)))

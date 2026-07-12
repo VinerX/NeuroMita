@@ -22,6 +22,7 @@ except Exception:
 def build_voiceover_settings_ui(self, parent_layout):
     actions = self.presentation.view_models.voiceover_settings(self, parent=self)
     self._voiceover_settings_view_model = actions
+    self.destroyed.connect(lambda *_: actions.close())
     sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
     right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 

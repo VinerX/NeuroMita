@@ -32,6 +32,7 @@ def setup_data_settings_controls(self, parent):
     view_model = self.presentation.view_models.finetune_data(self)
     view_model.setParent(self)
     self._finetune_data_view_model = view_model
+    self.destroyed.connect(lambda *_: view_model.close())
 
     def _handle_effect(effect) -> None:
         if isinstance(effect, FineTuneDataMessage):

@@ -65,6 +65,7 @@ def _beat_view_model(gui):
         view_model.state_changed.connect(lambda state: _render_beat_state(gui, state))
         view_model.effect_emitted.connect(lambda effect: _handle_beat_effect(gui, effect))
         gui._beat_settings_view_model = view_model
+        gui.destroyed.connect(lambda *_: view_model.close())
     return view_model
 
 
