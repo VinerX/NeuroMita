@@ -80,8 +80,15 @@ FILES_TO_COPY: List[Tuple[Path, Path]] = [
     for f in _copy_files_raw.split(",") if f.strip()
 ]
 
-# Скрипты запуска/установки для копирования в корень билда
-_root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "scripts/run.bat,scripts/run.py,scripts/init_triton.bat")
+# Скрипты запуска/установки для копирования в корень билда.
+# Launcher.exe — нативная (C) кнопка запуска: находит свою папку, проверяет
+# libs\python\python.exe и запускает run.py (см. scripts/launcher.c). Копируется
+# как есть, бинарь; вся логика установки/запуска — в run.py. run.bat оставляем
+# как запасной вариант запуска без .exe.
+_root_scripts_raw = env.get(
+    "BUILD_ROOT_SCRIPTS",
+    "scripts/Launcher.exe,scripts/run.bat,scripts/run.py,scripts/init_triton.bat",
+)
 ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
     (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)
     for s in _root_scripts_raw.split(",") if s.strip()
