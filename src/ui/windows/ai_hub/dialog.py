@@ -135,6 +135,14 @@ class AIHubDialog(QDialog):
         self.setObjectName("AIHubDialog")
         self.setWindowTitle(_("AI Hub", "AI Hub"))
         self.setModal(False)
+        # Кнопка сворачивания: у QDialog её в заголовке по умолчанию нет.
+        # WindowSystemMenuHint нужен, чтобы системные кнопки вообще появились;
+        # заодно убираем бесполезную контекстную «?»-кнопку.
+        flags = self.windowFlags()
+        flags |= Qt.WindowType.WindowMinimizeButtonHint
+        flags |= Qt.WindowType.WindowSystemMenuHint
+        flags &= ~Qt.WindowType.WindowContextHelpButtonHint
+        self.setWindowFlags(flags)
         # Размеры под экран: на узких/масштабированных дисплеях жёсткие 1280×820 и
         # min 1100×700 уводили контент (сайдбар + панель настроек) за левую кромку
         # окна — «интерфейс поехал» (#21). Клампим к доступной геометрии экрана и
@@ -926,10 +934,36 @@ class AIHubDialog(QDialog):
         except Exception as exc:
             logger.info(f"AI Hub: не удалось открыть папку моделей: {exc}")
 
+    # Порядок и подписи групп внутри категории RAG.
+    _GROUP_ORDER = {"embeddings": 0, "reranker": 1, "other": 2}
+
+    def _grouping_key(self, row: dict[str, Any]) -> str:
+        item = str(meta_from_row(row).get("item_id") or "").strip().lower()
+        return item if item in ("embeddings", "reranker") else "other"
+
+    def _group_title(self, key: str) -> str:
+        titles = {
+            "embeddings": _("Эмбеддинги", "Embeddings"),
+            "reranker": _("Реранкеры", "Rerankers"),
+            "other": _("Прочее", "Other"),
+        }
+        return titles.get(key, key)
+
+    def _insert_section_header(self, title: str, *, first: bool = False) -> None:
+        header = QLabel(title)
+        header.setObjectName("AIHubSectionHeader")
+        header.setProperty("first", "true" if first else "false")
+        self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, header)
+
     def _rebuild_component_list(self) -> None:
         if hasattr(self, "_open_models_btn"):
             self._open_models_btn.setVisible(self._selected_category == "voices")
         rows = self._filtered_rows()
+        # Первичная загрузка ещё идёт (данных нет) — держим индикатор загрузки,
+        # а не подменяем его на «ничего не найдено» при переключении категории.
+        if not rows and self._refresh_inflight and not self._rows:
+            self._show_scroll_loading()
+            return
         self._clear_scroll()
         if not rows:
             empty = QLabel(
@@ -943,7 +977,22 @@ class AIHubDialog(QDialog):
 
         gpu_vendor = self._detect_gpu_vendor()
         self._component_cards = []
+
+        # Внутри категории RAG модели делятся на эмбеддинги и реранкеры —
+        # показываем их сгруппированно с заголовком-разделителем.
+        grouped = self._selected_category == "rag"
+        if grouped:
+            rows = sorted(rows, key=lambda r: self._GROUP_ORDER.get(self._grouping_key(r), 99))
+
+        last_group: str | None = None
+        first_header = True
         for row in rows:
+            if grouped:
+                group = self._grouping_key(row)
+                if group != last_group:
+                    self._insert_section_header(self._group_title(group), first=first_header)
+                    first_header = False
+                    last_group = group
             card = ModelCard(
                 row,
                 on_install=lambda cid: self._request_component_action(cid, "install"),
@@ -1400,9 +1449,41 @@ class AIHubDialog(QDialog):
             chip.setToolTip("")
             return
         chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
-        titles = [str((j or {}).get("title") or (j or {}).get("task_id") or "") for j in pending]
-        chip.setToolTip("\n".join(t for t in titles if t))
+        chip.setToolTip(self._queue_tooltip_html())
         chip.setVisible(True)
+
+    def _queue_tooltip_html(self) -> str:
+        """Read-only сводка очереди для всплывающей подсказки: что ставится
+        сейчас + список ожидающих. Без кнопок отмены — только просмотр
+        (редактирование остаётся в панели «АКТИВНОСТЬ» слева)."""
+        running = self._queue_state.get("running") or {}
+        pending = self._queue_state.get("pending") or []
+
+        def _job_title(job: dict[str, Any]) -> str:
+            return str((job or {}).get("title") or (job or {}).get("task_id") or "").strip()
+
+        parts: list[str] = []
+        run_title = _job_title(running)
+        if run_title:
+            parts.append(
+                "<b>{label}</b><br>{title}".format(
+                    label=html.escape(_("Устанавливается сейчас:", "Installing now:")),
+                    title=html.escape(run_title),
+                )
+            )
+        rows = "".join(
+            "&nbsp;•&nbsp;{t}<br>".format(t=html.escape(_job_title(job)))
+            for job in pending
+            if _job_title(job)
+        )
+        if rows:
+            parts.append(
+                "<b>{label}</b><br>{rows}".format(
+                    label=html.escape(_("В очереди:", "Queued:")),
+                    rows=rows,
+                )
+            )
+        return "<div style='line-height:140%;'>" + "<br>".join(parts) + "</div>"
 
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()

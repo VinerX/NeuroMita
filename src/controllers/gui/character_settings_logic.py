@@ -52,6 +52,13 @@ class ReindexAllCharactersWorker(TaskWorker):
 
     def __init__(self, character_ids: list[str]):
         character_ids = [str(c or "").strip() for c in (character_ids or []) if str(c or "").strip()]
+        worker_ref = self  # capture for status emissions
+
+        def _emit_status(text: str) -> None:
+            try:
+                worker_ref.status_signal.emit(str(text))
+            except Exception:
+                pass
 
         def _do_all(*, progress_callback=None):
             # NOTE: cooperative cancellation happens inside progress_callback (TaskWorker._emit_progress)
@@ -64,6 +71,7 @@ class ReindexAllCharactersWorker(TaskWorker):
             model_name = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
 
             # Pre-count for a stable global progress bar (best-effort).
+            _emit_status(_("Подсчёт отсутствующих записей...", "Counting missing records..."))
             totals: dict[str, int] = {}
             grand_total = 0
             for cid in character_ids:
@@ -74,15 +82,29 @@ class ReindexAllCharactersWorker(TaskWorker):
 
             created_total = 0
             done_base = 0
+            first_char = True
 
             # If nothing to do: still emit a progress tick so "Cancel" works predictably.
             if progress_callback:
                 progress_callback(0, max(grand_total, 1))
 
-            for cid in character_ids:
+            pending = [c for c in character_ids if int(totals.get(c, 0) or 0) > 0]
+            for pos, cid in enumerate(pending, start=1):
                 char_total = int(totals.get(cid, 0) or 0)
-                if char_total <= 0:
-                    continue
+
+                # На первом персонаже модель эмбеддингов грузится лениво и может
+                # занять 1-2 минуты — сообщаем об этом, иначе окно выглядит
+                # зависшим (прогресс-тики придут только после загрузки).
+                if first_char:
+                    _emit_status(_(
+                        "Загрузка модели эмбеддингов (первый запуск может занять 1-2 минуты)... [{c}/{t}] {cid}",
+                        "Loading embedding model (first run may take 1-2 min)... [{c}/{t}] {cid}",
+                    ).format(c=pos, t=len(pending), cid=cid))
+                    first_char = False
+                else:
+                    _emit_status(_(
+                        "Обработка [{c}/{t}] {cid}", "Processing [{c}/{t}] {cid}",
+                    ).format(c=pos, t=len(pending), cid=cid))
 
                 rag = RAGManager(cid)
 
@@ -1565,6 +1587,17 @@ def _get_all_character_ids() -> list[str]:
 
 def run_reindexing_all(gui):
     """Fill missing embeddings for ALL characters."""
+    # Уже запущено — не плодим второй воркер, а возвращаем (возможно скрытое)
+    # окно прогресса. Это же даёт «показать снова» после кнопки «Скрыть».
+    existing = getattr(gui, "_reindex_all_worker", None)
+    if existing is not None and existing.isRunning():
+        dlg = getattr(gui, "_reindex_all_dialog", None)
+        if dlg is not None:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        return
+
     character_ids = _get_all_character_ids()
     if not character_ids:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонажи не найдены.", "No characters found."))
@@ -1582,46 +1615,52 @@ def run_reindexing_all(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
+    from ui.dialogs.background_task_dialog import BackgroundTaskDialog
+
     gui._reindex_all_worker = ReindexAllCharactersWorker(character_ids)
     gui._reindex_all_cancelled = False
 
-    progress = QProgressDialog(
-        _("Генерация векторов (все персонажи)...", "Generating embeddings (all characters)..."),
-        _("Отмена", "Cancel"),
-        0, 100,
-        gui
+    progress = BackgroundTaskDialog(
+        gui,
+        title=_("Генерация векторов (все персонажи)", "Generating embeddings (all characters)"),
+        eyebrow="RAG REINDEX",
+        hint=_(
+            "Окно можно скрыть — переиндексация продолжится в фоне. "
+            "Кнопка «Индекс нового (все)» откроет его снова.",
+            "You can hide this window — reindexing continues in the background. "
+            "The \"Index new (all)\" button reopens it.",
+        ),
     )
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setValue(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
+    gui._reindex_all_dialog = progress
 
     def on_progress(curr, total):
         try:
             t = int(total or 0)
             c = int(curr or 0)
-            progress.setRange(0, max(t, 1))
-            progress.setValue(min(c, max(t, 1)))
-            progress.setLabelText(
+            progress.set_range(0, max(t, 1))
+            progress.set_value(min(c, max(t, 1)))
+            progress.set_detail(
                 _("Обработано: {c} / {t}", "Processed: {c} / {t}").format(c=c, t=t if t else "?")
             )
         except Exception:
             pass
 
+    def _cleanup():
+        gui._reindex_all_worker = None
+        gui._reindex_all_cancelled = False
+        gui._reindex_all_dialog = None
+
     def on_finished(count):
         if getattr(gui, "_reindex_all_cancelled", False):
-            gui._reindex_all_worker = None
-            gui._reindex_all_cancelled = False
+            _cleanup()
             return
-        progress.close()
+        progress.finish()
         QMessageBox.information(
             gui,
             _("Готово", "Done"),
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1634,31 +1673,29 @@ def run_reindexing_all(gui):
 
     def on_error(msg):
         if getattr(gui, "_reindex_all_cancelled", False):
-            gui._reindex_all_worker = None
-            gui._reindex_all_cancelled = False
+            _cleanup()
             return
-        progress.close()
+        progress.finish()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
 
-    def on_cancel():
+    def on_stop():
         gui._reindex_all_cancelled = True
         try:
             gui._reindex_all_worker.requestInterruption()
         except Exception:
             pass
-        progress.close()
+        progress.finish()
 
     def on_cancelled():
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
 
     gui._reindex_all_worker.progress_signal.connect(on_progress)
+    gui._reindex_all_worker.status_signal.connect(progress.set_status)
     gui._reindex_all_worker.finished_signal.connect(on_finished)
     gui._reindex_all_worker.error_signal.connect(on_error)
     gui._reindex_all_worker.cancelled_signal.connect(on_cancelled)
-    progress.canceled.connect(on_cancel)
+    progress.stopRequested.connect(on_stop)
 
     progress.show()
     gui._reindex_all_worker.start()

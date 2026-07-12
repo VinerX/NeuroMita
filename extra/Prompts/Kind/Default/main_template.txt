@@ -8,4 +8,3 @@
 [<Context/examplesLong.txt>]
 [<Context/Mita_history.txt>]
 [<Structural/VariablesEffects.txt>]
-[<../../Common/CommonContext.script>]

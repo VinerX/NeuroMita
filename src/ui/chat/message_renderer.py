@@ -2,12 +2,12 @@
 message_renderer — widget-based message rendering for the chat.
 """
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt
 from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W
+from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W, _get_avatar_pixmap
 from ui.chat.message_actions_presentation import (
     DeleteChatMessage,
     EditChatMessage,
@@ -54,7 +54,7 @@ def _strip_hidden_image_descriptions(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
-def _wrap_panel_aligned(panel, role="assistant", parent=None):
+def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None):
     """
     Wrap a structured/think panel in a container to align perfectly with the message text bubble.
     Math: Avatar(36) + LayoutSpacing(8) + Tail(8) = 52px.
@@ -67,8 +67,17 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None):
     indent = AVATAR_SIZE + 16  # 36 + 8 (spacing) + 8 (tail)
     
     if role == "assistant":
-        lay.setContentsMargins(indent, 2, 0, 4)
-        lay.setSpacing(0)
+        if avatar_pixmap is not None:
+            lay.setContentsMargins(0, 2, 0, 4)
+            avatar = QLabel(wrapper)
+            avatar.setFixedSize(AVATAR_SIZE, AVATAR_SIZE)
+            avatar.setStyleSheet("background: transparent; border: none;")
+            avatar.setPixmap(avatar_pixmap)
+            lay.setSpacing(8)
+            lay.addWidget(avatar, 0, Qt.AlignmentFlag.AlignBottom)
+        else:
+            lay.setContentsMargins(indent, 2, 0, 4)
+            lay.setSpacing(0)
         lay.addWidget(panel)
         lay.addStretch()
     elif role == "user":
@@ -312,7 +321,12 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[gui._think_block_counter - 1] = block
 
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
+        wrapped = _wrap_panel_aligned(
+            block,
+            "assistant",
+            parent=chat_parent,
+            avatar_pixmap=_get_avatar_pixmap(name, "assistant"),
+        )
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 

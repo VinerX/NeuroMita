@@ -64,6 +64,30 @@ def setup_debug_panel_controls(view, parent_layout):
     )
     parent_layout.addWidget(struct_expanded_cb)
 
+    sandbox_structured_limits_cb = tr_set(
+        QCheckBox(),
+        'Ограничивать structured output в sandbox',
+        'Restrict structured output in sandbox',
+    )
+    tr_set(
+        sandbox_structured_limits_cb,
+        'Убирать emotions, animations и idle_animations без подключённой игры. '
+        'Снимите галку для отладки и возврата этих полей. Поле commands не отключается.',
+        'Remove emotions, animations and idle_animations when the game is disconnected. '
+        'Uncheck for debugging and restore these fields. The commands field remains available.',
+        "setToolTip",
+    )
+    sandbox_structured_limits_cb.setObjectName("SandboxCaptureToggle")
+    sandbox_structured_limits_cb.setChecked(bool(view._get_setting(
+        "REMOTE_ONLY_STRUCTURED_FIELDS_EXCLUSION_ENABLED", True
+    )))
+    sandbox_structured_limits_cb.toggled.connect(
+        lambda checked: view._save_setting(
+            "REMOTE_ONLY_STRUCTURED_FIELDS_EXCLUSION_ENABLED", checked
+        )
+    )
+    parent_layout.addWidget(sandbox_structured_limits_cb)
+
     # ── System message insertion ─────────────────────────────────────────────
     sys_label = tr_set(QLabel(), 'Вставить system-сообщение в историю', 'Insert system message into history')
     sys_label.setObjectName('SeparatorLabel')

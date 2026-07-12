@@ -27,6 +27,11 @@ from ui.windows.ai_hub.presentation import (
     SubmitComponentAction,
 )
 from utils import getTranslationVariant as _
+from main_logger import logger
+
+# Проверка статусов идёт вне Qt и может трогать сторонние пакеты или сеть.
+# Зависший worker не должен бесконечно держать кнопки установки заблокированными.
+STATUS_REFRESH_TIMEOUT_MS = 20_000
 
 
 class AIHubViewModel(IntentViewModel[AIHubState]):
@@ -42,6 +47,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         self._presentation = presentation
         self._catalog = presentation.installables
         self._install_ui_generation = 0
+        self._refresh_timeout_generation = 0
         for topic, callback in (
             (UiTopic.INSTALL_TASK_STARTED, self._on_install_started),
             (UiTopic.INSTALL_TASK_PROGRESS, self._on_install_progress),
@@ -102,6 +108,12 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         if include_status is None:
             include_status = bool(force or self.state.loaded_once)
         self.update_state(refreshing=True, error=None)
+        self._refresh_timeout_generation += 1
+        generation = self._refresh_timeout_generation
+        QTimer.singleShot(
+            STATUS_REFRESH_TIMEOUT_MS,
+            lambda: self._on_refresh_timeout(generation),
+        )
 
         def worker() -> dict[str, Any]:
             rows = self._catalog.list_rows(
@@ -294,6 +306,22 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
 
     def _apply_refresh_error(self, error: Exception) -> None:
         self.update_state(refreshing=False, error=str(error))
+
+    def _on_refresh_timeout(self, generation: int) -> None:
+        """Разблокировать UI, если проверка статусов не уложилась в бюджет."""
+        if generation != self._refresh_timeout_generation or not self.state.refreshing:
+            return
+        logger.warning(
+            "AI Hub status refresh timed out after %d ms", STATUS_REFRESH_TIMEOUT_MS
+        )
+        self.update_state(
+            refreshing=False,
+            checking_component_ids=frozenset(),
+            task_status=_(
+                "Проверка файлов не завершилась. Новая проверка будет доступна после завершения текущей. Если состояние не изменится, перезапустите приложение.",
+                "The file check did not finish. A new check will be available after the current one ends. If the state does not change, restart the application.",
+            ),
+        )
 
     def _on_install_started(self, event) -> None:
         if not self._is_installable_task(event):

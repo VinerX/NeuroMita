@@ -8,6 +8,5 @@
 [<Context/examples.script>] 
 [<Main/player.txt>]
 [<Structural/VariableEffects.script>]
-[<../../Common/CommonContext.script>]
 [<Scripts/chess_handler.script>]
 [<Scripts/seabattle_handler.script>]

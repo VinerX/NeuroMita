@@ -89,6 +89,9 @@ class LauncherSidebarWidget(QFrame):
 
         self._lang_buttons: dict[str, QPushButton] = {}
         self._lang_pills_layout: QHBoxLayout | None = None
+        # Вторая пилюля — всегда последний выбранный НЕ английский язык.
+        # По умолчанию русский; обновляется при каждой смене на неанглийский.
+        self._last_secondary_lang = "ru"
         self._version_label: QLabel | None = None
 
         self._build_ui()
@@ -278,6 +281,10 @@ class LauncherSidebarWidget(QFrame):
         # Контейнер для «быстрых» пилюль языков — его содержимое пересобирается
         # при смене языка (вторая пилюля зависит от текущего языка).
         pills_host = QWidget()
+        # Явный objectName + прозрачный фон: иначе глобальное правило
+        # QWidget { background-color: bg_root } из main-стилей рисует под
+        # обеими пилюлями сплошной прямоугольник (фидбэк vinerx).
+        pills_host.setObjectName("LauncherShellLangPillsHost")
         pills_layout = QHBoxLayout(pills_host)
         pills_layout.setContentsMargins(0, 0, 0, 0)
         pills_layout.setSpacing(6)
@@ -321,10 +328,11 @@ class LauncherSidebarWidget(QFrame):
             self._version_label.setText(self._read_version_string())
 
     def _rebuild_lang_pills(self) -> None:
-        """Пересобирает «быстрые» пилюли языков: всегда RU + одна вторая.
+        """Пересобирает «быстрые» пилюли языков: всегда EN слева + одна вторая.
 
-        Если выбран язык вне RU/EN — вторая пилюля показывает именно его
-        (вместо EN), чтобы текущий язык был под рукой одним кликом."""
+        EN — основной язык (левая пилюля). Вторая пилюля показывает последний
+        выбранный НЕ английский язык (по умолчанию русский), чтобы текущий язык
+        был под рукой одним кликом. Активная пилюля подсвечивается («горит»)."""
         layout = self._lang_pills_layout
         if layout is None:
             return
@@ -342,9 +350,15 @@ class LauncherSidebarWidget(QFrame):
         except Exception:
             available = {"ru", "en"}
         current = str(self._active_language or "ru").lower()
-        second = "en" if (current in ("ru", "en") or current not in available) else current
 
-        for code in ("ru", second):
+        # Запоминаем последний выбранный неанглийский язык для второй пилюли.
+        if current != "en" and current in available:
+            self._last_secondary_lang = current
+        second = self._last_secondary_lang
+        if second == "en" or second not in available:
+            second = "ru"
+
+        for code in ("en", second):
             button = QPushButton(code.upper())
             button.setObjectName("LauncherShellLangPill")
             button.setCheckable(True)

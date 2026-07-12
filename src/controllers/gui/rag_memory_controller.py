@@ -22,10 +22,12 @@ from localization.live import tr_set
 from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ApiPresetService, GenerationService, SettingsService, UtilityGenerationRequest
+from managers.settings_manager import SettingsManager
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
     get_install_status,
+    required_model_targets,
     start_install,
 )
 from managers.rag.pipeline.config import RAG_DEFAULTS
@@ -800,6 +802,60 @@ def _refresh_preset_combo(gui) -> None:
     _update_preset_delete_btn(gui, combo.currentText())
 
 
+def _missing_preset_model_targets() -> list[tuple[str, list[str]]]:
+    """Return enabled RAG targets whose selected model is absent locally.
+
+    The install status is also responsible for checking Python dependencies, but
+    this helper deliberately reports only model artifacts: the user should not
+    get a download prompt merely because a package needs an update.
+    """
+    settings = use(SettingsService)
+    targets = required_model_targets(settings=settings)
+
+    missing: list[tuple[str, list[str]]] = []
+    for target in targets:
+        status = get_install_status(target)
+        models = [str(model) for model in status.get("download_models", []) if str(model).strip()]
+        if models:
+            missing.append((target, models))
+    return missing
+
+
+def _show_missing_preset_models(gui, missing: list[tuple[str, list[str]]]) -> None:
+    """Offer to enqueue downloads after background status inspection."""
+    if not missing:
+        return
+
+    model_names = "\n".join(
+        f"• {model}" for _target, models in missing for model in models
+    )
+    answer = QMessageBox.question(
+        gui,
+        _("Необходима загрузка моделей", "Model download required"),
+        _(
+            "Для выбранного пресета RAG отсутствуют модели:\n{models}\n\nДобавить их в очередь загрузки?",
+            "The selected RAG preset needs these models:\n{models}\n\nAdd them to the download queue?",
+        ).format(models=model_names),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+    )
+    if answer != QMessageBox.StandardButton.Yes:
+        return
+
+    for target, _models in missing:
+        start_install(target, with_ui=True)
+
+
+def _offer_missing_preset_models(gui) -> None:
+    """Inspect preset model artifacts without blocking the settings window."""
+    run_async(
+        gui,
+        _missing_preset_model_targets,
+        lambda missing: _show_missing_preset_models(gui, missing),
+        name="rag-preset-model-status",
+    )
+
+
 def _on_apply_preset(gui) -> None:
     combo = getattr(gui, 'RAG_PIPELINE_PRESET', None)
     if combo is None:
@@ -847,6 +903,7 @@ def _on_apply_preset(gui) -> None:
             widget.setText(str(v))
     if any(k in settings for k in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM", "RAG_EMBED_QUERY_PREFIX")):
         sync_legacy_settings_to_preset(log_migration=False, force=True)
+    _offer_missing_preset_models(gui)
 
 
 def _on_save_preset(gui) -> bool:
@@ -1989,13 +2046,34 @@ def _refresh_embed_status(gui, *, force: bool = False) -> None:
 
 def _open_rag_ai_hub(gui, target: str) -> None:
     try:
+        # AI Hub показывает модели отдельными карточками — подсвечиваем
+        # карточку активной модели (что выбрано в настройках RAG). Для кастомной
+        # модели (нет в пресетах) просто открываем категорию RAG.
+        component_id = ""
+        try:
+            from managers.rag.model_catalog import spec_for_hf
+            from handlers.embedding_presets import resolve_full_config
+            from managers.rag.pipeline.config import resolve_ce_model
+
+            if target == TARGET_EMBEDDINGS:
+                active_hf = str(resolve_full_config().get("hf_name") or "").strip()
+            elif target == TARGET_RERANKER:
+                active_hf = str(resolve_ce_model() or "").strip()
+            else:
+                active_hf = ""
+            spec = spec_for_hf(target, active_hf) if active_hf else None
+            if spec:
+                component_id = spec["id"]
+        except Exception:
+            component_id = ""
+
         get_event_bus().emit(
             Events.GUI.SHOW_WINDOW,
             {
                 "window_id": "ai_hub",
                 "payload": {
                     "category": "rag",
-                    "component_id": f"rag:{target}",
+                    "component_id": component_id,
                 },
             },
         )

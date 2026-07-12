@@ -235,6 +235,28 @@ class MicrophoneSettingsController(BaseController):
 
         return (result + ellipsis) if result else ellipsis
 
+    # SpeechService — ленивая optional-фича: если открыть настройки микрофона
+    # раньше, чем она поднялась, список залипал на «микрофоны не найдены» и не
+    # обновлялся сам (микрофон физически есть, распознавание потом работает).
+    # Пока сервис не появился — коротко повторяем запрос.
+    _SPEECH_WAIT_MAX = 25            # ~15 c при 600 мс
+    _SPEECH_WAIT_INTERVAL_MS = 600
+
+    def _speech_service_or_retry(self, retry_fn, counter_attr: str):
+        """Возвращает (service, gave_up). Если сервиса ещё нет — планирует
+        повтор retry_fn и возвращает (None, False); при исчерпании попыток —
+        (None, True), чтобы вызывающий показал финальную заглушку."""
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            setattr(self, counter_attr, 0)
+            return speech, False
+        ticks = int(getattr(self, counter_attr, 0))
+        if ticks < self._SPEECH_WAIT_MAX:
+            setattr(self, counter_attr, ticks + 1)
+            QTimer.singleShot(self._SPEECH_WAIT_INTERVAL_MS, lambda: self._ui(retry_fn))
+            return None, False
+        return None, True
+
     def refresh_microphones(self):
         v = self.view
         if not v or not hasattr(v, "mic_combobox"):
@@ -297,9 +319,11 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
-        speech = services().get_optional(SpeechService)
+        speech, gave_up = self._speech_service_or_retry(self.refresh_microphones, "_mic_speech_wait")
         if speech is None:
-            cb([_("Микрофоны не найдены", "No microphones found")], RuntimeError("Speech service is unavailable"))
+            if gave_up:
+                cb([_("Микрофоны не найдены", "No microphones found")], RuntimeError("Speech service is unavailable"))
+            # иначе оставляем «Загрузка...» до следующей попытки
             return
         try:
             speech.microphone_list_async(cb)
@@ -382,9 +406,11 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
-        speech = services().get_optional(SpeechService)
+        speech, gave_up = self._speech_service_or_retry(self.refresh_engines, "_asr_speech_wait")
         if speech is None:
-            cb([], RuntimeError("Speech service is unavailable"))
+            if gave_up:
+                cb([], RuntimeError("Speech service is unavailable"))
+            # иначе комбобокс остаётся в состоянии «Загрузка...» до повтора
             return
         try:
             speech.asr_models_glossary_async(cb)

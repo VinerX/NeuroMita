@@ -95,7 +95,11 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     excl = set() if has_custom else {"custom_fields"}
                     if not caps.get("schema_reasoning", True):
                         excl.add("reasoning")
-                    params["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
+                    segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                    params["response_format"] = model_cls.openai_response_format(
+                        exclude_fields=excl or None,
+                        exclude_segment_fields=segment_excl or None,
+                    )
                 logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
             completion = client.chat.completions.create(**params, stream=req.stream)

@@ -214,6 +214,22 @@ class GameLinkService(ABC):
     def is_connected(self) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeCapabilities:
+    """Capabilities of the currently available game/runtime channel."""
+
+    connected: bool | None = None
+    remote_only: bool | None = None
+    structured_segment_exclude_fields: tuple[str, ...] = ()
+
+
+class RuntimeCapabilitiesService(ABC):
+    """Single source of truth for runtime-dependent prompt capabilities."""
+
+    @abstractmethod
+    def snapshot(self) -> RuntimeCapabilities: ...
+
+
 # ---------------------------------------------------------------------------
 # История
 # ---------------------------------------------------------------------------
@@ -248,6 +264,7 @@ class PromptBuildRequest:
     policy: RequestPolicy
     user_input: str = ""
     system_input: str = ""
+    rag_context: str = ""
     hidden_user_context: str = ""
     image_data: List[Any] = field(default_factory=list)
     memory_limit: int = 40

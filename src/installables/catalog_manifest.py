@@ -498,54 +498,10 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'languages': ['Multilingual'],
          'size': ''},
     ),
-    InstallableCatalogEntry(
-        id='rag:embeddings',
-        loader='managers.rag.install_spec:create_rag_installable_components',
-        metadata_ru={'id': 'rag:embeddings',
-         'item_id': 'embeddings',
-         'category': 'rag',
-         'title': 'Qwen/Qwen3-Embedding-0.6B',
-         'description': 'Local RAG model artifacts.',
-         'backend': 'cpu',
-         'legacy_kind': 'rag',
-         'tags': ['rag'],
-         'languages': [],
-         'size': ''},
-        metadata_en={'id': 'rag:embeddings',
-         'item_id': 'embeddings',
-         'category': 'rag',
-         'title': 'Qwen/Qwen3-Embedding-0.6B',
-         'description': 'Local RAG model artifacts.',
-         'backend': 'cpu',
-         'legacy_kind': 'rag',
-         'tags': ['rag'],
-         'languages': [],
-         'size': ''},
-    ),
-    InstallableCatalogEntry(
-        id='rag:reranker',
-        loader='managers.rag.install_spec:create_rag_installable_components',
-        metadata_ru={'id': 'rag:reranker',
-         'item_id': 'reranker',
-         'category': 'rag',
-         'title': 'Alibaba-NLP/gte-multilingual-reranker-base',
-         'description': 'Local RAG model artifacts.',
-         'backend': 'cpu',
-         'legacy_kind': 'rag',
-         'tags': ['rag'],
-         'languages': [],
-         'size': ''},
-        metadata_en={'id': 'rag:reranker',
-         'item_id': 'reranker',
-         'category': 'rag',
-         'title': 'Alibaba-NLP/gte-multilingual-reranker-base',
-         'description': 'Local RAG model artifacts.',
-         'backend': 'cpu',
-         'legacy_kind': 'rag',
-         'tags': ['rag'],
-         'languages': [],
-         'size': ''},
-    ),
+    # RAG embeddings/reranker выводятся ОТДЕЛЬНОЙ карточкой на каждую модель
+    # пресета — они генерируются динамически из пресетов ниже (см.
+    # _rag_model_catalog_entries), чтобы заголовок карточки и реально
+    # скачиваемая модель не расходились.
     InstallableCatalogEntry(
         id='beats:beat_this',
         loader='game_connections.services.beat_install:create_beat_installable_components',
@@ -831,13 +787,158 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
     ),
 )
 
-CATALOG_BY_ID = {entry.id: entry for entry in CATALOG_ENTRIES}
+_RAG_LOADER = 'managers.rag.install_spec:create_rag_installable_components'
+
+
+def _rag_model_catalog_entries() -> tuple[InstallableCatalogEntry, ...]:
+    """Карточки конкретных RAG-моделей, построенные из пресетов.
+
+    Источник правды — те же пресеты, что и в настройках RAG, поэтому список
+    карточек всегда соответствует реально устанавливаемым моделям. Если пресеты
+    почему-то не читаются, возвращаем пустой набор — каталог остальных
+    компонентов от этого не ломается.
+    """
+    try:
+        from managers.rag.model_catalog import all_model_specs
+    except Exception:
+        return ()
+
+    entries: list[InstallableCatalogEntry] = []
+    try:
+        for spec in all_model_specs():
+            meta = {
+                'id': spec['id'],
+                'item_id': spec['kind'],
+                'category': 'rag',
+                'title': spec['hf_id'],
+                'description': spec['display'],
+                'backend': 'cpu',
+                'legacy_kind': 'rag',
+                'tags': ['rag', spec['kind']],
+                'languages': [],
+                'size': '',
+            }
+            entries.append(
+                InstallableCatalogEntry(
+                    id=spec['id'],
+                    loader=_RAG_LOADER,
+                    metadata_ru=dict(meta),
+                    metadata_en=dict(meta),
+                )
+            )
+    except Exception:
+        return ()
+    return tuple(entries)
+
+
+def _rag_aggregate_catalog_entries() -> tuple[InstallableCatalogEntry, ...]:
+    """Агрегатные RAG-компоненты — только для lookup (не показываются в сетке).
+
+    Используются settings-driven установкой АКТИВНОЙ (в т.ч. кастомной) модели
+    через start_install(); заголовок резолвится вживую из настроек RAG.
+    """
+    out: list[InstallableCatalogEntry] = []
+    for item_id, title in (('embeddings', 'RAG embeddings'), ('reranker', 'RAG reranker')):
+        meta = {
+            'id': f'rag:{item_id}',
+            'item_id': item_id,
+            'category': 'rag',
+            'title': title,
+            'description': 'Local RAG model artifacts.',
+            'backend': 'cpu',
+            'legacy_kind': 'rag',
+            'tags': ['rag'],
+            'languages': [],
+            'size': '',
+        }
+        out.append(
+            InstallableCatalogEntry(
+                id=f'rag:{item_id}',
+                loader=_RAG_LOADER,
+                metadata_ru=dict(meta),
+                metadata_en=dict(meta),
+            )
+        )
+    return tuple(out)
+
+
+def _rag_custom_catalog_entries() -> tuple[InstallableCatalogEntry, ...]:
+    """Живые карточки для активной КАСТОМНОЙ модели (нет в пресетах).
+
+    Пересчитываются на каждый запрос каталога (resolve_full_config кэширован),
+    чтобы карточка появлялась сразу после выбора кастомной модели в настройках
+    RAG. Пресетные модели сюда не попадают (у них уже есть статичная карточка).
+    """
+    try:
+        from managers.rag.model_catalog import custom_active_model_specs
+
+        specs = custom_active_model_specs()
+    except Exception:
+        return ()
+
+    entries: list[InstallableCatalogEntry] = []
+    for spec in specs:
+        if spec["id"] in _BASE_BY_ID:
+            continue
+        meta = {
+            'id': spec['id'],
+            'item_id': spec['kind'],
+            'category': 'rag',
+            'title': spec['hf_id'],
+            'description': spec['display'],
+            'backend': 'cpu',
+            'legacy_kind': 'rag',
+            'tags': ['rag', spec['kind'], 'custom'],
+            'languages': [],
+            'size': '',
+        }
+        entries.append(
+            InstallableCatalogEntry(
+                id=spec['id'],
+                loader=_RAG_LOADER,
+                metadata_ru=dict(meta),
+                metadata_en=dict(meta),
+            )
+        )
+    return tuple(entries)
+
+
+# Статичная часть каталога (не-RAG + карточки RAG-моделей из пресетов) считается
+# один раз. Карточка активной кастомной модели добавляется вживую поверх неё.
+_BASE_ENTRIES: tuple[InstallableCatalogEntry, ...] = CATALOG_ENTRIES + _rag_model_catalog_entries()
+_BASE_BY_ID: dict[str, InstallableCatalogEntry] = {entry.id: entry for entry in _BASE_ENTRIES}
+for _entry in _rag_aggregate_catalog_entries():
+    _BASE_BY_ID.setdefault(_entry.id, _entry)
+
+
+def catalog_entries() -> tuple[InstallableCatalogEntry, ...]:
+    """Полный каталог для сетки AI Hub (со свежей кастомной карточкой)."""
+    return _BASE_ENTRIES + _rag_custom_catalog_entries()
+
+
+def catalog_by_id() -> dict[str, InstallableCatalogEntry]:
+    """Индекс по id для require_component (включая агрегаты и кастом)."""
+    custom = _rag_custom_catalog_entries()
+    if not custom:
+        return _BASE_BY_ID
+    merged = dict(_BASE_BY_ID)
+    for entry in custom:
+        merged.setdefault(entry.id, entry)
+    return merged
+
+
+# Обратная совместимость: снапшот на момент импорта (без кастомной карточки).
+# Новый код должен звать catalog_entries()/catalog_by_id() для живого списка.
+CATALOG_ENTRIES = _BASE_ENTRIES
+CATALOG_BY_ID = _BASE_BY_ID
+
 
 def entries_for_category(category: str | None = None) -> tuple[InstallableCatalogEntry, ...]:
+    entries = catalog_entries()
     if not category:
-        return CATALOG_ENTRIES
+        return entries
     target = str(category).strip().lower()
     return tuple(
-        entry for entry in CATALOG_ENTRIES
+        entry for entry in entries
         if str(entry.metadata_ru.get("category") or "").strip().lower() == target
     )

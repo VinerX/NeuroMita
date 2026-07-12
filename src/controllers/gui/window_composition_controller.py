@@ -122,7 +122,8 @@ class WindowCompositionController:
     def create_installation_window(self, title: str, initial_status: str, holder: dict) -> None:
         ready_event = holder.get("ready_event")
         try:
-            win = VoiceInstallationWindow(self._view, title, initial_status)
+            style_variant = str(holder.get("style_variant") or "default")
+            win = VoiceInstallationWindow(self._view, title, initial_status, style_variant=style_variant)
             self._active_install_window = win
             win.minimized.connect(lambda: self._set_install_logs_visible(True))
             win.window_closed.connect(lambda window=win: self._on_install_window_closed(window))

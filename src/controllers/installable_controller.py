@@ -246,6 +246,8 @@ class InstallableController(InstallableOperationsService):
             payload["install_window"] = data.get("install_window")
         if data.get("install_callbacks") is not None:
             payload["install_callbacks"] = data.get("install_callbacks")
+        if data.get("install_style_variant") is not None:
+            payload["install_style_variant"] = data.get("install_style_variant")
 
         queue_service = services().get_optional(InstallQueueService)
         if queue_service is not None:

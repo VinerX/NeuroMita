@@ -97,9 +97,12 @@ def _run_gui(runtime, startup_mode: str) -> int:
     install_combobox_wheel_guard(app)
 
     try:
-        from PyQt6.QtGui import QIcon
+        from ui.app_icon import application_icon, set_app_user_model_id
 
-        app.setWindowIcon(QIcon("Icon.ico"))
+        # Закрепляем идентичность в панели задач ДО создания окон, иначе после
+        # перезапуска detached-процессом иконка наследуется от python.exe.
+        set_app_user_model_id()
+        app.setWindowIcon(application_icon())
     except Exception:
         pass
 
@@ -201,7 +204,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
     try:
         from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
 
-        install_dark_titlebar_sync(main_window)
+        install_dark_titlebar_sync(app)
         apply_dark_titlebar(main_window)
     except Exception:
         pass

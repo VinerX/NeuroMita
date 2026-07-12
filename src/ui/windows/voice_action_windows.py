@@ -18,6 +18,10 @@ from collections import deque
 # и одиночные ESC-последовательности (\x1bX), и OSC/прочие escape-формы.
 ANSI_RE = re.compile(r'\x1b(?:\[.*?[@-~]|\].*?(?:\x1b\\|\x07))')
 
+# Незавершённая ANSI-последовательность в конце чанка (ESC без финального байта):
+# её нельзя стрипать сразу — финальный байт придёт со следующим PTY-чтением.
+TRAILING_ANSI_RE = re.compile(r'\x1b(?:\][^\x07\x1b]*|\[[0-9;?]*)?$')
+
 
 def strip_ansi(s: str) -> str:
     """Удаляет ANSI escape-коды из строки."""
@@ -128,6 +132,10 @@ class VoiceInstallationWindow(QDialog):
         self._full_log_lines: list[str] = []
         self._raw_log_chunks: list[str] = []
         self._raw_pending_chunks: deque[str] = deque()
+        # Хвост незакрытой ANSI-последовательности, разорванной на границе
+        # PTY-чтения: держим до следующего чанка, иначе strip_ansi её пропустит
+        # и в Raw log посыплются «□[32m»-артефакты (выглядит как сломанная кодировка).
+        self._raw_ansi_carry: str = ""
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
         self._snapshot_lines: list[str] = []
@@ -604,8 +612,22 @@ class VoiceInstallationWindow(QDialog):
         chunk = str(text)
         if not chunk:
             return
-        self._raw_log_chunks.append(chunk)
-        self._raw_pending_chunks.append(chunk)
+        # PTY-поток UV/pip приходит с ANSI-кодами цвета и живой перерисовки
+        # прогресса. QPlainTextEdit их не интерпретирует, поэтому raw ESC-байты
+        # рендерились как «□[32m» — пользователь видит «сломанную кодировку».
+        # Чистим ANSI (и одиночные ESC), но держим хвост незакрытой
+        # последовательности, разорванной на границе чтения, до следующего чанка.
+        buffered = self._raw_ansi_carry + chunk
+        self._raw_ansi_carry = ""
+        m = TRAILING_ANSI_RE.search(buffered)
+        if m:
+            self._raw_ansi_carry = buffered[m.start():]
+            buffered = buffered[:m.start()]
+        clean = strip_ansi(buffered).replace("\x1b", "")
+        if not clean:
+            return
+        self._raw_log_chunks.append(clean)
+        self._raw_pending_chunks.append(clean)
         self._schedule_raw_flush()
 
     def _raw_log_text(self) -> str:

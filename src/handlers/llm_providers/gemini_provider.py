@@ -203,7 +203,11 @@ class GeminiProvider(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
-                schema = model_cls.gemini_schema_dict(exclude_fields=excl or None)
+                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                schema = model_cls.gemini_schema_dict(
+                    exclude_fields=excl or None,
+                    exclude_segment_fields=segment_excl or None,
+                )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:

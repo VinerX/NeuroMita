@@ -39,6 +39,11 @@ TAIL_W = 8
 TAIL_H = 12
 BUBBLE_RADIUS = 12
 
+# Аватары используются почти в каждом сообщении. Держим уже загруженные и
+# округлённые pixmap в памяти, чтобы повторно не читать PNG и не перерисовывать
+# маску при каждом новом ответе.
+_AVATAR_CACHE: dict[tuple[str, str, int], QPixmap] = {}
+
 # Modern, balanced chat colors (Telegram/Discord inspired)
 ROLE_COLORS = {
     "user":      "#ff7ab8",
@@ -120,6 +125,10 @@ def _placeholder_avatar(size: int, color: str, name: str = "M") -> QPixmap:
     return pm
 
 def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
+    cache_key = (str(character_name or ""), str(role or ""), AVATAR_SIZE)
+    cached = _AVATAR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     filename = AVATAR_MAP.get(character_name)
     if not filename and character_name:
         for key, val in AVATAR_MAP.items():
@@ -130,8 +139,13 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
         path = os.path.join(_get_avatar_dir(), filename)
         if os.path.isfile(path):
             pm = QPixmap(path)
-            if not pm.isNull(): return _round_pixmap(pm, AVATAR_SIZE)
-    return _placeholder_avatar(AVATAR_SIZE, ROLE_COLORS.get(role, "#A78BFA"), character_name)
+            if not pm.isNull():
+                result = _round_pixmap(pm, AVATAR_SIZE)
+                _AVATAR_CACHE[cache_key] = result
+                return result
+    result = _placeholder_avatar(AVATAR_SIZE, ROLE_COLORS.get(role, "#A78BFA"), character_name)
+    _AVATAR_CACHE[cache_key] = result
+    return result
 
 
 def resolve_character_avatar(character_id: str, size: int = 32, role: str = "assistant") -> QPixmap:

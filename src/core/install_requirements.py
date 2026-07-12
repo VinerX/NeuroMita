@@ -334,7 +334,13 @@ def check_requirements(requirements: list[InstallRequirement], ctx: Optional[dic
                 missing_optional.append(req.id)
 
     return {
-        "ok": all_ok and len(missing_required) == 0,
+        # Компонент считается установленным, если на месте все ОБЯЗАТЕЛЬНЫЕ
+        # зависимости. Отсутствие опциональной (напр. pyaudio у Google-ASR) не
+        # должно ронять is_installed() — иначе post-install check падал с
+        # «missing: unknown» и компонент невозможно было поставить.
+        # (all_ok здесь включал и опциональные провалы — это и был баг.)
+        "ok": len(missing_required) == 0,
+        "all_ok": all_ok,
         "missing_required": missing_required,
         "missing_optional": missing_optional,
         "details": details,

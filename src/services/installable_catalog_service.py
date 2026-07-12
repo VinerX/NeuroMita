@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable
 
-from installables.catalog_manifest import CATALOG_BY_ID, CATALOG_ENTRIES
+from installables.catalog_manifest import catalog_by_id, catalog_entries
 from main_logger import logger
 from services.contracts import InstallableCatalogService, SettingsService
 
@@ -70,14 +70,15 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         status_category: str | None = None,
         ctx: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        all_entries = catalog_entries()
         entries = tuple(
-            entry for entry in CATALOG_ENTRIES if self._matches_category(entry, category)
+            entry for entry in all_entries if self._matches_category(entry, category)
         )
 
         if include_status:
             status_entries = tuple(
                 entry
-                for entry in CATALOG_ENTRIES
+                for entry in all_entries
                 if self._matches_category(entry, status_category or category)
             )
             self._refresh_statuses(status_entries, refresh=refresh, ctx=ctx)
@@ -96,7 +97,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
 
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any:
         normalized = str(component_id or "").strip()
-        if normalized not in CATALOG_BY_ID:
+        if normalized not in catalog_by_id():
             raise KeyError(f"Unknown installable component: {normalized}")
         from installables.registry_builder import (
             get_installable_registry,
@@ -147,7 +148,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                     installed_layer = manager.get_core_layer(spec.layer_id)
                 if installed_layer is None:
                     backend_ready = False
-            backend_entry = CATALOG_BY_ID.get(backend_id)
+            backend_entry = catalog_by_id().get(backend_id)
             if backend_entry is not None:
                 backend_meta = self._metadata(backend_entry)
                 backend_title = str(backend_meta.get("title") or backend_title)
@@ -292,8 +293,10 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         if refresh:
             runtime_ctx["refresh"] = True
 
+        by_id = catalog_by_id()
+
         def inspect(component_id: str) -> tuple[str, dict[str, Any]]:
-            entry = CATALOG_BY_ID[component_id]
+            entry = by_id[component_id]
             try:
                 from core.runtime_environments import runtime_environments
 

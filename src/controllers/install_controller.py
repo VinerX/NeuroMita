@@ -1057,12 +1057,17 @@ class InstallController(InstallService):
                         self._raise_if_cancelled(ctx)
                         cb.status("Failed")
                         cb.log(f"call step returned False: {desc or atype}")
+                        # Иначе причина падения шага (напр. «Downloading model
+                        # files…») жила только в GUI-логе, а в NeuroMitaLogs.log
+                        # было пусто — пользователю нечего смотреть.
+                        logger.error(f"Install call step '{desc or atype}' returned False")
                         return False
                 except InstallCancelled:
                     raise
                 except Exception as e:
                     cb.status("Failed")
                     cb.log(str(e))
+                    logger.error(f"Install call step '{desc or atype}' failed: {e}", exc_info=True)
                     return False
 
             elif atype == "call_async":
@@ -1109,12 +1114,14 @@ class InstallController(InstallService):
                         self._raise_if_cancelled(ctx)
                         cb.status("Failed")
                         cb.log("async step returned False")
+                        logger.error(f"Install async step '{desc or atype}' returned False")
                         return False
                 except InstallCancelled:
                     raise
                 except Exception as e:
                     cb.status("Failed")
                     cb.log(str(e))
+                    logger.error(f"Install async step '{desc or atype}' failed: {e}", exc_info=True)
                     return False
 
             else:

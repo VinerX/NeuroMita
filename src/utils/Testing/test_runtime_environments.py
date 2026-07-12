@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -702,6 +704,75 @@ def test_rag_snapshot_download_uses_isolated_environment(
     ).read_text(encoding="utf-8") == "no-token"
     assert installer.active is None
     assert str(overlay) not in sys.path
+
+
+def test_rag_snapshot_download_splits_oversized_process_timeout(monkeypatch) -> None:
+    from managers.rag import install_spec
+
+    process = MagicMock()
+    process.returncode = 0
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("snapshot_download", install_spec._SUBPROCESS_WAIT_SLICE_SEC),
+        ("download complete\n", None),
+    ]
+    monkeypatch.setattr(install_spec.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    action = install_spec._snapshot_download_action(
+        "owner/model",
+        description="download",
+        progress=50,
+    )
+
+    assert action.fn(ctx={"timeout_sec": 7_200_000.0})
+    assert process.communicate.call_args_list[0].kwargs["timeout"] == install_spec._SUBPROCESS_WAIT_SLICE_SEC
+
+
+def test_rag_snapshot_download_cleans_active_process_after_overall_timeout(monkeypatch) -> None:
+    from managers.rag import install_spec
+
+    process = MagicMock()
+    process.returncode = None
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("snapshot_download", 1.0),
+        ("partial output\n", None),
+    ]
+
+    class _Installer:
+        script_path = sys.executable
+
+        def __init__(self) -> None:
+            self.active = None
+
+        def _set_active_process(self, active, _killer) -> None:
+            self.active = active
+
+        def _clear_active_process(self, active) -> None:
+            if self.active is active:
+                self.active = None
+
+        @staticmethod
+        def _terminate_process(active, _reason="") -> None:
+            active.kill()
+
+    installer = _Installer()
+    monkeypatch.setattr(
+        install_spec.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monotonic_values = iter((100.0, 100.5, 101.0))
+    monkeypatch.setattr(install_spec.time, "monotonic", lambda: next(monotonic_values))
+
+    action = install_spec._snapshot_download_action(
+        "owner/model",
+        description="download",
+        progress=50,
+    )
+
+    assert not action.fn(pip_installer=installer, ctx={"timeout_sec": 1.0})
+    assert installer.active is None
+    process.kill.assert_called_once()
+    assert process.communicate.call_args_list[1].kwargs == {}
 
 def test_runtime_bootstrap_reserves_lib_core_for_main_process(
     tmp_path: Path,

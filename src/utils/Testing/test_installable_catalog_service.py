@@ -57,7 +57,9 @@ class InstallableCatalogServiceTests(unittest.TestCase):
 import sys
 from services.installable_catalog_service import DefaultInstallableCatalogService
 rows = DefaultInstallableCatalogService().list_rows()
-assert len(rows) == 30
+# RAG embed/reranker модели теперь идут отдельной карточкой на модель и
+# строятся из пресетов, поэтому точное число зависит от набора пресетов.
+assert len(rows) >= 30
 for name in (
     'installables.registry_builder',
     'handlers.voice_models.edge_tts_rvc_model',
