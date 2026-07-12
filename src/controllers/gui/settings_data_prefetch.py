@@ -98,43 +98,10 @@ class SettingsDataCache:
             self._errors.pop(key, None)
 
 
-_CACHE = SettingsDataCache()
-
-
-def settings_data_cache() -> SettingsDataCache:
-    return _CACHE
-
-
-def get_cached_settings_data(key: str, default: Any = None) -> Any:
-    return _CACHE.get(key, default)
-
-
-def request_settings_data(
-    target: Any,
-    key: str,
-    worker: Worker,
-    on_ready: Callback | None = None,
-    on_error: ErrorCallback | None = None,
-    *,
-    name: str | None = None,
-    force: bool = False,
-):
-    return _CACHE.request(target, key, worker, on_ready, on_error, name=name, force=force)
-
-
-def prefetch_settings_data(gui) -> None:
-    """Compatibility entry point.
-
-    Settings data is no longer prefetched globally when the Settings page is
-    created. Callers should use :func:`prefetch_settings_section` so disabled
-    subsystems do not import packages or scan hardware in the background.
-    """
-    return None
-
-
-def prefetch_settings_section(gui, category: str) -> None:
+def prefetch_settings_section(gui, category: str, cache: SettingsDataCache) -> None:
+    """Владелец кэша — presentation-хаб (`presentation.settings_data`);
+    модуль больше не держит глобального синглтона."""
     category = str(category or "").strip().lower()
-    cache = settings_data_cache()
 
     if category == "api":
         cache.request(

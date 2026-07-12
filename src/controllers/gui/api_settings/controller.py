@@ -16,10 +16,7 @@ from .protocols_mixin import ProtocolsMixin
 from .editor_mixin import EditorMixin
 from .presets_mixin import PresetsMixin
 from .test_mixin import TestMixin
-from controllers.gui.settings_data_prefetch import (
-    API_PROVIDER_NAMES,
-    settings_data_cache,
-)
+from controllers.gui.settings_data_prefetch import API_PROVIDER_NAMES
 
 
 class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, TestMixin):
@@ -200,7 +197,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         self.event_bus.subscribe(Events.ApiPresets.PRESET_DELETED, self._on_preset_catalog_changed, weak=False)
 
     def _on_preset_catalog_changed(self, _event) -> None:
-        settings_data_cache().clear(API_PROVIDER_NAMES)
+        self.view.presentation.settings_data.clear(API_PROVIDER_NAMES)
         self.reload_presets_async()
 
     def close(self) -> None:

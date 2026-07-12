@@ -23,8 +23,6 @@ from controllers.gui.settings_data_prefetch import (
     API_PROVIDER_NAMES,
     CHARACTER_SETTINGS_SNAPSHOT,
     api_provider_names_from_result,
-    get_cached_settings_data,
-    request_settings_data,
 )
 
 
@@ -354,7 +352,7 @@ def _load_character_settings_snapshot_async(gui) -> None:
     if bool(getattr(gui, "_character_settings_snapshot_loading", False)):
         return
 
-    cached = get_cached_settings_data(CHARACTER_SETTINGS_SNAPSHOT, None)
+    cached = gui.presentation.settings_data.get(CHARACTER_SETTINGS_SNAPSHOT, None)
     if cached is not None:
         _apply_character_settings_snapshot(gui, cached)
         return
@@ -384,7 +382,7 @@ def _load_character_settings_snapshot_async(gui) -> None:
             "current_char_id": _fallback_current_character_id(gui),
         })
 
-    request_settings_data(
+    gui.presentation.settings_data.request(
         gui,
         CHARACTER_SETTINGS_SNAPSHOT,
         _worker,
@@ -395,7 +393,7 @@ def _load_character_settings_snapshot_async(gui) -> None:
 
 
 def _load_character_provider_items_async(gui) -> None:
-    cached = get_cached_settings_data(API_PROVIDER_NAMES, None)
+    cached = gui.presentation.settings_data.get(API_PROVIDER_NAMES, None)
     if cached is not None:
         _set_character_provider_items(gui, [*_default_provider_items(), *cached])
         return
@@ -406,7 +404,7 @@ def _load_character_provider_items_async(gui) -> None:
     def _apply(provider_names: list[str]) -> None:
         _set_character_provider_items(gui, [*_default_provider_items(), *(provider_names or [])])
 
-    request_settings_data(
+    gui.presentation.settings_data.request(
         gui,
         API_PROVIDER_NAMES,
         _worker,

@@ -24,10 +24,16 @@ from ui.presentation import UiEvent, UiSettingsDataKey, UiTopic
 
 
 class _SettingsDataController:
-    def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
-        from controllers.gui.settings_data_prefetch import get_cached_settings_data
+    """Владелец кэша данных настроек: единственный экземпляр SettingsDataCache
+    живёт здесь, а не модульным синглтоном."""
 
-        return get_cached_settings_data(str(key), default)
+    def __init__(self) -> None:
+        from controllers.gui.settings_data_prefetch import SettingsDataCache
+
+        self._cache = SettingsDataCache()
+
+    def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
+        return self._cache.get(str(key), default)
 
     def request(
         self,
@@ -40,9 +46,7 @@ class _SettingsDataController:
         name: str | None = None,
         force: bool = False,
     ):
-        from controllers.gui.settings_data_prefetch import request_settings_data
-
-        return request_settings_data(
+        return self._cache.request(
             target,
             str(key),
             worker,
@@ -52,10 +56,13 @@ class _SettingsDataController:
             force=force,
         )
 
+    def clear(self, key: UiSettingsDataKey | str | None = None) -> None:
+        self._cache.clear(str(key) if key is not None else None)
+
     def prefetch_section(self, gui: Any, category: str) -> None:
         from controllers.gui.settings_data_prefetch import prefetch_settings_section
 
-        prefetch_settings_section(gui, str(category))
+        prefetch_settings_section(gui, str(category), self._cache)
 
     def embed_preset_items_from_meta(self, meta: Any) -> list[tuple[str, Any]]:
         from controllers.gui.settings_data_prefetch import embed_preset_items_from_meta
@@ -64,10 +71,13 @@ class _SettingsDataController:
 
 
 class _ProviderOptionsController:
+    def __init__(self, settings_data: "_SettingsDataController") -> None:
+        self._settings_data = settings_data
+
     def current(self) -> list[Any]:
         from controllers.gui.provider_options import current_provider_options
 
-        return list(current_provider_options())
+        return list(current_provider_options(self._settings_data))
 
     def load(self) -> list[Any]:
         from controllers.gui.provider_options import load_provider_options
@@ -77,7 +87,9 @@ class _ProviderOptionsController:
     def load_async(self, gui: Any, setting_keys: tuple[str, ...], *, name: str):
         from controllers.gui.provider_options import load_api_provider_options_async
 
-        return load_api_provider_options_async(gui, setting_keys, name=name)
+        return load_api_provider_options_async(
+            gui, setting_keys, settings_data=self._settings_data, name=name
+        )
 
 
 class _SettingsSectionsController:
@@ -687,7 +699,7 @@ class UiPresentationHub:
         self.settings = _SettingsController()
         self.app = _ApplicationController()
         self.settings_data = _SettingsDataController()
-        self.providers = _ProviderOptionsController()
+        self.providers = _ProviderOptionsController(self.settings_data)
         self.settings_sections = _SettingsSectionsController()
         self.rag = _RagController()
         self.view_models = _ViewModelFactory(self)

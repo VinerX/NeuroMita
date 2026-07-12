@@ -13,9 +13,6 @@ from controllers.gui.async_runner import run_async
 from controllers.gui.settings_data_prefetch import (
     RAG_CE_STATUS,
     RAG_EMBED_STATUS,
-    get_cached_settings_data,
-    request_settings_data,
-    settings_data_cache,
 )
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -1879,7 +1876,7 @@ def _is_rag_install_event(event) -> bool:
 
 
 def _refresh_rag_install_widgets(gui) -> None:
-    cache = settings_data_cache()
+    cache = gui.presentation.settings_data
     cache.clear(RAG_EMBED_STATUS)
     cache.clear(RAG_CE_STATUS)
     try:
@@ -1989,12 +1986,12 @@ def _refresh_ce_status(gui, *, force: bool = False) -> None:
         except Exception:
             pass
 
-    cached = get_cached_settings_data(RAG_CE_STATUS, None)
+    cached = gui.presentation.settings_data.get(RAG_CE_STATUS, None)
     if cached is not None and not force:
         _apply(cached)
         return
 
-    request_settings_data(
+    gui.presentation.settings_data.request(
         gui,
         RAG_CE_STATUS,
         _worker,
@@ -2029,12 +2026,12 @@ def _refresh_embed_status(gui, *, force: bool = False) -> None:
         except Exception:
             pass
 
-    cached = get_cached_settings_data(RAG_EMBED_STATUS, None)
+    cached = gui.presentation.settings_data.get(RAG_EMBED_STATUS, None)
     if cached is not None and not force:
         _apply(cached)
         return
 
-    request_settings_data(
+    gui.presentation.settings_data.request(
         gui,
         RAG_EMBED_STATUS,
         _worker,

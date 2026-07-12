@@ -8,8 +8,6 @@ from main_logger import logger
 from controllers.gui.settings_data_prefetch import (
     API_PROVIDER_NAMES,
     api_provider_names_from_result,
-    get_cached_settings_data,
-    request_settings_data,
 )
 from utils import getTranslationVariant as _
 
@@ -18,8 +16,8 @@ CURRENT_PROVIDER_VALUE = "Текущий"
 CURRENT_PROVIDER_EN_VALUE = "Current"
 
 
-def current_provider_options() -> list:
-    names = _unique_provider_names(get_cached_settings_data(API_PROVIDER_NAMES, []))
+def current_provider_options(settings_data) -> list:
+    names = _unique_provider_names(settings_data.get(API_PROVIDER_NAMES, []))
     return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE), *names]
 
 
@@ -28,12 +26,18 @@ def load_provider_options() -> list:
     return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE), *names]
 
 
-def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: str = "api-provider-options"):
+def load_api_provider_options_async(
+    gui,
+    setting_keys: Sequence[str],
+    *,
+    settings_data,
+    name: str = "api-provider-options",
+):
     keys = tuple(str(key) for key in setting_keys if key)
     if not keys:
         return None
 
-    cached = get_cached_settings_data(API_PROVIDER_NAMES, None)
+    cached = settings_data.get(API_PROVIDER_NAMES, None)
     if cached is not None:
         _apply_api_provider_options(gui, keys, cached)
         return None
@@ -44,7 +48,7 @@ def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: s
     def _apply(provider_names: Iterable[str]) -> None:
         _apply_api_provider_options(gui, keys, provider_names)
 
-    return request_settings_data(gui, API_PROVIDER_NAMES, _worker, _apply, name=name)
+    return settings_data.request(gui, API_PROVIDER_NAMES, _worker, _apply, name=name)
 
 
 def _provider_names_from_result(result) -> list[str]:
