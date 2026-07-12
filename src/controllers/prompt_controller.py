@@ -257,6 +257,14 @@ class PromptController(PromptBuilderService):
         normalized = " ".join(block.strip().split()).lower()
         return any(normalized.startswith(prefix) for prefix in _VOLATILE_SYSTEM_BLOCK_PREFIXES)
 
+    @staticmethod
+    def _build_unity_actual_info_message(game_state: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Return Unity's current context as a volatile system message when present."""
+        actual_info = game_state.get("actualInfo", "")
+        if not actual_info or not str(actual_info).strip():
+            return None
+        return {"role": "system", "content": f"Other info: {actual_info}"}
+
     def build(self, request: PromptBuildRequest) -> PromptBuildResult:
         character = request.character
         char_id = str(getattr(character, "char_id", "") or "")
@@ -283,15 +291,6 @@ class PromptController(PromptBuilderService):
         rag_context = request.rag_context or ""
         policy = request.policy
 
-        try:
-            character.set_variable("GAME_DISTANCE", float(game_state.get("distance", 0.0)))
-            character.set_variable("GAME_ROOM_PLAYER", game_state.get("roomPlayer", -1))
-            character.set_variable("GAME_ROOM_MITA", game_state.get("roomMita", -1))
-            character.set_variable("GAME_NEAR_OBJECTS", game_state.get("nearObjects", ""))
-            character.set_variable("GAME_ACTUAL_INFO", game_state.get("actualInfo", ""))
-        except Exception as e:
-            logger.warning(f"[PromptController] Не удалось обновить игровые переменные для {char_id}: {e}")
-
         game_state_prompt_content: Optional[str] = None
         try:
             if character.get_variable("playingGame", False) and hasattr(character, "game_manager"):
@@ -305,6 +304,9 @@ class PromptController(PromptBuilderService):
             character, event_type, separate_prompts, policy=policy,
             capabilities=capabilities,
         )
+        unity_actual_info_message = self._build_unity_actual_info_message(game_state)
+        if unity_actual_info_message:
+            volatile_system_messages.insert(0, unity_actual_info_message)
         messages.extend(stable_system_messages)
 
         history_limited: List[Dict[str, Any]] = []

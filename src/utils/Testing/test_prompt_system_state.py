@@ -13,6 +13,20 @@ from controllers.prompt_controller import PromptController
 
 
 class PromptSystemStateTests(unittest.TestCase):
+    def test_unity_actual_info_is_added_as_a_system_message(self):
+        message = PromptController._build_unity_actual_info_message(
+            {"actualInfo": "The player is holding the key."}
+        )
+
+        self.assertEqual(
+            message,
+            {"role": "system", "content": "Other info: The player is holding the key."},
+        )
+
+    def test_empty_unity_actual_info_is_ignored(self):
+        self.assertIsNone(PromptController._build_unity_actual_info_message({"actualInfo": "  "}))
+        self.assertIsNone(PromptController._build_unity_actual_info_message({"actualInfo": None}))
+
     def test_remote_sandbox_state_is_explicit(self):
         message = PromptController._format_system_state_message(
             remote_only=True,
