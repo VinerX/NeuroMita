@@ -15,10 +15,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ui.presentation import UiTopic
 from main_logger import logger
-from ui.presentation import run_ui_async as run_async
 from ui.chat.chat_widget import ChatWidget
+from ui.widgets.chat_panel_presentation import (
+    ChatCaptureScreenRequested,
+    ChatClearStagedRequested,
+    ChatImagesStaged,
+    ChatInputChanged,
+    ChatOpenHistoryRequested,
+    ChatPanelActivated,
+    ChatPanelState,
+    ChatShowError,
+    ChatStageFilesRequested,
+    ChatStageImageRequested,
+    ChatStagedCleared,
+)
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.mita_status_widget import MitaStatusWidget
@@ -27,18 +38,72 @@ from localization.live import tr_set
 
 
 class ChatPanel(QWidget):
-    def __init__(self, gui):
+    def __init__(self, gui, view_model):
         super().__init__(gui)
         self.gui = gui
+        self._view_model = view_model
+        self._state: ChatPanelState = view_model.state
         self.setObjectName("ChatWorkspace")
 
         self._conversation_title_label = None
 
         self._build_ui()
+        self._view_model.state_changed.connect(self.render)
+        self._view_model.effect_emitted.connect(self._handle_effect)
+        self.destroyed.connect(lambda *_: self._view_model.close())
+        self.render(self._state)
         self.gui.chat_panel = self
 
     def _get_current_character_id(self) -> str:
-        return self.gui.presentation.characters.current_id()
+        return str(self._state.character_id or "")
+
+    def render(self, state: ChatPanelState) -> None:
+        self._state = state
+        self.gui._composer_blocked = bool(state.blocked)
+        self.gui._composer_block_category = str(state.settings_category or "api")
+        if self._conversation_title_label is not None:
+            self._conversation_title_label.setText(
+                _("Разговор с ", "Conversation with ")
+                + (state.character_id or _("персонажем", "character"))
+            )
+        warning_label = getattr(self.gui, "composer_warning_label", None)
+        if warning_label is not None:
+            warning_label.setText(state.warning)
+        composer = getattr(self.gui, "composer_bar", None)
+        warning = getattr(self.gui, "composer_warning", None)
+        if composer is not None:
+            composer.setVisible(not state.blocked)
+        if warning is not None:
+            warning.setVisible(state.blocked)
+        send_button = getattr(self.gui, "send_button", None)
+        if send_button is not None:
+            send_button.setEnabled(bool(state.can_send))
+
+    def _handle_effect(self, effect) -> None:
+        if isinstance(effect, ChatImagesStaged):
+            for image in effect.images:
+                self.gui.staged_image_data.append(image)
+                show_image_preview_bar(self.gui)
+                self.gui.image_preview_bar.add_image(image)
+            self._dispatch_input_state()
+            return
+        if isinstance(effect, ChatStagedCleared):
+            self.gui.staged_image_data.clear()
+            if getattr(self.gui, "image_preview_bar", None):
+                self.gui.image_preview_bar.clear()
+                hide_image_preview_bar(self.gui)
+            self._dispatch_input_state()
+            return
+        if isinstance(effect, ChatShowError):
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, effect.title, effect.message)
+
+    def _dispatch_input_state(self) -> None:
+        entry = getattr(self.gui, "user_entry", None)
+        has_text = bool(entry and entry.toPlainText().strip())
+        staged_count = len(getattr(self.gui, "staged_image_data", []) or [])
+        self._view_model.dispatch(ChatInputChanged(has_text, staged_count))
 
     def _refresh_conversation_title(self):
         if self._conversation_title_label is None:
@@ -53,8 +118,7 @@ class ChatPanel(QWidget):
         )
 
     def on_activated(self):
-        self._refresh_conversation_title()
-        refresh_composer_state(self.gui)
+        self._view_model.dispatch(ChatPanelActivated())
 
     def _open_block_settings(self):
         category = getattr(self.gui, "_composer_block_category", "api") or "api"
@@ -115,14 +179,9 @@ class ChatPanel(QWidget):
         return strip
 
     def _open_character_history(self):
-        try:
-            combo = getattr(self.gui, "chat_character_combobox", None)
-            character_id = combo.currentText().strip() if combo is not None else ""
-            if character_id:
-                self.gui.presentation.events.publish(UiTopic.CHARACTER_SET_CURRENT, {"character_id": character_id})
-            self.gui.presentation.characters.open_db_viewer(self.gui)
-        except Exception as exc:
-            logger.error(f"Failed to open character history: {exc}", exc_info=True)
+        combo = getattr(self.gui, "chat_character_combobox", None)
+        character_id = combo.currentText().strip() if combo is not None else ""
+        self._view_model.dispatch(ChatOpenHistoryRequested(character_id))
 
     def _build_composer(self) -> QWidget:
         wrapper = QWidget()
@@ -287,125 +346,21 @@ def adjust_input_height(gui):
     gui.user_entry.setFixedHeight(new_height)
 
 
-def _send_block_reason(gui):
-    """(#5) Причина, по которой отправка сейчас запрещена, либо None.
-
-    Блокируем, если не настроен API-пресет ИЛИ у текущего персонажа нет набора
-    промптов (например, удалена стандартная папка Prompts). Возвращает кортеж
-    (текст_предупреждения, категория_настроек_для_перехода)."""
-    # 1) API-пресет: не выбран никто и в списке пусто (не создавался).
-    try:
-        m = gui.presentation.api_presets.list_meta()
-        custom = (m or {}).get("custom") or []
-        has_selected = bool(gui._get_setting("LAST_API_PRESET_ID", 0))
-        if not custom and not has_selected:
-            return (
-                _("Нельзя отправлять сообщения: не настроен API-пресет. "
-                  "Создайте или выберите пресет в настройках.",
-                  "Can't send messages: no API preset configured. "
-                  "Create or select a preset in settings."),
-                "api",
-            )
-    except Exception:
-        pass
-
-    # 2) Набор промптов текущего персонажа.
-    try:
-        char_id = gui.presentation.characters.current_id()
-        if char_id and not gui.presentation.prompts.list_sets("Prompts", char_id):
-            return (
-                _("Нельзя отправлять сообщения: у персонажа нет набора промптов "
-                  "(папка Prompts). Восстановите промпты.",
-                  "Can't send messages: character has no prompt set "
-                  "(Prompts folder). Restore prompts."),
-                "characters",
-            )
-    except Exception:
-        pass
-
-    return None
-
-
 def refresh_composer_state(gui):
-    ticket = int(getattr(gui, "_composer_state_ticket", 0) or 0) + 1
-    gui._composer_state_ticket = ticket
-    gui._composer_blocked = False
-    update_send_button_state(gui)
-
-    def worker():
-        return _send_block_reason(gui)
-
-    def apply(reason):
-        if ticket != int(getattr(gui, "_composer_state_ticket", 0) or 0):
-            return
-        _apply_composer_state(gui, reason)
-
-    run_async(gui, worker, apply, name="composer-state")
-
-
-def _apply_composer_state(gui, reason):
-    gui._composer_blocked = bool(reason)
-
-    bar = getattr(gui, "composer_bar", None)
-    warning = getattr(gui, "composer_warning", None)
-    if reason is not None:
-        text, category = reason
-        gui._composer_block_category = category
-        lbl = getattr(gui, "composer_warning_label", None)
-        if lbl is not None:
-            lbl.setText(text)
-    if bar is not None:
-        bar.setVisible(not gui._composer_blocked)
-    if warning is not None:
-        warning.setVisible(gui._composer_blocked)
-
-    update_send_button_state(gui)
+    panel = getattr(gui, "chat_panel", None)
+    view_model = getattr(panel, "_view_model", None)
+    if view_model is not None:
+        view_model.dispatch(ChatPanelActivated())
 
 
 def refresh_composer_state_sync_legacy(gui):
-    """Переключает строку ввода на предупреждение, когда отправка заблокирована
-    (#5), и обратно. Дёргать при активации песочницы и смене пресета/персонажа."""
-    reason = _send_block_reason(gui)
-    gui._composer_blocked = bool(reason)
-
-    bar = getattr(gui, "composer_bar", None)
-    warning = getattr(gui, "composer_warning", None)
-    if reason is not None:
-        text, category = reason
-        gui._composer_block_category = category
-        lbl = getattr(gui, "composer_warning_label", None)
-        if lbl is not None:
-            lbl.setText(text)
-    if bar is not None:
-        bar.setVisible(not gui._composer_blocked)
-    if warning is not None:
-        warning.setVisible(gui._composer_blocked)
-
-    update_send_button_state(gui)
+    refresh_composer_state(gui)
 
 
 def update_send_button_state(gui):
-    if not getattr(gui, "user_entry", None) or not getattr(gui, "send_button", None):
-        return
-
-    if not gui.presentation.app.backend_ready:
-        gui.send_button.setEnabled(False)
-        return
-
-    # Отправка полностью заблокирована (нет пресета/промптов) — см. #5.
-    if getattr(gui, "_composer_blocked", False):
-        gui.send_button.setEnabled(False)
-        return
-
-    has_text = bool(gui.user_entry.toPlainText().strip())
-    has_images = bool(getattr(gui, "staged_image_data", []))
-
-    has_auto_images = bool(
-        gui._get_setting("AUTO_ATTACH_IMAGES", False)
-        or gui._get_setting("ENABLE_CAMERA_CAPTURE", False)
-    )
-
-    gui.send_button.setEnabled(has_text or has_images or has_auto_images)
+    panel = getattr(gui, "chat_panel", None)
+    if panel is not None:
+        panel._dispatch_input_state()
 
 
 def init_image_preview(gui):
@@ -490,11 +445,10 @@ def clipboard_image_to_controller(gui) -> bool:
     buf.open(QIODevice.OpenModeFlag.WriteOnly)
     qimg.save(buf, "PNG")
     img_bytes = buf.data().data()
-    gui.staged_image_data.append(img_bytes)
-    gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": img_bytes})
-    show_image_preview_bar(gui)
-    gui.image_preview_bar.add_image(img_bytes)
-    update_send_button_state(gui)
+    panel = getattr(gui, "chat_panel", None)
+    if panel is None:
+        return False
+    panel._view_model.dispatch(ChatStageImageRequested(bytes(img_bytes)))
     return True
 
 
@@ -507,57 +461,22 @@ def attach_images(gui):
     )
     if not file_paths:
         return
-
-    for file_path in file_paths:
-        gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": file_path})
-
-    for file_path in file_paths:
-        try:
-            with open(file_path, "rb") as file:
-                img_data = file.read()
-            gui.staged_image_data.append(img_data)
-            show_image_preview_bar(gui)
-            gui.image_preview_bar.add_image(img_data)
-        except Exception as exc:
-            logger.error(f"Ошибка чтения файла {file_path}: {exc}")
-
-    logger.info(f"Прикреплены изображения: {file_paths}")
-    update_send_button_state(gui)
+    panel = getattr(gui, "chat_panel", None)
+    if panel is not None:
+        panel._view_model.dispatch(ChatStageFilesRequested(tuple(file_paths)))
 
 
 def clear_staged_images(gui):
-    gui.presentation.events.publish(UiTopic.CHAT_CLEAR_STAGED_IMAGES)
-    gui.staged_image_data.clear()
-    if getattr(gui, "image_preview_bar", None):
-        gui.image_preview_bar.clear()
-        hide_image_preview_bar(gui)
-    update_send_button_state(gui)
+    panel = getattr(gui, "chat_panel", None)
+    if panel is not None:
+        panel._view_model.dispatch(ChatClearStagedRequested())
 
 
 def send_screen_capture(gui):
     logger.info("Запрошена отправка скриншота.")
-    # Запас времени на one-shot захват экрана.
-    frames = gui.presentation.capture.capture_screen(1)
-    if not frames:
-        from PyQt6.QtWidgets import QMessageBox
-
-        QMessageBox.warning(
-            gui,
-            _("Ошибка", "Error"),
-            _(
-                "Не удалось захватить экран. Убедитесь, что обработка изображений включена в настройках.",
-                "Failed to capture the screen. Make sure image analysis is enabled in settings.",
-            ),
-        )
-        return
-
-    for frame_data in frames[0]:
-        gui.staged_image_data.append(frame_data)
-        gui.presentation.events.publish(UiTopic.CHAT_STAGE_IMAGE, {"image_data": frame_data})
-        show_image_preview_bar(gui)
-        gui.image_preview_bar.add_image(frame_data)
-
-    update_send_button_state(gui)
+    panel = getattr(gui, "chat_panel", None)
+    if panel is not None:
+        panel._view_model.dispatch(ChatCaptureScreenRequested())
 
 
 def position_mita_status(gui):

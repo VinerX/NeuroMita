@@ -8,8 +8,13 @@ from utils import _
 from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W
+from ui.chat.message_actions_presentation import (
+    DeleteChatMessage,
+    EditChatMessage,
+    RegenerateChat,
+    RegenerateChatFrom,
+)
 from ui.chat.structured_panel import StructuredOutputPanel
-from ui.presentation import UiTopic
 
 def _strip_hidden_image_descriptions(text: str) -> str:
     import re
@@ -145,14 +150,17 @@ def _group_segments_by_target(segments: list) -> list:
     return groups
 
 def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, character_id: str):
-    events = gui.presentation.events
+    actions = getattr(gui, "_chat_message_actions_view_model", None)
+    if actions is None or actions.is_closed:
+        actions = gui.presentation.view_models.chat_message_actions(gui, parent=gui)
+        gui._chat_message_actions_view_model = actions
 
     def on_delete(mid):
-        events.publish(UiTopic.CHAT_DELETE_MESSAGE, {"message_id": mid, "character_id": character_id})
+        actions.dispatch(DeleteChatMessage(str(mid), str(character_id)))
     def on_edit(mid):
-        events.publish(UiTopic.CHAT_DELETE_MESSAGES_FROM, {"message_id": mid, "character_id": character_id, "edit_mode": True})
+        actions.dispatch(EditChatMessage(str(mid), str(character_id)))
     def on_regenerate(mid):
-        events.publish(UiTopic.CHAT_REGENERATE, {"character_id": character_id})
+        actions.dispatch(RegenerateChat(str(character_id)))
     def on_regenerate_from(mid):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         dlg = QDialog()
@@ -184,7 +192,7 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
         btn_row.addWidget(yes_btn)
         lay.addLayout(btn_row)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            events.publish(UiTopic.CHAT_REGENERATE_FROM, {"message_id": mid, "character_id": character_id})
+            actions.dispatch(RegenerateChatFrom(str(mid), str(character_id)))
 
     def on_view_context(sample_id: str, initial_tab: str = "request"):
         import json

@@ -244,8 +244,8 @@ class MainWindowCoordinator:
             page.show_extra_menu(anchor_widget)
 
     def find_unity_executable(self):
-        page = getattr(self._view, "home_page", None)
-        return page.find_unity_executable() if page is not None else None
+        configured = self._presentation.settings.get("UNITY_INSTALL_DIR") or None
+        return self._presentation.home.find_unity_executable(configured)
 
     def close(self) -> None:
         if self._closed:

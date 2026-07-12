@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 import qtawesome as qta
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QFrame,
@@ -17,9 +17,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ui.presentation import UiTopic
-from main_logger import logger
-from ui.presentation import run_ui_async as run_async
+from ui.widgets.character_state_presentation import (
+    CharacterParamState,
+    CharacterStatePanelState,
+    RefreshCharacterState,
+)
 from utils import _
 from localization.live import register_if_tr, tr_set
 
@@ -152,16 +154,16 @@ class CharacterStatePanel(QWidget):
     a mood label, and a collapsible textarea with all variables.
     """
 
-    def __init__(self, gui, parent: QWidget | None = None):
+    def __init__(self, gui, view_model, parent: QWidget | None = None):
         super().__init__(parent)
         self.gui = gui
+        self._view_model = view_model
         self.setObjectName("SandboxStatePanel")
 
         self._dynamic_bars: Dict[str, _StatBar] = {}
         self._dynamic_badges: Dict[str, QLabel] = {}
         self._current_char_id: str = ""
-        self._refresh_ticket = 0
-        self._all_text_ticket = 0
+        self._custom_signature: tuple[tuple[str, str, float, float], ...] = ()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -253,26 +255,10 @@ class CharacterStatePanel(QWidget):
         root.addWidget(all_card)
         root.addStretch(1)
 
-        # Subscribe to events
-        try:
-            events = self.gui.presentation.events
-            self._subscriptions = [
-                events.subscribe(UiTopic.CHARACTER_CURRENT_CHANGED, lambda e: self._schedule_refresh(rebuild=True), weak=False),
-                events.subscribe(UiTopic.CHARACTER_RELOAD_DATA, lambda e: self._schedule_refresh(rebuild=True), weak=False),
-            ]
-
-            def _on_response(_event):
-                self._schedule_refresh(rebuild=False)
-                if self._all_text.isVisible():
-                    QTimer.singleShot(100, self._refresh_all_text)
-
-            self._subscriptions.append(
-                events.subscribe(UiTopic.MODEL_SUCCESS, _on_response, weak=False)
-            )
-        except Exception:
-            pass
-
-        self.refresh(rebuild=True)
+        self._view_model.state_changed.connect(self.render)
+        self.destroyed.connect(lambda *_: self._view_model.close())
+        self.render(self._view_model.state)
+        self._view_model.dispatch(RefreshCharacterState(rebuild=True))
 
     # ─────────────────────────────────────────────────────────────
     def _on_toggle_all(self, checked: bool) -> None:
@@ -281,53 +267,8 @@ class CharacterStatePanel(QWidget):
         if checked:
             self._refresh_all_text()
 
-    def _schedule_refresh(self, *, rebuild: bool = False) -> None:
-        QTimer.singleShot(50, lambda: self.refresh(rebuild=rebuild))
-
     # ─────────────────────────────────────────────────────────────
-    def _get_current_character(self):
-        return self.gui.presentation.characters.current()
-
-    def _bounds_for(self, character, key: str, default_min: float, default_max: float) -> tuple[float, float]:
-        try:
-            vmin = float(character.get_variable(f"{key}_min", default_min))
-            vmax = float(character.get_variable(f"{key}_max", default_max))
-        except Exception:
-            vmin, vmax = default_min, default_max
-        return vmin, vmax
-
-    def _custom_param_bounds(self, param: Dict[str, Any], character) -> Optional[tuple[float, float]]:
-        # Explicit min/max wins
-        for key_min, key_max in (("min", "max"), ("value_min", "value_max")):
-            if key_min in param or key_max in param:
-                try:
-                    return float(param.get(key_min, 0.0)), float(param.get(key_max, 100.0))
-                except Exception:
-                    pass
-        # Try parsing formula like "max(A, min(<name> + <change>, B))"
-        formula = str(param.get("formula") or "")
-        if formula:
-            import re
-
-            m = re.search(r"max\(\s*(-?\d+(?:\.\d+)?)\s*,\s*min\(.*?,\s*(-?\d+(?:\.\d+)?)\s*\)", formula)
-            if m:
-                try:
-                    return float(m.group(1)), float(m.group(2))
-                except Exception:
-                    pass
-        # Fallback: use current value to derive a reasonable range
-        try:
-            cur = float(character.get_variable(str(param.get("name") or ""), 0.0) or 0.0)
-        except Exception:
-            cur = 0.0
-        if cur <= 0:
-            return 0.0, 100.0
-        # Round the upper bound up to a nice number
-        upper = max(100.0, ((int(cur) // 50) + 1) * 50.0)
-        return 0.0, upper
-
-    # ─────────────────────────────────────────────────────────────
-    def _rebuild_dynamic(self, character) -> None:
+    def _rebuild_dynamic(self, params: tuple[CharacterParamState, ...]) -> None:
         # Wipe existing dynamic widgets
         for w in list(self._dynamic_bars.values()):
             w.setParent(None)
@@ -338,19 +279,15 @@ class CharacterStatePanel(QWidget):
         self._dynamic_bars.clear()
         self._dynamic_badges.clear()
 
-        params: List[Dict[str, Any]] = list(getattr(character, "custom_params", []) or [])
         any_widget = False
         for param in params:
-            name = str(param.get("name") or "").strip()
+            name = str(param.name or "").strip()
             if not name:
                 continue
-            ptype = str(param.get("type") or "float").lower()
+            ptype = str(param.kind or "float").lower()
             if ptype in ("float", "int"):
-                bounds = self._custom_param_bounds(param, character)
-                if bounds is None:
-                    continue
                 bar = _StatBar(name, color="#ff8ad1")
-                bar.set_range(*bounds)
+                bar.set_range(param.minimum, param.maximum)
                 self._custom_layout.addWidget(bar)
                 self._dynamic_bars[name] = bar
                 any_widget = True
@@ -367,162 +304,73 @@ class CharacterStatePanel(QWidget):
 
         self._custom_card.setVisible(any_widget)
 
-    def _all_variables_text_for(self, character) -> str:
-        if character is None:
-            return "-"
-        try:
-            variables = dict(getattr(character, "variables", {}) or {})
-        except Exception:
-            variables = {}
-        lines: List[str] = []
-        for k in sorted(variables.keys(), key=str.lower):
-            v = variables[k]
-            try:
-                if isinstance(v, bool):
-                    v_text = "true" if v else "false"
-                elif v is None:
-                    v_text = "None"
-                elif isinstance(v, float):
-                    v_text = f"{v:.3f}".rstrip("0").rstrip(".")
-                elif isinstance(v, str):
-                    v_text = f'"{v}"' if len(v) > 0 and (" " in v or "\n" in v or v[0] in "{[#") else v
-                else:
-                    v_text = str(v)
-            except Exception:
-                v_text = repr(v)
-            if len(v_text) > 300:
-                v_text = v_text[:297] + "..."
-            lines.append(f"{k}: {v_text}")
-        return "\n".join(lines) if lines else "-"
-
     def _refresh_all_text(self) -> None:
         if self._all_text.hasFocus():
             return
-        self._all_text_ticket += 1
-        ticket = self._all_text_ticket
-
-        def worker():
-            return self._all_variables_text_for(self._get_current_character())
-
-        def apply(new_text: str):
-            if ticket != self._all_text_ticket:
-                return
-            scrollbar = self._all_text.verticalScrollBar()
-            scroll_val = scrollbar.value() if scrollbar else 0
-            self._all_text.setPlainText(str(new_text or "-"))
-            if scrollbar:
-                scrollbar.setValue(scroll_val)
-
-        run_async(self.gui, worker, apply, name="character-state-all-vars")
-        return
-        character = self._get_current_character()
-        if character is None:
-            self._all_text.setPlainText("—")
-            return
-        try:
-            variables = dict(getattr(character, "variables", {}) or {})
-        except Exception:
-            variables = {}
-        lines: List[str] = []
-        for k in sorted(variables.keys(), key=str.lower):
-            v = variables[k]
-            try:
-                if isinstance(v, bool):
-                    v_text = "true" if v else "false"
-                elif v is None:
-                    v_text = "None"
-                elif isinstance(v, float):
-                    v_text = f"{v:.3f}".rstrip("0").rstrip(".")
-                elif isinstance(v, str):
-                    v_text = f'"{v}"' if len(v) > 0 and (" " in v or "\n" in v or v[0] in "{[#") else v
-                else:
-                    v_text = str(v)
-            except Exception:
-                v_text = repr(v)
-            if len(v_text) > 300:
-                v_text = v_text[:297] + "…"
-            lines.append(f"{k}: {v_text}")
-        new_text = "\n".join(lines) if lines else "—"
         scrollbar = self._all_text.verticalScrollBar()
         scroll_val = scrollbar.value() if scrollbar else 0
-        self._all_text.setPlainText(new_text)
+        self._all_text.setPlainText(self._view_model.state.all_variables_text or "—")
         if scrollbar:
             scrollbar.setValue(scroll_val)
 
     # ─────────────────────────────────────────────────────────────
     def refresh(self, *, rebuild: bool = False) -> None:
-        self._refresh_ticket += 1
-        ticket = self._refresh_ticket
+        self._view_model.dispatch(RefreshCharacterState(rebuild=rebuild))
 
-        def worker():
-            return self._get_current_character()
-
-        def apply(character):
-            if ticket != self._refresh_ticket:
-                return
-            self._apply_character_refresh(character, rebuild=rebuild)
-
-        run_async(self.gui, worker, apply, name="character-state-refresh")
-
-    def _apply_character_refresh(self, character, *, rebuild: bool = False) -> None:
-        if character is None:
+    def render(self, state: CharacterStatePanelState) -> None:
+        if not state.character_id:
             self._attitude_bar.set_value(0)
             self._boredom_bar.set_value(0)
             self._stress_bar.set_value(0)
             self._secret_badge.setVisible(False)
             self._custom_card.setVisible(False)
+            self._all_text.setPlainText(state.all_variables_text or "—")
             return
 
-        char_id = str(getattr(character, "char_id", "") or "")
-        if rebuild or char_id != self._current_char_id:
-            self._current_char_id = char_id
-            self._rebuild_dynamic(character)
+        custom_signature = tuple(
+            (
+                str(item.name),
+                str(item.kind),
+                float(item.minimum),
+                float(item.maximum),
+            )
+            for item in state.custom_params
+        )
+        if (
+            state.character_id != self._current_char_id
+            or custom_signature != self._custom_signature
+        ):
+            self._current_char_id = state.character_id
+            self._custom_signature = custom_signature
+            self._rebuild_dynamic(state.custom_params)
 
-        try:
-            attitude = float(character.get_variable("attitude", 0) or 0)
-            boredom = float(character.get_variable("boredom", 0) or 0)
-            stress = float(character.get_variable("stress", 0) or 0)
-        except Exception:
-            attitude = boredom = stress = 0.0
+        self._attitude_bar.set_range(state.attitude.minimum, state.attitude.maximum)
+        self._boredom_bar.set_range(state.boredom.minimum, state.boredom.maximum)
+        self._stress_bar.set_range(state.stress.minimum, state.stress.maximum)
+        self._attitude_bar.set_value(state.attitude.value)
+        self._boredom_bar.set_value(state.boredom.value)
+        self._stress_bar.set_value(state.stress.value)
 
-        self._attitude_bar.set_range(*self._bounds_for(character, "attitude", 0.0, 100.0))
-        self._boredom_bar.set_range(*self._bounds_for(character, "boredom", 0.0, 100.0))
-        self._stress_bar.set_range(*self._bounds_for(character, "stress", 0.0, 100.0))
-
-        self._attitude_bar.set_value(attitude)
-        self._boredom_bar.set_value(boredom)
-        self._stress_bar.set_value(stress)
-
-        # Secret exposed (only show if the variable exists in the character's state)
-        try:
-            variables = dict(getattr(character, "variables", {}) or {})
-        except Exception:
-            variables = {}
-        if "secretExposed" in variables:
-            exposed = bool(variables.get("secretExposed"))
-            self._secret_badge.setVisible(exposed)
-            if exposed:
-                self._secret_badge.setProperty("kind", "secret")
-                self._secret_badge.style().unpolish(self._secret_badge)
-                self._secret_badge.style().polish(self._secret_badge)
-        else:
-            self._secret_badge.setVisible(False)
+        self._secret_badge.setVisible(state.secret_exposed)
+        if state.secret_exposed:
+            self._secret_badge.setProperty("kind", "secret")
+            self._secret_badge.style().unpolish(self._secret_badge)
+            self._secret_badge.style().polish(self._secret_badge)
 
         # Custom params live values
+        params = {item.name: item for item in state.custom_params}
         for name, bar in self._dynamic_bars.items():
-            try:
-                v = float(variables.get(name, 0) or 0)
-            except Exception:
-                v = 0.0
-            bar.set_value(v)
+            item = params.get(name)
+            bar.set_value(float(item.value or 0.0) if item is not None else 0.0)
 
         for name, badge in self._dynamic_badges.items():
-            val = variables.get(name)
-            visible = bool(val) and val is not None
+            item = params.get(name)
+            visible = bool(item and item.value)
             badge.setVisible(visible)
             if visible:
-                badge.setProperty("kind", "active" if bool(val) else "neutral")
+                badge.setProperty("kind", "active")
                 badge.style().unpolish(badge)
                 badge.style().polish(badge)
 
-        # all_text refreshes only on response events, not on timer tick
+        if self._all_text.isVisible() and not self._all_text.hasFocus():
+            self._refresh_all_text()

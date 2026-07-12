@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QWidget
 
 from ui.pages.settings.section_registry import get_settings_section_specs
 from ui.pages.settings.settings_page_widget import SettingsPage, normalize_mode
+from ui.settings.settings_access import settings_store
 
 # ---------------------------------------------------------------------------
 # Per-section enable/disable
@@ -79,10 +80,10 @@ def apply_section_visibility(gui) -> None:
 
     # Fallback for early-startup / detached usage: drive raw button maps.
     for cat, btn in getattr(gui, "settings_buttons", {}).items():
-        btn.setVisible(is_section_enabled(cat, gui.presentation.settings))
+        btn.setVisible(is_section_enabled(cat, settings_store(gui)))
 
     active = getattr(gui, "current_settings_category", None)
-    if active and not is_section_enabled(active, gui.presentation.settings) and hasattr(gui, "show_settings_category"):
+    if active and not is_section_enabled(active, settings_store(gui)) and hasattr(gui, "show_settings_category"):
         gui.show_settings_category(active)
 
     try:
@@ -94,7 +95,7 @@ def apply_section_visibility(gui) -> None:
 
     sidebar = getattr(gui, "shell_sidebar", None)
     if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
-        sidebar.apply_section_visibility(lambda key: is_section_enabled(key, gui.presentation.settings))
+        sidebar.apply_section_visibility(lambda key: is_section_enabled(key, settings_store(gui)))
 
 
 def apply_interface_mode(gui, mode_value=None):
@@ -104,7 +105,9 @@ def apply_interface_mode(gui, mode_value=None):
 
 
 def create_settings_page(gui) -> QWidget:
-    page = SettingsPage(gui)
+    view_model = gui.presentation.view_models.settings_page(gui)
+    page = SettingsPage(gui, view_model)
+    view_model.setParent(page)
     gui.settings_page = page
     return page
 

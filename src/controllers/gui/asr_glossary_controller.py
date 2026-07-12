@@ -1,3 +1,5 @@
+import threading
+
 from PyQt6.QtCore import QTimer
 
 from core.events import Events, Event
@@ -5,6 +7,7 @@ from core.services import services
 from main_logger import logger
 from services.contracts import SpeechService
 from .base_controller import BaseController
+from .asr_glossary_view_model import AsrGlossaryViewModel
 
 from ui.windows.asr_glossary_view import AsrGlossaryView
 
@@ -12,15 +15,17 @@ from ui.windows.asr_glossary_view import AsrGlossaryView
 class AsrGlossaryGuiController(BaseController):
     def __init__(self, main_controller, view):
         self._dialog = None
-        self._glossary_view: AsrGlossaryView | None = AsrGlossaryView()
+        self._view_model = AsrGlossaryViewModel(
+            load_catalog=self._load_catalog,
+            load_settings=self._load_settings,
+            install_model=self._install_model,
+            set_option=self._set_recognizer_option,
+        )
+        self._glossary_view: AsrGlossaryView | None = AsrGlossaryView(self._view_model)
+        self._view_model.setParent(self._glossary_view)
         super().__init__(main_controller, view)
 
         self._register_window_on_ready()
-
-        self._glossary_view.request_install.connect(self._request_install)
-        self._glossary_view.request_refresh.connect(self._request_refresh)
-        self._glossary_view.request_settings.connect(self._request_settings)
-        self._glossary_view.setting_changed.connect(self._set_recognizer_option)
 
     def _register_window_on_ready(self):
         if not self.view or not hasattr(self.view, "window_manager") or self.view.window_manager is None:
@@ -57,40 +62,31 @@ class AsrGlossaryGuiController(BaseController):
 
         lay.addWidget(self._glossary_view)
 
-        QTimer.singleShot(0, self._glossary_view.refresh)
+        QTimer.singleShot(0, self._view_model.refresh)
 
-    def _request_install(self, engine_id: str):
+    def _install_model(self, engine_id: str) -> None:
         self.event_bus.emit(Events.Speech.INSTALL_ASR_MODEL, {"model": engine_id})
 
-    def _request_refresh(self):
-        view = self._glossary_view
-        if view is None:
-            return
-        ticket = view.begin_refresh()
+    def _load_catalog(self, refresh: bool) -> list[dict]:
         speech = services().get_optional(SpeechService)
         if speech is None:
-            view.catalog_loaded_signal.emit(
-                {
-                    "ticket": ticket,
-                    "models": [],
-                    "error": "Speech service is unavailable",
-                }
-            )
-            return
+            raise RuntimeError("Speech service is unavailable")
+
+        completed = threading.Event()
+        result: dict[str, object] = {"models": [], "error": None}
 
         def callback(models, error=None):
-            view.catalog_loaded_signal.emit(
-                {
-                    "ticket": ticket,
-                    "models": models if isinstance(models, list) else [],
-                    "error": str(error or ""),
-                }
-            )
+            result["models"] = models if isinstance(models, list) else []
+            result["error"] = error
+            completed.set()
 
-        try:
-            speech.asr_models_glossary_async(callback, refresh=True)
-        except Exception as exc:
-            callback([], exc)
+        speech.asr_models_glossary_async(callback, refresh=bool(refresh))
+        if not completed.wait(timeout=60.0):
+            raise TimeoutError("ASR model catalog request timed out")
+        error = result.get("error")
+        if error:
+            raise RuntimeError(str(error))
+        return list(result.get("models") or [])
 
 
     def _set_recognizer_option(self, engine_id: str, key: str, value) -> None:
@@ -99,42 +95,14 @@ class AsrGlossaryGuiController(BaseController):
             {"engine": str(engine_id), "key": str(key), "value": value},
         )
 
-    def _request_settings(self, engine_id: str, ticket: int) -> None:
-        view = self._glossary_view
-        if view is None:
-            return
-
-        def worker():
-            speech = services().get_optional(SpeechService)
-            if speech is None:
-                raise RuntimeError("Speech service is unavailable")
-            return {
-                "ticket": int(ticket),
-                "engine_id": str(engine_id),
-                "schema": speech.recognizer_settings_schema(str(engine_id)) or [],
-                "values": speech.recognizer_settings(str(engine_id)) or {},
-            }
-
-        def apply(payload: dict) -> None:
-            view.settings_loaded_signal.emit(payload)
-
-        def fail(exc: Exception) -> None:
-            view.settings_loaded_signal.emit(
-                {
-                    "ticket": int(ticket),
-                    "engine_id": str(engine_id),
-                    "schema": [],
-                    "values": {},
-                    "error": str(exc),
-                }
-            )
-
-        self._run_async(
-            worker,
-            apply,
-            fail,
-            name=f"asr-settings:{engine_id}",
-        )
+    def _load_settings(self, engine_id: str) -> dict:
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            raise RuntimeError("Speech service is unavailable")
+        return {
+            "schema": speech.recognizer_settings_schema(str(engine_id)) or [],
+            "values": speech.recognizer_settings(str(engine_id)) or {},
+        }
 
     def _is_asr_task(self, data: dict) -> bool:
         if not isinstance(data, dict):
@@ -149,38 +117,39 @@ class AsrGlossaryGuiController(BaseController):
         return data.get("item_id") or meta.get("item_id") or data.get("model")
 
     def _on_install_progress(self, event: Event):
-        if not self._glossary_view:
-            return
         data = event.data or {}
         if not self._is_asr_task(data):
             return
         model = self._task_model_id(data)
         if not model:
             return
-        self._glossary_view.on_install_progress(
-            model=str(model),
+        self._view_model.install_progress(
+            engine_id=str(model),
             progress=int(data.get("progress", 0) or 0),
-            status=str(data.get("status", "") or "")
+            status=str(data.get("status", "") or ""),
         )
 
     def _on_install_finished(self, event: Event):
-        if not self._glossary_view:
-            return
         data = event.data or {}
         if not self._is_asr_task(data):
             return
         model = self._task_model_id(data)
         if not model:
             return
-        self._glossary_view.on_install_finished(str(model))
+        self._view_model.install_finished(str(model))
 
     def _on_install_failed(self, event: Event):
-        if not self._glossary_view:
-            return
         data = event.data or {}
         if not self._is_asr_task(data):
             return
         model = self._task_model_id(data)
         if not model:
             return
-        self._glossary_view.on_install_failed(str(model), str(data.get("error", "") or ""))
+        self._view_model.install_failed(
+            str(model),
+            str(data.get("error", "") or ""),
+        )
+
+    def close(self) -> None:
+        self._view_model.close()
+        super().close()

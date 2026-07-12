@@ -1,71 +1,21 @@
 from ui.gui_templates import create_settings_section, create_section_header
-from ui.presentation import UiSettingsDataKey
+from ui.settings.runtime_options import (
+    refresh_camera_options,
+    register_camera_options,
+    register_provider_options,
+    select_camera_option,
+)
 from utils import getTranslationVariant as _
-from main_logger import logger
-
-def get_camera_list():
-    try:
-        import cv2
-        camera_list = []
-        for i in range(5):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                camera_list.append(f"Camera {i}")
-                cap.release()
-        return camera_list if camera_list else [_("Камер не найдено", "No cameras found")]
-    except ImportError:
-        # cv2 — опциональная зависимость (ставится как компонент «OpenCV» в AI Hub
-        # или на лету при первом захвате). Не пугаем WARNING-ом на старте и не
-        # пишем «Камер не найдено» (будто нет железа) — сообщаем суть.
-        logger.info("[screen_capture] OpenCV (cv2) не установлен — перечисление камер недоступно.")
-        return [_("OpenCV не установлен (см. AI Hub)", "OpenCV not installed (see AI Hub)")]
 
 def update_camera_list(gui, *, force: bool = False):
-    if hasattr(gui, 'camera_combobox'):
-        combo = gui.camera_combobox
-        current_text = combo.currentText()
-        combo.setEnabled(False)
-
-        def _apply(new_list):
-            combo = getattr(gui, 'camera_combobox', None)
-            if combo is None:
-                return
-            combo.clear()
-            combo.addItems(new_list)
-            if current_text in new_list:
-                combo.setCurrentText(current_text)
-            combo.setEnabled(True)
-
-        def _error(_exc):
-            combo = getattr(gui, 'camera_combobox', None)
-            if combo is not None:
-                combo.setEnabled(True)
-
-        cached = gui.presentation.settings_data.get(UiSettingsDataKey.CAMERA_LIST, None)
-        if cached is not None and not force:
-            _apply(cached)
-            return
-
-        gui.presentation.settings_data.request(
-            gui,
-            UiSettingsDataKey.CAMERA_LIST,
-            get_camera_list,
-            _apply,
-            _error,
-            name="screen-camera-list",
-            force=force,
-        )
+    if force:
+        refresh_camera_options(gui)
+    else:
+        register_camera_options(gui)
 
 def on_camera_selected(gui):
     if hasattr(gui, 'camera_combobox'):
-        selection = gui.camera_combobox.currentText()
-        if selection and "Camera" in selection:
-            try:
-                camera_index = int(selection.split(" ")[-1])
-                gui.settings.set("CAMERA_INDEX", camera_index)
-                logger.info(f"[screen_capture] Selected camera index: {camera_index}")
-            except (IndexError, ValueError):
-                logger.error(f"[screen_capture] Failed to parse camera index from '{selection}'")
+        select_camera_option(gui, gui.camera_combobox.currentText())
 
 def setup_screen_analysis_controls(gui, parent_layout):
     # No group header here: the page already carries the "Изображения и камера"
@@ -155,7 +105,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
     create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config, icon_name="fa6s.hourglass-half")
 
     # Четвёртая CollapsibleSection — описание изображений
-    _vision_provider_names = gui.presentation.providers.current()
+    _vision_provider_names = [_("Текущий", "Current")]
 
     image_description_config = [
         {
@@ -224,11 +174,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         },
     ]
     create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config, icon_name="fa6s.comment-dots")
-    gui.presentation.providers.load_async(
-        gui,
-        ("IMAGE_DESCRIPTION_PROVIDER",),
-        name="screen-analysis-provider-options",
-    )
+    register_provider_options(gui, ("IMAGE_DESCRIPTION_PROVIDER",))
     # Detail depends on EITHER inline OR non-native mode being on (both use it)
     _wire_detail_dependency(gui)
 

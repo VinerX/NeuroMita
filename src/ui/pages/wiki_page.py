@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrows
 
 from ui.widgets.launcher_dashboard_helpers import create_shell_page_container
 from ui.widgets.launcher_dashboard_helpers import _create_hero_card
+from ui.settings.settings_access import get_setting
 from utils import _
 from localization.live import register_if_tr
 
@@ -293,7 +294,10 @@ class WikiPage(QWidget):
 
     def _get_requested_language(self) -> str:
         try:
-            return str(self.gui.settings.get("LANGUAGE", _DEFAULT_DOC_LANGUAGE) or _DEFAULT_DOC_LANGUAGE).strip().lower()
+            return str(
+                get_setting(self.gui, "LANGUAGE", _DEFAULT_DOC_LANGUAGE)
+                or _DEFAULT_DOC_LANGUAGE
+            ).strip().lower()
         except Exception:
             return _DEFAULT_DOC_LANGUAGE
 

@@ -127,20 +127,6 @@ class UiApplicationPort(Protocol):
     def ensure_optional_gui(self, feature: str) -> None: ...
 
 
-class UiTaskPort(Protocol):
-    def run(
-        self,
-        target: Any,
-        worker: Callable[[], Any],
-        on_ok: Callable[[Any], None] | None = None,
-        on_error: Callable[[Exception], None] | None = None,
-        *,
-        name: str = "gui-async",
-    ): ...
-
-    def dispatch(self, target: Any, callback: Callable[[], None]) -> bool: ...
-
-
 class UiSettingsDataPort(Protocol):
     def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any: ...
     def request(
@@ -160,6 +146,7 @@ class UiSettingsDataPort(Protocol):
 
 class UiProviderOptionsPort(Protocol):
     def current(self) -> list[Any]: ...
+    def load(self) -> list[Any]: ...
     def load_async(self, gui: Any, setting_keys: tuple[str, ...], *, name: str): ...
 
 
@@ -180,15 +167,30 @@ class UiRagPort(Protocol):
     def embed_status_text(self) -> str: ...
 
 
+class UiViewModelFactoryPort(Protocol):
+    def home(self, host: Any, *, parent: Any = None): ...
+    def sandbox(self, host: Any, *, parent: Any = None): ...
+    def character_state(self, host: Any, *, parent: Any = None): ...
+    def chat_panel(self, host: Any, *, parent: Any = None): ...
+    def beat_settings(self, host: Any, *, parent: Any = None): ...
+    def finetune_data(self, host: Any, *, parent: Any = None): ...
+    def embed_provider(self, host: Any, *, parent: Any = None): ...
+    def voiceover_settings(self, host: Any, *, parent: Any = None): ...
+    def chat_message_actions(self, host: Any, *, parent: Any = None): ...
+    def news_page(self, host: Any, *, parent: Any = None): ...
+    def ai_hub_settings(self, host: Any, *, parent: Any = None): ...
+    def settings_runtime_options(self, host: Any, *, parent: Any = None): ...
+
+
 class UiPresentationPort(Protocol):
     events: UiEventsPort
     settings: UiSettingsPort
     app: UiApplicationPort
-    tasks: UiTaskPort
     settings_data: UiSettingsDataPort
     providers: UiProviderOptionsPort
     settings_sections: UiSettingsSectionsPort
     rag: UiRagPort
+    view_models: UiViewModelFactoryPort
     api_presets: Any
     embeddings: Any
     characters: Any
@@ -230,22 +232,3 @@ def resolve_presentation(target: Any) -> UiPresentationPort:
     raise RuntimeError("UI object is not attached to a presentation boundary")
 
 
-def run_ui_async(
-    target: Any,
-    worker: Callable[[], Any],
-    on_ok: Callable[[Any], None] | None = None,
-    on_error: Callable[[Exception], None] | None = None,
-    *,
-    name: str = "gui-async",
-):
-    return resolve_presentation(target).tasks.run(
-        target,
-        worker,
-        on_ok,
-        on_error,
-        name=name,
-    )
-
-
-def dispatch_ui(target: Any, callback: Callable[[], None]) -> bool:
-    return bool(resolve_presentation(target).tasks.dispatch(target, callback))

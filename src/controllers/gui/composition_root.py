@@ -43,13 +43,19 @@ class GuiCompositionRoot:
         except Exception as exc:
             self.shell_controller.backend_failed(exc)
             raise
-        self.window.refresh_backend_state()
+        self.window.refresh_backend_state(
+            backend_ready=bool(self.presentation.app.backend_ready),
+            startup_error=self.presentation.app.startup_error,
+        )
 
     def backend_failed(self, error: BaseException | str) -> None:
         if self._closed:
             return
         self.shell_controller.backend_failed(error)
-        self.window.refresh_backend_state()
+        self.window.refresh_backend_state(
+            backend_ready=bool(self.presentation.app.backend_ready),
+            startup_error=self.presentation.app.startup_error,
+        )
 
     def close(self) -> None:
         if self._closed:

@@ -6,19 +6,20 @@ import sys
 from styles.theme import get_theme
 from utils import render_qss
 from ui.widgets.flow_layout import FlowLayout
+from ui.settings.settings_access import get_setting, set_setting
 
 class EULAWidget(QWidget):
     accepted = pyqtSignal()
     rejected = pyqtSignal()
     
-    def __init__(self, presentation, parent=None):
+    def __init__(self, settings_view_model, parent=None):
         super().__init__(parent)
-        self.presentation = presentation
+        self.settings_view_model = settings_view_model
         self.setObjectName("EULAWidget")
         self.current_language = "ru"
         self._lang_buttons: dict[str, QRadioButton] = {}
         self.current_language = str(
-            self.presentation.settings.get("LANGUAGE", "RU") or "RU"
+            get_setting(self, "LANGUAGE", "RU") or "RU"
         ).strip().lower()
         # Язык, с которым уже построен интерфейс под оверлеем: если на старте
         # пользователь выберет другой — после принятия предложим перезапуск.
@@ -235,8 +236,8 @@ class EULAWidget(QWidget):
         
     def _on_accept(self):
         # Сохраняем выбранный на стартовом экране язык интерфейса.
-        self.presentation.settings.set("LANGUAGE", str(self.current_language or "ru").upper())
-        self.presentation.settings.set("EULA_ACCEPTED", True)
+        set_setting(self, "LANGUAGE", str(self.current_language or "ru").upper())
+        set_setting(self, "EULA_ACCEPTED", True)
         self.accepted.emit()
 
     def language_changed_on_start(self) -> bool:

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from ui.gui_templates import create_settings_section, create_section_header
+from ui.settings.settings_access import get_setting
 from utils import getTranslationVariant as _
 
 
@@ -15,7 +16,7 @@ def _on_language_changed(gui, value=None):
     """Живая смена языка: применяем сразу, без перезапуска."""
     code = str(value or "").strip().upper()
     if not code:
-        code = str(gui.presentation.settings.get("LANGUAGE", "RU") or "RU").upper()
+        code = str(get_setting(gui, "LANGUAGE", "RU") or "RU").upper()
     try:
         from localization.live import set_language
         set_language(code)

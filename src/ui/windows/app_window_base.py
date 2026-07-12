@@ -267,14 +267,18 @@ class AppWindowBase(QMainWindow):
         self.settings_view_model = binding
         self.settings_binding = binding
 
-    def refresh_backend_state(self) -> None:
+    def refresh_backend_state(
+        self,
+        *,
+        backend_ready: bool,
+        startup_error: str | None = None,
+    ) -> None:
         try:
             chat_panel.update_send_button_state(self)
         except Exception:
             pass
-        app = self.presentation.app
-        if not app.backend_ready and app.startup_error and hasattr(self, "_set_home_progress"):
-            self._set_home_progress(app.startup_error, 0, 1, busy=False)
+        if not backend_ready and startup_error and hasattr(self, "_set_home_progress"):
+            self._set_home_progress(str(startup_error), 0, 1, busy=False)
 
     def _on_reopen_install_logs(self):
         controller = self.window_controller
@@ -758,10 +762,7 @@ class AppWindowBase(QMainWindow):
         if binding is not None:
             binding.set(key, value)
             return
-        try:
-            self.presentation.settings.set(key, value)
-        except Exception:
-            self.settings.set(key, value)
+        self.settings.set(key, value)
 
     def _get_setting(self, key, default=None):
         view_model = getattr(self, "settings_view_model", None)
@@ -780,6 +781,12 @@ class AppWindowBase(QMainWindow):
         return str(self._get_setting("CHARACTER_NAME", "Assistant") or "Assistant")
 
     def closeEvent(self, event):
+        for subscription in list(getattr(self, "_rag_install_subscriptions", []) or []):
+            try:
+                subscription.close()
+            except Exception:
+                pass
+        self._rag_install_subscriptions = []
         try:
             if self.shell_controller is not None:
                 self.shell_controller.close_application()
@@ -1128,7 +1135,7 @@ class AppWindowBase(QMainWindow):
 
     def _show_eula_dialog(self):
         from ui.widgets.eula_widget import EULAWidget
-        eula_widget = EULAWidget(self.presentation)
+        eula_widget = EULAWidget(self.settings_binding or self.settings)
         eula_widget.accepted.connect(lambda: self._on_eula_accepted(eula_widget))
         eula_widget.rejected.connect(lambda: self._on_eula_rejected(eula_widget))
         self.overlay.set_content(eula_widget, locked=True)
@@ -1157,7 +1164,7 @@ class AppWindowBase(QMainWindow):
 
     def _show_guide(self):
         from ui.widgets.guide_widget import GuideWidget
-        guide_widget = GuideWidget(self.presentation)
+        guide_widget = GuideWidget(self.settings_binding or self.settings)
         guide_widget.closed.connect(lambda: self._on_guide_closed(guide_widget))
         self.overlay.set_content(guide_widget)
         self.overlay.show_animated()

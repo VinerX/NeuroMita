@@ -23,6 +23,11 @@ def current_provider_options() -> list:
     return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE), *names]
 
 
+def load_provider_options() -> list:
+    names = _provider_names_from_result([use(ApiPresetService).list_meta()])
+    return [_(CURRENT_PROVIDER_VALUE, CURRENT_PROVIDER_EN_VALUE), *names]
+
+
 def load_api_provider_options_async(gui, setting_keys: Sequence[str], *, name: str = "api-provider-options"):
     keys = tuple(str(key) for key in setting_keys if key)
     if not keys:

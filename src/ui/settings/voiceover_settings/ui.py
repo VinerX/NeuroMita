@@ -7,7 +7,11 @@ from PyQt6.QtWidgets import (
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
-from ui.presentation import UiTopic
+from ui.settings.voiceover_settings.presentation import (
+    OpenVoiceAIHub,
+    RestartVoiceService,
+    StartTelegramVoice,
+)
 
 try:
     import qtawesome as qta
@@ -16,6 +20,8 @@ except Exception:
 
 
 def build_voiceover_settings_ui(self, parent_layout):
+    actions = self.presentation.view_models.voiceover_settings(self, parent=self)
+    self._voiceover_settings_view_model = actions
     sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
     right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 
@@ -67,7 +73,7 @@ def build_voiceover_settings_ui(self, parent_layout):
 
         {'label': _('Подключиться к Telegram', 'Connect Telegram'),
          'type': 'button',
-         'command': (lambda: self.presentation.events.publish(UiTopic.TELEGRAM_START_SILERO, {"source": "ui", "force": True})),
+         'command': (lambda: actions.dispatch(StartTelegramVoice())),
          'widget_name': 'tg_connect_button'},
 
         {'label': _('Канал/Сервис', "Channel/Service"), 'key': 'AUDIO_BOT',
@@ -158,11 +164,8 @@ def build_voiceover_settings_ui(self, parent_layout):
             mid = self.local_voice_combobox.currentData()
         if not mid:
             mid = self.settings.get("NM_CURRENT_VOICEOVER")
-        payload = {"category": "tts"}
         mid = str(mid or "").strip()
-        if mid:
-            payload["component_id"] = f"tts:{mid}"
-        self.presentation.events.publish(UiTopic.GUI_SHOW_WINDOW, {"window_id": "ai_hub", "payload": payload})
+        actions.dispatch(OpenVoiceAIHub(mid or None))
 
     self.local_model_settings_btn.clicked.connect(_open_current_model_settings)
 
@@ -258,11 +261,11 @@ def build_voiceover_settings_ui(self, parent_layout):
 
         {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
          'type': 'button',
-         'command': (lambda: self.presentation.events.publish(UiTopic.AI_RESTART_SERVICE, {"service": "tts"}))},
+         'command': (lambda: actions.dispatch(RestartVoiceService()))},
 
         {'label': _('Открыть AI Hub', 'Open AI Hub'),
          'type': 'button',
-         'command': (lambda: self.presentation.events.publish(UiTopic.GUI_SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}}))}
+         'command': (lambda: actions.dispatch(OpenVoiceAIHub()))}
     ]
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {

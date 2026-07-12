@@ -23,26 +23,6 @@ from services.contracts import (
 from ui.presentation import UiEvent, UiSettingsDataKey, UiTopic
 
 
-class _TaskController:
-    def run(
-        self,
-        target: Any,
-        worker: Callable[[], Any],
-        on_ok: Callable[[Any], None] | None = None,
-        on_error: Callable[[Exception], None] | None = None,
-        *,
-        name: str = "gui-async",
-    ):
-        from controllers.gui.async_runner import run_async
-
-        return run_async(target, worker, on_ok, on_error, name=name)
-
-    def dispatch(self, target: Any, callback: Callable[[], None]) -> bool:
-        from controllers.gui.async_runner import dispatch_to_gui
-
-        return bool(dispatch_to_gui(target, callback))
-
-
 class _SettingsDataController:
     def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
         from controllers.gui.settings_data_prefetch import get_cached_settings_data
@@ -88,6 +68,11 @@ class _ProviderOptionsController:
         from controllers.gui.provider_options import current_provider_options
 
         return list(current_provider_options())
+
+    def load(self) -> list[Any]:
+        from controllers.gui.provider_options import load_provider_options
+
+        return list(load_provider_options())
 
     def load_async(self, gui: Any, setting_keys: tuple[str, ...], *, name: str):
         from controllers.gui.provider_options import load_api_provider_options_async
@@ -154,6 +139,134 @@ class _RagController:
         from controllers.gui.rag_memory_controller import _get_embed_status_text
 
         return str(_get_embed_status_text())
+
+
+class _ViewModelFactory:
+    def __init__(self, presentation: "UiPresentationHub") -> None:
+        self._presentation = presentation
+
+    def home(self, host: Any, *, parent: Any = None):
+        from controllers.gui.home_page_view_model import HomePageViewModel
+
+        return HomePageViewModel(
+            host=host,
+            home_controller=self._presentation.home,
+            news_controller=self._presentation.news,
+            settings=self._presentation.settings,
+            parent=parent,
+        )
+
+    def sandbox(self, host: Any, *, parent: Any = None):
+        from controllers.gui.sandbox_page_view_model import SandboxPageViewModel
+
+        return SandboxPageViewModel(
+            host=host,
+            controller=self._presentation.sandbox,
+            parent=parent,
+        )
+
+    def character_state(self, host: Any, *, parent: Any = None):
+        from controllers.gui.character_state_view_model import CharacterStateViewModel
+
+        return CharacterStateViewModel(
+            current_character=self._presentation.characters.current,
+            parent=parent,
+        )
+
+    def chat_panel(self, host: Any, *, parent: Any = None):
+        from controllers.gui.chat_panel_view_model import ChatPanelViewModel
+
+        return ChatPanelViewModel(
+            host=host,
+            backend_ready=lambda: bool(self._presentation.app.backend_ready),
+            parent=parent,
+        )
+
+    def beat_settings(self, host: Any, *, parent: Any = None):
+        from controllers.gui.beat_settings_view_model import BeatSettingsViewModel
+
+        return BeatSettingsViewModel(
+            controller=self._presentation.beats,
+            settings=self._presentation.settings,
+            parent=parent,
+        )
+
+    def finetune_data(self, host: Any, *, parent: Any = None):
+        from controllers.gui.finetune_data_view_model import FineTuneDataViewModel
+
+        return FineTuneDataViewModel(
+            finetune=self._presentation.finetune,
+            parent=parent,
+        )
+
+    def embed_provider(self, host: Any, *, parent: Any = None):
+        from controllers.gui.embed_provider_view_model import EmbedProviderViewModel
+
+        return EmbedProviderViewModel(
+            host=host,
+            presentation=self._presentation,
+            parent=parent,
+        )
+
+    def voiceover_settings(self, host: Any, *, parent: Any = None):
+        from controllers.gui.voiceover_settings_view_model import (
+            VoiceoverSettingsViewModel,
+        )
+
+        return VoiceoverSettingsViewModel(
+            events=self._presentation.events,
+            parent=parent,
+        )
+
+    def chat_message_actions(self, host: Any, *, parent: Any = None):
+        from controllers.gui.chat_message_actions_view_model import (
+            ChatMessageActionsViewModel,
+        )
+
+        return ChatMessageActionsViewModel(
+            events=self._presentation.events,
+            parent=parent,
+        )
+
+    def news_page(self, host: Any, *, parent: Any = None):
+        from controllers.gui.news_page_view_model import NewsPageViewModel
+
+        return NewsPageViewModel(
+            host=host,
+            news=self._presentation.news,
+            parent=parent,
+        )
+
+    def ai_hub_settings(self, host: Any, *, parent: Any = None):
+        from controllers.gui.ai_hub_settings_view_model import (
+            AIHubSettingsViewModel,
+        )
+
+        return AIHubSettingsViewModel(
+            catalog=self._presentation.installables,
+            parent=parent,
+        )
+
+    def settings_runtime_options(self, host: Any, *, parent: Any = None):
+        from controllers.gui.settings_runtime_options_view_model import (
+            SettingsRuntimeOptionsViewModel,
+        )
+
+        return SettingsRuntimeOptionsViewModel(
+            providers=self._presentation.providers,
+            settings=self._presentation.settings,
+            parent=parent,
+        )
+
+    def settings_page(self, host: Any, *, parent: Any = None):
+        from controllers.gui.settings_page_view_model import SettingsPageViewModel
+
+        return SettingsPageViewModel(
+            host=host,
+            app=self._presentation.app,
+            settings_data=self._presentation.settings_data,
+            parent=parent,
+        )
 
 
 class _NewsController:
@@ -556,11 +669,11 @@ class UiPresentationHub:
         self.events = _EventsController()
         self.settings = _SettingsController()
         self.app = _ApplicationController()
-        self.tasks = _TaskController()
         self.settings_data = _SettingsDataController()
         self.providers = _ProviderOptionsController()
         self.settings_sections = _SettingsSectionsController()
         self.rag = _RagController()
+        self.view_models = _ViewModelFactory(self)
 
     @cached_property
     def api_presets(self):

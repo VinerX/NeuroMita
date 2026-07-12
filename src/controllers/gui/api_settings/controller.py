@@ -16,6 +16,10 @@ from .protocols_mixin import ProtocolsMixin
 from .editor_mixin import EditorMixin
 from .presets_mixin import PresetsMixin
 from .test_mixin import TestMixin
+from controllers.gui.settings_data_prefetch import (
+    API_PROVIDER_NAMES,
+    settings_data_cache,
+)
 
 
 class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, TestMixin):
@@ -54,6 +58,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
         self._wire_ui()
         self._subscribe_bus()
+        view.destroyed.connect(lambda *_args: self.close())
 
         # load transforms catalog (once)
         QTimer.singleShot(0, self._safe(self._load_transform_catalog_async, "load_transform_catalog_async"))
@@ -191,8 +196,18 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         self.event_bus.subscribe(Events.ApiPresets.TEST_RESULT, self._on_test_result, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.TEST_FAILED, self._on_test_failed, weak=False)
 
-        self.event_bus.subscribe(Events.ApiPresets.PRESET_SAVED, lambda _e: self.reload_presets_async(), weak=False)
-        self.event_bus.subscribe(Events.ApiPresets.PRESET_DELETED, lambda _e: self.reload_presets_async(), weak=False)
+        self.event_bus.subscribe(Events.ApiPresets.PRESET_SAVED, self._on_preset_catalog_changed, weak=False)
+        self.event_bus.subscribe(Events.ApiPresets.PRESET_DELETED, self._on_preset_catalog_changed, weak=False)
+
+    def _on_preset_catalog_changed(self, _event) -> None:
+        settings_data_cache().clear(API_PROVIDER_NAMES)
+        self.reload_presets_async()
+
+    def close(self) -> None:
+        try:
+            self.event_bus.unsubscribe_owner(self)
+        except Exception:
+            pass
 
     def _load_transform_catalog_async(self) -> None:
         def _call():

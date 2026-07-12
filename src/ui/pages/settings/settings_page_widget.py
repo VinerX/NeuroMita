@@ -20,7 +20,13 @@ from ui.pages.settings.section_registry import (
     get_settings_section_specs,
     resolve_settings_builder,
 )
+from ui.pages.settings.settings_presentation import (
+    PrepareSettingsSection,
+    SettingsSectionFailed,
+    SettingsSectionReady,
+)
 from ui.widgets.settings_icon_button import SettingsIconButton
+from ui.settings.settings_access import get_setting, set_setting, settings_store
 from utils import _
 from localization.live import tr_set
 from localization.live import register_if_tr
@@ -139,9 +145,10 @@ class SettingsSectionPage(QFrame):
 
 
 class SettingsPage(QWidget):
-    def __init__(self, gui):
+    def __init__(self, gui, view_model):
         super().__init__(gui)
         self.gui = gui
+        self._view_model = view_model
         self.setObjectName("SettingsPageRoot")
 
         self.settings_buttons = {}
@@ -168,6 +175,8 @@ class SettingsPage(QWidget):
         self._build_ui()
         self._build_section_containers()
         self._sync_host_exports()
+        self._view_model.effect_emitted.connect(self._handle_effect)
+        self.destroyed.connect(lambda *_args: self._view_model.close())
         # Сразу применяем карту видимости, иначе до первого клика в «Видимых
         # разделах» показываются все вкладки, включая отключённые.
         self.apply_section_visibility()
@@ -210,7 +219,7 @@ class SettingsPage(QWidget):
         try:
             from ui.widgets.settings_panel import is_section_enabled
 
-            return is_section_enabled(category, self.gui.presentation.settings)
+            return is_section_enabled(category, settings_store(self.gui))
         except Exception:
             return True
 
@@ -268,7 +277,7 @@ class SettingsPage(QWidget):
 
         entry = getattr(self.gui, '_tester_code_entry', None)
         if entry is not None:
-            entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+            entry.setText(str(get_setting(self.gui, "TESTER_CODE", "") or ""))
 
     def show_overview(self, *, scroll_to_top: bool = False):
         fallback = self._first_available_category()
@@ -320,7 +329,7 @@ class SettingsPage(QWidget):
         if category == "updates":
             entry = getattr(self.gui, '_tester_code_entry', None)
             if entry is not None:
-                entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+                entry.setText(str(get_setting(self.gui, "TESTER_CODE", "") or ""))
 
         if category not in self._loaded_sections:
             self._ensure_section_loaded(category, subsection=subsection, smooth_scroll=smooth_scroll)
@@ -617,71 +626,22 @@ class SettingsPage(QWidget):
         if not background:
             self._pending_section_scroll[category] = (subsection, smooth_scroll)
         self._set_section_placeholder(page, "loading")
-        self.gui.presentation.settings_data.prefetch_section(self.gui, category)
-
         required_features = _SECTION_FEATURES.get(category, ())
-        if required_features or category in _BACKEND_REQUIRED_SECTIONS:
-            self._prepare_section_features(category, required_features)
-        else:
-            QTimer.singleShot(0, lambda cat=category: self._build_section_now(cat))
-
-    def _prepare_section_features(
-        self,
-        category: str,
-        feature_names: tuple[str, ...],
-        *,
-        backend_attempt: int = 0,
-    ) -> None:
-        app = self.gui.presentation.app
-        if not app.backend_ready:
-            if backend_attempt < 150:
-                QTimer.singleShot(40, lambda: self._prepare_section_features(
-                    category, feature_names, backend_attempt=backend_attempt + 1
-                ))
-                return
-            self._finish_section_feature_error(
-                category, RuntimeError("Backend is not ready")
+        self._view_model.dispatch(
+            PrepareSettingsSection(
+                category=category,
+                feature_names=tuple(required_features),
+                require_backend=category in _BACKEND_REQUIRED_SECTIONS,
+                gui_feature=_SECTION_GUI_FEATURES.get(category),
             )
+        )
+
+    def _handle_effect(self, effect) -> None:
+        if isinstance(effect, SettingsSectionReady):
+            self._build_section_now(effect.category)
             return
-
-        def start_at(index: int) -> None:
-            if index >= len(feature_names):
-                self._dispatch_gui(lambda: self._finish_section_features(category))
-                return
-
-            feature_name = feature_names[index]
-            future = app.ensure_feature_async(feature_name)
-
-            def done(completed) -> None:
-                try:
-                    completed.result()
-                except BaseException as exc:
-                    self._dispatch_gui(
-                        lambda exc=exc: self._finish_section_feature_error(category, exc)
-                    )
-                    return
-                start_at(index + 1)
-
-            future.add_done_callback(done)
-
-        start_at(0)
-
-    def _finish_section_features(self, category: str) -> None:
-        gui_feature = _SECTION_GUI_FEATURES.get(category)
-        if gui_feature:
-            try:
-                self.gui.presentation.app.ensure_optional_gui(gui_feature)
-            except BaseException as exc:
-                self._finish_section_feature_error(category, exc)
-                return
-        self._build_section_now(category)
-
-    def _dispatch_gui(self, callback) -> None:
-        signal = getattr(self.gui, "run_ui_task_signal", None)
-        if signal is not None:
-            signal.emit(callback)
-            return
-        QTimer.singleShot(0, callback)
+        if isinstance(effect, SettingsSectionFailed):
+            self._finish_section_feature_error(effect.category, RuntimeError(effect.message))
 
     def _finish_section_feature_error(self, category: str, error: BaseException) -> None:
         page = self.settings_containers.get(category)
@@ -776,13 +736,13 @@ class SettingsPage(QWidget):
         header.style().polish(header)
 
     def _collapsed_state_map(self) -> dict:
-        value = self.gui.presentation.settings.get(self._COLLAPSE_STATE_KEY, {})
+        value = get_setting(self.gui, self._COLLAPSE_STATE_KEY, {})
         return dict(value) if isinstance(value, dict) else {}
 
     def _persist_collapsed_state(self, section_id: str, collapsed: bool) -> None:
         state = self._collapsed_state_map()
         state[section_id] = bool(collapsed)
-        self.gui.presentation.settings.set(self._COLLAPSE_STATE_KEY, state)
+        set_setting(self.gui, self._COLLAPSE_STATE_KEY, state)
 
     def _prepare_settings_subsections(self, page: SettingsSectionPage):
         """Keep the in-page subsections collapsible so long pages (e.g. Models)

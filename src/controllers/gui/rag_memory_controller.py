@@ -15,6 +15,7 @@ from controllers.gui.settings_data_prefetch import (
     RAG_EMBED_STATUS,
     get_cached_settings_data,
     request_settings_data,
+    settings_data_cache,
 )
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -1821,12 +1822,15 @@ def _is_rag_install_event(event) -> bool:
 
 
 def _refresh_rag_install_widgets(gui) -> None:
+    cache = settings_data_cache()
+    cache.clear(RAG_EMBED_STATUS)
+    cache.clear(RAG_CE_STATUS)
     try:
-        _refresh_embed_status(gui)
+        _refresh_embed_status(gui, force=True)
     except Exception:
         pass
     try:
-        _refresh_ce_status(gui)
+        _refresh_ce_status(gui, force=True)
     except Exception:
         pass
 
@@ -1845,8 +1849,12 @@ def _ensure_rag_install_event_handlers(gui) -> None:
         else:
             gui.run_ui_task_signal.emit(lambda: _refresh_rag_install_widgets(gui))
 
-    gui.event_bus.subscribe(Events.Install.TASK_FINISHED, _on_install_changed, weak=False)
-    gui.event_bus.subscribe(Events.Install.TASK_FAILED, _on_install_changed, weak=False)
+    bus = get_event_bus()
+    subscriptions = [
+        bus.subscribe(Events.Install.TASK_FINISHED, _on_install_changed, weak=False),
+        bus.subscribe(Events.Install.TASK_FAILED, _on_install_changed, weak=False),
+    ]
+    gui._rag_install_subscriptions = subscriptions
     gui._rag_install_events_bound = True
 
 
@@ -1981,7 +1989,7 @@ def _refresh_embed_status(gui, *, force: bool = False) -> None:
 
 def _open_rag_ai_hub(gui, target: str) -> None:
     try:
-        gui.event_bus.emit(
+        get_event_bus().emit(
             Events.GUI.SHOW_WINDOW,
             {
                 "window_id": "ai_hub",

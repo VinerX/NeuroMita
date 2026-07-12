@@ -9,6 +9,7 @@ from main_logger import logger
 from ui.window_manager import WindowManager
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
+from controllers.gui.ai_hub_view_model import AIHubViewModel
 
 
 class WindowCompositionController:
@@ -18,6 +19,11 @@ class WindowCompositionController:
         self._view = view
         self._presentation = presentation
         self.window_manager = WindowManager(parent=view)
+        self._ai_hub_view_model = AIHubViewModel(presentation)
+        self._ai_hub_settings_view_model = presentation.view_models.ai_hub_settings(
+            view,
+            parent=view,
+        )
         self._active_install_window = None
         self._closed = False
         self._register_dialogs()
@@ -71,7 +77,12 @@ class WindowCompositionController:
     def _factory_ai_hub(self, parent, _payload: dict):
         from ui.windows.ai_hub_window import AIHubDialog
 
-        return AIHubDialog(self._presentation, parent)
+        return AIHubDialog(
+            self._ai_hub_view_model,
+            self._ai_hub_settings_view_model,
+            getattr(self._view, "settings_binding", None),
+            parent,
+        )
 
     @staticmethod
     def _on_ai_hub_ready(dialog, payload: dict) -> None:
@@ -170,6 +181,8 @@ class WindowCompositionController:
         if self._closed:
             return
         self._closed = True
+        self._ai_hub_view_model.close()
+        self._ai_hub_settings_view_model.close()
         self.window_manager.close_all(destroy=True)
         self._active_install_window = None
         if getattr(self._view, "window_manager", None) is self.window_manager:

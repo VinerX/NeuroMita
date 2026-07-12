@@ -8,19 +8,37 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QLabel, QVBoxLayout, QHBoxLayout, QFrame,
-    QPushButton, QLineEdit, QFileDialog, QCheckBox,
+    QPushButton, QLineEdit, QFileDialog, QCheckBox, QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
-from ui.presentation import run_ui_async as run_async
 import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.settings.settings_access import get_setting, set_setting
+from ui.settings.finetune_data_presentation import (
+    ClearFineTuneData,
+    EnforceFineTuneLimit,
+    FineTuneDataMessage,
+    FineTuneDataState,
+    RefreshFineTuneData,
+    SetFineTuneDirectory,
+)
 from utils import getTranslationVariant as _
 from localization.live import tr_set, register_if_tr
 
 
 def setup_data_settings_controls(self, parent):
+    view_model = self.presentation.view_models.finetune_data(self)
+    view_model.setParent(self)
+    self._finetune_data_view_model = view_model
+
+    def _handle_effect(effect) -> None:
+        if isinstance(effect, FineTuneDataMessage):
+            method = QMessageBox.critical if effect.error else QMessageBox.information
+            method(self, effect.title, effect.message)
+
+    view_model.effect_emitted.connect(_handle_effect)
     create_section_header(parent, _("Данные для дообучения", "Finetune Data"))
 
     # ── Explanatory info block ────────────────────────────────────────────────
@@ -152,10 +170,7 @@ def setup_data_settings_controls(self, parent):
     limit_row.addStretch()
 
     def _apply_limit_now():
-        try:
-            self.presentation.finetune.enforce_limit()
-        except Exception:
-            pass
+        view_model.dispatch(EnforceFineTuneLimit())
 
     def _on_limit_changed(value):
         try:
@@ -193,7 +208,7 @@ def setup_data_settings_controls(self, parent):
     path_lbl.setFixedWidth(60)
     path_row.addWidget(path_lbl)
 
-    path_edit = QLineEdit(_get_current_data_dir(self.presentation.settings))
+    path_edit = QLineEdit(_get_current_data_dir(self))
     path_edit.setReadOnly(True)
     path_edit.setStyleSheet(
         "QLineEdit { background: transparent; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; "
@@ -219,11 +234,8 @@ def setup_data_settings_controls(self, parent):
             return
         new_data_dir = str(Path(chosen) / "FineTuneData")
         path_edit.setText(new_data_dir)
-        self.presentation.settings.set("FINETUNE_DATA_DIR", chosen)
-        try:
-            self.presentation.finetune.set_data_directory(new_data_dir)
-        except Exception:
-            pass
+        set_setting(self, "FINETUNE_DATA_DIR", chosen)
+        view_model.dispatch(SetFineTuneDirectory(new_data_dir))
 
     browse_btn.clicked.connect(_on_browse)
     path_row.addWidget(browse_btn)
@@ -239,7 +251,7 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(sep1)
 
     # ── Stats section ─────────────────────────────────────────────────────────
-    parent.addWidget(_LiveStatsWidget(self.presentation.finetune, parent=self))
+    parent.addWidget(_LiveStatsWidget(view_model, parent=self))
 
     # ── Separator ─────────────────────────────────────────────────────────────
     sep2 = QFrame()
@@ -263,7 +275,7 @@ def setup_data_settings_controls(self, parent):
     clear_btn.setIcon(qta.icon("fa6s.trash-can", color="#ffffff"))
     tr_set(clear_btn, "Удалить все накопленные файлы данных дообучения. Действие необратимо.",
         "Delete all accumulated fine-tuning data files. This action is irreversible.", "setToolTip")
-    clear_btn.clicked.connect(lambda: _clear_all_data(self))
+    clear_btn.clicked.connect(lambda: _clear_all_data(self, view_model))
     btn_row.addWidget(clear_btn)
 
     btn_container = SettingsBodyWidget()
@@ -271,7 +283,8 @@ def setup_data_settings_controls(self, parent):
     parent.addWidget(btn_container)
 
     # ── Motivation image ──────────────────────────────────────────────────────
-    parent.addWidget(_MotivationImage(self.presentation.finetune, parent=self))
+    parent.addWidget(_MotivationImage(view_model, parent=self))
+    view_model.dispatch(RefreshFineTuneData())
 
 
 # ── Live stats widget ─────────────────────────────────────────────────────────
@@ -279,12 +292,9 @@ def setup_data_settings_controls(self, parent):
 class _LiveStatsWidget(QFrame):
     """Виджет статистики, пересчитывающийся при каждом показе панели."""
 
-    _lines_ready = pyqtSignal(list)
-
-    def __init__(self, finetune_controller, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
-        self._finetune = finetune_controller
-        self._lines_ready.connect(self._apply_lines)
+        self._view_model = view_model
         self.setStyleSheet(
             "QFrame { background: transparent; border: none; }"
             "QLabel { background: transparent; border: none; color: #bca9bb; font-size: 11px; }"
@@ -318,23 +328,25 @@ class _LiveStatsWidget(QFrame):
         layout.addLayout(header_row)
 
         self._stats_layout = layout
+        self._view_model.state_changed.connect(self._render_state)
+        self._render_state(self._view_model.state)
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._refresh()
 
     def _refresh(self):
-        # Парсинг jsonl может быть тяжёлым — считаем в фоне, чтобы не морозить GUI
-        # при открытии вкладки. Пока считается — плейсхолдер.
         self._apply_lines([_("Загрузка статистики…", "Loading statistics…")])
-        run_async(self, self._compute_async, name="data-statistics-compute")
+        self._view_model.dispatch(RefreshFineTuneData())
 
-    def _compute_async(self):
-        lines = self._build_lines()
-        try:
-            self._lines_ready.emit(lines)
-        except Exception:
-            pass
+    def _render_state(self, state: FineTuneDataState) -> None:
+        if state.loading and not state.statistics_lines:
+            self._apply_lines([_("Загрузка статистики…", "Loading statistics…")])
+            return
+        lines = list(state.statistics_lines)
+        if state.error:
+            lines.append(f"Error: {state.error}")
+        self._apply_lines(lines or ["—"])
 
     def _apply_lines(self, lines: list):
         # keep header row (index 0) only
@@ -351,33 +363,6 @@ class _LiveStatsWidget(QFrame):
             lbl.setWordWrap(True)
             self._stats_layout.addWidget(lbl)
 
-    def _build_lines(self) -> list:
-        try:
-            if not self._finetune.available():
-                return [_("Сборщик не инициализирован", "Collector not initialized")]
-
-            stats = self._finetune.get_stats()
-            total    = stats.get("total", 0)
-            rated    = stats.get("rated", 0)
-            positive = stats.get("positive", 0)
-            negative = stats.get("negative", 0)
-
-            lines = [
-                _("Всего записей: ", "Total records: ") + str(total),
-                _("С рейтингом: ", "Rated: ") + f"{rated}  (👍 {positive} / 👎 {negative})",
-            ]
-
-            by_char = stats.get("by_character", {})
-            if by_char:
-                lines.append(_("По персонажам:", "By character:"))
-                for char_id, cnt in sorted(by_char.items()):
-                    lines.append(f"   {char_id}: {cnt}")
-
-            return lines
-        except Exception as e:
-            return [f"Error: {e}"]
-
-
 # ── Motivation image widget ───────────────────────────────────────────────────
 
 class _MotivationImage(QLabel):
@@ -387,30 +372,20 @@ class _MotivationImage(QLabel):
     _IMG_100    = os.path.join("assets", "finetune_motivation_100.png")
     _WIDTH      = 360
 
-    _total_ready = pyqtSignal(int)
-
-    def __init__(self, finetune_controller, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
-        self._finetune = finetune_controller
+        self._view_model = view_model
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background: transparent; border: none; margin-top: 8px;")
-        self._total_ready.connect(self._apply_total)
+        self._view_model.state_changed.connect(self._render_state)
+        self._render_state(self._view_model.state)
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        # get_stats() дорогой — считаем в фоне, картинку ставим по готовности.
-        run_async(self, self._compute_async, name="finetune-total-compute")
+        self._view_model.dispatch(RefreshFineTuneData())
 
-    def _compute_async(self):
-        total = 0
-        try:
-            total = self._finetune.get_stats().get("total", 0)
-        except Exception:
-            pass
-        try:
-            self._total_ready.emit(int(total))
-        except Exception:
-            pass
+    def _render_state(self, state: FineTuneDataState) -> None:
+        self._apply_total(state.total_records)
 
     def _apply_total(self, total: int):
         path = self._IMG_100 if total >= 100 else self._IMG_NORMAL
@@ -424,17 +399,16 @@ class _MotivationImage(QLabel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_current_data_dir(settings) -> str:
-    saved = settings.get("FINETUNE_DATA_DIR")
+def _get_current_data_dir(owner) -> str:
+    saved = get_setting(owner, "FINETUNE_DATA_DIR")
     if saved:
         return str(Path(saved) / "FineTuneData")
     base = os.environ.get("NEUROMITA_BASE_DIR", os.getcwd())
     return os.path.join(base, "FineTuneData")
 
 
-def _clear_all_data(gui):
+def _clear_all_data(gui, view_model):
     try:
-        from PyQt6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
             None,
             _("Подтверждение", "Confirmation"),
@@ -447,13 +421,7 @@ def _clear_all_data(gui):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        if gui.presentation.finetune.available():
-            count = gui.presentation.finetune.clear_all()
-            QMessageBox.information(
-                None,
-                _("Готово", "Done"),
-                _("Удалено файлов: ", "Files deleted: ") + str(count),
-            )
+        view_model.dispatch(ClearFineTuneData())
     except Exception as e:
         from main_logger import logger
         logger.error(f"Failed to clear finetune data: {e}", exc_info=True)

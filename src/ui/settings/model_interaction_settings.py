@@ -223,7 +223,9 @@ def setup_model_interaction_controls(self, parent):
         icon_name='fa5s.cogs'
     )
 
-    provider_options = self.presentation.providers.current()
+    from ui.settings.runtime_options import register_provider_options
+
+    provider_options = [_("Текущий", "Current")]
 
     react_settings_config = [
         {
@@ -295,10 +297,9 @@ def setup_model_interaction_controls(self, parent):
 
     self.presentation.rag.build_memory_section(self, parent, provider_options)
     self.presentation.rag.build_rag_section(self, parent, provider_options)
-    self.presentation.providers.load_async(
+    register_provider_options(
         self,
         ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
-        name="model-interaction-provider-options",
     )
 
     # Token pricing/context limits now come from the selected provider/preset,

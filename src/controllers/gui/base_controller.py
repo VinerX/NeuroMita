@@ -42,6 +42,10 @@ class BaseController:
         return subscription
 
     def close(self) -> None:
+        try:
+            self.event_bus.unsubscribe_owner(self)
+        except Exception:
+            pass
         subscriptions = self._settings_subscriptions
         self._settings_subscriptions = []
         for subscription in subscriptions:

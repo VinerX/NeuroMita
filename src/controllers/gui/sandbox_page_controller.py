@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from core.events import Events, get_event_bus
@@ -57,6 +58,18 @@ class SandboxPageController:
 
     def clear_current_history(self) -> None:
         self._bus.emit(Events.Character.CLEAR_HISTORY)
+
+    def open_history(self, host: Any, character_id: str) -> None:
+        self.select_character(character_id, reload_data=False)
+        from controllers.gui.character_settings_logic import open_db_viewer
+
+        open_db_viewer(host)
+
+    def settings_snapshot(self, keys: Iterable[str] | None = None) -> dict[str, Any]:
+        return dict(self._settings().snapshot(keys) or {})
+
+    def update_setting(self, key: str, value: Any) -> None:
+        self._settings().update(str(key), value)
 
     def effective_prompt_history_count(self, character, dialog_limit: int) -> int | None:
         if character is None:
