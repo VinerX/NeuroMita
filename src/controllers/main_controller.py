@@ -69,6 +69,7 @@ class MainController:
         self.gui_fallback_controller = None
 
         self.loop_controller = None
+        self.server_controller = None
         self.gui_controller = None
         self.telegram_controller = None
         self.install_controller = None
@@ -164,11 +165,6 @@ class MainController:
         self.loop_controller = self._build_component("loop", LoopController)
         logger.notify("LoopController initialized.")
 
-        # The game API is a core transport, not an AI feature. Bring it up as
-        # soon as the event loop and settings exist so Unity can connect while
-        # neural services continue initializing in the background.
-        self._build_component("server", self._init_server_controller)
-
         with startup_trace.phase("controller.pending_update"):
             self._check_and_perform_pending_update()
 
@@ -229,6 +225,9 @@ class MainController:
 
         self._subscribe_to_events()
         logger.notify("MainController подписался на события")
+        # External requests are accepted only after every mandatory service and
+        # event handler used by the game protocol has been registered.
+        self._build_component("server", self._init_server_controller)
         startup_trace.mark("controller.main.ready", headless=self.headless)
         startup_trace.write()
 
@@ -569,6 +568,12 @@ class MainController:
         server_controller = getattr(self, "server_controller", None)
         if server_controller is not None:
             shutdown_step("server", server_controller.destroy)
+
+        history_controller = getattr(self, "history_controller", None)
+        if history_controller is not None:
+            close_history = getattr(history_controller, "close", None)
+            if callable(close_history):
+                shutdown_step("history timers", close_history)
 
         gui_controller = getattr(self, "gui_controller", None)
         if gui_controller is not None:

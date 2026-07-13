@@ -25,15 +25,13 @@ class DaemonExecutor:
         self._lock = threading.Lock()
         self._closed = False
         self._stop_event = threading.Event()
+        self._thread_name_prefix = str(thread_name_prefix)
+        self._next_worker_index = 0
         self._threads: list[threading.Thread] = []
+        self._worker_by_future: dict[Future[Any], threading.Thread] = {}
+        self._retired_threads: set[threading.Thread] = set()
         for index in range(max(1, int(max_workers))):
-            thread = task_supervisor().start_thread(
-                self,
-                f"{thread_name_prefix}-{index}",
-                self._worker,
-                cancel_event=self._stop_event,
-            )
-            self._threads.append(thread)
+            self._start_worker()
 
     def submit(self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Future[_T]:
         future: Future[_T] = Future()
@@ -64,7 +62,46 @@ class DaemonExecutor:
             self._queue.put(None)
         task_supervisor().cancel_owner(self, timeout=1.0)
 
+    def abandon(self, future: Future[Any]) -> bool:
+        """Detach a running task and replace its worker.
+
+        Python cannot kill the underlying call. The abandoned worker therefore
+        remains daemonized until the call returns, while a fresh worker keeps
+        the executor capacity available for subsequent requests.
+        """
+        with self._lock:
+            if self._closed:
+                return False
+            thread = self._worker_by_future.get(future)
+            if thread is None or thread in self._retired_threads:
+                return False
+            self._retired_threads.add(thread)
+        if self._start_worker():
+            return True
+        with self._lock:
+            self._retired_threads.discard(thread)
+        return False
+
+    def _start_worker(self) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            index = self._next_worker_index
+            self._next_worker_index += 1
+            try:
+                thread = task_supervisor().start_thread(
+                    self,
+                    f"{self._thread_name_prefix}-{index}",
+                    self._worker,
+                    cancel_event=self._stop_event,
+                )
+            except Exception:
+                return False
+            self._threads.append(thread)
+        return True
+
     def _worker(self) -> None:
+        current_thread = threading.current_thread()
         while True:
             item = self._queue.get()
             if item is None:
@@ -72,9 +109,19 @@ class DaemonExecutor:
             future, fn, args, kwargs = item
             if not future.set_running_or_notify_cancel():
                 continue
+            with self._lock:
+                self._worker_by_future[future] = current_thread
             try:
                 result = fn(*args, **kwargs)
             except BaseException as exc:
                 future.set_exception(exc)
             else:
                 future.set_result(result)
+            finally:
+                with self._lock:
+                    self._worker_by_future.pop(future, None)
+                    retired = current_thread in self._retired_threads
+                    if retired:
+                        self._retired_threads.discard(current_thread)
+                if retired:
+                    return

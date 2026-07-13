@@ -19,6 +19,7 @@ from utils import _, save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
 from handlers.llm_providers.base import LLMResponse
+from handlers.llm_providers.base import RequestCancellation
 
 
 class LLMRequestRunner:
@@ -185,6 +186,8 @@ class LLMRequestRunner:
                 "http_read_timeout_seconds",
                 max(1.0, float(request_timeout) - 5.0),
             )
+            cancellation = RequestCancellation()
+            req.extra["_request_cancellation"] = cancellation
 
             validation_error = self._validate_request(req)
             if validation_error is not None:
@@ -201,6 +204,7 @@ class LLMRequestRunner:
                     pm.generate,
                     args=(req,),
                     timeout=request_timeout,
+                    cancellation=cancellation,
                 )
                 if response and response.text:
                     self.last_error = None
@@ -288,7 +292,14 @@ class LLMRequestRunner:
             ),
         )
 
-    def _call_with_timeout(self, func, args=(), kwargs=None, timeout: float = 30.0):
+    def _call_with_timeout(
+        self,
+        func,
+        args=(),
+        kwargs=None,
+        timeout: float = 30.0,
+        cancellation: RequestCancellation | None = None,
+    ):
         """Вызвать func с ограничением по времени.
 
         Раньше здесь был `with ThreadPoolExecutor(...)`: его __exit__ делает
@@ -298,8 +309,9 @@ class LLMRequestRunner:
         """
         if kwargs is None:
             kwargs = {}
+        pool = executors().pool(Pools.LLM_HTTP)
         try:
-            future = executors().try_submit(Pools.LLM_HTTP, func, *args, **kwargs)
+            future = pool.try_submit(func, *args, **kwargs)
         except PoolSaturated as exc:
             raise RuntimeError(
                 "LLM HTTP pool is saturated by unfinished provider requests"
@@ -307,8 +319,20 @@ class LLMRequestRunner:
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
-            # Поток провайдера дожмёт запрос сам; мы его больше не ждём.
+            if cancellation is not None:
+                cancellation.cancel()
             future.cancel()
+            try:
+                future.result(timeout=min(1.0, max(0.1, float(timeout) * 0.05)))
+            except concurrent.futures.TimeoutError:
+                abandoned = pool.abandon(future)
+                logger.warning(
+                    "LLM provider did not stop within the cancellation grace period; "
+                    "the detached daemon worker will be ignored"
+                    + (" and its pool slot was replaced" if abandoned else "")
+                )
+            except Exception:
+                pass
             raise
 
     def _debug_dumps_enabled(self) -> bool:

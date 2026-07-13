@@ -53,6 +53,7 @@ class HistoryController(HistoryService):
         self._background_compression_inflight: set[str] = set()
         self._background_compression_timers: Dict[str, threading.Timer] = {}
         self._compression_cooldowns: Dict[str, float] = {}
+        self._closed = False
 
         services().register(HistoryService, self, replace=True)
         self._subscribe_to_events()
@@ -60,6 +61,25 @@ class HistoryController(HistoryService):
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.History.SAVE_AFTER_RESPONSE, self._on_save_after_response, weak=False)
         self.event_bus.subscribe(Events.History.MESSAGE_COMPLETED, self._on_message_completed, weak=False)
+
+    def close(self) -> None:
+        with self._compression_guard:
+            if getattr(self, "_closed", False):
+                return
+            self._closed = True
+            timers = tuple(self._background_compression_timers.values())
+            self._background_compression_timers.clear()
+            self._compression_cooldowns.clear()
+        for timer in timers:
+            timer.cancel()
+        self.event_bus.unsubscribe(
+            Events.History.SAVE_AFTER_RESPONSE,
+            self._on_save_after_response,
+        )
+        self.event_bus.unsubscribe(
+            Events.History.MESSAGE_COMPLETED,
+            self._on_message_completed,
+        )
 
     def _get_setting(self, key: str, default: Any = None) -> Any:
         return use(SettingsService).get(key, default)
@@ -425,12 +445,16 @@ class HistoryController(HistoryService):
         return new_summary, new_count
 
     def _start_background_compression(self, character) -> None:
+        if getattr(self, "_closed", False):
+            return
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         delay_sec = self._compression_background_delay_seconds()
         remaining_cooldown = self._get_compression_cooldown_remaining(char_id)
         self._schedule_background_compression(character, delay_sec=max(delay_sec, remaining_cooldown))
 
     def _schedule_background_compression(self, character, *, delay_sec: float) -> None:
+        if getattr(self, "_closed", False):
+            return
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         timer = threading.Timer(
             max(0.0, float(delay_sec)),
@@ -441,6 +465,8 @@ class HistoryController(HistoryService):
         timer.name = f"history-compress-delay-{char_id}"
 
         with self._compression_guard:
+            if getattr(self, "_closed", False):
+                return
             previous_timer = self._background_compression_timers.get(char_id)
             if previous_timer is not None:
                 previous_timer.cancel()
@@ -457,6 +483,8 @@ class HistoryController(HistoryService):
         should_reschedule = False
         with self._compression_guard:
             self._background_compression_timers.pop(char_id, None)
+            if self._closed:
+                return
             if char_id in self._background_compression_inflight:
                 should_reschedule = True
             else:

@@ -1,6 +1,7 @@
 # File: src/controllers/server_controller.py
 import ipaddress
 import os
+import threading
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
@@ -19,6 +20,7 @@ class ServerEchoSuppressor:
         self._seen_in_ids: dict[str, deque[str]] = {}
         self._max_out_ids = int(max_out_ids_per_speaker)
         self._max_seen_in = int(max_seen_in_ids)
+        self._lock = threading.RLock()
 
     def register_outgoing(self, client_id: str, speaker: str, message_id: str, text: str):
         client_id = str(client_id or "")
@@ -30,22 +32,35 @@ class ServerEchoSuppressor:
             return
 
         key = (client_id, speaker)
-        dq = self._out_ids.get(key)
-        if dq is None:
-            dq = deque(maxlen=self._max_out_ids)
-            self._out_ids[key] = dq
+        with self._lock:
+            dq = self._out_ids.get(key)
+            if dq is None:
+                dq = deque(maxlen=self._max_out_ids)
+                self._out_ids[key] = dq
 
-        dq.append(message_id)
-        if text.strip():
-            self._out_text[key] = text.strip()
+            dq.append(message_id)
+            if text.strip():
+                self._out_text[key] = text.strip()
 
     def _seen_in(self, client_id: str) -> deque[str]:
         client_id = str(client_id or "")
-        dq = self._seen_in_ids.get(client_id)
-        if dq is None:
-            dq = deque(maxlen=self._max_seen_in)
-            self._seen_in_ids[client_id] = dq
-        return dq
+        with self._lock:
+            dq = self._seen_in_ids.get(client_id)
+            if dq is None:
+                dq = deque(maxlen=self._max_seen_in)
+                self._seen_in_ids[client_id] = dq
+            return dq
+
+    def forget_client(self, client_id: str) -> None:
+        client_id = str(client_id or "")
+        if not client_id:
+            return
+        with self._lock:
+            self._seen_in_ids.pop(client_id, None)
+            for mapping in (self._out_ids, self._out_text):
+                stale = [key for key in mapping if key[0] == client_id]
+                for key in stale:
+                    mapping.pop(key, None)
 
     def should_echo_incoming(
         self,
@@ -63,27 +78,28 @@ class ServerEchoSuppressor:
         if not client_id:
             return True
 
-        if incoming_message_id:
-            seen = self._seen_in(client_id)
-            if incoming_message_id in seen:
-                return False
-            seen.append(incoming_message_id)
+        with self._lock:
+            if incoming_message_id:
+                seen = self._seen_in(client_id)
+                if incoming_message_id in seen:
+                    return False
+                seen.append(incoming_message_id)
 
-        if sender == "Player":
-            return True
+            if sender == "Player":
+                return True
 
-        if origin_message_id:
+            if origin_message_id:
+                key = (client_id, sender)
+                dq = self._out_ids.get(key)
+                if dq and origin_message_id in dq:
+                    return False
+
             key = (client_id, sender)
-            dq = self._out_ids.get(key)
-            if dq and origin_message_id in dq:
+            last = self._out_text.get(key, "")
+            if last and last == text.strip():
                 return False
 
-        key = (client_id, sender)
-        last = self._out_text.get(key, "")
-        if last and last == text.strip():
-            return False
-
-        return True
+            return True
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -300,6 +316,8 @@ class ServerController:
                 self.server.schedule_send_loaded_settings(client_id, body)
             except Exception as exc:
                 logger.warning(f"Failed to send initial settings to {client_id}: {exc}")
+        elif not bool(client_connected) and client_id:
+            self.echo_suppressor.forget_client(client_id)
 
     def _probe_connection(self) -> Optional[bool]:
         """Живое состояние соединений сервера; None — если сказать нечего."""

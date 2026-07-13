@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import faulthandler
 import json
+import logging
 import os
 import site
 import sys
@@ -11,6 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from startup.startup_profiler import startup_trace
+
+
+_runtime_cleanup_lock = threading.Lock()
+_runtime_cleanup_roots: set[str] = set()
+_runtime_cleanup_owner = object()
 
 
 @dataclass
@@ -154,9 +160,13 @@ def _configure_paths(base_dir: str) -> str:
         manager = RuntimeEnvironmentManager(runtime_root)
         manager.migrate_legacy_environment_ids()
         manager.recover_unregistered_overlays()
-        manager.cleanup_inactive_overlays()
         main_paths = manager.main_runtime_paths()
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to activate main runtime environment paths: %s",
+            exc,
+            exc_info=True,
+        )
         main_paths = ()
 
     loaded_main_paths: list[str] = []
@@ -175,6 +185,44 @@ def _configure_paths(base_dir: str) -> str:
 
     os.environ["NEUROMITA_MAIN_ENVIRONMENT_PATHS"] = os.pathsep.join(loaded_main_paths)
     return str(core_root)
+
+
+def _schedule_runtime_cleanup(logger: Any) -> None:
+    runtime_root = str(Path(os.environ["NEUROMITA_RUNTIME_ROOT"]).resolve())
+    with _runtime_cleanup_lock:
+        if runtime_root in _runtime_cleanup_roots:
+            return
+        _runtime_cleanup_roots.add(runtime_root)
+
+    cancel_event = threading.Event()
+
+    def cleanup() -> None:
+        try:
+            raw_delay = os.environ.get("NEUROMITA_RUNTIME_CLEANUP_DELAY_SECONDS", "5")
+            try:
+                delay = max(0.0, float(raw_delay))
+            except (TypeError, ValueError):
+                delay = 5.0
+            if delay and cancel_event.wait(delay):
+                return
+            if cancel_event.is_set():
+                return
+
+            from core.runtime_environments import RuntimeEnvironmentManager
+
+            RuntimeEnvironmentManager(Path(runtime_root)).cleanup_inactive_overlays()
+            logger.info("Inactive runtime overlay cleanup completed")
+        except Exception as exc:
+            logger.warning(f"Inactive runtime overlay cleanup failed: {exc}", exc_info=True)
+
+    from core.task_supervisor import task_supervisor
+
+    task_supervisor().start_thread(
+        _runtime_cleanup_owner,
+        f"runtime-overlay-cleanup-{abs(hash(runtime_root))}",
+        cleanup,
+        cancel_event=cancel_event,
+    )
 
 
 def _configure_crash_logging(base_dir: str):
@@ -395,6 +443,7 @@ def initialize_runtime(
     logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
     logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
     logger.info(f"Lib: {libs_dir}")
+    _schedule_runtime_cleanup(logger)
 
     with startup_trace.phase("runtime.environment"):
         _load_environment(base_dir, logger)
