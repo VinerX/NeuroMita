@@ -699,7 +699,6 @@ def reload_character_data(gui):
     if chosen:
         try:
             gui.settings.set(saved_key, chosen)
-            gui.settings.save_settings()
         except Exception:
             pass
 
@@ -727,7 +726,6 @@ def on_prompt_set_changed(gui):
         return
 
     gui.settings.set(_prompt_set_key(character_id), set_name)
-    gui.settings.save_settings()
 
     get_event_bus().emit(Events.Character.RELOAD_DATA)
 
@@ -764,7 +762,6 @@ def change_character_actions(gui, character_id=None):
         if chosen:
             gui.prompt_pack_combobox.setCurrentText(chosen)
             gui.settings.set(saved_key, chosen)
-            gui.settings.save_settings()
 
         gui.prompt_pack_combobox.blockSignals(False)
 
@@ -793,7 +790,6 @@ def apply_prompt_set(gui, force_apply=True):
             return
 
     gui.settings.set(_prompt_set_key(character_id), set_name)
-    gui.settings.save_settings()
 
     get_event_bus().emit(Events.Character.RELOAD_DATA)
 
@@ -1005,10 +1001,6 @@ def save_character_provider(gui, provider: str):
         return
     provider_key = f"CHAR_PROVIDER_{selected_character}"
     gui.settings.set(provider_key, provider)
-    try:
-        gui.settings.save_settings()
-    except Exception:
-        pass
     logger.info(f"Saved provider '{provider}' for character '{selected_character}'")
 
 def migrate_to_db(gui):

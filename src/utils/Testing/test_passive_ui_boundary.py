@@ -150,6 +150,54 @@ class PassiveUiBoundaryTests(unittest.TestCase):
             + "\n".join(violations),
         )
 
+    def test_gui_view_settings_calls_match_qt_view_model_contract(self) -> None:
+        binding_path = _UI_ROOT / "settings" / "settings_binding.py"
+        binding_tree = ast.parse(
+            binding_path.read_text(encoding="utf-8"),
+            filename=str(binding_path),
+        )
+        view_model = next(
+            node
+            for node in binding_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "QtSettingsViewModel"
+        )
+        public_methods = {
+            node.name
+            for node in view_model.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not node.name.startswith("_")
+        }
+
+        controllers_root = _SRC_ROOT / "controllers" / "gui"
+        view_names = {"gui", "view", "window"}
+        violations: list[str] = []
+        for path in sorted(controllers_root.rglob("*.py")):
+            relative = path.relative_to(controllers_root)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                settings_owner = node.value
+                if not (
+                    isinstance(settings_owner, ast.Attribute)
+                    and settings_owner.attr == "settings"
+                    and isinstance(settings_owner.value, ast.Name)
+                    and settings_owner.value.id in view_names
+                ):
+                    continue
+                if node.attr not in public_methods:
+                    violations.append(
+                        f"{relative}:{node.lineno}: "
+                        f"{settings_owner.value.id}.settings.{node.attr}"
+                    )
+
+        self.assertEqual(
+            [],
+            violations,
+            "GUI controllers call methods absent from QtSettingsViewModel:\n"
+            + "\n".join(violations),
+        )
+
     def test_views_do_not_store_concrete_composition_controllers(self) -> None:
         forbidden_attributes = {
             "presentation",
