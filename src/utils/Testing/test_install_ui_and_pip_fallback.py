@@ -286,9 +286,11 @@ class PipInstallerFallbackTests(unittest.TestCase):
                     )
                     return True, 2
 
-                with patch.object(installer, "_ensure_pty_available", return_value=False), patch.object(
-                    installer, "_detect_pty", return_value=(False, None)
-                ), patch.object(installer, "_run_with_pipes", side_effect=fake_run):
+                with patch.object(installer, "_assert_not_gui_thread"), patch.object(
+                    installer, "_ensure_pty_available", return_value=False
+                ), patch.object(installer, "_detect_pty", return_value=(False, None)), patch.object(
+                    installer, "_run_with_pipes", side_effect=fake_run
+                ):
                     ok = installer._run_pip_process(
                         [sys.executable, "-m", "uv", "--verbose", "pip", "install", "tts-with-rvc"],
                         "Installing...",

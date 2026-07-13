@@ -244,9 +244,9 @@ def _probe_runtime_modules(
             ) from exc
 
 
-def _probe_runtime_capabilities(
+def _runtime_capabilities(
     python_paths: tuple[str, ...] | list[str] | None,
-) -> None:
+) -> set[str]:
     capabilities: set[str] = set()
     for raw_path in python_paths or ():
         manifest = Path(str(raw_path)).resolve().parent / "manifest.json"
@@ -255,6 +255,34 @@ def _probe_runtime_capabilities(
         except (OSError, ValueError, TypeError):
             continue
         capabilities.update(str(item) for item in data.get("capabilities") or ())
+    return capabilities
+
+
+def _configure_openmp_compatibility(
+    python_paths: tuple[str, ...] | list[str] | None,
+    *,
+    log_queue=None,
+) -> bool:
+    if os.name != "nt":
+        return False
+    capabilities = _runtime_capabilities(python_paths)
+    has_onnx = any(item.startswith("onnx.") for item in capabilities)
+    if not has_onnx:
+        return False
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+    if log_queue is not None:
+        _log(
+            log_queue,
+            "warning",
+            "Bootstrap: enabled OpenMP compatibility for Windows ONNX runtime",
+        )
+    return True
+
+
+def _probe_runtime_capabilities(
+    python_paths: tuple[str, ...] | list[str] | None,
+) -> None:
+    capabilities = _runtime_capabilities(python_paths)
 
     if any(item.startswith("torch.") for item in capabilities):
         import torch
@@ -298,6 +326,7 @@ def run_worker_process(
       - "shared" -> один worker для TTS + ASR
     """
     try:
+        _configure_openmp_compatibility(python_paths, log_queue=log_queue)
         _log(log_queue, "info", "Bootstrap: configuring isolated runtime paths")
         _ensure_lib_on_path(python_paths)
         _log(

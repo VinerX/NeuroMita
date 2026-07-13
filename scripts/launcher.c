@@ -1,9 +1,21 @@
 #include <windows.h>
 #include <conio.h>
+#include <fcntl.h>
+#include <io.h>
 #include <stdio.h>
 #include <wchar.h>
 
+static void configure_console(void) {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    _setmode(_fileno(stdout), _O_U8TEXT);
+    _setmode(_fileno(stderr), _O_U8TEXT);
+}
+
 static void wait_for_key(void) {
+    if (!_isatty(_fileno(stdin))) {
+        return;
+    }
     fputws(L"\nНажмите любую клавишу для выхода . . .", stderr);
     _getwch();
 }
@@ -24,14 +36,15 @@ int wmain(void) {
     DWORD launcher_path_length;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
+    DWORD wait_result;
     DWORD exit_code = 1;
+    LONG signed_exit_code;
 
     ZeroMemory(&startup_info, sizeof(startup_info));
     ZeroMemory(&process_info, sizeof(process_info));
     startup_info.cb = sizeof(startup_info);
 
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
+    configure_console();
 
     launcher_path_length = GetModuleFileNameW(NULL, launcher_dir, ARRAYSIZE(launcher_dir));
     if (launcher_path_length == 0 || launcher_path_length >= ARRAYSIZE(launcher_dir)) {
@@ -72,16 +85,36 @@ int wmain(void) {
         return 1;
     }
 
-    WaitForSingleObject(process_info.hProcess, INFINITE);
+    wait_result = WaitForSingleObject(process_info.hProcess, INFINITE);
+    if (wait_result == WAIT_FAILED) {
+        fwprintf(stderr, L"ERROR: Не удалось дождаться завершения NeuroMita (код Win32: %lu).\n",
+                 GetLastError());
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        wait_for_key();
+        return 1;
+    }
     if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
-        exit_code = 1;
+        fwprintf(stderr, L"ERROR: Не удалось получить код завершения NeuroMita (код Win32: %lu).\n",
+                 GetLastError());
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        wait_for_key();
+        return 1;
     }
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
 
+    signed_exit_code = (LONG)exit_code;
     if (exit_code != 0) {
-        fwprintf(stderr, L"\nNeuroMita завершилась с кодом %lu.\n", exit_code);
+        if (signed_exit_code < 0) {
+            fwprintf(stderr,
+                     L"\nNeuroMita завершилась аварийно с кодом %ld (0x%08lX).\n",
+                     signed_exit_code, exit_code);
+        } else {
+            fwprintf(stderr, L"\nNeuroMita завершилась с кодом %lu.\n", exit_code);
+        }
         wait_for_key();
     }
-    return (int)exit_code;
+    return signed_exit_code < 0 ? 1 : (int)signed_exit_code;
 }

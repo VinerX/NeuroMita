@@ -139,25 +139,42 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
 
 
 def _onnx_edge_settings() -> list[dict[str, Any]]:
+    device = _setting_combo(
+        "device",
+        "Устройство RVC",
+        "RVC Device",
+        ["dml", "cpu"],
+        "dml",
+        "DirectML для AMD, Intel и NVIDIA или CPU fallback.",
+        "DirectML for AMD, Intel, and NVIDIA or CPU fallback.",
+    )
+    device["options"].update(
+        {
+            "values_nvidia": ["dml", "cpu"],
+            "default_nvidia": "dml",
+            "values_amd": ["dml", "cpu"],
+            "default_amd": "dml",
+            "values_intel": ["dml", "cpu"],
+            "default_intel": "dml",
+            "values_cpu": ["cpu"],
+            "default_cpu": "cpu",
+            "values_other": ["cpu"],
+            "default_other": "cpu",
+        }
+    )
+    f0_method = _setting_combo(
+        "f0method",
+        "Метод F0 (RVC)",
+        "F0 Method (RVC)",
+        list(_RVC_F0_METHODS),
+        _RVC_F0_DEFAULT,
+        _RVC_F0_HELP_RU,
+        _RVC_F0_HELP_EN,
+    )
+    f0_method["options"]["default_amd"] = "pm"
     return [
-        _setting_combo(
-            "device",
-            "Устройство RVC",
-            "RVC Device",
-            ["dml", "cpu"],
-            "dml",
-            "DirectML для AMD/Intel или CPU fallback.",
-            "DirectML for AMD/Intel or CPU fallback.",
-        ),
-        _setting_combo(
-            "f0method",
-            "Метод F0 (RVC)",
-            "F0 Method (RVC)",
-            list(_RVC_F0_METHODS),
-            _RVC_F0_DEFAULT,
-            _RVC_F0_HELP_RU,
-            _RVC_F0_HELP_EN,
-        ),
+        device,
+        f0_method,
         _setting_entry("pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
         _setting_entry("index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -195,18 +212,43 @@ def _cuda_silero_settings() -> list[dict[str, Any]]:
 
 
 def _onnx_silero_settings() -> list[dict[str, Any]]:
+    device = _setting_combo(
+        "silero_rvc_device",
+        "Устройство RVC",
+        "RVC Device",
+        ["dml", "cpu"],
+        "dml",
+        "DirectML для AMD, Intel и NVIDIA или CPU fallback.",
+        "DirectML for AMD, Intel, and NVIDIA or CPU fallback.",
+    )
+    device["options"].update(
+        {
+            "values_nvidia": ["dml", "cpu"],
+            "default_nvidia": "dml",
+            "values_amd": ["dml", "cpu"],
+            "default_amd": "dml",
+            "values_intel": ["dml", "cpu"],
+            "default_intel": "dml",
+            "values_cpu": ["cpu"],
+            "default_cpu": "cpu",
+            "values_other": ["cpu"],
+            "default_other": "cpu",
+        }
+    )
+    f0_method = _setting_combo(
+        "silero_rvc_f0method",
+        "Метод F0 (RVC)",
+        "F0 Method (RVC)",
+        list(_RVC_F0_METHODS),
+        _RVC_F0_DEFAULT,
+        _RVC_F0_HELP_RU,
+        _RVC_F0_HELP_EN,
+    )
+    f0_method["options"]["default_amd"] = "pm"
     return [
-        _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["dml", "cpu"], "dml", "DirectML для RVC или CPU fallback.", "DirectML for RVC or CPU fallback."),
+        device,
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cpu"], "cpu", "Silero в ONNX-сборке запускается на CPU для стабильности.", "Silero runs on CPU in the ONNX build for stability.", locked=True),
-        _setting_combo(
-            "silero_rvc_f0method",
-            "Метод F0 (RVC)",
-            "F0 Method (RVC)",
-            list(_RVC_F0_METHODS),
-            _RVC_F0_DEFAULT,
-            _RVC_F0_HELP_RU,
-            _RVC_F0_HELP_EN,
-        ),
+        f0_method,
         _setting_entry("silero_rvc_pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("silero_rvc_use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Улучшает совпадение тембра.", "Improves timbre matching."),
         _setting_entry("silero_rvc_index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -530,6 +572,9 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self.RVC_DEFAULT_F0_METHOD
         return method
 
+    def _resolve_runtime_device(self, value: Any) -> str:
+        return str(value or self.RVC_DEFAULT_DEVICE).strip() or self.RVC_DEFAULT_DEVICE
+
     @staticmethod
     def _normalize_runtime_path(path: str) -> str:
         value = str(path or "").strip()
@@ -599,7 +644,9 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             if self.current_tts_rvc is None:
                 settings = self._load_settings_for(current_mode)
                 device_key, f0_key = self._settings_keys(current_mode)
-                device = str(settings.get(device_key, self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
+                device = self._resolve_runtime_device(
+                    settings.get(device_key, self.RVC_DEFAULT_DEVICE)
+                )
                 f0_method = self._normalize_f0_method(settings.get(f0_key, self.RVC_DEFAULT_F0_METHOD))
                 model_path_to_use = self._default_model_path()
                 logger.info(
@@ -1093,11 +1140,11 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             "name": "Edge-TTS + RVC (ONNX)",
             "min_vram": 3,
             "rec_vram": 4,
-            "gpu_vendor": ["AMD", "INTEL", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 3,
             "languages": ["Russian", "English"],
             "intents": [_("ONNX", "ONNX"), _("Стабильно", "Stable")],
-            "description": _("Edge-TTS с RVC через ONNX (DirectML / CPU). Ветка для AMD, Intel и CPU без fp16.", "Edge-TTS with RVC via ONNX (DirectML / CPU). Variant for AMD, Intel and CPU without fp16."),
+            "description": _("Edge-TTS с RVC через ONNX/DirectML на AMD, Intel и NVIDIA с CPU fallback. На NVIDIA рекомендуется CUDA-версия.", "Edge-TTS with RVC through ONNX/DirectML on AMD, Intel, and NVIDIA with CPU fallback. The CUDA variant is recommended on NVIDIA."),
             "settings": _onnx_edge_settings(),
         },
         {
@@ -1106,14 +1153,32 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             "name": "Silero + RVC (ONNX)",
             "min_vram": 3,
             "rec_vram": 4,
-            "gpu_vendor": ["AMD", "INTEL", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 3,
             "languages": ["Russian", "English"],
             "intents": [_("ONNX", "ONNX"), _("Локальный синтез", "Offline synth")],
-            "description": _("Silero + RVC через ONNX с ограниченными стабильными параметрами.", "Silero + RVC through ONNX with a limited stable parameter set."),
+            "description": _("Silero + RVC через ONNX/DirectML на Windows с CPU fallback. На NVIDIA рекомендуется CUDA-версия.", "Silero + RVC through ONNX/DirectML on Windows with CPU fallback. The CUDA variant is recommended on NVIDIA."),
             "settings": _onnx_silero_settings(),
         },
     ]
+
+    def _resolve_runtime_device(self, value: Any) -> str:
+        requested = super()._resolve_runtime_device(value).lower()
+        if requested != "dml":
+            return requested
+        try:
+            import onnxruntime
+
+            providers = set(onnxruntime.get_available_providers() or ())
+        except Exception:
+            providers = set()
+        if "DmlExecutionProvider" in providers:
+            return "dml"
+        logger.warning(
+            "ONNX RVC requested DirectML, but DmlExecutionProvider is unavailable; "
+            "using CPUExecutionProvider."
+        )
+        return "cpu"
 
     @classmethod
     def _configure_imported_rvc_module(cls, module_name: str, module: Any) -> None:

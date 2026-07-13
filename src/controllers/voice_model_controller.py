@@ -585,11 +585,17 @@ class VoiceModelController(VoiceModelService):
                     "И F5-TTS, и RVC будут работать без GPU-ускорения. Режим совместим, но самый медленный.",
                     "Both F5-TTS and RVC will run without GPU acceleration. This mode is supported, but it is the slowest option.",
                 )
-        elif model_id in {"edge_tts_rvc_onnx", "silero_rvc_onnx"} and vendor == "CPU":
-            warning = _(
-                "RVC будет работать через CPU fallback без DirectML-ускорения.",
-                "RVC will run through the CPU fallback without DirectML acceleration.",
-            )
+        elif model_id in {"edge_tts_rvc_onnx", "silero_rvc_onnx"}:
+            if vendor == "NVIDIA":
+                warning = _(
+                    "DirectML поддерживается на NVIDIA, но эта ONNX-реализация не рекомендуется: CUDA-версия обычно быстрее и лучше оптимизирована.",
+                    "DirectML is supported on NVIDIA, but this ONNX implementation is not recommended: the CUDA variant is usually faster and better optimized.",
+                )
+            elif vendor == "CPU":
+                warning = _(
+                    "RVC будет работать через CPU fallback без DirectML-ускорения.",
+                    "RVC will run through the CPU fallback without DirectML acceleration.",
+                )
 
         return {
             "vendors": vendors,
@@ -881,6 +887,8 @@ class VoiceModelController(VoiceModelService):
                     suffix_candidates = ["_amd", ""]
                 elif vendor_to_adapt_for == "INTEL":
                     suffix_candidates = ["_intel", "_amd", ""]
+                elif vendor_to_adapt_for == "CPU":
+                    suffix_candidates = ["_cpu", "_other", ""]
                 elif vendor_to_adapt_for == "OTHER":
                     suffix_candidates = ["_other", ""]
                 else:
@@ -904,10 +912,19 @@ class VoiceModelController(VoiceModelService):
                         base_other_values = options.get("values_other", ["cpu"])
                         base_non_cuda_provider = base_nvidia_values if base_nvidia_values else base_other_values
                         non_cuda_options = [v for v in base_non_cuda_provider if not str(v).startswith("cuda")]
-                        if cuda_devices:
+                        allows_cuda = any(
+                            str(value).startswith("cuda")
+                            for value in (
+                                list(base_nvidia_values)
+                                + list(options.get("values", []))
+                            )
+                        )
+                        if cuda_devices and allows_cuda:
                             final_values_list = list(cuda_devices) + non_cuda_options
                         else:
-                            final_values_list = [v for v in base_other_values if v in ["cpu", "mps"]] or ["cpu"]
+                            final_values_list = non_cuda_options or [
+                                v for v in base_other_values if v in ["cpu", "mps"]
+                            ] or ["cpu"]
                     else:
                         if platform.system() == "Darwin":
                             base_values = final_values_list or options.get("values_other", options.get("values", [])) or ["cpu"]

@@ -33,6 +33,8 @@ class Chip(QLabel):
             self.setObjectName("AIHubChipMulti")
         elif variant == "onnx":
             self.setObjectName("AIHubChipOnnx")
+        elif variant == "not_recommended":
+            self.setObjectName("AIHubChipNotRecommended")
         else:
             self.setObjectName("AIHubChip")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -212,7 +214,12 @@ class ModelCard(QFrame):
     # ------------------------------------------------------------------
     def _build(self) -> None:
         from .constants import STATUS_LABELS, STATUS_ICONS
-        from .helpers import is_backend_compatible, meta_from_row, status_from_row
+        from .helpers import (
+            is_backend_compatible,
+            is_backend_not_recommended,
+            meta_from_row,
+            status_from_row,
+        )
 
         meta = meta_from_row(self._row)
         status = status_from_row(self._row)
@@ -222,6 +229,7 @@ class ModelCard(QFrame):
         update_available = installed and bool(details.get("update_available"))
         backend = str(meta.get("backend") or "").strip().lower()
         compatible = is_backend_compatible(backend, self._gpu_vendor)
+        not_recommended = is_backend_not_recommended(backend, self._gpu_vendor)
         self._compatible = compatible
 
         # mark whole card visually as incompatible (drives QSS via property)
@@ -265,6 +273,19 @@ class ModelCard(QFrame):
             )
             warn_chip.setObjectName("AIHubChipDanger")
             title_row.addWidget(warn_chip, 0, Qt.AlignmentFlag.AlignTop)
+        elif not_recommended:
+            title_row.addWidget(
+                Chip(
+                    _t("Не рекомендуется", "Not recommended"),
+                    variant="not_recommended",
+                    tooltip=_t(
+                        "DirectML разрешён на NVIDIA, но CUDA-реализация обычно быстрее и лучше оптимизирована.",
+                        "DirectML is supported on NVIDIA, but the CUDA implementation is usually faster and better optimized.",
+                    ),
+                ),
+                0,
+                Qt.AlignmentFlag.AlignTop,
+            )
 
         info_col.addLayout(title_row)
 

@@ -33,13 +33,13 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             "id": "whisper_onnx",
             "name": "Whisper Large v3 turbo (ONNX)",
             "description": _(
-                "Офлайн Whisper в формате ONNX. Работает через onnxruntime, а на AMD/не‑NVIDIA может "
-                "использовать DirectML. Модель и файлы transformers скачиваются локально.",
-                "Offline Whisper in ONNX format. Runs via onnxruntime, and on AMD/non‑NVIDIA can "
-                "use DirectML. Model and transformers files are downloaded locally."
+                "Офлайн Whisper в формате ONNX. Использует DirectML на Windows для AMD, Intel и NVIDIA "
+                "с CPU fallback. Модель и файлы transformers скачиваются локально.",
+                "Offline Whisper in ONNX format. Uses DirectML on Windows for AMD, Intel, and NVIDIA "
+                "with CPU fallback. Model and transformers files are downloaded locally."
             ),
             "languages": ["Multilingual"],
-            "gpu_vendor": ["NVIDIA", "AMD"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("Локально", "Local"),
                 _("ONNX", "ONNX"),
@@ -86,7 +86,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
     def settings_spec(self):
         return [
             {"key": "device", "label_ru": "Устройство", "label_en": "Device",
-             "type": "combobox", "options": ["auto", "dml", "cpu", "cuda"], "default": "auto"},
+             "type": "combobox", "options": ["auto", "dml", "cpu"], "default": "auto"},
             {"key": "language", "label_ru": "Язык", "label_en": "Language",
              "type": "combobox", "options": ["ru", "en", "auto"], "default": "ru"},
             {"key": "max_tokens", "label_ru": "Макс. токенов", "label_en": "Max tokens",

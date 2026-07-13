@@ -32,7 +32,7 @@ class BackendInstallableComponent:
         description_map = {
             BackendKind.CPU: "Base runtime for CPU models.",
             BackendKind.CUDA: "Primary NVIDIA runtime; can coexist with ONNX Runtime.",
-            BackendKind.ONNX: "CPU or DirectML runtime; can coexist with PyTorch.",
+            BackendKind.ONNX: "DirectML runtime for Windows with CPU fallback; can coexist with PyTorch.",
         }
         return ComponentMetadata(
             id=self.id,

@@ -1165,8 +1165,6 @@ class AppWindowBase(QMainWindow):
             "Вы не можете использовать программу без принятия лицензионного соглашения.\n"
             "You cannot use the software without accepting the license agreement.")
         self.close()
-        import sys
-        sys.exit(0)
 
     def _show_guide(self):
         from ui.widgets.guide_widget import GuideWidget
@@ -1402,5 +1400,4 @@ class AppWindowBase(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
-
 

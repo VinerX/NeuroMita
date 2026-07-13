@@ -2,7 +2,6 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QFrame, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QFont
 from localization import available_languages, language_display_name, translate_for_language
-import sys
 from styles.theme import get_theme
 from utils import render_qss
 from ui.widgets.flow_layout import FlowLayout
@@ -247,4 +246,3 @@ class EULAWidget(QWidget):
         
     def _on_reject(self):
         self.rejected.emit()
-        sys.exit(0)

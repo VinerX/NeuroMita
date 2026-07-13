@@ -366,6 +366,15 @@ QLabel#AIHubChipOnnx {
     font-size: 10px;
     font-weight: 700;
 }
+QLabel#AIHubChipNotRecommended {
+    background: rgba(245, 166, 35, 0.10);
+    color: #f0b45d;
+    border: 1px solid rgba(245, 166, 35, 0.42);
+    border-radius: 8px;
+    padding: 2px 9px;
+    font-size: 10px;
+    font-weight: 700;
+}
 QLabel#AIHubStatusInstalled {
     color: {success};
     font-size: 11px;

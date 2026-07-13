@@ -67,12 +67,12 @@ class AIContourBoundaryTests(unittest.TestCase):
                     violations.append(f"{path.relative_to(SRC)}:{node.lineno}: {name}")
         self.assertEqual([], violations, "GUI computes installable state:\n" + "\n".join(violations))
 
-    def test_auto_topology_is_split(self) -> None:
+    def test_auto_topology_is_shared(self) -> None:
         from controllers.ai_engine_controller import AIEngineController
 
         controller = AIEngineController.__new__(AIEngineController)
         with patch.dict(os.environ, {"NEUROMITA_AI_ENGINE_MODE": "auto"}, clear=False):
-            self.assertEqual(controller._resolve_mode(), "split")
+            self.assertEqual(controller._resolve_mode(), "shared")
 
     def test_split_composition_contains_only_its_domain_records(self) -> None:
         from controllers.ai_engine_controller import AIEngineController

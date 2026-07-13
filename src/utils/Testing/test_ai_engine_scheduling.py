@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
 import threading
 import time
@@ -189,6 +191,55 @@ class WorkerDispatchTests(unittest.TestCase):
         self.assertEqual(len(responses), 1)
         self.assertFalse(responses[0]["ok"])
         self.assertIn("model exploded", responses[0]["error"])
+
+
+class WorkerBootstrapTests(unittest.TestCase):
+    def test_onnx_runtime_enables_kmp_inside_windows_worker(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as temp_dir:
+            roots = []
+            for name, capabilities in (("onnx", ["onnx.cpu", "onnx.dml"]),):
+                root = Path(temp_dir) / name
+                site_packages = root / "site-packages"
+                site_packages.mkdir(parents=True)
+                (root / "manifest.json").write_text(
+                    json.dumps({"capabilities": capabilities}),
+                    encoding="utf-8",
+                )
+                roots.append(str(site_packages))
+
+            with patch.object(wp.os, "name", "nt"), patch.dict(
+                os.environ,
+                {"KMP_DUPLICATE_LIB_OK": "FALSE"},
+                clear=False,
+            ):
+                enabled = wp._configure_openmp_compatibility(roots)
+                self.assertTrue(enabled)
+                self.assertEqual(os.environ["KMP_DUPLICATE_LIB_OK"], "TRUE")
+
+    def test_single_backend_runtime_does_not_enable_kmp(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "torch"
+            site_packages = root / "site-packages"
+            site_packages.mkdir(parents=True)
+            (root / "manifest.json").write_text(
+                json.dumps({"capabilities": ["torch.cpu"]}),
+                encoding="utf-8",
+            )
+
+            with patch.object(wp.os, "name", "nt"), patch.dict(
+                os.environ,
+                {},
+                clear=True,
+            ):
+                enabled = wp._configure_openmp_compatibility([str(site_packages)])
+                self.assertFalse(enabled)
+                self.assertNotIn("KMP_DUPLICATE_LIB_OK", os.environ)
 
 
 if __name__ == "__main__":

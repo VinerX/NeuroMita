@@ -42,6 +42,7 @@ _RUNTIME_SLOT_ORDER = (
     "rag",
     "beats",
 )
+_CORE_FAMILY_ORDER = ("torch", "onnx")
 _CORE_IMPORT_MODULES = {
     "torch": "torch",
     "torchaudio": "torchaudio",
@@ -875,9 +876,7 @@ class RuntimeEnvironmentManager:
             )
 
         if required_backend == BackendKind.ONNX:
-            gpu_vendor = str(context.get("gpu_vendor") or "CPU").upper()
-            device = str(context.get("device") or "").strip().lower()
-            provider = "dml" if device == "dml" or (device != "cpu" and gpu_vendor != "NVIDIA") else "cpu"
+            provider = service.preferred_onnx_provider(context)
             runtime_spec = ONNX_DIRECTML_SPEC if provider == "dml" else ONNX_SPEC
             capabilities = ("onnx.cpu",)
             if provider == "dml":
@@ -885,7 +884,7 @@ class RuntimeEnvironmentManager:
             layers.append(
                 CoreLayerSpec(
                     group=f"onnx-{provider}",
-                    packages=(runtime_spec,),
+                    packages=(runtime_spec, service.numpy_spec()),
                     capabilities=capabilities,
                 )
             )
@@ -1707,7 +1706,13 @@ class RuntimeEnvironmentManager:
                     candidate_by_family[family] = layer
 
         selected_layers: list[CoreLayer] = []
-        for family in sorted(required_by_family):
+        family_rank = {
+            family: index for index, family in enumerate(_CORE_FAMILY_ORDER)
+        }
+        for family in sorted(
+            required_by_family,
+            key=lambda item: (family_rank.get(item, len(family_rank)), item),
+        ):
             required = required_by_family[family]
             candidate = candidate_by_family.get(family)
             if candidate is not None and self._layer_satisfies(candidate, required):

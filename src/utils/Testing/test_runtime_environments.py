@@ -1464,6 +1464,48 @@ def test_backend_candidates_keep_torch_cuda_and_onnx_side_by_side(
     assert onnx.root.is_dir()
 
 
+def test_onnx_runtime_pins_numpy_and_keeps_torch_first_in_shared_paths(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    specs = manager.core_layer_specs(
+        BackendKind.ONNX,
+        {"gpu_vendor": "NVIDIA"},
+    )
+
+    assert len(specs) == 2
+    assert specs[0].group == "torch-cu128"
+    assert specs[1].group == "onnx-dml"
+    assert "onnx.dml" in specs[1].capabilities
+    assert any(package.startswith("onnxruntime-directml==") for package in specs[1].packages)
+    assert "numpy==1.26.0" in specs[1].packages
+
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "edge-onnx"},
+        requested_specs=("tts-with-rvc-onnx",),
+        required_backend=BackendKind.ONNX,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "tts-with-rvc-onnx", "1.0.0")
+    record = transaction.commit()
+    composition = manager.runtime_composition(
+        selection={"tts": record.logical_id},
+    )
+
+    torch, onnx = transaction.core_layers
+    assert onnx.packages["numpy"] == "1.26.0"
+    assert onnx.owned_packages["numpy"] == "1.26.0"
+    assert composition.paths[:2] == (
+        str(torch.site_packages),
+        str(onnx.site_packages),
+    )
+
+
 def test_materialized_backend_layer_is_registered_before_gc(tmp_path: Path) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
     created: list[_FakeInstaller] = []

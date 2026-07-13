@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from controllers.voice_model_controller import VoiceModelController
 from core.events import Event
+from handlers.voice_models.edge_tts_rvc_model import EdgeTTSRVCOnnxModel
 
 
 _F5_FIXTURE = [
@@ -54,6 +55,33 @@ _F5_FIXTURE = [
             },
         ],
     },
+]
+
+_ONNX_FIXTURE = [
+    {
+        "id": "edge_tts_rvc_onnx",
+        "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
+        "settings": [
+            {
+                "key": "device",
+                "type": "combobox",
+                "options": {
+                    "values": ["dml", "cpu"],
+                    "default": "dml",
+                    "values_nvidia": ["dml", "cpu"],
+                    "default_nvidia": "dml",
+                    "values_amd": ["dml", "cpu"],
+                    "default_amd": "dml",
+                    "values_intel": ["dml", "cpu"],
+                    "default_intel": "dml",
+                    "values_cpu": ["cpu"],
+                    "default_cpu": "cpu",
+                    "values_other": ["cpu"],
+                    "default_other": "cpu",
+                },
+            }
+        ],
+    }
 ]
 
 
@@ -140,6 +168,52 @@ class VoiceModelControllerTests(unittest.TestCase):
         self.assertTrue(model["compat_supported"])
         self.assertIn("INTEL", model["gpu_vendor"])
         self.assertTrue(model["compat_warning"])
+
+    def test_onnx_device_uses_directml_on_nvidia_without_offering_cuda(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce RTX 4060"
+
+        adapted = controller.finalize_model_settings(
+            _ONNX_FIXTURE,
+            "NVIDIA",
+            ["cuda:0"],
+        )
+
+        device = adapted[0]["settings"][0]["options"]
+        self.assertEqual(device["values"], ["dml", "cpu"])
+        self.assertEqual(device["default"], "dml")
+
+    def test_onnx_voice_model_is_supported_but_warned_on_nvidia(self):
+        controller = self._make_controller_stub()
+        model = EdgeTTSRVCOnnxModel.MODEL_CONFIGS[0]
+
+        compatibility = controller._build_model_compatibility(model, "NVIDIA")
+
+        self.assertTrue(compatibility["supported"])
+        self.assertTrue(compatibility["warning"])
+        self.assertIn("CUDA", compatibility["warning"])
+
+    def test_real_onnx_rvc_configs_resolve_pm_as_amd_default(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "AMD Radeon RX 7800 XT"
+
+        adapted = controller.finalize_model_settings(
+            EdgeTTSRVCOnnxModel.MODEL_CONFIGS,
+            "AMD",
+            [],
+        )
+
+        edge = next(item for item in adapted if item["id"] == "edge_tts_rvc_onnx")
+        silero = next(item for item in adapted if item["id"] == "silero_rvc_onnx")
+        edge_f0 = next(item for item in edge["settings"] if item["key"] == "f0method")
+        silero_f0 = next(
+            item
+            for item in silero["settings"]
+            if item["key"] == "silero_rvc_f0method"
+        )
+
+        self.assertEqual(edge_f0["options"]["default"], "pm")
+        self.assertEqual(silero_f0["options"]["default"], "pm")
 
     def test_refresh_installed_models_uses_canonical_catalog(self):
         controller = VoiceModelController.__new__(VoiceModelController)

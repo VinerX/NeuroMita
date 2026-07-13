@@ -32,13 +32,13 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             "id": "gigaam_onnx",
             "name": "GigaAM ONNX",
             "description": _(
-                "Офлайн-распознавание речи на базе GigaAM через ONNXRuntime. "
-                "Запускается в отдельном процессе. Подходит для CPU/DirectML.",
+                "Офлайн-распознавание речи на базе GigaAM через ONNXRuntime DirectML на Windows "
+                "с CPU fallback. Запускается в отдельном процессе.",
                 "Offline speech recognition based on GigaAM via ONNXRuntime. "
-                "Runs in a separate process. Suitable for CPU/DirectML."
+                "Uses DirectML on Windows with CPU fallback and runs in a separate process."
             ),
             "languages": ["Russian"],
-            "gpu_vendor": ["AMD", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("ONNX", "ONNX"),
                 _("Отдельный процесс", "Separate process"),

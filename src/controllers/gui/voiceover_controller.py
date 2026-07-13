@@ -9,7 +9,12 @@ from main_logger import logger
 from core.events import Events, Event
 from core.services import services
 from core.task_supervisor import task_supervisor
-from services.contracts import LocalVoiceService, TelegramService, VoiceModelService
+from services.contracts import (
+    InstallableCatalogService,
+    LocalVoiceService,
+    TelegramService,
+    VoiceModelService,
+)
 from .base_controller import BaseController
 
 from ui.dialogs.model_loading_dialog import create_model_loading_dialog
@@ -78,12 +83,18 @@ class VoiceoverGuiController(BaseController):
         if self._installed_models_cache is not None and (now - self._installed_models_cache_ts) < 1.0:
             return set(self._installed_models_cache)
 
-        voice_models = services().get_optional(VoiceModelService)
-        installed = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
+        installed = self._canonical_installed_model_ids()
 
         self._installed_models_cache = installed
         self._installed_models_cache_ts = now
         return set(installed)
+
+    @staticmethod
+    def _canonical_installed_model_ids() -> set[str]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return set()
+        return set(catalog.ready_item_ids("tts"))
 
     def _initialize_local_model(self, model_id: str) -> None:
         local_voice = services().get_optional(LocalVoiceService)
@@ -424,9 +435,8 @@ class VoiceoverGuiController(BaseController):
             self._apply_model_status(chip, btn, "loading", _("Checking...", "Checking..."), None, "")
 
         def worker():
-            voice_models = services().get_optional(VoiceModelService)
             local_voice = services().get_optional(LocalVoiceService)
-            installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
+            installed_ids = self._canonical_installed_model_ids()
 
             installed = model_id in installed_ids
             initialized = bool(installed and local_voice and local_voice.check_initialized(model_id))
@@ -572,7 +582,7 @@ class VoiceoverGuiController(BaseController):
             local_voice = services().get_optional(LocalVoiceService)
             voice_models = services().get_optional(VoiceModelService)
             cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
-            installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
+            installed_ids = self._canonical_installed_model_ids()
             if current_model_id and local_voice is not None:
                 initialized = bool(local_voice.check_initialized(current_model_id))
 
@@ -1085,8 +1095,7 @@ class VoiceoverGuiController(BaseController):
         if cb is None:
             return
 
-        voice_models = services().get_optional(VoiceModelService)
-        installed_ids = set(voice_models.installed_models_snapshot()) if voice_models is not None else set()
+        installed_ids = self._canonical_installed_model_ids()
 
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]

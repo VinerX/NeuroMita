@@ -51,7 +51,7 @@ _BACKEND_COMPAT: dict[str, set[str]] = {
     "NVIDIA": {"cuda", "onnx", "cpu", "none", ""},
     "AMD":    {"onnx", "cpu", "none", ""},
     "INTEL":  {"onnx", "cpu", "none", ""},
-    "CPU":    {"cpu", "none", ""},
+    "CPU":    {"onnx", "cpu", "none", ""},
 }
 
 
@@ -62,3 +62,9 @@ def is_backend_compatible(component_backend: str, gpu_vendor: str) -> bool:
     vendor = str(gpu_vendor or "CPU").strip().upper()
     allowed = _BACKEND_COMPAT.get(vendor, _BACKEND_COMPAT["CPU"])
     return backend in allowed
+
+
+def is_backend_not_recommended(component_backend: str, gpu_vendor: str) -> bool:
+    backend = str(component_backend or "").strip().lower()
+    vendor = str(gpu_vendor or "CPU").strip().upper()
+    return backend == "onnx" and vendor == "NVIDIA"

@@ -8,9 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from PyQt6 import sip
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
-from ui.windows.ai_hub.helpers import is_backend_compatible
+from ui.windows.ai_hub.helpers import (
+    is_backend_compatible,
+    is_backend_not_recommended,
+)
 from ui.windows.ai_hub.widgets import ModelCard
 
 
@@ -56,6 +59,26 @@ def test_nvidia_accepts_onnx_but_amd_rejects_cuda() -> None:
     assert is_backend_compatible("cuda", "NVIDIA")
     assert not is_backend_compatible("cuda", "AMD")
     assert is_backend_compatible("onnx", "AMD")
+    assert is_backend_compatible("onnx", "INTEL")
+    assert is_backend_compatible("onnx", "CPU")
+    assert is_backend_not_recommended("onnx", "NVIDIA")
+    assert not is_backend_not_recommended("onnx", "AMD")
+
+
+def test_nvidia_onnx_card_is_allowed_but_marked_not_recommended() -> None:
+    _app()
+    card = ModelCard(
+        _row(),
+        on_install=lambda _component_id: None,
+        on_uninstall=lambda _component_id: None,
+        on_open_settings=lambda _component_id: None,
+        gpu_vendor="NVIDIA",
+    )
+
+    button = card.findChild(QPushButton, "AIHubCardPrimary")
+    warning = card.findChild(QLabel, "AIHubChipNotRecommended")
+    assert button is not None and button.isEnabled()
+    assert warning is not None
 
 
 def test_file_check_and_other_install_keep_card_button_neutral() -> None:
