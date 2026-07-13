@@ -1428,6 +1428,42 @@ def test_core_cleanup_keeps_pending_backend_candidate_until_activation(
     assert cuda.root.is_dir()
 
 
+def test_backend_candidates_keep_torch_cuda_and_onnx_side_by_side(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cuda = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cu128",
+            packages=("torch==2.7.1+cu128",),
+            capabilities=("torch.cpu", "torch.cuda"),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    onnx = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="onnx-cpu",
+            packages=("onnxruntime==1.22.0",),
+            capabilities=("onnx.cpu",),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+
+    assert cuda is not None and onnx is not None
+    manager.register_backend_candidates((cuda.layer_id, onnx.layer_id))
+    manager.cleanup_unreferenced_core_layers()
+
+    candidates = set(
+        manager.registry_snapshot()["backend_candidates"]["core_layer_ids"]
+    )
+    assert candidates == {cuda.layer_id, onnx.layer_id}
+    assert cuda.root.is_dir()
+    assert onnx.root.is_dir()
+
+
 def test_materialized_backend_layer_is_registered_before_gc(tmp_path: Path) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
     created: list[_FakeInstaller] = []

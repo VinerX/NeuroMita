@@ -48,7 +48,7 @@ def qicon(name: str, color: str):
 _BACKEND_COMPAT: dict[str, set[str]] = {
     # GPU vendor (uppercase) -> backends that are compatible with the
     # detected hardware. "none"/"cpu" backends are always compatible.
-    "NVIDIA": {"cuda", "cpu", "none", ""},
+    "NVIDIA": {"cuda", "onnx", "cpu", "none", ""},
     "AMD":    {"onnx", "cpu", "none", ""},
     "INTEL":  {"onnx", "cpu", "none", ""},
     "CPU":    {"cpu", "none", ""},
