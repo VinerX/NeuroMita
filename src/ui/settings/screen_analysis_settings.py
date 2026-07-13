@@ -1,10 +1,11 @@
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section
 from ui.settings.runtime_options import (
     refresh_camera_options,
     register_camera_options,
     register_provider_options,
     select_camera_option,
 )
+from main_logger import logger
 from utils import getTranslationVariant as _
 
 def update_camera_list(gui, *, force: bool = False):
@@ -352,7 +353,7 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
             'validation': gui.validate_positive_integer,
         },
     ]
-    section = create_settings_section(
+    create_settings_section(
         gui, parent_layout,
         _("Хранение и очистка изображений", "Image Storage & Cleanup"),
         cleanup_config,

@@ -25,9 +25,10 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
 
     dispatch_to_gui = pyqtSignal(object)
 
-    def __init__(self, view: Any):
+    def __init__(self, view: Any, *, settings_data: Any):
         super().__init__(view)
         self.view = view
+        self._settings_data = settings_data
         self.event_bus = get_event_bus()
 
         self.current_preset_id: Optional[int] = None
@@ -197,7 +198,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         self.event_bus.subscribe(Events.ApiPresets.PRESET_DELETED, self._on_preset_catalog_changed, weak=False)
 
     def _on_preset_catalog_changed(self, _event) -> None:
-        self.view.presentation.settings_data.clear(API_PROVIDER_NAMES)
+        self._settings_data.clear(API_PROVIDER_NAMES)
         self.reload_presets_async()
 
     def close(self) -> None:

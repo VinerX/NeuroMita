@@ -120,6 +120,36 @@ class PassiveUiBoundaryTests(unittest.TestCase):
             "Views use the presentation service locator:\n" + "\n".join(violations),
         )
 
+    def test_gui_controllers_do_not_resolve_presentation_through_views(self) -> None:
+        controllers_root = _SRC_ROOT / "controllers" / "gui"
+        view_names = {"gui", "view", "window"}
+        violations: list[str] = []
+
+        for path in sorted(controllers_root.rglob("*.py")):
+            relative = path.relative_to(controllers_root)
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute) or node.attr != "presentation":
+                    continue
+
+                base = node.value
+                direct_view = isinstance(base, ast.Name) and base.id in view_names
+                stored_view = (
+                    isinstance(base, ast.Attribute)
+                    and isinstance(base.value, ast.Name)
+                    and base.value.id == "self"
+                    and base.attr in view_names
+                )
+                if direct_view or stored_view:
+                    violations.append(f"{relative}:{node.lineno}: view.presentation")
+
+        self.assertEqual(
+            [],
+            violations,
+            "GUI controllers resolve the presentation hub through a View:\n"
+            + "\n".join(violations),
+        )
+
     def test_views_do_not_store_concrete_composition_controllers(self) -> None:
         forbidden_attributes = {
             "presentation",

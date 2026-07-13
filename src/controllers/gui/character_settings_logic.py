@@ -13,6 +13,7 @@ from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ApiPresetService, CharacterRegistry
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
+from utils.history_migration import migrate_character_history
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_structured_migration
 from ui.dialogs.db_viewer import DbViewerDialog
@@ -181,7 +182,6 @@ class DedupeHistoryWorker(TaskWorker):
         from managers.database_manager import DatabaseManager
         db = DatabaseManager()
         super().__init__(db.dedupe_history, kwargs={"character_id": str(character_id or "").strip()})
-from utils.history_migration import migrate_character_history
 
 
 def _prompt_set_key(character_id: str) -> str:
@@ -348,11 +348,11 @@ def _populate_chat_character_combobox(gui, character_list: list[str], current_ch
         combo.blockSignals(blocked)
 
 
-def _load_character_settings_snapshot_async(gui) -> None:
+def _load_character_settings_snapshot_async(gui, settings_data) -> None:
     if bool(getattr(gui, "_character_settings_snapshot_loading", False)):
         return
 
-    cached = gui.presentation.settings_data.get(CHARACTER_SETTINGS_SNAPSHOT, None)
+    cached = settings_data.get(CHARACTER_SETTINGS_SNAPSHOT, None)
     if cached is not None:
         _apply_character_settings_snapshot(gui, cached)
         return
@@ -382,7 +382,7 @@ def _load_character_settings_snapshot_async(gui) -> None:
             "current_char_id": _fallback_current_character_id(gui),
         })
 
-    gui.presentation.settings_data.request(
+    settings_data.request(
         gui,
         CHARACTER_SETTINGS_SNAPSHOT,
         _worker,
@@ -392,8 +392,8 @@ def _load_character_settings_snapshot_async(gui) -> None:
     )
 
 
-def _load_character_provider_items_async(gui) -> None:
-    cached = gui.presentation.settings_data.get(API_PROVIDER_NAMES, None)
+def _load_character_provider_items_async(gui, settings_data) -> None:
+    cached = settings_data.get(API_PROVIDER_NAMES, None)
     if cached is not None:
         _set_character_provider_items(gui, [*_default_provider_items(), *cached])
         return
@@ -404,7 +404,7 @@ def _load_character_provider_items_async(gui) -> None:
     def _apply(provider_names: list[str]) -> None:
         _set_character_provider_items(gui, [*_default_provider_items(), *(provider_names or [])])
 
-    gui.presentation.settings_data.request(
+    settings_data.request(
         gui,
         API_PROVIDER_NAMES,
         _worker,
@@ -439,7 +439,7 @@ def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
 
 
 
-def wire_character_settings_logic(self):
+def wire_character_settings_logic(self, *, settings_data):
 
     initial_characters = _fallback_character_list(self)
     initial_char_id = _fallback_current_character_id(self, initial_characters)
@@ -533,8 +533,8 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'btn_all_purge'):
         self.btn_all_purge.clicked.connect(lambda: purge_deleted_data(self))
 
-    _load_character_settings_snapshot_async(self)
-    _load_character_provider_items_async(self)
+    _load_character_settings_snapshot_async(self, settings_data)
+    _load_character_provider_items_async(self, settings_data)
     update_prompt_set_info(self)
 
 

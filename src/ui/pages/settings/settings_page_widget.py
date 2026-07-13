@@ -1,6 +1,6 @@
 import qtawesome as qta
 
-from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QWidgetItem,
 )
 
 from ui.pages.settings.section_registry import (
@@ -24,7 +23,9 @@ from ui.pages.settings.settings_presentation import (
     SettingsSectionFailed,
     SettingsSectionReady,
 )
+from ui.widgets.flow_layout import FlowLayout as _FlowLayout
 from ui.widgets.settings_icon_button import SettingsIconButton
+from main_logger import logger
 from utils import _
 from localization.live import tr_set
 from localization.live import register_if_tr
@@ -77,11 +78,6 @@ def _make_card(name: str) -> QFrame:
     card = QFrame()
     card.setObjectName(name)
     return card
-
-
-# _FlowLayout вынесен в общий модуль (используется и стартовым EULA-экраном).
-from ui.widgets.flow_layout import FlowLayout as _FlowLayout
-
 
 class SettingsSectionPage(QFrame):
     def __init__(self, spec: SettingsSectionSpec, parent=None):
@@ -626,6 +622,12 @@ class SettingsPage(QWidget):
             self._prepare_settings_subsections(page)
             self._loaded_sections.add(category)
         except Exception as exc:
+            logger.error(
+                "Failed to build settings section '%s': %s",
+                category,
+                exc,
+                exc_info=True,
+            )
             self._set_section_placeholder(page, "error", f"Failed to load section: {exc}")
         finally:
             self._loading_sections.discard(category)

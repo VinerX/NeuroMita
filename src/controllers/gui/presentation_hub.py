@@ -242,14 +242,20 @@ class _SettingsSectionsController:
     def wire_api(self, gui: Any):
         from controllers.gui.api_settings import ApiSettingsController
 
-        controller = ApiSettingsController(gui)
+        controller = ApiSettingsController(
+            gui,
+            settings_data=self._presentation.settings_data,
+        )
         setattr(gui, "api_settings_logic", controller)
         return controller
 
     def wire_characters(self, gui: Any):
         from controllers.gui.character_settings_logic import wire_character_settings_logic
 
-        return wire_character_settings_logic(gui)
+        return wire_character_settings_logic(
+            gui,
+            settings_data=self._presentation.settings_data,
+        )
 
     def wire_microphone(self, gui: Any):
         from controllers.gui.microphone_settings_logic import wire_microphone_settings_logic

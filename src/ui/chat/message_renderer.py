@@ -5,9 +5,8 @@ message_renderer — widget-based message rendering for the chat.
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt
 from utils import _
-from main_logger import logger
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, TAIL_W, _get_avatar_pixmap
+from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, _get_avatar_pixmap
 from ui.chat.message_actions_presentation import (
     DeleteChatMessage,
     EditChatMessage,
@@ -261,7 +260,7 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             block,
             "assistant",
             parent=chat_parent,
-            avatar_pixmap=_get_avatar_pixmap(name, "assistant"),
+            avatar_pixmap=_get_avatar_pixmap(speaker_name, "assistant"),
         )
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
@@ -288,7 +287,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     if isinstance(content, list):
         for item in content:
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == "meta":
                 speaker_name = str(item.get("speaker") or item.get("character_name") or item.get("name") or "")
             elif item.get("type") == "text":
@@ -304,9 +304,12 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         text_parts.append(content)
 
     if not speaker_name:
-        if role == "user": speaker_name = _("Вы", "You")
-        elif role == "assistant" and hasattr(gui, "_get_character_name"): speaker_name = gui._get_character_name()
-        elif role in ("system", "event"): speaker_name = _("ⓘ Система", "ⓘ System")
+        if role == "user":
+            speaker_name = _("Вы", "You")
+        elif role == "assistant" and hasattr(gui, "_get_character_name"):
+            speaker_name = gui._get_character_name()
+        elif role in ("system", "event"):
+            speaker_name = _("ⓘ Система", "ⓘ System")
 
     full_text = "".join(text_parts).strip()
     has_any_images = bool(images or ui_images)
