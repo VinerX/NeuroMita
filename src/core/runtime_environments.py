@@ -42,17 +42,6 @@ _RUNTIME_SLOT_ORDER = (
     "rag",
     "beats",
 )
-_CORE_DISTRIBUTIONS = frozenset(
-    canonicalize_name(name)
-    for name in (
-        "torch",
-        "torchaudio",
-        "numpy",
-        "onnxruntime",
-        "onnxruntime-directml",
-    )
-)
-
 _CORE_IMPORT_MODULES = {
     "torch": "torch",
     "torchaudio": "torchaudio",
@@ -267,13 +256,19 @@ def _distribution_name(dist_info: Path) -> str:
 def _distribution_probe_modules(
     site_packages: Path,
     requested_specs: Iterable[str],
+    *,
+    excluded_distributions: Iterable[str] = (),
 ) -> tuple[str, ...]:
     wanted = {
         _requirement_name(spec)
         for spec in requested_specs
         if str(spec or "").strip()
     }
-    wanted.difference_update(_CORE_DISTRIBUTIONS)
+    wanted.difference_update(
+        canonicalize_name(name)
+        for name in excluded_distributions
+        if str(name or "").strip()
+    )
     if not wanted or not site_packages.is_dir():
         return ()
 
@@ -374,6 +369,22 @@ class CoreLayer:
     extra_args: tuple[str, ...]
 
 
+def _core_package_names(layers: Iterable[CoreLayer]) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for layer in layers:
+        provided_names = set(layer.packages)
+        if "onnx.dml" in layer.capabilities:
+            provided_names.update({"onnxruntime", "onnxruntime-directml"})
+        for name in provided_names:
+            normalized = canonicalize_name(name)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(normalized)
+    return tuple(names)
+
+
 @dataclass(frozen=True, slots=True)
 class EnvironmentRecord:
     logical_id: str
@@ -436,26 +447,11 @@ class EnvironmentTransaction:
     @property
     def validation_paths(self) -> tuple[str, ...]:
         assert self.site_packages is not None
-        return (str(self.site_packages), *(str(layer.site_packages) for layer in self.core_layers))
+        return (*(str(layer.site_packages) for layer in self.core_layers), str(self.site_packages))
 
     @property
     def core_package_names(self) -> tuple[str, ...]:
-        names: list[str] = []
-        seen: set[str] = set()
-        for layer in self.core_layers:
-            provided_names = set(layer.packages)
-            if "onnx.dml" in layer.capabilities:
-                # DirectML ships the same import runtime as the CPU wheel. A
-                # dependent package may declare both names, but the overlay
-                # must never materialize a second onnxruntime beside DML.
-                provided_names.update({"onnxruntime", "onnxruntime-directml"})
-            for name in provided_names:
-                normalized = canonicalize_name(name)
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                names.append(normalized)
-        return tuple(names)
+        return _core_package_names(self.core_layers)
 
     @property
     def core_overrides(self) -> tuple[str, ...]:
@@ -501,10 +497,10 @@ class EnvironmentTransaction:
 
     def strip_core_packages(self) -> None:
         assert self.site_packages is not None
-        provided = set()
-        for layer in self.core_layers:
-            provided.update(layer.packages.keys())
-        self.manager.remove_distributions(self.site_packages, provided)
+        self.manager.remove_distributions(
+            self.site_packages,
+            self.core_package_names,
+        )
 
     def commit(self, meta: dict[str, Any] | None = None) -> EnvironmentRecord:
         if self.committed:
@@ -518,9 +514,21 @@ class EnvironmentTransaction:
         assert self.site_packages is not None
 
         packages = _scan_distributions(self.site_packages)
+        embedded_core = (
+            sorted(set(packages) & set(self.core_package_names))
+            if self.category in _AI_ENVIRONMENT_CATEGORIES and self.category != "backend"
+            else []
+        )
+        if embedded_core:
+            raise RuntimeError(
+                f"Environment '{self.logical_id}' contains backend-owned distributions: "
+                f"{', '.join(embedded_core)}. AI overlays must reuse distributions "
+                "provided by their declared shared backend layer."
+            )
         probe_modules = _distribution_probe_modules(
             self.site_packages,
             self.requested_specs,
+            excluded_distributions=self.core_package_names,
         )
         required_capabilities = tuple(
             sorted(
@@ -1279,9 +1287,15 @@ class RuntimeEnvironmentManager:
                     if _is_probe_module(str(module))
                 )
             else:
+                core_layers = tuple(
+                    layer
+                    for layer_id in layer_ids
+                    if (layer := self.get_core_layer(layer_id)) is not None
+                )
                 probe_modules = _distribution_probe_modules(
                     root / "site-packages",
                     manifest.get("requested_specs") or (),
+                    excluded_distributions=_core_package_names(core_layers),
                 )
             return EnvironmentRecord(
                 logical_id=normalized,
@@ -1683,8 +1697,8 @@ class RuntimeEnvironmentManager:
         self._warn_distribution_conflicts(selected_records, selected_layers)
 
         paths = tuple(
-            [str(record.site_packages) for record in selected_records]
-            + [str(layer.site_packages) for layer in selected_layers]
+            [str(layer.site_packages) for layer in selected_layers]
+            + [str(record.site_packages) for record in selected_records]
         )
         # Candidate bootstrap validates only the shared backend layers. Importing
         # arbitrary overlay top-level modules here duplicates model initialization

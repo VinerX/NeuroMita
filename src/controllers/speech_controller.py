@@ -142,6 +142,7 @@ class SpeechController(SpeechService):
 
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started_backend, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized_backend, weak=False)
+        eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed_backend, weak=False)
 
     # ——— readiness tracking
     def _on_asr_init_started_backend(self, _event: Event):
@@ -150,6 +151,10 @@ class SpeechController(SpeechService):
 
     def _on_asr_initialized_backend(self, _event: Event):
         self.asr_is_ready = True
+        self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_asr_failed_backend(self, _event: Event):
+        self.asr_is_ready = False
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     # ——— settings loaded
@@ -309,11 +314,6 @@ class SpeechController(SpeechService):
 
             try:
                 self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-            except Exception:
-                pass
-
-            try:
-                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
             except Exception:
                 pass
 
@@ -849,4 +849,3 @@ class SpeechController(SpeechService):
             )
 
         return result
-

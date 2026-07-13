@@ -295,6 +295,7 @@ class MainController:
                 factory=self._create_local_voice_controller,
                 provided_services=(LocalVoiceService,),
                 priority=35,
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(
@@ -310,6 +311,7 @@ class MainController:
                 provided_services=(VoiceModelService,),
                 depends_on=("local_voice",),
                 priority=40,
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(
@@ -322,6 +324,7 @@ class MainController:
                 shutdown=self._shutdown_speech_controller,
                 priority=50,
                 required_modules=("sounddevice",),
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(

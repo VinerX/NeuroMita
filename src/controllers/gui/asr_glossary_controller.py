@@ -67,10 +67,22 @@ class AsrGlossaryGuiController(BaseController):
     def _install_model(self, engine_id: str) -> None:
         self.event_bus.emit(Events.Speech.INSTALL_ASR_MODEL, {"model": engine_id})
 
-    def _load_catalog(self, refresh: bool) -> list[dict]:
+    def _speech_service(self) -> SpeechService:
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            return speech
+
+        ensure = getattr(self.main_controller, "ensure_feature", None)
+        if callable(ensure):
+            ensure("speech", timeout=60.0)
+
         speech = services().get_optional(SpeechService)
         if speech is None:
-            raise RuntimeError("Speech service is unavailable")
+            raise RuntimeError("Speech service failed to become ready")
+        return speech
+
+    def _load_catalog(self, refresh: bool) -> list[dict]:
+        speech = self._speech_service()
 
         completed = threading.Event()
         result: dict[str, object] = {"models": [], "error": None}
@@ -96,9 +108,7 @@ class AsrGlossaryGuiController(BaseController):
         )
 
     def _load_settings(self, engine_id: str) -> dict:
-        speech = services().get_optional(SpeechService)
-        if speech is None:
-            raise RuntimeError("Speech service is unavailable")
+        speech = self._speech_service()
         return {
             "schema": speech.recognizer_settings_schema(str(engine_id)) or [],
             "values": speech.recognizer_settings(str(engine_id)) or {},

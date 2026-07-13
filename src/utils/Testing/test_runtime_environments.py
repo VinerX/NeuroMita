@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -199,7 +200,102 @@ def test_environment_commit_is_atomic_and_strips_only_core_owned_packages(tmp_pa
     assert manager.active(transaction.logical_id) == record
     assert record.site_packages.is_dir()
     assert not transaction.staging_root.exists()
-    assert manager.runtime_paths(record)[0] == str(record.site_packages)
+    assert manager.runtime_paths(record) == (
+        str(transaction.core_layers[0].site_packages),
+        str(record.site_packages),
+    )
+
+
+def test_environment_commit_rejects_backend_distributions_inside_overlay(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "broken"},
+        requested_specs=("silero-vad",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "CPU"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+    _write_dist(transaction.site_packages, "torch", "2.7.1")
+
+    with pytest.raises(RuntimeError, match="backend-owned distributions: torch"):
+        transaction.commit()
+
+
+def test_shared_core_precedes_overlays_in_runtime_and_validation_paths(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "google"},
+        requested_specs=("silero-vad",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+
+    layer = transaction.core_layers[0]
+    assert transaction.validation_paths == (
+        str(layer.site_packages),
+        str(transaction.site_packages),
+    )
+
+    record = transaction.commit()
+    composition = manager.runtime_composition(
+        selection={"asr": record.logical_id},
+    )
+    assert composition.paths == (
+        str(layer.site_packages),
+        str(record.site_packages),
+    )
+
+
+def test_overlay_packages_do_not_override_explicit_backend_contract(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cuda_spec = manager.core_layer_specs(
+        BackendKind.CUDA,
+        {"gpu_vendor": "NVIDIA"},
+    )[0]
+    cuda_layer = manager.ensure_core_layer(
+        cuda_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cuda_layer is not None
+    manager.promote_backend_profile((cuda_layer.layer_id,))
+
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "cuda-with-onnxruntime"},
+        requested_specs=("silero-vad", "onnxruntime"),
+        required_backend=BackendKind.CUDA,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+    _write_dist(transaction.site_packages, "onnxruntime", "1.22.0")
+    record = transaction.commit()
+
+    composition = manager.runtime_composition(
+        selection={"asr": record.logical_id},
+    )
+    assert record.packages["onnxruntime"] == "1.22.0"
+    assert "onnxruntime" in record.probe_modules
+    assert composition.core_layer_ids == (cuda_layer.layer_id,)
+    assert composition.paths == (
+        str(cuda_layer.site_packages),
+        str(record.site_packages),
+    )
 
 
 def test_runtime_composition_bootstrap_probes_only_backend_imports(
@@ -1211,8 +1307,8 @@ def test_component_context_uses_compatible_profile_after_original_layer_cleanup(
     assert not cpu_layer.root.exists()
     context = manager.component_context(category="rag", item_id="embeddings")
     assert context["python_paths"] == [
-        str(record.site_packages),
         str(cuda_layer.site_packages),
+        str(record.site_packages),
     ]
 
 

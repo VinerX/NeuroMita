@@ -403,7 +403,21 @@ def _prime_onnxruntime(_logger: Any) -> None:
     return
 
 
+def _configure_gui_native_window_policy() -> None:
+    os.environ.pop("QT_USE_NATIVE_WINDOWS", None)
+
+    from PyQt6.QtCore import QCoreApplication, Qt
+
+    attributes = Qt.ApplicationAttribute
+    QCoreApplication.setAttribute(attributes.AA_NativeWindows, False)
+    QCoreApplication.setAttribute(
+        attributes.AA_DontCreateNativeWidgetSiblings,
+        True,
+    )
+
+
 def _import_gui_runtime():
+    _configure_gui_native_window_policy()
     # onnxruntime уже загружен выше; здесь выполняется первый явный Qt-import.
 
     from PyQt6.QtWidgets import QApplication

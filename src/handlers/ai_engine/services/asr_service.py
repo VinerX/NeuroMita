@@ -4,6 +4,10 @@ import asyncio
 import gc
 from typing import Any, Callable, Optional
 
+import numpy as np
+
+from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
+
 
 class ASRService:
     """
@@ -114,12 +118,19 @@ class ASRService:
         if not ok:
             return False
 
-        vad_model = None
-        if engine_id != "google":
-            vad_model = await self._get_vad_model()
+        vad_model = await self._get_vad_model()
+        capture = AudioCaptureService(self._logger)
 
         self._active = True
-        self.emit_event("status", {"running": True})
+        service_loop = asyncio.get_running_loop()
+        capture_ready = service_loop.create_future()
+
+        def _mark_capture_ready() -> None:
+            def _resolve() -> None:
+                if not capture_ready.done():
+                    capture_ready.set_result(True)
+
+            service_loop.call_soon_threadsafe(_resolve)
 
         async def _handle_text(text: str):
             t = (text or "").strip()
@@ -129,36 +140,99 @@ class ASRService:
         def _active_flag():
             return bool(self._active)
 
+        def _speech_probability(audio: np.ndarray, rate: int) -> float:
+            import torch
+
+            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+            return float(vad_model(tensor, rate).item())
+
+        async def _transcribe_segment(audio: np.ndarray, rate: int) -> None:
+            text = await rec.transcribe(audio, rate)
+            if text:
+                await _handle_text(text)
+
         async def _runner():
+            failed = False
             try:
                 await asyncio.to_thread(
                     lambda: asyncio.run(
-                        rec.live_recognition(
-                            mic_index,
-                            _handle_text,
-                            vad_model,
-                            _active_flag,
-                            sample_rate=sample_rate,
-                            chunk_size=chunk_size,
-                            vad_threshold=vad_threshold,
-                            silence_timeout=silence_timeout,
-                            pre_buffer_duration=pre_buffer_duration,
-                            max_speech_duration=max_speech_duration,
+                        capture.run(
+                            microphone_index=mic_index,
+                            config=AudioCaptureConfig(
+                                sample_rate=sample_rate,
+                                chunk_size=chunk_size,
+                                vad_threshold=vad_threshold,
+                                silence_timeout=silence_timeout,
+                                pre_buffer_duration=pre_buffer_duration,
+                                max_speech_duration=max_speech_duration,
+                            ),
+                            is_active=_active_flag,
+                            speech_probability=_speech_probability,
+                            on_segment=_transcribe_segment,
+                            on_ready=_mark_capture_ready,
                         )
                     )
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Без этого события ошибка цикла (не открылся микрофон, VAD не
-                # принял чанк и т.п.) умирала молча, а GUI продолжал считать,
-                # что распознавание работает.
-                self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
+                failed = True
+                if not capture_ready.done():
+                    capture_ready.set_exception(e)
+                else:
+                    self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
             finally:
                 self._active = False
-                self.emit_event("status", {"running": False})
+                if not capture_ready.done():
+                    capture_ready.set_exception(
+                        RuntimeError("Audio capture stopped before the microphone became ready")
+                    )
+                elif not failed:
+                    self.emit_event("status", {"running": False})
 
         self._task = asyncio.create_task(_runner())
+        try:
+            await asyncio.wait_for(asyncio.shield(capture_ready), timeout=10.0)
+        except asyncio.CancelledError:
+            self._active = False
+            if not capture_ready.done():
+                capture_ready.cancel()
+            if self._task is not None:
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+            raise
+        except Exception as exc:
+            self._active = False
+            if not capture_ready.done():
+                capture_ready.cancel()
+            task = self._task
+            if task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                except Exception:
+                    pass
+            self._task = None
+            if isinstance(exc, asyncio.TimeoutError):
+                message = (
+                    f"Микрофон {mic_index} не передал аудиоданные за 10 секунд; "
+                    "устройство или аудиодрайвер не отвечает"
+                )
+            else:
+                message = str(exc).strip() or f"Не удалось запустить микрофон {mic_index}"
+            raise RuntimeError(message) from exc
+
+        if self._task.done() or not self._active:
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+            raise RuntimeError(
+                f"ASR audio capture on microphone {mic_index} stopped during startup"
+            )
+
+        self.emit_event("status", {"running": True})
         return True
 
     async def _stop_live_internal(self):
@@ -191,13 +265,7 @@ class ASRService:
             return self._vad_model
 
         def load() -> Any:
-            try:
-                from handlers.embedding_handler import _ensure_torch_and_transformers
-
-                _ensure_torch_and_transformers()
-                import torch  # noqa: F401
-            except Exception as e:
-                raise RuntimeError(f"torch not available for VAD: {e}") from None
+            import torch  # noqa: F401
 
             try:
                 from silero_vad import load_silero_vad

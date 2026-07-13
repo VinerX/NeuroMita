@@ -52,11 +52,15 @@ class GuiCompositionRoot:
         self.settings_binding.setParent(self.window)
         self.window.attach_settings_binding(self.settings_binding)
         self.presentation.settings_sections.load_microphone(self.window)
-        self.shell_controller = AppShellController(self.window, self.presentation)
+        self.page_coordinator = MainWindowCoordinator(self.window, self.presentation)
+        self.shell_controller = AppShellController(
+            self.window,
+            self.presentation,
+            close_pages=self.page_coordinator.close,
+        )
         self.shell_actions.bind(self.shell_controller)
         self.window_controller = WindowCompositionController(self.window, self.presentation)
         self.window_actions.bind(self.window_controller)
-        self.page_coordinator = MainWindowCoordinator(self.window, self.presentation)
         self.page_actions.bind(self.page_coordinator)
         self.window.initialize_pages()
 

@@ -623,6 +623,7 @@ class Events:
         ASR_MODEL_INSTALL_FINISHED = "asr_model_install_finished"
         ASR_MODEL_INSTALL_FAILED = "asr_model_install_failed"
         ASR_MODEL_INITIALIZED = "asr_model_initialized"
+        ASR_FAILED = "asr_failed"
         
         GET_RECOGNIZER_SETTINGS_SCHEMA = "get_asr_settings_schema"
         GET_RECOGNIZER_SETTINGS = "get_asr_settings"

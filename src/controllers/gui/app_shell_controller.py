@@ -30,9 +30,16 @@ class AppShellController:
     backend request that used to leak through ``AppWindowBase``.
     """
 
-    def __init__(self, view: Any, presentation: Any) -> None:
+    def __init__(
+        self,
+        view: Any,
+        presentation: Any,
+        *,
+        close_pages: Callable[[], None] | None = None,
+    ) -> None:
         self._view = view
         self._presentation = presentation
+        self._close_pages = close_pages
         self._event_bus = get_event_bus()
         self._main_controller = None
         self._backend_error = ""
@@ -75,14 +82,13 @@ class AppShellController:
         self._closed = True
         controller = self._main_controller
         try:
-            # Page ViewModels must stop accepting refreshes before the backend
-            # shutdown reaches the global TaskSupervisor. The composition
-            # root also closes them from aboutToQuit, but that signal arrives
-            # too late for the normal window-close path.
-            page_coordinator = getattr(self._view, "page_coordinator", None)
-            close_pages = getattr(page_coordinator, "close", None)
-            if callable(close_pages):
-                close_pages()
+            close_pages = self._close_pages
+            self._close_pages = None
+            if close_pages is not None:
+                try:
+                    close_pages()
+                except Exception:
+                    logger.exception("Failed to close page presentation models")
             if controller is not None:
                 controller.close_app()
             else:

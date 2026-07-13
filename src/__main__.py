@@ -91,6 +91,12 @@ def _run_gui(runtime, startup_mode: str) -> int:
     with startup_trace.phase("gui.qapplication_create"):
         app = QApplication(sys.argv)
     logger.info("QApplication создан")
+    from controllers.gui.qt_dispatch import install_qt_dispatcher
+    from controllers.gui.qt_logging import install_qt_message_logging
+
+    install_qt_message_logging(logger)
+
+    install_qt_dispatcher(app)
 
     from ui.wheel_guard import install_combobox_wheel_guard
 
@@ -218,6 +224,12 @@ def _run_gui(runtime, startup_mode: str) -> int:
     backend_loader.request_shutdown()
     if not backend_loader.wait(timeout=5.0):
         logger.warning("GUI backend startup thread did not stop within 5 seconds")
+    if result < 0:
+        logger.critical(
+            "Qt event loop terminated with an invalid negative exit code: %d",
+            result,
+        )
+        return 1
     return result
 
 

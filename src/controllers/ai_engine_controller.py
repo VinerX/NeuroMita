@@ -707,6 +707,7 @@ class _Worker:
 
             level = str(msg.get("level") or "info").lower()
             text = str(msg.get("message") or "")
+            detail = str(msg.get("detail") or "").strip()
             self.last_status = text
             if level == "error":
                 self.last_error = text
@@ -720,6 +721,10 @@ class _Worker:
                     logger.success(f"[AI:{self.worker_name}] {text}")
                 else:
                     logger.info(f"[AI:{self.worker_name}] {text}")
+                if detail:
+                    logger.debug(
+                        f"[AI:{self.worker_name}] diagnostic traceback for {text}:\n{detail}"
+                    )
             except Exception:
                 pass
 
@@ -903,7 +908,7 @@ class AIEngineController(AIEngineService):
                         f"{service_name}.{method} returned a negative result"
                     )
             except Exception as exc:
-                detail = worker.last_error or str(exc)
+                detail = str(exc)
                 logger.error(
                     f"Candidate AI runtime validation failed for "
                     f"{service_name}.{method}: {detail}"

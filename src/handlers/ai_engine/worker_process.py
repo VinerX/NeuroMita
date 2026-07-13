@@ -34,6 +34,23 @@ def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
 _DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
+def _runtime_target_path(paths: list[str]) -> str | None:
+    fallback: str | None = None
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            manifest = json.loads((path.parent / "manifest.json").read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+        if manifest.get("logical_id"):
+            return str(path)
+        if manifest.get("layer_id"):
+            continue
+        if "bases" not in {part.casefold() for part in path.parts} and fallback is None:
+            fallback = str(path)
+    return fallback
+
+
 def _configure_torch_compile_cache(runtime_root: str) -> None:
     """Configure one persistent TorchInductor/Triton cache for all AI overlays."""
     environment_root = os.path.abspath(
@@ -116,8 +133,9 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
         explicit_paths + ([main_core] if os.path.isdir(main_core) else [])
     ))
     os.environ["NEUROMITA_AI_WORKER"] = "1"
-    if explicit_paths:
-        os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = explicit_paths[0]
+    runtime_target = _runtime_target_path(explicit_paths)
+    if runtime_target:
+        os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] = runtime_target
     else:
         os.environ.pop("NEUROMITA_RUNTIME_TARGET_DIR", None)
     os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"] = os.pathsep.join(ordered)
@@ -176,9 +194,12 @@ def _ensure_lib_on_path(python_paths: tuple[str, ...] | list[str] | None = None)
             os.environ["PATH"] = os.pathsep.join(path_entries + [os.environ.get("PATH", "")])
 
 
-def _log(log_queue, level: str, message: str) -> None:
+def _log(log_queue, level: str, message: str, *, detail: str | None = None) -> None:
     try:
-        log_queue.put_nowait({"level": str(level), "message": str(message)})
+        payload = {"level": str(level), "message": str(message)}
+        if detail:
+            payload["detail"] = str(detail)
+        log_queue.put_nowait(payload)
     except Exception:
         pass
 
@@ -335,7 +356,12 @@ async def _dispatch(service, service_name: str, method: str, payload: dict, req_
         await _respond(res_queue, service_name, req_id, ok=False, error="Request cancelled")
         raise
     except Exception as e:
-        _log(log_queue, "error", f"[{service_name}.{method}] failed: {e}\n{traceback.format_exc()}")
+        _log(
+            log_queue,
+            "error",
+            f"[{service_name}.{method}] failed: {e}",
+            detail=traceback.format_exc(),
+        )
         await _respond(res_queue, service_name, req_id, ok=False, error=e)
 
 

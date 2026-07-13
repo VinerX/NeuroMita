@@ -418,11 +418,6 @@ class SpeechRecognizerInterface(ABC):
         pass
 
     @abstractmethod
-    async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                               vad_model, active_flag, **kwargs) -> None:
-        pass
-
-    @abstractmethod
     def cleanup(self) -> None:
         pass
 

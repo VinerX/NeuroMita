@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 
 from main_logger import logger
+from controllers.gui.qt_dispatch import dispatch_to_qt
 
 
 Callback = Callable[[Any], None]
@@ -82,18 +83,11 @@ def dispatch_to_gui(target: Any, fn: Callable[[], None]) -> bool:
         except Exception:
             continue
 
-    try:
-        from PyQt6.QtCore import QTimer
-
-        QTimer.singleShot(0, fn)
+    if dispatch_to_qt(fn):
         return True
-    except Exception:
-        try:
-            fn()
-            return True
-        except Exception:
-            logger.error("Failed to dispatch callable to GUI", exc_info=True)
-            return False
+
+    logger.debug("Dropped GUI callback because the Qt dispatcher is unavailable")
+    return False
 
 
 def run_async(

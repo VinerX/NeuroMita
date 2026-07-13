@@ -16,6 +16,7 @@ from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
 from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
+from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
 from core.events import get_event_bus, Events, Event
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.task_supervisor import task_supervisor
@@ -85,6 +86,12 @@ def _on_ai_engine_event(event: Event):
             logger.error(f"ASR engine reported an error: {message}")
         else:
             logger.warning("ASR engine stopped unexpectedly (status: running=false).")
+
+        get_event_bus().emit(Events.Speech.ASR_FAILED, {
+            "engine": SpeechRecognition._recognizer_type,
+            "message": message,
+            "phase": "runtime",
+        })
 
         def _shutdown():
             # Отдельный поток обязателен: этот обработчик выполняется в
@@ -386,12 +393,35 @@ class SpeechRecognition:
 
                     retry = 0
                     if SpeechRecognition._recognizer_type == "google":
-                        await inst.live_recognition(
-                            SpeechRecognition.microphone_index,
-                            SpeechRecognition._handle_voice_message,
-                            None,
-                            lambda: SpeechRecognition.active,
-                            chunk_size=SpeechRecognition.CHUNK_SIZE
+                        from silero_vad import load_silero_vad
+                        import numpy as np
+                        import torch
+
+                        vad_model = await asyncio.to_thread(load_silero_vad)
+
+                        def speech_probability(audio: np.ndarray, sample_rate: int) -> float:
+                            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+                            return float(vad_model(tensor, sample_rate).item())
+
+                        async def transcribe_segment(audio: np.ndarray, sample_rate: int) -> None:
+                            text = await inst.transcribe(audio, sample_rate)
+                            if text:
+                                await SpeechRecognition._handle_voice_message(text)
+
+                        capture = AudioCaptureService(logger)
+                        await capture.run(
+                            microphone_index=SpeechRecognition.microphone_index,
+                            config=AudioCaptureConfig(
+                                sample_rate=SpeechRecognition.VOSK_SAMPLE_RATE,
+                                chunk_size=SpeechRecognition.CHUNK_SIZE,
+                                vad_threshold=SpeechRecognition.VAD_THRESHOLD,
+                                silence_timeout=SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
+                                pre_buffer_duration=SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
+                                max_speech_duration=SpeechRecognition.MAX_SPEECH_DURATION_SEC,
+                            ),
+                            is_active=lambda: SpeechRecognition.active,
+                            speech_probability=speech_probability,
+                            on_segment=transcribe_segment,
                         )
                     else:
                         logger.error(
@@ -450,12 +480,26 @@ class SpeechRecognition:
                 time.sleep(0.2)
 
         engine_id = SpeechRecognition._recognizer_type
-        use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
+        use_remote = SpeechRecognition._remote_asr_mode
 
         if use_remote:
+            eb = get_event_bus()
+            eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED, {"engine": engine_id})
+
+            def _emit_start_failure(message: str) -> None:
+                eb.emit(Events.Speech.ASR_FAILED, {
+                    "engine": engine_id,
+                    "message": message,
+                    "phase": "startup",
+                })
+
             eng = SpeechRecognition._get_ai_engine()
             if not eng:
                 logger.error("ASR engine not available. Local fallback is disabled.")
+                _emit_start_failure(_(
+                    "Сервис ASR недоступен. Подробности в логе.",
+                    "The ASR service is unavailable. See the log for details.",
+                ))
             else:
                 vad = {
                     "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
@@ -472,22 +516,34 @@ class SpeechRecognition:
                     "engine_settings": settings,
                     "vad": vad,
                 }
-                eb = get_event_bus()
-                eb.emit(Events.Speech.ASR_MODEL_INIT_STARTED, {"engine": engine_id})
                 activate = getattr(eng, "activate_environment", None)
-                if not callable(activate) or not activate(
-                    "asr",
-                    engine_id,
-                    category="asr",
-                    timeout=30.0,
-                    validation_method="start_live",
-                    validation_payload=start_payload,
-                    validation_timeout=300.0,
-                ):
+                try:
+                    activated = callable(activate) and activate(
+                        "asr",
+                        engine_id,
+                        category="asr",
+                        timeout=30.0,
+                        validation_method="start_live",
+                        validation_payload=start_payload,
+                        validation_timeout=300.0,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"Managed ASR environment startup failed for engine "
+                        f"'{engine_id}': {exc}",
+                        exc_info=True,
+                    )
+                    activated = False
+
+                if not activated:
                     logger.error(
                         f"Managed ASR environment could not be initialized for "
                         f"engine '{engine_id}'."
                     )
+                    _emit_start_failure(_(
+                        "Не удалось открыть выбранный микрофон или запустить ASR. Подробности в логе.",
+                        "Failed to open the selected microphone or start ASR. See the log for details.",
+                    ))
                     return False
                 with SpeechRecognition._start_lock:
                     SpeechRecognition._is_running = True
@@ -530,7 +586,7 @@ class SpeechRecognition:
 
         # stop remote if used
         engine_id = SpeechRecognition._recognizer_type
-        use_remote = SpeechRecognition._remote_asr_mode and engine_id != "google"
+        use_remote = SpeechRecognition._remote_asr_mode
         if use_remote:
             eng = SpeechRecognition._get_ai_engine()
             if eng:
