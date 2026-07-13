@@ -7,7 +7,7 @@ from main_logger import logger
 from core.events import Events, Event
 from core.services import services
 from core.task_supervisor import task_supervisor
-from services.contracts import SpeechService
+from services.contracts import InstallableCatalogService, SpeechService
 from .base_controller import BaseController
 from utils import getTranslationVariant as _
 
@@ -385,21 +385,21 @@ class AsrEventsController(BaseController):
                 if int(self._installed_inflight.get(eng, 0)) != tok:
                     return
                 ok = False
-                if error is None:
-                    ok = bool(result)
+                if error is None and isinstance(result, dict):
+                    ok = bool(result.get("ready", False))
                 self._installed_cache[eng] = (ok, time.time())
                 self._sync_indicator(force=True)
 
             self._ui_safe(apply)
 
-        speech = services().get_optional(SpeechService)
-        if speech is None:
-            cb(False, RuntimeError("Speech service is unavailable"))
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
             return
         try:
-            speech.asr_model_installed_async(eng, cb)
+            catalog.get_status_async(f"asr:{eng}", cb)
         except Exception as exc:
-            cb(False, exc)
+            cb({}, exc)
 
     def _get_installed_cached(self, engine: str) -> bool | None:
         eng = str(engine or "").strip()

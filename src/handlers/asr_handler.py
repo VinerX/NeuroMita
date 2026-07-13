@@ -11,11 +11,7 @@ from main_logger import logger
 from utils.pip_installer import PipInstaller
 from utils import getTranslationVariant as _
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
-from handlers.asr_models.google_recognizer import GoogleRecognizer
-from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
-from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
-from handlers.asr_models.whisper_recognizer import WhisperRecognizer
-from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
+from handlers.asr_models.registry import create_recognizer, engine_classes
 from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
 from core.events import get_event_bus, Events, Event
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
@@ -59,8 +55,14 @@ def _on_install_asr_model_event(event: Event):
         },
     }
 
-    eb = get_event_bus()
-    eb.emit(Events.Installable.INSTALL, payload)
+    from core.services import services
+    from services.contracts import InstallableOperationsService
+
+    operations = services().get_optional(InstallableOperationsService)
+    if operations is None:
+        logger.error("INSTALL_ASR_MODEL: installable operations service is unavailable")
+        return
+    return operations.install(payload)
 
 
 def _on_ai_engine_event(event: Event):
@@ -175,13 +177,7 @@ class SpeechRecognition:
     _pip_installer = None
     _rec_instance_lock = RLock()
 
-    _registry: Dict[str, type[SpeechRecognizerInterface]] = {
-        "google": GoogleRecognizer,
-        "gigaam": GigaAMRecognizer,
-        "gigaam_onnx": GigaAMOnnxRecognizer,
-        "whisper": WhisperRecognizer,
-        "whisper_onnx": WhisperOnnxRecognizer,
-    }
+    _registry: Dict[str, type[SpeechRecognizerInterface]] = engine_classes()
 
     @staticmethod
     def _init_pip():
@@ -190,11 +186,10 @@ class SpeechRecognition:
 
     @staticmethod
     def _new_instance(engine: str) -> Optional[SpeechRecognizerInterface]:
-        cls = SpeechRecognition._registry.get(engine)
-        if not cls:
+        if engine not in SpeechRecognition._registry:
             return None
         SpeechRecognition._init_pip()
-        return cls(SpeechRecognition._pip_installer, logger)
+        return create_recognizer(engine, SpeechRecognition._pip_installer, logger)
 
     @staticmethod
     def _ensure_instance():
@@ -344,7 +339,7 @@ class SpeechRecognition:
                 item_id=engine,
                 ctx={"engine_settings": dict(settings)},
             )
-            return inst.is_installed(runtime_ctx)
+            return bool(inst.status(runtime_ctx).ready)
         except Exception as e:
             logger.warning(f"is_installed error: {e}")
             return False
@@ -377,7 +372,7 @@ class SpeechRecognition:
                         continue
                     inst_for_cleanup = inst
 
-                    if not inst.is_installed():
+                    if not inst.status().ready:
                         logger.warning("ASR model is not set. Stopping recognition.")
                         return
 

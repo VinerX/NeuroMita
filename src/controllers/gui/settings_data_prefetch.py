@@ -227,20 +227,62 @@ def _load_camera_list() -> list[str]:
 
 def _load_rag_embed_status() -> dict[str, Any]:
     from controllers.gui import rag_memory_controller as rag
+    from core.services import use
+    from services.contracts import InstallableCatalogService
+
+    status = use(InstallableCatalogService).get_status("rag:embeddings")
+    details = status.get("details") if isinstance(status.get("details"), dict) else {}
+    required = bool(details.get("required", True))
+    missing = ", ".join(str(item) for item in (details.get("missing_required") or ()))
+    backend = (
+        _("Не требуется", "Not required")
+        if not required
+        else _("Установлен", "Installed")
+        if bool(status.get("ready", False))
+        else _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
+        if missing
+        else _("Нужна установка", "Needs install")
+    )
 
     return {
-        "backend": rag._get_embed_backend_status(),
+        "backend": backend,
         "index": rag._get_embed_status_text(),
-        "visible": rag._needs_embed_backend_install(),
+        "visible": required and not bool(status.get("ready", False)),
     }
 
 
 def _load_rag_ce_status() -> dict[str, Any]:
     from controllers.gui import rag_memory_controller as rag
+    from core.services import use
+    from managers.rag.pipeline.config import resolve_ce_model
+    from services.contracts import InstallableCatalogService
+
+    status = use(InstallableCatalogService).get_status("rag:reranker")
+    details = status.get("details") if isinstance(status.get("details"), dict) else {}
+    required = bool(details.get("required", True))
+    missing = ", ".join(str(item) for item in (details.get("missing_required") or ()))
+    backend = (
+        _("Не требуется", "Not required")
+        if not required
+        else _("Установлен", "Installed")
+        if bool(status.get("ready", False))
+        else _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
+        if missing
+        else _("Нужна установка", "Needs install")
+    )
+    model_name = str(resolve_ce_model() or "")
+    missing_models = tuple(details.get("download_models") or ())
+    model_status = (
+        _("Не выбрана", "Not selected")
+        if not model_name
+        else _("Не скачана", "Not downloaded") + f" ({model_name})"
+        if missing_models
+        else _("Скачана", "Downloaded") + f" ({model_name})"
+    )
 
     return {
-        "backend": rag._get_ce_backend_status(),
-        "model": rag._get_ce_download_status(),
+        "backend": backend,
+        "model": model_status,
         "loaded": rag._get_ce_loaded_status(),
-        "visible": rag._needs_ce_backend_install() or not rag._is_ce_model_downloaded(),
+        "visible": required and not bool(status.get("ready", False)),
     }

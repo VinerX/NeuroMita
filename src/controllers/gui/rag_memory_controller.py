@@ -25,7 +25,6 @@ from managers.settings_manager import SettingsManager
 from managers.rag.install_spec import (
     TARGET_EMBEDDINGS,
     TARGET_RERANKER,
-    get_install_status,
 )
 from managers.rag.pipeline.config import RAG_DEFAULTS
 from managers.rag.pipeline.config import list_ce_preset_names, CE_PRESETS
@@ -52,17 +51,6 @@ def _selected_character_id(gui) -> str:
 # ---------------------------------------------------------------------------
 # Status helpers
 # ---------------------------------------------------------------------------
-
-def _get_checkpoints_dir() -> str:
-    root = os.getcwd()
-    if os.path.exists(os.path.join(root, ".project-root")) or os.path.isdir(os.path.join(root, "checkpoints")):
-        return os.path.join(root, "checkpoints")
-    try:
-        import sys
-        return os.path.join(os.path.dirname(sys.executable), "checkpoints")
-    except Exception:
-        return os.path.join(root, "checkpoints")
-
 
 def _get_embed_status_text() -> str:
     """Check if current model has missing embeddings."""
@@ -112,24 +100,6 @@ def _get_embed_status_text() -> str:
         return "?"
 
 
-def _get_ce_download_status() -> str:
-    """Check if the selected cross-encoder model is cached locally."""
-    try:
-        import sys
-        from managers.rag.pipeline.config import resolve_ce_model
-        hf_name = resolve_ce_model()
-        if not hf_name:
-            return _("Не выбрана", "Not selected")
-        script_dir = os.path.dirname(sys.executable)
-        checkpoints_dir = os.path.join(script_dir, "checkpoints")
-        cache_dir_name = "models--" + hf_name.replace("/", "--")
-        if os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name)):
-            return _("Скачана", "Downloaded") + f" ({hf_name})"
-        return _("Не скачана", "Not downloaded") + f" ({hf_name})"
-    except Exception:
-        return "?"
-
-
 def _get_ce_loaded_status() -> str:
     """Check if the cross-encoder is currently loaded in memory."""
     try:
@@ -155,35 +125,6 @@ def _get_ce_loaded_status() -> str:
 # ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
-
-def _is_embed_model_downloaded() -> bool:
-    try:
-        cfg = resolve_full_config()
-        hf_name = str(cfg.get("hf_name") or resolve_model_settings()["hf_name"])
-        provider = str(cfg.get("provider_name") or "local").strip().lower()
-        if provider != "local" or not hf_name:
-            return True
-        checkpoints_dir = _get_checkpoints_dir()
-        cache_dir_name = "models--" + hf_name.replace("/", "--")
-        return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
-    except Exception:
-        return True  # assume downloaded on error to avoid spurious button
-
-
-def _is_ce_model_downloaded() -> bool:
-    try:
-        import sys
-        from managers.rag.pipeline.config import resolve_ce_model
-        hf_name = resolve_ce_model()
-        if not hf_name:
-            return True
-        script_dir = os.path.dirname(sys.executable)
-        checkpoints_dir = os.path.join(script_dir, "checkpoints")
-        cache_dir_name = "models--" + hf_name.replace("/", "--")
-        return os.path.isdir(os.path.join(checkpoints_dir, cache_dir_name))
-    except Exception:
-        return True
-
 
 # ---------------------------------------------------------------------------
 # Reindex / entity extraction / GC / reset
@@ -1549,52 +1490,6 @@ def _refresh_rag_install_status(view_model) -> None:
     from ui.settings.rag_install_presentation import RefreshRagInstall
 
     view_model.dispatch(RefreshRagInstall(force=True))
-
-
-def _get_embed_backend_status() -> str:
-    try:
-        status = get_install_status(TARGET_EMBEDDINGS)
-        if not status.get("required"):
-            return _("Не требуется", "Not required")
-        if status.get("ok"):
-            return _("Установлен", "Installed")
-        missing = ", ".join(status.get("missing_required") or [])
-        if missing:
-            return _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
-        return _("Нужна установка", "Needs install")
-    except Exception:
-        return "?"
-
-
-def _get_ce_backend_status() -> str:
-    try:
-        status = get_install_status(TARGET_RERANKER)
-        if not status.get("required"):
-            return _("Не требуется", "Not required")
-        if status.get("ok"):
-            return _("Установлен", "Installed")
-        missing = ", ".join(status.get("missing_required") or [])
-        if missing:
-            return _("Нужна установка ({items})", "Needs install ({items})").format(items=missing)
-        return _("Нужна установка", "Needs install")
-    except Exception:
-        return "?"
-
-
-def _needs_embed_backend_install() -> bool:
-    try:
-        status = get_install_status(TARGET_EMBEDDINGS)
-        return bool(status.get("required")) and not bool(status.get("ok"))
-    except Exception:
-        return False
-
-
-def _needs_ce_backend_install() -> bool:
-    try:
-        status = get_install_status(TARGET_RERANKER)
-        return bool(status.get("required")) and not bool(status.get("ok"))
-    except Exception:
-        return False
 
 
 def _find_inner_section(section, *title_needles: str):

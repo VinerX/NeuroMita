@@ -12,7 +12,14 @@ from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import services, use
 from core.task_supervisor import task_supervisor
-from services.contracts import AudioStateService, GameLinkService, LoopService, SettingsService, SpeechService
+from services.contracts import (
+    AudioStateService,
+    GameLinkService,
+    InstallableCatalogService,
+    LoopService,
+    SettingsService,
+    SpeechService,
+)
 from utils import getTranslationVariant as _
 
 
@@ -451,7 +458,13 @@ class SpeechController(SpeechService):
             engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
         except Exception:
             engine_settings = {}
-        return SpeechRecognition.check_model_installed(model_type, settings=engine_settings)
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return False
+        return catalog.is_ready(
+            f"asr:{str(model_type or '').strip()}",
+            ctx={"engine_settings": dict(engine_settings)},
+        )
 
     def _on_get_asr_engines_list(self, _event: Event):
         return list(SpeechRecognition._registry.keys())
@@ -685,7 +698,7 @@ class SpeechController(SpeechService):
         def worker() -> None:
             error = None
             try:
-                result = self._compute_asr_models_glossary()
+                result = self._compute_asr_models_glossary(refresh=refresh)
             except Exception as exc:
                 logger.error(f"GET_ASR_MODELS_GLOSSARY error: {exc}", exc_info=True)
                 result = []
@@ -711,141 +724,46 @@ class SpeechController(SpeechService):
         )
         return [] if not callable(callback) else None
 
-    def _compute_asr_models_glossary(self) -> list[dict]:
-        from core.install_requirements import check_requirements
-        from utils.gpu_utils import check_gpu_provider
+    def _compute_asr_models_glossary(self, *, refresh: bool = False) -> list[dict]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return []
 
-        try:
-            gpu_vendor = check_gpu_provider() or "CPU"
-        except Exception:
-            gpu_vendor = "CPU"
-
-        if not self._asr_settings or not self._asr_settings.get("models"):
-            self._load_asr_settings()
-
-        models_map = self._asr_settings.get("models", {}) or {}
-        registry = getattr(SpeechRecognition, "_registry", {}) or {}
-        engines = list(registry.keys())
-        try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            installable_registry = get_installable_registry()
-        except Exception:
-            installable_registry = None
-            ComponentCategory = None
-            make_component_id = None
-
+        rows = catalog.list_rows(
+            include_status=True,
+            refresh=bool(refresh),
+            category="asr",
+            status_category="asr",
+        )
         result: list[dict] = []
-        for engine in engines:
-            engine_settings = models_map.get(engine, {}) or {}
+        for row in rows:
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(metadata, dict) or not isinstance(status, dict):
+                continue
 
-            try:
-                instance = SpeechRecognition._new_instance(engine)
-                if instance and hasattr(instance, "apply_settings"):
-                    instance.apply_settings(engine_settings)
-            except Exception:
-                instance = None
-
-            metadata = {}
-            try:
-                configs = (
-                    instance.get_model_configs()
-                    if instance
-                    else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
-                )
-                if isinstance(configs, list):
-                    metadata = next(
-                        (
-                            item
-                            for item in configs
-                            if isinstance(item, dict)
-                            and str(item.get("id") or "") == str(engine)
-                        ),
-                        {},
-                    )
-            except Exception:
-                metadata = {}
-
-            try:
-                requirements = (
-                    instance.requirements()
-                    if instance and hasattr(instance, "requirements")
-                    else []
-                ) or []
-            except Exception:
-                requirements = []
-
-            context = {
-                "device": engine_settings.get("device"),
-                "gpu_vendor": gpu_vendor,
-                "engine_settings": engine_settings,
-            }
-            status = (
-                check_requirements(requirements, ctx=context)
-                if requirements
-                else {
-                    "ok": True,
-                    "missing_required": [],
-                    "missing_optional": [],
-                    "details": [],
-                }
-            )
-
-            component_id = ""
-            component_status = None
-            if (
-                installable_registry is not None
-                and ComponentCategory is not None
-                and make_component_id is not None
-            ):
-                try:
-                    component_id = make_component_id(ComponentCategory.ASR, engine)
-                    component = installable_registry.get(component_id)
-                    if component is not None:
-                        component_status = component.status(context)
-                except Exception:
-                    component_status = None
-
-            installed = (
-                bool(component_status.ready)
-                if component_status is not None
-                else bool(status.get("ok"))
-            )
-            missing_required = list(status.get("missing_required", []))
-            details = list(status.get("details", []))
-            if component_status is not None:
-                if (
-                    not component_status.ready
-                    and component_status.installed
-                    and not component_status.backend_ok
-                ):
-                    missing_required = ["backend"]
-                details.append(component_status.as_dict())
+            details = status.get("details")
+            details = dict(details) if isinstance(details, dict) else {}
+            missing_required = list(details.get("missing_required") or ())
+            if not bool(status.get("backend_ok", True)) and "backend" not in missing_required:
+                missing_required.append("backend")
 
             result.append(
                 {
-                    "id": engine,
-                    "component_id": component_id,
-                    "name": metadata.get("name") or engine,
-                    "description": metadata.get("description") or "",
-                    "languages": metadata.get("languages", [])
-                    if isinstance(metadata.get("languages"), list)
-                    else [],
-                    "gpu_vendor": metadata.get("gpu_vendor", [])
-                    if isinstance(metadata.get("gpu_vendor"), list)
-                    else [],
-                    "tags": metadata.get("tags", [])
-                    if isinstance(metadata.get("tags"), list)
-                    else [],
-                    "links": metadata.get("links", [])
-                    if isinstance(metadata.get("links"), list)
-                    else [],
-                    "installed": installed,
+                    "id": str(metadata.get("item_id") or ""),
+                    "component_id": str(metadata.get("id") or ""),
+                    "name": str(metadata.get("title") or metadata.get("item_id") or ""),
+                    "description": str(metadata.get("description") or ""),
+                    "languages": list(metadata.get("languages") or ()),
+                    "gpu_vendor": [],
+                    "tags": list(metadata.get("tags") or ()),
+                    "links": [],
+                    "installed": bool(status.get("ready", False)),
+                    "ready": bool(status.get("ready", False)),
+                    "status": dict(status),
                     "missing_required": missing_required,
-                    "missing_optional": status.get("missing_optional", []),
-                    "details": details,
+                    "missing_optional": list(details.get("missing_optional") or ()),
+                    "details": [dict(status)],
                 }
             )
-
         return result

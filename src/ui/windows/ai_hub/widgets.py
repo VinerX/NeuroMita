@@ -216,7 +216,7 @@ class ModelCard(QFrame):
         meta = meta_from_row(self._row)
         status = status_from_row(self._row)
         status_code = str(status.get("code") or "unknown")
-        installed = bool(status.get("installed")) or status_code in ("ready", "installed")
+        installed = bool(status.get("ready")) or status_code == "ready"
         details = status.get("details") if isinstance(status.get("details"), dict) else {}
         update_available = installed and bool(details.get("update_available"))
         backend = str(meta.get("backend") or "").strip().lower()

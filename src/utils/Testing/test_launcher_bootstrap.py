@@ -39,6 +39,15 @@ def test_launcher_uv_is_isolated_from_embedded_python_scripts() -> None:
     assert launcher.UV_EXE.parent != launcher.PYTHON.parent / "Scripts"
 
 
+def test_launcher_does_not_forward_global_native_widget_mode(monkeypatch) -> None:
+    launcher = _load_launcher()
+    monkeypatch.setenv("QT_USE_NATIVE_WINDOWS", "1")
+
+    environment = launcher._base_env()
+
+    assert "QT_USE_NATIVE_WINDOWS" not in environment
+
+
 def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"

@@ -22,6 +22,25 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         self._settings = settings
         self._lock = threading.RLock()
         self._status_cache: dict[str, dict[str, Any]] = {}
+        self._runtime_registry_prepared = False
+        self._executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="installable-state",
+        )
+        self._settings_subscription = None
+        if settings is not None:
+            try:
+                self._settings_subscription = settings.subscribe(
+                    self._on_setting_changed,
+                    replay=False,
+                )
+            except Exception:
+                self._settings_subscription = None
+
+    def _on_setting_changed(self, _change: Any) -> None:
+        # Component readiness can depend on device/model/provider settings.
+        # A single invalidation point prevents stale per-screen interpretations.
+        self.invalidate()
 
     def _language(self) -> str:
         if self._settings is None:
@@ -95,6 +114,132 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             rows.append(row)
         return rows
 
+    def get_row(
+        self,
+        component_id: str,
+        *,
+        include_status: bool = True,
+        refresh: bool = False,
+        ctx: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized = str(component_id or "").strip()
+        entry = catalog_by_id().get(normalized)
+        if entry is None:
+            raise KeyError(f"Unknown installable component: {normalized}")
+
+        if include_status:
+            self._refresh_statuses((entry,), refresh=refresh, ctx=ctx)
+
+        row: dict[str, Any] = {"metadata": self._metadata(entry)}
+        if include_status:
+            with self._lock:
+                status = copy.deepcopy(self._status_cache.get(normalized))
+            if status is not None:
+                row["status"] = status
+        return row
+
+    def get_status(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = self.get_row(
+            component_id,
+            include_status=True,
+            refresh=refresh,
+            ctx=ctx,
+        )
+        status = row.get("status")
+        if not isinstance(status, dict):
+            raise RuntimeError(f"Component status is unavailable: {component_id}")
+        return status
+
+    def is_ready(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: dict[str, Any] | None = None,
+    ) -> bool:
+        return bool(
+            self.get_status(
+                component_id,
+                refresh=refresh,
+                ctx=ctx,
+            ).get("ready", False)
+        )
+
+    def ready_item_ids(
+        self,
+        category: str,
+        *,
+        refresh: bool = False,
+        ctx: dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        rows = self.list_rows(
+            include_status=True,
+            refresh=refresh,
+            category=str(category or "").strip().lower(),
+            ctx=ctx,
+        )
+        result: list[str] = []
+        for row in rows:
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(metadata, dict) or not isinstance(status, dict):
+                continue
+            if bool(status.get("ready", False)):
+                item_id = str(metadata.get("item_id") or "").strip()
+                if item_id:
+                    result.append(item_id)
+        return tuple(result)
+
+    def list_rows_async(
+        self,
+        callback,
+        *,
+        include_status: bool = False,
+        refresh: bool = False,
+        category: str | None = None,
+        status_category: str | None = None,
+        ctx: dict[str, Any] | None = None,
+    ) -> None:
+        def run() -> None:
+            try:
+                rows = self.list_rows(
+                    include_status=include_status,
+                    refresh=refresh,
+                    category=category,
+                    status_category=status_category,
+                    ctx=ctx,
+                )
+                callback(rows, None)
+            except BaseException as exc:
+                callback([], exc)
+
+        self._executor.submit(run)
+
+    def get_status_async(
+        self,
+        component_id: str,
+        callback,
+        *,
+        refresh: bool = False,
+        ctx: dict[str, Any] | None = None,
+    ) -> None:
+        def run() -> None:
+            try:
+                callback(
+                    self.get_status(component_id, refresh=refresh, ctx=ctx),
+                    None,
+                )
+            except BaseException as exc:
+                callback({}, exc)
+
+        self._executor.submit(run)
+
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any:
         normalized = str(component_id or "").strip()
         if normalized not in catalog_by_id():
@@ -114,7 +259,6 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         ctx: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from core.backends import BackendKind, get_backend_service
-        from core.runtime_environments import runtime_environments
         from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
 
         component = self.require_component(component_id)
@@ -129,6 +273,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         backend_title = ""
         backend_packages: list[str] = []
         backend_size = ""
+        backend_status: dict[str, Any] = {}
         if backend_kind is not BackendKind.NONE:
             backend_id = f"backend:{backend_kind.value}"
             backend_title = {
@@ -136,18 +281,12 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 BackendKind.CPU: "PyTorch CPU",
                 BackendKind.ONNX: "ONNX Runtime",
             }.get(backend_kind, backend_kind.value.upper())
-            manager = runtime_environments()
-            specs = manager.core_layer_specs(backend_kind, runtime_ctx)
-            for spec in specs:
-                backend_packages.extend(str(item) for item in spec.packages)
-                if spec.group == "torch-reuse":
-                    installed_layer = manager.find_core_layer(
-                        required_capabilities=spec.capabilities
-                    )
-                else:
-                    installed_layer = manager.get_core_layer(spec.layer_id)
-                if installed_layer is None:
-                    backend_ready = False
+            canonical_backend_status = self.get_status(backend_id, ctx=runtime_ctx)
+            backend_ready = bool(canonical_backend_status.get("ready"))
+            backend_status = dict(canonical_backend_status.get("details") or {})
+            backend_packages.extend(
+                str(item) for item in backend_status.get("install_packages") or ()
+            )
             backend_entry = catalog_by_id().get(backend_id)
             if backend_entry is not None:
                 backend_meta = self._metadata(backend_entry)
@@ -187,6 +326,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             "backend_title": backend_title,
             "backend_packages": list(dict.fromkeys(backend_packages)),
             "backend_size": backend_size,
+            "backend_status": backend_status,
             "backend_ready": backend_ready,
             "backend_will_install": backend_will_install,
             "additional_components": additional_components,
@@ -257,6 +397,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                         "errors": dict(getattr(result, "errors", {}) or {}),
                     }
             component.save_settings(values)
+            self.invalidate(component_id)
             return {"ok": True, "errors": {}}
         except Exception as exc:
             logger.error(
@@ -284,6 +425,8 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             ]
         if not missing:
             return
+
+        self._prepare_runtime_registry()
 
         if refresh:
             for component_id in missing:
@@ -338,3 +481,21 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         with self._lock:
             for component_id, status in inspected:
                 self._status_cache[component_id] = status
+
+    def _prepare_runtime_registry(self) -> None:
+        with self._lock:
+            if self._runtime_registry_prepared:
+                return
+            self._runtime_registry_prepared = True
+        try:
+            from core.runtime_environments import runtime_environments
+
+            manager = runtime_environments()
+            migrate = getattr(manager, "migrate_legacy_environment_ids", None)
+            if callable(migrate):
+                migrate()
+            recover = getattr(manager, "recover_unregistered_overlays", None)
+            if callable(recover):
+                recover()
+        except Exception as exc:
+            logger.warning(f"Runtime environment registry preparation failed: {exc}")

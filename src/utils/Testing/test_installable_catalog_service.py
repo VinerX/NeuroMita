@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,35 @@ class _PreviewComponent:
 
 
 class InstallableCatalogServiceTests(unittest.TestCase):
+    def test_component_readiness_has_one_cached_snapshot_for_all_consumers(self):
+        service = DefaultInstallableCatalogService()
+        service._status_cache["asr:google"] = {
+            "id": "asr:google",
+            "code": "backend_missing",
+            "installed": True,
+            "ready": False,
+            "backend": "cpu",
+            "backend_ok": False,
+            "details": {},
+        }
+
+        self.assertFalse(service.is_ready("asr:google"))
+        self.assertFalse(service.get_status("asr:google")["ready"])
+        self.assertFalse(service.get_row("asr:google")["status"]["ready"])
+
+        completed = threading.Event()
+        observed = {}
+
+        def callback(status, error):
+            observed["status"] = status
+            observed["error"] = error
+            completed.set()
+
+        service.get_status_async("asr:google", callback)
+        self.assertTrue(completed.wait(2.0))
+        self.assertIsNone(observed["error"])
+        self.assertFalse(observed["status"]["ready"])
+
     def test_metadata_phase_does_not_import_work_registry_or_model_modules(self):
         code = """
 import sys
@@ -97,33 +127,33 @@ for name in (
     def test_component_settings_are_available_without_install_controller(self):
         service = DefaultInstallableCatalogService()
         component = _ConfigurableComponent()
+        service._status_cache["tts:test"] = {"ready": True}
 
         with patch.object(service, "require_component", return_value=component):
             self.assertEqual(service.settings_schema("tts:test")[0]["key"], "quality")
             self.assertEqual(service.load_settings("tts:test"), {"quality": "high"})
             self.assertTrue(service.save_component_settings("tts:test", {"quality": "low"})["ok"])
             self.assertEqual(component.saved, {"quality": "low"})
+            self.assertNotIn("tts:test", service._status_cache)
 
     def test_install_preview_discloses_missing_backend_and_packages(self):
         service = DefaultInstallableCatalogService()
         backend_service = SimpleNamespace(
             build_requirement=lambda value: SimpleNamespace(kind=value)
         )
-        spec = SimpleNamespace(
-            group="torch",
-            layer_id="torch-cuda",
-            packages=("torch==2.7.1+cu128", "torchaudio==2.7.1+cu128"),
-            capabilities=("torch.cpu", "torch.cuda"),
-        )
-        manager = SimpleNamespace(
-            core_layer_specs=lambda _kind, _ctx: (spec,),
-            get_core_layer=lambda _layer_id: None,
-            find_core_layer=lambda **_kwargs: None,
-        )
+        backend_status = {
+            "ready": False,
+            "details": {
+                "install_packages": [
+                    "torch==2.7.1+cu128",
+                    "torchaudio==2.7.1+cu128",
+                ]
+            },
+        }
 
         with patch.object(service, "require_component", return_value=_PreviewComponent()), \
+             patch.object(service, "get_status", return_value=backend_status), \
              patch("core.backends.get_backend_service", return_value=backend_service), \
-             patch("core.runtime_environments.runtime_environments", return_value=manager), \
              patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
              patch("utils.gpu_utils.format_primary_gpu_label", return_value="RTX 4060"):
             preview = service.install_preview("tts:preview")
@@ -140,21 +170,14 @@ for name in (
         backend_service = SimpleNamespace(
             build_requirement=lambda value: SimpleNamespace(kind=value)
         )
-        spec = SimpleNamespace(
-            group="torch",
-            layer_id="torch-cuda",
-            packages=("torch==2.7.1+cu128",),
-            capabilities=("torch.cpu", "torch.cuda"),
-        )
-        manager = SimpleNamespace(
-            core_layer_specs=lambda _kind, _ctx: (spec,),
-            get_core_layer=lambda _layer_id: object(),
-            find_core_layer=lambda **_kwargs: object(),
-        )
+        backend_status = {
+            "ready": True,
+            "details": {"install_packages": ["torch==2.7.1+cu128"]},
+        }
 
         with patch.object(service, "require_component", return_value=_PreviewComponent()), \
+             patch.object(service, "get_status", return_value=backend_status), \
              patch("core.backends.get_backend_service", return_value=backend_service), \
-             patch("core.runtime_environments.runtime_environments", return_value=manager), \
              patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
              patch("utils.gpu_utils.format_primary_gpu_label", return_value="RTX 4060"):
             preview = service.install_preview("tts:preview")

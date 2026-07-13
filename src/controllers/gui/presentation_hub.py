@@ -318,9 +318,7 @@ class _RagController:
         open_rag_ai_hub(TARGET_EMBEDDINGS)
 
     def is_embed_model_downloaded(self) -> bool:
-        from controllers.gui.rag_memory_controller import _is_embed_model_downloaded
-
-        return bool(_is_embed_model_downloaded())
+        return bool(use(InstallableCatalogService).is_ready("rag:embeddings"))
 
     def embed_status_text(self) -> str:
         from controllers.gui.rag_memory_controller import _get_embed_status_text

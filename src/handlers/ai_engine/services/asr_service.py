@@ -104,12 +104,16 @@ class ASRService:
         except Exception:
             pass
 
-        if hasattr(rec, "is_installed"):
+        if hasattr(rec, "status"):
             try:
-                if not await asyncio.to_thread(rec.is_installed):
+                status = await asyncio.to_thread(
+                    rec.status,
+                    {"engine_settings": dict(self._engine_settings)},
+                )
+                if not bool(status.ready):
                     return False
             except Exception:
-                pass
+                return False
 
         # Most legacy recognizer ``init`` implementations are declared async but
         # perform imports, model loading and filesystem/network work
@@ -290,23 +294,10 @@ class ASRService:
         if self._recognizer is not None and self._engine_id == engine_id:
             return self._recognizer
 
-        # Ленивая загрузка классов
-        from handlers.asr_models.google_recognizer import GoogleRecognizer
-        from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
-        from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
-        from handlers.asr_models.whisper_recognizer import WhisperRecognizer
-        from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
+        from handlers.asr_models.registry import create_recognizer, engine_class
 
-        reg = {
-            "google": GoogleRecognizer,
-            "gigaam": GigaAMRecognizer,
-            "gigaam_onnx": GigaAMOnnxRecognizer,
-            "whisper": WhisperRecognizer,
-            "whisper_onnx": WhisperOnnxRecognizer,
-        }
-
-        cls = reg.get(str(engine_id or "").strip())
-        if not cls:
+        normalized = str(engine_id or "").strip()
+        if engine_class(normalized) is None:
             return None
 
         if self._logger is None:
@@ -322,5 +313,9 @@ class ASRService:
             except Exception:
                 self._pip_installer = None
 
-        self._recognizer = cls(self._pip_installer, self._logger)
+        self._recognizer = create_recognizer(
+            normalized,
+            self._pip_installer,
+            self._logger,
+        )
         return self._recognizer

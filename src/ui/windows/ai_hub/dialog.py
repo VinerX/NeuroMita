@@ -852,7 +852,7 @@ class AIHubDialog(QDialog):
         def _compat_rank(r: dict[str, Any]) -> int:
             # 0 = compatible or already installed; 1 = incompatible -> bottom
             status = status_from_row(r)
-            if status.get("installed") or status.get("ready"):
+            if status.get("ready"):
                 return 0
             return 0 if is_backend_compatible(str(meta_from_row(r).get("backend") or ""), gpu_vendor) else 1
 
@@ -860,7 +860,7 @@ class AIHubDialog(QDialog):
             rows.sort(
                 key=lambda r: (
                     _compat_rank(r),
-                    0 if status_from_row(r).get("installed") else 1,
+                    0 if status_from_row(r).get("ready") else 1,
                     str(meta_from_row(r).get("title") or ""),
                 )
             )
@@ -1068,7 +1068,7 @@ class AIHubDialog(QDialog):
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
         _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "extras", "backend", "dependencies"}
         counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
-        installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
+        installed = sum(1 for r in counted_rows if status_from_row(r).get("ready"))
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
         gpu_label = format_primary_gpu_label()

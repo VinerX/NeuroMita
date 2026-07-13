@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import ast
+import os
 import sys
 import types
 import unittest

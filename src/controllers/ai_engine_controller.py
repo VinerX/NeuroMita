@@ -738,9 +738,8 @@ class AIEngineController(AIEngineService):
       - транслирует async события из worker -> Events.AI.ENGINE_EVENT
 
     Режим задаётся через NEUROMITA_AI_ENGINE_MODE=auto|shared|split.
-    auto:
-      - AMD    -> split
-      - other  -> shared
+    auto resolves to split: every AI domain owns its worker and runtime paths.
+    Shared mode remains an explicit compatibility override only.
     """
 
     def __init__(self):
@@ -779,7 +778,7 @@ class AIEngineController(AIEngineService):
         if raw == "auto":
             gpu_vendor = _detect_gpu_vendor()
             gpu_label = _detect_gpu_label()
-            resolved = "shared"
+            resolved = "split"
             logger.info(
                 f"AIEngineController auto mode resolved to '{resolved}' "
                 f"(gpu={gpu_label}, gpu_vendor={gpu_vendor})"
@@ -788,17 +787,35 @@ class AIEngineController(AIEngineService):
 
         return raw
 
-    def _init_workers(self) -> None:
-        try:
-            composition = self._environments.runtime_composition()
-            python_paths = composition.paths
-            probe_modules = composition.probe_modules
-        except Exception as exc:
-            logger.error(f"Failed to compose installed AI runtime: {exc}")
-            python_paths = ()
-            probe_modules = ()
+    def _composition_for_service(
+        self,
+        service: str,
+        *,
+        selection: dict[str, Any] | None = None,
+    ):
+        service_name = str(service or "").strip().lower()
+        category = self._environment_category_for_service(service_name)
+        selected_records = getattr(self._environments, "selected_records", None)
+        if callable(selected_records):
+            records = tuple(
+                record
+                for record in selected_records(selection=selection)
+                if str(getattr(record, "category", "") or "").strip().lower()
+                == category
+            )
+            return self._environments.runtime_composition(records=records)
+        return self._environments.runtime_composition(selection=selection)
 
+    def _init_workers(self) -> None:
         if self.mode == "shared":
+            try:
+                composition = self._environments.runtime_composition()
+                python_paths = composition.paths
+                probe_modules = composition.probe_modules
+            except Exception as exc:
+                logger.error(f"Failed to compose installed AI runtime: {exc}")
+                python_paths = ()
+                probe_modules = ()
             shared = _Worker(
                 self._ctx,
                 _SHARED_WORKER,
@@ -810,8 +827,19 @@ class AIEngineController(AIEngineService):
             self._workers = {_SHARED_WORKER: shared}
             self._service_to_worker = {service: _SHARED_WORKER for service in _DEFAULT_SERVICES}
         else:
-            self._workers = {
-                service: _Worker(
+            self._workers = {}
+            for service in _DEFAULT_SERVICES:
+                try:
+                    composition = self._composition_for_service(service)
+                    python_paths = composition.paths
+                    probe_modules = composition.probe_modules
+                except Exception as exc:
+                    logger.error(
+                        f"Failed to compose isolated runtime for '{service}': {exc}"
+                    )
+                    python_paths = ()
+                    probe_modules = ()
+                self._workers[service] = _Worker(
                     self._ctx,
                     service,
                     (service,),
@@ -819,8 +847,6 @@ class AIEngineController(AIEngineService):
                     probe_modules=probe_modules,
                     on_crash=self._on_worker_crash,
                 )
-                for service in _DEFAULT_SERVICES
-            }
             self._service_to_worker = {service: service for service in _DEFAULT_SERVICES}
 
         for w in self._workers.values():
@@ -930,11 +956,15 @@ class AIEngineController(AIEngineService):
         operation_timeout = max(1.0, float(timeout or 0.0))
         bootstrap_timeout = _bootstrap_timeout(operation_timeout)
 
-        def same_contract(worker: _Worker | None) -> bool:
+        def same_contract(
+            worker: _Worker | None,
+            paths: tuple[str, ...] = target_paths,
+            probes: tuple[str, ...] = target_probes,
+        ) -> bool:
             return bool(
                 worker is not None
-                and tuple(worker.python_paths) == target_paths
-                and tuple(worker.probe_modules) == target_probes
+                and tuple(worker.python_paths) == tuple(paths)
+                and tuple(worker.probe_modules) == tuple(probes)
                 and worker.proc is not None
                 and worker.proc.is_alive()
             )
@@ -1138,8 +1168,16 @@ class AIEngineController(AIEngineService):
                 current_workers = dict(self._workers)
             try:
                 for service_name in _DEFAULT_SERVICES:
+                    isolated = self._composition_for_service(
+                        service_name,
+                        selection=dict(selection) if selection is not None else None,
+                    )
+                    service_paths = tuple(isolated.paths)
+                    service_probes = tuple(
+                        getattr(isolated, "probe_modules", ()) or ()
+                    )
                     current = current_workers.get(service_name)
-                    if same_contract(current):
+                    if same_contract(current, service_paths, service_probes):
                         assert current is not None
                         candidates[service_name] = current
                         continue
@@ -1147,8 +1185,8 @@ class AIEngineController(AIEngineService):
                         self._ctx,
                         service_name,
                         (service_name,),
-                        python_paths=target_paths,
-                        probe_modules=target_probes,
+                        python_paths=service_paths,
+                        probe_modules=service_probes,
                     )
                     candidate.start()
                     if not self._wait_all_ready(candidate, bootstrap_timeout):

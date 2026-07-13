@@ -56,7 +56,11 @@ class SettingsService(ABC):
 
 
 class InstallableCatalogService(ABC):
-    """Lightweight catalog data available before the work backend is ready."""
+    """Canonical catalog, lifecycle status and readiness of AI components.
+
+    UI and runtime consumers must not inspect packages, files or backends on
+    their own.  They read the same component snapshot through this contract.
+    """
 
     @abstractmethod
     def list_rows(
@@ -68,6 +72,112 @@ class InstallableCatalogService(ABC):
         status_category: str | None = None,
         ctx: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]: ...
+
+    def get_row(
+        self,
+        component_id: str,
+        *,
+        include_status: bool = True,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        normalized = str(component_id or "").strip()
+        category = normalized.split(":", 1)[0]
+        for row in self.list_rows(
+            include_status=include_status,
+            refresh=refresh,
+            category=category,
+            status_category=category,
+            ctx=ctx,
+        ):
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            if isinstance(metadata, dict) and metadata.get("id") == normalized:
+                return row
+        raise KeyError(normalized)
+
+    def get_status(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return dict(
+            self.get_row(
+                component_id,
+                include_status=True,
+                refresh=refresh,
+                ctx=ctx,
+            ).get("status")
+            or {}
+        )
+
+    def is_ready(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> bool:
+        return bool(self.get_status(component_id, refresh=refresh, ctx=ctx).get("ready"))
+
+    def ready_item_ids(
+        self,
+        category: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        result: list[str] = []
+        for row in self.list_rows(
+            include_status=True,
+            refresh=refresh,
+            category=category,
+            status_category=category,
+            ctx=ctx,
+        ):
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if isinstance(metadata, dict) and isinstance(status, dict) and status.get("ready"):
+                result.append(str(metadata.get("item_id") or ""))
+        return tuple(item for item in result if item)
+
+    def list_rows_async(
+        self,
+        callback: Callable[[List[Dict[str, Any]], BaseException | None], None],
+        *,
+        include_status: bool = False,
+        refresh: bool = False,
+        category: str | None = None,
+        status_category: str | None = None,
+        ctx: Dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            callback(
+                self.list_rows(
+                    include_status=include_status,
+                    refresh=refresh,
+                    category=category,
+                    status_category=status_category,
+                    ctx=ctx,
+                ),
+                None,
+            )
+        except BaseException as exc:
+            callback([], exc)
+
+    def get_status_async(
+        self,
+        component_id: str,
+        callback: Callable[[Dict[str, Any], BaseException | None], None],
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            callback(self.get_status(component_id, refresh=refresh, ctx=ctx), None)
+        except BaseException as exc:
+            callback({}, exc)
 
     @abstractmethod
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any: ...

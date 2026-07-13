@@ -8,7 +8,7 @@ from PyQt6.QtGui import QFontMetrics
 
 from core.events import Events, Event
 from core.services import services
-from services.contracts import SpeechService
+from services.contracts import InstallableCatalogService, SpeechService
 from main_logger import logger
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
@@ -370,8 +370,15 @@ class MicrophoneSettingsController(BaseController):
                 engines: list[str] = []
                 for item in glossary:
                     try:
-                        if item.get("installed", False) and item.get("id"):
-                            engines.append(str(item["id"]))
+                        metadata = item.get("metadata") if isinstance(item, dict) else None
+                        status = item.get("status") if isinstance(item, dict) else None
+                        if (
+                            isinstance(metadata, dict)
+                            and isinstance(status, dict)
+                            and bool(status.get("ready", False))
+                            and metadata.get("item_id")
+                        ):
+                            engines.append(str(metadata["item_id"]))
                     except Exception:
                         pass
 
@@ -406,16 +413,19 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
-        speech, gave_up = self._speech_service_or_retry(self.refresh_engines, "_asr_speech_wait")
-        if speech is None:
-            if gave_up:
-                cb([], RuntimeError("Speech service is unavailable"))
-            # иначе комбобокс остаётся в состоянии «Загрузка...» до повтора
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb([], RuntimeError("Installable catalog service is unavailable"))
             return
         try:
-            speech.asr_models_glossary_async(cb)
+            catalog.list_rows_async(
+                cb,
+                include_status=True,
+                category="asr",
+                status_category="asr",
+            )
         except Exception as e:
-            logger.error(f"ASR models glossary request failed: {e}")
+            logger.error(f"ASR component catalog request failed: {e}")
             cb([], e)
 
     def _apply_asr_install_status(self, engine: str):
@@ -450,7 +460,11 @@ class MicrophoneSettingsController(BaseController):
                 if int(getattr(v, "_asr_installed_req_id", 0)) != req_id:
                     return
 
-                installed = bool(result) if error is None else False
+                installed = (
+                    bool(result.get("ready", False))
+                    if error is None and isinstance(result, dict)
+                    else False
+                )
                 try:
                     v.mic_active_checkbox.setEnabled(bool(installed))
                     if not installed:
@@ -460,14 +474,14 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
-        speech = services().get_optional(SpeechService)
-        if speech is None:
-            cb(False, RuntimeError("Speech service is unavailable"))
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
             return
         try:
-            speech.asr_model_installed_async(engine, cb)
+            catalog.get_status_async(f"asr:{engine}", cb)
         except Exception as exc:
-            cb(False, exc)
+            cb({}, exc)
 
     def _on_mic_changed(self, index: int):
         v = self.view
