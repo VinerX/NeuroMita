@@ -16,5 +16,10 @@ class OpenVoiceAIHub(UiIntent):
 
 
 @dataclass(frozen=True, slots=True)
+class OpenAIEngineSettings(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class RestartVoiceService(UiIntent):
     pass

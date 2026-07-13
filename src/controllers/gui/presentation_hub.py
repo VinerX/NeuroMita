@@ -146,6 +146,20 @@ class _SettingsSectionsController:
                 wire_microphone=self.wire_microphone,
             )
             return
+        if key == "ai_engine":
+            from ui.settings.ai_engine_settings import setup_ai_engine_settings_controls
+
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(
+                self._presentation.view_models.ai_engine_settings(gui),
+                owner,
+            )
+            setup_ai_engine_settings_controls(
+                gui,
+                parent,
+                view_model=view_model,
+            )
+            return
         if key == "game":
             from ui.settings.game_settings import setup_game_controls
 
@@ -400,6 +414,20 @@ class _ViewModelFactory:
         )
 
         return VoiceoverSettingsViewModel(
+            events=self._presentation.events,
+            open_settings=lambda category: host.show_settings_category(
+                category,
+                force=True,
+            ),
+            parent=parent,
+        )
+
+    def ai_engine_settings(self, host: Any, *, parent: Any = None):
+        from controllers.gui.ai_engine_settings_view_model import (
+            AIEngineSettingsViewModel,
+        )
+
+        return AIEngineSettingsViewModel(
             events=self._presentation.events,
             parent=parent,
         )

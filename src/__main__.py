@@ -124,6 +124,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
             LoopService,
             SettingsService,
             InstallableCatalogService,
+            HardwareInventoryService,
         )
         from services.game_link_service import DisconnectedGameLinkService
         from services.loop_service import NoLoopService
@@ -133,6 +134,13 @@ def _run_gui(runtime, startup_mode: str) -> int:
             str(settings_path("settings.json", create_parent=True))
         )
         shell_settings_service = services().get(SettingsService)
+        if not services().is_registered(HardwareInventoryService):
+            from services.hardware_inventory_service import WindowsHardwareInventoryService
+
+            services().register(
+                HardwareInventoryService,
+                WindowsHardwareInventoryService(),
+            )
         if not services().is_registered(InstallableCatalogService):
             from services.installable_catalog_service import DefaultInstallableCatalogService
 

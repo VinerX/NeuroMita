@@ -688,6 +688,43 @@ class RuntimeEnvironmentManager:
     def file_lock(self, name: str, *, timeout: float = 120.0) -> _FileLock:
         return _FileLock(self.lock_root / f"{_safe_id(name)}.lock", timeout=timeout)
 
+    def reset_managed_storage(self) -> None:
+        """Delete and recreate the AI-owned environment tree only."""
+        target = self.environment_root.resolve()
+        forbidden = {
+            Path(target.anchor).resolve(),
+            self.lib_root.resolve(),
+            self.main_core_root.resolve(),
+        }
+        if target in forbidden or target.parent == target:
+            raise RuntimeError(f"Refusing to reset unsafe AI environment path: {target}")
+        for owned_path in (
+            self.core_root,
+            self.overlay_root,
+            self.staging_root,
+            self.lock_root,
+            self.registry_path,
+        ):
+            try:
+                owned_path.resolve().relative_to(target)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Managed path escapes AI environment root: {owned_path}"
+                ) from exc
+
+        with self._lock:
+            if target.exists():
+                shutil.rmtree(target)
+            for path in (
+                self.environment_root,
+                self.core_root,
+                self.overlay_root,
+                self.staging_root,
+                self.lock_root,
+            ):
+                path.mkdir(parents=True, exist_ok=True)
+            self._warned_distribution_conflicts.clear()
+
     def _warn_distribution_conflicts(
         self,
         records: Sequence[EnvironmentRecord],

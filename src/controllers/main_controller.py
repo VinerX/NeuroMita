@@ -7,11 +7,14 @@ from main_logger import logger
 from core.events import Event, EventDelivery, Events, get_event_bus, shutdown_event_bus
 from core.app_paths import settings_dir, settings_path
 from core.executors import executors
+from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
 from startup.startup_profiler import startup_trace
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
 from services.contracts import (
+    AIEngineAdministrationService,
+    AIEnvironmentMaintenanceService,
     AIEngineService,
     ApiPresetService,
     AppVarsService,
@@ -170,6 +173,20 @@ class MainController:
 
         self.ai_engine_controller = self._build_component("ai_engine", AIEngineController)
         services().register(AIEngineService, self.ai_engine_controller, replace=True)
+        services().register(
+            AIEngineAdministrationService,
+            self.ai_engine_controller,
+            replace=True,
+        )
+        from services.ai_environment_maintenance_service import (
+            DefaultAIEnvironmentMaintenanceService,
+        )
+
+        services().register(
+            AIEnvironmentMaintenanceService,
+            DefaultAIEnvironmentMaintenanceService(runtime_environments()),
+            replace=True,
+        )
         logger.notify(
             f"AIEngineController успешно инициализирован (mode={getattr(self.ai_engine_controller, 'mode', 'unknown')})."
         )

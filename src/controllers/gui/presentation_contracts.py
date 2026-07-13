@@ -50,6 +50,7 @@ class UiTopic(StrEnum):
     INSTALL_QUEUE_CHANGED = "install_queue_changed"
     INSTALL_TASK_FAILED = "install_task_failed"
     INSTALL_TASK_FINISHED = "install_task_finished"
+    INSTALL_CATALOG_CHANGED = "install_catalog_changed"
     INSTALL_TASK_PROGRESS = "install_task_progress"
     INSTALL_TASK_STARTED = "install_task_started"
 

@@ -1,13 +1,14 @@
 import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
+    QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
     QSizePolicy, QPushButton, QSlider
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from ui.settings.voiceover_settings.presentation import (
+    OpenAIEngineSettings,
     OpenVoiceAIHub,
     RestartVoiceService,
     StartTelegramVoice,
@@ -141,6 +142,13 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     label_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
 
     self.local_voice_combobox = QComboBox()
+    self.local_voice_empty_status = tr_set(
+        QLabel(),
+        "Нет установленных моделей",
+        "No installed models",
+    )
+    self.local_voice_empty_status.setObjectName("SeparatorLabel")
+    self.local_voice_empty_status.setVisible(False)
 
     # Шестерёнка справа от модели → настройки конкретной модели (AI Hub, раздел TTS).
     self.local_model_settings_btn = QPushButton()
@@ -170,6 +178,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
     local_model_layout.addWidget(label_container)
     local_model_layout.addWidget(self.local_voice_combobox, 1)
+    local_model_layout.addWidget(self.local_voice_empty_status, 1)
     local_model_layout.addWidget(self.local_model_settings_btn, 0)
     local_layout.addWidget(local_model_row)
 
@@ -262,9 +271,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'type': 'button',
          'command': (lambda: actions.dispatch(RestartVoiceService()))},
 
-        {'label': _('Открыть AI Hub', 'Open AI Hub'),
+        {'label': _('Перейти к настройкам AI Engine', 'Open AI Engine settings'),
          'type': 'button',
-         'command': (lambda: actions.dispatch(OpenVoiceAIHub()))}
+         'command': (lambda: actions.dispatch(OpenAIEngineSettings()))}
     ]
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {

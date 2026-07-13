@@ -260,6 +260,7 @@ class GuiStartupOrderTests(unittest.TestCase):
                     "LoopService",
                     "SettingsService",
                     "InstallableCatalogService",
+                    "HardwareInventoryService",
                 )
             }
             pyqt = fake_module("PyQt6")
@@ -303,6 +304,10 @@ class GuiStartupOrderTests(unittest.TestCase):
                 "services.installable_catalog_service": fake_module(
                     "services.installable_catalog_service",
                     DefaultInstallableCatalogService=lambda *_args: object(),
+                ),
+                "services.hardware_inventory_service": fake_module(
+                    "services.hardware_inventory_service",
+                    WindowsHardwareInventoryService=lambda: object(),
                 ),
                 "controllers.gui.composition_root": fake_module(
                     "controllers.gui.composition_root",

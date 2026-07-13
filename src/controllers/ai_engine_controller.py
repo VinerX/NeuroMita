@@ -10,7 +10,12 @@ from concurrent.futures import Future
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
-from services.contracts import AIEngineService
+from services.contracts import (
+    AIEngineAdministrationService,
+    AIEngineService,
+    SettingsService,
+)
+from core.services import services
 from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
 from main_logger import logger
@@ -729,7 +734,7 @@ class _Worker:
                 pass
 
 
-class AIEngineController(AIEngineService):
+class AIEngineController(AIEngineService, AIEngineAdministrationService):
     """
     AI Hub в GUI-процессе:
       - управляет topology AI worker'ов (shared/split)
@@ -738,8 +743,8 @@ class AIEngineController(AIEngineService):
       - транслирует async события из worker -> Events.AI.ENGINE_EVENT
 
     Режим задаётся через NEUROMITA_AI_ENGINE_MODE=auto|shared|split.
-    auto resolves to split: every AI domain owns its worker and runtime paths.
-    Shared mode remains an explicit compatibility override only.
+    The persisted default is shared. Split is an explicit isolation mode and
+    therefore never selected merely from the detected GPU vendor.
     """
 
     def __init__(self):
@@ -767,7 +772,10 @@ class AIEngineController(AIEngineService):
         logger.info(f"AIEngineController topology mode: {self.mode}")
 
     def _resolve_mode(self) -> str:
-        raw = str(os.environ.get("NEUROMITA_AI_ENGINE_MODE", "auto") or "auto").strip().lower()
+        env_value = os.environ.get("NEUROMITA_AI_ENGINE_MODE")
+        settings = services().get_optional(SettingsService)
+        configured = settings.get("AI_ENGINE_MODE", "shared") if settings is not None else "shared"
+        raw = str(env_value if env_value is not None else configured or "shared").strip().lower()
         if raw not in _VALID_MODES:
             logger.warning(
                 f"Unknown NEUROMITA_AI_ENGINE_MODE='{raw}', falling back to auto "
@@ -776,14 +784,7 @@ class AIEngineController(AIEngineService):
             raw = "auto"
 
         if raw == "auto":
-            gpu_vendor = _detect_gpu_vendor()
-            gpu_label = _detect_gpu_label()
-            resolved = "split"
-            logger.info(
-                f"AIEngineController auto mode resolved to '{resolved}' "
-                f"(gpu={gpu_label}, gpu_vendor={gpu_vendor})"
-            )
-            return resolved
+            return "shared"
 
         return raw
 
@@ -1719,12 +1720,89 @@ class AIEngineController(AIEngineService):
         for worker in workers:
             worker.expected_exit.set()
 
+    def topology_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            workers = {
+                name: {
+                    "services": list(worker.service_names),
+                    "alive": bool(worker.proc is not None and worker.proc.is_alive()),
+                }
+                for name, worker in self._workers.items()
+            }
+        return {
+            "mode": self.mode,
+            "override": os.environ.get("NEUROMITA_AI_ENGINE_MODE"),
+            "suspended": self._runtime_switching.is_set() and not workers,
+            "workers": workers,
+        }
+
+    def _stop_runtime_workers(self, *, timeout: float) -> None:
+        with self._lock:
+            workers = list(self._workers.values())
+            self._workers = {}
+            self._service_to_worker = {}
+        for worker in workers:
+            worker.expected_exit.set()
+        for worker in workers:
+            try:
+                worker.stop(timeout=timeout)
+            except Exception:
+                logger.exception(f"Failed to stop AI worker '{worker.worker_name}'")
+
+    def suspend_for_maintenance(self, *, timeout: float = 15.0) -> bool:
+        if self._shutting_down.is_set():
+            return False
+        with self._runtime_switch_lock:
+            self._runtime_switching.set()
+            self._stop_runtime_workers(timeout=timeout)
+            return True
+
+    def resume_after_maintenance(self) -> bool:
+        if self._shutting_down.is_set():
+            return False
+        with self._runtime_switch_lock:
+            with self._lock:
+                already_running = bool(self._workers)
+            if not already_running:
+                self._init_workers()
+            self._runtime_switching.clear()
+            return True
+
+    def switch_topology(self, mode: str, *, timeout: float = 30.0) -> dict[str, Any]:
+        requested = str(mode or "").strip().lower()
+        if requested not in {"shared", "split"}:
+            return {"ok": False, "error": f"Unsupported AI engine mode: {mode}", **self.topology_snapshot()}
+        override = os.environ.get("NEUROMITA_AI_ENGINE_MODE")
+        if override is not None:
+            return {
+                "ok": False,
+                "error": "NEUROMITA_AI_ENGINE_MODE overrides the application setting",
+                **self.topology_snapshot(),
+            }
+        if requested == self.mode:
+            return {"ok": True, **self.topology_snapshot()}
+
+        previous = self.mode
+        with self._runtime_switch_lock:
+            self._runtime_switching.set()
+            try:
+                self._stop_runtime_workers(timeout=timeout)
+                self.mode = requested
+                self._init_workers()
+            except Exception as exc:
+                logger.exception(f"Failed to switch AI topology to '{requested}'")
+                self.mode = previous
+                self._stop_runtime_workers(timeout=timeout)
+                self._init_workers()
+                return {"ok": False, "error": str(exc), **self.topology_snapshot()}
+            finally:
+                self._runtime_switching.clear()
+
+        settings = services().get_optional(SettingsService)
+        if settings is not None:
+            settings.update("AI_ENGINE_MODE", requested)
+        return {"ok": True, **self.topology_snapshot()}
+
     def shutdown(self, timeout: float = 5.0) -> None:
         self._shutting_down.set()
-        with self._lock:
-            ws = list(self._workers.values())
-        for w in ws:
-            try:
-                w.stop(timeout=timeout)
-            except Exception:
-                pass
+        self._stop_runtime_workers(timeout=timeout)

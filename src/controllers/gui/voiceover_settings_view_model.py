@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from controllers.gui.intent_view_model import IntentViewModel
 from controllers.gui.presentation_contracts import UiTopic
 from ui.settings.voiceover_settings.presentation import (
+    OpenAIEngineSettings,
     OpenVoiceAIHub,
     RestartVoiceService,
     StartTelegramVoice,
@@ -18,9 +19,16 @@ class _VoiceoverActionsState:
 
 
 class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
-    def __init__(self, *, events, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        events,
+        open_settings: Callable[[str], None] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(_VoiceoverActionsState(), parent)
         self._events = events
+        self._open_settings = open_settings
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, StartTelegramVoice):
@@ -44,3 +52,7 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
                 UiTopic.GUI_SHOW_WINDOW,
                 {"window_id": "ai_hub", "payload": payload},
             )
+            return
+        if isinstance(intent, OpenAIEngineSettings):
+            if self._open_settings is not None:
+                self._open_settings("ai_engine")

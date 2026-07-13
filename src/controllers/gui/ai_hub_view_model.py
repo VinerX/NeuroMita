@@ -52,6 +52,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             (UiTopic.INSTALL_TASK_STARTED, self._on_install_started),
             (UiTopic.INSTALL_TASK_PROGRESS, self._on_install_progress),
             (UiTopic.INSTALL_TASK_FINISHED, self._on_install_finished),
+            (UiTopic.INSTALL_CATALOG_CHANGED, self._on_catalog_changed),
             (UiTopic.INSTALL_TASK_FAILED, self._on_install_failed),
             (UiTopic.INSTALL_QUEUE_CHANGED, self._on_queue_changed),
         ):
@@ -397,6 +398,9 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             )
 
         self._post_ui(apply)
+
+    def _on_catalog_changed(self, _event) -> None:
+        self._post_ui(lambda: self.refresh(force=True))
 
     def _on_install_failed(self, event) -> None:
         if not self._is_installable_task(event):

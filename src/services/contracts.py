@@ -227,6 +227,16 @@ class InstallQueueService(ABC):
     ) -> InstallAdmission: ...
 
 
+class InstallQueueAdministrationService(ABC):
+    """Maintenance boundary for pausing all writes into AI environments."""
+
+    @abstractmethod
+    def quiesce(self, *, timeout: float = 30.0) -> bool: ...
+
+    @abstractmethod
+    def resume(self) -> None: ...
+
+
 class InstallableOperationsService(ABC):
     """Typed command boundary for installable component lifecycle operations."""
 
@@ -693,6 +703,43 @@ class AIEngineService(ABC):
     @abstractmethod
     def get_engine(self) -> Optional[Any]:
         """Оркестратор движка (умеет .call(service, method, payload)) или None."""
+
+
+class AIEngineAdministrationService(ABC):
+    """Administrative lifecycle boundary; inference clients never depend on it."""
+
+    @abstractmethod
+    def topology_snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def switch_topology(self, mode: str, *, timeout: float = 30.0) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def suspend_for_maintenance(self, *, timeout: float = 15.0) -> bool: ...
+
+    @abstractmethod
+    def resume_after_maintenance(self) -> bool: ...
+
+
+class HardwareInventoryService(ABC):
+    """Canonical, cached hardware inventory used by UI and backend selection."""
+
+    @abstractmethod
+    def snapshot(self, *, refresh: bool = False) -> Dict[str, Any]: ...
+
+
+class AIEnvironmentMaintenanceService(ABC):
+    """Owns the state machine for resetting all managed AI environments."""
+
+    @abstractmethod
+    def snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def reset_all(
+        self,
+        *,
+        progress: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> Dict[str, Any]: ...
 
 
 class EmbeddingPresetService(ABC):

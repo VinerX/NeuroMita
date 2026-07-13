@@ -66,6 +66,7 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_models_changed, weak=False)
         eb.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_models_changed, weak=False)
         eb.subscribe(Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_models_changed, weak=False)
+        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_models_changed, weak=False)
 
         eb.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_tg_connected_event, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False)
@@ -649,6 +650,7 @@ class VoiceoverGuiController(BaseController):
 
     def _set_local_voice_loading_placeholders(self):
         cb = getattr(self.view, "local_voice_combobox", None)
+        self._set_local_model_selector_state(has_models=False, loading=True)
         if cb is not None and cb.count() == 0:
             cb.blockSignals(True)
             try:
@@ -661,6 +663,18 @@ class VoiceoverGuiController(BaseController):
         if chip is not None and btn is not None and not chip.isVisible():
             self._apply_model_status(chip, btn, "loading", _("Проверка...", "Checking..."), None, "")
 
+    def _set_local_model_selector_state(self, *, has_models: bool, loading: bool = False) -> None:
+        combo = getattr(self.view, "local_voice_combobox", None)
+        empty = getattr(self.view, "local_voice_empty_status", None)
+        settings_button = getattr(self.view, "local_model_settings_btn", None)
+        if combo is not None:
+            combo.setVisible(bool(has_models or loading))
+            combo.setEnabled(bool(has_models))
+        if empty is not None:
+            empty.setVisible(bool(not has_models and not loading))
+        if settings_button is not None:
+            settings_button.setVisible(bool(has_models))
+
     def _update_local_models_combobox_from_snapshot(self, installed_ids: set[str], current_model_id: str) -> str:
         cb = getattr(self.view, "local_voice_combobox", None)
         if cb is None:
@@ -669,6 +683,7 @@ class VoiceoverGuiController(BaseController):
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
         items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
+        self._set_local_model_selector_state(has_models=bool(items))
 
         cb.blockSignals(True)
         try:
@@ -1076,6 +1091,7 @@ class VoiceoverGuiController(BaseController):
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
         items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
+        self._set_local_model_selector_state(has_models=bool(items))
 
         cb.blockSignals(True)
         try:

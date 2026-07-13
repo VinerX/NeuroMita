@@ -33,6 +33,7 @@ class MicrophoneSettingsController(BaseController):
         eb = self.event_bus
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
+        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_catalog_changed, weak=False)
 
         self._ui(self._bind_if_ready)
 
@@ -100,8 +101,8 @@ class MicrophoneSettingsController(BaseController):
         v.mic_mute_while_speaking_checkbox.stateChanged.connect(self._on_mute_while_speaking_toggled)
 
         if hasattr(v, "asr_manage_button") and v.asr_manage_button:
-            safe_disconnect(v.asr_manage_button.clicked, self._open_asr_glossary)
-            v.asr_manage_button.clicked.connect(self._open_asr_glossary)
+            safe_disconnect(v.asr_manage_button.clicked, self._open_ai_engine_settings)
+            v.asr_manage_button.clicked.connect(self._open_ai_engine_settings)
 
         if hasattr(v, "vad_apply_button") and v.vad_apply_button:
             safe_disconnect(v.vad_apply_button.clicked, self._on_apply_vad_params)
@@ -186,9 +187,9 @@ class MicrophoneSettingsController(BaseController):
         except Exception as e:
             logger.error(f"VAD params reset error: {e}")
 
-    def _open_asr_glossary(self):
+    def _open_ai_engine_settings(self):
         try:
-            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
+            self.view.show_settings_category("ai_engine", force=True)
         except Exception:
             pass
 
@@ -345,6 +346,10 @@ class MicrophoneSettingsController(BaseController):
             prev_engine = ""
 
         def show_loading():
+            v.recognizer_combobox.setVisible(True)
+            empty_status = getattr(v, "asr_models_empty_status", None)
+            if empty_status is not None:
+                empty_status.setVisible(False)
             v.recognizer_combobox.blockSignals(True)
             try:
                 v.recognizer_combobox.clear()
@@ -386,6 +391,10 @@ class MicrophoneSettingsController(BaseController):
                 try:
                     v.recognizer_combobox.clear()
                     if engines:
+                        v.recognizer_combobox.setVisible(True)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(False)
                         v.recognizer_combobox.setEnabled(True)
                         v.recognizer_combobox.addItems(engines)
 
@@ -397,7 +406,10 @@ class MicrophoneSettingsController(BaseController):
                             self._save_setting("RECOGNIZER_TYPE", v.recognizer_combobox.currentText())
                     else:
                         v.recognizer_combobox.setEnabled(False)
-                        v.recognizer_combobox.addItem(_("Нет установленных моделей", "No installed models"))
+                        v.recognizer_combobox.setVisible(False)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(True)
                 finally:
                     v.recognizer_combobox.blockSignals(False)
 
@@ -559,6 +571,9 @@ class MicrophoneSettingsController(BaseController):
         data = event.data or {}
         if not self._is_asr_task(data):
             return
+        self._ui(self.refresh_engines)
+
+    def _on_catalog_changed(self, _event: Event):
         self._ui(self.refresh_engines)
 
     def _on_install_failed(self, event: Event):

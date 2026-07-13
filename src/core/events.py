@@ -763,6 +763,7 @@ class Events:
         TASK_LOG = "install_task_log"
         TASK_FINISHED = "install_task_finished"
         TASK_FAILED = "install_task_failed"
+        CATALOG_CHANGED = "install_catalog_changed"
         RUN_BLOCKING = "run_install_blocking"
 
         # Очередь установок (выполняются строго по одной за раз).
