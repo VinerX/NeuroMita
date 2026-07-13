@@ -82,7 +82,6 @@ class LogsPage(QWidget):
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
 
-        self._sync_host_exports()
         self._build_ui()
         self._view_model.state_changed.connect(self.render)
         self._view_model.effect_emitted.connect(self.handle_effect)

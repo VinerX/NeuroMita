@@ -120,6 +120,12 @@ class MainWindowCoordinator:
         try:
             page = self._create_page(page_key, factory)
         except Exception as exc:
+            logger.error(
+                "Failed to build main page '%s': %s",
+                page_key,
+                exc,
+                exc_info=True,
+            )
             view._page_building.discard(page_key)
             label = placeholder.findChild(QLabel)
             if label is not None:

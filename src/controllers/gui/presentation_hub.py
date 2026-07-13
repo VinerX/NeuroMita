@@ -275,7 +275,12 @@ class _SettingsSectionsController:
     def build_updates(self, gui: Any, parent: Any) -> None:
         from controllers.gui.updates_settings_controller import setup_updates_settings_controls
 
-        setup_updates_settings_controls(gui, parent)
+        setup_updates_settings_controls(
+            gui,
+            parent,
+            pending_restart_version=lambda: self._presentation.app.pending_restart_version,
+            set_pending_restart_version=self._presentation.app.set_pending_restart_version,
+        )
 
 
 class _RagController:

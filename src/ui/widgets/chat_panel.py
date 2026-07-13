@@ -146,14 +146,25 @@ class ChatPanel(QWidget):
             reposition()
 
     def eventFilter(self, obj, event):
-        if obj == self.chat_window.viewport() and event.type() in (
-            QEvent.Type.Resize,
-            QEvent.Type.Paint,
+        chat_window = getattr(self, "chat_window", None)
+        user_entry = getattr(self, "user_entry", None)
+        if (
+            chat_window is not None
+            and obj == chat_window.viewport()
+            and event.type() in (QEvent.Type.Resize, QEvent.Type.Paint)
         ):
             self.reposition_scroll_button()
-        elif obj == self.chat_window and event.type() == QEvent.Type.Resize:
+        elif (
+            chat_window is not None
+            and obj == chat_window
+            and event.type() == QEvent.Type.Resize
+        ):
             self.reposition_status()
-        elif obj == self.user_entry and event.type() == QEvent.Type.KeyPress:
+        elif (
+            user_entry is not None
+            and obj == user_entry
+            and event.type() == QEvent.Type.KeyPress
+        ):
             if not isinstance(event, QKeyEvent):
                 return super().eventFilter(obj, event)
             key = event.key()

@@ -598,6 +598,11 @@ class SettingsPage(QWidget):
             self._finish_section_feature_error(effect.category, RuntimeError(effect.message))
 
     def _finish_section_feature_error(self, category: str, error: BaseException) -> None:
+        logger.error(
+            "Settings section feature preparation failed for '%s': %s",
+            category,
+            error,
+        )
         page = self.settings_containers.get(category)
         if page is not None:
             self._set_section_placeholder(
