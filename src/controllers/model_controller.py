@@ -1210,6 +1210,17 @@ class ModelController(GenerationService, ModelStateService):
             prompt_set_path = getattr(char, "base_data_path", None)
             rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
+        # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
+        # they fire on precise player input, independent of RAG availability or
+        # embedding similarity of a two-digit message.
+        try:
+            from managers.core_memory_triggers import core_memory_context
+            _core_ctx = core_memory_context(user_input)
+            if _core_ctx:
+                rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+        except Exception as _core_err:
+            logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+
         game_state = self.game_state.to_prompt_dict()
 
         with self._temporary_system_infos_lock:
