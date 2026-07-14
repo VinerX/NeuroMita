@@ -171,7 +171,7 @@ jobs:
         run: >
           python scripts/bootstrap_release_runtime.py
           --repo "${{ github.repository }}"
-          --prefer-tag "v2026.06.12_Full"
+          --before-tag "v${{ steps.ver.outputs.version }}"
           --exclude-tag "v${{ steps.ver.outputs.version }}"
           --target libs
         env:
@@ -179,9 +179,8 @@ jobs:
           # as soon as repository settings access is available again.
           BOOTSTRAP_TESTER_CODE: '23'
           PYTHONUTF8: '1'
-        # TEMPORARY: pin the baseline runtime to the known-small v2026.06.12_Full release.
-        # That legacy asset is password-protected, so CI must receive TESTER_CODE to unpack it.
-        # Replace this with a dedicated canonical runtime asset/release after release testing.
+        # Берётся последний доступный full runtime со строго меньшей версией тега.
+        # Архивы старых релизов могут быть зашифрованы, поэтому CI передаёт TESTER_CODE.
 
       - name: Verify embedded Python runtime
         if: steps.release_meta.outputs.should_release == 'true'
@@ -211,7 +210,7 @@ jobs:
               f"BUILD_COPY_DIRS=extra\\Prompts,assets,libs",
               f"BUILD_FAST_COPY_DIRS=extra\\Prompts",
               f"BUILD_COPY_FILES=extra\\init.py,extra\\Icon.png",
-              f"BUILD_ROOT_SCRIPTS=scripts\\Launcher.exe,scripts\\run.py,scripts\\init_triton.bat",
+              f"BUILD_ROOT_SCRIPTS=scripts\\Launcher.exe,scripts\\run.bat,scripts\\run.py,scripts\\init_triton.bat",
               f"BUILD_EXCLUDE_DOT_DIRS=1",
               f"BUILD_EXCLUDE_CHECKPOINTS=1",
               f"BUILD_CLEAN_OUTPUT=1",
