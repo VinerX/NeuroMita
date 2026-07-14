@@ -31,6 +31,7 @@ from ui.pages.home_presentation import (
     HomeRestartDecision,
     HomeShowError,
     HomeState,
+    HomeStopUnityRequested,
     HomeTesterCodeSubmitted,
     HomeToggleUpdate,
     HomeUpdateState,
@@ -53,8 +54,6 @@ class _ProgressLogger:
 
     def _set(self, marker: str, message: Any, level: str) -> None:
         getattr(logger, level, logger.info)(f"[{self._prefix}] {message}")
-        text = f"{marker}{message}" if marker else str(message)
-        self._view_model.post_progress(text, 0, 0, busy=True)
 
     def info(self, message: Any) -> None:
         self._set("", message, "info")
@@ -94,6 +93,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self._last_update_check = float(app.last_update_check_ts)
         self._cancel_event: threading.Event | None = None
         self._pending_continuation: str | None = None
+        self._operation_components: tuple[str, ...] = ()
 
         bus = get_event_bus()
         self.track_subscription(
@@ -108,6 +108,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self.track_subscription(
             bus.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
         )
+        self._home.process_state_changed.connect(self._on_unity_process_state)
         self._refresh_local_state(emit=False)
 
     def dispatch(self, intent: Any) -> None:
@@ -144,7 +145,18 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             self._run_primary_action()
             return
         if isinstance(intent, HomeInstallUnityRequested):
-            self._start_unity_install()
+            update = self.state.unity_update
+            if update.available or update.installable:
+                self.update_state(
+                    unity_update=HomeUpdateState(
+                        available=update.available,
+                        installable=update.installable,
+                        selected=True,
+                        latest_version=update.latest_version,
+                    )
+                )
+                self._refresh_computed_state()
+                self._request_selective_update()
             return
         if isinstance(intent, HomeApplyUpdatesRequested):
             self._request_selective_update()
@@ -154,6 +166,9 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             return
         if isinstance(intent, HomeCancelRequested):
             self._cancel_current_operation()
+            return
+        if isinstance(intent, HomeStopUnityRequested):
+            self._stop_unity()
             return
         if isinstance(intent, HomeTesterCodeSubmitted):
             self._resume_with_tester_code(intent.continuation, intent.code)
@@ -255,13 +270,13 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def _run_primary_action(self) -> None:
         action = self.state.primary_action
-        if action == "restart":
+        if action == "stop":
+            self._stop_unity()
+        elif action == "restart":
             self.emit_effect(HomePromptRestart())
-        elif action == "install":
-            self._start_unity_install()
-        elif action == "update":
+        elif action == "apply":
             self._request_selective_update()
-        else:
+        elif action == "play":
             try:
                 self._home.launch_unity(self._settings.get("UNITY_INSTALL_DIR") or None)
             except Exception as exc:
@@ -282,6 +297,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             self.update_state(
                 python_update=HomeUpdateState(
                     available=update.available,
+                    installable=update.installable,
                     selected=bool(selected) and update.available,
                     latest_version=update.latest_version,
                 )
@@ -291,7 +307,8 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             self.update_state(
                 unity_update=HomeUpdateState(
                     available=update.available,
-                    selected=bool(selected) and update.available,
+                    installable=update.installable,
+                    selected=bool(selected) and (update.available or update.installable),
                     latest_version=update.latest_version,
                 )
             )
@@ -309,16 +326,15 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self.update_state(
             python_update=HomeUpdateState(
                 available=py_available,
-                selected=py_available and (
-                    previous_py.selected if previous_py.available else True
-                ),
+                selected=py_available and previous_py.available and previous_py.selected,
                 latest_version=str((py_info or {}).get("latest_version") or ""),
             ),
             unity_update=HomeUpdateState(
                 available=unity_available,
-                selected=unity_available and (
-                    previous_unity.selected if previous_unity.available else True
-                ),
+                installable=not self.state.unity_installed,
+                selected=(unity_available or not self.state.unity_installed)
+                and (previous_unity.available or previous_unity.installable)
+                and previous_unity.selected,
                 latest_version=str((unity_info or {}).get("latest_version") or ""),
             ),
             update_checking=False,
@@ -329,11 +345,30 @@ class HomePageViewModel(IntentViewModel[HomeState]):
     def _refresh_local_state(self, *, emit: bool = True) -> None:
         pending = self._pending_restart_version()
         backend_status = self._backend_status(pending)
-        unity_status = self._unity_status()
+        configured_unity = self._settings.get("UNITY_INSTALL_DIR") or None
+        unity_installed = self._home.find_unity_executable(
+            configured_unity
+        ) is not None
+        process = self._home.refresh_process_state(
+            configured_unity
+        )
+        unity_status = self._unity_status(process.state)
+        current_unity_update = self.state.unity_update
+        unity_update = HomeUpdateState(
+            available=current_unity_update.available,
+            installable=not unity_installed,
+            selected=current_unity_update.selected
+            and (current_unity_update.available or not unity_installed),
+            latest_version=current_unity_update.latest_version,
+        )
         if emit:
             self.update_state(
                 backend_status=backend_status,
                 unity_status=unity_status,
+                unity_installed=unity_installed,
+                unity_process_state=process.state,
+                unity_process_error=process.error,
+                unity_update=unity_update,
                 pending_restart_version=pending,
                 revision=self.state.revision + 1,
             )
@@ -342,30 +377,38 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self._state = HomeState(
             backend_status=backend_status,
             unity_status=unity_status,
+            unity_installed=unity_installed,
+            unity_process_state=process.state,
+            unity_process_error=process.error,
+            unity_update=unity_update,
             pending_restart_version=pending,
         )
         self._refresh_computed_state(emit=False)
 
     def _refresh_computed_state(self, *, emit: bool = True) -> None:
         action = self._primary_action()
-        suffix = ""
-        has_selected_update = self._has_selected_update()
-        if action in ("install", "update") and has_selected_update and not self._tester_code():
-            suffix = _(" (нужен код тестера)", " (tester code needed)")
         labels = {
+            "busy": _("Выполняется операция…", "Operation in progress…"),
+            "starting": _("Запуск Unity…", "Starting Unity…"),
+            "stopping": _("Закрытие Unity…", "Closing Unity…"),
+            "stop": _("Unity запущена — закрыть", "Unity is running — close"),
             "restart": _("Перезапустить", "Restart"),
-            "install": _("Установить", "Install") + suffix,
-            "update": _("Обновить", "Update") + suffix,
+            "apply": self._apply_action_label(),
             "play": _("Играть", "Play"),
+            "unavailable": _("Для запуска нужна Unity", "Unity is required to play"),
         }
         icons = {
+            "busy": "fa6s.spinner",
+            "starting": "fa6s.spinner",
+            "stopping": "fa6s.spinner",
+            "stop": "fa6s.stop",
             "restart": "fa6s.rotate-right",
-            "install": "fa6s.download",
-            "update": "fa6s.rotate",
+            "apply": "fa6s.download",
             "play": "fa6s.play",
+            "unavailable": "mdi.unity",
         }
         icon = icons[action]
-        if action in ("install", "update") and has_selected_update and not self._tester_code():
+        if action == "apply" and not self._tester_code():
             icon = "fa6s.lock"
         changes = {
             "primary_action": action,
@@ -380,96 +423,54 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             self._state = replace(self._state, **changes)
 
     def _primary_action(self) -> str:
+        if self.state.operation is not None:
+            return "busy"
+        process_state = self.state.unity_process_state
+        if process_state == "starting":
+            return "starting"
+        if process_state == "stopping":
+            return "stopping"
+        if process_state == "running":
+            return "stop"
         if self._pending_restart():
             return "restart"
-        if self._home.find_unity_executable(
-            self._settings.get("UNITY_INSTALL_DIR") or None
-        ) is None:
-            return "install"
         if self._has_selected_update():
-            return "update"
-        return "play"
+            return "apply"
+        return "play" if self.state.unity_installed else "unavailable"
+
+    def _selected_components(self) -> tuple[str, ...]:
+        selected: list[str] = []
+        if self.state.python_update.available and self.state.python_update.selected:
+            selected.append("python")
+        if (
+            self.state.unity_update.available or self.state.unity_update.installable
+        ) and self.state.unity_update.selected:
+            selected.append("unity")
+        return tuple(selected)
+
+    def _apply_action_label(self) -> str:
+        selected = self._selected_components()
+        if len(selected) > 1:
+            if not self.state.unity_installed and "unity" in selected:
+                return _("Установить компоненты (2)", "Install components (2)")
+            return _("Обновить компоненты (2)", "Update components (2)")
+        if selected == ("python",):
+            return _("Обновить Python", "Update Python")
+        if selected == ("unity",):
+            return (
+                _("Обновить Unity", "Update Unity")
+                if self.state.unity_installed
+                else _("Установить Unity", "Install Unity")
+            )
+        return _("Выберите компоненты", "Select components")
 
     def _has_selected_update(self) -> bool:
         return bool(
             self.state.python_update.available
             and self.state.python_update.selected
-            or self.state.unity_update.available
+            or (self.state.unity_update.available or self.state.unity_update.installable)
             and self.state.unity_update.selected
         )
-
-    def _start_unity_install(self) -> None:
-        if self.state.operation is not None:
-            return
-        cancel_event = threading.Event()
-        self._cancel_event = cancel_event
-        self.update_state(operation="install-unity", can_cancel=True, error=None)
-        self._set_progress(
-            _("Подготовка к установке…", "Preparing installation…"),
-            0,
-            0,
-            busy=True,
-        )
-        settings = self._settings.snapshot()
-        progress_logger = _ProgressLogger(self, "home_install")
-
-        def worker() -> dict[str, Any]:
-            return dict(
-                self._home.install_unity(
-                    channel=str(settings.get("UPDATE_CHANNEL") or "stable"),
-                    tester_code=str(settings.get("TESTER_CODE") or "").strip() or None,
-                    unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
-                    logger_adapter=progress_logger,
-                    on_progress=self._download_progress("Unity"),
-                    on_extract_progress=self._extract_progress,
-                    stop_event=cancel_event,
-                )
-                or {}
-            )
-
-        self.run_exclusive(
-            "home-install-unity",
-            worker,
-            lambda result: self._finish_unity_install(result, cancel_event),
-            lambda error: self._finish_operation_error(error),
-        )
-
-    def _finish_unity_install(
-        self,
-        result: dict[str, Any],
-        cancel_event: threading.Event,
-    ) -> None:
-        if not result.get("ok"):
-            self._set_progress(
-                _("Ошибка проверки: {err}", "Check error: {err}").format(
-                    err=result.get("error") or _("неизвестная ошибка", "unknown error")
-                ),
-                0,
-                0,
-                busy=False,
-            )
-        elif result.get("already_installed"):
-            self._set_progress(
-                _("Unity уже установлен.", "Unity already installed."),
-                100,
-                100,
-                busy=False,
-            )
-        elif result.get("cancelled") or cancel_event.is_set():
-            self._set_progress(
-                _("Установка отменена.", "Installation cancelled."),
-                0,
-                100,
-                busy=False,
-            )
-        else:
-            self._set_progress(
-                _("Установка завершена.", "Installation finished."),
-                100,
-                100,
-                busy=False,
-            )
-        self._finish_operation()
 
     def _request_selective_update(self) -> None:
         if self.state.operation is not None:
@@ -522,12 +523,26 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             self.state.python_update.available and self.state.python_update.selected
         )
         update_unity = bool(
-            self.state.unity_update.available and self.state.unity_update.selected
+            (self.state.unity_update.available or self.state.unity_update.installable)
+            and self.state.unity_update.selected
         )
         pending_python_version = self.state.python_update.latest_version
+        components = tuple(
+            component
+            for component, selected in (("python", update_python), ("unity", update_unity))
+            if selected
+        )
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
-        self.update_state(operation="apply-updates", can_cancel=True, error=None)
+        self._operation_components = components
+        self.update_state(
+            operation="apply-updates",
+            operation_component=components[0] if components else "",
+            operation_item_index=1 if components else 0,
+            operation_item_total=len(components),
+            can_cancel=True,
+            error=None,
+        )
         self._set_progress(
             _("Подготовка к установке…", "Preparing installation…"),
             0,
@@ -550,8 +565,10 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                         settings.get("UPDATE_PRESERVE_PROMPTS", True)
                     ),
                     logger_adapter=progress_logger,
-                    on_progress=self._download_progress(""),
+                    on_progress=self._download_progress(),
                     on_extract_progress=self._extract_progress,
+                    on_verify_progress=self._verify_progress,
+                    on_stage=self._operation_stage,
                     stop_event=cancel_event,
                 )
                 or {}
@@ -562,6 +579,24 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             if result.get("cancelled") or cancel_event.is_set():
                 self._set_progress(
                     _("Установка отменена.", "Installation cancelled."),
+                    0,
+                    100,
+                    busy=False,
+                )
+            elif not result.get("ok"):
+                failed = [
+                    (component, data)
+                    for component, data in dict(result.get("results") or {}).items()
+                    if not data.get("ok")
+                ]
+                details = "; ".join(
+                    f"{component.title()}: {data.get('error') or data.get('status') or 'error'}"
+                    for component, data in failed
+                )
+                self._set_progress(
+                    _("Не удалось установить: {err}", "Installation failed: {err}").format(
+                        err=details or _("неизвестная ошибка", "unknown error")
+                    ),
                     0,
                     100,
                     busy=False,
@@ -586,7 +621,15 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def _finish_operation(self, *, prompt_restart: bool = False) -> None:
         self._cancel_event = None
-        self.update_state(operation=None, can_cancel=False)
+        self._operation_components = ()
+        self.update_state(
+            operation=None,
+            operation_component="",
+            operation_stage="",
+            operation_item_index=0,
+            operation_item_total=0,
+            can_cancel=False,
+        )
         self._refresh_local_state()
         self.refresh_updates(force=True)
         if prompt_restart:
@@ -596,7 +639,16 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def _finish_operation_error(self, error: Exception) -> None:
         self._cancel_event = None
-        self.update_state(operation=None, can_cancel=False, error=str(error))
+        self._operation_components = ()
+        self.update_state(
+            operation=None,
+            operation_component="",
+            operation_stage="",
+            operation_item_index=0,
+            operation_item_total=0,
+            can_cancel=False,
+            error=str(error),
+        )
         self._set_progress(
             _("Ошибка: {err}", "Error: {err}").format(err=error),
             0,
@@ -608,7 +660,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def _cancel_current_operation(self) -> None:
         cancel = self._cancel_event
-        if cancel is None or self.state.operation is None:
+        if cancel is None or self.state.operation is None or not self.state.can_cancel:
             return
         cancel.set()
         self.update_state(can_cancel=False)
@@ -618,6 +670,42 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             0,
             busy=True,
         )
+
+    def _stop_unity(self) -> None:
+        try:
+            if not self._home.stop_unity():
+                self._refresh_local_state()
+        except Exception as exc:
+            self.emit_effect(
+                HomeShowError(
+                    _("Unity", "Unity"),
+                    _(
+                        "Не удалось закрыть Unity: {err}",
+                        "Failed to close Unity: {err}",
+                    ).format(err=exc),
+                )
+            )
+
+    def _on_unity_process_state(self, snapshot) -> None:
+        if self.is_closed:
+            return
+        process_state = str(getattr(snapshot, "state", "stopped") or "stopped")
+        self.update_state(
+            unity_status=self._unity_status(process_state),
+            unity_process_state=process_state,
+            unity_process_error=str(getattr(snapshot, "error", "") or ""),
+        )
+        self._refresh_computed_state()
+        if getattr(snapshot, "state", "") == "failed":
+            self._set_progress(
+                _("Ошибка запуска Unity: {err}", "Unity launch error: {err}").format(
+                    err=getattr(snapshot, "error", "") or _("неизвестная ошибка", "unknown error")
+                ),
+                0,
+                100,
+                busy=False,
+            )
+            self._schedule_hide_progress()
 
     def _open_unity_folder(self) -> None:
         try:
@@ -675,35 +763,137 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             )
         )
 
-    def _download_progress(self, label: str):
+    def _download_progress(self):
+        last_time = time.monotonic()
+        last_bytes = 0
+        smoothed_speed = 0.0
+
         def callback(downloaded: int, total: int) -> None:
+            nonlocal last_time, last_bytes, smoothed_speed
+            now = time.monotonic()
+            if downloaded < last_bytes:
+                last_time = now
+                last_bytes = 0
+                smoothed_speed = 0.0
+            elapsed = max(0.001, now - last_time)
+            delta = max(0, downloaded - last_bytes)
+            if delta > 0:
+                instant_speed = delta / elapsed
+                smoothed_speed = instant_speed if smoothed_speed <= 0 else smoothed_speed * 0.72 + instant_speed * 0.28
+                last_time = now
+                last_bytes = downloaded
+            state = self.state
+            item_suffix = (
+                f" ({state.operation_item_index}/{state.operation_item_total})"
+                if state.operation_item_total > 1 and state.operation_item_index > 0
+                else ""
+            )
+            speed_text = self._format_transfer_speed(smoothed_speed)
             if total > 0:
                 pct = int(max(0, min(100, downloaded * 100 / total)))
-                done_mb = downloaded / (1024 * 1024)
-                total_mb = total / (1024 * 1024)
-                prefix = f"{label} " if label else ""
+                eta_text = ""
+                if smoothed_speed > 0 and total > downloaded:
+                    eta_seconds = int((total - downloaded) / smoothed_speed)
+                    eta_text = _(" · ~{seconds} с", " · ~{seconds}s").format(seconds=max(1, eta_seconds))
                 text = _(
-                    "Загрузка {prefix}… {done:.1f} / {total:.1f} MB",
-                    "Downloading {prefix}… {done:.1f} / {total:.1f} MB",
-                ).format(prefix=prefix, done=done_mb, total=total_mb)
+                    "Загрузка{item} · {pct}%{speed}{eta}",
+                    "Downloading{item} · {pct}%{speed}{eta}",
+                ).format(
+                    item=item_suffix,
+                    pct=pct,
+                    speed=f" · {speed_text}" if speed_text else "",
+                    eta=eta_text,
+                )
                 self.post_progress(text, pct, 100, busy=False)
             else:
                 done_mb = downloaded / (1024 * 1024)
-                prefix = f"{label} " if label else ""
                 text = _(
-                    "Загрузка {prefix}… {done:.1f} MB",
-                    "Downloading {prefix}… {done:.1f} MB",
-                ).format(prefix=prefix, done=done_mb)
+                    "Загрузка{item} · {done:.1f} MB{speed}",
+                    "Downloading{item} · {done:.1f} MB{speed}",
+                ).format(
+                    item=item_suffix,
+                    done=done_mb,
+                    speed=f" · {speed_text}" if speed_text else "",
+                )
                 self.post_progress(text, 0, 0, busy=True)
 
         return callback
 
+    @staticmethod
+    def _format_transfer_speed(bytes_per_second: float) -> str:
+        if bytes_per_second <= 0:
+            return ""
+        value = float(bytes_per_second)
+        units = ("B/s", "KB/s", "MB/s", "GB/s")
+        for unit in units:
+            if value < 1024.0 or unit == units[-1]:
+                return f"{value:.1f} {unit}" if unit != "B/s" else f"{int(value)} {unit}"
+            value /= 1024.0
+        return ""
+
+    def _operation_stage(
+        self,
+        component: str,
+        stage: str,
+        stage_index: int,
+        stage_total: int,
+        can_cancel: bool,
+    ) -> None:
+        normalized = str(component or "").lower()
+        try:
+            item_index = self._operation_components.index(normalized) + 1
+        except ValueError:
+            item_index = 1
+        item_total = max(1, len(self._operation_components))
+        stage_labels = {
+            "Downloading": _("Загрузка", "Downloading"),
+            "Extracting": _("Распаковка", "Extracting"),
+            "Verifying staged files": _("Проверка файлов", "Verifying files"),
+            "Applying update": _("Применение обновления", "Applying update"),
+            "Recovering installation": _("Восстановление установки", "Recovering installation"),
+            "Completed": _("Установка завершена", "Installation completed"),
+        }
+        label = stage_labels.get(stage, str(stage))
+        if item_total > 1:
+            label = f"{label} ({item_index}/{item_total})"
+
+        def apply() -> None:
+            self.update_state(
+                operation_component=normalized,
+                operation_stage=str(stage),
+                operation_item_index=item_index,
+                operation_item_total=item_total,
+                can_cancel=bool(can_cancel),
+            )
+            self._set_progress(label, 0, 0, busy=True)
+
+        self._post_ui(apply)
+
     def _extract_progress(self, extracted: int, total: int) -> None:
+        suffix = (
+            f" ({self.state.operation_item_index}/{self.state.operation_item_total})"
+            if self.state.operation_item_total > 1
+            else ""
+        )
+        text = _("Распаковка", "Extracting") + suffix
         if total > 0:
             pct = int(max(0, min(100, extracted * 100 / total)))
-            self.post_progress(_("Распаковка…", "Extracting…"), pct, 100, busy=False)
+            self.post_progress(f"{text} · {pct}%", pct, 100, busy=False)
         else:
-            self.post_progress(_("Распаковка…", "Extracting…"), 0, 0, busy=True)
+            self.post_progress(text, 0, 0, busy=True)
+
+    def _verify_progress(self, processed: int, total: int) -> None:
+        suffix = (
+            f" ({self.state.operation_item_index}/{self.state.operation_item_total})"
+            if self.state.operation_item_total > 1
+            else ""
+        )
+        text = _("Проверка файлов", "Verifying files") + suffix
+        if total > 0:
+            pct = int(max(0, min(100, processed * 100 / total)))
+            self.post_progress(f"{text} · {pct}%", pct, 100, busy=False)
+        else:
+            self.post_progress(text, 0, 0, busy=True)
 
     def _set_progress(
         self,
@@ -749,21 +939,30 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         except Exception:
             return _("Установлен", "Installed")
 
-    def _unity_status(self) -> str:
+    def _unity_status(self, process_state: str = "stopped") -> str:
         configured = self._settings.get("UNITY_INSTALL_DIR") or None
         executable = self._home.find_unity_executable(configured)
         if executable is None:
             return _("Не установлен", "Not installed")
+        version = ""
         try:
             version_file = Path(self._home.unity_install_dir(configured)) / "_version.txt"
             if version_file.exists():
                 version = version_file.read_text(encoding="utf-8").strip()
-                if version:
-                    return _("Установлен v{ver}", "Installed v{ver}").format(
-                        ver=_strip_v(version)
-                    )
         except Exception:
             logger.debug("Failed to read Unity version", exc_info=True)
+        state_labels = {
+            "starting": _("Запускается", "Starting"),
+            "running": _("Запущена", "Running"),
+            "stopping": _("Закрывается", "Closing"),
+        }
+        if process_state in state_labels:
+            label = state_labels[process_state]
+            return f"{label} • v{_strip_v(version)}" if version else label
+        if version:
+            return _("Установлен v{ver}", "Installed v{ver}").format(
+                ver=_strip_v(version)
+            )
         return _("Установлен", "Installed")
 
     def _tester_code(self) -> str:
@@ -786,11 +985,15 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self._refresh_local_state()
 
     def _on_install_started(self, event) -> None:
+        if self.state.operation is not None:
+            return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}
         title = str(data.get("title") or data.get("name") or _("Установка", "Installation"))
         self.post_progress(title, 0, 100, busy=True)
 
     def _on_install_progress(self, event) -> None:
+        if self.state.operation is not None:
+            return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}
         title = str(data.get("title") or data.get("name") or "")
         downloaded = float(data.get("downloaded") or data.get("current") or 0)
@@ -817,6 +1020,8 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self._refresh_local_state()
 
     def _on_install_failed(self, event) -> None:
+        if self.state.operation is not None:
+            return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}
         message = str(data.get("error") or data.get("message") or _("ошибка", "error"))
         self._post_ui(

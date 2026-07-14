@@ -156,8 +156,6 @@ class MainWindowCoordinator:
             page = factory(view, view_models.home(view), view._page_actions)
             view.home_page = page
             view.home_primary_button = page.primary_button
-            view.home_progress_bar = page.progress_bar
-            view.home_progress_label = page.progress_label
             return page
         if page_key == "news":
             page = factory(view, view_models.news_page(view), view._page_actions)

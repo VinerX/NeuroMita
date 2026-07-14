@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import qtawesome as qta
-from PyQt6.QtCore import QPoint, QRectF, QSize, Qt, QSignalBlocker
+from PyQt6.QtCore import QPoint, QRectF, QSize, Qt, QSignalBlocker, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -14,9 +14,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +46,7 @@ from ui.pages.home_presentation import (
     HomeRestartDecision,
     HomeShowError,
     HomeState,
+    HomeStopUnityRequested,
     HomeTesterCodeSubmitted,
     HomeToggleUpdate,
 )
@@ -84,6 +87,62 @@ class LauncherHomeBackground(QWidget):
         painter.drawPixmap(rect, self._bg, source)
 
 
+class LauncherPrimaryButton(QPushButton):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._progress_visible = False
+        self._progress_busy = False
+        self._progress_value = 0
+        self._progress_maximum = 100
+        self._pulse = 0
+        self._animation = QTimer(self)
+        self._animation.setInterval(35)
+        self._animation.timeout.connect(self._advance_pulse)
+
+    def set_operation_progress(
+        self,
+        *,
+        visible: bool,
+        value: int,
+        maximum: int,
+        busy: bool,
+    ) -> None:
+        self._progress_visible = bool(visible)
+        self._progress_value = max(0, int(value))
+        self._progress_maximum = max(1, int(maximum or 1))
+        self._progress_busy = bool(busy)
+        if self._progress_visible and self._progress_busy:
+            if not self._animation.isActive():
+                self._animation.start()
+        else:
+            self._animation.stop()
+        self.update()
+
+    def _advance_pulse(self) -> None:
+        self._pulse = (self._pulse + 3) % 140
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        painter = QStylePainter(self)
+        painter.drawControl(QStyle.ControlElement.CE_PushButtonBevel, option)
+        if self._progress_visible:
+            content = self.rect().adjusted(1, 1, -1, -1)
+            painter.save()
+            painter.setClipRect(content)
+            if self._progress_busy:
+                width = max(70, int(content.width() * 0.28))
+                left = int((content.width() + width) * self._pulse / 140) - width
+                fill = content.adjusted(left, 0, -(content.width() - left - width), 0)
+            else:
+                width = int(content.width() * min(1.0, self._progress_value / self._progress_maximum))
+                fill = content.adjusted(0, 0, -(content.width() - width), 0)
+            painter.fillRect(fill, QColor(255, 255, 255, 38))
+            painter.restore()
+        painter.drawControl(QStyle.ControlElement.CE_PushButtonLabel, option)
+
+
 class HomePage(LauncherHomeBackground):
     """Passive launcher home view: intents in, immutable state/effects out."""
 
@@ -101,10 +160,7 @@ class HomePage(LauncherHomeBackground):
         self._unity_new_badge: QLabel | None = None
         self._news_items_layout: QVBoxLayout | None = None
         self._menu_button: QPushButton | None = None
-        self.primary_button: QPushButton | None = None
-        self.progress_bar: QProgressBar | None = None
-        self.progress_label: QLabel | None = None
-        self._cancel_button: QPushButton | None = None
+        self.primary_button: LauncherPrimaryButton | None = None
 
         self._build_ui()
         self.view_model.state_changed.connect(self.render)
@@ -158,7 +214,7 @@ class HomePage(LauncherHomeBackground):
 
         button_row = QHBoxLayout()
         button_row.setSpacing(0)
-        self.primary_button = QPushButton("")
+        self.primary_button = LauncherPrimaryButton()
         self.primary_button.setObjectName("LauncherHomePrimaryButton")
         self.primary_button.clicked.connect(
             lambda: self.dispatch_intent(HomePrimaryRequested())
@@ -173,34 +229,9 @@ class HomePage(LauncherHomeBackground):
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Expanding,
         )
-        self._menu_button.clicked.connect(
-            lambda: self.show_extra_menu(self._menu_button)
-        )
+        self._menu_button.clicked.connect(self._on_menu_button_clicked)
         button_row.addWidget(self._menu_button)
         left_column.addLayout(button_row)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setObjectName("LauncherHomeProgressBar")
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(10)
-        self.progress_bar.setVisible(False)
-        left_column.addWidget(self.progress_bar)
-
-        progress_row = QHBoxLayout()
-        progress_row.setSpacing(8)
-        progress_row.setContentsMargins(0, 0, 0, 0)
-        self.progress_label = QLabel("")
-        self.progress_label.setObjectName("LauncherHomeProgressLabel")
-        self.progress_label.setVisible(False)
-        progress_row.addWidget(self.progress_label, 1)
-        self._cancel_button = tr_set(QPushButton(), "✕ Отменить", "✕ Cancel")
-        self._cancel_button.setObjectName("LauncherHomeCancelButton")
-        self._cancel_button.setVisible(False)
-        self._cancel_button.clicked.connect(
-            lambda: self.dispatch_intent(HomeCancelRequested())
-        )
-        progress_row.addWidget(self._cancel_button)
-        left_column.addLayout(progress_row)
 
         right_column = QVBoxLayout()
         right_column.setContentsMargins(0, 0, 0, 8)
@@ -249,8 +280,8 @@ class HomePage(LauncherHomeBackground):
         update_check.setVisible(False)
         tr_set(
             update_check,
-            "Включить в обновление",
-            "Include in update",
+            "Выбрать компонент для установки или обновления",
+            "Select component for installation or update",
             "setToolTip",
         )
         update_check.toggled.connect(
@@ -305,6 +336,7 @@ class HomePage(LauncherHomeBackground):
         self._render_update_control(
             self._py_update_check,
             self._py_new_badge,
+            state.python_update.available or state.python_update.installable,
             state.python_update.available,
             state.python_update.selected,
             state.python_update.latest_version,
@@ -312,15 +344,41 @@ class HomePage(LauncherHomeBackground):
         self._render_update_control(
             self._unity_update_check,
             self._unity_new_badge,
+            state.unity_update.available or state.unity_update.installable,
             state.unity_update.available,
             state.unity_update.selected,
             state.unity_update.latest_version,
         )
         if self.primary_button is not None:
-            self.primary_button.setText(state.primary_label)
-            self.primary_button.setIcon(qta.icon(state.primary_icon_name, color="#ffffff"))
+            mode = "progress" if state.progress_visible else state.primary_action
+            if self.primary_button.property("mode") != mode:
+                self.primary_button.setProperty("mode", mode)
+                self.primary_button.style().unpolish(self.primary_button)
+                self.primary_button.style().polish(self.primary_button)
+            full_text = state.progress_text if state.progress_visible and state.progress_text else state.primary_label
+            available_width = max(140, self.primary_button.width() - 90)
+            visible_text = self.primary_button.fontMetrics().elidedText(
+                full_text,
+                Qt.TextElideMode.ElideRight,
+                available_width,
+            )
+            self.primary_button.setText(visible_text)
+            self.primary_button.setToolTip(full_text if visible_text != full_text else "")
+            icon_name = state.primary_icon_name
+            if state.progress_visible:
+                if state.progress_busy:
+                    icon_name = "fa6s.spinner"
+                elif state.progress_maximum > 0 and state.progress_value >= state.progress_maximum:
+                    icon_name = "fa6s.check"
+                else:
+                    icon_name = "fa6s.download"
+            self.primary_button.setIcon(qta.icon(icon_name, color="#ffffff"))
             self.primary_button.setIconSize(QSize(15, 15))
-            self.primary_button.setEnabled(state.operation is None)
+            self.primary_button.setEnabled(
+                state.operation is None
+                and not state.progress_visible
+                and state.primary_action not in {"busy", "starting", "stopping", "unavailable"}
+            )
         self._render_progress(state)
         self._render_menu_indicator(state)
         if state.news != self._rendered_news:
@@ -331,14 +389,15 @@ class HomePage(LauncherHomeBackground):
         self,
         control: QCheckBox | None,
         badge: QLabel | None,
+        selectable: bool,
         available: bool,
         selected: bool,
         version: str,
     ) -> None:
         if control is not None:
             blocker = QSignalBlocker(control)
-            control.setVisible(bool(available))
-            control.setChecked(bool(available and selected))
+            control.setVisible(bool(selectable))
+            control.setChecked(bool(selectable and selected))
             del blocker
         if badge is not None:
             badge.setVisible(bool(available))
@@ -351,28 +410,39 @@ class HomePage(LauncherHomeBackground):
                 )
 
     def _render_progress(self, state: HomeState) -> None:
-        if self.progress_bar is not None:
-            self.progress_bar.setVisible(state.progress_visible)
-            if state.progress_busy:
-                self.progress_bar.setRange(0, 0)
-            else:
-                self.progress_bar.setRange(0, max(1, state.progress_maximum))
-                self.progress_bar.setValue(state.progress_value)
-        if self.progress_label is not None:
-            self.progress_label.setVisible(state.progress_visible)
-            self.progress_label.setText(state.progress_text)
-        if self._cancel_button is not None:
-            self._cancel_button.setVisible(state.can_cancel)
-            self._cancel_button.setEnabled(state.can_cancel)
+        if self.primary_button is not None:
+            self.primary_button.set_operation_progress(
+                visible=state.progress_visible,
+                value=state.progress_value,
+                maximum=state.progress_maximum,
+                busy=state.progress_busy,
+            )
 
     def _render_menu_indicator(self, state: HomeState) -> None:
         if self._menu_button is None:
+            return
+        if state.operation is not None:
+            self._menu_button.setProperty("hasUpdate", "false")
+            if state.can_cancel:
+                self._menu_button.setIcon(qta.icon("fa6s.xmark", color="#ffffff"))
+                self._menu_button.setToolTip(_("Отменить", "Cancel"))
+                self._menu_button.setEnabled(True)
+                self._menu_button.setProperty("mode", "cancel")
+            else:
+                self._menu_button.setIcon(qta.icon("fa6s.lock", color="#8f8793"))
+                self._menu_button.setToolTip(_("Этот этап нельзя прервать", "This stage cannot be interrupted"))
+                self._menu_button.setEnabled(False)
+                self._menu_button.setProperty("mode", "locked")
+            self._menu_button.style().unpolish(self._menu_button)
+            self._menu_button.style().polish(self._menu_button)
             return
         has_update = bool(
             state.python_update.available or state.unity_update.available
         )
         color = "#ffcf7d" if has_update else "#ffd2ec"
         self._menu_button.setIcon(qta.icon("fa6s.chevron-down", color=color))
+        self._menu_button.setEnabled(True)
+        self._menu_button.setProperty("mode", "menu")
         self._menu_button.setProperty("hasUpdate", "true" if has_update else "false")
         self._menu_button.setToolTip(
             _("Доступны обновления", "Updates available")
@@ -381,6 +451,14 @@ class HomePage(LauncherHomeBackground):
         )
         self._menu_button.style().unpolish(self._menu_button)
         self._menu_button.style().polish(self._menu_button)
+
+    def _on_menu_button_clicked(self) -> None:
+        if self._state.operation is not None:
+            if self._state.can_cancel:
+                self.dispatch_intent(HomeCancelRequested())
+            return
+        if self._menu_button is not None:
+            self.show_extra_menu(self._menu_button)
 
     def _render_news(self, items: tuple[HomeNewsItemState, ...]) -> None:
         if self._news_items_layout is None:
@@ -483,7 +561,7 @@ class HomePage(LauncherHomeBackground):
         menu = QMenu(self)
         menu.setObjectName("LauncherHomeExtraMenu")
         menu.addAction(
-            _("Проверить файлы / обновления", "Verify files / updates"),
+            _("Проверить обновления", "Check for updates"),
             lambda: self.dispatch_intent(HomeRefreshUpdates(force=True, show_result=True)),
         )
         menu.addAction(
@@ -494,6 +572,12 @@ class HomePage(LauncherHomeBackground):
             _("Открыть папку Unity", "Open Unity folder"),
             lambda: self.dispatch_intent(HomeOpenUnityFolderRequested()),
         )
+        if self._state.unity_process_state == "running":
+            menu.addSeparator()
+            menu.addAction(
+                _("Закрыть Unity", "Close Unity"),
+                lambda: self.dispatch_intent(HomeStopUnityRequested()),
+            )
         menu.exec(anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height())))
 
     def on_activated(self) -> None:

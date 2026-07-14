@@ -338,7 +338,7 @@ def setup_updates_settings_controls(
             pending_python_version = str(py_info.get("latest_version") or "").strip()
             if bool(py_info.get("available")):
                 _set_status(_("Устанавливаю Python-обновление...", "Installing Python update..."))
-                py_applied = bool(check_for_updates(
+                python_result = check_for_updates(
                     base_dir=base_dir,
                     logger=ui_log,
                     channel=channel,
@@ -348,11 +348,14 @@ def setup_updates_settings_controls(
                     restart_on_success=False,
                     update_mode=(self.settings.get("UPDATE_MODE", "diff") or "diff"),
                     preserve_prompts=bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
-                ))
+                )
+                if not python_result.ok:
+                    raise RuntimeError(python_result.error or "Python update failed")
+                py_applied = bool(python_result)
 
             if bool(unity_info.get("available")):
                 _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))
-                check_for_unity_updates(
+                unity_result = check_for_unity_updates(
                     base_dir=base_dir,
                     logger=ui_log,
                     unity_dir=unity_dir,
@@ -361,6 +364,8 @@ def setup_updates_settings_controls(
                     on_progress=_on_progress,
                     auto_update=True,
                 )
+                if not unity_result.ok:
+                    raise RuntimeError(unity_result.error or "Unity update failed")
 
             _refresh_version_labels()
 

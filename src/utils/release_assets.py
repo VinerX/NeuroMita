@@ -45,6 +45,7 @@ class ReleaseAsset:
     url: str
     size: int
     content_type: str = ""
+    digest: str = ""
 
 
 @dataclass
@@ -216,6 +217,7 @@ def parse_release(item: dict) -> Release:
             url=a.get("browser_download_url", ""),
             size=int(a.get("size") or 0),
             content_type=a.get("content_type", ""),
+            digest=str(a.get("digest") or ""),
         )
         for a in (item.get("assets") or [])
     ]

@@ -70,9 +70,9 @@ class SettingsPanel(QWidget):
         ll.setContentsMargins(14, 14, 14, 14)
         ll.setSpacing(10)
 
-        header = QLabel(_("Установленные модели", "Installed models"))
-        header.setObjectName("AIHubSettingsListHeader")
-        ll.addWidget(header)
+        self._header = QLabel(_("Установленные модели", "Installed models"))
+        self._header.setObjectName("AIHubSettingsListHeader")
+        ll.addWidget(self._header)
 
         self._list = QListWidget()
         self._list.setObjectName("AIHubSettingsModelList")
@@ -177,6 +177,20 @@ class SettingsPanel(QWidget):
             if str(item.data(Qt.ItemDataRole.UserRole) or "") == cid:
                 self._list.setCurrentItem(item)
                 return
+
+    def retranslate(self) -> None:
+        """Refresh shell labels without disturbing the edited form values."""
+        self._header.setText(_("Установленные модели", "Installed models"))
+        self._btn_reset.setText(_("Сбросить", "Reset"))
+        self._btn_save.setText(_("Сохранить", "Save"))
+        if not self._current_id:
+            self._title.setText(_("Нет установленных моделей", "No installed models"))
+            self._empty.setText(
+                _(
+                    "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
+                    "No models installed in this category.\nGo to the «Install» section to add one.",
+                )
+            )
 
     # ---------------------------------------------------------- list
     def _rebuild_list(self, state: AIHubSettingsState) -> None:

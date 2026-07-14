@@ -49,7 +49,7 @@ from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
 
-from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
+from .constants import CATEGORY_ICONS, CATEGORY_ORDER, ROW_CATEGORY_MAP, category_label
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
 from .widgets import CategoryButton, ModelCard, Stat
 
@@ -296,17 +296,17 @@ class AIHubDialog(QDialog):
         title_box = QVBoxLayout()
         title_box.setContentsMargins(0, 0, 0, 0)
         title_box.setSpacing(2)
-        title = QLabel(_("AI Hub", "AI Hub"))
-        title.setObjectName("AIHubTitle")
-        title_box.addWidget(title)
-        subtitle = QLabel(
+        self._title_label = QLabel(_("AI Hub", "AI Hub"))
+        self._title_label.setObjectName("AIHubTitle")
+        title_box.addWidget(self._title_label)
+        self._subtitle_label = QLabel(
             _(
                 "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
                 "Install, remove and maintain local AI components and system dependencies.",
             )
         )
-        subtitle.setObjectName("AIHubSubtitle")
-        title_box.addWidget(subtitle)
+        self._subtitle_label.setObjectName("AIHubSubtitle")
+        title_box.addWidget(self._subtitle_label)
         header.addLayout(title_box, 1)
 
         # native OS window chrome already provides a close button
@@ -329,14 +329,14 @@ class AIHubDialog(QDialog):
         sidebar_layout.setContentsMargins(14, 16, 14, 14)
         sidebar_layout.setSpacing(8)
 
-        cat_header = QLabel(_("КАТЕГОРИИ", "CATEGORIES"))
-        cat_header.setObjectName("AIHubSidebarHeader")
-        sidebar_layout.addWidget(cat_header)
+        self._categories_header = QLabel(_("КАТЕГОРИИ", "CATEGORIES"))
+        self._categories_header.setObjectName("AIHubSidebarHeader")
+        sidebar_layout.addWidget(self._categories_header)
 
         for key in CATEGORY_ORDER:
             btn = CategoryButton(
                 key,
-                CATEGORY_LABELS.get(key, key),
+                category_label(key),
                 CATEGORY_ICONS.get(key, "fa5s.circle"),
                 self._select_category,
                 sidebar,
@@ -498,7 +498,9 @@ class AIHubDialog(QDialog):
         top.setSpacing(10)
 
         self._component_list_title = QLabel(
-            CATEGORY_LABELS.get(self._selected_category, _("Компоненты", "Components"))
+            category_label(self._selected_category)
+            if self._selected_category in CATEGORY_ORDER
+            else _("Компоненты", "Components")
         )
         self._component_list_title.setObjectName("AIHubSectionTitle")
         top.addWidget(self._component_list_title, 0)
@@ -527,9 +529,9 @@ class AIHubDialog(QDialog):
             except Exception:
                 pass
         check_layout.addWidget(self._check_spinner, 0)
-        check_text = QLabel(_("Проверяем компоненты…", "Checking components…"))
-        check_text.setObjectName("AIHubCheckText")
-        check_layout.addWidget(check_text, 0)
+        self._check_text = QLabel(_("Проверяем компоненты…", "Checking components…"))
+        self._check_text.setObjectName("AIHubCheckText")
+        check_layout.addWidget(self._check_text, 0)
         top.addWidget(self._check_indicator, 0)
 
         top.addStretch(1)
@@ -559,9 +561,9 @@ class AIHubDialog(QDialog):
         filters = QHBoxLayout()
         filters.setContentsMargins(0, 0, 0, 0)
         filters.setSpacing(8)
-        filter_label = QLabel(_("Реализация", "Runtime"))
-        filter_label.setObjectName("AIHubToolbarLabel")
-        filters.addWidget(filter_label, 0)
+        self._filter_label = QLabel(_("Реализация", "Runtime"))
+        self._filter_label.setObjectName("AIHubToolbarLabel")
+        filters.addWidget(self._filter_label, 0)
 
         self._backend_filter = "all"
         self._backend_filter_buttons: dict[str, QPushButton] = {}
@@ -673,16 +675,46 @@ class AIHubDialog(QDialog):
         # следующем открытии (сравнение _rendered_language с текущим языком).
         if self.isVisible():
             try:
-                self._refresh_views()
+                self._refresh_localized_ui()
             except Exception:
                 logger.exception("AI Hub: re-render on language change failed")
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.view_model.dispatch(ActivateAIHub())
-        if self._loaded_once and self._rendered_language and self._rendered_language != self._current_ui_language():
+        if self._rendered_language != self._current_ui_language():
             # Язык сменился, пока диалог был скрыт — перерисовываем в текущем языке.
-            QTimer.singleShot(0, self._refresh_views)
+            QTimer.singleShot(0, self._refresh_localized_ui)
+
+    def _refresh_localized_ui(self) -> None:
+        self.setWindowTitle(_("AI Hub", "AI Hub"))
+        self._title_label.setText(_("AI Hub", "AI Hub"))
+        self._subtitle_label.setText(
+            _(
+                "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
+                "Install, remove and maintain local AI components and system dependencies.",
+            )
+        )
+        self._categories_header.setText(_("КАТЕГОРИИ", "CATEGORIES"))
+        self._activity_header.setText(_("АКТИВНОСТЬ", "ACTIVITY"))
+        self.btn_refresh.setText(_("Обновить список", "Refresh list"))
+        self.btn_clear_cache.setText(_("Очистить кэш загрузок", "Clear download cache"))
+        self._install_logs_btn.setText(_("Логи установки", "Install logs"))
+        self._check_text.setText(_("Проверяем компоненты…", "Checking components…"))
+        self.search_box.setPlaceholderText(_("Поиск в категории…", "Search this category…"))
+        self._open_models_btn.setText(_("Открыть папку моделей", "Open models folder"))
+        self._filter_label.setText(_("Реализация", "Runtime"))
+        self._backend_filter_buttons["all"].setText(_("Все", "All"))
+        self._tab_buttons["install"].setText(_("Компоненты", "Components"))
+        self._tab_buttons["settings"].setText(_("Параметры моделей", "Model settings"))
+        self.stat_installed.setLabel(_("Установлено", "Installed"))
+        self.stat_disk.setLabel(_("Свободно на диске", "Free disk"))
+        self.stat_check.setLabel(_("Последняя проверка", "Last check"))
+        self.banner_button.setText(_("Оптимизировать", "Optimize"))
+        self.banner_dismiss.setText(_("Позже", "Later"))
+        if hasattr(self, "_settings_panel"):
+            self._settings_panel.retranslate()
+        self._refresh_views()
 
     def refresh(self, *, force: bool = False, include_status: bool | None = None) -> None:
         if not self._rows:
@@ -815,6 +847,7 @@ class AIHubDialog(QDialog):
             selected = "tts"
 
         for key, btn in self._category_buttons.items():
+            btn.setLabel(category_label(key))
             btn.setCount(counts.get(key, 0))
             btn.setSelected(key == selected)
 
@@ -840,10 +873,9 @@ class AIHubDialog(QDialog):
         title = getattr(self, "_component_list_title", None)
         if title is not None:
             title.setText(
-                CATEGORY_LABELS.get(
-                    self._selected_category,
-                    _("Компоненты", "Components"),
-                )
+                category_label(self._selected_category)
+                if self._selected_category in CATEGORY_ORDER
+                else _("Компоненты", "Components")
             )
 
     def _category_status_loaded(self, category: str) -> bool:

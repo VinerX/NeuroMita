@@ -97,6 +97,9 @@ class CategoryButton(QFrame):
         self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._count_lbl, 0)
 
+    def setLabel(self, label: str) -> None:
+        self._label_lbl.setText(str(label or ""))
+
     def setCount(self, count: int) -> None:
         self._count_lbl.setText(str(count))
         # Поясняем, что цифра — это число компонентов в категории, а не «индикатор»
@@ -171,6 +174,9 @@ class Stat(QFrame):
         self._sub_lbl.setText(subline)
         self._sub_lbl.setVisible(bool(subline))
 
+    def setLabel(self, label: str) -> None:
+        self._label_lbl.setText(str(label or ""))
+
 
 class ModelCard(QFrame):
     """Single model row.
@@ -210,7 +216,7 @@ class ModelCard(QFrame):
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
-        from .constants import STATUS_LABELS, STATUS_ICONS
+        from .constants import STATUS_ICONS, status_label
         from .helpers import (
             meta_from_row,
             status_from_row,
@@ -355,7 +361,7 @@ class ModelCard(QFrame):
             else:
                 dot.setText("●")
                 dot.setStyleSheet(f"color: {icon_color};")
-            dot.setToolTip(STATUS_LABELS.get(status_code, status_code))
+            dot.setToolTip(status_label(status_code))
             root.addWidget(dot, 0)
 
         # ---- right: action button or ⋮ menu

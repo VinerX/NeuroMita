@@ -295,7 +295,12 @@ def _load_environment(base_dir: str, logger: Any) -> None:
 
 def _run_update_checks(base_dir: str, logger: Any) -> None:
     try:
-        from updater import check_for_unity_updates, check_for_updates
+        from updater import (
+            check_for_unity_updates,
+            check_for_updates,
+            resume_pending_python_update,
+            resume_pending_unity_update,
+        )
 
         def enabled(name: str, fallback: bool = False) -> bool:
             raw_env = os.environ.get(name)
@@ -313,6 +318,40 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                 settings = json.load(source)
         except Exception:
             pass
+
+        try:
+            python_recovery = resume_pending_python_update(
+                base_dir=base_dir,
+                tester_code=settings.get("TESTER_CODE") or None,
+                logger=logger,
+            )
+            if python_recovery.changed:
+                logger.info("Recovered an interrupted Python installation; restarting.")
+                raise SystemExit(42)
+            if not python_recovery.ok and python_recovery.status not in {
+                "waiting_for_credentials"
+            }:
+                logger.warning(
+                    f"Python installation recovery failed: {python_recovery.error}"
+                )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.warning(f"Python installation recovery failed: {exc}")
+
+        try:
+            recovery = resume_pending_unity_update(
+                base_dir=base_dir,
+                unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
+                tester_code=settings.get("TESTER_CODE") or None,
+                logger=logger,
+            )
+            if recovery.changed:
+                logger.info("Recovered an interrupted Unity installation.")
+            elif not recovery.ok and recovery.status not in {"waiting_for_credentials"}:
+                logger.warning(f"Unity installation recovery failed: {recovery.error}")
+        except Exception as exc:
+            logger.warning(f"Unity installation recovery failed: {exc}")
 
         auto_update = enabled("AUTO_UPDATE", False)
         check_updates = enabled("AUTO_UPDATE_CHECK", auto_update)
