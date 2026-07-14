@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+import re
 from pathlib import Path
 
 
@@ -58,6 +59,11 @@ def _parse_args() -> argparse.Namespace:
         help="Явный full-release tag для временного pinned baseline runtime.",
     )
     parser.add_argument(
+        "--before-tag",
+        default=None,
+        help="Использовать только runtime-релизы со строго меньшей версией тега.",
+    )
+    parser.add_argument(
         "--tester-code",
         default=None,
         help="Пароль для зашифрованных release-архивов. Если не задан, берётся из TESTER_CODE/BOOTSTRAP_TESTER_CODE.",
@@ -73,6 +79,27 @@ def _resolve_tester_code(cli_value: str | None) -> str | None:
         if value:
             return value
     return None
+
+
+def _release_version(tag: str) -> tuple[int, ...] | None:
+    """Возвращает числовую часть тега vYYYY.MM.DD[.N][_Full]."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:_[A-Za-z]+)?", str(tag or "").strip())
+    if match is None:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def _releases_before_tag(releases: list[dict], before_tag: str | None) -> list[dict]:
+    if not before_tag:
+        return releases
+    limit = _release_version(before_tag)
+    if limit is None:
+        raise ValueError(f"Invalid --before-tag version: {before_tag}")
+    return [
+        release
+        for release in releases
+        if (version := _release_version(str(release.get("tag_name") or ""))) is not None and version < limit
+    ]
 
 
 def _collapse_single_root(root: Path) -> Path:
@@ -130,6 +157,11 @@ def main() -> int:
     _configure_stdio()
     args = _parse_args()
     releases = fetch_releases(args.repo)
+    try:
+        releases = _releases_before_tag(releases, args.before_tag)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 2
 
     release = asset = None
     preferred_release = _find_release_by_tag(releases, args.prefer_tag)
