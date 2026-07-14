@@ -1,8 +1,9 @@
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QCoreApplication, QThread, QTimer
 from main_logger import logger
 from core.events import get_event_bus
 from core.services import use
 from core.task_supervisor import task_supervisor
+from controllers.gui.qt_dispatch import dispatch_to_qt
 from services.contracts import GuiInteractionService, SettingsService
 
 from .gui.status_controller import StatusController
@@ -20,9 +21,17 @@ from .gui.settings_sidebar_controller import SettingsSidebarController
 
 class GuiController(GuiInteractionService):
     def __init__(self, main_controller, view):
+        app = QCoreApplication.instance()
+        if app is None or QThread.currentThread() != app.thread():
+            message = "GuiController must be constructed on the Qt GUI thread"
+            logger.critical(message)
+            raise RuntimeError(message)
+
         self.main_controller = main_controller
         self.view = view
         self.event_bus = get_event_bus()
+        self._gui_thread = app.thread()
+        self._closed = False
 
         self.voice_language_var = None
         self.local_voice_combobox = None
@@ -104,11 +113,19 @@ class GuiController(GuiInteractionService):
         return False
 
     def _dispatch_ui(self, callback) -> None:
+        if self._closed or not callable(callback):
+            return
         signal = getattr(self.view, "run_ui_task_signal", None)
         if signal is not None:
-            signal.emit(callback)
-            return
-        QTimer.singleShot(0, callback)
+            try:
+                signal.emit(callback)
+                return
+            except RuntimeError:
+                pass
+        if not dispatch_to_qt(callback):
+            logger.debug(
+                "Dropped GuiController callback because the Qt dispatcher is unavailable"
+            )
 
     def _on_setting_changed(self, change) -> None:
         key = str(getattr(change, "key", ""))
@@ -129,6 +146,15 @@ class GuiController(GuiInteractionService):
         return created
 
     def ensure_optional_gui(self, name: str):
+        if self._closed:
+            raise RuntimeError("GUI controller is closed")
+        if QThread.currentThread() != self._gui_thread:
+            message = (
+                f"Optional GUI feature '{name}' was requested outside the Qt GUI thread"
+            )
+            logger.critical(message)
+            raise RuntimeError(message)
+
         normalized = str(name or "").strip().lower()
         existing = self._optional_gui_features.get(normalized)
         if existing is not None:
@@ -189,6 +215,9 @@ class GuiController(GuiInteractionService):
         return created
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         subscription = getattr(self, "_settings_subscription", None)
         self._settings_subscription = None
         if subscription is not None:

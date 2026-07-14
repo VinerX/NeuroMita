@@ -1,10 +1,11 @@
-from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section
 from ui.settings.runtime_options import (
     refresh_camera_options,
     register_camera_options,
     register_provider_options,
     select_camera_option,
 )
+from main_logger import logger
 from utils import getTranslationVariant as _
 
 def update_camera_list(gui, *, force: bool = False):
@@ -17,7 +18,10 @@ def on_camera_selected(gui):
     if hasattr(gui, 'camera_combobox'):
         select_camera_option(gui, gui.camera_combobox.currentText())
 
-def setup_screen_analysis_controls(gui, parent_layout):
+def setup_screen_analysis_controls(gui, parent_layout, *, runtime_options_view_model):
+    from ui.settings.runtime_options import attach_runtime_options_view_model
+
+    attach_runtime_options_view_model(gui, runtime_options_view_model)
     # No group header here: the page already carries the "Изображения и камера"
     # title, so a separate "Настройки экрана" heading just duplicated it.
 
@@ -349,7 +353,7 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
             'validation': gui.validate_positive_integer,
         },
     ]
-    section = create_settings_section(
+    create_settings_section(
         gui, parent_layout,
         _("Хранение и очистка изображений", "Image Storage & Cleanup"),
         cleanup_config,

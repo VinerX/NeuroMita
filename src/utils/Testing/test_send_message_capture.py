@@ -127,6 +127,44 @@ class SendMessageCaptureTests(unittest.TestCase):
 
         return controller, view, fake_use, _FakeServices(capture)
 
+    def test_page_view_models_close_before_backend_shutdown(self):
+        events: list[str] = []
+        controller = AppShellController(
+            _FakeView(),
+            SimpleNamespace(app=_AppPort()),
+            close_pages=lambda: events.append("pages"),
+        )
+        controller._main_controller = SimpleNamespace(
+            _closing_started=False,
+            close_app=lambda: events.append("backend"),
+        )
+
+        controller.close_application()
+
+        self.assertEqual(events, ["pages", "backend"])
+
+    def test_backend_still_closes_if_page_shutdown_fails(self):
+        events: list[str] = []
+
+        def close_pages():
+            events.append("pages")
+            raise RuntimeError("page close failed")
+
+        controller = AppShellController(
+            _FakeView(),
+            SimpleNamespace(app=_AppPort()),
+            close_pages=close_pages,
+        )
+        controller._main_controller = SimpleNamespace(
+            _closing_started=False,
+            close_app=lambda: events.append("backend"),
+        )
+
+        with patch("controllers.gui.app_shell_controller.logger.exception"):
+            controller.close_application()
+
+        self.assertEqual(events, ["pages", "backend"])
+
     def test_backend_startup_blocks_early_send(self):
         controller, view, fake_use, fake_services = self._make_controller({}, view=_FakeView())
         controller._main_controller = None

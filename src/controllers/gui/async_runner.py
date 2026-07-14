@@ -2,19 +2,52 @@ from __future__ import annotations
 
 import threading
 import weakref
+from dataclasses import dataclass
 from core.task_supervisor import task_supervisor
 from typing import Any, Callable, Optional
 
 
 from main_logger import logger
+from controllers.gui.qt_dispatch import dispatch_to_qt
 
 
 Callback = Callable[[Any], None]
 
 
 _state_lock = threading.RLock()
-_generations: dict[tuple[int, str], int] = {}
-_exclusive: set[tuple[int, str]] = set()
+@dataclass(slots=True)
+class _OperationState:
+    next_generation: int = 0
+    current_generation: int = 0
+    active_count: int = 0
+    exclusive: bool = False
+
+
+_operations: dict[tuple[int, str], _OperationState] = {}
+_tracked_owner_ids: set[int] = set()
+
+
+def _purge_owner_state(owner_id: int) -> None:
+    """Убрать все записи владельца: id() переиспользуется после GC, и без
+    очистки новый объект унаследовал бы чужие счётчики поколений."""
+    with _state_lock:
+        _tracked_owner_ids.discard(owner_id)
+        for key in [k for k in _operations if k[0] == owner_id]:
+            del _operations[key]
+
+
+def _track_owner(owner: Any) -> None:
+    owner_id = id(owner)
+    with _state_lock:
+        if owner_id in _tracked_owner_ids:
+            return
+        _tracked_owner_ids.add(owner_id)
+    try:
+        weakref.finalize(owner, _purge_owner_state, owner_id)
+    except TypeError:
+        # Не-weakref-able владелец (например, сам модульный fallback) живёт
+        # до конца процесса — его записи чистить не нужно.
+        pass
 
 
 def _target_closed(target: Any) -> bool:
@@ -50,18 +83,11 @@ def dispatch_to_gui(target: Any, fn: Callable[[], None]) -> bool:
         except Exception:
             continue
 
-    try:
-        from PyQt6.QtCore import QTimer
-
-        QTimer.singleShot(0, fn)
+    if dispatch_to_qt(fn):
         return True
-    except Exception:
-        try:
-            fn()
-            return True
-        except Exception:
-            logger.error("Failed to dispatch callable to GUI", exc_info=True)
-            return False
+
+    logger.debug("Dropped GUI callback because the Qt dispatcher is unavailable")
+    return False
 
 
 def run_async(
@@ -77,49 +103,74 @@ def run_async(
     owner = target if target is not None else run_async
     key = (id(owner), str(name or "gui-async"))
     owner_ref = _owner_ref(owner)
+    _track_owner(owner)
     with _state_lock:
+        state = _operations.setdefault(key, _OperationState())
         if normalized_policy == "exclusive":
-            if key in _exclusive:
+            if state.exclusive or state.active_count:
                 return None
-            _exclusive.add(key)
-            generation = _generations.get(key, 0) + 1
-            _generations[key] = generation
-        else:
-            generation = _generations.get(key, 0) + 1
-            _generations[key] = generation
+            state.exclusive = True
+        state.next_generation += 1
+        generation = state.next_generation
+        state.current_generation = generation
+        state.active_count += 1
 
     def current() -> bool:
         current_owner = owner_ref()
         if current_owner is None or _target_closed(current_owner):
             return False
         with _state_lock:
-            return _generations.get(key, 0) == generation
+            state = _operations.get(key)
+            return state is not None and state.current_generation == generation
 
     def finish() -> None:
-        if normalized_policy != "exclusive":
-            return
         with _state_lock:
-            _exclusive.discard(key)
+            state = _operations.get(key)
+            if state is None:
+                return
+            state.active_count = max(0, state.active_count - 1)
+            if normalized_policy == "exclusive":
+                state.exclusive = False
+            if state.active_count == 0:
+                _operations.pop(key, None)
 
     def _run():
+        # Для policy="exclusive" слот освобождается только после того, как
+        # колбэк реально выполнен в GUI-потоке (или отброшен): иначе следующий
+        # «эксклюзивный» запуск мог бы стартовать, пока прежний on_ok ещё
+        # висит в очереди Qt, и их колбэки перемешались бы.
         try:
             result = worker()
         except Exception as exc:
             logger.error(f"Async GUI worker failed: {name}: {exc}", exc_info=True)
-            if on_error is not None:
-                dispatch_to_gui(
-                    target,
-                    lambda exc=exc: on_error(exc) if current() else None,
-                )
+            if on_error is None:
+                finish()
+                return
+
+            def _apply_error(exc=exc) -> None:
+                try:
+                    if current():
+                        on_error(exc)
+                finally:
+                    finish()
+
+            if not dispatch_to_gui(target, _apply_error):
+                finish()
+            return
+
+        if on_ok is None:
             finish()
             return
 
-        if on_ok is not None:
-            dispatch_to_gui(
-                target,
-                lambda result=result: on_ok(result) if current() else None,
-            )
-        finish()
+        def _apply_result(result=result) -> None:
+            try:
+                if current():
+                    on_ok(result)
+            finally:
+                finish()
+
+        if not dispatch_to_gui(target, _apply_result):
+            finish()
 
     supervisor = task_supervisor()
     if supervisor.is_shutdown:

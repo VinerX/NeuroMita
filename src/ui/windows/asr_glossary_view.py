@@ -1,7 +1,7 @@
 # src/ui/windows/asr_glossary_view.py
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QScrollArea,
@@ -78,7 +78,6 @@ class AsrGlossaryView(QWidget):
         self._build_ui()
 
         self._view_model.state_changed.connect(self.render)
-        QTimer.singleShot(0, lambda: self._view_model.dispatch(RefreshAsrGlossary()))
 
     def refresh(self):
         self._view_model.dispatch(RefreshAsrGlossary())

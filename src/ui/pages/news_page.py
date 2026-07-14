@@ -17,9 +17,9 @@ from utils import _
 
 
 class NewsPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions):
+        super().__init__(parent)
+        self._page_actions = page_actions
         self.setObjectName("NewsPage")
 
         self._page_widget = None
@@ -29,15 +29,12 @@ class NewsPage(QWidget):
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
 
-        self._view_model = gui.presentation.view_models.news_page(gui, parent=self)
+        self._view_model = view_model
+        self._view_model.setParent(self)
         self._view_model.state_changed.connect(self.render)
         self._view_model.effect_emitted.connect(self.handle_effect)
         self.destroyed.connect(lambda *_: self._view_model.close())
-        self._sync_host_exports()
         self._view_model.dispatch(ActivateNewsPage())
-
-    def _sync_host_exports(self):
-        self.gui.news_page = self
 
     def _build_page_widget(self, *, loading: bool = False) -> QWidget:
         repository = self._state.repository
@@ -96,9 +93,7 @@ class NewsPage(QWidget):
     def handle_effect(self, effect) -> None:
         if not isinstance(effect, NewsPageUpdated):
             return
-        home_page = getattr(self.gui, "home_page", None)
-        if home_page is not None and hasattr(home_page, "refresh_news_content"):
-            home_page.refresh_news_content()
+        self._page_actions.refresh_home_news()
 
     def on_activated(self):
         self._view_model.dispatch(ActivateNewsPage())
@@ -133,5 +128,5 @@ class NewsPage(QWidget):
         return str(self._state.content or "")
 
 
-def build_news_page(window) -> QWidget:
-    return NewsPage(window)
+def build_news_page(parent, view_model, page_actions) -> QWidget:
+    return NewsPage(parent, view_model, page_actions)

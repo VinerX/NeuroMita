@@ -73,7 +73,7 @@ class MainWindowCoordinator:
             view.page_stack.addWidget(page)
             self._schedule_build(page_key)
             return page
-        page = factory(view)
+        page = self._create_page(page_key, factory)
         view.page_map[page_key] = page
         view.page_stack.addWidget(page)
         view._ensure_settings_animation()
@@ -118,8 +118,14 @@ class MainWindowCoordinator:
             and view.page_stack.currentWidget() is placeholder
         )
         try:
-            page = factory(view)
+            page = self._create_page(page_key, factory)
         except Exception as exc:
+            logger.error(
+                "Failed to build main page '%s': %s",
+                page_key,
+                exc,
+                exc_info=True,
+            )
             view._page_building.discard(page_key)
             label = placeholder.findChild(QLabel)
             if label is not None:
@@ -142,6 +148,80 @@ class MainWindowCoordinator:
                 page.on_activated()
         for action in view._pending_page_actions.pop(page_key, []):
             action(page)
+
+    def _create_page(self, page_key: str, factory):
+        view = self._view
+        view_models = self._presentation.view_models
+        if page_key == "home":
+            page = factory(view, view_models.home(view), view._page_actions)
+            view.home_page = page
+            view.home_primary_button = page.primary_button
+            return page
+        if page_key == "news":
+            page = factory(view, view_models.news_page(view), view._page_actions)
+            view.news_page = page
+            return page
+        if page_key == "sandbox":
+            from ui.widgets.chat_panel_presentation import ChatPanelActions
+
+            chat_actions = ChatPanelActions(
+                reload_history=view.load_chat_history,
+                clear_chat=view.clear_chat_display,
+                send_message=view.send_message,
+                open_settings=lambda category: self.show_settings_category(
+                    category,
+                    force=True,
+                ),
+                show_image=view.show_chat_image,
+                surface_ready=view.bind_chat_panel,
+            )
+            page = factory(
+                view,
+                view_models.sandbox(view),
+                character_state_view_model=view_models.character_state(view),
+                chat_panel_view_model=view_models.chat_panel(view),
+                chat_panel_actions=chat_actions,
+                page_actions=view._page_actions,
+            )
+            view.bind_sandbox_page(page)
+            return page
+        if page_key == "settings":
+            page = factory(
+                view,
+                view_models.settings_page(view),
+                view._page_actions,
+                getattr(view, "settings_binding", None),
+            )
+            view.settings_page = page
+            view.settings_buttons = page.settings_buttons
+            view._category_modes = page.category_modes
+            view.settings_containers = page.settings_containers
+            view.settings_overview_container = page.settings_overview_container
+            view.settings_overlay = page.settings_overlay
+            view.current_settings_category = page.current_settings_category
+            view.SETTINGS_PANEL_WIDTH = page.SETTINGS_PANEL_WIDTH
+            view.SETTINGS_SIDEBAR_WIDTH = page.SETTINGS_SIDEBAR_WIDTH
+            view.settings_resize_handle = page.settings_resize_handle
+            return page
+        if page_key == "developer":
+            page = factory(
+                view,
+                view_models.finetune_data(view),
+                view._page_actions,
+                getattr(view, "settings_binding", None),
+            )
+            view.developer_page = page
+            return page
+        if page_key == "logs":
+            page = factory(view, view_models.logs_page(view), view._page_actions)
+            view.logs_page = page
+            view.logs_window = page.logs_window
+            return page
+        if page_key == "wiki":
+            page = factory(view, view._page_actions, getattr(view, "settings_binding", None))
+            view.wiki_page = page
+            return page
+        return factory(view)
 
     def when_page_ready(self, page_key: str, action: Callable[[Any], None]) -> None:
         view = self._view
@@ -185,12 +265,139 @@ class MainWindowCoordinator:
             page.on_activated()
         return True
 
+    def is_current(self, page_key: str) -> bool:
+        return str(getattr(self._view, "current_main_page", "") or "") == str(
+            page_key or ""
+        )
+
+    def show_guide(self) -> None:
+        callback = getattr(self._view, "_show_guide", None)
+        if callable(callback):
+            callback()
+
+    def view_last_context(self) -> None:
+        callback = getattr(self._view, "_on_debug_view_last_context", None)
+        if callable(callback):
+            callback()
+
+    def refresh_status(self) -> None:
+        callback = getattr(self._view, "update_status_colors", None)
+        if callable(callback):
+            callback()
+
     def open_release_page(self, release_id: str = "") -> None:
         self.switch_page("news")
         self.when_page_ready(
             "news",
             lambda page: page.focus_release(release_id) if hasattr(page, "focus_release") else None,
         )
+
+    def refresh_sidebar_version(self) -> None:
+        sidebar = getattr(self._view, "shell_sidebar", None)
+        callback = getattr(sidebar, "refresh_version_label", None)
+        if callable(callback):
+            callback()
+
+    def refresh_home_news(self) -> None:
+        page = getattr(self._view, "home_page", None)
+        callback = getattr(page, "refresh_news_content", None)
+        if callable(callback):
+            callback()
+
+    def open_sandbox_debug(self) -> None:
+        self.switch_page("sandbox")
+        self.when_page_ready(
+            "sandbox",
+            lambda page: page.show_debug_tab() if hasattr(page, "show_debug_tab") else None,
+        )
+
+    def refresh_debug_info(self) -> None:
+        callback = getattr(self._view, "update_debug_info", None)
+        if callable(callback):
+            callback()
+
+    def insert_debug_message(self, text: str, *, as_user: bool) -> None:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return
+        shell_actions = getattr(self._view, "_shell_actions", None)
+        if shell_actions is None:
+            return
+        shell_actions.insert_debug_message(
+            text=normalized,
+            character_id=shell_actions.current_character_id(),
+            as_user=bool(as_user),
+        )
+
+    def save_debug_snapshot(self) -> None:
+        callback = getattr(self._view, "_on_debug_save_snapshot", None)
+        if callable(callback):
+            callback()
+
+    def load_debug_snapshot(self) -> None:
+        callback = getattr(self._view, "_on_debug_load_snapshot", None)
+        if callable(callback):
+            callback()
+
+    def view_debug_context(self, initial_tab: str = "request") -> None:
+        callback = getattr(self._view, "_on_debug_view_last_context", None)
+        if callable(callback):
+            callback(initial_tab=str(initial_tab or "request"))
+
+    def build_settings_section(self, category: str, layout) -> None:
+        self._presentation.settings_sections.build_section(
+            self._view,
+            str(category),
+            layout,
+        )
+
+    def sync_settings_mode_widgets(self, mode_value) -> None:
+        from PyQt6.QtCore import Qt
+        from ui.pages.settings.settings_presentation import get_mode_label
+
+        clean_label = get_mode_label(mode_value)
+        for attr_name in ("INTERFACE_MODE", "chat_mode_combobox"):
+            widget = getattr(self._view, attr_name, None)
+            if widget is None or not hasattr(widget, "findText"):
+                continue
+            index = widget.findText(clean_label, Qt.MatchFlag.MatchFixedString)
+            if index < 0 or widget.currentIndex() == index:
+                continue
+            widget.blockSignals(True)
+            try:
+                widget.setCurrentIndex(index)
+            finally:
+                widget.blockSignals(False)
+
+    def apply_settings_aux_visibility(self) -> None:
+        try:
+            from ui.widgets.status_indicators_widget import apply_capture_visibility
+
+            apply_capture_visibility(self._view)
+        except Exception:
+            pass
+
+        sidebar = getattr(self._view, "shell_sidebar", None)
+        if sidebar is None or not hasattr(sidebar, "apply_section_visibility"):
+            return
+        try:
+            from ui.widgets.settings_panel import is_section_enabled
+
+            sidebar.apply_section_visibility(is_section_enabled)
+        except Exception:
+            pass
+
+    def refresh_tester_code(self) -> None:
+        entry = getattr(self._view, "_tester_code_entry", None)
+        if entry is None:
+            return
+        value = self._presentation.settings.get("TESTER_CODE", "")
+        entry.setText(str(value or ""))
+
+    def register_status_indicator(self, attr_name: str, widget) -> None:
+        from ui.widgets.status_indicators_widget import _register_indicator
+
+        _register_indicator(self._view, str(attr_name), widget)
 
     def refresh_logs(self) -> None:
         page = getattr(self._view, "logs_page", None)
@@ -203,10 +410,10 @@ class MainWindowCoordinator:
             page.refresh_content()
 
     def news_content(self) -> str:
-        return self._presentation.news.get_content(self._view)
+        return self._presentation.news.get_content()
 
     def news_releases(self):
-        return self._presentation.news.get_releases(self._view)
+        return self._presentation.news.get_releases()
 
     def refresh_home_primary_label(self) -> None:
         page = getattr(self._view, "home_page", None)
@@ -252,6 +459,33 @@ class MainWindowCoordinator:
             return
         self._closed = True
         view = self._view
+
+        # Page widgets outlive this coordinator until Qt destroys the main
+        # window. Close their presentation models explicitly before the global
+        # TaskSupervisor is shut down; otherwise queued refreshes can race with
+        # application shutdown and attempt to start new worker threads.
+        pages = getattr(view, "page_map", {})
+        closed_models: set[int] = set()
+        for page in tuple(pages.values()) if isinstance(pages, dict) else ():
+            for attribute in (
+                "view_model",
+                "_view_model",
+                "_character_state_view_model",
+                "_chat_panel_view_model",
+            ):
+                model = getattr(page, attribute, None)
+                close_model = getattr(model, "close", None)
+                if not callable(close_model) or id(model) in closed_models:
+                    continue
+                try:
+                    close_model()
+                except Exception as exc:
+                    logger.debug(
+                        "Page presentation model close failed during shutdown: %s",
+                        exc,
+                    )
+                closed_models.add(id(model))
+
         page = None
         if hasattr(view, "page_stack"):
             page = view.page_stack.currentWidget()

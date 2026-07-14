@@ -42,6 +42,23 @@ def test_install_runtime_features_are_lazy_but_explicitly_activatable() -> None:
         assert spec.enabled(object()) is True
 
 
+def test_gui_management_features_survive_disabled_runtime_toggles() -> None:
+    registry = _ServiceRegistryProbe()
+    controller = MainController.__new__(MainController)
+
+    with (
+        patch("controllers.main_controller.RuntimeFeatureManager", _FeatureManagerProbe),
+        patch("controllers.main_controller.services", return_value=registry),
+    ):
+        controller._configure_optional_features("unused", object())
+
+    manager = _FeatureManagerProbe.last
+    assert manager is not None
+
+    for name in ("local_voice", "voice_models", "speech"):
+        assert manager.specs[name].stop_when_disabled is False
+
+
 def test_backend_navigation_link_targets_install_tab_not_component_settings() -> None:
     source_path = (
         Path(__file__).resolve().parents[2]

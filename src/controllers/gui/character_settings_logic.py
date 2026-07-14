@@ -13,6 +13,7 @@ from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import ApiPresetService, CharacterRegistry
 from managers.prompt_catalogue_manager import list_prompt_sets, read_info_json
+from utils.history_migration import migrate_character_history
 from utils.migrate_json_to_sqlite import migrate as run_json_migration
 from utils.migrate_tags_to_structured_in_db import migrate as run_tags_to_structured_migration
 from ui.dialogs.db_viewer import DbViewerDialog
@@ -23,8 +24,6 @@ from controllers.gui.settings_data_prefetch import (
     API_PROVIDER_NAMES,
     CHARACTER_SETTINGS_SNAPSHOT,
     api_provider_names_from_result,
-    get_cached_settings_data,
-    request_settings_data,
 )
 
 
@@ -52,6 +51,13 @@ class ReindexAllCharactersWorker(TaskWorker):
 
     def __init__(self, character_ids: list[str]):
         character_ids = [str(c or "").strip() for c in (character_ids or []) if str(c or "").strip()]
+        worker_ref = self  # capture for status emissions
+
+        def _emit_status(text: str) -> None:
+            try:
+                worker_ref.status_signal.emit(str(text))
+            except Exception:
+                pass
 
         def _do_all(*, progress_callback=None):
             # NOTE: cooperative cancellation happens inside progress_callback (TaskWorker._emit_progress)
@@ -64,6 +70,7 @@ class ReindexAllCharactersWorker(TaskWorker):
             model_name = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
 
             # Pre-count for a stable global progress bar (best-effort).
+            _emit_status(_("Подсчёт отсутствующих записей...", "Counting missing records..."))
             totals: dict[str, int] = {}
             grand_total = 0
             for cid in character_ids:
@@ -74,15 +81,29 @@ class ReindexAllCharactersWorker(TaskWorker):
 
             created_total = 0
             done_base = 0
+            first_char = True
 
             # If nothing to do: still emit a progress tick so "Cancel" works predictably.
             if progress_callback:
                 progress_callback(0, max(grand_total, 1))
 
-            for cid in character_ids:
+            pending = [c for c in character_ids if int(totals.get(c, 0) or 0) > 0]
+            for pos, cid in enumerate(pending, start=1):
                 char_total = int(totals.get(cid, 0) or 0)
-                if char_total <= 0:
-                    continue
+
+                # На первом персонаже модель эмбеддингов грузится лениво и может
+                # занять 1-2 минуты — сообщаем об этом, иначе окно выглядит
+                # зависшим (прогресс-тики придут только после загрузки).
+                if first_char:
+                    _emit_status(_(
+                        "Загрузка модели эмбеддингов (первый запуск может занять 1-2 минуты)... [{c}/{t}] {cid}",
+                        "Loading embedding model (first run may take 1-2 min)... [{c}/{t}] {cid}",
+                    ).format(c=pos, t=len(pending), cid=cid))
+                    first_char = False
+                else:
+                    _emit_status(_(
+                        "Обработка [{c}/{t}] {cid}", "Processing [{c}/{t}] {cid}",
+                    ).format(c=pos, t=len(pending), cid=cid))
 
                 rag = RAGManager(cid)
 
@@ -161,7 +182,6 @@ class DedupeHistoryWorker(TaskWorker):
         from managers.database_manager import DatabaseManager
         db = DatabaseManager()
         super().__init__(db.dedupe_history, kwargs={"character_id": str(character_id or "").strip()})
-from utils.history_migration import migrate_character_history
 
 
 def _prompt_set_key(character_id: str) -> str:
@@ -328,11 +348,11 @@ def _populate_chat_character_combobox(gui, character_list: list[str], current_ch
         combo.blockSignals(blocked)
 
 
-def _load_character_settings_snapshot_async(gui) -> None:
+def _load_character_settings_snapshot_async(gui, settings_data) -> None:
     if bool(getattr(gui, "_character_settings_snapshot_loading", False)):
         return
 
-    cached = get_cached_settings_data(CHARACTER_SETTINGS_SNAPSHOT, None)
+    cached = settings_data.get(CHARACTER_SETTINGS_SNAPSHOT, None)
     if cached is not None:
         _apply_character_settings_snapshot(gui, cached)
         return
@@ -362,7 +382,7 @@ def _load_character_settings_snapshot_async(gui) -> None:
             "current_char_id": _fallback_current_character_id(gui),
         })
 
-    request_settings_data(
+    settings_data.request(
         gui,
         CHARACTER_SETTINGS_SNAPSHOT,
         _worker,
@@ -372,8 +392,8 @@ def _load_character_settings_snapshot_async(gui) -> None:
     )
 
 
-def _load_character_provider_items_async(gui) -> None:
-    cached = get_cached_settings_data(API_PROVIDER_NAMES, None)
+def _load_character_provider_items_async(gui, settings_data) -> None:
+    cached = settings_data.get(API_PROVIDER_NAMES, None)
     if cached is not None:
         _set_character_provider_items(gui, [*_default_provider_items(), *cached])
         return
@@ -384,7 +404,7 @@ def _load_character_provider_items_async(gui) -> None:
     def _apply(provider_names: list[str]) -> None:
         _set_character_provider_items(gui, [*_default_provider_items(), *(provider_names or [])])
 
-    request_settings_data(
+    settings_data.request(
         gui,
         API_PROVIDER_NAMES,
         _worker,
@@ -419,7 +439,7 @@ def _apply_character_settings_snapshot(gui, snapshot: dict) -> None:
 
 
 
-def wire_character_settings_logic(self):
+def wire_character_settings_logic(self, *, settings_data):
 
     initial_characters = _fallback_character_list(self)
     initial_char_id = _fallback_current_character_id(self, initial_characters)
@@ -513,8 +533,8 @@ def wire_character_settings_logic(self):
     if hasattr(self, 'btn_all_purge'):
         self.btn_all_purge.clicked.connect(lambda: purge_deleted_data(self))
 
-    _load_character_settings_snapshot_async(self)
-    _load_character_provider_items_async(self)
+    _load_character_settings_snapshot_async(self, settings_data)
+    _load_character_provider_items_async(self, settings_data)
     update_prompt_set_info(self)
 
 
@@ -679,7 +699,6 @@ def reload_character_data(gui):
     if chosen:
         try:
             gui.settings.set(saved_key, chosen)
-            gui.settings.save_settings()
         except Exception:
             pass
 
@@ -707,7 +726,6 @@ def on_prompt_set_changed(gui):
         return
 
     gui.settings.set(_prompt_set_key(character_id), set_name)
-    gui.settings.save_settings()
 
     get_event_bus().emit(Events.Character.RELOAD_DATA)
 
@@ -744,7 +762,6 @@ def change_character_actions(gui, character_id=None):
         if chosen:
             gui.prompt_pack_combobox.setCurrentText(chosen)
             gui.settings.set(saved_key, chosen)
-            gui.settings.save_settings()
 
         gui.prompt_pack_combobox.blockSignals(False)
 
@@ -773,7 +790,6 @@ def apply_prompt_set(gui, force_apply=True):
             return
 
     gui.settings.set(_prompt_set_key(character_id), set_name)
-    gui.settings.save_settings()
 
     get_event_bus().emit(Events.Character.RELOAD_DATA)
 
@@ -985,10 +1001,6 @@ def save_character_provider(gui, provider: str):
         return
     provider_key = f"CHAR_PROVIDER_{selected_character}"
     gui.settings.set(provider_key, provider)
-    try:
-        gui.settings.save_settings()
-    except Exception:
-        pass
     logger.info(f"Saved provider '{provider}' for character '{selected_character}'")
 
 def migrate_to_db(gui):
@@ -1565,6 +1577,17 @@ def _get_all_character_ids() -> list[str]:
 
 def run_reindexing_all(gui):
     """Fill missing embeddings for ALL characters."""
+    # Уже запущено — не плодим второй воркер, а возвращаем (возможно скрытое)
+    # окно прогресса. Это же даёт «показать снова» после кнопки «Скрыть».
+    existing = getattr(gui, "_reindex_all_worker", None)
+    if existing is not None and existing.isRunning():
+        dlg = getattr(gui, "_reindex_all_dialog", None)
+        if dlg is not None:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        return
+
     character_ids = _get_all_character_ids()
     if not character_ids:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонажи не найдены.", "No characters found."))
@@ -1582,46 +1605,52 @@ def run_reindexing_all(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
+    from ui.dialogs.background_task_dialog import BackgroundTaskDialog
+
     gui._reindex_all_worker = ReindexAllCharactersWorker(character_ids)
     gui._reindex_all_cancelled = False
 
-    progress = QProgressDialog(
-        _("Генерация векторов (все персонажи)...", "Generating embeddings (all characters)..."),
-        _("Отмена", "Cancel"),
-        0, 100,
-        gui
+    progress = BackgroundTaskDialog(
+        gui,
+        title=_("Генерация векторов (все персонажи)", "Generating embeddings (all characters)"),
+        eyebrow="RAG REINDEX",
+        hint=_(
+            "Окно можно скрыть — переиндексация продолжится в фоне. "
+            "Кнопка «Индекс нового (все)» откроет его снова.",
+            "You can hide this window — reindexing continues in the background. "
+            "The \"Index new (all)\" button reopens it.",
+        ),
     )
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setValue(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
+    gui._reindex_all_dialog = progress
 
     def on_progress(curr, total):
         try:
             t = int(total or 0)
             c = int(curr or 0)
-            progress.setRange(0, max(t, 1))
-            progress.setValue(min(c, max(t, 1)))
-            progress.setLabelText(
+            progress.set_range(0, max(t, 1))
+            progress.set_value(min(c, max(t, 1)))
+            progress.set_detail(
                 _("Обработано: {c} / {t}", "Processed: {c} / {t}").format(c=c, t=t if t else "?")
             )
         except Exception:
             pass
 
+    def _cleanup():
+        gui._reindex_all_worker = None
+        gui._reindex_all_cancelled = False
+        gui._reindex_all_dialog = None
+
     def on_finished(count):
         if getattr(gui, "_reindex_all_cancelled", False):
-            gui._reindex_all_worker = None
-            gui._reindex_all_cancelled = False
+            _cleanup()
             return
-        progress.close()
+        progress.finish()
         QMessageBox.information(
             gui,
             _("Готово", "Done"),
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1634,31 +1663,29 @@ def run_reindexing_all(gui):
 
     def on_error(msg):
         if getattr(gui, "_reindex_all_cancelled", False):
-            gui._reindex_all_worker = None
-            gui._reindex_all_cancelled = False
+            _cleanup()
             return
-        progress.close()
+        progress.finish()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
 
-    def on_cancel():
+    def on_stop():
         gui._reindex_all_cancelled = True
         try:
             gui._reindex_all_worker.requestInterruption()
         except Exception:
             pass
-        progress.close()
+        progress.finish()
 
     def on_cancelled():
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
+        _cleanup()
 
     gui._reindex_all_worker.progress_signal.connect(on_progress)
+    gui._reindex_all_worker.status_signal.connect(progress.set_status)
     gui._reindex_all_worker.finished_signal.connect(on_finished)
     gui._reindex_all_worker.error_signal.connect(on_error)
     gui._reindex_all_worker.cancelled_signal.connect(on_cancelled)
-    progress.canceled.connect(on_cancel)
+    progress.stopRequested.connect(on_stop)
 
     progress.show()
     gui._reindex_all_worker.start()

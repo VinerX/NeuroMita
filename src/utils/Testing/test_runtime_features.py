@@ -75,6 +75,35 @@ def test_concurrent_ensure_deduplicates_factory():
         manager.shutdown()
 
 
+def test_explicit_ensure_keeps_on_demand_feature_ready_while_auto_disabled():
+    settings = SettingsRegistry({"ENABLED": False})
+    resource = _Resource()
+    manager = RuntimeFeatureManager(settings)
+    manager.register(
+        FeatureSpec(
+            name="feature",
+            enabled=lambda values: values.get("ENABLED", False),
+            setting_keys=("ENABLED",),
+            factory=lambda: resource,
+            stop_when_disabled=False,
+        )
+    )
+    try:
+        assert manager.start_enabled() == {}
+        assert manager.ensure("feature", timeout=2.0) is resource
+        assert manager.is_ready("feature")
+
+        settings.set("ENABLED", True)
+        settings.set("ENABLED", False)
+        assert settings.flush_notifications(1.0)
+
+        assert manager.is_ready("feature")
+        assert manager.get("feature") is resource
+        assert not resource.stopped.is_set()
+    finally:
+        manager.shutdown()
+
+
 def test_enabled_feature_stops_when_setting_is_disabled():
     settings = SettingsRegistry({"ENABLED": True})
     resource = _Resource()

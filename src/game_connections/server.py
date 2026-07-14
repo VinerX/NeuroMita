@@ -95,7 +95,12 @@ class ChatServerNew:
             pass
 
     async def start_async(self):
-        self.server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        self.server = await asyncio.start_server(
+            self.handle_client,
+            self.host,
+            self.port,
+            limit=self._max_message_bytes + 1,
+        )
         if self._stop_requested.is_set():
             self.server.close()
             await self.server.wait_closed()
@@ -175,39 +180,43 @@ class ChatServerNew:
         self.client_tasks[client_id] = set()
         self._notify_connection_changed(True, client_id)
 
-        buffer = bytearray()
-        decoder = json.JSONDecoder()
-
         try:
             while self.running:
-                chunk = await reader.read(4096)
-                if not chunk:
-                    break
-
-                buffer.extend(chunk)
-                if len(buffer) > self._max_message_bytes:
+                try:
+                    frame = await reader.readline()
+                except ValueError:
                     await self.send_error(writer, "Message is too large")
                     logger.warning(
                         f"Клиент {client_id} превысил лимит сообщения "
-                        f"({len(buffer)} > {self._max_message_bytes} bytes)"
+                        f"({self._max_message_bytes} bytes)"
                     )
                     break
+                if not frame:
+                    break
+                if len(frame) > self._max_message_bytes:
+                    await self.send_error(writer, "Message is too large")
+                    logger.warning(
+                        f"Клиент {client_id} превысил лимит сообщения "
+                        f"({len(frame)} > {self._max_message_bytes} bytes)"
+                    )
+                    break
+                frame = frame.rstrip(b"\r\n")
+                if not frame.strip():
+                    continue
+                try:
+                    request = json.loads(frame.decode("utf-8"))
+                except UnicodeDecodeError:
+                    await self.send_error(writer, "Message must be valid UTF-8")
+                    logger.warning(f"Клиент {client_id} прислал невалидный UTF-8 frame")
+                    continue
+                except json.JSONDecodeError as exc:
+                    await self.send_error(writer, "Malformed JSON message")
+                    logger.warning(
+                        f"Клиент {client_id} прислал повреждённый JSON frame: {exc}"
+                    )
+                    continue
 
-                while buffer:
-                    try:
-                        buf_str = buffer.decode('utf-8')
-                        obj, idx = decoder.raw_decode(buf_str)
-
-                        await self.process_request(obj, client_id)
-
-                        del buffer[:len(buf_str[:idx].encode('utf-8'))]
-                        while buffer and chr(buffer[0]).isspace():
-                            buffer.pop(0)
-
-                    except json.JSONDecodeError:
-                        break
-                    except UnicodeDecodeError:
-                        break
+                await self.process_request(request, client_id)
         except asyncio.CancelledError:
             pass
         except (ConnectionResetError, ConnectionAbortedError, ConnectionError) as e:
@@ -219,8 +228,7 @@ class ChatServerNew:
             logger.error(f"Ошибка в handle_client: {e}", exc_info=True)
         finally:
             self.active_connections.pop(client_id, None)
-            if client_id in self.client_tasks:
-                del self.client_tasks[client_id]
+            self._forget_client_state(client_id)
 
             try:
                 writer.close()
@@ -231,6 +239,16 @@ class ChatServerNew:
             logger.info(f"Клиент {client_id} отключился")
 
             self._notify_connection_changed(False, client_id)
+
+    def _forget_client_state(self, client_id: str) -> None:
+        self.client_tasks.pop(client_id, None)
+        self.last_participants.pop(client_id, None)
+        stale_dialogue_keys = [
+            key for key in self._last_sent_dialogue_text
+            if key[0] == client_id
+        ]
+        for key in stale_dialogue_keys:
+            self._last_sent_dialogue_text.pop(key, None)
 
     async def process_request(self, request: Dict[str, Any], client_id: str):
         if not isinstance(request, dict):
@@ -249,7 +267,16 @@ class ChatServerNew:
             return
 
         ctx = RequestContext(server=self, client_id=client_id, writer=writer, event_bus=self.event_bus)
-        await handler.handle(request, ctx)
+        try:
+            await handler.handle(request, ctx)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                f"Ошибка обработчика action={action!r} от {client_id}: {exc}",
+                exc_info=True,
+            )
+            await self.send_error(writer, f"Action failed: {action}")
 
     def _should_block_event(self, event_type: str) -> bool:
         if not self.ignore_game_requests:

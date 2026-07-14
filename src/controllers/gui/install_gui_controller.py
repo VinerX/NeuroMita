@@ -1,4 +1,5 @@
 import threading
+import time
 from collections import deque
 from typing import Any
 
@@ -10,10 +11,18 @@ from .base_controller import BaseController
 
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallCallbacks
 from core.task_supervisor import task_supervisor
-from services.contracts import InstallAdmission, InstallQueueService
+from services.contracts import (
+    InstallAdmission,
+    InstallQueueAdministrationService,
+    InstallQueueService,
+)
 
 
-class InstallGuiController(BaseController, InstallQueueService):
+class InstallGuiController(
+    BaseController,
+    InstallQueueService,
+    InstallQueueAdministrationService,
+):
     """Исполняет задачи установки строго по одной за раз (очередь).
 
     Раньше каждая задача стартовала в своём демон-потоке, поэтому два клика
@@ -30,10 +39,17 @@ class InstallGuiController(BaseController, InstallQueueService):
         self._worker_thread: threading.Thread | None = None
         self._worker_stop_event = threading.Event()
         self._last_enqueue_error = ""
+        self._accepting_jobs = True
         self._queue_service_registration: ServiceRegistration | None = None
+        self._queue_admin_registration: ServiceRegistration | None = None
         super().__init__(main_controller, view)
         self._queue_service_registration = services().register_owned(
             InstallQueueService,
+            self,
+            replace=True,
+        )
+        self._queue_admin_registration = services().register_owned(
+            InstallQueueAdministrationService,
             self,
             replace=True,
         )
@@ -84,6 +100,12 @@ class InstallGuiController(BaseController, InstallQueueService):
             )
 
         with self._queue_cond:
+            if not self._accepting_jobs:
+                return InstallAdmission(
+                    accepted=False,
+                    task_id=task_id,
+                    error="Install queue is paused for AI environment maintenance",
+                )
             active_ids = {str((self._running or {}).get("task_id") or "")}
             active_ids.update(str(j.get("task_id") or "") for j in self._pending)
             if task_id and task_id in active_ids:
@@ -205,8 +227,37 @@ class InstallGuiController(BaseController, InstallQueueService):
             finally:
                 with self._queue_cond:
                     self._running = None
+                    self._queue_cond.notify_all()
                 self._emit_queue_changed()
         logger.info("Install queue worker stopped")
+
+    def quiesce(self, *, timeout: float = 30.0) -> bool:
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        with self._queue_cond:
+            self._accepting_jobs = False
+            for job in self._pending:
+                cancel_event = job.get("cancel_event")
+                if isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+            self._pending.clear()
+            if self._running is not None:
+                cancel_event = self._running.get("cancel_event")
+                if isinstance(cancel_event, threading.Event):
+                    cancel_event.set()
+                    self._running["cancelling"] = True
+            self._queue_cond.notify_all()
+            while self._running is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._queue_cond.wait(timeout=min(0.25, remaining))
+        self._emit_queue_changed()
+        return True
+
+    def resume(self) -> None:
+        with self._queue_cond:
+            self._accepting_jobs = True
+            self._queue_cond.notify_all()
 
     def close(self) -> None:
         self._worker_stop_event.set()
@@ -219,6 +270,13 @@ class InstallGuiController(BaseController, InstallQueueService):
                 registration.close()
             except Exception:
                 logger.exception("Failed to unregister install queue service")
+        admin_registration = self._queue_admin_registration
+        self._queue_admin_registration = None
+        if admin_registration is not None:
+            try:
+                admin_registration.close()
+            except Exception:
+                logger.exception("Failed to unregister install queue administration service")
         try:
             self.event_bus.unsubscribe_owner(self)
         except Exception:
@@ -246,6 +304,7 @@ class InstallGuiController(BaseController, InstallQueueService):
             win, progress_cb, status_cb, log_cb, raw_log_cb = self._create_install_window(
                 job.get("title") or f"Installing {task_id}",
                 job.get("initial_status") or "Preparing...",
+                job.get("install_style_variant") or "default",
             )
             cbs = (progress_cb, status_cb, log_cb, raw_log_cb)
             job["win"] = win
@@ -396,11 +455,14 @@ class InstallGuiController(BaseController, InstallQueueService):
         except Exception:
             pass
 
-    def _create_install_window(self, title: str, initial_status: str):
+    def _create_install_window(self, title: str, initial_status: str, style_variant: str = "default"):
         if not self.view or not hasattr(self.view, "create_installation_window_signal"):
             return None, (lambda *_: None), (lambda *_: None), (lambda *_: None), (lambda *_: None)
 
-        holder = {"ready_event": threading.Event()}
+        holder = {
+            "ready_event": threading.Event(),
+            "style_variant": str(style_variant or "default"),
+        }
 
         try:
             self.view.create_installation_window_signal.emit(title, initial_status, holder)
@@ -498,6 +560,7 @@ class InstallGuiController(BaseController, InstallQueueService):
             "timeout_sec": float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC)),
             "win": win,
             "callbacks": cbs,
+            "install_style_variant": str(data.get("install_style_variant") or "default"),
             "headless": not with_ui,
         }
         admission = self._admit_job(job)

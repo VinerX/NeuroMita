@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import re
 import threading
@@ -8,11 +7,18 @@ import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
-from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import services, use
 from core.task_supervisor import task_supervisor
-from services.contracts import AudioStateService, GameLinkService, LoopService, SettingsService, SpeechService
+from services.contracts import (
+    AudioStateService,
+    GameLinkService,
+    InstallableCatalogService,
+    LoopService,
+    SettingsService,
+    SpeechService,
+)
+from services.asr_settings_service import ensure_asr_settings_service
 from utils import getTranslationVariant as _
 
 
@@ -36,6 +42,7 @@ class SpeechController(SpeechService):
         self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
+        self.asr_settings = ensure_asr_settings_service()
 
         self._glossary_lock = threading.RLock()
         self._glossary_cache: list[dict] | None = None
@@ -51,15 +58,6 @@ class SpeechController(SpeechService):
         self._mita_speaking = False        # открытое окно (локальное воспроизведение)
         self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
 
-        self._asr_settings_path = str(settings_path("asr_settings.json", create_parent=True))
-        self._asr_settings = {
-            "engine": "google",
-            "models": {
-                "google": {},
-                "gigaam": {"device": "auto"}
-            }
-        }
-
         self._settings_subscription = self.settings.subscribe(
             self._on_setting_changed, keys=self._SETTING_KEYS
         )
@@ -68,17 +66,11 @@ class SpeechController(SpeechService):
 
     # ——— settings json
     def _load_asr_settings(self):
-        try:
-            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
-            if os.path.exists(self._asr_settings_path):
-                with open(self._asr_settings_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        self._asr_settings.update(data)
-            if self._sanitize_asr_models():
-                self._save_asr_settings()
-        except Exception as e:
-            logger.error(f"ASR settings load error: {e}")
+        self._sanitize_asr_models()
+
+    @property
+    def _asr_settings(self) -> dict:
+        return self.asr_settings.snapshot()
 
     def _sanitize_asr_models(self) -> bool:
         """Чинит устаревшие/битые значения «model» в asr_settings.json.
@@ -106,16 +98,9 @@ class SpeechController(SpeechService):
                     f"ASR: модель '{model}' недопустима для '{engine}' — заменяю на '{default}'."
                 )
                 cfg["model"] = default
+                self.asr_settings.set_model_settings(engine, cfg)
                 changed = True
         return changed
-
-    def _save_asr_settings(self):
-        try:
-            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
-            with open(self._asr_settings_path, "w", encoding="utf-8") as f:
-                json.dump(self._asr_settings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"ASR settings save error: {e}")
 
     # ——— subscriptions
     def _subscribe_to_events(self):
@@ -142,6 +127,7 @@ class SpeechController(SpeechService):
 
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started_backend, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized_backend, weak=False)
+        eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed_backend, weak=False)
 
     # ——— readiness tracking
     def _on_asr_init_started_backend(self, _event: Event):
@@ -150,6 +136,10 @@ class SpeechController(SpeechService):
 
     def _on_asr_initialized_backend(self, _event: Event):
         self.asr_is_ready = True
+        self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_asr_failed_backend(self, _event: Event):
+        self.asr_is_ready = False
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     # ——— settings loaded
@@ -163,7 +153,7 @@ class SpeechController(SpeechService):
         self._load_asr_settings()
 
         engine = self.settings.get("RECOGNIZER_TYPE", self._asr_settings.get("engine", "google"))
-        self._asr_settings["engine"] = engine
+        self.asr_settings.set_selected_engine(engine)
 
         SpeechRecognition.set_recognizer_type(engine)
         SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
@@ -218,8 +208,7 @@ class SpeechController(SpeechService):
                 SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
                 return
 
-            self._asr_settings["engine"] = engine
-            self._save_asr_settings()
+            self.asr_settings.set_selected_engine(engine)
 
             if self.mic_recognition_active:
                 SpeechRecognition.speech_recognition_stop()
@@ -309,11 +298,6 @@ class SpeechController(SpeechService):
 
             try:
                 self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-            except Exception:
-                pass
-
-            try:
-                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
             except Exception:
                 pass
 
@@ -430,17 +414,15 @@ class SpeechController(SpeechService):
         value = data.get('value')
         if key is None:
             return
-        self._asr_settings.setdefault("models", {}).setdefault(engine, {})[key] = value
-        self._save_asr_settings()
+        self.asr_settings.set_model_option(engine, key, value)
         if engine == self._asr_settings.get("engine"):
-            SpeechRecognition.apply_settings(engine, self._asr_settings["models"][engine])
+            SpeechRecognition.apply_settings(engine, self.asr_settings.model_settings(engine))
 
     def _on_apply_recognizer_settings(self, event: Event):
         data = event.data or {}
         engine = data.get('engine') or self._asr_settings.get("engine", "google")
         settings = data.get('settings', {})
-        self._asr_settings.setdefault("models", {})[engine] = settings
-        self._save_asr_settings()
+        self.asr_settings.set_model_settings(engine, settings)
         if engine == self._asr_settings.get("engine"):
             SpeechRecognition.apply_settings(engine, settings)
 
@@ -451,7 +433,13 @@ class SpeechController(SpeechService):
             engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
         except Exception:
             engine_settings = {}
-        return SpeechRecognition.check_model_installed(model_type, settings=engine_settings)
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return False
+        return catalog.is_ready(
+            f"asr:{str(model_type or '').strip()}",
+            ctx={"engine_settings": dict(engine_settings)},
+        )
 
     def _on_get_asr_engines_list(self, _event: Event):
         return list(SpeechRecognition._registry.keys())
@@ -685,7 +673,7 @@ class SpeechController(SpeechService):
         def worker() -> None:
             error = None
             try:
-                result = self._compute_asr_models_glossary()
+                result = self._compute_asr_models_glossary(refresh=refresh)
             except Exception as exc:
                 logger.error(f"GET_ASR_MODELS_GLOSSARY error: {exc}", exc_info=True)
                 result = []
@@ -711,142 +699,46 @@ class SpeechController(SpeechService):
         )
         return [] if not callable(callback) else None
 
-    def _compute_asr_models_glossary(self) -> list[dict]:
-        from core.install_requirements import check_requirements
-        from utils.gpu_utils import check_gpu_provider
+    def _compute_asr_models_glossary(self, *, refresh: bool = False) -> list[dict]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return []
 
-        try:
-            gpu_vendor = check_gpu_provider() or "CPU"
-        except Exception:
-            gpu_vendor = "CPU"
-
-        if not self._asr_settings or not self._asr_settings.get("models"):
-            self._load_asr_settings()
-
-        models_map = self._asr_settings.get("models", {}) or {}
-        registry = getattr(SpeechRecognition, "_registry", {}) or {}
-        engines = list(registry.keys())
-        try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            installable_registry = get_installable_registry()
-        except Exception:
-            installable_registry = None
-            ComponentCategory = None
-            make_component_id = None
-
+        rows = catalog.list_rows(
+            include_status=True,
+            refresh=bool(refresh),
+            category="asr",
+            status_category="asr",
+        )
         result: list[dict] = []
-        for engine in engines:
-            engine_settings = models_map.get(engine, {}) or {}
+        for row in rows:
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(metadata, dict) or not isinstance(status, dict):
+                continue
 
-            try:
-                instance = SpeechRecognition._new_instance(engine)
-                if instance and hasattr(instance, "apply_settings"):
-                    instance.apply_settings(engine_settings)
-            except Exception:
-                instance = None
-
-            metadata = {}
-            try:
-                configs = (
-                    instance.get_model_configs()
-                    if instance
-                    else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
-                )
-                if isinstance(configs, list):
-                    metadata = next(
-                        (
-                            item
-                            for item in configs
-                            if isinstance(item, dict)
-                            and str(item.get("id") or "") == str(engine)
-                        ),
-                        {},
-                    )
-            except Exception:
-                metadata = {}
-
-            try:
-                requirements = (
-                    instance.requirements()
-                    if instance and hasattr(instance, "requirements")
-                    else []
-                ) or []
-            except Exception:
-                requirements = []
-
-            context = {
-                "device": engine_settings.get("device"),
-                "gpu_vendor": gpu_vendor,
-                "engine_settings": engine_settings,
-            }
-            status = (
-                check_requirements(requirements, ctx=context)
-                if requirements
-                else {
-                    "ok": True,
-                    "missing_required": [],
-                    "missing_optional": [],
-                    "details": [],
-                }
-            )
-
-            component_id = ""
-            component_status = None
-            if (
-                installable_registry is not None
-                and ComponentCategory is not None
-                and make_component_id is not None
-            ):
-                try:
-                    component_id = make_component_id(ComponentCategory.ASR, engine)
-                    component = installable_registry.get(component_id)
-                    if component is not None:
-                        component_status = component.status(context)
-                except Exception:
-                    component_status = None
-
-            installed = (
-                bool(component_status.ready)
-                if component_status is not None
-                else bool(status.get("ok"))
-            )
-            missing_required = list(status.get("missing_required", []))
-            details = list(status.get("details", []))
-            if component_status is not None:
-                if (
-                    not component_status.ready
-                    and component_status.installed
-                    and not component_status.backend_ok
-                ):
-                    missing_required = ["backend"]
-                details.append(component_status.as_dict())
+            details = status.get("details")
+            details = dict(details) if isinstance(details, dict) else {}
+            missing_required = list(details.get("missing_required") or ())
+            if not bool(status.get("backend_ok", True)) and "backend" not in missing_required:
+                missing_required.append("backend")
 
             result.append(
                 {
-                    "id": engine,
-                    "component_id": component_id,
-                    "name": metadata.get("name") or engine,
-                    "description": metadata.get("description") or "",
-                    "languages": metadata.get("languages", [])
-                    if isinstance(metadata.get("languages"), list)
-                    else [],
-                    "gpu_vendor": metadata.get("gpu_vendor", [])
-                    if isinstance(metadata.get("gpu_vendor"), list)
-                    else [],
-                    "tags": metadata.get("tags", [])
-                    if isinstance(metadata.get("tags"), list)
-                    else [],
-                    "links": metadata.get("links", [])
-                    if isinstance(metadata.get("links"), list)
-                    else [],
-                    "installed": installed,
+                    "id": str(metadata.get("item_id") or ""),
+                    "component_id": str(metadata.get("id") or ""),
+                    "name": str(metadata.get("title") or metadata.get("item_id") or ""),
+                    "description": str(metadata.get("description") or ""),
+                    "languages": list(metadata.get("languages") or ()),
+                    "gpu_vendor": [],
+                    "tags": list(metadata.get("tags") or ()),
+                    "links": [],
+                    "installed": bool(status.get("ready", False)),
+                    "ready": bool(status.get("ready", False)),
+                    "status": dict(status),
                     "missing_required": missing_required,
-                    "missing_optional": status.get("missing_optional", []),
-                    "details": details,
+                    "missing_optional": list(details.get("missing_optional") or ()),
+                    "details": [dict(status)],
                 }
             )
-
         return result
-

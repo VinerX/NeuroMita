@@ -39,6 +39,23 @@ def test_launcher_uv_is_isolated_from_embedded_python_scripts() -> None:
     assert launcher.UV_EXE.parent != launcher.PYTHON.parent / "Scripts"
 
 
+def test_launcher_does_not_forward_global_native_widget_mode(monkeypatch) -> None:
+    launcher = _load_launcher()
+    monkeypatch.setenv("QT_USE_NATIVE_WINDOWS", "1")
+
+    environment = launcher._base_env()
+
+    assert "QT_USE_NATIVE_WINDOWS" not in environment
+
+
+def test_launcher_normalizes_unsigned_windows_negative_exit_code() -> None:
+    launcher = _load_launcher()
+
+    assert launcher._normalize_child_exit_code(0xFFFFFFFF, windows=True) == 1
+    assert launcher._normalize_child_exit_code(42, windows=True) == 42
+    assert launcher._normalize_child_exit_code(0, windows=True) == 0
+
+
 def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"
@@ -326,11 +343,12 @@ def test_core_lock_reuses_persistent_kernel_lock_file(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(launcher, "CORE_LOCK_FILE", lock_file)
     with launcher._CoreInstallLock(timeout=1.0, stale_after=10.0):
         assert lock_file.is_file()
-        assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
 
     assert lock_file.exists()
+    assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
     with launcher._CoreInstallLock(timeout=1.0, stale_after=10.0):
-        assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
+        assert lock_file.is_file()
+    assert f"pid={launcher.os.getpid()}" in lock_file.read_text(encoding="ascii")
 
 
 def test_core_health_rejects_unowned_top_level_payload(tmp_path, monkeypatch) -> None:

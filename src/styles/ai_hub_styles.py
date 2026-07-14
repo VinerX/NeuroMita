@@ -52,6 +52,17 @@ QLabel#AIHubSidebarStatus {
     font-size: 10px;
     padding: 4px 6px;
 }
+QLabel#AIHubSectionHeader {
+    color: {text};
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    padding: 12px 2px 6px 2px;
+    border-bottom: 1px solid {outline};
+}
+QLabel#AIHubSectionHeader[first="true"] {
+    padding-top: 2px;
+}
 QFrame#AIHubActivityPanel {
     background: rgba(255,255,255,0.02);
     border: 1px solid {outline};
@@ -144,6 +155,11 @@ QPushButton#AIHubSidebarBtn:hover {
     color: {text};
     border: 1px solid {accent_border};
 }
+QPushButton#AIHubSidebarBtn:disabled {
+    background: #20212b;
+    color: #77727c;
+    border: 1px solid #30313a;
+}
 
 QFrame#AIHubHint {
     background: rgba({accent_rgb}, 0.06);
@@ -228,6 +244,12 @@ QLabel#AIHubSectionTitle {
     font-size: 19px;
     font-weight: 700;
 }
+QLabel#AIHubToolbarLabel {
+    color: {muted};
+    font-size: 11px;
+    font-weight: 600;
+    padding-right: 2px;
+}
 QLineEdit#AIHubSearch {
     background: {panel_bg};
     color: {text};
@@ -239,28 +261,6 @@ QLineEdit#AIHubSearch {
 QLineEdit#AIHubSearch:focus {
     border: 1px solid {accent_border};
     background: rgba({accent_rgb}, 0.04);
-}
-QComboBox#AIHubSort {
-    background: {panel_bg};
-    color: {text};
-    border: 1px solid {outline};
-    border-radius: 10px;
-    padding: 6px 30px 6px 12px;
-    font-size: 12px;
-}
-QComboBox#AIHubSort:hover {
-    border: 1px solid {accent_border};
-}
-QComboBox#AIHubSort::drop-down {
-    border: none;
-    width: 24px;
-}
-QComboBox#AIHubSort QAbstractItemView {
-    background: {sidebar_panel};
-    color: {text};
-    selection-background-color: rgba({accent_rgb}, 0.18);
-    border: 1px solid {outline};
-    outline: none;
 }
 
 /* ---------- Model list ---------- */
@@ -366,6 +366,15 @@ QLabel#AIHubChipOnnx {
     font-size: 10px;
     font-weight: 700;
 }
+QLabel#AIHubChipNotRecommended {
+    background: rgba(245, 166, 35, 0.10);
+    color: #f0b45d;
+    border: 1px solid rgba(245, 166, 35, 0.42);
+    border-radius: 8px;
+    padding: 2px 9px;
+    font-size: 10px;
+    font-weight: 700;
+}
 QLabel#AIHubStatusInstalled {
     color: {success};
     font-size: 11px;
@@ -397,6 +406,11 @@ QPushButton#AIHubCardPrimary {
 }
 QPushButton#AIHubCardPrimary:hover { background: {accent_hover}; }
 QPushButton#AIHubCardPrimary:pressed { background: {accent_pressed}; }
+QPushButton#AIHubCardPrimary:disabled {
+    background: #24252f;
+    color: #77727c;
+    border: 1px solid #34353f;
+}
 QPushButton#AIHubCardDanger {
     background: rgba(255,123,123,0.06);
     color: {warn_text};
@@ -409,19 +423,15 @@ QPushButton#AIHubCardDanger {
 }
 QPushButton#AIHubCardDanger:hover { background: rgba(255,123,123,0.14); }
 
-QPushButton#AIHubCardPrimaryDim {
-    background: rgba({accent_rgb}, 0.20);
-    color: rgba(255, 255, 255, 0.65);
-    border: 1px solid rgba({accent_rgb}, 0.30);
+QPushButton#AIHubCardUnavailable {
+    background: #24252f;
+    color: #77727c;
+    border: 1px solid #34353f;
     border-radius: 9px;
     padding: 7px 16px;
     font-weight: 700;
     font-size: 12px;
     min-width: 112px;
-}
-QPushButton#AIHubCardPrimaryDim:hover {
-    background: rgba({accent_rgb}, 0.30);
-    color: rgba(255,255,255,0.85);
 }
 
 QPushButton#AIHubCardMenuBtn {
@@ -435,6 +445,11 @@ QPushButton#AIHubCardMenuBtn {
 QPushButton#AIHubCardMenuBtn:hover {
     background: rgba({accent_rgb}, 0.12);
     border: 1px solid {accent_border};
+}
+QPushButton#AIHubCardMenuBtn:disabled {
+    background: #24252f;
+    color: #77727c;
+    border: 1px solid #34353f;
 }
 QMenu#AIHubCardMenu {
     background: {sidebar_panel};
@@ -510,6 +525,27 @@ QPushButton#AIHubSecondary {
 QPushButton#AIHubSecondary:hover {
     background: rgba({accent_rgb}, 0.08);
     border: 1px solid {accent_border};
+}
+QPushButton#AIHubSecondary:disabled {
+    background: #20212b;
+    color: #77727c;
+    border: 1px solid #30313a;
+}
+
+QFrame#AIHubCheckIndicator {
+    background: rgba({accent_rgb}, 0.08);
+    border: 1px solid rgba({accent_rgb}, 0.20);
+    border-radius: 10px;
+}
+QPushButton#AIHubCheckSpinner:disabled {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+QLabel#AIHubCheckText {
+    color: {muted};
+    font-size: 11px;
+    font-weight: 600;
 }
 
 /* ---------- Settings panel ---------- */

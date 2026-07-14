@@ -75,7 +75,7 @@ class WindowCompositionController:
         return dialog
 
     def _factory_ai_hub(self, parent, _payload: dict):
-        from ui.windows.ai_hub_window import AIHubDialog
+        from ui.windows.ai_hub import AIHubDialog
 
         return AIHubDialog(
             self._ai_hub_view_model,
@@ -102,14 +102,18 @@ class WindowCompositionController:
     def _factory_vc_redist(self, parent, _payload: dict):
         from ui.windows.voice_action_windows import VCRedistWarningDialog
 
-        return VCRedistWarningDialog(self._presentation.voice, parent=parent)
+        return VCRedistWarningDialog(
+            self._presentation.voice.open_documentation,
+            parent=parent,
+        )
 
     def _factory_triton(self, parent, payload: dict):
         from ui.windows.voice_action_windows import TritonDependenciesDialog
 
         deps = payload.get("dependencies_status") or payload.get("deps") or {}
         return TritonDependenciesDialog(
-            self._presentation.voice,
+            open_documentation=self._presentation.voice.open_documentation,
+            refresh_status=lambda: self._presentation.voice.triton_status(refresh=True),
             parent=parent,
             dependencies_status=deps,
         )
@@ -122,7 +126,8 @@ class WindowCompositionController:
     def create_installation_window(self, title: str, initial_status: str, holder: dict) -> None:
         ready_event = holder.get("ready_event")
         try:
-            win = VoiceInstallationWindow(self._view, title, initial_status)
+            style_variant = str(holder.get("style_variant") or "default")
+            win = VoiceInstallationWindow(self._view, title, initial_status, style_variant=style_variant)
             self._active_install_window = win
             win.minimized.connect(lambda: self._set_install_logs_visible(True))
             win.window_closed.connect(lambda window=win: self._on_install_window_closed(window))

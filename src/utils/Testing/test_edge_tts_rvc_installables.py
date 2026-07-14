@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 import os
+import sys
 import tempfile
 from types import SimpleNamespace
 from pathlib import Path
@@ -108,6 +109,55 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
         config = EdgeTTSRVCOnnxModel._find_model_config(EDGE_TTS_RVC_ONNX_ID)
 
         self.assertIn("INTEL", config["gpu_vendor"])
+
+    def test_onnx_rvc_defaults_to_pm_on_amd(self):
+        edge = EdgeTTSRVCOnnxModel._find_model_config(EDGE_TTS_RVC_ONNX_ID)
+        silero = EdgeTTSRVCOnnxModel._find_model_config(SILERO_RVC_ONNX_ID)
+
+        edge_f0 = next(item for item in edge["settings"] if item["key"] == "f0method")
+        silero_f0 = next(
+            item
+            for item in silero["settings"]
+            if item["key"] == "silero_rvc_f0method"
+        )
+
+        self.assertEqual(edge_f0["options"]["default_amd"], "pm")
+        self.assertEqual(silero_f0["options"]["default_amd"], "pm")
+
+    def test_onnx_runtime_falls_back_to_cpu_without_directml_provider(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_ONNX_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        model = EdgeTTSRVCOnnxModel(_Parent(), EDGE_TTS_RVC_ONNX_ID)
+        fake_ort = SimpleNamespace(
+            get_available_providers=lambda: ["CPUExecutionProvider"],
+        )
+
+        with patch.dict(sys.modules, {"onnxruntime": fake_ort}):
+            self.assertEqual(model._resolve_runtime_device("dml"), "cpu")
+
+    def test_onnx_runtime_keeps_directml_when_provider_is_available(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_ONNX_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        model = EdgeTTSRVCOnnxModel(_Parent(), EDGE_TTS_RVC_ONNX_ID)
+        fake_ort = SimpleNamespace(
+            get_available_providers=lambda: [
+                "DmlExecutionProvider",
+                "CPUExecutionProvider",
+            ],
+        )
+
+        with patch.dict(sys.modules, {"onnxruntime": fake_ort}):
+            self.assertEqual(model._resolve_runtime_device("dml"), "dml")
 
     def test_onnx_runtime_import_accepts_published_wheel_package_layout(self):
         fallback_module = SimpleNamespace(TTS_RVC=object())

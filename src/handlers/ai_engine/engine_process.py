@@ -168,8 +168,6 @@ async def _handle_action(st: EngineState, action: str, payload: dict, *, log_que
         if warm_torch:
             import importlib
             importlib.invalidate_caches()
-            from handlers.embedding_handler import _ensure_torch_and_transformers
-            _ensure_torch_and_transformers()
             import torch  # noqa: F401
 
         if warm_tf:

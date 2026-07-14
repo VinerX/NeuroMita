@@ -293,13 +293,14 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         if not normalized:
             return
         current = dict(self.state.settings)
-        previous = current.get(normalized)
+        missing = object()
+        previous = current.get(normalized, missing)
         current[normalized] = value
         self._update(settings=self._freeze_mapping(current))
         try:
             self._controller.update_setting(normalized, value)
         except Exception as exc:
-            if previous is None:
+            if previous is missing:
                 current.pop(normalized, None)
             else:
                 current[normalized] = previous

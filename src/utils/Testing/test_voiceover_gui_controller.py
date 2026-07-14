@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
@@ -20,6 +21,34 @@ class _EventBusStub:
 
     def emit(self, event_name, payload):
         self.emitted.append((event_name, payload))
+
+
+class _ComboStub:
+    def __init__(self):
+        self.items: list[tuple[str, str]] = []
+        self.current_index = -1
+
+    def blockSignals(self, _blocked):
+        return None
+
+    def clear(self):
+        self.items.clear()
+        self.current_index = -1
+
+    def addItem(self, name, item_id):
+        self.items.append((str(name), str(item_id)))
+
+    def count(self):
+        return len(self.items)
+
+    def itemData(self, index):
+        return self.items[index][1]
+
+    def currentIndex(self):
+        return self.current_index
+
+    def setCurrentIndex(self, index):
+        self.current_index = index
 
 
 class VoiceoverGuiControllerTests(unittest.TestCase):
@@ -50,6 +79,67 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         self.assertEqual(event_name, Events.GUI.SET_SETTINGS_ICON_INDICATOR)
         self.assertEqual(payload.get("category"), "voice")
         self.assertEqual(payload.get("state"), "green")
+
+    def test_tts_selector_reads_installed_models_from_canonical_catalog(self):
+        controller, _bus = self._make_controller()
+        catalog = SimpleNamespace(
+            ready_item_ids=lambda category: (
+                "edge_tts_rvc_cuda",
+                "edge_tts_rvc_onnx",
+                "medium",
+            )
+            if category == "tts"
+            else ()
+        )
+        registry = SimpleNamespace(
+            get_optional=lambda _contract: catalog,
+        )
+
+        with patch(
+            "controllers.gui.voiceover_controller.services",
+            return_value=registry,
+        ):
+            installed = controller._canonical_installed_model_ids()
+
+        self.assertEqual(
+            installed,
+            {"edge_tts_rvc_cuda", "edge_tts_rvc_onnx", "medium"},
+        )
+
+    def test_tts_selector_keeps_every_ready_catalog_model_after_onnx_install(self):
+        controller, _bus = self._make_controller()
+        combo = _ComboStub()
+        controller.view = SimpleNamespace(local_voice_combobox=combo)
+        controller._model_id_to_name = {
+            "edge_tts_rvc_cuda": "Edge CUDA",
+            "silero_rvc_cuda": "Silero CUDA",
+            "edge_tts_rvc_onnx": "Edge ONNX",
+            "medium": "Fish Speech",
+        }
+        controller._set_local_model_selector_state = lambda **_kwargs: None
+        controller._save_setting = lambda *_args: None
+
+        selected = controller._update_local_models_combobox_from_snapshot(
+            {
+                "edge_tts_rvc_cuda",
+                "silero_rvc_cuda",
+                "edge_tts_rvc_onnx",
+                "medium",
+            },
+            "edge_tts_rvc_onnx",
+        )
+
+        self.assertEqual(selected, "edge_tts_rvc_onnx")
+        self.assertEqual(
+            [item_id for _name, item_id in combo.items],
+            [
+                "edge_tts_rvc_cuda",
+                "silero_rvc_cuda",
+                "edge_tts_rvc_onnx",
+                "medium",
+            ],
+        )
+        self.assertEqual(combo.itemData(combo.currentIndex()), "edge_tts_rvc_onnx")
 
 
 if __name__ == "__main__":

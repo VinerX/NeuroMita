@@ -7,11 +7,14 @@ from main_logger import logger
 from core.events import Event, EventDelivery, Events, get_event_bus, shutdown_event_bus
 from core.app_paths import settings_dir, settings_path
 from core.executors import executors
+from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
 from startup.startup_profiler import startup_trace
 from core.services import services
 from services.character_registry import SettingsOnlyCharacterRegistry
 from services.contracts import (
+    AIEngineAdministrationService,
+    AIEnvironmentMaintenanceService,
     AIEngineService,
     ApiPresetService,
     AppVarsService,
@@ -26,6 +29,7 @@ from services.contracts import (
     LocalVoiceService,
     ModelStateService,
     RuntimeFeatureService,
+    RuntimeCapabilitiesService,
     SpeechService,
     VoiceModelService,
     InstallableCatalogService,
@@ -42,6 +46,7 @@ from services.loop_service import NoLoopService
 from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 from services.runtime_features import FeatureSpec, RuntimeFeatureManager
+from services.runtime_capabilities import DefaultRuntimeCapabilitiesService
 
 if TYPE_CHECKING:
     from controllers.settings_controller import SettingsController
@@ -67,6 +72,7 @@ class MainController:
         self.gui_fallback_controller = None
 
         self.loop_controller = None
+        self.server_controller = None
         self.gui_controller = None
         self.telegram_controller = None
         self.install_controller = None
@@ -94,6 +100,9 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        from services.asr_settings_service import ensure_asr_settings_service
+
+        ensure_asr_settings_service()
         if not services().is_registered(InstallableCatalogService):
             from services.installable_catalog_service import DefaultInstallableCatalogService
 
@@ -107,6 +116,11 @@ class MainController:
         else:
             self.game_link = DisconnectedGameLinkService()
         services().register(GameLinkService, self.game_link, replace=True)
+        services().register(
+            RuntimeCapabilitiesService,
+            DefaultRuntimeCapabilitiesService(settings_service, self.game_link),
+            replace=True,
+        )
         services().register(
             AppVarsService, DefaultAppVarsService(settings_service, self.game_link), replace=True
         )
@@ -157,16 +171,25 @@ class MainController:
         self.loop_controller = self._build_component("loop", LoopController)
         logger.notify("LoopController initialized.")
 
-        # The game API is a core transport, not an AI feature. Bring it up as
-        # soon as the event loop and settings exist so Unity can connect while
-        # neural services continue initializing in the background.
-        self._build_component("server", self._init_server_controller)
-
         with startup_trace.phase("controller.pending_update"):
             self._check_and_perform_pending_update()
 
         self.ai_engine_controller = self._build_component("ai_engine", AIEngineController)
         services().register(AIEngineService, self.ai_engine_controller, replace=True)
+        services().register(
+            AIEngineAdministrationService,
+            self.ai_engine_controller,
+            replace=True,
+        )
+        from services.ai_environment_maintenance_service import (
+            DefaultAIEnvironmentMaintenanceService,
+        )
+
+        services().register(
+            AIEnvironmentMaintenanceService,
+            DefaultAIEnvironmentMaintenanceService(runtime_environments()),
+            replace=True,
+        )
         logger.notify(
             f"AIEngineController успешно инициализирован (mode={getattr(self.ai_engine_controller, 'mode', 'unknown')})."
         )
@@ -222,6 +245,9 @@ class MainController:
 
         self._subscribe_to_events()
         logger.notify("MainController подписался на события")
+        # External requests are accepted only after every mandatory service and
+        # event handler used by the game protocol has been registered.
+        self._build_component("server", self._init_server_controller)
         startup_trace.mark("controller.main.ready", headless=self.headless)
         startup_trace.write()
 
@@ -289,6 +315,7 @@ class MainController:
                 factory=self._create_local_voice_controller,
                 provided_services=(LocalVoiceService,),
                 priority=35,
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(
@@ -304,6 +331,7 @@ class MainController:
                 provided_services=(VoiceModelService,),
                 depends_on=("local_voice",),
                 priority=40,
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(
@@ -316,6 +344,7 @@ class MainController:
                 shutdown=self._shutdown_speech_controller,
                 priority=50,
                 required_modules=("sounddevice",),
+                stop_when_disabled=False,
             )
         )
         feature_manager.register(
@@ -563,6 +592,12 @@ class MainController:
         if server_controller is not None:
             shutdown_step("server", server_controller.destroy)
 
+        history_controller = getattr(self, "history_controller", None)
+        if history_controller is not None:
+            close_history = getattr(history_controller, "close", None)
+            if callable(close_history):
+                shutdown_step("history timers", close_history)
+
         gui_controller = getattr(self, "gui_controller", None)
         if gui_controller is not None:
             close_gui = getattr(gui_controller, "close", None)
@@ -578,6 +613,10 @@ class MainController:
         feature_manager = getattr(self, "feature_manager", None)
         if feature_manager is not None:
             shutdown_step("optional features", feature_manager.shutdown)
+
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is not None:
+            shutdown_step("installable catalog", catalog.close)
 
         if services().is_registered(TelegramAuthService):
             auth_service = services().get(TelegramAuthService)

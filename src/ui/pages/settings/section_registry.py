@@ -12,10 +12,6 @@ TextPair = tuple[str, str]
 SectionBuilder = Callable[[object, QVBoxLayout], None]
 
 
-def _build_updates_section(gui: object, parent_layout: QVBoxLayout) -> None:
-    gui.presentation.settings_sections.build_updates(gui, parent_layout)
-
-
 @dataclass(frozen=True, slots=True)
 class SettingsSectionSpec:
     key: str
@@ -101,6 +97,18 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
         builder_ref="ui.settings.microphone_settings:setup_microphone_controls",
     ),
     SettingsSectionSpec(
+        key="ai_engine",
+        icon_name="fa6s.microchip",
+        nav_label=("AI Engine", "AI Engine"),
+        title=("Управление AI Engine", "AI Engine management"),
+        subtitle=(
+            "Аппаратный профиль, модели, режим workers и обслуживание AI-окружений.",
+            "Hardware profile, models, worker topology and AI environment maintenance.",
+        ),
+        min_mode="advanced",
+        builder_ref="ui.settings.ai_engine_settings:setup_ai_engine_settings_controls",
+    ),
+    SettingsSectionSpec(
         key="game",
         icon_name="fa5s.gamepad",
         nav_label=("Игра", "Game"),
@@ -146,7 +154,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Manage client and component updates.",
         ),
         min_mode="advanced",
-        builder_ref=_build_updates_section,
+        builder_ref="updates",
     ),
 )
 

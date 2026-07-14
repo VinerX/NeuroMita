@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from controllers.gui.async_runner import run_async
 from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -29,7 +30,13 @@ from utils import getTranslationVariant as _
 from localization.live import tr_set
 
 
-def setup_updates_settings_controls(self, parent):
+def setup_updates_settings_controls(
+    self,
+    parent,
+    *,
+    pending_restart_version: Callable[[], str],
+    set_pending_restart_version: Callable[[str | None], None],
+):
     create_section_header(parent, _("Обновления", "Updates"))
 
     class _Dispatch(QObject):
@@ -45,12 +52,17 @@ def setup_updates_settings_controls(self, parent):
     _dispatch = _Dispatch()
 
     def _persist_setting(key: str, value):
-        if hasattr(self, "_save_setting"):
-            self._save_setting(key, value)
-            return
         try:
-            self.settings.set(key, value)
-            self.settings.save_settings()
+            save_setting = getattr(self, "_save_setting", None)
+            if callable(save_setting):
+                save_setting(key, value)
+                return
+
+            settings = getattr(self, "settings", None)
+            setter = getattr(settings, "set", None)
+            if not callable(setter):
+                raise RuntimeError("Settings write port is unavailable")
+            setter(key, value)
         except Exception:
             logger.error(f"[updates_ui] Failed to persist setting {key!r}", exc_info=True)
 
@@ -72,13 +84,13 @@ def setup_updates_settings_controls(self, parent):
         return "?"
 
     def _pending_python_restart_version() -> str:
-        return str(getattr(self, "_pending_python_restart_version", "") or "").strip()
+        return str(pending_restart_version() or "").strip()
 
     def _has_pending_python_restart() -> bool:
         return bool(_pending_python_restart_version())
 
     def _mark_python_restart_required(version: str | None) -> None:
-        self._pending_python_restart_version = str(version or "").strip() or None
+        set_pending_restart_version(version)
         sidebar = getattr(self, "shell_sidebar", None)
         if sidebar is not None and hasattr(sidebar, "refresh_version_label"):
             try:
@@ -326,7 +338,7 @@ def setup_updates_settings_controls(self, parent):
             pending_python_version = str(py_info.get("latest_version") or "").strip()
             if bool(py_info.get("available")):
                 _set_status(_("Устанавливаю Python-обновление...", "Installing Python update..."))
-                py_applied = bool(check_for_updates(
+                python_result = check_for_updates(
                     base_dir=base_dir,
                     logger=ui_log,
                     channel=channel,
@@ -336,11 +348,14 @@ def setup_updates_settings_controls(self, parent):
                     restart_on_success=False,
                     update_mode=(self.settings.get("UPDATE_MODE", "diff") or "diff"),
                     preserve_prompts=bool(self.settings.get("UPDATE_PRESERVE_PROMPTS", True)),
-                ))
+                )
+                if not python_result.ok:
+                    raise RuntimeError(python_result.error or "Python update failed")
+                py_applied = bool(python_result)
 
             if bool(unity_info.get("available")):
                 _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))
-                check_for_unity_updates(
+                unity_result = check_for_unity_updates(
                     base_dir=base_dir,
                     logger=ui_log,
                     unity_dir=unity_dir,
@@ -349,6 +364,8 @@ def setup_updates_settings_controls(self, parent):
                     on_progress=_on_progress,
                     auto_update=True,
                 )
+                if not unity_result.ok:
+                    raise RuntimeError(unity_result.error or "Unity update failed")
 
             _refresh_version_labels()
 

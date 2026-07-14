@@ -45,46 +45,6 @@ def _ensure_checkpoints_dir() -> str:
 checkpoints_dir = _ensure_checkpoints_dir()
 
 
-def _assert_managed_worker_runtime() -> None:
-    if os.environ.get("NEUROMITA_AI_WORKER") != "1":
-        return
-    declared = [
-        os.path.normcase(os.path.abspath(item))
-        for item in os.environ.get("NEUROMITA_RUNTIME_PYTHON_PATHS", "").split(os.pathsep)
-        if item
-    ]
-    if not declared:
-        raise RuntimeError("AI worker started without a managed runtime environment")
-    root = os.path.normcase(os.path.abspath(os.environ.get("NEUROMITA_RUNTIME_ROOT", "")))
-    if root and any(path == root for path in declared):
-        raise RuntimeError("AI worker runtime illegally contains the shared Lib root")
-
-
-def _ensure_torch_and_transformers() -> None:
-    _assert_managed_worker_runtime()
-    try:
-        import torch
-    except Exception as exc:
-        raise RuntimeError(
-            "PyTorch is unavailable in the active RAG environment. "
-            "Reinstall the RAG component through AI Hub."
-        ) from exc
-
-    torch_cuda_ver = getattr(torch.version, "cuda", None)
-    torch_file = getattr(torch, "__file__", "?")
-    logger.info(
-        f"torch loaded: version={torch.__version__}, cuda_version={torch_cuda_ver}, "
-        f"cuda_available={torch.cuda.is_available()}, path={torch_file}"
-    )
-    try:
-        from transformers import AutoModel, AutoTokenizer  # noqa: F401
-    except Exception as exc:
-        raise RuntimeError(
-            "transformers is unavailable in the active RAG environment. "
-            "Reinstall the RAG component through AI Hub."
-        ) from exc
-
-
 class EmbeddingModelHandler:
     """Управляет загрузкой модели Snowflake и получением эмбеддингов."""
 
@@ -163,7 +123,6 @@ class EmbeddingModelHandler:
     })
 
     def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
-        _ensure_torch_and_transformers()
         self.model_name = model_name
         self.query_prefix = query_prefix if query_prefix else QUERY_PREFIX
         self.device = self._get_device()

@@ -31,24 +31,23 @@ from utils import getTranslationVariant as _
 from localization.live import tr_set
 
 
-def build_embed_provider_inner_section(gui) -> InnerCollapsibleSection:
+def build_embed_provider_inner_section(gui, view_model) -> InnerCollapsibleSection:
     section = InnerCollapsibleSection(
         _("Провайдер эмбеддингов", "Embedding Provider"), gui
     )
-    ctrl = _EmbedProviderWidget(gui)
+    ctrl = _EmbedProviderWidget(gui, view_model)
     section.add_widget(ctrl)
     return section
 
 
-def build_embed_provider_widget(gui) -> QWidget:
-    return _EmbedProviderWidget(gui)
+def build_embed_provider_widget(gui, view_model) -> QWidget:
+    return _EmbedProviderWidget(gui, view_model)
 
 
 class _EmbedProviderWidget(QWidget):
-    def __init__(self, gui):
+    def __init__(self, gui, view_model):
         super().__init__()
         self._gui = gui
-        self._presentation = gui.presentation
         self._current_preset_id: Optional[Any] = None
         self._is_loading = False
         self._key_url: str = ""
@@ -57,10 +56,8 @@ class _EmbedProviderWidget(QWidget):
         self._config_revision = -1
 
         self._setup_ui()
-        self._view_model = self._presentation.view_models.embed_provider(
-            self._gui,
-            parent=self,
-        )
+        self._view_model = view_model
+        self._view_model.setParent(self)
         self._view_model.state_changed.connect(self.render)
         self._view_model.effect_emitted.connect(self.handle_effect)
         self.destroyed.connect(lambda _obj=None: self._view_model.close())

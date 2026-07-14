@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -197,7 +200,102 @@ def test_environment_commit_is_atomic_and_strips_only_core_owned_packages(tmp_pa
     assert manager.active(transaction.logical_id) == record
     assert record.site_packages.is_dir()
     assert not transaction.staging_root.exists()
-    assert manager.runtime_paths(record)[0] == str(record.site_packages)
+    assert manager.runtime_paths(record) == (
+        str(transaction.core_layers[0].site_packages),
+        str(record.site_packages),
+    )
+
+
+def test_environment_commit_rejects_backend_distributions_inside_overlay(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "broken"},
+        requested_specs=("silero-vad",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "CPU"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+    _write_dist(transaction.site_packages, "torch", "2.7.1")
+
+    with pytest.raises(RuntimeError, match="backend-owned distributions: torch"):
+        transaction.commit()
+
+
+def test_shared_core_precedes_overlays_in_runtime_and_validation_paths(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "google"},
+        requested_specs=("silero-vad",),
+        required_backend=BackendKind.CPU,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+
+    layer = transaction.core_layers[0]
+    assert transaction.validation_paths == (
+        str(layer.site_packages),
+        str(transaction.site_packages),
+    )
+
+    record = transaction.commit()
+    composition = manager.runtime_composition(
+        selection={"asr": record.logical_id},
+    )
+    assert composition.paths == (
+        str(layer.site_packages),
+        str(record.site_packages),
+    )
+
+
+def test_overlay_packages_do_not_override_explicit_backend_contract(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cuda_spec = manager.core_layer_specs(
+        BackendKind.CUDA,
+        {"gpu_vendor": "NVIDIA"},
+    )[0]
+    cuda_layer = manager.ensure_core_layer(
+        cuda_spec,
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    assert cuda_layer is not None
+    manager.promote_backend_profile((cuda_layer.layer_id,))
+
+    transaction = manager.begin(
+        meta={"category": "asr", "item_id": "cuda-with-onnxruntime"},
+        requested_specs=("silero-vad", "onnxruntime"),
+        required_backend=BackendKind.CUDA,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "silero-vad", "6.0.0")
+    _write_dist(transaction.site_packages, "onnxruntime", "1.22.0")
+    record = transaction.commit()
+
+    composition = manager.runtime_composition(
+        selection={"asr": record.logical_id},
+    )
+    assert record.packages["onnxruntime"] == "1.22.0"
+    assert "onnxruntime" in record.probe_modules
+    assert composition.core_layer_ids == (cuda_layer.layer_id,)
+    assert composition.paths == (
+        str(cuda_layer.site_packages),
+        str(record.site_packages),
+    )
 
 
 def test_runtime_composition_bootstrap_probes_only_backend_imports(
@@ -703,6 +801,75 @@ def test_rag_snapshot_download_uses_isolated_environment(
     assert installer.active is None
     assert str(overlay) not in sys.path
 
+
+def test_rag_snapshot_download_splits_oversized_process_timeout(monkeypatch) -> None:
+    from managers.rag import install_spec
+
+    process = MagicMock()
+    process.returncode = 0
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("snapshot_download", install_spec._SUBPROCESS_WAIT_SLICE_SEC),
+        ("download complete\n", None),
+    ]
+    monkeypatch.setattr(install_spec.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    action = install_spec._snapshot_download_action(
+        "owner/model",
+        description="download",
+        progress=50,
+    )
+
+    assert action.fn(ctx={"timeout_sec": 7_200_000.0})
+    assert process.communicate.call_args_list[0].kwargs["timeout"] == install_spec._SUBPROCESS_WAIT_SLICE_SEC
+
+
+def test_rag_snapshot_download_cleans_active_process_after_overall_timeout(monkeypatch) -> None:
+    from managers.rag import install_spec
+
+    process = MagicMock()
+    process.returncode = None
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired("snapshot_download", 1.0),
+        ("partial output\n", None),
+    ]
+
+    class _Installer:
+        script_path = sys.executable
+
+        def __init__(self) -> None:
+            self.active = None
+
+        def _set_active_process(self, active, _killer) -> None:
+            self.active = active
+
+        def _clear_active_process(self, active) -> None:
+            if self.active is active:
+                self.active = None
+
+        @staticmethod
+        def _terminate_process(active, _reason="") -> None:
+            active.kill()
+
+    installer = _Installer()
+    monkeypatch.setattr(
+        install_spec.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monotonic_values = iter((100.0, 100.5, 101.0))
+    monkeypatch.setattr(install_spec.time, "monotonic", lambda: next(monotonic_values))
+
+    action = install_spec._snapshot_download_action(
+        "owner/model",
+        description="download",
+        progress=50,
+    )
+
+    assert not action.fn(pip_installer=installer, ctx={"timeout_sec": 1.0})
+    assert installer.active is None
+    process.kill.assert_called_once()
+    assert process.communicate.call_args_list[1].kwargs == {}
+
 def test_runtime_bootstrap_reserves_lib_core_for_main_process(
     tmp_path: Path,
     monkeypatch,
@@ -1140,8 +1307,8 @@ def test_component_context_uses_compatible_profile_after_original_layer_cleanup(
     assert not cpu_layer.root.exists()
     context = manager.component_context(category="rag", item_id="embeddings")
     assert context["python_paths"] == [
-        str(record.site_packages),
         str(cuda_layer.site_packages),
+        str(record.site_packages),
     ]
 
 
@@ -1259,6 +1426,84 @@ def test_core_cleanup_keeps_pending_backend_candidate_until_activation(
 
     assert cpu.root.is_dir()
     assert cuda.root.is_dir()
+
+
+def test_backend_candidates_keep_torch_cuda_and_onnx_side_by_side(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    created: list[_FakeInstaller] = []
+    cuda = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="torch-cu128",
+            packages=("torch==2.7.1+cu128",),
+            capabilities=("torch.cpu", "torch.cuda"),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+    onnx = manager.ensure_core_layer(
+        CoreLayerSpec(
+            group="onnx-cpu",
+            packages=("onnxruntime==1.22.0",),
+            capabilities=("onnx.cpu",),
+        ),
+        installer_factory=_factory(created),
+        log=lambda _message: None,
+    )
+
+    assert cuda is not None and onnx is not None
+    manager.register_backend_candidates((cuda.layer_id, onnx.layer_id))
+    manager.cleanup_unreferenced_core_layers()
+
+    candidates = set(
+        manager.registry_snapshot()["backend_candidates"]["core_layer_ids"]
+    )
+    assert candidates == {cuda.layer_id, onnx.layer_id}
+    assert cuda.root.is_dir()
+    assert onnx.root.is_dir()
+
+
+def test_onnx_runtime_pins_numpy_and_keeps_torch_first_in_shared_paths(
+    tmp_path: Path,
+) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+    specs = manager.core_layer_specs(
+        BackendKind.ONNX,
+        {"gpu_vendor": "NVIDIA"},
+    )
+
+    assert len(specs) == 2
+    assert specs[0].group == "torch-cu128"
+    assert specs[1].group == "onnx-dml"
+    assert "onnx.dml" in specs[1].capabilities
+    assert any(package.startswith("onnxruntime-directml==") for package in specs[1].packages)
+    assert "numpy==1.26.0" in specs[1].packages
+
+    created: list[_FakeInstaller] = []
+    transaction = manager.begin(
+        meta={"category": "tts", "item_id": "edge-onnx"},
+        requested_specs=("tts-with-rvc-onnx",),
+        required_backend=BackendKind.ONNX,
+        backend_context={"gpu_vendor": "NVIDIA"},
+    )
+    assert transaction.ensure_core_layers(
+        _factory(created),
+        log=lambda _message: None,
+    )
+    _write_dist(transaction.site_packages, "tts-with-rvc-onnx", "1.0.0")
+    record = transaction.commit()
+    composition = manager.runtime_composition(
+        selection={"tts": record.logical_id},
+    )
+
+    torch, onnx = transaction.core_layers
+    assert onnx.packages["numpy"] == "1.26.0"
+    assert onnx.owned_packages["numpy"] == "1.26.0"
+    assert composition.paths[:2] == (
+        str(torch.site_packages),
+        str(onnx.site_packages),
+    )
 
 
 def test_materialized_backend_layer_is_registered_before_gc(tmp_path: Path) -> None:

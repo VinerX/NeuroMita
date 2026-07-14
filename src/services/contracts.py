@@ -55,8 +55,44 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+class ASRSettingsService(ABC):
+    """Single owner of the selected ASR engine and per-engine settings."""
+
+    @property
+    @abstractmethod
+    def revision(self) -> int: ...
+
+    @abstractmethod
+    def snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def selected_engine(self) -> str: ...
+
+    @abstractmethod
+    def model_settings(self, engine_id: str) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def set_selected_engine(self, engine_id: str) -> None: ...
+
+    @abstractmethod
+    def set_model_settings(self, engine_id: str, values: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def set_model_option(self, engine_id: str, key: str, value: Any) -> None: ...
+
+    @abstractmethod
+    def subscribe(self, callback: Callable[[Any], None], *, replay: bool = False) -> Any: ...
+
+
 class InstallableCatalogService(ABC):
-    """Lightweight catalog data available before the work backend is ready."""
+    """Canonical catalog, lifecycle status and readiness of AI components.
+
+    UI and runtime consumers must not inspect packages, files or backends on
+    their own.  They read the same component snapshot through this contract.
+    """
+
+    def close(self) -> None:
+        """Release asynchronous probes and reject late lifecycle results."""
 
     @abstractmethod
     def list_rows(
@@ -68,6 +104,112 @@ class InstallableCatalogService(ABC):
         status_category: str | None = None,
         ctx: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]: ...
+
+    def get_row(
+        self,
+        component_id: str,
+        *,
+        include_status: bool = True,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        normalized = str(component_id or "").strip()
+        category = normalized.split(":", 1)[0]
+        for row in self.list_rows(
+            include_status=include_status,
+            refresh=refresh,
+            category=category,
+            status_category=category,
+            ctx=ctx,
+        ):
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            if isinstance(metadata, dict) and metadata.get("id") == normalized:
+                return row
+        raise KeyError(normalized)
+
+    def get_status(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return dict(
+            self.get_row(
+                component_id,
+                include_status=True,
+                refresh=refresh,
+                ctx=ctx,
+            ).get("status")
+            or {}
+        )
+
+    def is_ready(
+        self,
+        component_id: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> bool:
+        return bool(self.get_status(component_id, refresh=refresh, ctx=ctx).get("ready"))
+
+    def ready_item_ids(
+        self,
+        category: str,
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        result: list[str] = []
+        for row in self.list_rows(
+            include_status=True,
+            refresh=refresh,
+            category=category,
+            status_category=category,
+            ctx=ctx,
+        ):
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if isinstance(metadata, dict) and isinstance(status, dict) and status.get("ready"):
+                result.append(str(metadata.get("item_id") or ""))
+        return tuple(item for item in result if item)
+
+    def list_rows_async(
+        self,
+        callback: Callable[[List[Dict[str, Any]], BaseException | None], None],
+        *,
+        include_status: bool = False,
+        refresh: bool = False,
+        category: str | None = None,
+        status_category: str | None = None,
+        ctx: Dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            callback(
+                self.list_rows(
+                    include_status=include_status,
+                    refresh=refresh,
+                    category=category,
+                    status_category=status_category,
+                    ctx=ctx,
+                ),
+                None,
+            )
+        except BaseException as exc:
+            callback([], exc)
+
+    def get_status_async(
+        self,
+        component_id: str,
+        callback: Callable[[Dict[str, Any], BaseException | None], None],
+        *,
+        refresh: bool = False,
+        ctx: Dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            callback(self.get_status(component_id, refresh=refresh, ctx=ctx), None)
+        except BaseException as exc:
+            callback({}, exc)
 
     @abstractmethod
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any: ...
@@ -115,6 +257,16 @@ class InstallQueueService(ABC):
         *,
         with_ui: bool,
     ) -> InstallAdmission: ...
+
+
+class InstallQueueAdministrationService(ABC):
+    """Maintenance boundary for pausing all writes into AI environments."""
+
+    @abstractmethod
+    def quiesce(self, *, timeout: float = 30.0) -> bool: ...
+
+    @abstractmethod
+    def resume(self) -> None: ...
 
 
 class InstallableOperationsService(ABC):
@@ -214,6 +366,22 @@ class GameLinkService(ABC):
     def is_connected(self) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeCapabilities:
+    """Capabilities of the currently available game/runtime channel."""
+
+    connected: bool | None = None
+    remote_only: bool | None = None
+    structured_segment_exclude_fields: tuple[str, ...] = ()
+
+
+class RuntimeCapabilitiesService(ABC):
+    """Single source of truth for runtime-dependent prompt capabilities."""
+
+    @abstractmethod
+    def snapshot(self) -> RuntimeCapabilities: ...
+
+
 # ---------------------------------------------------------------------------
 # История
 # ---------------------------------------------------------------------------
@@ -248,6 +416,7 @@ class PromptBuildRequest:
     policy: RequestPolicy
     user_input: str = ""
     system_input: str = ""
+    rag_context: str = ""
     hidden_user_context: str = ""
     image_data: List[Any] = field(default_factory=list)
     memory_limit: int = 40
@@ -566,6 +735,43 @@ class AIEngineService(ABC):
     @abstractmethod
     def get_engine(self) -> Optional[Any]:
         """Оркестратор движка (умеет .call(service, method, payload)) или None."""
+
+
+class AIEngineAdministrationService(ABC):
+    """Administrative lifecycle boundary; inference clients never depend on it."""
+
+    @abstractmethod
+    def topology_snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def switch_topology(self, mode: str, *, timeout: float = 30.0) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def suspend_for_maintenance(self, *, timeout: float = 15.0) -> bool: ...
+
+    @abstractmethod
+    def resume_after_maintenance(self) -> bool: ...
+
+
+class HardwareInventoryService(ABC):
+    """Canonical, cached hardware inventory used by UI and backend selection."""
+
+    @abstractmethod
+    def snapshot(self, *, refresh: bool = False) -> Dict[str, Any]: ...
+
+
+class AIEnvironmentMaintenanceService(ABC):
+    """Owns the state machine for resetting all managed AI environments."""
+
+    @abstractmethod
+    def snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def reset_all(
+        self,
+        *,
+        progress: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> Dict[str, Any]: ...
 
 
 class EmbeddingPresetService(ABC):

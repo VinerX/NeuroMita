@@ -1,7 +1,6 @@
 [<Scripts/init.script>]
 [<Structural/VariableEffects.script>]
 [<Main/main.script>]
-[<Common/CommonContext.script>]
 [<Context/examples.script>]
 [<Quests/quest.script>]
 [<Main/main.txt>]

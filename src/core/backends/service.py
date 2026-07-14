@@ -182,6 +182,16 @@ class BackendService:
         runtime_pkg = ONNX_DIRECTML_SPEC if provider == "dml" else ONNX_SPEC
         return TORCH_PACKAGES + (runtime_pkg, BACKEND_NUMPY_SPEC)
 
+    def preferred_onnx_provider(self, ctx: dict[str, Any] | None = None) -> str:
+        context = dict(ctx or {})
+        platform_name = str(context.get("platform") or "").strip().lower()
+        is_windows = (
+            platform_name.startswith("win")
+            if platform_name
+            else os.name == "nt"
+        )
+        return "dml" if is_windows else "cpu"
+
     def preferred_torch_kind(self, ctx: dict[str, Any] | None = None) -> BackendKind:
         return BackendKind.CUDA if self._should_use_cuda(ctx) else BackendKind.CPU
 
@@ -332,7 +342,13 @@ class BackendService:
         # _onnx_installed_variant).
         marker_kind = status.requirement.kind
         if marker_kind == BackendKind.ONNX:
-            marker_provider = self._preferred_onnx_provider(self._build_ctx(ctx))
+            installed_variant = self._onnx_variant(status.target_dir)
+            marker_provider = {
+                "onnx_dml": "dml",
+                "onnx_cpu": "cpu",
+            }.get(installed_variant)
+            if marker_provider is None:
+                return self.get_status(requirement, ctx=ctx)
         else:
             marker_provider = marker_kind.value
         self._write_backend_marker(status.target_dir, marker_kind, marker_provider)
@@ -493,7 +509,7 @@ class BackendService:
         target_dirs: Sequence[str],
         target_dir: Optional[str],
     ) -> BackendStatus:
-        preferred_provider = self._preferred_onnx_provider(ctx)
+        preferred_provider = self.preferred_onnx_provider(ctx)
         installed_variant = self._onnx_installed_variant(target_dirs)
         provider = "dml" if installed_variant == "onnx_dml" else ("cpu" if installed_variant == "onnx_cpu" else "missing")
         runtime_ok = installed_variant != "missing" and (preferred_provider != "dml" or installed_variant == "onnx_dml")
@@ -658,18 +674,6 @@ class BackendService:
         if variant == "onnx_cpu":
             return ("CPUExecutionProvider",)
         return ()
-
-    def _preferred_onnx_provider(self, ctx: dict[str, Any]) -> str:
-        device = str(ctx.get("device") or "").strip().lower()
-        if device == "dml":
-            return "dml"
-        if device == "cpu":
-            return "cpu"
-
-        gpu_vendor = str(ctx.get("gpu_vendor") or "CPU").upper()
-        if gpu_vendor != "NVIDIA":
-            return "dml"
-        return "cpu"
 
     def _should_use_cuda(self, ctx: dict[str, Any] | None) -> bool:
         ctx_data = self._build_ctx(ctx)

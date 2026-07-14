@@ -91,15 +91,24 @@ def _run_gui(runtime, startup_mode: str) -> int:
     with startup_trace.phase("gui.qapplication_create"):
         app = QApplication(sys.argv)
     logger.info("QApplication создан")
+    from controllers.gui.qt_dispatch import install_qt_dispatcher
+    from controllers.gui.qt_logging import install_qt_message_logging
+
+    install_qt_message_logging(logger)
+
+    install_qt_dispatcher(app)
 
     from ui.wheel_guard import install_combobox_wheel_guard
 
     install_combobox_wheel_guard(app)
 
     try:
-        from PyQt6.QtGui import QIcon
+        from ui.app_icon import application_icon, set_app_user_model_id
 
-        app.setWindowIcon(QIcon("Icon.ico"))
+        # Закрепляем идентичность в панели задач ДО создания окон, иначе после
+        # перезапуска detached-процессом иконка наследуется от python.exe.
+        set_app_user_model_id()
+        app.setWindowIcon(application_icon())
     except Exception:
         pass
 
@@ -110,11 +119,13 @@ def _run_gui(runtime, startup_mode: str) -> int:
         from services.character_registry import SettingsOnlyCharacterRegistry
         from services.contracts import (
             AppVarsService,
+            ASRSettingsService,
             CharacterRegistry,
             GameLinkService,
             LoopService,
             SettingsService,
             InstallableCatalogService,
+            HardwareInventoryService,
         )
         from services.game_link_service import DisconnectedGameLinkService
         from services.loop_service import NoLoopService
@@ -124,6 +135,17 @@ def _run_gui(runtime, startup_mode: str) -> int:
             str(settings_path("settings.json", create_parent=True))
         )
         shell_settings_service = services().get(SettingsService)
+        if not services().is_registered(ASRSettingsService):
+            from services.asr_settings_service import ensure_asr_settings_service
+
+            ensure_asr_settings_service()
+        if not services().is_registered(HardwareInventoryService):
+            from services.hardware_inventory_service import WindowsHardwareInventoryService
+
+            services().register(
+                HardwareInventoryService,
+                WindowsHardwareInventoryService(),
+            )
         if not services().is_registered(InstallableCatalogService):
             from services.installable_catalog_service import DefaultInstallableCatalogService
 
@@ -198,10 +220,20 @@ def _run_gui(runtime, startup_mode: str) -> int:
     app.aboutToQuit.connect(backend_loader.request_shutdown)
     app.aboutToQuit.connect(gui_root.close)
 
+    def close_shell_catalog() -> None:
+        try:
+            catalog = services().get_optional(InstallableCatalogService)
+            if catalog is not None:
+                catalog.close()
+        except Exception:
+            pass
+
+    app.aboutToQuit.connect(close_shell_catalog)
+
     try:
         from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
 
-        install_dark_titlebar_sync(main_window)
+        install_dark_titlebar_sync(app)
         apply_dark_titlebar(main_window)
     except Exception:
         pass
@@ -215,6 +247,12 @@ def _run_gui(runtime, startup_mode: str) -> int:
     backend_loader.request_shutdown()
     if not backend_loader.wait(timeout=5.0):
         logger.warning("GUI backend startup thread did not stop within 5 seconds")
+    if result < 0:
+        logger.critical(
+            "Qt event loop terminated with an invalid negative exit code: %d",
+            result,
+        )
+        return 1
     return result
 
 

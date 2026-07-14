@@ -393,7 +393,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 stale
                 or self._closed
                 or entry.stop_requested
-                or not self._is_effectively_enabled(spec)
+                or self._settings_require_stop(spec)
             )
             stop_for_shutdown = self._closed
 
@@ -429,7 +429,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 entry.generation != generation
                 or self._closed
                 or entry.stop_requested
-                or not self._is_effectively_enabled(spec)
+                or self._settings_require_stop(spec)
             ):
                 should_stop = True
             else:
@@ -520,7 +520,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                         to_start.add(name)
                     continue
 
-                if not entry.spec.stop_when_disabled:
+                if not self._settings_require_stop(entry.spec):
                     continue
                 if entry.state is FeatureState.LOADING:
                     entry.stop_requested = True
@@ -658,6 +658,32 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             if entry is None or not self._is_effectively_enabled(entry.spec, visited):
                 return False
         return True
+
+    def _settings_require_stop(
+        self,
+        spec: FeatureSpec,
+        _visited: set[str] | None = None,
+    ) -> bool:
+        """Whether settings require an already requested instance to stop.
+
+        ``enabled`` controls automatic startup. ``stop_when_disabled=False``
+        additionally allows an explicit ``ensure*`` request to keep a feature
+        alive while its automatic-start predicate is false. Dependencies still
+        have to satisfy their own retention policy.
+        """
+        visited = set() if _visited is None else set(_visited)
+        if spec.name in visited:
+            return True
+        visited.add(spec.name)
+
+        if spec.stop_when_disabled and not self._is_enabled(spec):
+            return True
+
+        for dependency in spec.depends_on:
+            entry = self._entries.get(str(dependency))
+            if entry is None or self._settings_require_stop(entry.spec, visited):
+                return True
+        return False
 
     def _is_enabled(self, spec: FeatureSpec) -> bool:
         try:

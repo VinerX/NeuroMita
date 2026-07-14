@@ -141,6 +141,7 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
+    env.pop("QT_USE_NATIVE_WINDOWS", None)
     env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONSAFEPATH"] = "1"
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
@@ -151,6 +152,22 @@ def _base_env() -> dict[str, str]:
 def run(cmd: list[Any], *, env: dict[str, str] | None = None) -> int:
     log("\n>>> " + " ".join(str(c) for c in cmd))
     return subprocess.run(cmd, cwd=str(ROOT), env=env or _base_env()).returncode
+
+
+def _normalize_child_exit_code(code: int, *, windows: bool | None = None) -> int:
+    value = int(code)
+    is_windows = os.name == "nt" if windows is None else bool(windows)
+    if is_windows and value > 0x7FFFFFFF:
+        signed = value - 0x100000000
+        log(
+            "NeuroMita завершилась с некорректным отрицательным кодом "
+            f"{signed} (0x{value:08X}); launcher вернёт код 1."
+        )
+        return 1
+    if value < 0:
+        log(f"NeuroMita завершилась по сигналу или с кодом {value}; launcher вернёт код 1.")
+        return 1
+    return value
 
 
 def run_quiet(
@@ -713,7 +730,9 @@ def main() -> None:
         # -S prevents packages accidentally left in libs/python/Lib/site-packages
         # from leaking into the application. runtime_bootstrap explicitly loads
         # Lib/core (including its .pth files) before importing app dependencies.
-        code = run([str(PYTHON), "-S", str(PYZ)], env=env)
+        code = _normalize_child_exit_code(
+            run([str(PYTHON), "-S", str(PYZ)], env=env)
+        )
         if code == 42:
             log("\nОбновление применено, перезапускаю...")
             if not ensure_core_ready():

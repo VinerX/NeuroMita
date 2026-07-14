@@ -13,7 +13,9 @@ from handlers.llm_providers.base import (
     BaseProvider,
     LLMRequest,
     LLMResponse,
+    check_request_cancelled,
     normalize_usage_payload,
+    register_cancellable_resource,
     resolve_requests_timeout,
 )
 from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
@@ -205,17 +207,31 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
-                payload["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
+                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                payload["response_format"] = model_cls.openai_response_format(
+                    exclude_fields=excl or None,
+                    exclude_segment_fields=segment_excl or None,
+                )
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
 
     def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
+        check_request_cancelled(req)
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
         timeout = resolve_requests_timeout(req)
-        return requests.post(request_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
+        response = requests.post(
+            request_url,
+            headers=headers,
+            json=payload,
+            stream=req.stream,
+            timeout=timeout,
+        )
+        register_cancellable_resource(req, response)
+        check_request_cancelled(req)
+        return response
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
@@ -258,6 +274,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         f"Error: {err_msg[:200]}"
                     )
                     payload["response_format"] = {"type": "json_object"}
+                    resp.close()
                     resp = self._request(request_url, req, payload)
 
         if resp.status_code != 200:
@@ -274,10 +291,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
             )
             logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
             logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(err, limit=800)}")
+            resp.close()
             raise provider_error
 
         if req.stream:
-            return self._handle_stream(resp, request_url, req.stream_cb)
+            return self._handle_stream(resp, request_url, req, req.stream_cb)
 
         try:
             data = resp.json()
@@ -289,7 +307,9 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 url=request_url,
             )
             logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            resp.close()
             raise provider_error from e
+        resp.close()
 
         if isinstance(data, dict) and data.get("error"):
             status_code = None
@@ -343,6 +363,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
         self,
         resp: requests.Response,
         api_url: str,
+        req: LLMRequest,
         stream_callback: Optional[callable] = None,
     ) -> LLMResponse:
         parts: List[str] = []
@@ -353,6 +374,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
         last_chunk_error = ""
         try:
             for line_bytes in resp.iter_lines(decode_unicode=False):
+                check_request_cancelled(req)
                 if not line_bytes:
                     continue
                 try:
@@ -392,6 +414,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
             provider_error = coerce_provider_error(self.name, e, url=api_url)
             logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
             raise provider_error from e
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                logger.debug(f"[{self.name}] Failed to close HTTP stream", exc_info=True)
 
         error_message = None
         if not parts:

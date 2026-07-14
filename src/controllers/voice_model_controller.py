@@ -11,12 +11,16 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
-from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.task_supervisor import task_supervisor
 from core.services import services
-from services.contracts import LocalVoiceService, VoiceModelService
+from services.contracts import (
+    InstallableCatalogService,
+    InstallableOperationsService,
+    LocalVoiceService,
+    VoiceModelService,
+)
 
 try:
     from utils.gpu_utils import (
@@ -73,6 +77,7 @@ class VoiceModelController(VoiceModelService):
 
         self.docs_manager = DocsManager()
         self.event_bus = get_event_bus()
+        self._installable_catalog = services().get_optional(InstallableCatalogService)
 
         self._last_voiceover_refresh_reload_ts: float = 0.0
 
@@ -290,7 +295,25 @@ class VoiceModelController(VoiceModelService):
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
         status["cuda_devices"] = list(self.detected_cuda_devices or [])
         status["gpu_name"] = self.gpu_name
-        status["backend_statuses"] = get_backend_service().status_snapshot(ctx=self._ctx())
+        catalog = services().get_optional(InstallableCatalogService)
+        backend_statuses: dict[str, dict[str, Any]] = {}
+        if catalog is not None:
+            try:
+                for row in catalog.list_rows(
+                    include_status=True,
+                    category="backend",
+                    ctx=self._ctx(),
+                ):
+                    metadata = row.get("metadata") if isinstance(row, dict) else {}
+                    canonical_status = row.get("status") if isinstance(row, dict) else {}
+                    backend_id = str((metadata or {}).get("item_id") or "")
+                    if backend_id:
+                        backend_statuses[backend_id] = dict(
+                            (canonical_status or {}).get("details") or {}
+                        )
+            except Exception as exc:
+                logger.warning(f"Failed to read canonical backend statuses: {exc}")
+        status["backend_statuses"] = backend_statuses
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -350,11 +373,31 @@ class VoiceModelController(VoiceModelService):
     def get_default_model_structure(self):
         models: list[dict[str, Any]] = []
         seen: set[str] = set()
+        catalog = services().get_optional(InstallableCatalogService)
+        metadata_by_item: dict[str, dict[str, Any]] = {}
+        catalog_metadata: list[dict[str, Any]] = []
+        if catalog is not None:
+            try:
+                catalog_metadata = [
+                    row["metadata"]
+                    for row in catalog.list_rows(category="tts")
+                    if isinstance(row, dict) and isinstance(row.get("metadata"), dict)
+                ]
+                metadata_by_item = {
+                    str(metadata.get("item_id") or ""): metadata
+                    for metadata in catalog_metadata
+                }
+            except Exception:
+                catalog_metadata = []
+                metadata_by_item = {}
         try:
-            from core.installables import ComponentCategory
-            from installables import get_installable_registry
-
-            components = get_installable_registry().by_category(ComponentCategory.TTS)
+            if catalog is None:
+                raise RuntimeError("Installable catalog service is unavailable")
+            components = [
+                catalog.require_component(str(metadata.get("id") or ""))
+                for metadata in catalog_metadata
+                if metadata.get("id")
+            ]
             for component in components:
                 get_configs = getattr(component, "get_model_configs", None)
                 if not callable(get_configs):
@@ -365,7 +408,15 @@ class VoiceModelController(VoiceModelService):
                     model_id = str(config.get("id") or "").strip()
                     if not model_id or model_id in seen:
                         continue
-                    models.append(copy.deepcopy(config))
+                    model = copy.deepcopy(config)
+                    canonical = metadata_by_item.get(model_id) or {}
+                    if canonical:
+                        model["name"] = str(canonical.get("title") or model.get("name") or model_id)
+                        model["description"] = str(canonical.get("description") or "")
+                        model["tags"] = list(canonical.get("tags") or ())
+                        model["languages"] = list(canonical.get("languages") or ())
+                        model["backend"] = str(canonical.get("backend") or "none")
+                    models.append(model)
                     seen.add(model_id)
         except Exception as exc:
             logger.warning(f"Failed to build local voice catalog from installables: {exc}")
@@ -506,53 +557,35 @@ class VoiceModelController(VoiceModelService):
         return result
 
     def _build_model_compatibility(self, model: dict, detected_vendor: str) -> dict[str, Any]:
-        vendor = self._normalize_gpu_vendor(detected_vendor)
-        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
-        supported = vendor in vendors if vendors else True
-
         model_id = str(model.get("id") or "").strip()
-        warning = ""
-
-        if model_id == "high":
-            if vendor in ("AMD", "INTEL"):
-                warning = _(
-                    "В этой сборке F5-TTS ускоряется только на NVIDIA. На текущем GPU модель будет работать через CPU, поэтому будет заметно медленнее.",
-                    "In this build F5-TTS is accelerated only on NVIDIA. On the current GPU it will run through the CPU fallback and be noticeably slower.",
-                )
-            elif vendor == "CPU":
-                warning = _(
-                    "F5-TTS будет работать только через CPU. Это совместимо, но заметно медленнее, чем на GPU.",
-                    "F5-TTS will run on CPU only. This is supported, but much slower than on GPU.",
-                )
-        elif model_id == "high+low":
-            if vendor in ("AMD", "INTEL"):
-                warning = _(
-                    "В этой сборке F5-TTS работает через CPU, а RVC — через ONNX/DirectML. Режим совместим, но медленнее, чем на NVIDIA.",
-                    "In this build F5-TTS runs on CPU while RVC uses ONNX/DirectML. This mode is supported, but slower than on NVIDIA.",
-                )
-            elif vendor == "CPU":
-                warning = _(
-                    "И F5-TTS, и RVC будут работать без GPU-ускорения. Режим совместим, но самый медленный.",
-                    "Both F5-TTS and RVC will run without GPU acceleration. This mode is supported, but it is the slowest option.",
-                )
-        elif model_id in {"edge_tts_rvc_onnx", "silero_rvc_onnx"} and vendor == "CPU":
-            warning = _(
-                "RVC будет работать через CPU fallback без DirectML-ускорения.",
-                "RVC will run through the CPU fallback without DirectML acceleration.",
+        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
+        try:
+            catalog = getattr(self, "_installable_catalog", None)
+            if catalog is None:
+                catalog = services().get(InstallableCatalogService)
+            row = catalog.get_row(
+                f"tts:{model_id}",
+                include_status=False,
+                ctx={"gpu_vendor": self._normalize_gpu_vendor(detected_vendor)},
             )
+            verdict = dict(row.get("compatibility") or {})
+        except Exception as exc:
+            logger.warning(f"Voice model compatibility is unavailable for '{model_id}': {exc}")
+            verdict = {
+                "supported": False,
+                "recommended": False,
+                "reason_code": "state_unavailable",
+                "warning": _(
+                    "Не удалось проверить совместимость модели. Обновите AI Hub и повторите попытку.",
+                    "Model compatibility could not be verified. Refresh AI Hub and try again.",
+                ),
+            }
 
-        return {
-            "vendors": vendors,
-            "supported": supported,
-            "warning": warning,
-        }
-
+        verdict["vendors"] = vendors
+        return verdict
     def _voice_installable_component(self, model_id: str):
-        from core.installables import ComponentCategory, make_component_id
-        from installables import get_installable_registry
-
-        component_id = make_component_id(ComponentCategory.TTS, str(model_id))
-        return get_installable_registry().require(component_id)
+        catalog = services().get(InstallableCatalogService)
+        return catalog.require_component(f"tts:{str(model_id or '').strip()}")
 
     def get_install_preflight(self, model_id: str) -> dict[str, Any]:
         mid = str(model_id or "").strip()
@@ -583,15 +616,15 @@ class VoiceModelController(VoiceModelService):
             }
 
         try:
-            component = self._voice_installable_component(mid)
-            install_plan = component.build_install_plan(self._ctx())
+            catalog = services().get(InstallableCatalogService)
+            preview = catalog.install_preview(f"tts:{mid}", ctx=self._ctx())
         except Exception as exc:
             logger.warning(f"Voice install preflight failed for '{mid}': {exc}")
             return {"blocked": False}
 
-        backend_kind = install_plan.required_backend
-        backend_status = get_backend_service().get_status(backend_kind, ctx=self._ctx())
-        if backend_status.ok or str(getattr(backend_kind, "value", "") or "") in ("", "none"):
+        backend_kind = str(preview.get("backend_kind") or "none")
+        backend_status = dict(preview.get("backend_status") or {})
+        if bool(preview.get("backend_ready")) or backend_kind in ("", "none"):
             return {"blocked": False}
 
         model_name = str(model.get("name") or mid)
@@ -601,7 +634,7 @@ class VoiceModelController(VoiceModelService):
             "Model installation was cancelled. You can install the required backend manually in AI Hub and retry.",
         )
 
-        if str(backend_kind.value) == "cuda" and vendor == "NVIDIA":
+        if backend_kind == "cuda" and vendor == "NVIDIA":
             message = _(
                 f"Для модели '{model_name}' нужен NVIDIA backend (PyTorch CUDA).\n\n"
                 f"Обнаружена видеокарта: {vendor_label}.\n\n"
@@ -614,7 +647,7 @@ class VoiceModelController(VoiceModelService):
                 "Установка модели отменена. Если хотите другой путь, можно отдельно поставить ONNX backend в AI Hub и потом вернуться к выбору модели.",
                 "Model installation was cancelled. If you want another path, you can install the ONNX backend manually in AI Hub and return to model setup later.",
             )
-        elif str(backend_kind.value) == "onnx":
+        elif backend_kind == "onnx":
             backend_label = "ONNX / DirectML" if vendor in ("AMD", "INTEL") else "ONNX"
             message = _(
                 f"Для модели '{model_name}' нужен backend {backend_label}.\n\n"
@@ -638,59 +671,19 @@ class VoiceModelController(VoiceModelService):
             "title": title,
             "message": message,
             "cancel_message": cancel_message,
-            "required_backend": str(getattr(backend_kind, "value", "") or ""),
-            "backend_status": backend_status.as_dict(),
+            "required_backend": backend_kind,
+            "backend_status": backend_status,
         }
 
     def refresh_installed_models(self):
-        ctx_base = self._ctx()
-        vendors = [
-            self.detected_gpu_vendor
-        ] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "INTEL", "CPU"]
-
         try:
-            from core.installables import ComponentCategory
-            from core.runtime_environments import runtime_environments
-            from installables import get_installable_registry
-
-            manager = runtime_environments()
-            migrate_environment_ids = getattr(manager, "migrate_legacy_environment_ids", None)
-            if callable(migrate_environment_ids):
-                migrate_environment_ids()
-            recover_overlays = getattr(manager, "recover_unregistered_overlays", None)
-            if callable(recover_overlays):
-                recover_overlays()
-            components = list(
-                get_installable_registry().by_category(ComponentCategory.TTS) or []
+            catalog = services().get(InstallableCatalogService)
+            installed = set(
+                catalog.ready_item_ids("tts", ctx=self._ctx())
             )
         except Exception as exc:
-            logger.error(f"Failed to load TTS installable registry: {exc}", exc_info=True)
-            components = []
-            manager = None
-
-        installed: set[str] = set()
-        for component in components:
-            model_id = str(getattr(component, "item_id", "") or "").strip()
-            if not model_id:
-                continue
-
-            for vendor in vendors:
-                component_ctx = dict(ctx_base)
-                component_ctx["gpu_vendor"] = vendor
-                if manager is not None:
-                    component_ctx = manager.component_context(
-                        category="tts",
-                        item_id=model_id,
-                        ctx=component_ctx,
-                    )
-                try:
-                    if component.status(component_ctx).installed:
-                        installed.add(model_id)
-                        break
-                except Exception as exc:
-                    logger.debug(
-                        f"Voice model status check failed for '{model_id}' ({vendor}): {exc}"
-                    )
+            logger.error(f"Failed to read canonical TTS readiness: {exc}", exc_info=True)
+            installed = set()
 
         with self._lock:
             self.installed_models = installed
@@ -698,12 +691,10 @@ class VoiceModelController(VoiceModelService):
     def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            component_id = make_component_id(ComponentCategory.TTS, mid)
-            component = get_installable_registry().require(component_id)
-            title = component.metadata().title
+            catalog = services().get(InstallableCatalogService)
+            component_id = f"tts:{mid}"
+            metadata = catalog.get_row(component_id, include_status=False)["metadata"]
+            title = str(metadata.get("title") or mid)
         except Exception as exc:
             logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
@@ -712,8 +703,10 @@ class VoiceModelController(VoiceModelService):
 
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 
-        self.event_bus.emit(
-            Events.Installable.INSTALL,
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            return False
+        admission = operations.install(
             {
                 "component_id": component_id,
                 "kind": "voice",
@@ -725,18 +718,16 @@ class VoiceModelController(VoiceModelService):
                 "with_ui": bool(with_ui),
                 "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-            },
+            }
         )
-        return True
+        return bool(admission.accepted)
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            component_id = make_component_id(ComponentCategory.TTS, mid)
-            get_installable_registry().require(component_id)
+            catalog = services().get(InstallableCatalogService)
+            component_id = f"tts:{mid}"
+            catalog.get_row(component_id, include_status=False)
         except Exception as exc:
             logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
@@ -745,8 +736,10 @@ class VoiceModelController(VoiceModelService):
 
         self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_STARTED, {"model_id": mid})
 
-        self.event_bus.emit(
-            Events.Installable.UNINSTALL,
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            return False
+        admission = operations.uninstall(
             {
                 "component_id": component_id,
                 "kind": "voice",
@@ -758,9 +751,9 @@ class VoiceModelController(VoiceModelService):
                 "with_ui": bool(with_ui),
                 "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
-            },
+            }
         )
-        return True
+        return bool(admission.accepted)
 
     def _schedule_install_state_refresh(
         self,
@@ -874,6 +867,8 @@ class VoiceModelController(VoiceModelService):
                     suffix_candidates = ["_amd", ""]
                 elif vendor_to_adapt_for == "INTEL":
                     suffix_candidates = ["_intel", "_amd", ""]
+                elif vendor_to_adapt_for == "CPU":
+                    suffix_candidates = ["_cpu", "_other", ""]
                 elif vendor_to_adapt_for == "OTHER":
                     suffix_candidates = ["_other", ""]
                 else:
@@ -897,10 +892,19 @@ class VoiceModelController(VoiceModelService):
                         base_other_values = options.get("values_other", ["cpu"])
                         base_non_cuda_provider = base_nvidia_values if base_nvidia_values else base_other_values
                         non_cuda_options = [v for v in base_non_cuda_provider if not str(v).startswith("cuda")]
-                        if cuda_devices:
+                        allows_cuda = any(
+                            str(value).startswith("cuda")
+                            for value in (
+                                list(base_nvidia_values)
+                                + list(options.get("values", []))
+                            )
+                        )
+                        if cuda_devices and allows_cuda:
                             final_values_list = list(cuda_devices) + non_cuda_options
                         else:
-                            final_values_list = [v for v in base_other_values if v in ["cpu", "mps"]] or ["cpu"]
+                            final_values_list = non_cuda_options or [
+                                v for v in base_other_values if v in ["cpu", "mps"]
+                            ] or ["cpu"]
                     else:
                         if platform.system() == "Darwin":
                             base_values = final_values_list or options.get("values_other", options.get("values", [])) or ["cpu"]

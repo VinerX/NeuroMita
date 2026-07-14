@@ -46,27 +46,6 @@ QLabel#LauncherHomeFootnote {
     color: {muted};
 }
 
-QProgressBar#LauncherHomeProgressBar {
-    background-color: rgba({settings_panel_rgb}, 0.78);
-    border: 1px solid rgba({accent_rgb}, 0.26);
-    border-radius: 5px;
-    text-align: center;
-}
-QProgressBar#LauncherHomeProgressBar::chunk {
-    background-color: qlineargradient(
-        x1: 0, y1: 0, x2: 1, y2: 0,
-        stop: 0 {accent_alt},
-        stop: 1 {slider_progress}
-    );
-    border-radius: 5px;
-}
-
-QLabel#LauncherHomeProgressLabel {
-    color: {text};
-    font-size: 9pt;
-    font-weight: 600;
-}
-
 QFrame#LauncherHomeUpdateChip,
 QFrame#LauncherHomeNewsPanel,
 QFrame#LauncherHomeStatusCard {
@@ -154,6 +133,22 @@ QPushButton#LauncherHomePrimaryButton:hover {
     );
 }
 
+QPushButton#LauncherHomePrimaryButton[mode="progress"]:disabled {
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 {accent},
+        stop: 1 {slider_progress}
+    );
+    color: #ffffff;
+    border: 1px solid rgba({accent_rgb_alt}, 0.42);
+}
+
+QPushButton#LauncherHomePrimaryButton[mode="unavailable"]:disabled {
+    background-color: rgba({settings_panel_rgb}, 0.90);
+    color: {muted};
+    border: 1px solid rgba({accent_rgb}, 0.18);
+}
+
 QPushButton#LauncherHomeMenuButton {
     min-width: 44px;
     background-color: rgba({sidebar_panel_rgb}, 0.96);
@@ -182,6 +177,16 @@ QPushButton#LauncherHomeMenuButton:hover {
     );
     border: 1px solid rgba({accent_rgb}, 0.34);
     border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+QPushButton#LauncherHomeMenuButton[mode="cancel"] {
+    background-color: rgba(185, 57, 91, 0.72);
+    border-color: rgba(255, 130, 160, 0.65);
+}
+
+QPushButton#LauncherHomeMenuButton[mode="locked"]:disabled {
+    background-color: rgba({sidebar_panel_rgb}, 0.84);
+    border-color: rgba({accent_rgb}, 0.10);
 }
 
 QPushButton#LauncherHomeVerifyButton:hover {
@@ -244,27 +249,6 @@ QLabel#LauncherHomeNewBadge {
     font-size: 7.5pt;
     font-weight: 800;
     letter-spacing: 0.4px;
-}
-
-QPushButton#LauncherHomeCancelButton {
-    background: transparent;
-    border: 1px solid rgba({accent_rgb}, 0.28);
-    border-radius: 8px;
-    color: {muted};
-    font-size: 8.5pt;
-    font-weight: 600;
-    padding: 2px 12px;
-    letter-spacing: 0px;
-}
-
-QPushButton#LauncherHomeCancelButton:hover {
-    border-color: rgba({accent_rgb}, 0.55);
-    color: {text};
-}
-
-QPushButton#LauncherHomeCancelButton:disabled {
-    color: rgba(255, 255, 255, 0.25);
-    border-color: rgba({accent_rgb}, 0.10);
 }
 
 QCheckBox#LauncherHomeStatusCheck {

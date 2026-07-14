@@ -28,15 +28,15 @@ class NewsPageViewModel(IntentViewModel[NewsPageState]):
 
     def refresh(self, *, force: bool) -> None:
         if force:
-            self._news.invalidate(self._host)
+            self._news.invalidate()
         self.update_state(loading=True, error=None)
 
         def worker() -> dict[str, Any]:
-            releases = list(self._news.get_releases(self._host) or [])
+            releases = list(self._news.get_releases() or [])
             return {
-                "items": tuple(self._news.build_items(self._host)),
+                "items": tuple(self._news.build_items()),
                 "releases": releases,
-                "content": str(self._news.get_content(self._host) or ""),
+                "content": str(self._news.get_content() or ""),
             }
 
         def applied(payload: dict[str, Any]) -> None:

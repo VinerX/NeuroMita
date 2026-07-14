@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,12 +54,152 @@ class _PreviewComponent:
 
 
 class InstallableCatalogServiceTests(unittest.TestCase):
+    def test_status_cache_isolated_by_canonical_context(self):
+        service = DefaultInstallableCatalogService()
+        self.addCleanup(service.close)
+        calls = []
+
+        def inspect(entry, ctx):
+            calls.append(dict(ctx))
+            device = str(ctx.get("device") or "auto")
+            return {
+                "id": entry.id,
+                "code": device,
+                "installed": True,
+                "ready": device == "cpu",
+                "backend": "cpu",
+                "backend_ok": device == "cpu",
+                "details": {},
+            }
+
+        with patch.object(service, "_prepare_runtime_registry"), \
+             patch.object(
+                 service,
+                 "_component_context",
+                 side_effect=lambda _entry, *, ctx, refresh: dict(ctx or {}),
+             ), \
+             patch.object(service, "_inspect_component", side_effect=inspect):
+            cpu = service.get_status("asr:google", ctx={"device": "cpu"})
+            cuda = service.get_status("asr:google", ctx={"device": "cuda"})
+            cpu_again = service.get_status("asr:google", ctx={"device": "cpu"})
+
+        self.assertTrue(cpu["ready"])
+        self.assertFalse(cuda["ready"])
+        self.assertEqual(cpu_again, cpu)
+        self.assertEqual(len(calls), 2)
+
+    def test_invalidation_rejects_late_probe_result(self):
+        service = DefaultInstallableCatalogService(status_timeout_sec=2.0)
+        self.addCleanup(service.close)
+        started = threading.Event()
+        release = threading.Event()
+        observed = {}
+        probe_count = 0
+
+        def inspect(entry, _ctx):
+            nonlocal probe_count
+            probe_count += 1
+            if probe_count == 1:
+                started.set()
+                release.wait(2.0)
+                code = "stale"
+            else:
+                code = "fresh"
+            return {
+                "id": entry.id,
+                "code": code,
+                "installed": True,
+                "ready": code == "fresh",
+                "backend": "cpu",
+                "backend_ok": code == "fresh",
+                "details": {},
+            }
+
+        def read_status():
+            try:
+                observed["status"] = service.get_status("asr:google")
+            except Exception as exc:
+                observed["error"] = exc
+
+        with patch.object(service, "_prepare_runtime_registry"), \
+             patch.object(service, "_component_context", return_value={}), \
+             patch.object(service, "_inspect_component", side_effect=inspect):
+            thread = threading.Thread(target=read_status)
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            service.invalidate("asr:google")
+            release.set()
+            thread.join(2.0)
+            self.assertFalse(thread.is_alive())
+            self.assertIn("error", observed)
+            fresh = service.get_status("asr:google")
+
+        self.assertEqual(fresh["code"], "fresh")
+        self.assertTrue(fresh["ready"])
+
+    def test_probe_timeout_does_not_block_catalog_or_shutdown(self):
+        service = DefaultInstallableCatalogService(status_timeout_sec=0.05)
+        release = threading.Event()
+
+        def inspect(_entry, _ctx):
+            release.wait(2.0)
+            return {}
+
+        try:
+            with patch.object(service, "_prepare_runtime_registry"), \
+                 patch.object(service, "_component_context", return_value={}), \
+                 patch.object(service, "_inspect_component", side_effect=inspect):
+                started_at = time.monotonic()
+                status = service.get_status("asr:google")
+                elapsed = time.monotonic() - started_at
+            self.assertEqual(status["code"], "timeout")
+            self.assertLess(elapsed, 0.5)
+        finally:
+            release.set()
+            service.close()
+
+    def test_component_readiness_has_one_cached_snapshot_for_all_consumers(self):
+        service = DefaultInstallableCatalogService()
+        self.addCleanup(service.close)
+        status = {
+            "id": "asr:google",
+            "code": "backend_missing",
+            "installed": True,
+            "ready": False,
+            "backend": "cpu",
+            "backend_ok": False,
+            "details": {},
+        }
+        with patch.object(service, "_prepare_runtime_registry"), \
+             patch.object(service, "_component_context", return_value={}), \
+             patch.object(service, "_inspect_component", return_value=status) as inspect:
+            self.assertFalse(service.is_ready("asr:google"))
+            self.assertFalse(service.get_status("asr:google")["ready"])
+            self.assertFalse(service.get_row("asr:google")["status"]["ready"])
+            self.assertEqual(inspect.call_count, 1)
+
+        completed = threading.Event()
+        observed = {}
+
+        def callback(status, error):
+            observed["status"] = status
+            observed["error"] = error
+            completed.set()
+
+        with patch.object(service, "_component_context", return_value={}):
+            service.get_status_async("asr:google", callback)
+            self.assertTrue(completed.wait(2.0))
+        self.assertIsNone(observed["error"])
+        self.assertFalse(observed["status"]["ready"])
+
     def test_metadata_phase_does_not_import_work_registry_or_model_modules(self):
         code = """
 import sys
 from services.installable_catalog_service import DefaultInstallableCatalogService
 rows = DefaultInstallableCatalogService().list_rows()
-assert len(rows) == 30
+# RAG embed/reranker модели теперь идут отдельной карточкой на модель и
+# строятся из пресетов, поэтому точное число зависит от набора пресетов.
+assert len(rows) >= 30
 for name in (
     'installables.registry_builder',
     'handlers.voice_models.edge_tts_rvc_model',
@@ -94,37 +236,43 @@ for name in (
 
     def test_component_settings_are_available_without_install_controller(self):
         service = DefaultInstallableCatalogService()
+        self.addCleanup(service.close)
         component = _ConfigurableComponent()
+        service._status_cache[("tts:test", "ctx")] = {"ready": True}
 
         with patch.object(service, "require_component", return_value=component):
             self.assertEqual(service.settings_schema("tts:test")[0]["key"], "quality")
             self.assertEqual(service.load_settings("tts:test"), {"quality": "high"})
             self.assertTrue(service.save_component_settings("tts:test", {"quality": "low"})["ok"])
             self.assertEqual(component.saved, {"quality": "low"})
+            self.assertFalse(any(key[0] == "tts:test" for key in service._status_cache))
 
     def test_install_preview_discloses_missing_backend_and_packages(self):
-        service = DefaultInstallableCatalogService()
+        hardware = SimpleNamespace(
+            snapshot=lambda refresh=False: {
+                "vendor": "NVIDIA",
+                "primary": {"name": "RTX 4060"},
+            }
+        )
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
         backend_service = SimpleNamespace(
             build_requirement=lambda value: SimpleNamespace(kind=value)
         )
-        spec = SimpleNamespace(
-            group="torch",
-            layer_id="torch-cuda",
-            packages=("torch==2.7.1+cu128", "torchaudio==2.7.1+cu128"),
-            capabilities=("torch.cpu", "torch.cuda"),
-        )
-        manager = SimpleNamespace(
-            core_layer_specs=lambda _kind, _ctx: (spec,),
-            get_core_layer=lambda _layer_id: None,
-            find_core_layer=lambda **_kwargs: None,
-        )
+        backend_status = {
+            "ready": False,
+            "details": {
+                "install_packages": [
+                    "torch==2.7.1+cu128",
+                    "torchaudio==2.7.1+cu128",
+                ]
+            },
+        }
 
         with patch.object(service, "require_component", return_value=_PreviewComponent()), \
-             patch("core.backends.get_backend_service", return_value=backend_service), \
-             patch("core.runtime_environments.runtime_environments", return_value=manager), \
-             patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
-             patch("utils.gpu_utils.format_primary_gpu_label", return_value="RTX 4060"):
-            preview = service.install_preview("tts:preview")
+             patch.object(service, "get_status", return_value=backend_status), \
+             patch("core.backends.get_backend_service", return_value=backend_service):
+            preview = service.install_preview("tts:edge_tts_rvc_cuda")
 
         self.assertTrue(preview["backend_will_install"])
         self.assertEqual(preview["backend_kind"], "cuda")
@@ -134,28 +282,26 @@ for name in (
         self.assertEqual(preview["actions"], ["Install model"])
 
     def test_install_preview_does_not_claim_backend_install_when_layer_exists(self):
-        service = DefaultInstallableCatalogService()
+        hardware = SimpleNamespace(
+            snapshot=lambda refresh=False: {
+                "vendor": "NVIDIA",
+                "primary": {"name": "RTX 4060"},
+            }
+        )
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
         backend_service = SimpleNamespace(
             build_requirement=lambda value: SimpleNamespace(kind=value)
         )
-        spec = SimpleNamespace(
-            group="torch",
-            layer_id="torch-cuda",
-            packages=("torch==2.7.1+cu128",),
-            capabilities=("torch.cpu", "torch.cuda"),
-        )
-        manager = SimpleNamespace(
-            core_layer_specs=lambda _kind, _ctx: (spec,),
-            get_core_layer=lambda _layer_id: object(),
-            find_core_layer=lambda **_kwargs: object(),
-        )
+        backend_status = {
+            "ready": True,
+            "details": {"install_packages": ["torch==2.7.1+cu128"]},
+        }
 
         with patch.object(service, "require_component", return_value=_PreviewComponent()), \
-             patch("core.backends.get_backend_service", return_value=backend_service), \
-             patch("core.runtime_environments.runtime_environments", return_value=manager), \
-             patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
-             patch("utils.gpu_utils.format_primary_gpu_label", return_value="RTX 4060"):
-            preview = service.install_preview("tts:preview")
+             patch.object(service, "get_status", return_value=backend_status), \
+             patch("core.backends.get_backend_service", return_value=backend_service):
+            preview = service.install_preview("tts:edge_tts_rvc_cuda")
 
         self.assertTrue(preview["backend_ready"])
         self.assertFalse(preview["backend_will_install"])

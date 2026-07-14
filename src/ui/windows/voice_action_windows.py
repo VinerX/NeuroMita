@@ -18,6 +18,10 @@ from collections import deque
 # и одиночные ESC-последовательности (\x1bX), и OSC/прочие escape-формы.
 ANSI_RE = re.compile(r'\x1b(?:\[.*?[@-~]|\].*?(?:\x1b\\|\x07))')
 
+# Незавершённая ANSI-последовательность в конце чанка (ESC без финального байта):
+# её нельзя стрипать сразу — финальный байт придёт со следующим PTY-чтением.
+TRAILING_ANSI_RE = re.compile(r'\x1b(?:\][^\x07\x1b]*|\[[0-9;?]*)?$')
+
 
 def strip_ansi(s: str) -> str:
     """Удаляет ANSI escape-коды из строки."""
@@ -128,6 +132,10 @@ class VoiceInstallationWindow(QDialog):
         self._full_log_lines: list[str] = []
         self._raw_log_chunks: list[str] = []
         self._raw_pending_chunks: deque[str] = deque()
+        # Хвост незакрытой ANSI-последовательности, разорванной на границе
+        # PTY-чтения: держим до следующего чанка, иначе strip_ansi её пропустит
+        # и в Raw log посыплются «□[32m»-артефакты (выглядит как сломанная кодировка).
+        self._raw_ansi_carry: str = ""
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
         self._snapshot_lines: list[str] = []
@@ -604,8 +612,22 @@ class VoiceInstallationWindow(QDialog):
         chunk = str(text)
         if not chunk:
             return
-        self._raw_log_chunks.append(chunk)
-        self._raw_pending_chunks.append(chunk)
+        # PTY-поток UV/pip приходит с ANSI-кодами цвета и живой перерисовки
+        # прогресса. QPlainTextEdit их не интерпретирует, поэтому raw ESC-байты
+        # рендерились как «□[32m» — пользователь видит «сломанную кодировку».
+        # Чистим ANSI (и одиночные ESC), но держим хвост незакрытой
+        # последовательности, разорванной на границе чтения, до следующего чанка.
+        buffered = self._raw_ansi_carry + chunk
+        self._raw_ansi_carry = ""
+        m = TRAILING_ANSI_RE.search(buffered)
+        if m:
+            self._raw_ansi_carry = buffered[m.start():]
+            buffered = buffered[:m.start()]
+        clean = strip_ansi(buffered).replace("\x1b", "")
+        if not clean:
+            return
+        self._raw_log_chunks.append(clean)
+        self._raw_pending_chunks.append(clean)
         self._schedule_raw_flush()
 
     def _raw_log_text(self) -> str:
@@ -767,7 +789,7 @@ class VoiceActionWindow(QDialog):
             )
 
         QTimer.singleShot(0, self._recalc_max_blocks_and_refresh)
-    
+
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
@@ -914,13 +936,13 @@ class VoiceActionWindow(QDialog):
 
 
 class VCRedistWarningDialog(QDialog):
-    def __init__(self, voice_controller, parent=None):
+    def __init__(self, open_documentation, parent=None):
         super().__init__(parent)
-        self.voice_controller = voice_controller
+        self._open_documentation = open_documentation
         self.setWindowTitle(_("⚠️ Ошибка загрузки Triton", "⚠️ Triton Load Error"))
         self.setModal(True)
         self.setMinimumSize(500, 250)
-        
+
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; }
             QLabel { color: #ffffff; }
@@ -935,16 +957,16 @@ class VCRedistWarningDialog(QDialog):
             #RetryButton { background-color: #b74b7d; }
             #RetryButton:hover { background-color: #c04c80; }
         """)
-        
+
         self.choice = 'close'
-        
+
         layout = QVBoxLayout(self)
-        
+
         title_label = QLabel(_("Ошибка импорта Triton (DLL Load Failed)", "Triton Import Error (DLL Load Failed)"))
         title_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         title_label.setStyleSheet("color: orange;")
         layout.addWidget(title_label)
-        
+
         info_text = _(
             "Не удалось загрузить библиотеку для Triton (возможно, отсутствует VC++ Redistributable).\n"
             "Установите последнюю версию VC++ Redistributable (x64) с сайта Microsoft\n"
@@ -956,43 +978,51 @@ class VCRedistWarningDialog(QDialog):
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        
+
         layout.addStretch()
-        
+
         button_layout = QHBoxLayout()
-        
+
         docs_button = QPushButton(_("Документация", "Documentation"))
         docs_button.clicked.connect(self._on_docs_clicked)
         button_layout.addWidget(docs_button)
-        
+
         button_layout.addStretch()
-        
+
         close_button = QPushButton(_("Закрыть", "Close"))
         close_button.clicked.connect(lambda: self._set_choice_and_accept('close'))
         button_layout.addWidget(close_button)
-        
+
         retry_button = QPushButton(_("Попробовать снова", "Retry"))
         retry_button.setObjectName("RetryButton")
         retry_button.clicked.connect(lambda: self._set_choice_and_accept('retry'))
         button_layout.addWidget(retry_button)
-        
+
         layout.addLayout(button_layout)
-    
+
     def _on_docs_clicked(self):
-        self.voice_controller.open_documentation("installation_guide.html#vc_redist")
-    
+        self._open_documentation("installation_guide.html#vc_redist")
+
     def _set_choice_and_accept(self, choice):
         self.choice = choice
         self.accept()
-    
+
     def get_choice(self):
         return self.choice
 
 
 class TritonDependenciesDialog(QDialog):
-    def __init__(self, voice_controller, parent=None, dependencies_status=None):
+    def __init__(
+        self,
+        *,
+        open_documentation,
+        refresh_status,
+        parent=None,
+        dependencies_status=None,
+    ):
         super().__init__(parent)
-        self.voice_controller = voice_controller
+        self._open_documentation = open_documentation
+        self._refresh_status = refresh_status
         self.setWindowTitle(_("⚠️ Зависимости Triton", "⚠️ Triton Dependencies"))
         self.setModal(True)
         self.setMinimumSize(700, 350)
@@ -1024,20 +1054,20 @@ class TritonDependenciesDialog(QDialog):
             }
             #ContinueButton:hover { background-color: #c04c80; }
         """)
-        
+
         self.choice = 'skip'
         self.dependencies_status = dependencies_status or {}
-        
+
         layout = QVBoxLayout(self)
-        
+
         title_label = QLabel(_("Статус зависимостей Triton:", "Triton Dependency Status:"))
         title_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         layout.addWidget(title_label)
-        
+
         self.status_layout = QHBoxLayout()
         self._update_status_display()
         layout.addLayout(self.status_layout)
-        
+
         self.warning_label = QLabel(_("⚠️ Для компиляции ядра Triton нужен MSVC (VC++ Build Tools)!",
                                      "⚠️ Triton kernel compilation requires MSVC (VC++ Build Tools)!"))
         self.warning_label.setStyleSheet("color: orange; font-weight: bold;")
@@ -1046,7 +1076,7 @@ class TritonDependenciesDialog(QDialog):
         msvc_found = self.dependencies_status.get('msvc_found', False)
         self.warning_label.setVisible(not msvc_found)
         layout.addWidget(self.warning_label)
-        
+
         info_text = _(
             "Для Fish Speech+ нужен только Microsoft VC++ Build Tools.\n"
             "Triton Windows уже содержит TinyCC и не требует Windows SDK или CUDA Toolkit.\n"
@@ -1060,76 +1090,76 @@ class TritonDependenciesDialog(QDialog):
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        
+
         layout.addStretch()
-        
+
         button_layout = QHBoxLayout()
-        
+
         docs_button = QPushButton(_("Открыть документацию", "Open Documentation"))
         docs_button.clicked.connect(self._on_docs_clicked)
         button_layout.addWidget(docs_button)
-        
+
         refresh_button = QPushButton(_("Обновить статус", "Refresh Status"))
         refresh_button.clicked.connect(self._on_refresh_status)
         button_layout.addWidget(refresh_button)
-        
+
         button_layout.addStretch()
-        
+
         skip_button = QPushButton(_("Пропустить инициализацию", "Skip Initialization"))
         skip_button.clicked.connect(lambda: self._set_choice_and_accept('skip'))
         button_layout.addWidget(skip_button)
-        
+
         continue_button = QPushButton(_("Продолжить инициализацию", "Continue Initialization"))
         continue_button.setObjectName("ContinueButton")
         continue_button.clicked.connect(lambda: self._set_choice_and_accept('continue'))
         button_layout.addWidget(continue_button)
-        
+
         layout.addLayout(button_layout)
-    
+
     def _update_status_display(self):
         while self.status_layout.count():
             item = self.status_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         items = [
             ("MSVC (VC++):", self.dependencies_status.get('msvc_found', False)),
         ]
-        
+
         for text, found in items:
             item_widget = QWidget()
             item_layout = QHBoxLayout(item_widget)
             item_layout.setContentsMargins(0, 0, 15, 0)
-            
+
             label = QLabel(text)
             label.setFont(QFont("Segoe UI", 9))
             item_layout.addWidget(label)
-            
+
             status_text = _("Найден", "Found") if found else _("Не найден", "Not Found")
             status_color = "#4CAF50" if found else "#F44336"
             status_label = QLabel(status_text)
             status_label.setFont(QFont("Segoe UI", 9))
             status_label.setStyleSheet(f"color: {status_color};")
             item_layout.addWidget(status_label)
-            
+
             self.status_layout.addWidget(item_widget)
-        
+
         self.status_layout.addStretch()
-        
+
         if hasattr(self, 'warning_label'):
             msvc_found = self.dependencies_status.get('msvc_found', False)
             self.warning_label.setVisible(not msvc_found)
-    
+
     def _on_refresh_status(self):
-        self.dependencies_status = self.voice_controller.triton_status(refresh=True)
+        self.dependencies_status = dict(self._refresh_status() or {})
         self._update_status_display()
-    
+
     def _on_docs_clicked(self):
-        self.voice_controller.open_documentation("installation_guide.html")
-    
+        self._open_documentation("installation_guide.html")
+
     def _set_choice_and_accept(self, choice):
         self.choice = choice
         self.accept()
-    
+
     def get_choice(self):
         return self.choice

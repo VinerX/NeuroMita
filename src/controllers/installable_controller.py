@@ -102,19 +102,11 @@ class InstallableController(InstallableOperationsService):
     def _on_get_status(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         try:
-            component_id = self._component_id(data)
-            rows = self.catalog.list_rows(
-                include_status=True,
+            return self.catalog.get_status(
+                self._component_id(data),
                 refresh=bool(data.get("refresh", False)),
-                category=str(component_id).split(":", 1)[0],
-                status_category=str(component_id).split(":", 1)[0],
                 ctx=data.get("ctx") if isinstance(data.get("ctx"), dict) else {},
             )
-            for row in rows:
-                metadata = row.get("metadata") if isinstance(row, dict) else None
-                if isinstance(metadata, dict) and metadata.get("id") == component_id:
-                    return row.get("status")
-            return None
         except Exception as exc:
             logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
             return None
@@ -246,6 +238,8 @@ class InstallableController(InstallableOperationsService):
             payload["install_window"] = data.get("install_window")
         if data.get("install_callbacks") is not None:
             payload["install_callbacks"] = data.get("install_callbacks")
+        if data.get("install_style_variant") is not None:
+            payload["install_style_variant"] = data.get("install_style_variant")
 
         queue_service = services().get_optional(InstallQueueService)
         if queue_service is not None:

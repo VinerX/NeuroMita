@@ -169,16 +169,73 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
         except Exception as exc:
             self.emit_effect(ChatShowError("History", str(exc)))
 
+    _MAX_STAGED_FILE_BYTES = 32 * 1024 * 1024
+    _MAX_STAGED_TOTAL_BYTES = 64 * 1024 * 1024
+    _MAX_STAGED_FILES = 8
+    _ALLOWED_IMAGE_SUFFIXES = frozenset(
+        {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+    )
+
     def _stage_files(self, paths: tuple[str, ...]) -> None:
         normalized = tuple(str(path) for path in paths if str(path).strip())
         if not normalized:
             return
 
         def worker() -> tuple[bytes, ...]:
+            import os
+            from pathlib import Path
+
             images: list[bytes] = []
+            if len(normalized) > self._MAX_STAGED_FILES:
+                raise ValueError(
+                    _(
+                        "Слишком много вложений: {count}, максимум {limit}",
+                        "Too many attachments: {count}, maximum {limit}",
+                    ).format(count=len(normalized), limit=self._MAX_STAGED_FILES)
+                )
+
+            total_size = 0
             for path in normalized:
+                suffix = Path(path).suffix.lower()
+                if suffix not in self._ALLOWED_IMAGE_SUFFIXES:
+                    raise ValueError(
+                        _(
+                            "Неподдерживаемый тип изображения: {name}",
+                            "Unsupported image type: {name}",
+                        ).format(name=os.path.basename(path))
+                    )
+                size = os.path.getsize(path)
+                if size > self._MAX_STAGED_FILE_BYTES:
+                    raise ValueError(
+                        _(
+                            "Файл слишком большой для вложения: {name} ({size:.1f} МБ, лимит {limit} МБ)",
+                            "File is too large to attach: {name} ({size:.1f} MB, limit {limit} MB)",
+                        ).format(
+                            name=os.path.basename(path),
+                            size=size / (1024 * 1024),
+                            limit=self._MAX_STAGED_FILE_BYTES // (1024 * 1024),
+                        )
+                    )
+                total_size += size
+                if total_size > self._MAX_STAGED_TOTAL_BYTES:
+                    raise ValueError(
+                        _(
+                            "Суммарный размер вложений превышает {limit} МБ",
+                            "Total attachment size exceeds {limit} MB",
+                        ).format(
+                            limit=self._MAX_STAGED_TOTAL_BYTES // (1024 * 1024)
+                        )
+                    )
                 with open(path, "rb") as stream:
-                    images.append(stream.read())
+                    payload = stream.read(self._MAX_STAGED_FILE_BYTES + 1)
+                if len(payload) != size:
+                    raise ValueError(
+                        _(
+                            "Файл изменился во время чтения: {name}",
+                            "File changed while being read: {name}",
+                        ).format(name=os.path.basename(path))
+                    )
+                images.append(payload)
             return tuple(images)
 
         self.run_exclusive(

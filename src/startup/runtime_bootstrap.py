@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import faulthandler
 import json
+import logging
 import os
 import site
 import sys
@@ -11,6 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from startup.startup_profiler import startup_trace
+
+
+_runtime_cleanup_lock = threading.Lock()
+_runtime_cleanup_roots: set[str] = set()
+_runtime_cleanup_owner = object()
 
 
 @dataclass
@@ -154,9 +160,13 @@ def _configure_paths(base_dir: str) -> str:
         manager = RuntimeEnvironmentManager(runtime_root)
         manager.migrate_legacy_environment_ids()
         manager.recover_unregistered_overlays()
-        manager.cleanup_inactive_overlays()
         main_paths = manager.main_runtime_paths()
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to activate main runtime environment paths: %s",
+            exc,
+            exc_info=True,
+        )
         main_paths = ()
 
     loaded_main_paths: list[str] = []
@@ -175,6 +185,44 @@ def _configure_paths(base_dir: str) -> str:
 
     os.environ["NEUROMITA_MAIN_ENVIRONMENT_PATHS"] = os.pathsep.join(loaded_main_paths)
     return str(core_root)
+
+
+def _schedule_runtime_cleanup(logger: Any) -> None:
+    runtime_root = str(Path(os.environ["NEUROMITA_RUNTIME_ROOT"]).resolve())
+    with _runtime_cleanup_lock:
+        if runtime_root in _runtime_cleanup_roots:
+            return
+        _runtime_cleanup_roots.add(runtime_root)
+
+    cancel_event = threading.Event()
+
+    def cleanup() -> None:
+        try:
+            raw_delay = os.environ.get("NEUROMITA_RUNTIME_CLEANUP_DELAY_SECONDS", "5")
+            try:
+                delay = max(0.0, float(raw_delay))
+            except (TypeError, ValueError):
+                delay = 5.0
+            if delay and cancel_event.wait(delay):
+                return
+            if cancel_event.is_set():
+                return
+
+            from core.runtime_environments import RuntimeEnvironmentManager
+
+            RuntimeEnvironmentManager(Path(runtime_root)).cleanup_inactive_overlays()
+            logger.info("Inactive runtime overlay cleanup completed")
+        except Exception as exc:
+            logger.warning(f"Inactive runtime overlay cleanup failed: {exc}", exc_info=True)
+
+    from core.task_supervisor import task_supervisor
+
+    task_supervisor().start_thread(
+        _runtime_cleanup_owner,
+        f"runtime-overlay-cleanup-{abs(hash(runtime_root))}",
+        cleanup,
+        cancel_event=cancel_event,
+    )
 
 
 def _configure_crash_logging(base_dir: str):
@@ -247,7 +295,12 @@ def _load_environment(base_dir: str, logger: Any) -> None:
 
 def _run_update_checks(base_dir: str, logger: Any) -> None:
     try:
-        from updater import check_for_unity_updates, check_for_updates
+        from updater import (
+            check_for_unity_updates,
+            check_for_updates,
+            resume_pending_python_update,
+            resume_pending_unity_update,
+        )
 
         def enabled(name: str, fallback: bool = False) -> bool:
             raw_env = os.environ.get(name)
@@ -265,6 +318,40 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                 settings = json.load(source)
         except Exception:
             pass
+
+        try:
+            python_recovery = resume_pending_python_update(
+                base_dir=base_dir,
+                tester_code=settings.get("TESTER_CODE") or None,
+                logger=logger,
+            )
+            if python_recovery.changed:
+                logger.info("Recovered an interrupted Python installation; restarting.")
+                raise SystemExit(42)
+            if not python_recovery.ok and python_recovery.status not in {
+                "waiting_for_credentials"
+            }:
+                logger.warning(
+                    f"Python installation recovery failed: {python_recovery.error}"
+                )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.warning(f"Python installation recovery failed: {exc}")
+
+        try:
+            recovery = resume_pending_unity_update(
+                base_dir=base_dir,
+                unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
+                tester_code=settings.get("TESTER_CODE") or None,
+                logger=logger,
+            )
+            if recovery.changed:
+                logger.info("Recovered an interrupted Unity installation.")
+            elif not recovery.ok and recovery.status not in {"waiting_for_credentials"}:
+                logger.warning(f"Unity installation recovery failed: {recovery.error}")
+        except Exception as exc:
+            logger.warning(f"Unity installation recovery failed: {exc}")
 
         auto_update = enabled("AUTO_UPDATE", False)
         check_updates = enabled("AUTO_UPDATE_CHECK", auto_update)
@@ -355,7 +442,21 @@ def _prime_onnxruntime(_logger: Any) -> None:
     return
 
 
+def _configure_gui_native_window_policy() -> None:
+    os.environ.pop("QT_USE_NATIVE_WINDOWS", None)
+
+    from PyQt6.QtCore import QCoreApplication, Qt
+
+    attributes = Qt.ApplicationAttribute
+    QCoreApplication.setAttribute(attributes.AA_NativeWindows, False)
+    QCoreApplication.setAttribute(
+        attributes.AA_DontCreateNativeWidgetSiblings,
+        True,
+    )
+
+
 def _import_gui_runtime():
+    _configure_gui_native_window_policy()
     # onnxruntime уже загружен выше; здесь выполняется первый явный Qt-import.
 
     from PyQt6.QtWidgets import QApplication
@@ -395,6 +496,7 @@ def initialize_runtime(
     logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
     logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
     logger.info(f"Lib: {libs_dir}")
+    _schedule_runtime_cleanup(logger)
 
     with startup_trace.phase("runtime.environment"):
         _load_environment(base_dir, logger)

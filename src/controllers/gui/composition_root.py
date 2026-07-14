@@ -14,24 +14,54 @@ class GuiCompositionRoot:
     def __init__(self, settings_controller: Any) -> None:
         from core.services import use
         from services.contracts import SettingsService
+        from controllers.gui.telegram_auth_view_model import TelegramAuthViewModel
+        from controllers.gui.window_action_adapters import (
+            MainPageActionsAdapter,
+            ShellActionsAdapter,
+            WindowActionsAdapter,
+        )
         from ui.settings.settings_binding import QtSettingsViewModel
         from ui.windows.main_window import MainWindow
 
         self.settings_controller = settings_controller
         self._closed = False
         self.presentation = UiPresentationHub()
-        self.window = MainWindow(
-            settings_controller.settings,
-            presentation=self.presentation,
+        self.chat_message_actions = self.presentation.view_models.chat_message_actions(
+            None,
+            parent=None,
         )
-        self.settings_binding = QtSettingsViewModel(use(SettingsService), self.window)
+        self.telegram_auth_actions = TelegramAuthViewModel(
+            auth=self.presentation.telegram,
+            parent=None,
+        )
+        self.shell_actions = ShellActionsAdapter()
+        self.window_actions = WindowActionsAdapter()
+        self.page_actions = MainPageActionsAdapter()
+        self.settings_binding = QtSettingsViewModel(use(SettingsService), None)
+        self.window = MainWindow(
+            self.settings_binding,
+            telegram_auth_actions=self.telegram_auth_actions,
+            chat_message_actions=self.chat_message_actions,
+            shell_actions=self.shell_actions,
+            window_actions=self.window_actions,
+            page_actions=self.page_actions,
+            pending_restart_version=lambda: self.presentation.app.pending_restart_version,
+        )
+        self.chat_message_actions.setParent(self.window)
+        self.telegram_auth_actions.setParent(self.window)
+        self.settings_binding.setParent(self.window)
         self.window.attach_settings_binding(self.settings_binding)
-        self.shell_controller = AppShellController(self.window, self.presentation)
-        self.window.attach_shell_controller(self.shell_controller)
-        self.window_controller = WindowCompositionController(self.window, self.presentation)
-        self.window.attach_window_controller(self.window_controller)
+        self.presentation.settings_sections.load_microphone(self.window)
         self.page_coordinator = MainWindowCoordinator(self.window, self.presentation)
-        self.window.attach_page_coordinator(self.page_coordinator)
+        self.shell_controller = AppShellController(
+            self.window,
+            self.presentation,
+            close_pages=self.page_coordinator.close,
+        )
+        self.shell_actions.bind(self.shell_controller)
+        self.window_controller = WindowCompositionController(self.window, self.presentation)
+        self.window_actions.bind(self.window_controller)
+        self.page_actions.bind(self.page_coordinator)
         self.window.initialize_pages()
 
     def attach_backend(self, controller: Any) -> None:
@@ -70,4 +100,10 @@ class GuiCompositionRoot:
                 try:
                     self.shell_controller.close_application()
                 finally:
-                    self.settings_binding.close()
+                    try:
+                        self.chat_message_actions.close()
+                    finally:
+                        try:
+                            self.telegram_auth_actions.close()
+                        finally:
+                            self.settings_binding.close()

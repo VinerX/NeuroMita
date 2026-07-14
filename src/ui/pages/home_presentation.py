@@ -8,6 +8,7 @@ from ui.mvvm import UiEffect, UiIntent
 @dataclass(frozen=True, slots=True)
 class HomeUpdateState:
     available: bool = False
+    installable: bool = False
     selected: bool = False
     latest_version: str = ""
 
@@ -25,12 +26,19 @@ class HomeNewsItemState:
 class HomeState:
     backend_status: str = ""
     unity_status: str = ""
+    unity_installed: bool = False
+    unity_process_state: str = "stopped"
+    unity_process_error: str = ""
     python_update: HomeUpdateState = field(default_factory=HomeUpdateState)
     unity_update: HomeUpdateState = field(default_factory=HomeUpdateState)
     primary_action: str = "install"
     primary_label: str = ""
     primary_icon_name: str = "fa6s.download"
     operation: str | None = None
+    operation_component: str = ""
+    operation_stage: str = ""
+    operation_item_index: int = 0
+    operation_item_total: int = 0
     progress_visible: bool = False
     progress_text: str = ""
     progress_value: int = 0
@@ -106,6 +114,11 @@ class HomeOpenUnityFolderRequested(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class HomeCancelRequested(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class HomeStopUnityRequested(UiIntent):
     pass
 
 

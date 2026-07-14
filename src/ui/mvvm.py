@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Generic, Protocol, TypeVar
 
 
@@ -31,6 +32,10 @@ class FrozenMapping(Mapping[KeyT, ValueT], Generic[KeyT, ValueT]):
     """
 
     _items: tuple[tuple[KeyT, ValueT], ...] = ()
+    _lookup: Mapping[KeyT, ValueT] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_lookup", MappingProxyType(dict(self._items)))
 
     def __iter__(self) -> Iterator[KeyT]:
         return (key for key, _value in self._items)
@@ -39,13 +44,31 @@ class FrozenMapping(Mapping[KeyT, ValueT], Generic[KeyT, ValueT]):
         return len(self._items)
 
     def __getitem__(self, key: KeyT) -> ValueT:
-        for current_key, value in self._items:
-            if current_key == key:
-                return value
-        raise KeyError(key)
+        return self._lookup[key]
 
     def items(self):
         return self._items
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenList(Sequence[ValueT], Generic[ValueT]):
+    """Immutable representation of an input ``list``.
+
+    Plain tuples remain tuples. Keeping a dedicated list wrapper makes
+    ``mutable_payload(immutable_payload(value))`` shape-preserving instead of
+    silently turning every tuple into a list.
+    """
+
+    _items: tuple[ValueT, ...] = ()
+
+    def __iter__(self) -> Iterator[ValueT]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index):
+        return self._items[index]
 
 
 class IntentView(Protocol[StateT, IntentT, EffectT]):
@@ -67,7 +90,7 @@ def immutable_payload(value: Any) -> Any:
             )
         )
     if isinstance(value, list):
-        return tuple(immutable_payload(item) for item in value)
+        return FrozenList(tuple(immutable_payload(item) for item in value))
     if isinstance(value, set):
         return frozenset(immutable_payload(item) for item in value)
     if isinstance(value, tuple):
@@ -83,8 +106,10 @@ def mutable_payload(value: Any) -> Any:
             mutable_payload(key): mutable_payload(item)
             for key, item in value.items()
         }
-    if isinstance(value, tuple):
+    if isinstance(value, FrozenList):
         return [mutable_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(mutable_payload(item) for item in value)
     if isinstance(value, frozenset):
         return {mutable_payload(item) for item in value}
     return value

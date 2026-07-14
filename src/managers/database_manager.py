@@ -24,6 +24,8 @@ class DatabaseManager:
 
     # Required for concurrent QtSql reads while sqlite3 writes
     _BUSY_TIMEOUT_MS: int = 5000
+    _MIGRATION_TIMESTAMP_NORMALIZATION = "history_timestamp_iso_v1"
+    _MIGRATION_MESSAGE_ID_UNIQUE = "history_message_id_unique_v1"
 
     # Single source of truth: extra columns to ensure in history table.
     # (column_name -> SQL type). Base columns (id, character_id, role, content,
@@ -265,7 +267,7 @@ class DatabaseManager:
             self._fts5_checked = True
             return bool(ok)
 
-    def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> None:
+    def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> bool:
         """
         Create/maintain FTS5 tables + sync triggers safely.
 
@@ -293,14 +295,14 @@ class DatabaseManager:
                     conn.commit()
                 except Exception as e:
                     logging.warning(f"DB: failed to drop FTS triggers on commit: {e}")
-                return
+                return False
 
             cur = conn.cursor()
 
             hist_cols = self._get_table_columns_conn(conn, "history")
             mem_cols = self._get_table_columns_conn(conn, "memories")
             if not hist_cols or not mem_cols:
-                return
+                return False
 
             # Desired columns (based on base table availability)
             history_desired = ["content"]
@@ -329,7 +331,7 @@ class DatabaseManager:
                     conn.commit()
                 except Exception as e:
                     logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {e}")
-                return
+                return False
 
             # Use ACTUAL FTS columns
             history_fts_cols = table_cols("history_fts") or ["content"]
@@ -415,9 +417,55 @@ class DatabaseManager:
                 conn.commit()
             except Exception as e:
                 logging.warning(f"DB: FTS5 schema commit failed: {e}")
+                return False
+            return True
 
         except Exception as e:
             logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {e}")
+            return False
+
+    @staticmethod
+    def _fts5_schema_present(conn: sqlite3.Connection) -> bool:
+        required = {
+            ("table", "history_fts"),
+            ("table", "memories_fts"),
+            ("trigger", "history_fts_ai"),
+            ("trigger", "history_fts_ad"),
+            ("trigger", "history_fts_au"),
+            ("trigger", "memories_fts_ai"),
+            ("trigger", "memories_fts_ad"),
+            ("trigger", "memories_fts_au"),
+        }
+        try:
+            rows = conn.execute(
+                "SELECT type, name FROM sqlite_master "
+                "WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(name for _kind, name in required),
+            ).fetchall()
+        except Exception:
+            return False
+        return required.issubset({(str(kind), str(name)) for kind, name in rows})
+
+    @staticmethod
+    def _ensure_migration_table(cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+    @staticmethod
+    def _migration_applied(cursor: sqlite3.Cursor, name: str) -> bool:
+        cursor.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,))
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def _mark_migration(cursor: sqlite3.Cursor, name: str) -> None:
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)",
+            (name,),
+        )
 
     def rebuild_fts_indexes(self) -> bool:
         """
@@ -628,6 +676,7 @@ class DatabaseManager:
         }
 
         try:
+            self._ensure_migration_table(cursor)
             # --- ADD missing columns for each table ---
             for table, columns in desired.items():
                 try:
@@ -650,7 +699,13 @@ class DatabaseManager:
             except Exception:
                 hist_cols = set()
 
-            if "timestamp" in hist_cols:
+            if (
+                "timestamp" in hist_cols
+                and not self._migration_applied(
+                    cursor,
+                    self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                )
+            ):
                 try:
                     cursor.execute(
                         """
@@ -674,27 +729,36 @@ class DatabaseManager:
                           )
                         """
                     )
+                    self._mark_migration(
+                        cursor,
+                        self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                    )
                 except Exception as e:
                     logging.warning(f"DB upgrade: failed to normalize history timestamps (ignored): {e}")
 
             if {"character_id", "message_id"}.issubset(hist_cols):
                 try:
-                    active_filter = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
-                    cursor.execute("DROP INDEX IF EXISTS idx_history_unique_msg")
-                    cursor.execute(
-                        f"""
-                        DELETE FROM history
-                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
-                          {active_filter}
-                          AND id NOT IN (
-                              SELECT MIN(id)
-                              FROM history
-                              WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
-                                {active_filter}
-                              GROUP BY character_id, message_id
-                          )
-                        """
+                    migration_applied = self._migration_applied(
+                        cursor,
+                        self._MIGRATION_MESSAGE_ID_UNIQUE,
                     )
+                    if not migration_applied:
+                        active_filter = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                        cursor.execute("DROP INDEX IF EXISTS idx_history_unique_msg")
+                        cursor.execute(
+                            f"""
+                            DELETE FROM history
+                            WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                              {active_filter}
+                              AND id NOT IN (
+                                  SELECT MIN(id)
+                                  FROM history
+                                  WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                                    {active_filter}
+                                  GROUP BY character_id, message_id
+                              )
+                            """
+                        )
                     deleted_predicate = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
                     cursor.execute(
                         f"""
@@ -704,6 +768,11 @@ class DatabaseManager:
                           {deleted_predicate}
                         """
                     )
+                    if not migration_applied:
+                        self._mark_migration(
+                            cursor,
+                            self._MIGRATION_MESSAGE_ID_UNIQUE,
+                        )
                     logging.info("DB upgrade: ensured message-id UNIQUE index")
                 except Exception as e:
                     logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {e}")
@@ -719,7 +788,8 @@ class DatabaseManager:
                     logging.warning(f"DB upgrade: failed to create index (ignored): {e}")
 
             # --- FTS5 lexical indexes (safe, optional) ---
-            self._ensure_fts5_schema(conn)
+            if not self._fts5_schema_present(conn):
+                self._ensure_fts5_schema(conn)
 
             # --- Ensure embeddings table exists (for DBs created before this code) ---
             try:

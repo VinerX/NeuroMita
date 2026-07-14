@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from ui.mvvm import FrozenMapping, immutable_payload, mutable_payload
+from ui.mvvm import FrozenList, FrozenMapping, immutable_payload, mutable_payload
 
 
 _SRC_ROOT = Path(__file__).resolve().parents[2]
@@ -17,16 +17,20 @@ class IntentMvvmContractTests(unittest.TestCase):
     def test_immutable_payload_preserves_mapping_and_pair_list_shapes(self) -> None:
         mapping = immutable_payload({"first": 1, "second": [2, 3]})
         pairs = immutable_payload([("first", 1), ("second", 2)])
+        original_tuple = ("tuple", [1, 2])
+        frozen_tuple = immutable_payload(original_tuple)
 
         self.assertIsInstance(mapping, FrozenMapping)
+        self.assertIsInstance(pairs, FrozenList)
         self.assertEqual(
             {"first": 1, "second": [2, 3]},
             mutable_payload(mapping),
         )
         self.assertEqual(
-            [["first", 1], ["second", 2]],
+            [("first", 1), ("second", 2)],
             mutable_payload(pairs),
         )
+        self.assertEqual(original_tuple, mutable_payload(frozen_tuple))
 
     def test_views_do_not_use_event_topics_or_async_runner(self) -> None:
         violations: list[str] = []
@@ -92,6 +96,70 @@ class IntentMvvmContractTests(unittest.TestCase):
         source = (_UI_ROOT / "gui_templates.py").read_text(encoding="utf-8")
         self.assertIn("_bind_setting_two_way", source)
         self.assertIn("binding.bind_two_way", source)
+
+    def test_gui_controllers_do_not_poke_private_view_state(self) -> None:
+        """Храповик миграции controllers/gui на MVVM.
+
+        Обращения вида `gui._attr` / `setattr(gui, "_attr", ...)` — это старый
+        стиль «состояние в виджетах». Новым файлам он запрещён полностью;
+        для ещё не мигрированных зафиксирован текущий счётчик нарушений —
+        уменьшать можно, расти нельзя. Домигрировал файл — убери его из списка.
+        """
+        allowed_counts = {
+            "character_settings_logic.py": 187,
+        }
+        controllers_root = _SRC_ROOT / "controllers" / "gui"
+        actual_counts: dict[str, int] = {}
+
+        for path in sorted(controllers_root.rglob("*.py")):
+            relative = str(path.relative_to(controllers_root)).replace("\\", "/")
+            count = 0
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "gui"
+                    and node.attr.startswith("_")
+                ):
+                    count += 1
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in ("setattr", "getattr")
+                    and node.args
+                    and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == "gui"
+                    and len(node.args) > 1
+                    and isinstance(node.args[1], ast.Constant)
+                    and str(node.args[1].value).startswith("_")
+                ):
+                    count += 1
+            if count:
+                actual_counts[relative] = count
+
+        problems: list[str] = []
+        for relative, count in actual_counts.items():
+            budget = allowed_counts.get(relative)
+            if budget is None:
+                problems.append(
+                    f"{relative}: {count} обращений к приватному состоянию gui — "
+                    "новый код обязан хранить состояние во view model/хабе"
+                )
+            elif count > budget:
+                problems.append(
+                    f"{relative}: нарушений стало {count} (бюджет {budget}) — "
+                    "уменьшать можно, расти нельзя"
+                )
+        for relative, budget in allowed_counts.items():
+            actual = actual_counts.get(relative, 0)
+            if actual < budget:
+                problems.append(
+                    f"{relative}: нарушений осталось {actual} (бюджет {budget}) — "
+                    "затяни храповик: обнови бюджет в allowed_counts"
+                )
+
+        self.assertEqual([], problems, "\n".join(problems))
 
     def test_stateful_views_do_not_own_refresh_generations(self) -> None:
         files = (

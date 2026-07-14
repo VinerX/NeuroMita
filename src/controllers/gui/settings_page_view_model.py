@@ -27,6 +27,7 @@ class SettingsPageViewModel(IntentViewModel[SettingsPageState]):
         category = str(intent.category or "").strip()
         if not category:
             return
+        gui_feature = str(intent.gui_feature or "").strip()
 
         loading = set(self.state.loading_sections)
         loading.add(category)
@@ -52,19 +53,30 @@ class SettingsPageViewModel(IntentViewModel[SettingsPageState]):
 
             for feature_name in intent.feature_names:
                 future = self._app.ensure_feature_async(str(feature_name))
-                future.result(timeout=3600)
-
-            if intent.gui_feature:
-                self._app.ensure_optional_gui(str(intent.gui_feature))
-
-        def applied(_result: object) -> None:
-            self._finish(category, None)
-            self.emit_effect(SettingsSectionReady(category))
+                instance = future.result(timeout=3600)
+                if instance is None:
+                    raise RuntimeError(
+                        f"Runtime feature '{feature_name}' did not become ready"
+                    )
 
         def failed(error: Exception) -> None:
             message = str(error)
             self._finish(category, message)
             self.emit_effect(SettingsSectionFailed(category, message))
+
+        def applied(_result: object) -> None:
+            try:
+                # Backend feature creation is intentionally performed by the
+                # worker above. Optional GUI controllers may construct
+                # QObject/QWidget/QTimer instances and therefore must only be
+                # created while this callback is running on the Qt thread.
+                if gui_feature:
+                    self._app.ensure_optional_gui(gui_feature)
+            except Exception as exc:
+                failed(exc)
+                return
+            self._finish(category, None)
+            self.emit_effect(SettingsSectionReady(category))
 
         self.run_exclusive(
             f"settings-section:{category}",

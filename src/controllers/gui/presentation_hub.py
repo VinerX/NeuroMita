@@ -20,14 +20,20 @@ from services.contracts import (
     TelegramAuthService,
     VoiceModelService,
 )
-from ui.presentation import UiEvent, UiSettingsDataKey, UiTopic
+from controllers.gui.presentation_contracts import UiEvent, UiSettingsDataKey, UiTopic
 
 
 class _SettingsDataController:
-    def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
-        from controllers.gui.settings_data_prefetch import get_cached_settings_data
+    """Владелец кэша данных настроек: единственный экземпляр SettingsDataCache
+    живёт здесь, а не модульным синглтоном."""
 
-        return get_cached_settings_data(str(key), default)
+    def __init__(self) -> None:
+        from controllers.gui.settings_data_prefetch import SettingsDataCache
+
+        self._cache = SettingsDataCache()
+
+    def get(self, key: UiSettingsDataKey | str, default: Any = None) -> Any:
+        return self._cache.get(str(key), default)
 
     def request(
         self,
@@ -40,9 +46,7 @@ class _SettingsDataController:
         name: str | None = None,
         force: bool = False,
     ):
-        from controllers.gui.settings_data_prefetch import request_settings_data
-
-        return request_settings_data(
+        return self._cache.request(
             target,
             str(key),
             worker,
@@ -52,10 +56,13 @@ class _SettingsDataController:
             force=force,
         )
 
+    def clear(self, key: UiSettingsDataKey | str | None = None) -> None:
+        self._cache.clear(str(key) if key is not None else None)
+
     def prefetch_section(self, gui: Any, category: str) -> None:
         from controllers.gui.settings_data_prefetch import prefetch_settings_section
 
-        prefetch_settings_section(gui, str(category))
+        prefetch_settings_section(gui, str(category), self._cache)
 
     def embed_preset_items_from_meta(self, meta: Any) -> list[tuple[str, Any]]:
         from controllers.gui.settings_data_prefetch import embed_preset_items_from_meta
@@ -64,10 +71,13 @@ class _SettingsDataController:
 
 
 class _ProviderOptionsController:
+    def __init__(self, settings_data: "_SettingsDataController") -> None:
+        self._settings_data = settings_data
+
     def current(self) -> list[Any]:
         from controllers.gui.provider_options import current_provider_options
 
-        return list(current_provider_options())
+        return list(current_provider_options(self._settings_data))
 
     def load(self) -> list[Any]:
         from controllers.gui.provider_options import load_provider_options
@@ -77,21 +87,189 @@ class _ProviderOptionsController:
     def load_async(self, gui: Any, setting_keys: tuple[str, ...], *, name: str):
         from controllers.gui.provider_options import load_api_provider_options_async
 
-        return load_api_provider_options_async(gui, setting_keys, name=name)
+        return load_api_provider_options_async(
+            gui, setting_keys, settings_data=self._settings_data, name=name
+        )
 
 
 class _SettingsSectionsController:
+    def __init__(self, presentation: "UiPresentationHub") -> None:
+        self._presentation = presentation
+
+    def build_section(self, gui: Any, category: str, parent: Any) -> None:
+        key = str(category or "").strip().lower()
+        if key == "general":
+            from ui.settings.general_settings import setup_general_settings_controls
+
+            setup_general_settings_controls(gui, parent)
+            return
+        if key == "language":
+            from ui.settings.language_settings import setup_language_settings_controls
+
+            setup_language_settings_controls(gui, parent)
+            return
+        if key == "api":
+            from ui.settings.api_settings import setup_api_controls
+
+            setup_api_controls(gui, parent, wire_api=self.wire_api)
+            return
+        if key == "characters":
+            from ui.settings.character_settings import setup_mita_controls
+
+            setup_mita_controls(
+                gui,
+                parent,
+                wire_characters=self.wire_characters,
+            )
+            return
+        if key == "voice":
+            from ui.settings.voiceover_settings import setup_voiceover_controls
+
+            owner = self._section_owner(gui, parent)
+            actions = self._own_view_model(
+                self._presentation.view_models.voiceover_settings(gui),
+                owner,
+            )
+            setup_voiceover_controls(
+                gui,
+                parent,
+                actions=actions,
+                wire_voiceover=self.wire_voiceover,
+            )
+            return
+        if key == "microphone":
+            from ui.settings.microphone_settings import setup_microphone_controls
+
+            setup_microphone_controls(
+                gui,
+                parent,
+                wire_microphone=self.wire_microphone,
+            )
+            return
+        if key == "ai_engine":
+            from ui.settings.ai_engine_settings import setup_ai_engine_settings_controls
+
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(
+                self._presentation.view_models.ai_engine_settings(gui),
+                owner,
+            )
+            setup_ai_engine_settings_controls(
+                gui,
+                parent,
+                view_model=view_model,
+            )
+            return
+        if key == "game":
+            from ui.settings.game_settings import setup_game_controls
+
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(
+                self._presentation.view_models.beat_settings(gui),
+                owner,
+            )
+            setup_game_controls(gui, parent, beat_view_model=view_model)
+            return
+        if key == "models":
+            from PyQt6.QtWidgets import QMessageBox
+            from ui.settings.model_interaction_settings import (
+                setup_model_interaction_controls,
+            )
+            from ui.settings.rag_install_presentation import RagInstallShowError
+
+            owner = self._section_owner(gui, parent)
+            runtime_options = self._runtime_options_view_model(gui)
+            embed_provider = self._own_view_model(
+                self._presentation.view_models.embed_provider(gui),
+                owner,
+            )
+            rag_preset = self._own_view_model(
+                self._presentation.view_models.rag_preset(gui),
+                owner,
+            )
+            rag_install = self._own_view_model(
+                self._presentation.view_models.rag_install(gui),
+                owner,
+            )
+
+            def show_rag_error(effect) -> None:
+                if isinstance(effect, RagInstallShowError):
+                    QMessageBox.critical(gui, effect.title, effect.message)
+
+            rag_install.effect_emitted.connect(show_rag_error)
+            setup_model_interaction_controls(
+                gui,
+                parent,
+                runtime_options_view_model=runtime_options,
+                build_memory_section=self._presentation.rag.build_memory_section,
+                build_rag_section=lambda target, layout, providers: self._presentation.rag.build_rag_section(
+                    target,
+                    layout,
+                    providers,
+                    rag_preset_view_model=rag_preset,
+                    embed_provider_view_model=embed_provider,
+                    rag_install_view_model=rag_install,
+                ),
+            )
+            return
+        if key == "screen":
+            from ui.settings.screen_analysis_settings import (
+                setup_screen_analysis_controls,
+            )
+
+            setup_screen_analysis_controls(
+                gui,
+                parent,
+                runtime_options_view_model=self._runtime_options_view_model(gui),
+            )
+            return
+        if key == "updates":
+            self.build_updates(gui, parent)
+            return
+        raise KeyError(f"Unknown settings section: {category}")
+
+    @staticmethod
+    def _section_owner(gui: Any, parent: Any):
+        try:
+            owner = parent.parentWidget()
+        except Exception:
+            owner = None
+        return owner or getattr(gui, "settings_page", None) or gui
+
+    @staticmethod
+    def _own_view_model(view_model, owner):
+        view_model.setParent(owner)
+        owner.destroyed.connect(lambda *_args, vm=view_model: vm.close())
+        return view_model
+
+    def _runtime_options_view_model(self, gui: Any):
+        page = getattr(gui, "settings_page", None) or gui
+        view_model = getattr(page, "runtime_options_view_model", None)
+        if view_model is None or view_model.is_closed:
+            view_model = self._own_view_model(
+                self._presentation.view_models.settings_runtime_options(gui),
+                page,
+            )
+            page.runtime_options_view_model = view_model
+        return view_model
+
     def wire_api(self, gui: Any):
         from controllers.gui.api_settings import ApiSettingsController
 
-        controller = ApiSettingsController(gui)
+        controller = ApiSettingsController(
+            gui,
+            settings_data=self._presentation.settings_data,
+        )
         setattr(gui, "api_settings_logic", controller)
         return controller
 
     def wire_characters(self, gui: Any):
         from controllers.gui.character_settings_logic import wire_character_settings_logic
 
-        return wire_character_settings_logic(gui)
+        return wire_character_settings_logic(
+            gui,
+            settings_data=self._presentation.settings_data,
+        )
 
     def wire_microphone(self, gui: Any):
         from controllers.gui.microphone_settings_logic import wire_microphone_settings_logic
@@ -111,29 +289,50 @@ class _SettingsSectionsController:
     def build_updates(self, gui: Any, parent: Any) -> None:
         from controllers.gui.updates_settings_controller import setup_updates_settings_controls
 
-        setup_updates_settings_controls(gui, parent)
+        setup_updates_settings_controls(
+            gui,
+            parent,
+            pending_restart_version=lambda: self._presentation.app.pending_restart_version,
+            set_pending_restart_version=self._presentation.app.set_pending_restart_version,
+        )
 
 
 class _RagController:
+    def __init__(self) -> None:
+        from controllers.gui.rag_memory_controller import RagSettingsCoordinator
+
+        self._coordinator = RagSettingsCoordinator()
+
     def build_memory_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
-        from controllers.gui.rag_memory_controller import build_memory_section
+        self._coordinator.build_memory_section(gui, parent, provider_options)
 
-        build_memory_section(gui, parent, provider_options)
+    def build_rag_section(
+        self,
+        gui: Any,
+        parent: Any,
+        provider_options: list[Any],
+        *,
+        rag_preset_view_model,
+        embed_provider_view_model,
+        rag_install_view_model,
+    ) -> None:
+        self._coordinator.build_rag_section(
+            gui,
+            parent,
+            provider_options,
+            rag_preset_view_model=rag_preset_view_model,
+            embed_provider_view_model=embed_provider_view_model,
+            rag_install_view_model=rag_install_view_model,
+        )
 
-    def build_rag_section(self, gui: Any, parent: Any, provider_options: list[Any]) -> None:
-        from controllers.gui.rag_memory_controller import build_rag_section
+    def download_embed_model(self) -> None:
+        from controllers.gui.rag_install_view_model import open_rag_ai_hub
+        from managers.rag.install_spec import TARGET_EMBEDDINGS
 
-        build_rag_section(gui, parent, provider_options)
-
-    def download_embed_model(self, gui: Any) -> None:
-        from controllers.gui.rag_memory_controller import _download_embed_model
-
-        _download_embed_model(gui)
+        open_rag_ai_hub(TARGET_EMBEDDINGS)
 
     def is_embed_model_downloaded(self) -> bool:
-        from controllers.gui.rag_memory_controller import _is_embed_model_downloaded
-
-        return bool(_is_embed_model_downloaded())
+        return bool(use(InstallableCatalogService).is_ready("rag:embeddings"))
 
     def embed_status_text(self) -> str:
         from controllers.gui.rag_memory_controller import _get_embed_status_text
@@ -150,6 +349,7 @@ class _ViewModelFactory:
 
         return HomePageViewModel(
             host=host,
+            app=self._presentation.app,
             home_controller=self._presentation.home,
             news_controller=self._presentation.news,
             settings=self._presentation.settings,
@@ -215,6 +415,20 @@ class _ViewModelFactory:
 
         return VoiceoverSettingsViewModel(
             events=self._presentation.events,
+            open_settings=lambda category: host.show_settings_category(
+                category,
+                force=True,
+            ),
+            parent=parent,
+        )
+
+    def ai_engine_settings(self, host: Any, *, parent: Any = None):
+        from controllers.gui.ai_engine_settings_view_model import (
+            AIEngineSettingsViewModel,
+        )
+
+        return AIEngineSettingsViewModel(
+            events=self._presentation.events,
             parent=parent,
         )
 
@@ -225,6 +439,7 @@ class _ViewModelFactory:
 
         return ChatMessageActionsViewModel(
             events=self._presentation.events,
+            finetune=self._presentation.finetune,
             parent=parent,
         )
 
@@ -258,6 +473,22 @@ class _ViewModelFactory:
             parent=parent,
         )
 
+    def rag_install(self, host: Any, *, parent: Any = None):
+        from controllers.gui.rag_install_view_model import RagInstallViewModel
+
+        return RagInstallViewModel(
+            settings_data=self._presentation.settings_data,
+            parent=parent,
+        )
+
+    def rag_preset(self, host: Any, *, parent: Any = None):
+        from controllers.gui.rag_preset_view_model import RagPresetViewModel
+
+        return RagPresetViewModel(
+            settings=use(SettingsService),
+            parent=parent,
+        )
+
     def settings_page(self, host: Any, *, parent: Any = None):
         from controllers.gui.settings_page_view_model import SettingsPageViewModel
 
@@ -268,38 +499,48 @@ class _ViewModelFactory:
             parent=parent,
         )
 
+    def logs_page(self, host: Any, *, parent: Any = None):
+        from controllers.gui.logs_page_view_model import LogsPageViewModel
+
+        return LogsPageViewModel(parent=parent)
+
 
 class _NewsController:
+    """Владелец кэша ленты релизов (NewsReleasesStore)."""
+
+    def __init__(self) -> None:
+        from controllers.gui.news_controller import NewsReleasesStore
+
+        self._store = NewsReleasesStore()
+
     @property
     def repository(self) -> str:
         from controllers.gui.news_controller import NEWS_REPO
 
         return str(NEWS_REPO)
 
-    def invalidate(self, gui: Any) -> None:
-        from controllers.gui.news_controller import invalidate_news_releases
+    def invalidate(self) -> None:
+        self._store.invalidate()
 
-        invalidate_news_releases(gui)
-
-    def load_async(self, gui: Any, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
+    def load_async(self, target: Any, on_ready: Callable[[list[dict[str, Any]]], None]) -> None:
         from controllers.gui.news_controller import load_news_releases_async
 
-        load_news_releases_async(gui, on_ready)
+        load_news_releases_async(self._store, target, on_ready)
 
-    def get_releases(self, gui: Any) -> list[dict[str, Any]]:
+    def get_releases(self) -> list[dict[str, Any]]:
         from controllers.gui.news_controller import get_news_releases
 
-        return list(get_news_releases(gui))
+        return list(get_news_releases(self._store))
 
-    def get_content(self, gui: Any) -> str:
+    def get_content(self) -> str:
         from controllers.gui.news_controller import get_news_content
 
-        return str(get_news_content(gui))
+        return str(get_news_content(self._store))
 
-    def build_items(self, gui: Any, *, limit: int | None = 8):
+    def build_items(self, *, limit: int | None = 8):
         from controllers.gui.news_controller import build_release_news_items
 
-        return list(build_release_news_items(gui, limit=limit))
+        return list(build_release_news_items(self._store, limit=limit))
 
 
 class _EventsController:
@@ -314,8 +555,11 @@ class _EventsController:
         topic: UiTopic,
         callback: Callable[[UiEvent], None],
         *,
-        weak: bool = True,
+        weak: bool = False,
     ):
+        # weak=True опасен для лямбд и локальных замыканий: weakref умирает
+        # сразу после подписки, и колбэк молча перестаёт получать события.
+        # Слабую подписку нужно запрашивать явно и только для bound-методов.
         normalized = UiTopic(topic)
         callback_ref = None
         strong_callback = callback
@@ -505,7 +749,7 @@ class _FineTuneController:
     def enforce_limit(self) -> None:
         collector = self._instance()
         if collector is not None:
-            collector._enforce_limit()
+            collector.enforce_limit()
 
     def set_data_directory(self, path: str) -> None:
         from pathlib import Path
@@ -558,15 +802,9 @@ class _VoiceController:
 
 class _InstallableController:
     def __init__(self) -> None:
-        registry = services()
-        if registry.is_registered(InstallableCatalogService):
-            self._catalog = registry.get(InstallableCatalogService)
-        else:
-            from services.installable_catalog_service import DefaultInstallableCatalogService
-
-            settings = registry.get_optional(SettingsService)
-            self._catalog = DefaultInstallableCatalogService(settings)
-            registry.register(InstallableCatalogService, self._catalog)
+        # Владелец сервиса — композиционный корень (__main__ / main_controller);
+        # хаб только потребляет. Отсутствие — ошибка порядка старта.
+        self._catalog = use(InstallableCatalogService)
 
     def list_rows(self, **kwargs):
         return self._catalog.list_rows(**kwargs)
@@ -615,10 +853,29 @@ class _InstallableController:
 class _ApplicationController:
     _main_controller: Any = None
     _startup_error: str = ""
+    # Единый источник истины для «Python обновлён, нужен перезапуск» и
+    # троттлинга проверки обновлений. Раньше это состояние жило атрибутами
+    # на окне (_pending_python_restart_version) и читалось тремя слоями.
+    _pending_restart_version: str = ""
+    _last_update_check_ts: float = 0.0
 
     @property
     def main_controller(self):
         return self._main_controller
+
+    @property
+    def pending_restart_version(self) -> str:
+        return self._pending_restart_version
+
+    def set_pending_restart_version(self, version: str | None) -> None:
+        self._pending_restart_version = str(version or "").strip()
+
+    @property
+    def last_update_check_ts(self) -> float:
+        return self._last_update_check_ts
+
+    def mark_update_check(self, timestamp: float) -> None:
+        self._last_update_check_ts = float(timestamp)
 
     @property
     def backend_ready(self) -> bool:
@@ -659,10 +916,11 @@ class _ApplicationController:
 
 
 class UiPresentationHub:
-    """Application-facing controllers injected into passive Qt views.
+    """Application-facing controllers owned by the GUI composition root.
 
-    The hub belongs to the composition root. Views may use these controllers,
-    but never resolve EventBus, service implementations, managers or databases.
+    Coordinators and ViewModel factories use this hub to assemble passive Qt
+    views. Views receive only their narrow state/action dependencies and never
+    resolve this hub, EventBus, service implementations, managers or databases.
     """
 
     def __init__(self) -> None:
@@ -670,8 +928,8 @@ class UiPresentationHub:
         self.settings = _SettingsController()
         self.app = _ApplicationController()
         self.settings_data = _SettingsDataController()
-        self.providers = _ProviderOptionsController()
-        self.settings_sections = _SettingsSectionsController()
+        self.providers = _ProviderOptionsController(self.settings_data)
+        self.settings_sections = _SettingsSectionsController(self)
         self.rag = _RagController()
         self.view_models = _ViewModelFactory(self)
 

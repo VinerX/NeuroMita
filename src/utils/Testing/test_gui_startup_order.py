@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import ast
+import os
 import sys
 import types
 import unittest
@@ -28,6 +29,64 @@ class _Trace:
 
 
 class GuiStartupOrderTests(unittest.TestCase):
+    def test_gui_runtime_disables_global_native_widget_promotion(self):
+        from startup import runtime_bootstrap
+
+        calls = []
+        native_windows = object()
+        dont_create_native_siblings = object()
+
+        class QCoreApplication:
+            @staticmethod
+            def setAttribute(attribute, enabled=True):
+                calls.append((attribute, enabled))
+
+        application_attributes = SimpleNamespace(
+            AA_NativeWindows=native_windows,
+            AA_DontCreateNativeWidgetSiblings=dont_create_native_siblings,
+        )
+        qapplication = object()
+
+        def fake_module(name: str, **attrs):
+            result = types.ModuleType(name)
+            for key, value in attrs.items():
+                setattr(result, key, value)
+            return result
+
+        pyqt = fake_module("PyQt6")
+        pyqt.__path__ = []
+        qt_core = fake_module(
+            "PyQt6.QtCore",
+            QCoreApplication=QCoreApplication,
+            Qt=SimpleNamespace(ApplicationAttribute=application_attributes),
+        )
+        qt_widgets = fake_module(
+            "PyQt6.QtWidgets",
+            QApplication=qapplication,
+        )
+        pyqt.QtCore = qt_core
+        pyqt.QtWidgets = qt_widgets
+
+        with patch.dict(
+            sys.modules,
+            {
+                "PyQt6": pyqt,
+                "PyQt6.QtCore": qt_core,
+                "PyQt6.QtWidgets": qt_widgets,
+            },
+        ), patch.dict(os.environ, {"QT_USE_NATIVE_WINDOWS": "1"}, clear=False):
+            imported = runtime_bootstrap._import_gui_runtime()
+            self.assertNotIn("QT_USE_NATIVE_WINDOWS", os.environ)
+
+        self.assertIs(imported, qapplication)
+        self.assertEqual(
+            calls,
+            [
+                (native_windows, False),
+                (dont_create_native_siblings, True),
+            ],
+        )
+
     def test_home_is_the_initial_main_page(self):
         window_source = (PROJECT_SRC / "ui" / "windows" / "main_window.py").read_text(
             encoding="utf-8"
@@ -196,11 +255,13 @@ class GuiStartupOrderTests(unittest.TestCase):
                 name: type(name, (), {})
                 for name in (
                     "AppVarsService",
+                    "ASRSettingsService",
                     "CharacterRegistry",
                     "GameLinkService",
                     "LoopService",
                     "SettingsService",
                     "InstallableCatalogService",
+                    "HardwareInventoryService",
                 )
             }
             pyqt = fake_module("PyQt6")
@@ -241,13 +302,29 @@ class GuiStartupOrderTests(unittest.TestCase):
                     "services.settings_service",
                     DefaultAppVarsService=lambda *_args: object(),
                 ),
+                "services.asr_settings_service": fake_module(
+                    "services.asr_settings_service",
+                    ensure_asr_settings_service=lambda: object(),
+                ),
                 "services.installable_catalog_service": fake_module(
                     "services.installable_catalog_service",
                     DefaultInstallableCatalogService=lambda *_args: object(),
                 ),
+                "services.hardware_inventory_service": fake_module(
+                    "services.hardware_inventory_service",
+                    WindowsHardwareInventoryService=lambda: object(),
+                ),
                 "controllers.gui.composition_root": fake_module(
                     "controllers.gui.composition_root",
                     GuiCompositionRoot=GuiCompositionRoot,
+                ),
+                "controllers.gui.qt_dispatch": fake_module(
+                    "controllers.gui.qt_dispatch",
+                    install_qt_dispatcher=lambda _app: events.append("qt_dispatcher"),
+                ),
+                "controllers.gui.qt_logging": fake_module(
+                    "controllers.gui.qt_logging",
+                    install_qt_message_logging=lambda _logger: events.append("qt_logging"),
                 ),
                 "controllers.main_controller": fake_module(
                     "controllers.main_controller",

@@ -6,7 +6,13 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import CharacterRegistry, LocalVoiceService, LoopService, SettingsService
+from services.contracts import (
+    CharacterRegistry,
+    InstallableCatalogService,
+    LocalVoiceService,
+    LoopService,
+    SettingsService,
+)
 from utils import getTranslationVariant as _
 
 
@@ -174,29 +180,12 @@ class LocalVoiceController(LocalVoiceService):
         if not model_id:
             return False
 
-        cached = self._installed_cache.get(model_id)
-        if cached is not None:
-            return bool(cached)
-
         try:
-            eng = self._get_engine()
-            if not eng:
-                return False
-            cfut = eng.call("tts", "check_installed", {"model_id": model_id})
-
-            def _done(f):
-                try:
-                    ok = bool(f.result())
-                    self._installed_cache[model_id] = ok
-                    self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
-                except Exception:
-                    self._installed_cache[model_id] = False
-
-            cfut.add_done_callback(_done)
+            ready = bool(use(InstallableCatalogService).is_ready(f"tts:{model_id}"))
         except Exception:
-            pass
-
-        return False
+            ready = False
+        self._installed_cache[model_id] = ready
+        return ready
 
     def _on_check_model_initialized(self, event: Event):
         model_id = str((event.data or {}).get("model_id") or "").strip()

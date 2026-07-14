@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from PyQt6.QtCore import QRegularExpression, QTimer
 from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import QLabel, QFrame, QPlainTextEdit, QVBoxLayout, QWidget
 
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, create_logs_page
+from ui.pages.logs_presentation import LogsShowError, OpenLogsFolder, RefreshLogs
+from ui.dialogs.styled_message import show_styled_message
 from utils import _
 from localization.live import tr_set
-
-_LOG_TAIL_BYTES = 64 * 1024
-_LOG_TAIL_LINES = 500
-
 
 _LOG_LEVEL_COLORS: dict[str, str] = {
     "DEBUG":    "#888888",
@@ -70,9 +66,10 @@ def _append_to_shell_page(page: QWidget, widget: QWidget) -> None:
 
 
 class LogsPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions):
+        super().__init__(parent)
+        self._page_actions = page_actions
+        self._view_model = view_model
         self.setObjectName("LogsPage")
 
         self._logs_timer = QTimer(self)
@@ -85,28 +82,14 @@ class LogsPage(QWidget):
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
 
-        self._sync_host_exports()
         self._build_ui()
-
-    def _sync_host_exports(self):
-        self.gui.logs_page = self
+        self._view_model.state_changed.connect(self.render)
+        self._view_model.effect_emitted.connect(self.handle_effect)
+        self.destroyed.connect(lambda *_args: self._view_model.close())
+        self.render(self._view_model.state)
 
     def _is_active(self) -> bool:
-        return getattr(self.gui, "current_main_page", None) == "logs"
-
-    def _read_log_tail(self, log_path: Path) -> str:
-        with log_path.open("rb") as handle:
-            handle.seek(0, 2)
-            file_size = handle.tell()
-            read_from = max(0, file_size - _LOG_TAIL_BYTES)
-            handle.seek(read_from)
-            chunk = handle.read()
-
-        text = chunk.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        if read_from > 0 and lines:
-            lines = lines[1:]
-        return "\n".join(lines[-_LOG_TAIL_LINES:])
+        return self._page_actions.is_current("logs")
 
     def _build_live_stream_card(self) -> QFrame:
         card = QFrame()
@@ -135,7 +118,6 @@ class LogsPage(QWidget):
         self._log_highlighter = _LogHighlighter(self.logs_window.document())
         card_layout.addWidget(self.logs_window)
 
-        self.gui.logs_window = self.logs_window
         return card
 
     def _build_ui(self):
@@ -148,7 +130,12 @@ class LogsPage(QWidget):
             items=[],
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self.refresh_logs, icon_name="fa6s.rotate-right"),
-                DashboardAction(_("Открыть папку", "Open folder"), callback=self.gui._open_logs_folder, icon_name="fa6s.folder-open", accent=False),
+                DashboardAction(
+                    _("Открыть папку", "Open folder"),
+                    callback=lambda: self._view_model.dispatch(OpenLogsFolder()),
+                    icon_name="fa6s.folder-open",
+                    accent=False,
+                ),
                 DashboardAction(_("Диагностика в песочнице", "Sandbox diagnostics"), callback=self._open_sandbox_debug, icon_name="fa6s.bug", accent=False),
             ],
         )
@@ -158,10 +145,7 @@ class LogsPage(QWidget):
     def _open_sandbox_debug(self):
         if self._logs_timer.isActive():
             self._logs_timer.stop()
-        self.gui.switch_main_page("sandbox")
-        page = getattr(self.gui, "sandbox_page", None)
-        if page is not None and hasattr(page, "show_debug_tab"):
-            QTimer.singleShot(0, page.show_debug_tab)
+        self._page_actions.open_sandbox_debug()
 
     def refresh_logs(self):
         if self.logs_window is None:
@@ -171,29 +155,31 @@ class LogsPage(QWidget):
                 self._logs_timer.stop()
             return
 
-        log_path = Path("NeuroMitaLogs.log")
-        try:
-            if not log_path.exists():
-                tail = _("Файл логов пока не создан.", "Log file does not exist yet.")
-            else:
-                tail = self._read_log_tail(log_path)
-        except Exception as exc:
-            tail = _("Не удалось прочитать лог: {err}", "Failed to read log: {err}").format(err=exc)
+        self._view_model.dispatch(RefreshLogs())
 
-        if tail == self._last_tail:
+    def render(self, state) -> None:
+        if self.logs_window is None or state.text == self._last_tail:
             return
-
         scrollbar = self.logs_window.verticalScrollBar()
         at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
-        self.logs_window.setPlainText(tail)
-        self._last_tail = tail
+        self.logs_window.setPlainText(state.text)
+        self._last_tail = state.text
         if at_bottom:
             scrollbar.setValue(scrollbar.maximum())
+
+    def handle_effect(self, effect) -> None:
+        if isinstance(effect, LogsShowError):
+            show_styled_message(
+                self,
+                effect.title,
+                effect.message,
+                level="error",
+            )
 
     def on_activated(self):
         if not self._logs_timer.isActive():
             self._logs_timer.start()
-        self.gui.update_debug_info()
+        self._page_actions.refresh_debug_info()
         self.refresh_logs()
 
     def on_deactivated(self):
@@ -201,5 +187,5 @@ class LogsPage(QWidget):
             self._logs_timer.stop()
 
 
-def build_logs_page(window) -> QWidget:
-    return LogsPage(window)
+def build_logs_page(parent, view_model, page_actions) -> QWidget:
+    return LogsPage(parent, view_model, page_actions)

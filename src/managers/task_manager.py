@@ -75,7 +75,7 @@ class TaskManager:
                 uid=uid,
                 status=TaskStatus.PENDING,
                 type=task_type,
-                data=data,
+                data=copy.deepcopy(data),
                 created_at=current_time,
                 updated_at=current_time
             )
@@ -85,7 +85,7 @@ class TaskManager:
             
             self._cleanup_if_needed()
             
-            return task
+            return task.snapshot()
     
     def update_task_status(
         self,
@@ -116,11 +116,12 @@ class TaskManager:
                 task.error = error
 
             logger.info(f"Updated task {uid} status to {status.value}")
-            return task
+            return task.snapshot()
 
     def get_task(self, uid: str) -> Optional[Task]:
         with self._lock:
-            return self._tasks.get(uid)
+            task = self._tasks.get(uid)
+            return task.snapshot() if task is not None else None
     
     def delete_task(self, uid: str) -> bool:
         with self._lock:

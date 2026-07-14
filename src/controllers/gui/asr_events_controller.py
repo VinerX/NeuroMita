@@ -7,7 +7,7 @@ from main_logger import logger
 from core.events import Events, Event
 from core.services import services
 from core.task_supervisor import task_supervisor
-from services.contracts import SpeechService
+from services.contracts import InstallableCatalogService, SpeechService
 from .base_controller import BaseController
 from utils import getTranslationVariant as _
 
@@ -16,7 +16,8 @@ class AsrEventsController(BaseController):
     def __init__(self, main_controller, view):
         self._asr_initializing: bool = False
         self._init_engine: str | None = None
-        self._pill_kind: str | None = None  # "loading" | "ready" | None — для live-перевода
+        self._pill_kind: str | None = None  # "loading" | "ready" | "error" | None
+        self._asr_error: str | None = None
         self._asr_installing: bool = False
         self._install_engine: str | None = None
         self._install_progress: int | None = None
@@ -43,6 +44,7 @@ class AsrEventsController(BaseController):
 
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized, weak=False)
+        eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed, weak=False)
 
         eb.subscribe(Events.Install.TASK_STARTED, self._on_install_started, weak=False)
         eb.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
@@ -128,15 +130,17 @@ class AsrEventsController(BaseController):
         (а не готовую строку), чтобы уметь перерисовать её на новом языке при
         live-переключении локали."""
         self._pill_kind = kind
-        if not kind:
-            return
         if not (self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status")):
             return
 
-        if kind == "loading":
+        if not kind:
+            text, pill_kind = "—", "info"
+        elif kind == "loading":
             text, pill_kind = self._asr_loading_text(self._init_engine), "progress"
         elif kind == "ready":
             text, pill_kind = _("Готово", "Ready"), "ok"
+        elif kind == "error":
+            text, pill_kind = _("Ошибка", "Error"), "warn"
         else:
             return
 
@@ -152,6 +156,7 @@ class AsrEventsController(BaseController):
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
+        self._asr_error = None
         self._init_engine = str((_event.data or {}).get("engine") or "").strip().lower() or None
         self._arm_init_timeout_guard()
 
@@ -162,8 +167,20 @@ class AsrEventsController(BaseController):
 
     def _on_asr_initialized(self, _event: Event):
         self._asr_initializing = False
+        self._asr_error = None
 
         self._set_pill("ready")
+        self._sync_indicator(force=True)
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_asr_failed(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        self._asr_initializing = False
+        self._asr_error = str(data.get("message") or "").strip() or _(
+            "ASR не удалось запустить", "ASR failed to start"
+        )
+        self._ready_cache = (False, time.time())
+        self._set_pill("error")
         self._sync_indicator(force=True)
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
@@ -306,10 +323,13 @@ class AsrEventsController(BaseController):
                     if not bool(change.value):
                         self._asr_initializing = False
                         self._ready_cache = (None, 0.0)
+                        if not self._asr_error:
+                            self._set_pill(None)
                 except Exception:
                     pass
 
             if key == "RECOGNIZER_TYPE":
+                self._asr_error = None
                 self._ready_cache = (None, 0.0)
 
             self._sync_indicator(force=True)
@@ -365,21 +385,21 @@ class AsrEventsController(BaseController):
                 if int(self._installed_inflight.get(eng, 0)) != tok:
                     return
                 ok = False
-                if error is None:
-                    ok = bool(result)
+                if error is None and isinstance(result, dict):
+                    ok = bool(result.get("ready", False))
                 self._installed_cache[eng] = (ok, time.time())
                 self._sync_indicator(force=True)
 
             self._ui_safe(apply)
 
-        speech = services().get_optional(SpeechService)
-        if speech is None:
-            cb(False, RuntimeError("Speech service is unavailable"))
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
             return
         try:
-            speech.asr_model_installed_async(eng, cb)
+            catalog.get_status_async(f"asr:{eng}", cb)
         except Exception as exc:
-            cb(False, exc)
+            cb({}, exc)
 
     def _get_installed_cached(self, engine: str) -> bool | None:
         eng = str(engine or "").strip()
@@ -443,7 +463,14 @@ class AsrEventsController(BaseController):
             return
 
         if not mic_active:
-            self._emit_indicator(None, None)
+            if self._asr_error:
+                self._emit_indicator("red", self._asr_error)
+            else:
+                self._emit_indicator(None, None)
+            return
+
+        if self._asr_error:
+            self._emit_indicator("red", self._asr_error)
             return
 
         installed = self._get_installed_cached(engine)

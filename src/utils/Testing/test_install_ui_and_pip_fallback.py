@@ -21,6 +21,25 @@ from services.contracts import InstallQueueService
 
 
 class InstallUiCallbackTests(unittest.TestCase):
+    def test_default_install_window_receives_requested_style_variant(self):
+        captured: dict[str, object] = {}
+
+        class Signal:
+            def emit(self, title, initial_status, holder):
+                captured.update(title=title, initial_status=initial_status, holder=holder)
+                holder["window"] = object()
+                holder["callbacks"] = (lambda *_: None,) * 4
+                holder["ready_event"].set()
+
+        controller = InstallGuiController.__new__(InstallGuiController)
+        controller.view = type("View", (), {"create_installation_window_signal": Signal()})()
+
+        controller._create_install_window("Installing RAG", "Preparing...", "ai_hub")
+
+        self.assertEqual(captured["title"], "Installing RAG")
+        self.assertEqual(captured["initial_status"], "Preparing...")
+        self.assertEqual(captured["holder"]["style_variant"], "ai_hub")
+
     def test_normalize_callbacks_accepts_legacy_triplet_and_adds_raw_noop(self):
         statuses: list[str] = []
         logs: list[str] = []
@@ -267,9 +286,11 @@ class PipInstallerFallbackTests(unittest.TestCase):
                     )
                     return True, 2
 
-                with patch.object(installer, "_ensure_pty_available", return_value=False), patch.object(
-                    installer, "_detect_pty", return_value=(False, None)
-                ), patch.object(installer, "_run_with_pipes", side_effect=fake_run):
+                with patch.object(installer, "_assert_not_gui_thread"), patch.object(
+                    installer, "_ensure_pty_available", return_value=False
+                ), patch.object(installer, "_detect_pty", return_value=(False, None)), patch.object(
+                    installer, "_run_with_pipes", side_effect=fake_run
+                ):
                     ok = installer._run_pip_process(
                         [sys.executable, "-m", "uv", "--verbose", "pip", "install", "tts-with-rvc"],
                         "Installing...",

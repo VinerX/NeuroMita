@@ -8,7 +8,6 @@ from typing import Any
 
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -21,6 +20,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+try:
+    import qtawesome as qta
+except Exception:
+    qta = None
 
 from ui.mvvm import mutable_payload
 from ui.windows.ai_hub.presentation import (
@@ -39,12 +43,13 @@ from ui.windows.ai_hub.presentation import (
     SubmitComponentAction,
 )
 from main_logger import logger
+from core.services import services
+from services.contracts import HardwareInventoryService
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label, get_primary_gpu_name
 
-from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
+from .constants import CATEGORY_ICONS, CATEGORY_ORDER, ROW_CATEGORY_MAP, category_label
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
 from .widgets import CategoryButton, ModelCard, Stat
 
@@ -135,6 +140,14 @@ class AIHubDialog(QDialog):
         self.setObjectName("AIHubDialog")
         self.setWindowTitle(_("AI Hub", "AI Hub"))
         self.setModal(False)
+        # Кнопка сворачивания: у QDialog её в заголовке по умолчанию нет.
+        # WindowSystemMenuHint нужен, чтобы системные кнопки вообще появились;
+        # заодно убираем бесполезную контекстную «?»-кнопку.
+        flags = self.windowFlags()
+        flags |= Qt.WindowType.WindowMinimizeButtonHint
+        flags |= Qt.WindowType.WindowSystemMenuHint
+        flags &= ~Qt.WindowType.WindowContextHelpButtonHint
+        self.setWindowFlags(flags)
         # Размеры под экран: на узких/масштабированных дисплеях жёсткие 1280×820 и
         # min 1100×700 уводили контент (сайдбар + панель настроек) за левую кромку
         # окна — «интерфейс поехал» (#21). Клампим к доступной геометрии экрана и
@@ -283,17 +296,17 @@ class AIHubDialog(QDialog):
         title_box = QVBoxLayout()
         title_box.setContentsMargins(0, 0, 0, 0)
         title_box.setSpacing(2)
-        title = QLabel(_("AI Hub", "AI Hub"))
-        title.setObjectName("AIHubTitle")
-        title_box.addWidget(title)
-        subtitle = QLabel(
+        self._title_label = QLabel(_("AI Hub", "AI Hub"))
+        self._title_label.setObjectName("AIHubTitle")
+        title_box.addWidget(self._title_label)
+        self._subtitle_label = QLabel(
             _(
                 "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
                 "Install, remove and maintain local AI components and system dependencies.",
             )
         )
-        subtitle.setObjectName("AIHubSubtitle")
-        title_box.addWidget(subtitle)
+        self._subtitle_label.setObjectName("AIHubSubtitle")
+        title_box.addWidget(self._subtitle_label)
         header.addLayout(title_box, 1)
 
         # native OS window chrome already provides a close button
@@ -316,14 +329,14 @@ class AIHubDialog(QDialog):
         sidebar_layout.setContentsMargins(14, 16, 14, 14)
         sidebar_layout.setSpacing(8)
 
-        cat_header = QLabel(_("КАТЕГОРИИ", "CATEGORIES"))
-        cat_header.setObjectName("AIHubSidebarHeader")
-        sidebar_layout.addWidget(cat_header)
+        self._categories_header = QLabel(_("КАТЕГОРИИ", "CATEGORIES"))
+        self._categories_header.setObjectName("AIHubSidebarHeader")
+        sidebar_layout.addWidget(self._categories_header)
 
         for key in CATEGORY_ORDER:
             btn = CategoryButton(
                 key,
-                CATEGORY_LABELS.get(key, key),
+                category_label(key),
                 CATEGORY_ICONS.get(key, "fa5s.circle"),
                 self._select_category,
                 sidebar,
@@ -475,12 +488,7 @@ class AIHubDialog(QDialog):
         return self.banner
 
     def _build_toolbar(self) -> QVBoxLayout:
-        """Two-row toolbar.
-
-        Row 1: «Доступные компоненты» (page header) + backend filter pills
-               + search + sort.
-        Row 2: install / settings tab switcher.
-        """
+        """Build a two-level catalog toolbar without overlapping controls."""
         wrap = QVBoxLayout()
         wrap.setContentsMargins(0, 0, 0, 0)
         wrap.setSpacing(10)
@@ -489,13 +497,56 @@ class AIHubDialog(QDialog):
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(10)
 
-        title = QLabel(_("Доступные компоненты", "Available components"))
-        title.setObjectName("AIHubSectionTitle")
-        top.addWidget(title, 0)
+        self._component_list_title = QLabel(
+            category_label(self._selected_category)
+            if self._selected_category in CATEGORY_ORDER
+            else _("Компоненты", "Components")
+        )
+        self._component_list_title.setObjectName("AIHubSectionTitle")
+        top.addWidget(self._component_list_title, 0)
 
-        # «Открыть папку моделей» — показываем только в категории «Голоса Мит»,
-        # чтобы можно было вручную положить голосовые файлы (свой бандл, или
-        # когда автоустановка недоступна).
+        self._check_indicator = QFrame()
+        self._check_indicator.setObjectName("AIHubCheckIndicator")
+        self._check_indicator.setVisible(False)
+        check_layout = QHBoxLayout(self._check_indicator)
+        check_layout.setContentsMargins(8, 4, 10, 4)
+        check_layout.setSpacing(6)
+        self._check_spinner = QPushButton()
+        self._check_spinner.setObjectName("AIHubCheckSpinner")
+        self._check_spinner.setEnabled(False)
+        self._check_spinner.setFixedSize(18, 18)
+        if qta is not None:
+            try:
+                self._check_spin = qta.Spin(self._check_spinner)
+                self._check_spinner.setIcon(
+                    qta.icon(
+                        "fa5s.spinner",
+                        color="#dc588a",
+                        animation=self._check_spin,
+                    )
+                )
+                self._check_spinner.setIconSize(QSize(13, 13))
+            except Exception:
+                pass
+        check_layout.addWidget(self._check_spinner, 0)
+        self._check_text = QLabel(_("Проверяем компоненты…", "Checking components…"))
+        self._check_text.setObjectName("AIHubCheckText")
+        check_layout.addWidget(self._check_text, 0)
+        top.addWidget(self._check_indicator, 0)
+
+        top.addStretch(1)
+
+        self.search_box = QLineEdit()
+        self.search_box.setObjectName("AIHubSearch")
+        self.search_box.setPlaceholderText(_("Поиск в категории…", "Search this category…"))
+        self.search_box.setFixedWidth(280)
+        si = qicon("fa5s.search", "#bca9bb")
+        if si is not None:
+            action = self.search_box.addAction(si, QLineEdit.ActionPosition.LeadingPosition)
+            action.setEnabled(False)
+        self.search_box.textChanged.connect(self._rebuild_component_list)
+        top.addWidget(self.search_box, 0)
+
         self._open_models_btn = QPushButton(_("Открыть папку моделей", "Open models folder"))
         self._open_models_btn.setObjectName("AIHubSecondary")
         self._open_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -507,9 +558,13 @@ class AIHubDialog(QDialog):
         self._open_models_btn.setVisible(self._selected_category == "voices")
         top.addWidget(self._open_models_btn, 0)
 
-        top.addStretch(1)
+        filters = QHBoxLayout()
+        filters.setContentsMargins(0, 0, 0, 0)
+        filters.setSpacing(8)
+        self._filter_label = QLabel(_("Реализация", "Runtime"))
+        self._filter_label.setObjectName("AIHubToolbarLabel")
+        filters.addWidget(self._filter_label, 0)
 
-        # backend filter pills
         self._backend_filter = "all"
         self._backend_filter_buttons: dict[str, QPushButton] = {}
         for key, label in (
@@ -525,32 +580,12 @@ class AIHubDialog(QDialog):
             btn.setProperty("active", "true" if key == "all" else "false")
             btn.clicked.connect(lambda _checked, k=key: self._set_backend_filter(k))
             self._backend_filter_buttons[key] = btn
-            top.addWidget(btn, 0)
+            filters.addWidget(btn, 0)
         self._backend_filter_buttons["all"].setChecked(True)
-
-        top.addSpacing(6)
-
-        self.search_box = QLineEdit()
-        self.search_box.setObjectName("AIHubSearch")
-        self.search_box.setPlaceholderText(_("Поиск компонентов...", "Search components..."))
-        self.search_box.setFixedWidth(240)
-        si = qicon("fa5s.search", "#bca9bb")
-        if si is not None:
-            action = self.search_box.addAction(si, QLineEdit.ActionPosition.LeadingPosition)
-            action.setEnabled(False)
-        self.search_box.textChanged.connect(self._rebuild_component_list)
-        top.addWidget(self.search_box, 0)
-
-        self.sort_combo = QComboBox()
-        self.sort_combo.setObjectName("AIHubSort")
-        self.sort_combo.setFixedWidth(220)
-        self.sort_combo.addItem(_("По умолчанию", "Default"), "default")
-        self.sort_combo.addItem(_("Сначала установленные", "Installed first"), "installed")
-        self.sort_combo.addItem(_("По имени", "By name"), "name")
-        self.sort_combo.currentIndexChanged.connect(self._rebuild_component_list)
-        top.addWidget(self.sort_combo, 0)
+        filters.addStretch(1)
 
         wrap.addLayout(top)
+        wrap.addLayout(filters)
         return wrap
 
     def _build_tab_switcher(self) -> QHBoxLayout:
@@ -559,8 +594,8 @@ class AIHubDialog(QDialog):
         row.setSpacing(6)
         self._tab_buttons: dict[str, QPushButton] = {}
         for key, label in (
-            ("install", _("Установка", "Install")),
-            ("settings", _("Настройки", "Settings")),
+            ("install", _("Компоненты", "Components")),
+            ("settings", _("Параметры моделей", "Model settings")),
         ):
             btn = QPushButton(label)
             btn.setObjectName("AIHubTabBtn")
@@ -640,16 +675,46 @@ class AIHubDialog(QDialog):
         # следующем открытии (сравнение _rendered_language с текущим языком).
         if self.isVisible():
             try:
-                self._refresh_views()
+                self._refresh_localized_ui()
             except Exception:
                 logger.exception("AI Hub: re-render on language change failed")
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.view_model.dispatch(ActivateAIHub())
-        if self._loaded_once and self._rendered_language and self._rendered_language != self._current_ui_language():
+        if self._rendered_language != self._current_ui_language():
             # Язык сменился, пока диалог был скрыт — перерисовываем в текущем языке.
-            QTimer.singleShot(0, self._refresh_views)
+            QTimer.singleShot(0, self._refresh_localized_ui)
+
+    def _refresh_localized_ui(self) -> None:
+        self.setWindowTitle(_("AI Hub", "AI Hub"))
+        self._title_label.setText(_("AI Hub", "AI Hub"))
+        self._subtitle_label.setText(
+            _(
+                "Установка, удаление и обслуживание локальных AI-компонентов и системных зависимостей.",
+                "Install, remove and maintain local AI components and system dependencies.",
+            )
+        )
+        self._categories_header.setText(_("КАТЕГОРИИ", "CATEGORIES"))
+        self._activity_header.setText(_("АКТИВНОСТЬ", "ACTIVITY"))
+        self.btn_refresh.setText(_("Обновить список", "Refresh list"))
+        self.btn_clear_cache.setText(_("Очистить кэш загрузок", "Clear download cache"))
+        self._install_logs_btn.setText(_("Логи установки", "Install logs"))
+        self._check_text.setText(_("Проверяем компоненты…", "Checking components…"))
+        self.search_box.setPlaceholderText(_("Поиск в категории…", "Search this category…"))
+        self._open_models_btn.setText(_("Открыть папку моделей", "Open models folder"))
+        self._filter_label.setText(_("Реализация", "Runtime"))
+        self._backend_filter_buttons["all"].setText(_("Все", "All"))
+        self._tab_buttons["install"].setText(_("Компоненты", "Components"))
+        self._tab_buttons["settings"].setText(_("Параметры моделей", "Model settings"))
+        self.stat_installed.setLabel(_("Установлено", "Installed"))
+        self.stat_disk.setLabel(_("Свободно на диске", "Free disk"))
+        self.stat_check.setLabel(_("Последняя проверка", "Last check"))
+        self.banner_button.setText(_("Оптимизировать", "Optimize"))
+        self.banner_dismiss.setText(_("Позже", "Later"))
+        if hasattr(self, "_settings_panel"):
+            self._settings_panel.retranslate()
+        self._refresh_views()
 
     def refresh(self, *, force: bool = False, include_status: bool | None = None) -> None:
         if not self._rows:
@@ -681,6 +746,8 @@ class AIHubDialog(QDialog):
         )
         self._checking_component_ids = set(state.checking_component_ids)
 
+        if hasattr(self, "_check_indicator"):
+            self._check_indicator.setVisible(bool(state.refreshing))
         if hasattr(self, "btn_refresh"):
             self.btn_refresh.setEnabled(not state.refreshing)
         if state.refreshing and not self._rows:
@@ -780,16 +847,19 @@ class AIHubDialog(QDialog):
             selected = "tts"
 
         for key, btn in self._category_buttons.items():
+            btn.setLabel(category_label(key))
             btn.setCount(counts.get(key, 0))
             btn.setSelected(key == selected)
 
         self._selected_category = selected
         self._pending_category = None
+        self._update_catalog_header()
 
     def _select_category(self, key: str) -> None:
         if key not in CATEGORY_ORDER:
             return
         self._selected_category = key
+        self._update_catalog_header()
         for k, btn in self._category_buttons.items():
             btn.setSelected(k == key)
         self._rebuild_component_list()
@@ -799,18 +869,24 @@ class AIHubDialog(QDialog):
         if self._loaded_once and not self._refresh_inflight and not self._category_status_loaded(key):
             QTimer.singleShot(0, lambda: self.refresh(force=False, include_status=True))
 
+    def _update_catalog_header(self) -> None:
+        title = getattr(self, "_component_list_title", None)
+        if title is not None:
+            title.setText(
+                category_label(self._selected_category)
+                if self._selected_category in CATEGORY_ORDER
+                else _("Компоненты", "Components")
+            )
+
     def _category_status_loaded(self, category: str) -> bool:
         rows = [row for row in self._rows if row_category(row) == category]
         return bool(rows) and all(isinstance(row.get("status"), dict) for row in rows)
 
     # ----------------------------------------------------------- filtering
     def _filtered_rows(self) -> list[dict[str, Any]]:
-        from .helpers import is_backend_compatible
-
         query = str(self.search_box.text() or "").strip().lower()
         category = self._selected_category
         backend_filter = getattr(self, "_backend_filter", "all")
-        gpu_vendor = self._detect_gpu_vendor()
 
         rows: list[dict[str, Any]] = []
         for row in self._rows:
@@ -839,35 +915,25 @@ class AIHubDialog(QDialog):
                 continue
             rows.append(row)
 
-        mode = str(self.sort_combo.currentData() or "default")
-
         def _compat_rank(r: dict[str, Any]) -> int:
-            # 0 = compatible or already installed; 1 = incompatible -> bottom
             status = status_from_row(r)
-            if status.get("installed") or status.get("ready"):
+            if status.get("ready"):
                 return 0
-            return 0 if is_backend_compatible(str(meta_from_row(r).get("backend") or ""), gpu_vendor) else 1
+            compatibility = r.get("compatibility") if isinstance(r, dict) else None
+            return 0 if isinstance(compatibility, dict) and compatibility.get("supported", False) else 1
 
-        if mode == "installed":
-            rows.sort(
-                key=lambda r: (
-                    _compat_rank(r),
-                    0 if status_from_row(r).get("installed") else 1,
-                    str(meta_from_row(r).get("title") or ""),
-                )
-            )
-        elif mode == "name":
-            rows.sort(key=lambda r: (_compat_rank(r), str(meta_from_row(r).get("title") or "")))
-        else:
-            # default — preserve original order but push incompatible to the bottom
-            rows.sort(key=_compat_rank)
+        rows.sort(key=_compat_rank)
         return rows
 
-    def _detect_gpu_vendor(self) -> str:
+    @staticmethod
+    def _hardware_snapshot() -> dict[str, Any]:
+        hardware = services().get_optional(HardwareInventoryService)
+        if hardware is None:
+            return {"vendor": "CPU", "primary": None}
         try:
-            return str(check_gpu_provider() or "CPU").upper()
+            return dict(hardware.snapshot() or {})
         except Exception:
-            return "CPU"
+            return {"vendor": "CPU", "primary": None}
 
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
@@ -880,10 +946,7 @@ class AIHubDialog(QDialog):
                 w.deleteLater()
 
     def _show_scroll_loading(self) -> None:
-        """Показывает индикатор загрузки в области списка компонентов, пока идёт
-        первичный опрос (иначе несколько секунд виден пустой список / «0 моделей»)."""
-        from PyQt6.QtWidgets import QProgressBar
-
+        """Keep a calm empty state while the toolbar spinner owns progress."""
         self._clear_scroll()
 
         box = QWidget()
@@ -891,24 +954,18 @@ class AIHubDialog(QDialog):
         box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 48, 0, 0)
-        lay.setSpacing(14)
+        lay.setSpacing(0)
         lay.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
-        label = QLabel(_("Загрузка компонентов…", "Loading components…"))
+        label = QLabel(
+            _(
+                "Каталог появится после проверки установленных компонентов.",
+                "The catalog will appear after installed components are checked.",
+            )
+        )
         label.setObjectName("AIHubEmpty")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(label, 0, Qt.AlignmentFlag.AlignHCenter)
-
-        bar = QProgressBar()
-        bar.setRange(0, 0)  # неопределённый (бегущая) режим
-        bar.setTextVisible(False)
-        bar.setFixedSize(240, 6)
-        bar.setStyleSheet(
-            "QProgressBar { background: rgba(255,255,255,0.06); border: none;"
-            " border-radius: 3px; }"
-            " QProgressBar::chunk { background-color: #b74b7d; border-radius: 3px; }"
-        )
-        lay.addWidget(bar, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, box)
 
@@ -926,10 +983,36 @@ class AIHubDialog(QDialog):
         except Exception as exc:
             logger.info(f"AI Hub: не удалось открыть папку моделей: {exc}")
 
+    # Порядок и подписи групп внутри категории RAG.
+    _GROUP_ORDER = {"embeddings": 0, "reranker": 1, "other": 2}
+
+    def _grouping_key(self, row: dict[str, Any]) -> str:
+        item = str(meta_from_row(row).get("item_id") or "").strip().lower()
+        return item if item in ("embeddings", "reranker") else "other"
+
+    def _group_title(self, key: str) -> str:
+        titles = {
+            "embeddings": _("Эмбеддинги", "Embeddings"),
+            "reranker": _("Реранкеры", "Rerankers"),
+            "other": _("Прочее", "Other"),
+        }
+        return titles.get(key, key)
+
+    def _insert_section_header(self, title: str, *, first: bool = False) -> None:
+        header = QLabel(title)
+        header.setObjectName("AIHubSectionHeader")
+        header.setProperty("first", "true" if first else "false")
+        self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, header)
+
     def _rebuild_component_list(self) -> None:
         if hasattr(self, "_open_models_btn"):
             self._open_models_btn.setVisible(self._selected_category == "voices")
         rows = self._filtered_rows()
+        # Первичная загрузка ещё идёт (данных нет) — держим индикатор загрузки,
+        # а не подменяем его на «ничего не найдено» при переключении категории.
+        if not rows and self._refresh_inflight and not self._rows:
+            self._show_scroll_loading()
+            return
         self._clear_scroll()
         if not rows:
             empty = QLabel(
@@ -941,15 +1024,28 @@ class AIHubDialog(QDialog):
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, empty)
             return
 
-        gpu_vendor = self._detect_gpu_vendor()
         self._component_cards = []
+
+        # Внутри категории RAG модели делятся на эмбеддинги и реранкеры —
+        # показываем их сгруппированно с заголовком-разделителем.
+        grouped = self._selected_category == "rag"
+        if grouped:
+            rows = sorted(rows, key=lambda r: self._GROUP_ORDER.get(self._grouping_key(r), 99))
+
+        last_group: str | None = None
+        first_header = True
         for row in rows:
+            if grouped:
+                group = self._grouping_key(row)
+                if group != last_group:
+                    self._insert_section_header(self._group_title(group), first=first_header)
+                    first_header = False
+                    last_group = group
             card = ModelCard(
                 row,
                 on_install=lambda cid: self._request_component_action(cid, "install"),
                 on_uninstall=lambda cid: self._request_component_action(cid, "uninstall"),
                 on_open_settings=self._open_component_settings,
-                gpu_vendor=gpu_vendor,
                 parent=self._scroll_content,
                 on_reinstall=lambda cid: self._request_component_action(
                     cid, "install", clean=True
@@ -983,29 +1079,25 @@ class AIHubDialog(QDialog):
                 pass
 
     def _apply_busy_state(self) -> None:
-        """Проставляет каждой карточке её состояние относительно очереди установок.
-
-        Раньше во время любой установки блокировались ВСЕ кнопки. По фидбэку
-        Артёма чужие кнопки должны оставаться активными и по клику вставать в
-        очередь (наработки очереди уже есть в InstallGuiController). Блокируется
-        только та карточка, что ставится прямо сейчас («Установка…») или уже
-        стоит в очереди («В очереди»)."""
+        """Disable every catalog mutation while the install queue is active."""
         running = self._queue_state.get("running") if isinstance(self._queue_state, dict) else None
         pending = self._queue_state.get("pending") if isinstance(self._queue_state, dict) else []
         running_tid = str((running or {}).get("task_id") or "").strip()
         pending_tids = {str((j or {}).get("task_id") or "").strip() for j in (pending or [])}
+        queue_busy = bool(running or pending)
         for card in getattr(self, "_component_cards", []) or []:
             try:
                 cid = card._component_id()
-                # task_id формируется как "{component_id}:{op}" (см. _task_id_for).
                 install_tid = f"{cid}:install"
                 uninstall_tid = f"{cid}:uninstall"
-                if cid in self._checking_component_ids:
-                    card.set_state("checking")
-                elif running_tid in (install_tid, uninstall_tid):
+                if running_tid in (install_tid, uninstall_tid):
                     card.set_state("running")
                 elif install_tid in pending_tids or uninstall_tid in pending_tids:
                     card.set_state("queued")
+                elif queue_busy:
+                    card.set_state("global_busy")
+                elif cid in self._checking_component_ids:
+                    card.set_state("checking")
                 elif self._refresh_inflight:
                     card.set_state("checking")
                 else:
@@ -1013,17 +1105,26 @@ class AIHubDialog(QDialog):
             except Exception:
                 pass
 
+        if hasattr(self, "btn_refresh"):
+            self.btn_refresh.setEnabled(not queue_busy and not self._refresh_inflight)
+        if hasattr(self, "btn_clear_cache"):
+            self.btn_clear_cache.setEnabled(not queue_busy)
+        if hasattr(self, "banner_button"):
+            self.banner_button.setEnabled(not queue_busy)
+
     # ----------------------------------------------------------- summary / banner
     def _update_summary(self) -> None:
         # "Models" stats — count only model categories (tts/asr/rag).
         # Backend ('Системное ядро') and deps ('Зависимости') aren't models.
         _COUNTED_CATEGORIES = {"tts", "voices", "asr", "rag", "extras", "backend", "dependencies"}
         counted_rows = [r for r in self._rows if row_category(r) in _COUNTED_CATEGORIES]
-        installed = sum(1 for r in counted_rows if status_from_row(r).get("installed"))
+        installed = sum(1 for r in counted_rows if status_from_row(r).get("ready"))
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
-        gpu_label = format_primary_gpu_label()
-        gpu_vendor = self._detect_gpu_vendor()
+        hardware = self._hardware_snapshot()
+        gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
+        primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
+        gpu_label = str(primary.get("name") or gpu_vendor)
         self.stat_gpu.setValue(gpu_label, gpu_vendor)
 
         try:
@@ -1051,18 +1152,16 @@ class AIHubDialog(QDialog):
             self.stat_check.setValue("-", "")
 
     def _update_banner(self) -> None:
-        try:
-            gpu_vendor = str(check_gpu_provider() or "CPU").upper()
-        except Exception:
-            gpu_vendor = "CPU"
+        hardware = self._hardware_snapshot()
+        gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
 
         row_cpu = self._row_by_id("backend:cpu")
         row_cuda = self._row_by_id("backend:cuda")
         cpu_ready = bool(status_from_row(row_cpu or {}).get("ready"))
         cuda_ready = bool(status_from_row(row_cuda or {}).get("ready"))
 
-        gpu_name = str(get_primary_gpu_name() or "").strip()
-        gpu_label = gpu_name or format_primary_gpu_label()
+        primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
+        gpu_label = str(primary.get("name") or gpu_vendor)
         show = gpu_vendor == "NVIDIA" and cpu_ready and not cuda_ready
         self.banner.setVisible(show)
         if show:
@@ -1184,16 +1283,16 @@ class AIHubDialog(QDialog):
             "В рамках этой же транзакции будет установлен: <b>{backend}</b>.<br><br>"
             "<b>План установки:</b><br>{plan}"
             "{packages}<br><br>"
-            "Переключение произойдёт только после проверки нового runtime. "
-            "При ошибке текущий backend останется активным.<br>"
+            "Новый runtime будет добавлен рядом с уже установленными и станет "
+            "доступен только после проверки. Существующие backend не удаляются.<br>"
             "<a href=\"backend\">Открыть вкладку «Системное ядро»</a>",
             "The required backend for <b>“{component}”</b> is not installed.<br><br>"
             "Detected device: <b>{gpu}</b><br>"
             "The same transaction will also install: <b>{backend}</b>.<br><br>"
             "<b>Installation plan:</b><br>{plan}"
             "{packages}<br><br>"
-            "The switch happens only after the new runtime passes validation. "
-            "If it fails, the current backend remains active.<br>"
+            "The new runtime is added alongside installed runtimes and becomes "
+            "available only after validation. Existing backends are not removed.<br>"
             "<a href=\"backend\">Open the “System Core” tab</a>",
         ).format(
             component=html.escape(component),
@@ -1400,9 +1499,41 @@ class AIHubDialog(QDialog):
             chip.setToolTip("")
             return
         chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
-        titles = [str((j or {}).get("title") or (j or {}).get("task_id") or "") for j in pending]
-        chip.setToolTip("\n".join(t for t in titles if t))
+        chip.setToolTip(self._queue_tooltip_html())
         chip.setVisible(True)
+
+    def _queue_tooltip_html(self) -> str:
+        """Read-only сводка очереди для всплывающей подсказки: что ставится
+        сейчас + список ожидающих. Без кнопок отмены — только просмотр
+        (редактирование остаётся в панели «АКТИВНОСТЬ» слева)."""
+        running = self._queue_state.get("running") or {}
+        pending = self._queue_state.get("pending") or []
+
+        def _job_title(job: dict[str, Any]) -> str:
+            return str((job or {}).get("title") or (job or {}).get("task_id") or "").strip()
+
+        parts: list[str] = []
+        run_title = _job_title(running)
+        if run_title:
+            parts.append(
+                "<b>{label}</b><br>{title}".format(
+                    label=html.escape(_("Устанавливается сейчас:", "Installing now:")),
+                    title=html.escape(run_title),
+                )
+            )
+        rows = "".join(
+            "&nbsp;•&nbsp;{t}<br>".format(t=html.escape(_job_title(job)))
+            for job in pending
+            if _job_title(job)
+        )
+        if rows:
+            parts.append(
+                "<b>{label}</b><br>{rows}".format(
+                    label=html.escape(_("В очереди:", "Queued:")),
+                    rows=rows,
+                )
+            )
+        return "<div style='line-height:140%;'>" + "<br>".join(parts) + "</div>"
 
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()

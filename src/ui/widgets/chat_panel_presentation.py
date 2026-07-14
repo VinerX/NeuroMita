@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
+from typing import Any
 
 from ui.mvvm import UiEffect, UiIntent
 
@@ -16,6 +18,16 @@ class ChatPanelState:
     has_text: bool = False
     staged_count: int = 0
     revision: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ChatPanelActions:
+    reload_history: Callable[[], Any]
+    clear_chat: Callable[[], Any]
+    send_message: Callable[[], Any]
+    open_settings: Callable[[str], Any]
+    show_image: Callable[[bytes], Any]
+    surface_ready: Callable[[Any], Any]
 
 
 @dataclass(frozen=True, slots=True)

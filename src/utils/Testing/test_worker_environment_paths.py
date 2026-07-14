@@ -14,7 +14,7 @@ from handlers.ai_engine.worker_process import (
 )
 
 
-def test_managed_worker_layers_environment_before_stable_main_core(tmp_path: Path, monkeypatch) -> None:
+def test_managed_worker_layers_shared_core_before_overlays_and_stable_main_core(tmp_path: Path, monkeypatch) -> None:
     overlay = tmp_path / "Lib" / "environment" / "tts" / "rev" / "site-packages"
     core = tmp_path / "Lib" / "environment" / "bases" / "torch" / "site-packages"
     stale_overlay = tmp_path / "Lib" / "environment" / "overlays" / "old" / "site-packages"
@@ -35,10 +35,10 @@ def test_managed_worker_layers_environment_before_stable_main_core(tmp_path: Pat
     sys.path.insert(0, str(stale_overlay.resolve()))
     sys.path.insert(0, str(stale_base.resolve()))
     try:
-        _ensure_lib_on_path([str(overlay), str(core)])
+        _ensure_lib_on_path([str(core), str(overlay)])
         assert sys.path[:3] == [
-            str(overlay.resolve()),
             str(core.resolve()),
+            str(overlay.resolve()),
             str(main_core.resolve()),
         ]
         assert str(legacy.resolve()) not in sys.path
@@ -46,8 +46,8 @@ def test_managed_worker_layers_environment_before_stable_main_core(tmp_path: Pat
         assert str(stale_base.resolve()) not in sys.path
         assert os.environ["NEUROMITA_RUNTIME_TARGET_DIR"] == str(overlay.resolve())
         assert os.environ["NEUROMITA_RUNTIME_PYTHON_PATHS"].split(os.pathsep) == [
-            str(overlay.resolve()),
             str(core.resolve()),
+            str(overlay.resolve()),
             str(main_core.resolve()),
         ]
     finally:
