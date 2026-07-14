@@ -13,6 +13,7 @@ from services.contracts import (
     PromptBuildRequest,
     PromptBuildResult,
     PromptBuilderService,
+    RuntimeFeatureService,
     SettingsService,
     SpeechService,
 )
@@ -51,14 +52,40 @@ class PromptController(PromptBuilderService):
     def _get_setting(self, key: str, default=None):
         return use(SettingsService).get(key, default)
 
-    @staticmethod
+    # Human-readable groupings of unity-only effect fields, used to tell the
+    # model which in-world effects are unavailable when the game is not linked.
+    _EFFECT_FIELD_LABELS = {
+        "emotions": "facial emotions",
+        "animations": "animations",
+        "idle_animations": "idle animations",
+        "movement_modes": "movement",
+        "visual_effects": "visual effects",
+        "clothes": "outfit changes",
+        "interactions": "world interactions",
+        "face_params": "face parameters",
+        "allow_sleep": "sleep control",
+        "start_game": "starting in-world games",
+        "end_game": "ending in-world games",
+    }
+
+    @classmethod
+    def _describe_unavailable_effects(cls, fields: tuple[str, ...]) -> str:
+        labels = [cls._EFFECT_FIELD_LABELS.get(f, f) for f in fields]
+        # De-duplicate while preserving order.
+        seen: set[str] = set()
+        ordered = [l for l in labels if not (l in seen or seen.add(l))]
+        return ", ".join(ordered)
+
+    @classmethod
     def _format_system_state_message(
+        cls,
         *,
         remote_only: bool | None,
         voice_enabled: bool,
         voice_method: str,
         speech_recognition_available: bool,
         vision_state: str,
+        unavailable_effect_fields: tuple[str, ...] = (),
     ) -> Dict[str, str]:
         """Собирает служебное состояние, не попадающее в историю диалога.
 
@@ -67,16 +94,24 @@ class PromptController(PromptBuilderService):
         ``vision_state`` — эффективное состояние зрения: ``native`` /
         ``description_fallback`` / ``unavailable`` — Мите сообщаем прежде всего,
         может ли она реально получить информацию об изображении.
+        ``unavailable_effect_fields`` — те же поля, что исключены из схемы
+        (unity-only), берутся из общей таблицы runtime_capabilities.
         """
         lines = ["[System State]"]
 
         if remote_only is True:
+            effects = cls._describe_unavailable_effects(unavailable_effect_fields)
+            unavailable = (
+                f" In-world effects are unavailable right now: {effects}."
+                if effects
+                else ""
+            )
             lines.append(
                 "You are currently communicating with the Player online through the NeuroMita computer program. "
                 "The Player is not physically with you right now, but they may come to your home later. "
-                "If you want to see them, do not hesitate to invite them. "
-                "Do not use world or game commands such as switching lights or moving around. "
-                "The commands field may still be used for program-level commands when genuinely needed."
+                "If you want to see them, do not hesitate to invite them."
+                + unavailable
+                + " The commands field may still be used for program-level commands when genuinely needed."
             )
         elif remote_only is False:
             lines.append(
@@ -110,47 +145,84 @@ class PromptController(PromptBuilderService):
             )
         return {"role": "system", "content": "\n".join(lines)}
 
+    @staticmethod
+    def _feature_ready(name: str) -> bool | None:
+        """Last-known runtime readiness of an optional feature, non-blocking.
+
+        Returns ``None`` when the RuntimeFeatureService is not registered (e.g.
+        isolated unit tests) so callers can decide how to degrade. Never starts
+        or probes anything — reads the cached feature state only.
+        """
+        service = services().get_optional(RuntimeFeatureService)
+        if service is None:
+            return None
+        try:
+            return bool(service.is_ready(name))
+        except Exception:
+            return False
+
     def _resolve_speech_recognition_available(self) -> bool:
-        """Фактическая доступность ASR, а не только настройка MIC_ACTIVE.
+        """Фактическая доступность ASR.
 
         ``SpeechService.mic_active()`` = микрофон активен И ASR-модель готова
         (``mic_recognition_active and asr_is_ready``). Читает только атрибуты —
-        безопасно для hot-path сборки промпта. При отсутствии сервиса падаем на
-        настройку.
+        безопасно для hot-path. Если сервис не зарегистрирован или падает —
+        распознавание недоступно (не подменяем это «сырой» настройкой MIC_ACTIVE,
+        которая не означает готовности модели).
         """
         speech = services().get_optional(SpeechService)
-        if speech is not None:
-            try:
-                return bool(speech.mic_active())
-            except Exception:
-                pass
-        return bool(self._get_setting("MIC_ACTIVE", False))
+        if speech is None:
+            return False
+        try:
+            return bool(speech.mic_active())
+        except Exception:
+            return False
 
     def _resolve_vision_state(self) -> str:
-        """Единое effective vision state.
+        """Единое effective vision state (только реальная готовность).
 
-        native             — изображения уходят напрямую в основную модель;
-        description_fallback — модель не видит, но настроен vision-провайдер,
-                               который описывает изображения текстом;
-        unavailable        — ни то, ни другое не доступно.
+        native             — модель настроена принимать изображения напрямую
+                             (ENABLE_IMAGE_ANALYSIS) И конвейер захвата реально
+                             готов доставлять их (feature ``capture``);
+        description_fallback — модель не видит сама, но настроен vision-провайдер,
+                             который описывает изображения текстом;
+        unavailable        — ни то, ни другое.
+
+        Когда RuntimeFeatureService недоступен (изолированные тесты), полагаемся
+        только на настройки — подтвердить рантайм-готовность нечем.
         """
         if bool(self._get_setting("ENABLE_IMAGE_ANALYSIS", False)):
-            return "native"
+            capture_ready = self._feature_ready("capture")
+            if capture_ready is None or capture_ready:
+                return "native"
         if bool(self._get_setting("IMAGE_DESCRIPTION_ENABLED", False)) and str(
             self._get_setting("IMAGE_DESCRIPTION_PROVIDER", "") or ""
         ).strip():
             return "description_fallback"
         return "unavailable"
 
+    def _resolve_voice_enabled(self) -> bool:
+        """TTS доступен, если он включён И голосовой конвейер реально готов.
+
+        Берём last-known readiness feature ``audio`` (создаётся при любом методе
+        озвучки). Пока движок ещё грузится/упал — не заявляем голос доступным.
+        Без RuntimeFeatureService (тесты) опираемся на настройку.
+        """
+        if not bool(self._get_setting("USE_VOICEOVER", False)):
+            return False
+        audio_ready = self._feature_ready("audio")
+        return True if audio_ready is None else audio_ready
+
     def _build_system_state_message(self) -> Dict[str, str]:
-        remote_only = runtime_capabilities().remote_only
+        caps = runtime_capabilities()
 
         return self._format_system_state_message(
-            remote_only=remote_only,
-            voice_enabled=bool(self._get_setting("USE_VOICEOVER", False)),
+            remote_only=caps.remote_only,
+            voice_enabled=self._resolve_voice_enabled(),
             voice_method=str(self._get_setting("VOICEOVER_METHOD", "Local") or "Local"),
             speech_recognition_available=self._resolve_speech_recognition_available(),
             vision_state=self._resolve_vision_state(),
+            unavailable_effect_fields=tuple(caps.structured_segment_exclude_fields),
         )
 
     # Reply-length / segmentation defaults. The common prompt sets these; a

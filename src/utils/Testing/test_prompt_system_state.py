@@ -87,6 +87,7 @@ class PromptSystemStateTests(unittest.TestCase):
             voice_method="Local",
             speech_recognition_available=False,
             vision_state="unavailable",
+            unavailable_effect_fields=("animations", "emotions", "clothes"),
         )
 
         content = message["content"]
@@ -96,9 +97,23 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertIn("Your voice (TTS): enabled; method: Local. This is your voice.", content)
         self.assertIn("You currently receive only typed text from the Player.", content)
         self.assertIn("Your sight (image recognition): unavailable.", content)
-        self.assertIn("Do not use world or game commands such as switching lights or moving around.", content)
+        # Unavailable in-world effects are listed from the shared capability table.
+        self.assertIn("In-world effects are unavailable right now:", content)
+        self.assertIn("animations", content)
+        self.assertIn("facial emotions", content)
+        self.assertIn("outfit changes", content)
         self.assertIn("program-level commands", content)
         self.assertNotIn("Structured output", content)
+
+    def test_remote_state_without_effect_fields_omits_effects_line(self):
+        message = PromptController._format_system_state_message(
+            remote_only=True,
+            voice_enabled=False,
+            voice_method="Local",
+            speech_recognition_available=False,
+            vision_state="unavailable",
+        )
+        self.assertNotIn("In-world effects are unavailable", message["content"])
 
     def test_connected_state_does_not_claim_remote_only(self):
         message = PromptController._format_system_state_message(
@@ -147,11 +162,21 @@ class PromptSystemStateTests(unittest.TestCase):
         settings.clear()
         self.assertEqual(controller._resolve_vision_state(), "unavailable")
 
-    def test_speech_recognition_falls_back_to_setting_without_service(self):
+    def test_speech_recognition_unavailable_without_service(self):
         controller = PromptController()
         controller._get_setting = lambda key, default=None: {"MIC_ACTIVE": True}.get(key, default)
-        # No SpeechService registered in the test process -> setting is used.
-        self.assertTrue(controller._resolve_speech_recognition_available())
+        # No SpeechService registered -> unavailable regardless of raw MIC_ACTIVE:
+        # the setting does not mean the ASR model is loaded and listening.
+        self.assertFalse(controller._resolve_speech_recognition_available())
+
+    def test_voice_enabled_requires_setting(self):
+        controller = PromptController()
+        controller._get_setting = lambda key, default=None: {"USE_VOICEOVER": False}.get(key, default)
+        # Off by setting -> disabled without touching feature readiness.
+        self.assertFalse(controller._resolve_voice_enabled())
+        # On by setting, no RuntimeFeatureService registered -> trust the setting.
+        controller._get_setting = lambda key, default=None: {"USE_VOICEOVER": True}.get(key, default)
+        self.assertTrue(controller._resolve_voice_enabled())
 
 
 class ReplyDefaultsTests(unittest.TestCase):
