@@ -1071,6 +1071,13 @@ class Character:
     def clear_history(self):
         logger.info(f"[{self.char_id}] Clearing history and resetting state.")
 
+        # Sticky core-memory triggers (e.g. code 23) are session/chat-scoped.
+        try:
+            from managers.core_memory_triggers import reset as reset_core_triggers
+            reset_core_triggers(self.char_id)
+        except Exception:
+            pass
+
         composed_initials = Character.BASE_DEFAULTS.copy()
         if hasattr(self, "DEFAULT_OVERRIDES"):
             subclass_overrides = getattr(self, "DEFAULT_OVERRIDES", {})

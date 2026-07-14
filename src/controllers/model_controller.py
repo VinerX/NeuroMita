@@ -1215,7 +1215,7 @@ class ModelController(GenerationService, ModelStateService):
         # embedding similarity of a two-digit message.
         try:
             from managers.core_memory_triggers import core_memory_context
-            _core_ctx = core_memory_context(user_input)
+            _core_ctx = core_memory_context(user_input, character_id=char_id)
             if _core_ctx:
                 rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
         except Exception as _core_err:

@@ -65,6 +65,46 @@ class MemoryIslandUpsertTests(unittest.TestCase):
         self.assertIsNone(mm.upsert_island("island:bogus", "nope"))
         self.assertIsNone(mm.upsert_island("relationship", "   "))  # empty content
 
+    def test_forgotten_island_is_reactivated_and_updated(self):
+        mm = self._fresh_mm("IslandForget")
+        eid = mm.upsert_island("island:opinion", "first opinion")
+        self.assertIsNotNone(eid)
+
+        # Forcibly forget it (simulates capacity/TTL having marked it forgotten).
+        with mm.db.connection() as conn:
+            conn.execute(
+                "UPDATE memories SET is_forgotten=1 WHERE character_id=? AND eternal_id=?",
+                (mm.storage_key, eid),
+            )
+            conn.commit()
+
+        eid2 = mm.upsert_island("island:opinion", "second opinion")
+        self.assertEqual(eid2, eid)  # reactivated, not orphaned/duplicated
+        self.assertEqual(mm.get_memory_content(eid), "second opinion")
+
+        with mm.db.connection() as conn:
+            row = conn.execute(
+                "SELECT is_forgotten FROM memories WHERE character_id=? AND eternal_id=?",
+                (mm.storage_key, eid),
+            ).fetchone()
+        self.assertEqual(int(row[0]), 0)  # active again
+        self.assertEqual(self._active_island_count(mm, "island:opinion"), 1)
+
+    def test_island_type_excluded_from_forget_candidates(self):
+        # The capacity-forget candidate query must never select island rows.
+        mm = self._fresh_mm("IslandCap")
+        mm.upsert_island("island:relationship", "we are close")
+        mm.add_memory(content="an ordinary fact", priority="normal")
+        with mm.db.connection() as conn:
+            island_candidates = conn.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
+                "AND type LIKE 'island:%'",
+                (mm.storage_key,),
+            ).fetchone()[0]
+        self.assertEqual(int(island_candidates), 1)  # island exists...
+        # ...but the forget query (which adds NOT LIKE 'island:%') can't pick it.
+
     def test_merge_updates_target_deletes_source_and_reindexes(self):
         class _FakeRag:
             def __init__(self):

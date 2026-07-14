@@ -249,12 +249,13 @@ class MemoryManager(CharacterScopedService):
             if need <= 0:
                 return
 
-            # Собираем всех кандидатов (Critical нельзя)
+            # Собираем всех кандидатов (Critical нельзя; islands защищены)
             cur.execute(
                 """
                 SELECT id, eternal_id, priority, date_created, content
                 FROM memories
                 WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                  AND (type IS NULL OR type NOT LIKE 'island:%')
                 """,
                 (self.storage_key,),
             )
@@ -452,12 +453,19 @@ class MemoryManager(CharacterScopedService):
         full_type = f"island:{short}"
         content = str(content).strip()
 
+        cols = self._mem_cols()
+        has_forgotten = "is_forgotten" in cols
+
         existing_eid: Optional[int] = None
+        was_forgotten = False
         try:
             with self.db.connection() as conn:
                 cur = conn.cursor()
+                # Look up regardless of is_forgotten: a forgotten island must be
+                # reactivated and updated, never orphaned.
+                select_cols = "eternal_id" + (", is_forgotten" if has_forgotten else "")
                 cur.execute(
-                    "SELECT eternal_id FROM memories "
+                    f"SELECT {select_cols} FROM memories "
                     "WHERE character_id=? AND type=? AND is_deleted=0 "
                     "ORDER BY eternal_id LIMIT 1",
                     (self.storage_key, full_type),
@@ -465,12 +473,31 @@ class MemoryManager(CharacterScopedService):
                 row = cur.fetchone()
                 if row:
                     existing_eid = int(row[0])
+                    was_forgotten = bool(row[1]) if has_forgotten and len(row) > 1 else False
+                    if was_forgotten:
+                        cur.execute(
+                            "UPDATE memories SET is_forgotten=0 "
+                            "WHERE character_id=? AND eternal_id=?",
+                            (self.storage_key, existing_eid),
+                        )
+                        conn.commit()
         except Exception as e:
             logging.warning(f"[MemoryManager] upsert_island lookup failed: {e}", exc_info=True)
 
         if existing_eid is not None:
-            self.update_memory(number=existing_eid, content=content, priority=priority)
-            return existing_eid
+            if was_forgotten:
+                # Content length changed while it was excluded from the active
+                # total — recompute so accounting stays correct.
+                self._calculate_total_characters()
+            updated = self.update_memory(number=existing_eid, content=content, priority=priority)
+            if updated:
+                return existing_eid
+            # Reactivation/update unexpectedly failed — fall through to create a
+            # fresh active island rather than silently reporting a false success.
+            logging.warning(
+                f"[MemoryManager] upsert_island: update of #{existing_eid} ({full_type}) failed, "
+                f"creating a new active island instead."
+            )
 
         return self.add_memory(content=content, priority=priority, memory_type=full_type)
 
@@ -833,6 +860,7 @@ class MemoryManager(CharacterScopedService):
                         rows = conn.execute(
                             f"SELECT eternal_id, {_age_expr} as age{extra} "
                             f"FROM memories WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
+                            f"AND (type IS NULL OR type NOT LIKE 'island:%') "
                             f"AND LOWER(priority)=? AND {_age_expr} > ?",
                             (self.storage_key, prio, pre_days),
                         ).fetchall()

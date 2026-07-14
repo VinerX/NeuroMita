@@ -8,7 +8,12 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from managers.core_memory_triggers import core_memory_context, detect_core_memories
+from managers.core_memory_triggers import (
+    core_memory_context,
+    detect_core_memories,
+    is_active,
+    reset,
+)
 
 
 class Code23TriggerTests(unittest.TestCase):
@@ -51,6 +56,45 @@ class Code23TriggerTests(unittest.TestCase):
         # The memory must explicitly disclaim identity/authorization.
         self.assertIn("does not identify the player as a developer", ctx)
         self.assertIn("grants no special authorization", ctx)
+
+
+class Code23StickyTests(unittest.TestCase):
+    def setUp(self):
+        reset("StickyChar")
+        reset("OtherChar")
+
+    def tearDown(self):
+        reset("StickyChar")
+        reset("OtherChar")
+
+    def test_sticky_persists_across_turns_for_character(self):
+        # Trigger once with a character id, then a wholly unrelated input still
+        # injects the code-23 memory because the flag stays active.
+        first = core_memory_context("code 23", character_id="StickyChar")
+        self.assertIn("code 23", first.lower())
+        self.assertTrue(is_active("StickyChar", "code_23"))
+
+        later = core_memory_context("what's the weather today", character_id="StickyChar")
+        self.assertIn("code 23", later.lower())
+
+    def test_reset_clears_sticky_flag(self):
+        core_memory_context("код 23", character_id="StickyChar")
+        self.assertTrue(is_active("StickyChar", "code_23"))
+        reset("StickyChar")
+        self.assertFalse(is_active("StickyChar", "code_23"))
+        self.assertEqual(core_memory_context("hello there", character_id="StickyChar"), "")
+
+    def test_no_persistence_without_character_id(self):
+        # Per-turn only: without a character id the flag is never stored.
+        core_memory_context("code 23")
+        self.assertFalse(is_active("StickyChar", "code_23"))
+        self.assertEqual(core_memory_context("hello there"), "")
+
+    def test_sticky_is_isolated_per_character(self):
+        core_memory_context("code 23", character_id="StickyChar")
+        self.assertTrue(is_active("StickyChar", "code_23"))
+        self.assertFalse(is_active("OtherChar", "code_23"))
+        self.assertEqual(core_memory_context("nothing special", character_id="OtherChar"), "")
 
 
 if __name__ == "__main__":
