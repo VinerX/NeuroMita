@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+PROJECT_SRC = Path(__file__).resolve().parents[2]
+if str(PROJECT_SRC) not in sys.path:
+    sys.path.insert(0, str(PROJECT_SRC))
+
+from managers.database_manager import DatabaseManager
+
+
+class MemoryIslandUpsertTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.mkdtemp(prefix="nm_island_")
+        DatabaseManager._instance = None
+        DatabaseManager._path_override = os.path.join(cls._tmp, "world.db")
+        from managers.memory_manager import MemoryManager
+        cls._MM = MemoryManager
+
+    @classmethod
+    def tearDownClass(cls):
+        DatabaseManager._instance = None
+        DatabaseManager._path_override = None
+
+    def _fresh_mm(self, name):
+        mm = self._MM(name)
+        mm.rag = None  # disable background RAG reindex for the test
+        return mm
+
+    def _active_island_count(self, mm, full_type):
+        with mm.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM memories WHERE character_id=? AND type=? AND is_deleted=0",
+                (mm.storage_key, full_type),
+            )
+            return int(cur.fetchone()[0])
+
+    def test_upsert_creates_then_updates_without_duplicate(self):
+        mm = self._fresh_mm("IslandChar")
+        eid1 = mm.upsert_island("island:relationship", "We are friendly", priority="high")
+        self.assertIsNotNone(eid1)
+        self.assertEqual(self._active_island_count(mm, "island:relationship"), 1)
+
+        eid2 = mm.upsert_island("relationship", "We had a fight and made up", priority="high")
+        self.assertEqual(eid2, eid1)  # same island, not a new one
+        self.assertEqual(self._active_island_count(mm, "island:relationship"), 1)
+        self.assertEqual(mm.get_memory_content(eid1), "We had a fight and made up")
+
+    def test_distinct_types_are_separate_islands(self):
+        mm = self._fresh_mm("IslandChar2")
+        a = mm.upsert_island("island:opinion", "I find them interesting")
+        b = mm.upsert_island("island:preferences", "They like tea")
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertNotEqual(a, b)
+
+    def test_unknown_type_ignored(self):
+        mm = self._fresh_mm("IslandChar3")
+        self.assertIsNone(mm.upsert_island("island:bogus", "nope"))
+        self.assertIsNone(mm.upsert_island("relationship", "   "))  # empty content
+
+    def test_merge_updates_target_deletes_source_and_reindexes(self):
+        class _FakeRag:
+            def __init__(self):
+                self.calls = []
+
+            def update_memory_embedding(self, eid, txt):
+                self.calls.append((int(eid), str(txt)))
+
+        mm = self._MM("MergeChar")
+        fake = _FakeRag()
+        mm.rag = fake
+
+        a = mm.add_memory(content="Player likes cats", priority="normal", entities=["cats"])
+        b = mm.add_memory(content="Player likes tea", priority="normal", entities=["tea"])
+
+        ok = mm.merge_memories(source_id=a, target_id=b, new_content="Player likes cats and tea")
+        self.assertTrue(ok)
+
+        # Source soft-deleted, target rewritten.
+        self.assertIsNone(mm.get_memory_content(a))
+        self.assertEqual(mm.get_memory_content(b), "Player likes cats and tea")
+
+        # Entities transferred from source to target.
+        with mm.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT entities FROM memories WHERE character_id=? AND eternal_id=?",
+                (mm.storage_key, b),
+            )
+            import json
+            ents = set(json.loads(cur.fetchone()[0] or "[]"))
+        self.assertIn("cats", ents)
+        self.assertIn("tea", ents)
+
+        # Reindex was scheduled — flush the single-worker embed executor.
+        mm._get_embed_executor().submit(lambda: None).result(timeout=5)
+        self.assertIn((b, "Player likes cats and tea"), fake.calls)
+
+
+class IslandRoutingTests(unittest.TestCase):
+    def test_memory_add_routes_island_to_upsert(self):
+        from characters.character import Character
+        from schemas.structured_response import StructuredResponse
+
+        class _FakeMem:
+            def __init__(self):
+                self.added = []
+                self.islands = []
+
+            def add_memory(self, priority=None, content=None, entities=None, **kw):
+                self.added.append((priority, content))
+                return 100 + len(self.added)
+
+            def upsert_island(self, island_type, content, **kw):
+                self.islands.append((island_type, content))
+                return 200 + len(self.islands)
+
+            def update_memory(self, **kw):
+                pass
+
+            def delete_memory(self, *a, **kw):
+                pass
+
+        class _Char(Character):
+            def __init__(self, mem):
+                self.char_id = "T"
+                self._mem = mem
+
+            @property
+            def memory_system(self):
+                return self._mem
+
+        mem = _FakeMem()
+        char = _Char(mem)
+        resp = StructuredResponse(
+            segments=[{"text": "hi"}],
+            memory_add=[
+                "island:relationship|We reconciled after the argument",
+                "high|The player's cat is named Barsik",
+            ],
+        )
+        char._apply_structured_memory_ops(resp)
+
+        self.assertEqual(mem.islands, [("island:relationship", "We reconciled after the argument")])
+        self.assertEqual(mem.added, [("high", "The player's cat is named Barsik")])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -627,6 +627,18 @@ class Character:
                 continue
             # Format: "priority|content" or "priority|content|entity1,entity2,..."
             parts = [p.strip() for p in mem_text.split("|", 2)]
+            # Island upsert: "island:<type>|content" updates the single running
+            # summary of that type instead of adding a duplicate memory.
+            if parts and parts[0].lower().startswith("island:"):
+                island_content = parts[1] if len(parts) >= 2 else ""
+                try:
+                    eid = self.memory_system.upsert_island(parts[0], island_content)
+                    if eid is not None:
+                        self._last_created_memory_ids.append(eid)
+                    logger.info(f"[{self.char_id}] Structured: upserted {parts[0]} island")
+                except Exception as e:
+                    logger.error(f"[{self.char_id}] Structured: error upserting island: {e}")
+                continue
             if len(parts) >= 2 and parts[0] in ("low", "normal", "high", "critical"):
                 priority = parts[0]
                 content = parts[1]

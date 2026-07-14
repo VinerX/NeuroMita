@@ -427,6 +427,53 @@ class MemoryManager(CharacterScopedService):
 
         return new_id
 
+    # Fixed, small set of running-summary "island" memories. Each type has at
+    # most one active memory per character; new information updates it in place
+    # instead of piling up competing duplicates.
+    ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts")
+
+    def upsert_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
+        """Insert-or-update the single running summary memory for an island type.
+
+        Returns the eternal_id of the island memory, or None if the type is
+        unknown or the content is empty. Enforces one active ``island:<type>``
+        per character; existing islands are rewritten (and reindexed via
+        ``update_memory``) rather than duplicated.
+        """
+        short = str(island_type or "").strip().lower()
+        if short.startswith("island:"):
+            short = short[len("island:"):]
+        if short not in self.ISLAND_TYPES:
+            logging.warning(f"[MemoryManager] upsert_island: unknown island type {island_type!r}, ignored.")
+            return None
+        if not content or not str(content).strip():
+            return None
+
+        full_type = f"island:{short}"
+        content = str(content).strip()
+
+        existing_eid: Optional[int] = None
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT eternal_id FROM memories "
+                    "WHERE character_id=? AND type=? AND is_deleted=0 "
+                    "ORDER BY eternal_id LIMIT 1",
+                    (self.storage_key, full_type),
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_eid = int(row[0])
+        except Exception as e:
+            logging.warning(f"[MemoryManager] upsert_island lookup failed: {e}", exc_info=True)
+
+        if existing_eid is not None:
+            self.update_memory(number=existing_eid, content=content, priority=priority)
+            return existing_eid
+
+        return self.add_memory(content=content, priority=priority, memory_type=full_type)
+
     def tag_with_entities(self, eternal_id: int, entity_names: list) -> bool:
         """Merge entity names into the entities column for a given memory."""
         if not entity_names:
