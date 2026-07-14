@@ -491,6 +491,10 @@ QWidget#SettingsPageRoot QLabel#AIEngineHardwareName {
     font-size: 12pt;
     font-weight: 700;
 }
+QWidget#SettingsPageRoot QWidget#AIEngineHardwareInfo {
+    background: transparent;
+    border: none;
+}
 QWidget#SettingsPageRoot QPushButton#AIEngineLoadingSpinner:disabled {
     background: transparent;
     border: none;

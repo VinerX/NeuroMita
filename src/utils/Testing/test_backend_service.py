@@ -344,7 +344,9 @@ class BackendServiceTests(unittest.TestCase):
         pip_installer = Mock()
         pip_installer.install_package.return_value = True
 
-        with patch.object(self.service, "get_status", side_effect=[pending, ready]):
+        with patch.object(self.service, "get_status", side_effect=[pending, ready]), \
+             patch.object(self.service, "_onnx_variant", return_value="onnx_dml"), \
+             patch.object(self.service, "preferred_onnx_provider", return_value="cpu") as preferred:
             status = self.service.install_backend(
                 BackendKind.ONNX,
                 pip_installer=pip_installer,
@@ -356,6 +358,7 @@ class BackendServiceTests(unittest.TestCase):
         self.assertTrue(marker_path.exists())
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
         self.assertEqual(marker["onnx"]["provider"], "dml")
+        preferred.assert_not_called()
 
     def test_write_backend_marker_uses_atomic_replace(self):
         with patch("core.backends.service.os.replace", wraps=os.replace) as replace_mock:

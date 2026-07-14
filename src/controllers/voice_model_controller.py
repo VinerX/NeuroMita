@@ -77,6 +77,7 @@ class VoiceModelController(VoiceModelService):
 
         self.docs_manager = DocsManager()
         self.event_bus = get_event_bus()
+        self._installable_catalog = services().get_optional(InstallableCatalogService)
 
         self._last_voiceover_refresh_reload_ts: float = 0.0
 
@@ -556,53 +557,32 @@ class VoiceModelController(VoiceModelService):
         return result
 
     def _build_model_compatibility(self, model: dict, detected_vendor: str) -> dict[str, Any]:
-        vendor = self._normalize_gpu_vendor(detected_vendor)
-        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
-        supported = vendor in vendors if vendors else True
-
         model_id = str(model.get("id") or "").strip()
-        warning = ""
+        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
+        try:
+            catalog = getattr(self, "_installable_catalog", None)
+            if catalog is None:
+                catalog = services().get(InstallableCatalogService)
+            row = catalog.get_row(
+                f"tts:{model_id}",
+                include_status=False,
+                ctx={"gpu_vendor": self._normalize_gpu_vendor(detected_vendor)},
+            )
+            verdict = dict(row.get("compatibility") or {})
+        except Exception as exc:
+            logger.warning(f"Voice model compatibility is unavailable for '{model_id}': {exc}")
+            verdict = {
+                "supported": False,
+                "recommended": False,
+                "reason_code": "state_unavailable",
+                "warning": _(
+                    "Не удалось проверить совместимость модели. Обновите AI Hub и повторите попытку.",
+                    "Model compatibility could not be verified. Refresh AI Hub and try again.",
+                ),
+            }
 
-        if model_id == "high":
-            if vendor in ("AMD", "INTEL"):
-                warning = _(
-                    "В этой сборке F5-TTS ускоряется только на NVIDIA. На текущем GPU модель будет работать через CPU, поэтому будет заметно медленнее.",
-                    "In this build F5-TTS is accelerated only on NVIDIA. On the current GPU it will run through the CPU fallback and be noticeably slower.",
-                )
-            elif vendor == "CPU":
-                warning = _(
-                    "F5-TTS будет работать только через CPU. Это совместимо, но заметно медленнее, чем на GPU.",
-                    "F5-TTS will run on CPU only. This is supported, but much slower than on GPU.",
-                )
-        elif model_id == "high+low":
-            if vendor in ("AMD", "INTEL"):
-                warning = _(
-                    "В этой сборке F5-TTS работает через CPU, а RVC — через ONNX/DirectML. Режим совместим, но медленнее, чем на NVIDIA.",
-                    "In this build F5-TTS runs on CPU while RVC uses ONNX/DirectML. This mode is supported, but slower than on NVIDIA.",
-                )
-            elif vendor == "CPU":
-                warning = _(
-                    "И F5-TTS, и RVC будут работать без GPU-ускорения. Режим совместим, но самый медленный.",
-                    "Both F5-TTS and RVC will run without GPU acceleration. This mode is supported, but it is the slowest option.",
-                )
-        elif model_id in {"edge_tts_rvc_onnx", "silero_rvc_onnx"}:
-            if vendor == "NVIDIA":
-                warning = _(
-                    "DirectML поддерживается на NVIDIA, но эта ONNX-реализация не рекомендуется: CUDA-версия обычно быстрее и лучше оптимизирована.",
-                    "DirectML is supported on NVIDIA, but this ONNX implementation is not recommended: the CUDA variant is usually faster and better optimized.",
-                )
-            elif vendor == "CPU":
-                warning = _(
-                    "RVC будет работать через CPU fallback без DirectML-ускорения.",
-                    "RVC will run through the CPU fallback without DirectML acceleration.",
-                )
-
-        return {
-            "vendors": vendors,
-            "supported": supported,
-            "warning": warning,
-        }
-
+        verdict["vendors"] = vendors
+        return verdict
     def _voice_installable_component(self, model_id: str):
         catalog = services().get(InstallableCatalogService)
         return catalog.require_component(f"tts:{str(model_id or '').strip()}")

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from controllers.voice_model_controller import VoiceModelController
 from core.events import Event
+from core.installables.compatibility import evaluate_installable_compatibility
 from handlers.voice_models.edge_tts_rvc_model import EdgeTTSRVCOnnxModel
 
 
@@ -126,6 +127,17 @@ class _CatalogStub:
         item_id = str(component_id).split(":", 1)[-1]
         return next(component for component in self._components if component.item_id == item_id)
 
+    def get_row(self, component_id, *, ctx=None, **_kwargs):
+        item_id = str(component_id).split(":", 1)[-1]
+        backend = "onnx" if item_id.endswith("_onnx") else "cpu"
+        return {
+            "compatibility": evaluate_installable_compatibility(
+                component_id=str(component_id),
+                backend=backend,
+                gpu_vendor=str((ctx or {}).get("gpu_vendor") or "CPU"),
+            )
+        }
+
     def ready_item_ids(self, category, *, ctx=None, **_kwargs):
         self.seen_contexts.append({"category": category, "ctx": dict(ctx or {})})
         return tuple(
@@ -136,6 +148,7 @@ class VoiceModelControllerTests(unittest.TestCase):
     def _make_controller_stub(self) -> VoiceModelController:
         controller = VoiceModelController.__new__(VoiceModelController)
         controller.gpu_name = "Intel Arc"
+        controller._installable_catalog = _CatalogStub([])
         return controller
 
     def test_f5_high_low_defaults_are_adapted_for_intel(self):

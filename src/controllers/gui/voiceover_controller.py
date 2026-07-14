@@ -161,68 +161,10 @@ class VoiceoverGuiController(BaseController):
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
-            if key == "USE_VOICEOVER" and bool(value):
-                self._maybe_warn_backend_missing()
             self._sync_everything(allow_autoload=False)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         self._ui(apply)
-
-    def _maybe_warn_backend_missing(self):
-        """Задача #1: при включении озвучки (Local) без установленного бэкенда
-        показываем плашку с тем, какой вариант будет поставлен по видеокарте.
-        Показывается один раз за сессию, чтобы не спамить."""
-        if getattr(self, "_backend_notice_shown", False) or not self.view:
-            return
-        # Локальная озвучка использует torch-бэкенд; для TG/прочего он не нужен.
-        if self._effective_method() != "Local":
-            return
-        try:
-            from core.backends.service import get_backend_service
-            variant = get_backend_service().get_installed_torch_variant()
-        except Exception:
-            variant = "cuda"  # при ошибке проверки — не пугаем пользователя
-        if variant and variant != "missing":
-            return
-
-        self._backend_notice_shown = True
-        try:
-            from utils.gpu_utils import (
-                get_primary_gpu_name, _classify_gpu_vendor, format_primary_gpu_label,
-            )
-            gpu_name = get_primary_gpu_name()
-            vendor = _classify_gpu_vendor(gpu_name or "")
-            gpu_label = gpu_name or format_primary_gpu_label()
-        except Exception:
-            vendor, gpu_label = "CPU", ""
-        is_nvidia = str(vendor).upper() == "NVIDIA"
-        backend_word = "CUDA" if is_nvidia else "CPU"
-        gpu_suffix_ru = f" ({gpu_label})" if gpu_label else ""
-        gpu_suffix_en = f" ({gpu_label})" if gpu_label else ""
-
-        box = QMessageBox(self.view)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(_("Бэкенд озвучки не установлен", "Voice backend not installed"))
-        box.setText(_(
-            f"Не установлен бэкенд озвучки. Судя по вашей видеокарте{gpu_suffix_ru} "
-            f"будет поставлен вариант {backend_word}.\n\nЕсли вы не согласны — "
-            f"установите бэкенд самостоятельно через AI Hub.",
-            f"The voice backend is not installed. Based on your GPU{gpu_suffix_en} "
-            f"the {backend_word} variant will be installed.\n\nIf you disagree — "
-            f"install the backend yourself via the AI Hub.",
-        ))
-        open_btn = box.addButton(_("Открыть AI Hub", "Open AI Hub"),
-                                 QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(_("Позже", "Later"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is open_btn:
-            try:
-                self.event_bus.emit(
-                    Events.GUI.SHOW_WINDOW,
-                    {"window_id": "ai_hub", "payload": {"category": "backend"}},
-                )
-            except Exception as exc:
-                logger.error(f"Failed to open AI Hub (backend) from notice: {exc}")
 
     # ---------- Telegram ----------
     def _on_tg_connected_event(self, event: Event):
@@ -1236,59 +1178,51 @@ class VoiceoverGuiController(BaseController):
         self._loading_status_label = None
 
     # ---------- GPU compatibility gate ----------
-    def _detected_gpu_vendor(self) -> str:
-        """NVIDIA | AMD | INTEL | CPU. Кэшируем — железо в рамках сессии не меняется."""
-        cached = getattr(self, "_gpu_vendor_cache", None)
-        if cached is not None:
-            return cached
-        vendor = "CPU"
+    def _model_catalog_row(self, model_id: str) -> dict[str, Any]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return {}
         try:
-            from utils.gpu_utils import get_primary_gpu_name, _classify_gpu_vendor
-            vendor = str(_classify_gpu_vendor(get_primary_gpu_name() or "") or "CPU").upper()
-        except Exception:
-            vendor = "CPU"
-        self._gpu_vendor_cache = vendor
-        return vendor
+            return dict(catalog.get_row(f"tts:{model_id}", include_status=False) or {})
+        except Exception as exc:
+            logger.warning(f"Cannot evaluate compatibility for voice model '{model_id}': {exc}")
+            return {}
 
-    def _model_gpu_vendors(self, model_id: str) -> list[str]:
-        try:
-            from presets.local_voice_models import LOCAL_VOICE_MODELS
-            for m in LOCAL_VOICE_MODELS:
-                if str(m.get("id") or "") == model_id:
-                    return [str(v).upper() for v in (m.get("gpu_vendor") or [])]
-        except Exception:
-            pass
-        return []
-
-    def _is_model_gpu_compatible(self, model_id: str) -> bool:
-        vendors = self._model_gpu_vendors(model_id)
-        if not vendors:
-            return True                      # неизвестная модель — не мешаем
-        if "CPU" in vendors:
-            return True                      # умеет CPU-фолбэк → совместима с любым железом
-        return self._detected_gpu_vendor() in vendors
+    def _model_compatibility(self, model_id: str) -> dict[str, Any]:
+        row = self._model_catalog_row(model_id)
+        verdict = dict(row.get("compatibility") or {})
+        if verdict:
+            return verdict
+        return {
+            "supported": False,
+            "gpu_vendor": "UNKNOWN",
+            "warning": _(
+                "Не удалось проверить совместимость модели. Обновите AI Hub и повторите попытку.",
+                "Model compatibility could not be verified. Refresh AI Hub and try again.",
+            ),
+        }
 
     def _confirm_gpu_compatibility(self, model_id: str) -> bool:
         """True — можно инициализировать; False — юзер отменил из-за несовместимости."""
-        if self._is_model_gpu_compatible(model_id):
+        compatibility = self._model_compatibility(model_id)
+        if bool(compatibility.get("supported")):
             return True
         if not self.view:
             return False
 
         model_name = self._model_id_to_name.get(model_id, model_id)
-        vendors = ", ".join(self._model_gpu_vendors(model_id)) or "NVIDIA"
-        detected = self._detected_gpu_vendor()
+        vendors = str(compatibility.get("backend") or "AI")
+        detected = str(compatibility.get("gpu_vendor") or "UNKNOWN")
+        warning = str(compatibility.get("warning") or "").strip()
 
         box = QMessageBox(self.view)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(_("Несовместимая модель", "Incompatible model"))
         box.setText(_(
-            f"Модель «{model_name}» рассчитана на GPU {vendors}, а у вас определилась {detected}.\n\n"
-            f"Инициализация, скорее всего, не запустится (нет CUDA) или будет крайне медленной. "
-            f"Выберите ONNX/CPU-вариант модели.\n\nВсё равно попробовать запустить?",
-            f"The model \"{model_name}\" targets a {vendors} GPU, but {detected} was detected.\n\n"
-            f"Initialization will most likely fail (no CUDA) or be extremely slow. "
-            f"Pick an ONNX/CPU variant instead.\n\nTry to start it anyway?",
+            f"Модель «{model_name}» использует backend {vendors}, несовместимый с устройством {detected}.\n\n"
+            f"{warning}\n\nВсё равно попробовать запустить?",
+            f"The model \"{model_name}\" uses the {vendors} backend, which is incompatible with {detected}.\n\n"
+            f"{warning}\n\nTry to start it anyway?",
         ))
         yes_btn = box.addButton(_("Всё равно запустить", "Start anyway"),
                                 QMessageBox.ButtonRole.AcceptRole)

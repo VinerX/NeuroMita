@@ -119,6 +119,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
         from services.character_registry import SettingsOnlyCharacterRegistry
         from services.contracts import (
             AppVarsService,
+            ASRSettingsService,
             CharacterRegistry,
             GameLinkService,
             LoopService,
@@ -134,6 +135,10 @@ def _run_gui(runtime, startup_mode: str) -> int:
             str(settings_path("settings.json", create_parent=True))
         )
         shell_settings_service = services().get(SettingsService)
+        if not services().is_registered(ASRSettingsService):
+            from services.asr_settings_service import ensure_asr_settings_service
+
+            ensure_asr_settings_service()
         if not services().is_registered(HardwareInventoryService):
             from services.hardware_inventory_service import WindowsHardwareInventoryService
 
@@ -214,6 +219,16 @@ def _run_gui(runtime, startup_mode: str) -> int:
     main_window.backend_loader = backend_loader
     app.aboutToQuit.connect(backend_loader.request_shutdown)
     app.aboutToQuit.connect(gui_root.close)
+
+    def close_shell_catalog() -> None:
+        try:
+            catalog = services().get_optional(InstallableCatalogService)
+            if catalog is not None:
+                catalog.close()
+        except Exception:
+            pass
+
+    app.aboutToQuit.connect(close_shell_catalog)
 
     try:
         from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync

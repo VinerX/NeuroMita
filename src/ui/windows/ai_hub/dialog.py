@@ -43,10 +43,11 @@ from ui.windows.ai_hub.presentation import (
     SubmitComponentAction,
 )
 from main_logger import logger
+from core.services import services
+from services.contracts import HardwareInventoryService
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label, get_primary_gpu_name
 
 from .constants import CATEGORY_ICONS, CATEGORY_LABELS, CATEGORY_ORDER, ROW_CATEGORY_MAP
 from .helpers import meta_from_row, qicon, qpixmap, row_category, status_from_row
@@ -851,12 +852,9 @@ class AIHubDialog(QDialog):
 
     # ----------------------------------------------------------- filtering
     def _filtered_rows(self) -> list[dict[str, Any]]:
-        from .helpers import is_backend_compatible
-
         query = str(self.search_box.text() or "").strip().lower()
         category = self._selected_category
         backend_filter = getattr(self, "_backend_filter", "all")
-        gpu_vendor = self._detect_gpu_vendor()
 
         rows: list[dict[str, Any]] = []
         for row in self._rows:
@@ -889,16 +887,21 @@ class AIHubDialog(QDialog):
             status = status_from_row(r)
             if status.get("ready"):
                 return 0
-            return 0 if is_backend_compatible(str(meta_from_row(r).get("backend") or ""), gpu_vendor) else 1
+            compatibility = r.get("compatibility") if isinstance(r, dict) else None
+            return 0 if isinstance(compatibility, dict) and compatibility.get("supported", False) else 1
 
         rows.sort(key=_compat_rank)
         return rows
 
-    def _detect_gpu_vendor(self) -> str:
+    @staticmethod
+    def _hardware_snapshot() -> dict[str, Any]:
+        hardware = services().get_optional(HardwareInventoryService)
+        if hardware is None:
+            return {"vendor": "CPU", "primary": None}
         try:
-            return str(check_gpu_provider() or "CPU").upper()
+            return dict(hardware.snapshot() or {})
         except Exception:
-            return "CPU"
+            return {"vendor": "CPU", "primary": None}
 
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
@@ -989,7 +992,6 @@ class AIHubDialog(QDialog):
             self._scroll_layout.insertWidget(self._scroll_layout.count() - 1, empty)
             return
 
-        gpu_vendor = self._detect_gpu_vendor()
         self._component_cards = []
 
         # Внутри категории RAG модели делятся на эмбеддинги и реранкеры —
@@ -1012,7 +1014,6 @@ class AIHubDialog(QDialog):
                 on_install=lambda cid: self._request_component_action(cid, "install"),
                 on_uninstall=lambda cid: self._request_component_action(cid, "uninstall"),
                 on_open_settings=self._open_component_settings,
-                gpu_vendor=gpu_vendor,
                 parent=self._scroll_content,
                 on_reinstall=lambda cid: self._request_component_action(
                     cid, "install", clean=True
@@ -1088,8 +1089,10 @@ class AIHubDialog(QDialog):
         installed = sum(1 for r in counted_rows if status_from_row(r).get("ready"))
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
-        gpu_label = format_primary_gpu_label()
-        gpu_vendor = self._detect_gpu_vendor()
+        hardware = self._hardware_snapshot()
+        gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
+        primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
+        gpu_label = str(primary.get("name") or gpu_vendor)
         self.stat_gpu.setValue(gpu_label, gpu_vendor)
 
         try:
@@ -1117,18 +1120,16 @@ class AIHubDialog(QDialog):
             self.stat_check.setValue("-", "")
 
     def _update_banner(self) -> None:
-        try:
-            gpu_vendor = str(check_gpu_provider() or "CPU").upper()
-        except Exception:
-            gpu_vendor = "CPU"
+        hardware = self._hardware_snapshot()
+        gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
 
         row_cpu = self._row_by_id("backend:cpu")
         row_cuda = self._row_by_id("backend:cuda")
         cpu_ready = bool(status_from_row(row_cpu or {}).get("ready"))
         cuda_ready = bool(status_from_row(row_cuda or {}).get("ready"))
 
-        gpu_name = str(get_primary_gpu_name() or "").strip()
-        gpu_label = gpu_name or format_primary_gpu_label()
+        primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
+        gpu_label = str(primary.get("name") or gpu_vendor)
         show = gpu_vendor == "NVIDIA" and cpu_ready and not cuda_ready
         self.banner.setVisible(show)
         if show:

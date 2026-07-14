@@ -379,7 +379,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'title': 'Google',
          'description': 'Онлайн-распознавание через SpeechRecognition (Google Web Speech API). Без '
                         'скачивания весов модели, но нужен интернет.',
-         'backend': 'none',
+         'backend': 'cpu',
          'legacy_kind': 'asr',
          'tags': ['Онлайн'],
          'languages': ['Russian', 'English'],
@@ -390,7 +390,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'title': 'Google',
          'description': 'Online speech recognition through SpeechRecognition (Google Web Speech API). No model '
                         'weights need to be downloaded, but an internet connection is required.',
-         'backend': 'none',
+         'backend': 'cpu',
          'legacy_kind': 'asr',
          'tags': ['Online'],
          'languages': ['Russian', 'English'],

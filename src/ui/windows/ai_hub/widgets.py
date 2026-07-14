@@ -182,8 +182,7 @@ class ModelCard(QFrame):
       - installed     → green "Установлено" + ⋮ menu (Settings / Uninstall)
       - not installed → status icon + Install button
       - incompatible  → grey-out + red "Несовместимо" chip; the action button
-                        warns on click and lets the user proceed at their own
-                        risk
+                        is disabled
     """
 
     def __init__(
@@ -192,7 +191,6 @@ class ModelCard(QFrame):
         on_install: Callable[[str], None],
         on_uninstall: Callable[[str], None],
         on_open_settings: Callable[[str], None],
-        gpu_vendor: str,
         parent=None,
         on_reinstall: Callable[[str], None] | None = None,
     ):
@@ -202,7 +200,6 @@ class ModelCard(QFrame):
         self._on_uninstall = on_uninstall
         self._on_open_settings = on_open_settings
         self._on_reinstall = on_reinstall
-        self._gpu_vendor = (gpu_vendor or "CPU").upper()
         self._install_btn = None
         self._install_btn_text = ""
         self._menu_btn = None
@@ -215,8 +212,6 @@ class ModelCard(QFrame):
     def _build(self) -> None:
         from .constants import STATUS_LABELS, STATUS_ICONS
         from .helpers import (
-            is_backend_compatible,
-            is_backend_not_recommended,
             meta_from_row,
             status_from_row,
         )
@@ -227,9 +222,12 @@ class ModelCard(QFrame):
         installed = bool(status.get("ready")) or status_code == "ready"
         details = status.get("details") if isinstance(status.get("details"), dict) else {}
         update_available = installed and bool(details.get("update_available"))
-        backend = str(meta.get("backend") or "").strip().lower()
-        compatible = is_backend_compatible(backend, self._gpu_vendor)
-        not_recommended = is_backend_not_recommended(backend, self._gpu_vendor)
+        compatibility = self._row.get("compatibility")
+        compatibility = compatibility if isinstance(compatibility, dict) else {}
+        compatible = bool(compatibility.get("supported", False))
+        not_recommended = compatible and not bool(compatibility.get("recommended", False))
+        compatibility_warning = str(compatibility.get("warning") or "").strip()
+        backend = str(compatibility.get("backend") or meta.get("backend") or "none").lower()
         self._compatible = compatible
 
         # mark whole card visually as incompatible (drives QSS via property)
@@ -266,7 +264,7 @@ class ModelCard(QFrame):
         if not compatible and not installed:
             warn_chip = Chip(
                 _t("Несовместимо", "Incompatible"),
-                tooltip=_t(
+                tooltip=compatibility_warning or _t(
                     "Эта модель требует другого backend и не запустится на вашем оборудовании.",
                     "This model needs a different backend and won't run on your hardware.",
                 ),
@@ -278,7 +276,7 @@ class ModelCard(QFrame):
                 Chip(
                     _t("Не рекомендуется", "Not recommended"),
                     variant="not_recommended",
-                    tooltip=_t(
+                    tooltip=compatibility_warning or _t(
                         "DirectML разрешён на NVIDIA, но CUDA-реализация обычно быстрее и лучше оптимизирована.",
                         "DirectML is supported on NVIDIA, but the CUDA implementation is usually faster and better optimized.",
                     ),

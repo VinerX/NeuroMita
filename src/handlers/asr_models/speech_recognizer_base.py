@@ -1,11 +1,9 @@
 from abc import ABC, abstractmethod
-import json
 import os
 from typing import Any, List, Optional
 
 import numpy as np
 
-from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallAction, InstallPlan
@@ -19,53 +17,16 @@ from core.installables import (
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
+from services.asr_settings_service import ensure_asr_settings_service
 from utils import _
 
 
-def _asr_settings_path() -> str:
-    return str(settings_path("asr_settings.json", create_parent=True))
-
-
 def load_asr_model_settings(engine_id: str) -> dict:
-    path = _asr_settings_path()
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict):
-                models = payload.get("models", {})
-                if isinstance(models, dict):
-                    value = models.get(str(engine_id or "").strip(), {})
-                    return dict(value) if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-    return {}
+    return ensure_asr_settings_service().model_settings(engine_id)
 
 
 def save_asr_model_settings(engine_id: str, values: dict) -> None:
-    path = _asr_settings_path()
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-    payload: dict[str, Any] = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                payload = raw
-    except Exception:
-        payload = {}
-
-    models = payload.get("models")
-    if not isinstance(models, dict):
-        models = {}
-    models[str(engine_id or "").strip()] = dict(values or {})
-    payload["models"] = models
-
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    ensure_asr_settings_service().set_model_settings(engine_id, values)
 
 
 def validate_asr_model_settings(schema: List[dict], values: dict) -> ValidationResult:

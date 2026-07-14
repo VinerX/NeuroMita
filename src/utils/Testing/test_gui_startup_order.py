@@ -255,6 +255,7 @@ class GuiStartupOrderTests(unittest.TestCase):
                 name: type(name, (), {})
                 for name in (
                     "AppVarsService",
+                    "ASRSettingsService",
                     "CharacterRegistry",
                     "GameLinkService",
                     "LoopService",
@@ -300,6 +301,10 @@ class GuiStartupOrderTests(unittest.TestCase):
                 "services.settings_service": fake_module(
                     "services.settings_service",
                     DefaultAppVarsService=lambda *_args: object(),
+                ),
+                "services.asr_settings_service": fake_module(
+                    "services.asr_settings_service",
+                    ensure_asr_settings_service=lambda: object(),
                 ),
                 "services.installable_catalog_service": fake_module(
                     "services.installable_catalog_service",

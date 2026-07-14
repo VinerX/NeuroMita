@@ -153,6 +153,7 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
     hardware_content.addWidget(self.ai_hardware_loading)
 
     self.ai_hardware_info = QWidget()
+    self.ai_hardware_info.setObjectName("AIEngineHardwareInfo")
     info_layout = QHBoxLayout(self.ai_hardware_info)
     info_layout.setContentsMargins(0, 0, 0, 0)
     info_layout.setSpacing(8)

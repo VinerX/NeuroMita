@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import re
 import threading
@@ -8,7 +7,6 @@ import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
-from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import services, use
 from core.task_supervisor import task_supervisor
@@ -20,6 +18,7 @@ from services.contracts import (
     SettingsService,
     SpeechService,
 )
+from services.asr_settings_service import ensure_asr_settings_service
 from utils import getTranslationVariant as _
 
 
@@ -43,6 +42,7 @@ class SpeechController(SpeechService):
         self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
+        self.asr_settings = ensure_asr_settings_service()
 
         self._glossary_lock = threading.RLock()
         self._glossary_cache: list[dict] | None = None
@@ -58,15 +58,6 @@ class SpeechController(SpeechService):
         self._mita_speaking = False        # открытое окно (локальное воспроизведение)
         self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
 
-        self._asr_settings_path = str(settings_path("asr_settings.json", create_parent=True))
-        self._asr_settings = {
-            "engine": "google",
-            "models": {
-                "google": {},
-                "gigaam": {"device": "auto"}
-            }
-        }
-
         self._settings_subscription = self.settings.subscribe(
             self._on_setting_changed, keys=self._SETTING_KEYS
         )
@@ -75,17 +66,11 @@ class SpeechController(SpeechService):
 
     # ——— settings json
     def _load_asr_settings(self):
-        try:
-            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
-            if os.path.exists(self._asr_settings_path):
-                with open(self._asr_settings_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        self._asr_settings.update(data)
-            if self._sanitize_asr_models():
-                self._save_asr_settings()
-        except Exception as e:
-            logger.error(f"ASR settings load error: {e}")
+        self._sanitize_asr_models()
+
+    @property
+    def _asr_settings(self) -> dict:
+        return self.asr_settings.snapshot()
 
     def _sanitize_asr_models(self) -> bool:
         """Чинит устаревшие/битые значения «model» в asr_settings.json.
@@ -113,16 +98,9 @@ class SpeechController(SpeechService):
                     f"ASR: модель '{model}' недопустима для '{engine}' — заменяю на '{default}'."
                 )
                 cfg["model"] = default
+                self.asr_settings.set_model_settings(engine, cfg)
                 changed = True
         return changed
-
-    def _save_asr_settings(self):
-        try:
-            os.makedirs(os.path.dirname(self._asr_settings_path), exist_ok=True)
-            with open(self._asr_settings_path, "w", encoding="utf-8") as f:
-                json.dump(self._asr_settings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"ASR settings save error: {e}")
 
     # ——— subscriptions
     def _subscribe_to_events(self):
@@ -175,7 +153,7 @@ class SpeechController(SpeechService):
         self._load_asr_settings()
 
         engine = self.settings.get("RECOGNIZER_TYPE", self._asr_settings.get("engine", "google"))
-        self._asr_settings["engine"] = engine
+        self.asr_settings.set_selected_engine(engine)
 
         SpeechRecognition.set_recognizer_type(engine)
         SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
@@ -230,8 +208,7 @@ class SpeechController(SpeechService):
                 SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
                 return
 
-            self._asr_settings["engine"] = engine
-            self._save_asr_settings()
+            self.asr_settings.set_selected_engine(engine)
 
             if self.mic_recognition_active:
                 SpeechRecognition.speech_recognition_stop()
@@ -437,17 +414,15 @@ class SpeechController(SpeechService):
         value = data.get('value')
         if key is None:
             return
-        self._asr_settings.setdefault("models", {}).setdefault(engine, {})[key] = value
-        self._save_asr_settings()
+        self.asr_settings.set_model_option(engine, key, value)
         if engine == self._asr_settings.get("engine"):
-            SpeechRecognition.apply_settings(engine, self._asr_settings["models"][engine])
+            SpeechRecognition.apply_settings(engine, self.asr_settings.model_settings(engine))
 
     def _on_apply_recognizer_settings(self, event: Event):
         data = event.data or {}
         engine = data.get('engine') or self._asr_settings.get("engine", "google")
         settings = data.get('settings', {})
-        self._asr_settings.setdefault("models", {})[engine] = settings
-        self._save_asr_settings()
+        self.asr_settings.set_model_settings(engine, settings)
         if engine == self._asr_settings.get("engine"):
             SpeechRecognition.apply_settings(engine, settings)
 

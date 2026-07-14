@@ -313,49 +313,6 @@ class SpeechRecognition:
             pass
 
     @staticmethod
-    def check_model_installed(recognizer_type: Optional[str] = None, settings: Optional[dict] = None) -> bool:
-        engine = recognizer_type or SpeechRecognition._recognizer_type
-        settings = settings or {}
-
-        SpeechRecognition._ensure_instance()
-        inst = SpeechRecognition._get_recognizer_snapshot()
-        if not inst or engine != SpeechRecognition._recognizer_type:
-            inst = SpeechRecognition._new_instance(engine)
-
-        if not inst:
-            return False
-
-        try:
-            if hasattr(inst, "apply_settings"):
-                inst.apply_settings(settings)
-        except Exception:
-            pass
-
-        try:
-            from core.runtime_environments import runtime_environments
-
-            runtime_ctx = runtime_environments().component_context(
-                category="asr",
-                item_id=engine,
-                ctx={"engine_settings": dict(settings)},
-            )
-            return bool(inst.status(runtime_ctx).ready)
-        except Exception as e:
-            logger.warning(f"is_installed error: {e}")
-            return False
-
-    @staticmethod
-    async def install_model(recognizer_type: Optional[str] = None) -> bool:
-        engine = recognizer_type or SpeechRecognition._recognizer_type
-        SpeechRecognition._ensure_instance()
-        inst = SpeechRecognition._get_recognizer_snapshot()
-        if not inst or engine != SpeechRecognition._recognizer_type:
-            inst = SpeechRecognition._new_instance(engine)
-        if inst:
-            return await inst.install()
-        return False
-
-    @staticmethod
     async def live_recognition():
         max_retries = 3
         retry = 0

@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, wait
 from typing import Any, Iterable
 
+from core.daemon_executor import DaemonExecutor
+from core.installables.compatibility import evaluate_installable_compatibility
+from core.services import services
 from installables.catalog_manifest import catalog_by_id, catalog_entries
 from main_logger import logger
-from services.contracts import InstallableCatalogService, SettingsService
+from services.asr_settings_service import ensure_asr_settings_service
+from services.contracts import (
+    ASRSettingsService,
+    HardwareInventoryService,
+    InstallableCatalogService,
+    SettingsService,
+)
 
 
 class DefaultInstallableCatalogService(InstallableCatalogService):
@@ -18,16 +29,34 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
     settings or install/uninstall work.
     """
 
-    def __init__(self, settings: SettingsService | None = None) -> None:
+    def __init__(
+        self,
+        settings: SettingsService | None = None,
+        *,
+        hardware: HardwareInventoryService | None = None,
+        asr_settings: ASRSettingsService | None = None,
+        status_timeout_sec: float = 15.0,
+    ) -> None:
         self._settings = settings
+        self._hardware = hardware or services().get_optional(HardwareInventoryService)
+        self._asr_settings = asr_settings or ensure_asr_settings_service()
+        self._status_timeout_sec = max(0.1, float(status_timeout_sec))
         self._lock = threading.RLock()
-        self._status_cache: dict[str, dict[str, Any]] = {}
+        self._status_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._inflight: dict[tuple[str, str], Future[Any]] = {}
+        self._component_revisions: dict[str, int] = {}
+        self._closed = False
         self._runtime_registry_prepared = False
-        self._executor = ThreadPoolExecutor(
-            max_workers=4,
-            thread_name_prefix="installable-state",
+        self._probe_executor = DaemonExecutor(
+            4,
+            thread_name_prefix="installable-probe",
+        )
+        self._async_executor = DaemonExecutor(
+            2,
+            thread_name_prefix="installable-request",
         )
         self._settings_subscription = None
+        self._asr_settings_subscription = None
         if settings is not None:
             try:
                 self._settings_subscription = settings.subscribe(
@@ -36,11 +65,42 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 )
             except Exception:
                 self._settings_subscription = None
+        try:
+            self._asr_settings_subscription = self._asr_settings.subscribe(
+                self._on_asr_setting_changed,
+                replay=False,
+            )
+        except Exception:
+            self._asr_settings_subscription = None
 
     def _on_setting_changed(self, _change: Any) -> None:
         # Component readiness can depend on device/model/provider settings.
         # A single invalidation point prevents stale per-screen interpretations.
         self.invalidate()
+
+    def _on_asr_setting_changed(self, change: Any) -> None:
+        engine_id = str(getattr(change, "engine_id", "") or "").strip()
+        self.invalidate(f"asr:{engine_id}" if engine_id else None)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            futures = tuple(self._inflight.values())
+            self._inflight.clear()
+            self._status_cache.clear()
+        for future in futures:
+            future.cancel()
+        self._async_executor.shutdown(cancel_futures=True)
+        self._probe_executor.shutdown(cancel_futures=True)
+        for subscription in (self._settings_subscription, self._asr_settings_subscription):
+            close = getattr(subscription, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def _language(self) -> str:
         if self._settings is None:
@@ -72,6 +132,35 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 pass
         return result
 
+    def _hardware_snapshot(self, *, refresh: bool = False) -> dict[str, Any]:
+        hardware = self._hardware or services().get_optional(HardwareInventoryService)
+        if hardware is None:
+            return {"vendor": "CPU", "platform": ""}
+        try:
+            return dict(hardware.snapshot(refresh=refresh) or {})
+        except Exception as exc:
+            logger.warning(f"Hardware inventory failed during catalog evaluation: {exc}")
+            return {"vendor": "CPU", "platform": "", "error": str(exc)}
+
+    def _compatibility(
+        self,
+        entry,
+        status: dict[str, Any] | None,
+        *,
+        ctx: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        metadata = self._metadata(entry)
+        backend = str((status or {}).get("backend") or metadata.get("backend") or "none")
+        vendor = str((ctx or {}).get("gpu_vendor") or "").strip()
+        if not vendor:
+            vendor = str(self._hardware_snapshot().get("vendor") or "CPU")
+        return evaluate_installable_compatibility(
+            component_id=entry.id,
+            backend=backend,
+            gpu_vendor=vendor,
+            language=self._language(),
+        )
+
     @staticmethod
     def _matches_category(entry, category: str | None) -> bool:
         if not category:
@@ -94,16 +183,14 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             entry for entry in all_entries if self._matches_category(entry, category)
         )
 
+        statuses: dict[str, dict[str, Any]] = {}
         if include_status:
             status_entries = tuple(
                 entry
                 for entry in all_entries
                 if self._matches_category(entry, status_category or category)
             )
-            self._refresh_statuses(status_entries, refresh=refresh, ctx=ctx)
-
-        with self._lock:
-            statuses = copy.deepcopy(self._status_cache)
+            statuses = self._refresh_statuses(status_entries, refresh=refresh, ctx=ctx)
 
         rows: list[dict[str, Any]] = []
         for entry in entries:
@@ -111,6 +198,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             status = statuses.get(entry.id)
             if status is not None:
                 row["status"] = status
+            row["compatibility"] = self._compatibility(entry, status, ctx=ctx)
             rows.append(row)
         return rows
 
@@ -127,15 +215,20 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         if entry is None:
             raise KeyError(f"Unknown installable component: {normalized}")
 
-        if include_status:
+        statuses = (
             self._refresh_statuses((entry,), refresh=refresh, ctx=ctx)
+            if include_status
+            else {}
+        )
 
         row: dict[str, Any] = {"metadata": self._metadata(entry)}
         if include_status:
-            with self._lock:
-                status = copy.deepcopy(self._status_cache.get(normalized))
+            status = statuses.get(normalized)
             if status is not None:
                 row["status"] = status
+        else:
+            status = None
+        row["compatibility"] = self._compatibility(entry, status, ctx=ctx)
         return row
 
     def get_status(
@@ -219,7 +312,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             except BaseException as exc:
                 callback([], exc)
 
-        self._executor.submit(run)
+        self._async_executor.submit(run)
 
     def get_status_async(
         self,
@@ -238,7 +331,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             except BaseException as exc:
                 callback({}, exc)
 
-        self._executor.submit(run)
+        self._async_executor.submit(run)
 
     def require_component(self, component_id: str, *, refresh: bool = False) -> Any:
         normalized = str(component_id or "").strip()
@@ -259,11 +352,12 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         ctx: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from core.backends import BackendKind, get_backend_service
-        from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
 
         component = self.require_component(component_id)
-        runtime_ctx = dict(ctx or {})
-        runtime_ctx.setdefault("gpu_vendor", str(check_gpu_provider() or "CPU"))
+        entry = catalog_by_id().get(str(component_id or "").strip())
+        if entry is None:
+            raise KeyError(component_id)
+        runtime_ctx = self._component_context(entry, ctx=ctx, refresh=False)
         plan = component.build_install_plan(runtime_ctx)
         backend_kind = get_backend_service().build_requirement(
             plan.required_backend
@@ -315,12 +409,15 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 }
             )
 
+        hardware = self._hardware_snapshot()
+        primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
+        gpu_label = str(primary.get("name") or hardware.get("vendor") or "CPU")
         return {
             "component_id": component.id,
             "component_title": metadata.title,
             "component_size": metadata.size,
             "component_is_backend": component_is_backend,
-            "gpu": format_primary_gpu_label(),
+            "gpu": gpu_label,
             "backend_kind": backend_kind.value,
             "backend_id": backend_id,
             "backend_title": backend_title,
@@ -334,11 +431,26 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         }
 
     def invalidate(self, component_id: str | None = None) -> None:
+        abandoned: list[Future[Any]] = []
         with self._lock:
             if component_id:
-                self._status_cache.pop(str(component_id), None)
+                normalized = str(component_id)
+                self._component_revisions[normalized] = self._component_revisions.get(normalized, 0) + 1
+                for key in tuple(self._status_cache):
+                    if key[0] == normalized:
+                        self._status_cache.pop(key, None)
+                for key in tuple(self._inflight):
+                    if key[0] == normalized:
+                        abandoned.append(self._inflight.pop(key))
             else:
+                for entry in catalog_entries():
+                    self._component_revisions[entry.id] = self._component_revisions.get(entry.id, 0) + 1
                 self._status_cache.clear()
+                abandoned.extend(self._inflight.values())
+                self._inflight.clear()
+        for future in abandoned:
+            future.cancel()
+            self._probe_executor.abandon(future)
         try:
             from installables.registry_builder import get_installable_registry
 
@@ -412,75 +524,142 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         *,
         refresh: bool,
         ctx: dict[str, Any] | None,
-    ) -> None:
-        unique = tuple(dict.fromkeys(entry.id for entry in entries))
-        if not unique:
-            return
+    ) -> dict[str, dict[str, Any]]:
+        by_id = {entry.id: entry for entry in entries}
+        if not by_id:
+            return {}
 
         with self._lock:
-            missing = [
-                component_id
-                for component_id in unique
-                if refresh or component_id not in self._status_cache
-            ]
-        if not missing:
-            return
+            if self._closed:
+                raise RuntimeError("Installable catalog is closed")
 
         self._prepare_runtime_registry()
-
         if refresh:
-            for component_id in missing:
+            for component_id in by_id:
                 self.invalidate(component_id)
 
-        runtime_ctx = dict(ctx or {})
-        if refresh:
-            runtime_ctx["refresh"] = True
+        contexts: dict[str, dict[str, Any]] = {}
+        keys: dict[str, tuple[str, str]] = {}
+        for component_id, entry in by_id.items():
+            component_ctx = self._component_context(entry, ctx=ctx, refresh=refresh)
+            contexts[component_id] = component_ctx
+            keys[component_id] = (component_id, self._context_fingerprint(component_ctx))
 
-        by_id = catalog_by_id()
+        futures: dict[tuple[str, str], Future[Any]] = {}
+        generations: dict[tuple[str, str], int] = {}
+        with self._lock:
+            for component_id, key in keys.items():
+                if key in self._status_cache:
+                    continue
+                revision = self._component_revisions.get(component_id, 0)
+                generations[key] = revision
+                future = self._inflight.get(key)
+                if future is None:
+                    future = self._probe_executor.submit(
+                        self._inspect_component,
+                        by_id[component_id],
+                        contexts[component_id],
+                    )
+                    self._inflight[key] = future
+                futures[key] = future
 
-        def inspect(component_id: str) -> tuple[str, dict[str, Any]]:
-            entry = by_id[component_id]
-            try:
-                from core.runtime_environments import runtime_environments
+        if futures:
+            done, pending = wait(
+                tuple(set(futures.values())),
+                timeout=self._status_timeout_sec,
+            )
+            results: dict[tuple[str, str], dict[str, Any]] = {}
+            for key, future in futures.items():
+                component_id = key[0]
+                if future in pending:
+                    future.cancel()
+                    self._probe_executor.abandon(future)
+                    results[key] = self._failed_status(
+                        by_id[component_id],
+                        f"Status probe timed out after {self._status_timeout_sec:.1f}s",
+                        code="timeout",
+                    )
+                    continue
+                try:
+                    results[key] = dict(future.result())
+                except BaseException as exc:
+                    logger.error(
+                        f"Installable status failed for '{component_id}': {exc}",
+                        exc_info=True,
+                    )
+                    results[key] = self._failed_status(by_id[component_id], str(exc))
 
-                metadata = entry.metadata_ru
-                component_ctx = runtime_environments().component_context(
-                    category=str(metadata.get("category") or ""),
-                    item_id=str(metadata.get("item_id") or component_id.split(":", 1)[-1]),
-                    ctx=runtime_ctx,
-                )
-                component = self.require_component(component_id)
-                value = component.status(component_ctx)
-                return component_id, value.as_dict()
-            except Exception as exc:
-                logger.error(
-                    f"Installable status failed for '{component_id}': {exc}",
-                    exc_info=True,
-                )
-                return component_id, {
-                    "id": component_id,
-                    "code": "failed",
-                    "installed": False,
-                    "ready": False,
-                    "message": f"Failed to inspect component: {exc}",
-                    "backend": str(entry.metadata_ru.get("backend") or "none"),
-                    "backend_ok": False,
-                    "details": {"error": str(exc)},
-                }
-
-        workers = min(4, len(missing))
-        if workers <= 1:
-            inspected = [inspect(component_id) for component_id in missing]
-        else:
-            with ThreadPoolExecutor(
-                max_workers=workers,
-                thread_name_prefix="installable-catalog",
-            ) as executor:
-                inspected = list(executor.map(inspect, missing))
+            with self._lock:
+                for key, future in futures.items():
+                    if self._inflight.get(key) is future:
+                        self._inflight.pop(key, None)
+                if not self._closed:
+                    for key, status in results.items():
+                        component_id = key[0]
+                        if self._component_revisions.get(component_id, 0) == generations[key]:
+                            self._status_cache[key] = copy.deepcopy(status)
 
         with self._lock:
-            for component_id, status in inspected:
-                self._status_cache[component_id] = status
+            return {
+                component_id: copy.deepcopy(self._status_cache[key])
+                for component_id, key in keys.items()
+                if key in self._status_cache
+            }
+
+    def _component_context(
+        self,
+        entry: Any,
+        *,
+        ctx: dict[str, Any] | None,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        metadata = entry.metadata_ru
+        category = str(metadata.get("category") or "").strip().lower()
+        item_id = str(metadata.get("item_id") or entry.id.split(":", 1)[-1]).strip()
+        result = dict(ctx or {})
+        hardware = self._hardware_snapshot(refresh=False)
+        result.setdefault("gpu_vendor", str(hardware.get("vendor") or "CPU"))
+        result.setdefault("platform", str(hardware.get("platform") or ""))
+        if category == "asr":
+            result.setdefault("engine_settings", self._asr_settings.model_settings(item_id))
+            result["asr_settings_revision"] = self._asr_settings.revision
+        if refresh:
+            result["refresh"] = True
+
+        from core.runtime_environments import runtime_environments
+
+        return runtime_environments().component_context(
+            category=category,
+            item_id=item_id,
+            ctx=result,
+        )
+
+    @staticmethod
+    def _context_fingerprint(ctx: dict[str, Any]) -> str:
+        stable_ctx = {
+            key: value
+            for key, value in ctx.items()
+            if key not in {"refresh", "timeout_sec", "callbacks"}
+        }
+        payload = json.dumps(stable_ctx, sort_keys=True, ensure_ascii=True, default=str, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _inspect_component(self, entry: Any, component_ctx: dict[str, Any]) -> dict[str, Any]:
+        component = self.require_component(entry.id)
+        return dict(component.status(dict(component_ctx)).as_dict())
+
+    @staticmethod
+    def _failed_status(entry: Any, error: str, *, code: str = "failed") -> dict[str, Any]:
+        return {
+            "id": entry.id,
+            "code": code,
+            "installed": False,
+            "ready": False,
+            "message": f"Failed to inspect component: {error}",
+            "backend": str(entry.metadata_ru.get("backend") or "none"),
+            "backend_ok": False,
+            "details": {"error": str(error)},
+        }
 
     def _prepare_runtime_registry(self) -> None:
         with self._lock:

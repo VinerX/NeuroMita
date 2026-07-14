@@ -100,6 +100,9 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        from services.asr_settings_service import ensure_asr_settings_service
+
+        ensure_asr_settings_service()
         if not services().is_registered(InstallableCatalogService):
             from services.installable_catalog_service import DefaultInstallableCatalogService
 
@@ -610,6 +613,10 @@ class MainController:
         feature_manager = getattr(self, "feature_manager", None)
         if feature_manager is not None:
             shutdown_step("optional features", feature_manager.shutdown)
+
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is not None:
+            shutdown_step("installable catalog", catalog.close)
 
         if services().is_registered(TelegramAuthService):
             auth_service = services().get(TelegramAuthService)

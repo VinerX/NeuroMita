@@ -342,7 +342,13 @@ class BackendService:
         # _onnx_installed_variant).
         marker_kind = status.requirement.kind
         if marker_kind == BackendKind.ONNX:
-            marker_provider = self.preferred_onnx_provider(self._build_ctx(ctx))
+            installed_variant = self._onnx_variant(status.target_dir)
+            marker_provider = {
+                "onnx_dml": "dml",
+                "onnx_cpu": "cpu",
+            }.get(installed_variant)
+            if marker_provider is None:
+                return self.get_status(requirement, ctx=ctx)
         else:
             marker_provider = marker_kind.value
         self._write_backend_marker(status.target_dir, marker_kind, marker_provider)

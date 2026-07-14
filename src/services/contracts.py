@@ -55,12 +55,44 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+class ASRSettingsService(ABC):
+    """Single owner of the selected ASR engine and per-engine settings."""
+
+    @property
+    @abstractmethod
+    def revision(self) -> int: ...
+
+    @abstractmethod
+    def snapshot(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def selected_engine(self) -> str: ...
+
+    @abstractmethod
+    def model_settings(self, engine_id: str) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def set_selected_engine(self, engine_id: str) -> None: ...
+
+    @abstractmethod
+    def set_model_settings(self, engine_id: str, values: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def set_model_option(self, engine_id: str, key: str, value: Any) -> None: ...
+
+    @abstractmethod
+    def subscribe(self, callback: Callable[[Any], None], *, replay: bool = False) -> Any: ...
+
+
 class InstallableCatalogService(ABC):
     """Canonical catalog, lifecycle status and readiness of AI components.
 
     UI and runtime consumers must not inspect packages, files or backends on
     their own.  They read the same component snapshot through this contract.
     """
+
+    def close(self) -> None:
+        """Release asynchronous probes and reject late lifecycle results."""
 
     @abstractmethod
     def list_rows(

@@ -10,10 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from PyQt6 import sip
 from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 
-from ui.windows.ai_hub.helpers import (
-    is_backend_compatible,
-    is_backend_not_recommended,
-)
+from core.installables.compatibility import evaluate_installable_compatibility
 from ui.windows.ai_hub.widgets import ModelCard
 
 
@@ -36,7 +33,7 @@ def teardown_module() -> None:
     _APP = None
 
 
-def _row(*, backend: str = "onnx", ready: bool = False) -> dict:
+def _row(*, backend: str = "onnx", ready: bool = False, vendor: str = "NVIDIA") -> dict:
     return {
         "metadata": {
             "id": "asr:test",
@@ -51,18 +48,28 @@ def _row(*, backend: str = "onnx", ready: bool = False) -> dict:
             "ready": ready,
             "installed": ready,
         },
+        "compatibility": evaluate_installable_compatibility(
+            component_id="asr:test",
+            backend=backend,
+            gpu_vendor=vendor,
+        ),
     }
 
 
 def test_nvidia_accepts_onnx_but_amd_rejects_cuda() -> None:
-    assert is_backend_compatible("onnx", "NVIDIA")
-    assert is_backend_compatible("cuda", "NVIDIA")
-    assert not is_backend_compatible("cuda", "AMD")
-    assert is_backend_compatible("onnx", "AMD")
-    assert is_backend_compatible("onnx", "INTEL")
-    assert is_backend_compatible("onnx", "CPU")
-    assert is_backend_not_recommended("onnx", "NVIDIA")
-    assert not is_backend_not_recommended("onnx", "AMD")
+    verdict = lambda backend, vendor: evaluate_installable_compatibility(
+        component_id="asr:test",
+        backend=backend,
+        gpu_vendor=vendor,
+    )
+    assert verdict("onnx", "NVIDIA")["supported"]
+    assert verdict("cuda", "NVIDIA")["supported"]
+    assert not verdict("cuda", "AMD")["supported"]
+    assert verdict("onnx", "AMD")["supported"]
+    assert verdict("onnx", "INTEL")["supported"]
+    assert verdict("onnx", "CPU")["supported"]
+    assert not verdict("onnx", "NVIDIA")["recommended"]
+    assert verdict("onnx", "AMD")["recommended"]
 
 
 def test_nvidia_onnx_card_is_allowed_but_marked_not_recommended() -> None:
@@ -72,7 +79,6 @@ def test_nvidia_onnx_card_is_allowed_but_marked_not_recommended() -> None:
         on_install=lambda _component_id: None,
         on_uninstall=lambda _component_id: None,
         on_open_settings=lambda _component_id: None,
-        gpu_vendor="NVIDIA",
     )
 
     button = card.findChild(QPushButton, "AIHubCardPrimary")
@@ -88,7 +94,6 @@ def test_file_check_and_other_install_keep_card_button_neutral() -> None:
         on_install=lambda _component_id: None,
         on_uninstall=lambda _component_id: None,
         on_open_settings=lambda _component_id: None,
-        gpu_vendor="NVIDIA",
     )
     button = card.findChild(QPushButton, "AIHubCardPrimary")
     assert button is not None
@@ -113,11 +118,25 @@ def test_file_check_and_other_install_keep_card_button_neutral() -> None:
 def test_hardware_incompatible_backend_cannot_be_installed() -> None:
     _app()
     card = ModelCard(
-        _row(backend="cuda"),
+        _row(backend="cuda", vendor="AMD"),
         on_install=lambda _component_id: None,
         on_uninstall=lambda _component_id: None,
         on_open_settings=lambda _component_id: None,
-        gpu_vendor="AMD",
+    )
+    button = card.findChild(QPushButton, "AIHubCardUnavailable")
+    assert button is not None
+    assert not button.isEnabled()
+
+
+def test_missing_canonical_compatibility_is_fail_closed() -> None:
+    _app()
+    row = _row()
+    row.pop("compatibility")
+    card = ModelCard(
+        row,
+        on_install=lambda _component_id: None,
+        on_uninstall=lambda _component_id: None,
+        on_open_settings=lambda _component_id: None,
     )
     button = card.findChild(QPushButton, "AIHubCardUnavailable")
     assert button is not None
@@ -131,7 +150,6 @@ def test_installed_component_menu_is_locked_during_install() -> None:
         on_install=lambda _component_id: None,
         on_uninstall=lambda _component_id: None,
         on_open_settings=lambda _component_id: None,
-        gpu_vendor="NVIDIA",
     )
     menu = card.findChild(QPushButton, "AIHubCardMenuBtn")
     assert menu is not None
