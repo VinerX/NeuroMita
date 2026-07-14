@@ -105,6 +105,54 @@ class MemoryIslandUpsertTests(unittest.TestCase):
         self.assertEqual(int(island_candidates), 1)  # island exists...
         # ...but the forget query (which adds NOT LIKE 'island:%') can't pick it.
 
+    def test_seed_rag_memory_is_forgotten_but_indexed(self):
+        class _FakeRag:
+            def __init__(self):
+                self.embedded = []
+
+            def update_memory_embedding(self, eid, txt):
+                self.embedded.append((int(eid), str(txt)))
+
+        mm = self._fresh_mm("CreditsChar")
+        fake = _FakeRag()
+        mm.rag = fake
+
+        eid = mm.seed_rag_memory("NeuroMita was made by VinerX", priority="high")
+        self.assertIsNotNone(eid)
+
+        # Not in the active block: stored as forgotten.
+        with mm.db.connection() as conn:
+            row = conn.execute(
+                "SELECT is_forgotten, is_deleted FROM memories "
+                "WHERE character_id=? AND eternal_id=?",
+                (mm.storage_key, eid),
+            ).fetchone()
+        self.assertEqual(int(row[0]), 1)  # forgotten -> out of active block
+        self.assertEqual(int(row[1]), 0)  # but not deleted -> RAG-findable
+
+        # Re-seeding the same fact updates in place without a duplicate and
+        # keeps it RAG-only.
+        eid2 = mm.seed_rag_memory("NeuroMita was made by VinerX", priority="high")
+        self.assertEqual(eid2, eid)
+        with mm.db.connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE character_id=? AND content=?",
+                (mm.storage_key, "NeuroMita was made by VinerX"),
+            ).fetchone()[0]
+        self.assertEqual(int(count), 1)
+
+        # It was scheduled for embedding (RAG index).
+        mm._get_embed_executor().submit(lambda: None).result(timeout=5)
+        self.assertTrue(any(e == eid for e, _ in fake.embedded))
+
+    def test_seed_rag_memory_absent_from_active_block(self):
+        mm = self._fresh_mm("CreditsActive")
+        mm.seed_rag_memory("credit fact only for RAG", priority="high")
+        mm.add_memory(content="a normal active fact", priority="normal")
+        active = mm.get_memories_formatted()
+        self.assertNotIn("credit fact only for RAG", active)
+        self.assertIn("a normal active fact", active)
+
     def test_merge_updates_target_deletes_source_and_reindexes(self):
         class _FakeRag:
             def __init__(self):

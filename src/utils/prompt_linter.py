@@ -75,7 +75,7 @@ def _iter_prompt_files(root: Path):
         if path.is_file() and path.suffix in PROMPT_EXTS:
             # Skip archived/legacy and worktrees.
             parts = set(path.parts)
-            if ".claude" in parts or "worktrees" in parts:
+            if ".claude" in parts or "worktrees" in parts or "Legacy" in parts:
                 continue
             yield path
 

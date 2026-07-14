@@ -579,9 +579,10 @@ class DslInterpreter:
                         returned_value_for_log = returned is not None
                         return (returned or "", sys_msgs)
 
-                    if command == "SEED_MEMORY":
+                    if command in ("SEED_MEMORY", "SEED_RAG_MEMORY"):
+                        fmt = f"{command} requires format: {command} priority | content [ENTITIES e1, e2]"
                         if not args or "|" not in args:
-                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                            raise DslError(fmt, resolved_script_id, num, raw)
                         entities = []
                         raw_args = args
                         upper_args = args.upper()
@@ -591,15 +592,22 @@ class DslInterpreter:
                             raw_args = args[:ent_idx]
                             entities = [e.strip() for e in entities_str.split(",") if e.strip()]
                         if "|" not in raw_args:
-                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                            raise DslError(fmt, resolved_script_id, num, raw)
                         parts = raw_args.split("|", 1)
                         priority = parts[0].strip()
                         content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
-                        if content and hasattr(self.character, "memory_system") and self.character.memory_system:
-                            self.character.memory_system.add_memory(
-                                str(content), priority=priority, skip_if_exists=True,
-                                entities=entities if entities else None
-                            )
+                        mem_sys = getattr(self.character, "memory_system", None)
+                        if content and mem_sys:
+                            ents = entities if entities else None
+                            if command == "SEED_RAG_MEMORY":
+                                # RAG-only: indexed and retrievable, but not part of
+                                # the always-on active memory block.
+                                mem_sys.seed_rag_memory(str(content), priority=priority, entities=ents)
+                            else:
+                                mem_sys.add_memory(
+                                    str(content), priority=priority, skip_if_exists=True,
+                                    entities=ents,
+                                )
                         continue
 
                     if command == "LINK_ENTITIES":

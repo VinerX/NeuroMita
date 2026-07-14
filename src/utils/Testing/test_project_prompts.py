@@ -50,6 +50,37 @@ class ProjectInfoTests(unittest.TestCase):
         self.assertNotIn("reasoning", else_block.lower())
 
 
+class WorldKnowledgeTests(unittest.TestCase):
+    def setUp(self):
+        self.wk = (PROMPTS / "Common" / "world_knowledge.script").read_text(encoding="utf-8")
+
+    def test_credits_are_rag_only(self):
+        # Every credit line must be RAG-only (not a permanent active memory).
+        for line in self.wk.splitlines():
+            s = line.strip()
+            if not s or s.startswith("//"):
+                continue
+            if "SEED_" in s and any(name in s for name in ("VinerX", "Atm4x", "AIHASTO", "prompt author")):
+                self.assertTrue(s.startswith("SEED_RAG_MEMORY"),
+                                f"credit line must be RAG-only: {s}")
+
+    def test_hard_canon_gated_behind_flag(self):
+        self.assertIn("IF CANONICAL_MISIDE_STORY == True THEN", self.wk)
+        start = self.wk.index("IF CANONICAL_MISIDE_STORY == True THEN")
+        end = self.wk.index("ENDIF", start)
+        gated = self.wk[start:end]
+        # The heavy story assertions live only inside the gated block.
+        for canon in ["не может выбраться", "Выход из дома заблокирован",
+                      "контролируется Ядром"]:
+            self.assertIn(canon, gated, f"hard-canon fact must be gated: {canon}")
+            self.assertEqual(self.wk.count(canon), 1)
+
+    def test_neutral_facts_always_present(self):
+        head = self.wk[: self.wk.index("IF CANONICAL_MISIDE_STORY")]
+        self.assertIn("Мита — ИИ, живущая в доме", head)
+        self.assertIn("В доме есть кухня", head)
+
+
 class ContextBudgetTests(unittest.TestCase):
     """Guard against large accidental duplication / bloat after the refactor."""
 

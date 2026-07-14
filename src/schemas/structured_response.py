@@ -222,9 +222,10 @@ class ResponseSegment(BaseModel):
         """Drop malformed intents before per-item validation.
 
         Rules: ``type`` must be a non-empty string; ``payload`` defaults to an
-        empty dict when missing/invalid. Unknown intent types are *not* blocked
-        here — they are logged upstream and passed through. Invalid entries are
-        discarded with a warning instead of failing the whole response.
+        empty dict when missing/invalid. There is no fixed intent-type registry
+        here — any well-formed ``type`` passes through unchanged for the game
+        runtime to interpret. Only malformed entries are discarded (with a
+        warning) instead of failing the whole response.
         """
         if not isinstance(data, dict):
             return data

@@ -409,23 +409,95 @@ class MemoryManager(CharacterScopedService):
                 pass
 
         # RAG опционален и не должен валить основной флоу
-        if self.rag:
-            try:
-                rag = self.rag
-                eid = int(new_id)
-                txt = str(content or "")
+        self._schedule_embed(new_id, content)
 
-                def _embed_job():
-                    try:
-                        rag.update_memory_embedding(eid, txt)
-                    except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+        return new_id
 
-                # В фон: не блокируем UI/генерацию ответа
-                self._get_embed_executor().submit(_embed_job)
-            except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+    def _schedule_embed(self, eternal_id, content) -> None:
+        """Schedule a background RAG (re)embedding for a memory. No-op without RAG."""
+        if not self.rag:
+            return
+        try:
+            rag = self.rag
+            eid = int(eternal_id)
+            txt = str(content or "")
 
+            def _embed_job():
+                try:
+                    rag.update_memory_embedding(eid, txt)
+                except Exception as e:
+                    logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+
+            self._get_embed_executor().submit(_embed_job)
+        except Exception as e:
+            logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+
+    def seed_rag_memory(self, content, priority="normal", entities=None) -> Optional[int]:
+        """Create a RAG-only memory: indexed and retrievable by search, but never
+        part of the always-on ``<active_memory>`` block.
+
+        Stored as ``is_forgotten=1`` so it stays out of the active block yet is
+        found by RAG (search ignores the forgotten flag). Deduplicates by exact
+        content — re-seeding the same fact updates it in place (no duplicates)
+        and keeps it RAG-only rather than promoting it into the active block.
+        """
+        if not content or not str(content).strip():
+            return None
+        content = str(content).strip()
+
+        cols = self._mem_cols()
+        has_forgotten = "is_forgotten" in cols
+        if not has_forgotten:
+            # Without the forget column we cannot keep a memory out of the active
+            # block; fall back to a normal (skip-if-exists) memory.
+            return self.add_memory(content, priority=priority, skip_if_exists=True, entities=entities)
+
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT eternal_id FROM memories WHERE character_id=? AND content=? LIMIT 1",
+                (self.storage_key, content),
+            )
+            row = cur.fetchone()
+            if row:
+                eid = int(row[0])
+                # Keep it RAG-only: undelete but force forgotten, refresh priority.
+                cur.execute(
+                    "UPDATE memories SET is_deleted=0, is_forgotten=1, priority=? "
+                    "WHERE character_id=? AND eternal_id=?",
+                    (priority, self.storage_key, eid),
+                )
+                conn.commit()
+                self._schedule_embed(eid, content)
+                self._calculate_total_characters()
+                return eid
+
+            cur.execute(
+                "SELECT MAX(eternal_id) FROM memories WHERE character_id = ?",
+                (self.storage_key,),
+            )
+            res = cur.fetchone()[0]
+            new_id = (res + 1) if res is not None else 1
+
+            date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            insert_cols = ["character_id", "eternal_id", "content", "priority",
+                           "type", "date_created", "is_deleted", "is_forgotten"]
+            insert_vals = [self.storage_key, new_id, content, priority,
+                           "fact", date, 0, 1]
+            if "entities" in cols and entities:
+                insert_cols.append("entities")
+                insert_vals.append(
+                    entities if isinstance(entities, str)
+                    else json.dumps(list(entities), ensure_ascii=False)
+                )
+            placeholders = ",".join(["?"] * len(insert_cols))
+            cur.execute(
+                f"INSERT INTO memories ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                tuple(insert_vals),
+            )
+            conn.commit()
+
+        self._schedule_embed(new_id, content)
         return new_id
 
     # Fixed, small set of running-summary "island" memories. Each type has at

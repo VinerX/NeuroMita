@@ -82,11 +82,13 @@ def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
 
 
 def _compute_token_usage(messages: Any) -> Dict[str, Any]:
-    """Per-message and per-section token counts for the debug dump.
+    """Per-message and per-section token *estimates* for the debug dump.
 
-    Uses the shared ContextCounter/tiktoken. Providers with an unknown
-    tokenizer degrade gracefully: counts are omitted with a clear note rather
-    than raising or blocking the dump.
+    Counts come from the shared ContextCounter/tiktoken (an OpenAI encoding),
+    so they are only an estimate for other providers (Gemini, Anthropic, local
+    models tokenize differently). Fields are named ``estimated_*`` to reflect
+    that. Providers with an unknown tokenizer degrade gracefully: counts are
+    omitted with a clear note rather than raising or blocking the dump.
     """
     if not isinstance(messages, list) or not messages:
         return {"available": False, "note": "no messages"}
@@ -114,15 +116,17 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
         except Exception:
             n = 0
         section = _classify_message_section(m, i == last_user_idx)
-        per_message.append({"index": i, "role": m.get("role"), "section": section, "tokens": n})
+        per_message.append({"index": i, "role": m.get("role"), "section": section, "estimated_tokens": n})
         by_section[section] = by_section.get(section, 0) + n
         total += n
 
     return {
         "available": True,
+        "estimated": True,
         "encoding": counter.encoding_model,
-        "total": total,
-        "by_section": by_section,
+        "note": f"estimated via {counter.encoding_model} tokenizer; actual provider tokenization may differ",
+        "estimated_total": total,
+        "estimated_by_section": by_section,
         "per_message": per_message,
     }
 

@@ -48,12 +48,13 @@ class TokenUsageTests(unittest.TestCase):
         if not usage.get("available"):
             self.skipTest(f"tiktoken unavailable: {usage.get('note')}")
 
+        self.assertTrue(usage.get("estimated"))
         self.assertEqual(len(usage["per_message"]), len(messages))
-        self.assertGreater(usage["total"], 0)
-        self.assertEqual(usage["total"], sum(usage["by_section"].values()))
-        self.assertEqual(usage["total"], sum(m["tokens"] for m in usage["per_message"]))
+        self.assertGreater(usage["estimated_total"], 0)
+        self.assertEqual(usage["estimated_total"], sum(usage["estimated_by_section"].values()))
+        self.assertEqual(usage["estimated_total"], sum(m["estimated_tokens"] for m in usage["per_message"]))
 
-        sections = usage["by_section"]
+        sections = usage["estimated_by_section"]
         for expected in ["character prompts", "memories", "MiSide World State", "System State", "history", "user input"]:
             self.assertIn(expected, sections, f"missing section {expected}")
 
