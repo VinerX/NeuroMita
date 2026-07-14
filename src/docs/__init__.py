@@ -68,8 +68,8 @@ _INSTALLATION_GUIDE_HTML = """
             <li><strong>Edge-TTS + RVC (low):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Silero + RVC (low+):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Fish Speech (medium):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов. <strong>Требуется NVIDIA GPU.</strong></li>
-            <li><strong>Fish Speech+ (medium+):</strong> Требует LLVM, MSVC Redist. Установка Visual Studio C++ и CUDA Toolkit рекомендуется, но может не потребоваться (см. ниже). <strong>Требуется NVIDIA GPU.</strong></li>
-            <li><strong>Fish Speech+RVC (medium+low):</strong> Требует LLVM, MSVC Redist. Установка Visual Studio C++ и CUDA Toolkit рекомендуется, но может не потребоваться (см. ниже). <strong>Требуется NVIDIA GPU.</strong></li>
+            <li><strong>Fish Speech+ (medium+):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. <strong>Требуется NVIDIA GPU.</strong></li>
+            <li><strong>Fish Speech+RVC (medium+low):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. <strong>Требуется NVIDIA GPU.</strong></li>
         </ul>
     </div>
     
@@ -100,14 +100,14 @@ _INSTALLATION_GUIDE_HTML = """
     </div>
 
     <div class="optional-component"> <!-- Изменен стиль на optional-component -->
-        <h3>3. Visual Studio (Инструменты сборки C++) - <i>Установка может не потребоваться</i></h3>
-        <p>Предоставляет компилятор C++ (MSVC) и Windows SDK, которые могут использоваться Triton для сборки некоторых компонентов.</p>
-        <p><strong>Рекомендация:</strong> Перед установкой Visual Studio, убедитесь, что модели medium+/medium+low не инициализируются корректно после установки LLVM, VC++ Redistributable и перезагрузки системы. Устанавливайте Visual Studio только в случае сохраняющихся ошибок инициализации Triton.</p>
+        <h3>3. Microsoft VC++ Build Tools</h3>
+        <p>Для Fish Speech+ / Fish Speech+RVC Triton использует MSVC. TinyCC уже входит в пакет triton-windows; Windows SDK и CUDA Toolkit для этой операции отдельно не нужны.</p>
+        <p><strong>Установите Build Tools</strong>, если окно проверки Triton сообщает, что MSVC не найден. Если после этого компиляция всё ещё не проходит, попробуйте ручную инициализацию и приложите лог ошибки.</p>
         <p>При необходимости установки:</p>
         <ul>
             <li><a href="https://visualstudio.microsoft.com/ru/downloads/" target="_blank" rel="noopener noreferrer">Загрузить Visual Studio</a> (Редакция Community бесплатна).</li>
             <li>При установке выберите рабочую нагрузку: <strong>"Разработка классических приложений на C++"</strong> (Desktop development with C++).</li>
-            <li>Убедитесь, что выбраны необходимые компоненты: последняя версия MSVC и Windows SDK (например, Windows 11 SDK или 10 SDK).</li>
+            <li>Выберите компонент MSVC из набора C++ Build Tools. Windows SDK выбирать специально не требуется.</li>
         </ul>
     </div>
     

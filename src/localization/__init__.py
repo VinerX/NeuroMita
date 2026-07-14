@@ -13,7 +13,7 @@
      дропом файла без пересборки.
 
 Базовый язык — RU: для него перевод не нужен, возвращается исходная строка.
-Фолбэк-цепочка для прочих языков: ``catalog[lang] -> inline en -> ru`` (без исключений).
+Фолбэк-цепочка для прочих языков: ``catalog[lang] -> catalog[EN] -> inline en -> ru``.
 """
 
 from __future__ import annotations
@@ -238,6 +238,10 @@ def translate_for_language(lang: str, ru_str: str, en_str: str = "") -> str:
     value = _catalog(lang).get(ru_str)
     if value:
         return value
+    if lang != "EN":
+        english_value = _catalog("EN").get(ru_str)
+        if english_value:
+            return english_value
     if lang == "EN" and en_str:
         return en_str
     return en_str or ru_str
@@ -260,6 +264,13 @@ class TrStr(str):
         obj.tr_ru = ru
         obj.tr_en = en
         return obj
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        memo[id(self)] = self
+        return self
 
 
 def translate(ru_str: str, en_str: str = "") -> str:

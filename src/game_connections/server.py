@@ -3,14 +3,23 @@ import json
 import asyncio
 import threading
 import time
+import os
 from typing import Optional, Dict, Any, Set, Callable
 from main_logger import logger
 from core.events import get_event_bus, Events
+from core.task_supervisor import task_supervisor
 from managers.task_manager import TaskStatus
 import uuid
 
 from game_connections.handlers import build_action_registry
 from game_connections.handlers.registry import RequestContext
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
 
 
 class ChatServerNew:
@@ -31,8 +40,17 @@ class ChatServerNew:
         self.event_bus = get_event_bus()
 
         self.running = False
+        self.server: asyncio.AbstractServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server_thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._startup_error: BaseException | None = None
+        self._max_message_bytes = _env_int(
+            "NEUROMITA_MAX_SOCKET_MESSAGE_BYTES",
+            8 * 1024 * 1024,
+            minimum=1024,
+        )
+        self._stop_requested = threading.Event()
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
@@ -50,9 +68,22 @@ class ChatServerNew:
         # controller hook:
         # called with (is_connected, client_id)
         self.on_connection_changed: Callable[[bool, str | None], None] | None = None
+        self.settings_provider: Callable[[], Dict[str, Any]] | None = None
 
     def set_connection_callback(self, cb: Callable[[bool, str | None], None] | None) -> None:
         self.on_connection_changed = cb
+
+    def set_settings_provider(self, provider: Callable[[], Dict[str, Any]] | None) -> None:
+        self.settings_provider = provider
+
+    def build_loaded_settings_payload(self) -> Dict[str, Any]:
+        provider = self.settings_provider
+        if not callable(provider):
+            raise RuntimeError("Server settings provider is not configured")
+        body = provider()
+        if not isinstance(body, dict):
+            raise TypeError("Server settings provider must return a dictionary")
+        return {"type": "loaded_settings", "body": body}
 
     def _notify_connection_changed(self, is_connected: bool, client_id: str | None):
         cb = self.on_connection_changed
@@ -64,10 +95,23 @@ class ChatServerNew:
             pass
 
     async def start_async(self):
+        self.server = await asyncio.start_server(
+            self.handle_client,
+            self.host,
+            self.port,
+            limit=self._max_message_bytes + 1,
+        )
+        if self._stop_requested.is_set():
+            self.server.close()
+            await self.server.wait_closed()
+            self.server = None
+            self.running = False
+            self._ready_event.set()
+            return
         self.running = True
-        self.server = await asyncio.start_server(self.handle_client, self.host, self.port)
-        addrs = ', '.join(str(sock.getsockname()) for sock in self.server.sockets)
-        logger.info(f'Новый сервер запущен на {addrs}')
+        self._ready_event.set()
+        addrs = ", ".join(str(sock.getsockname()) for sock in self.server.sockets or ())
+        logger.info(f"Новый сервер запущен на {addrs}")
         try:
             async with self.server:
                 await self.server.serve_forever()
@@ -76,54 +120,103 @@ class ChatServerNew:
         finally:
             self.running = False
 
-    def start(self):
+    @property
+    def startup_error(self) -> BaseException | None:
+        return self._startup_error
+
+    def start(self, timeout: float = 5.0) -> bool:
+        if self._server_thread is not None and self._server_thread.is_alive():
+            return bool(self.running)
+
+        self._ready_event.clear()
+        self._stop_requested.clear()
+        self._startup_error = None
         self._loop = asyncio.new_event_loop()
-        self._server_thread = threading.Thread(target=self._run_server_loop, daemon=True)
-        self._server_thread.start()
+        self._server_thread = task_supervisor().start_thread(
+            self,
+            "neuromita-chat-server",
+            self._run_server_loop,
+            cancel_event=self._stop_requested,
+        )
+        if not self._ready_event.wait(timeout=max(0.1, float(timeout or 0.0))):
+            self.stop()
+            return False
+        return self.running and self._startup_error is None
 
     def _run_server_loop(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self.start_async())
+        loop = self._loop
+        if loop is None:
+            self._startup_error = RuntimeError("Server event loop was not created")
+            self._ready_event.set()
+            return
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.start_async())
+        except BaseException as exc:
+            self._startup_error = exc
+            self.running = False
+            self._ready_event.set()
+            logger.error(f"Не удалось запустить сервер {self.host}:{self.port}: {exc}", exc_info=True)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')
         client_id = f"{addr[0]}:{addr[1]}"
         logger.info(f"Новое подключение от {client_id}")
 
-        was_empty = (len(self.active_connections) == 0)
-
         self.active_connections[client_id] = writer
         self.client_tasks[client_id] = set()
-
-        if was_empty:
-            self._notify_connection_changed(True, client_id)
-
-        buffer = bytearray()
-        decoder = json.JSONDecoder()
+        self._notify_connection_changed(True, client_id)
 
         try:
             while self.running:
-                chunk = await reader.read(4096)
-                if not chunk:
+                try:
+                    frame = await reader.readline()
+                except ValueError:
+                    await self.send_error(writer, "Message is too large")
+                    logger.warning(
+                        f"Клиент {client_id} превысил лимит сообщения "
+                        f"({self._max_message_bytes} bytes)"
+                    )
                     break
+                if not frame:
+                    break
+                if len(frame) > self._max_message_bytes:
+                    await self.send_error(writer, "Message is too large")
+                    logger.warning(
+                        f"Клиент {client_id} превысил лимит сообщения "
+                        f"({len(frame)} > {self._max_message_bytes} bytes)"
+                    )
+                    break
+                frame = frame.rstrip(b"\r\n")
+                if not frame.strip():
+                    continue
+                try:
+                    request = json.loads(frame.decode("utf-8"))
+                except UnicodeDecodeError:
+                    await self.send_error(writer, "Message must be valid UTF-8")
+                    logger.warning(f"Клиент {client_id} прислал невалидный UTF-8 frame")
+                    continue
+                except json.JSONDecodeError as exc:
+                    await self.send_error(writer, "Malformed JSON message")
+                    logger.warning(
+                        f"Клиент {client_id} прислал повреждённый JSON frame: {exc}"
+                    )
+                    continue
 
-                buffer.extend(chunk)
-
-                while buffer:
-                    try:
-                        buf_str = buffer.decode('utf-8')
-                        obj, idx = decoder.raw_decode(buf_str)
-
-                        await self.process_request(obj, client_id)
-
-                        del buffer[:len(buf_str[:idx].encode('utf-8'))]
-                        while buffer and chr(buffer[0]).isspace():
-                            buffer.pop(0)
-
-                    except json.JSONDecodeError:
-                        break
-                    except UnicodeDecodeError:
-                        break
+                await self.process_request(request, client_id)
         except asyncio.CancelledError:
             pass
         except (ConnectionResetError, ConnectionAbortedError, ConnectionError) as e:
@@ -135,8 +228,7 @@ class ChatServerNew:
             logger.error(f"Ошибка в handle_client: {e}", exc_info=True)
         finally:
             self.active_connections.pop(client_id, None)
-            if client_id in self.client_tasks:
-                del self.client_tasks[client_id]
+            self._forget_client_state(client_id)
 
             try:
                 writer.close()
@@ -146,10 +238,24 @@ class ChatServerNew:
 
             logger.info(f"Клиент {client_id} отключился")
 
-            if not self.active_connections:
-                self._notify_connection_changed(False, client_id)
+            self._notify_connection_changed(False, client_id)
+
+    def _forget_client_state(self, client_id: str) -> None:
+        self.client_tasks.pop(client_id, None)
+        self.last_participants.pop(client_id, None)
+        stale_dialogue_keys = [
+            key for key in self._last_sent_dialogue_text
+            if key[0] == client_id
+        ]
+        for key in stale_dialogue_keys:
+            self._last_sent_dialogue_text.pop(key, None)
 
     async def process_request(self, request: Dict[str, Any], client_id: str):
+        if not isinstance(request, dict):
+            writer = self.active_connections.get(client_id)
+            if writer:
+                await self.send_error(writer, "Request must be a JSON object")
+            return
         action = request.get('action')
         writer = self.active_connections.get(client_id)
         if not writer:
@@ -161,7 +267,16 @@ class ChatServerNew:
             return
 
         ctx = RequestContext(server=self, client_id=client_id, writer=writer, event_bus=self.event_bus)
-        await handler.handle(request, ctx)
+        try:
+            await handler.handle(request, ctx)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                f"Ошибка обработчика action={action!r} от {client_id}: {exc}",
+                exc_info=True,
+            )
+            await self.send_error(writer, f"Action failed: {action}")
 
     def _should_block_event(self, event_type: str) -> bool:
         if not self.ignore_game_requests:
@@ -223,27 +338,31 @@ class ChatServerNew:
         await self.send_json(writer, {"type": "error", "error": error})
 
     def stop(self):
+        self._stop_requested.set()
         self.running = False
+        loop = self._loop
 
-        if self._loop and self._loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop)
+        if loop and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self._async_stop(), loop)
             try:
                 future.result(timeout=5)
-            except Exception as e:
-                logger.warning(f"Ошибка при остановке сервера: {e}")
+            except Exception as exc:
+                logger.warning(f"Ошибка при остановке сервера: {exc}")
 
-        if self._server_thread:
-            self._server_thread.join(timeout=5)
-            if self._server_thread.is_alive():
+        thread = self._server_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=5)
+            if thread.is_alive():
                 logger.warning("Server thread did not stop in time")
+        task_supervisor().cancel_owner(self, timeout=0.5)
 
-        # ensure controller sees "disconnected"
         self._notify_connection_changed(False, None)
 
     async def _async_stop(self):
-        if hasattr(self, 'server'):
+        if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
+            self.server = None
 
         for writer in list(self.active_connections.values()):
             try:
@@ -275,6 +394,26 @@ class ChatServerNew:
             asyncio.run_coroutine_threadsafe(self.send_task_update(client_id, task), self._loop)
         except Exception:
             pass
+
+    def schedule_send_json(self, client_id: str, payload: Dict[str, Any]) -> None:
+        if not self.can_schedule():
+            return
+
+        async def _push():
+            writer = self.active_connections.get(str(client_id or ""))
+            if writer is not None:
+                await self.send_json(writer, payload)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_push(), self._loop)
+        except Exception:
+            pass
+
+    def schedule_send_loaded_settings(self, client_id: str, body: Dict[str, Any]) -> None:
+        self.schedule_send_json(
+            client_id,
+            {"type": "loaded_settings", "body": body},
+        )
 
     def schedule_broadcast_json(self, payload: Dict[str, Any]) -> None:
         if not self.can_schedule():

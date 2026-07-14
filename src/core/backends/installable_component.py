@@ -25,16 +25,21 @@ class BackendInstallableComponent:
 
     def metadata(self) -> ComponentMetadata:
         title_map = {
-            BackendKind.CPU: "PyTorch CPU backend",
-            BackendKind.CUDA: "PyTorch CUDA backend",
-            BackendKind.ONNX: "ONNX backend",
+            BackendKind.CPU: "PyTorch CPU",
+            BackendKind.CUDA: "PyTorch CUDA",
+            BackendKind.ONNX: "ONNX Runtime",
+        }
+        description_map = {
+            BackendKind.CPU: "Base runtime for CPU models.",
+            BackendKind.CUDA: "Primary NVIDIA runtime; can coexist with ONNX Runtime.",
+            BackendKind.ONNX: "DirectML runtime for Windows with CPU fallback; can coexist with PyTorch.",
         }
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,
             category=self.category,
             title=title_map.get(self.backend, self.item_id),
-            description="System runtime used by local AI models.",
+            description=description_map.get(self.backend, "AI model runtime."),
             backend=self.backend,
             legacy_kind=self.legacy_kind,
             tags=("system", self.backend.value),
@@ -43,6 +48,22 @@ class BackendInstallableComponent:
     def status(self, ctx: dict[str, Any] | None = None) -> ComponentStatus:
         run_ctx = build_runtime_ctx(ctx)
         try:
+            from core.runtime_environments import runtime_environments
+
+            managed_paths = runtime_environments().core_paths_for_backend(
+                self.backend,
+                run_ctx,
+            )
+            if managed_paths:
+                run_ctx.update(
+                    {
+                        "target_dir": managed_paths[0],
+                        "libs_dir": managed_paths[0],
+                        "lib_dir": managed_paths[0],
+                        "python_paths": list(managed_paths),
+                        "strict_target": True,
+                    }
+                )
             status = get_backend_service().get_status(self.backend, ctx=run_ctx)
             return ComponentStatus(
                 id=self.id,

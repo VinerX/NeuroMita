@@ -26,10 +26,14 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view или user_entry не найден!")
 
-    def stream_callback_handler(self, chunk: str, role: str = "assistant"):
-        logger.debug(f"ChatController: stream_callback_handler [{role}]: {chunk[:50]}...")
+    def stream_callback_handler(self, chunk: str, role: str = "assistant", stream_id: str = "default"):
+        logger.debug(f"ChatController: stream_callback_handler [{role}/{stream_id}]: {chunk[:50]}...")
         if self.view:
-            self.view.append_stream_chunk_signal.emit({"chunk": chunk, "role": role})
+            self.view.append_stream_chunk_signal.emit({
+                "stream_id": stream_id,
+                "chunk": chunk,
+                "role": role,
+            })
         else:
             logger.error("ChatController: view не найден!")
 
@@ -40,10 +44,10 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view не найден!")
 
-    def finish_stream(self):
+    def finish_stream(self, data: dict | None = None):
         logger.info("ChatController: finish_stream")
         if self.view:
-            self.view.finish_stream_signal.emit()
+            self.view.finish_stream_signal.emit(data or {})
         else:
             logger.error("ChatController: view не найден!")
 
@@ -101,25 +105,17 @@ class ChatController(BaseController):
         self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):
-        data = event.data or {}
-        role = data.get("role", "assistant")
-        if self.view is not None:
-            self.view._stream_speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
-        self.prepare_stream(data)
+        self.prepare_stream(event.data or {})
 
     def _on_append_stream_chunk_ui(self, event: Event):
         data = event.data or {}
         chunk = data.get('chunk', '')
         role = data.get('role', 'assistant')
-        self.stream_callback_handler(chunk, role)
+        stream_id = str(data.get('stream_id') or 'default')
+        self.stream_callback_handler(chunk, role, stream_id)
 
     def _on_finish_stream_ui(self, event: Event):
-        structured_data = (event.data or {}).get("structured_data")
-        if self.view and structured_data:
-            self.view._pending_structured_data = structured_data
-        self.finish_stream()
-        if self.view is not None and hasattr(self.view, "_stream_speaker_name"):
-            self.view._stream_speaker_name = ""
+        self.finish_stream(event.data or {})
 
     def _on_update_token_count(self, event: Event):
         self.update_token_count()

@@ -8,7 +8,17 @@ class SettingsController(BaseController):
         self.event_bus.subscribe(Events.GUI.UPDATE_CHAT_FONT_SIZE, self._on_update_chat_font_size, weak=False)
         self.event_bus.subscribe(Events.GUI.RELOAD_CHAT_HISTORY, self._on_reload_chat_history, weak=False)
         self.event_bus.subscribe(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, self._on_remove_last_chat_widgets, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self._subscribe_settings(
+            self._on_setting_changed,
+            keys=(
+                "USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT",
+                "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST",
+                "CHAT_FONT_SIZE", "SHOW_CHAT_TIMESTAMPS",
+                "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
+                "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT",
+                "CHAT_MAX_BUBBLE_WIDTH", "SHOW_SYSTEM_MESSAGES", "SHOW_TOKEN_INFO",
+            ),
+        )
         
     def _on_switch_voiceover_settings(self, event: Event):
         if self.view and hasattr(self.view, 'switch_voiceover_settings_signal') and self.view.switch_voiceover_settings_signal:
@@ -36,9 +46,9 @@ class SettingsController(BaseController):
         elif self.view and hasattr(self.view, '_on_remove_last_chat_widgets'):
             self.view._on_remove_last_chat_widgets(count)
 
-    def _on_setting_changed(self, event: Event):
-        key = event.data.get('key')
-        value = event.data.get('value')
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key in ["USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT", "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST"]:
             self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)

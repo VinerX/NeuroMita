@@ -116,6 +116,10 @@ class FineTuneCollector:
             logger.error(f"[FineTuneCollector] Failed to save sample: {e}", exc_info=True)
             return None
 
+    def enforce_limit(self) -> None:
+        """Публичная точка входа для внешних вызовов (presentation hub)."""
+        self._enforce_limit()
+
     def _enforce_limit(self) -> None:
         """Trim the oldest samples so at most `_record_limit()` remain.
 

@@ -1,10 +1,11 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox, 
                              QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSignalBlocker, Qt
 
 from main_logger import logger
-from managers.settings_manager import CollapsibleSection, InnerCollapsibleSection
+from ui.widgets.settings_sections import CollapsibleSection, InnerCollapsibleSection
 from ui.widgets.tr_combobox import TRQComboBox
+from ui.settings.settings_access import get_setting, set_setting
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr
 
@@ -13,6 +14,61 @@ class SettingsBodyWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SettingsBodyWidget")
+
+
+def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
+    if not key:
+        return
+    binding = getattr(gui, "settings_binding", None)
+    if binding is None:
+        return
+
+    def _apply(value):
+        blocker = QSignalBlocker(widget)
+        try:
+            apply_value(value)
+        finally:
+            del blocker
+
+    binding.bind(key, widget, _apply)
+
+
+def _bind_setting_two_way(
+    gui,
+    key: str,
+    widget: QWidget,
+    changed_signal,
+    read_value,
+    apply_value,
+    *,
+    default=None,
+    transform=None,
+    after_write=None,
+) -> bool:
+    if not key:
+        return False
+    binding = getattr(gui, "settings_binding", None)
+    if binding is None or not hasattr(binding, "bind_two_way"):
+        return False
+
+    def _apply(value):
+        blocker = QSignalBlocker(widget)
+        try:
+            apply_value(value)
+        finally:
+            del blocker
+
+    binding.bind_two_way(
+        key,
+        widget,
+        changed_signal,
+        read_value,
+        _apply,
+        default=default,
+        transform=transform,
+        after_write=after_write,
+    )
+    return True
 
 
 def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=None):
@@ -225,13 +281,16 @@ def create_setting_widget(
         toggle_default: bool | None = None,
         **kwargs
 ):
-    if setting_key and gui.settings.get(setting_key) is None:
+    if setting_key and get_setting(gui, setting_key) is None:
         init_val = default_checkbutton if widget_type == 'checkbutton' else default
-        gui.settings.set(setting_key, init_val)
+        set_setting(gui, setting_key, init_val)
 
-    if toggle_key and gui.settings.get(toggle_key) is None:
-        gui.settings.set(toggle_key,
-                         toggle_default if toggle_default is not None else True)
+    if toggle_key and get_setting(gui, toggle_key) is None:
+        set_setting(
+            gui,
+            toggle_key,
+            toggle_default if toggle_default is not None else True,
+        )
         
     if widget_type in ('textarea', 'textedit'):
         frame = QWidget(parent)
@@ -247,15 +306,30 @@ def create_setting_widget(
         vlay.addWidget(lbl)
 
         widget = QTextEdit()
-        widget.setPlainText(str(gui.settings.get(setting_key, default)))
+        widget.setPlainText(str(get_setting(gui, setting_key, default)))
         widget.setMinimumHeight(50)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         vlay.addWidget(widget)
 
-        widget.textChanged.connect(
-            lambda w=widget: gui._save_setting(setting_key, w.toPlainText())
-        )
+        if not _bind_setting_two_way(
+            gui,
+            setting_key,
+            widget,
+            widget.textChanged,
+            widget.toPlainText,
+            lambda value: widget.setPlainText(str(value if value is not None else default)),
+            default=default,
+        ):
+            widget.textChanged.connect(
+                lambda w=widget: gui._save_setting(setting_key, w.toPlainText())
+            )
+            _bind_setting_value(
+                gui,
+                setting_key,
+                widget,
+                lambda value: widget.setPlainText(str(value if value is not None else default)),
+            )
 
         if tooltip:
             _tt = _fmt_tooltip(tooltip)
@@ -290,23 +364,43 @@ def create_setting_widget(
 
     if widget_type == 'entry' and toggle_key:
         toggle_chk = QCheckBox()
-        toggle_chk.setChecked(bool(gui.settings.get(toggle_key, True)))
+        toggle_chk.setChecked(bool(get_setting(gui, toggle_key, True)))
+
+        def _apply_toggle_enabled(enabled: bool):
+            if widget:
+                widget.setEnabled(bool(enabled))
+            lbl.setEnabled(bool(enabled))
+            _apply_setting_row_disabled(frame, not bool(enabled))
 
         def _toggle_slot(state):
             enabled = state == Qt.CheckState.Checked.value
             gui._save_setting(toggle_key, enabled)
-            if widget:
-                widget.setEnabled(enabled)
-            lbl.setEnabled(enabled)
-            _apply_setting_row_disabled(frame, not enabled)
+            _apply_toggle_enabled(enabled)
 
-        toggle_chk.stateChanged.connect(_toggle_slot)
+        if not _bind_setting_two_way(
+            gui,
+            toggle_key,
+            toggle_chk,
+            toggle_chk.stateChanged,
+            lambda: toggle_chk.isChecked(),
+            lambda value: toggle_chk.setChecked(bool(value)),
+            default=toggle_default if toggle_default is not None else True,
+            after_write=_apply_toggle_enabled,
+        ):
+            toggle_chk.stateChanged.connect(_toggle_slot)
+            _bind_setting_value(
+                gui,
+                toggle_key,
+                toggle_chk,
+                lambda value: toggle_chk.setChecked(bool(value)),
+            )
+        _apply_toggle_enabled(toggle_chk.isChecked())
 
     if widget_type == 'checkbutton':
         from ui.widgets.toggle_switch import ToggleSwitch
 
         widget = ToggleSwitch()
-        widget.setChecked(bool(gui.settings.get(setting_key, default_checkbutton)))
+        widget.setChecked(bool(get_setting(gui, setting_key, default_checkbutton)))
         lbl.setMinimumWidth(0)
         lbl.setMaximumWidth(16777215)
         lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -317,7 +411,23 @@ def create_setting_widget(
             if command:
                 command(val)
 
-        widget.stateChanged.connect(_save_check)
+        if not _bind_setting_two_way(
+            gui,
+            setting_key,
+            widget,
+            widget.stateChanged,
+            widget.isChecked,
+            lambda value: widget.setChecked(bool(value)),
+            default=default_checkbutton,
+            after_write=command,
+        ):
+            widget.stateChanged.connect(_save_check)
+            _bind_setting_value(
+                gui,
+                setting_key,
+                widget,
+                lambda value: widget.setChecked(bool(value)),
+            )
 
         title_col = QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
@@ -335,7 +445,7 @@ def create_setting_widget(
         layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     elif widget_type == 'entry':
-        widget = QLineEdit(str(gui.settings.get(setting_key, default)))
+        widget = QLineEdit(str(get_setting(gui, setting_key, default)))
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         widget.setMinimumWidth(60)
         if hide:
@@ -343,7 +453,7 @@ def create_setting_widget(
 
         def _save_entry():
             if validation and not validation(widget.text()):
-                widget.setText(str(gui.settings.get(setting_key, default)))
+                widget.setText(str(get_setting(gui, setting_key, default)))
                 return
             if not (hide and widget.text() == ''):
                 gui._save_setting(setting_key, widget.text())
@@ -351,6 +461,16 @@ def create_setting_widget(
                 command(widget.text())
 
         widget.editingFinished.connect(_save_entry)
+        _bind_setting_value(
+            gui,
+            setting_key,
+            widget,
+            lambda value: (
+                None
+                if widget.hasFocus()
+                else widget.setText(str(value if value is not None else default))
+            ),
+        )
 
         layout.addWidget(lbl)
         if toggle_chk:
@@ -387,7 +507,7 @@ def create_setting_widget(
                     else:
                         widget.add_data_item(str(o))
             # выбор: сохранённое значение → default → первый пункт (без ложного save).
-            if not widget.set_current_value(_canon(gui.settings.get(setting_key, default))):
+            if not widget.set_current_value(_canon(get_setting(gui, setting_key, default))):
                 if not widget.set_current_value(_canon(default)) and widget.count():
                     widget.setCurrentIndex(0)
         finally:
@@ -399,7 +519,23 @@ def create_setting_widget(
             if command:
                 command(val)
 
-        widget.currentIndexChanged.connect(_save_combo)
+        if not _bind_setting_two_way(
+            gui,
+            setting_key,
+            widget,
+            widget.currentIndexChanged,
+            widget.current_value,
+            lambda value: widget.set_current_value(_canon(value)),
+            default=default,
+            after_write=command,
+        ):
+            widget.currentIndexChanged.connect(_save_combo)
+            _bind_setting_value(
+                gui,
+                setting_key,
+                widget,
+                lambda value: widget.set_current_value(_canon(value)),
+            )
 
         layout.addWidget(lbl)
         if toggle_chk:

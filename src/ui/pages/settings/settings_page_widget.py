@@ -1,6 +1,6 @@
 import qtawesome as qta
 
-from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,11 +12,20 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QWidgetItem,
 )
 
-from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
+from ui.pages.settings.section_registry import (
+    SettingsSectionSpec,
+    get_settings_section_specs,
+)
+from ui.pages.settings.settings_presentation import (
+    PrepareSettingsSection,
+    SettingsSectionFailed,
+    SettingsSectionReady,
+)
+from ui.widgets.flow_layout import FlowLayout as _FlowLayout
 from ui.widgets.settings_icon_button import SettingsIconButton
+from main_logger import logger
 from utils import _
 from localization.live import tr_set
 from localization.live import register_if_tr
@@ -27,6 +36,21 @@ _MODE_ALIASES = {
     "advanced": {"advanced", "продвинутый", "expanded", "расширенный"},
     "full": {"full", "полный", "maximum", "максимальный"},
 }
+
+_SECTION_FEATURES: dict[str, tuple[str, ...]] = {
+    # Model metadata is supplied by LocalVoiceController; the voice catalog is
+    # built only after that provider is ready. Both import and construction run
+    # in the runtime-feature pool, never on the Qt thread.
+    "voice": ("local_voice", "voice_models"),
+    "microphone": ("speech",),
+}
+
+_SECTION_GUI_FEATURES: dict[str, str] = {
+    "voice": "voice",
+    "microphone": "speech",
+}
+
+_BACKEND_REQUIRED_SECTIONS = frozenset({"api", "characters", "models"})
 
 
 def normalize_mode(value):
@@ -54,11 +78,6 @@ def _make_card(name: str) -> QFrame:
     card = QFrame()
     card.setObjectName(name)
     return card
-
-
-# _FlowLayout вынесен в общий модуль (используется и стартовым EULA-экраном).
-from ui.widgets.flow_layout import FlowLayout as _FlowLayout
-
 
 class SettingsSectionPage(QFrame):
     def __init__(self, spec: SettingsSectionSpec, parent=None):
@@ -120,9 +139,11 @@ class SettingsSectionPage(QFrame):
 
 
 class SettingsPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions, settings):
+        super().__init__(parent)
+        self._view_model = view_model
+        self._page_actions = page_actions
+        self._settings = settings
         self.setObjectName("SettingsPageRoot")
 
         self.settings_buttons = {}
@@ -137,58 +158,40 @@ class SettingsPage(QWidget):
         self._settings_stack = None
         self._page_indexes = {}
         self._tabs_host = None
+        self._loaded_sections = set()
+        self._loading_sections = set()
+        self._pending_section_scroll = {}
 
-        self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
+        width_getter = getattr(settings, "get", None)
+        stored_width = width_getter("SETTINGS_PANEL_WIDTH", 980) if callable(width_getter) else 980
+        self.SETTINGS_PANEL_WIDTH = max(920, int(stored_width or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
         self.settings_resize_handle = None
         self.settings_scroll = None
 
         self._build_ui()
         self._build_section_containers()
-        self._sync_host_exports()
+        self._view_model.effect_emitted.connect(self._handle_effect)
+        self.destroyed.connect(lambda *_args: self._view_model.close())
         # Сразу применяем карту видимости, иначе до первого клика в «Видимых
         # разделах» показываются все вкладки, включая отключённые.
         self.apply_section_visibility()
 
-    def _sync_host_exports(self):
-        self.gui.settings_page = self
-        self.gui.settings_buttons = self.settings_buttons
-        self.gui._category_modes = self._category_modes
-        self.gui.settings_containers = self.settings_containers
-        self.gui.settings_overview_container = self.settings_overview_container
-        self.gui.settings_overlay = self.settings_overlay
-        self.gui.current_settings_category = self.current_settings_category
-        self.gui.SETTINGS_PANEL_WIDTH = self.SETTINGS_PANEL_WIDTH
-        self.gui.SETTINGS_SIDEBAR_WIDTH = self.SETTINGS_SIDEBAR_WIDTH
-        self.gui.settings_resize_handle = self.settings_resize_handle
-
     def _set_current_category(self, category):
         self.current_settings_category = category
-        self.gui.current_settings_category = category
+
+    @property
+    def category_modes(self):
+        return self._category_modes
 
     def _sync_mode_widgets(self, mode_value):
-        clean_label = get_mode_label(mode_value)
-
-        for attr_name in ("INTERFACE_MODE", "chat_mode_combobox"):
-            widget = getattr(self.gui, attr_name, None)
-            if widget is None or not hasattr(widget, "findText"):
-                continue
-
-            index = widget.findText(clean_label, Qt.MatchFlag.MatchFixedString)
-            if index < 0 or widget.currentIndex() == index:
-                continue
-
-            widget.blockSignals(True)
-            try:
-                widget.setCurrentIndex(index)
-            finally:
-                widget.blockSignals(False)
+        self._page_actions.sync_settings_mode_widgets(mode_value)
 
     def _section_enabled(self, category) -> bool:
         try:
             from ui.widgets.settings_panel import is_section_enabled
 
-            return is_section_enabled(category)
+            return is_section_enabled(category, self._settings)
         except Exception:
             return True
 
@@ -211,28 +214,14 @@ class SettingsPage(QWidget):
         active = self.current_settings_category
         if active is None or not self._section_enabled(active):
             fallback = self._first_available_category()
-            if fallback is not None:
+            if fallback is not None and self._page_actions.is_current("settings"):
                 self._activate_category(fallback, smooth_scroll=False)
             else:
                 self._set_current_category(None)
 
         self._update_nav_state()
 
-        try:
-            from ui.widgets.status_indicators_widget import apply_capture_visibility
-
-            apply_capture_visibility(self.gui)
-        except Exception:
-            pass
-
-        sidebar = getattr(self.gui, "shell_sidebar", None)
-        if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
-            try:
-                from ui.widgets.settings_panel import is_section_enabled
-
-                sidebar.apply_section_visibility(is_section_enabled)
-            except Exception:
-                pass
+        self._page_actions.apply_settings_aux_visibility()
 
     def apply_interface_mode(self, mode_value=None):
         # Back-compat: the interface mode dropdown was replaced by per-section
@@ -244,9 +233,7 @@ class SettingsPage(QWidget):
             first_key = self._first_available_category() or "api"
             self._activate_category(first_key, smooth_scroll=False)
 
-        entry = getattr(self.gui, '_tester_code_entry', None)
-        if entry is not None:
-            entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+        self._page_actions.refresh_tester_code()
 
     def show_overview(self, *, scroll_to_top: bool = False):
         fallback = self._first_available_category()
@@ -271,9 +258,9 @@ class SettingsPage(QWidget):
             else:
                 return
 
-        was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
+        was_on_settings_page = self._page_actions.is_current("settings")
         if not was_on_settings_page:
-            self.gui.switch_main_page("settings")
+            self._page_actions.switch_page("settings")
             QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force, sub=subsection: self._activate_category(cat, smooth_scroll=smooth, force=f, subsection=sub))
             return
 
@@ -296,9 +283,12 @@ class SettingsPage(QWidget):
         self.settings_scroll = getattr(page, "scroll", None)
         self._update_nav_state()
         if category == "updates":
-            entry = getattr(self.gui, '_tester_code_entry', None)
-            if entry is not None:
-                entry.setText(self.gui.settings.get("TESTER_CODE", ""))
+            self._page_actions.refresh_tester_code()
+
+        if category not in self._loaded_sections:
+            self._ensure_section_loaded(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
         if subsection:
             # Разворачиваем целевую подсекцию и скроллим к ней (с задержкой —
             # дать layout пересобраться после expand).
@@ -503,18 +493,18 @@ class SettingsPage(QWidget):
         guide_button = tr_set(QPushButton(), "Руководство", "Guide")
         register_if_tr(guide_button, _("Руководство", "Guide"))
         guide_button.setObjectName("SettingsHeaderButton")
-        guide_button.clicked.connect(self.gui._show_guide)
+        guide_button.clicked.connect(self._page_actions.show_guide)
         actions.addWidget(guide_button)
 
         wiki_button = tr_set(QPushButton(), "Вики", "Wiki")
         wiki_button.setObjectName("SettingsHeaderButton")
-        wiki_button.clicked.connect(lambda: self.gui.switch_main_page("wiki"))
+        wiki_button.clicked.connect(lambda: self._page_actions.switch_page("wiki"))
         actions.addWidget(wiki_button)
 
         home_button = tr_set(QPushButton(), "На главную", "Home")
         register_if_tr(home_button, _("На главную", "Home"))
         home_button.setObjectName("SettingsHeaderButton")
-        home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
+        home_button.clicked.connect(lambda: self._page_actions.switch_page("home"))
         actions.addWidget(home_button)
 
         updates_button = tr_set(QPushButton(), "Открыть обновления", "Open updates")
@@ -534,19 +524,141 @@ class SettingsPage(QWidget):
 
         for spec in get_settings_section_specs():
             page = SettingsSectionPage(spec, self._settings_stack)
-
-            builder = spec.builder_ref
-            if isinstance(builder, str):
-                getattr(self.gui, builder)(page.body_layout)
-            else:
-                builder(self.gui, page.body_layout)
-
-            self._promote_first_subsection_header(page)
-            self._prepare_settings_subsections(page)
-
+            self._set_section_placeholder(page, "idle")
             self.settings_containers[spec.key] = page
             index = self._settings_stack.addWidget(page)
             self._page_indexes[spec.key] = index
+
+    def _set_section_placeholder(self, page: SettingsSectionPage, state: str, message: str | None = None):
+        self._clear_layout(page.body_layout)
+        box = QFrame()
+        box.setObjectName("SettingsSectionLoading")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(24, 44, 24, 44)
+        layout.setSpacing(10)
+
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            icon.setPixmap(qta.icon("fa6s.circle-notch", color="#ff6db7").pixmap(28, 28))
+        except Exception:
+            icon.setText("...")
+
+        text = message
+        if not text:
+            if state == "loading":
+                text = _("Loading section...", "Loading section...")
+            else:
+                text = _("Section is ready to load.", "Section is ready to load.")
+        label = QLabel(text)
+        label.setObjectName("Subtle")
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch(1)
+        layout.addWidget(icon)
+        layout.addWidget(label)
+        layout.addStretch(1)
+        page.body_layout.addWidget(box)
+
+    def _ensure_section_loaded(self, category: str, *, subsection=None, smooth_scroll: bool = False, background: bool = False):
+        if category in self._loaded_sections:
+            if not background:
+                self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
+        if category in self._loading_sections:
+            if not background:
+                self._pending_section_scroll[category] = (subsection, smooth_scroll)
+            return
+
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+
+        self._loading_sections.add(category)
+        if not background:
+            self._pending_section_scroll[category] = (subsection, smooth_scroll)
+        self._set_section_placeholder(page, "loading")
+        required_features = _SECTION_FEATURES.get(category, ())
+        self._view_model.dispatch(
+            PrepareSettingsSection(
+                category=category,
+                feature_names=tuple(required_features),
+                require_backend=category in _BACKEND_REQUIRED_SECTIONS,
+                gui_feature=_SECTION_GUI_FEATURES.get(category),
+            )
+        )
+
+    def _handle_effect(self, effect) -> None:
+        if isinstance(effect, SettingsSectionReady):
+            self._build_section_now(effect.category)
+            return
+        if isinstance(effect, SettingsSectionFailed):
+            self._finish_section_feature_error(effect.category, RuntimeError(effect.message))
+
+    def _finish_section_feature_error(self, category: str, error: BaseException) -> None:
+        logger.error(
+            "Settings section feature preparation failed for '%s': %s",
+            category,
+            error,
+        )
+        page = self.settings_containers.get(category)
+        if page is not None:
+            self._set_section_placeholder(
+                page,
+                "error",
+                _("Компонент недоступен", "Component unavailable") + f": {error}",
+            )
+        self._loading_sections.discard(category)
+
+    def _build_section_now(self, category: str):
+        page = self.settings_containers.get(category)
+        spec = self._section_specs.get(category)
+        if page is None or spec is None:
+            self._loading_sections.discard(category)
+            return
+
+        try:
+            self._clear_layout(page.body_layout)
+            self._page_actions.build_settings_section(category, page.body_layout)
+
+            self._promote_first_subsection_header(page)
+            self._prepare_settings_subsections(page)
+            self._loaded_sections.add(category)
+        except Exception as exc:
+            logger.error(
+                "Failed to build settings section '%s': %s",
+                category,
+                exc,
+                exc_info=True,
+            )
+            self._set_section_placeholder(page, "error", f"Failed to load section: {exc}")
+        finally:
+            self._loading_sections.discard(category)
+
+        subsection, smooth_scroll = self._pending_section_scroll.pop(category, (None, False))
+        self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+
+    def _apply_pending_scroll(self, category: str, *, subsection=None, smooth_scroll: bool = False):
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+        if subsection:
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
+            QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _clear_layout(self, layout: QLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+                continue
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout(child_layout)
 
     _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
 
@@ -584,23 +696,16 @@ class SettingsPage(QWidget):
         header.style().polish(header)
 
     def _collapsed_state_map(self) -> dict:
-        try:
-            from managers.settings_manager import SettingsManager
-
-            value = SettingsManager.get(self._COLLAPSE_STATE_KEY, {})
-            return dict(value) if isinstance(value, dict) else {}
-        except Exception:
-            return {}
+        getter = getattr(self._settings, "get", None)
+        value = getter(self._COLLAPSE_STATE_KEY, {}) if callable(getter) else {}
+        return dict(value) if isinstance(value, dict) else {}
 
     def _persist_collapsed_state(self, section_id: str, collapsed: bool) -> None:
-        try:
-            from managers.settings_manager import SettingsManager
-
-            state = self._collapsed_state_map()
-            state[section_id] = bool(collapsed)
-            SettingsManager.set(self._COLLAPSE_STATE_KEY, state)
-        except Exception:
-            pass
+        state = self._collapsed_state_map()
+        state[section_id] = bool(collapsed)
+        setter = getattr(self._settings, "set", None)
+        if callable(setter):
+            setter(self._COLLAPSE_STATE_KEY, state)
 
     def _prepare_settings_subsections(self, page: SettingsSectionPage):
         """Keep the in-page subsections collapsible so long pages (e.g. Models)

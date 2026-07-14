@@ -6,12 +6,14 @@ import asyncio
 from typing import Any, Optional, Callable
 
 
+from handlers.ai_engine.gpu_scheduler import Priority, get_scheduler
+
+
 class TTSService:
     """
     Универсальный TTS service поверх LocalVoice.
     Не знает про конкретные модели (Fish/F5/Edge).
-    Warmup best-effort: если модель требует внешние артефакты (например reference audio)
-    и warmup падает "предсказуемо", считаем warmup skipped, а init успешным.
+    Инициализация завершается только после успешного первого синтеза для модели.
     """
 
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
@@ -22,6 +24,7 @@ class TTSService:
         self._current_model_id: Optional[str] = None
 
         self._triton_status_cache = None
+        self._warmup_status: dict[str, str] = {}
 
     def _get_local_voice(self):
         if self._local_voice is None:
@@ -30,10 +33,17 @@ class TTSService:
         return self._local_voice
 
     async def shutdown(self):
-        try:
-            self._local_voice = None
-        except Exception:
-            pass
+        local_voice = self._local_voice
+        self._local_voice = None
+        self._current_model_id = None
+        self._warmup_status.clear()
+        if local_voice is not None:
+            shutdown = getattr(local_voice, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    await asyncio.to_thread(shutdown)
+                except Exception:
+                    pass
 
     async def handle(self, method: str, payload: dict):
         m = str(method or "").strip().lower()
@@ -46,37 +56,37 @@ class TTSService:
             if not lang:
                 return False
             self._voice_language = lang
-            lv = self._get_local_voice()
+            lv = await asyncio.to_thread(self._get_local_voice)
             try:
-                lv.change_voice_language(lang)
+                await asyncio.to_thread(lv.change_voice_language, lang)
             except Exception:
                 pass
             return True
 
         if m == "list_models":
-            lv = self._get_local_voice()
-            return lv.get_all_model_configs() or []
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return await asyncio.to_thread(lv.get_all_model_configs) or []
 
         if m == "check_installed":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            return bool(lv.is_model_installed(model_id))
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return bool(await asyncio.to_thread(lv.is_model_installed, model_id))
 
         if m == "check_initialized":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            return bool(lv.is_model_initialized(model_id))
+            lv = await asyncio.to_thread(self._get_local_voice)
+            return bool(await asyncio.to_thread(lv.is_model_initialized, model_id))
 
         if m == "select_model":
             model_id = str(payload.get("model_id") or "").strip()
             if not model_id:
                 return False
-            lv = self._get_local_voice()
-            lv.select_model(model_id)
+            lv = await asyncio.to_thread(self._get_local_voice)
+            await asyncio.to_thread(lv.select_model, model_id)
             self._current_model_id = model_id
             return True
 
@@ -86,9 +96,9 @@ class TTSService:
             if not model_id:
                 return False
 
-            lv = self._get_local_voice()
+            lv = await asyncio.to_thread(self._get_local_voice)
             self.emit_event("log", f"[tts:init] start model_id={model_id} warmup={do_warmup}")
-            ok = await asyncio.to_thread(lv.initialize_model, model_id, init=False)
+            ok = await get_scheduler().run(Priority.BULK, lv.initialize_model, model_id, init=False)
             if not ok:
                 self.emit_event("log", f"[tts:init] initialize_model returned False for model_id={model_id}")
                 return False
@@ -96,12 +106,28 @@ class TTSService:
             self._current_model_id = model_id
             self.emit_event("log", f"[tts:init] runtime initialized for model_id={model_id}")
 
-            if do_warmup:
-                warm = await self._best_effort_warmup(lv, model_id)
+            if do_warmup and self._warmup_status.get(model_id) != "ready":
+                try:
+                    warm = await asyncio.wait_for(
+                        self._warmup_model(lv, model_id),
+                        timeout=120.0,
+                    )
+                except asyncio.TimeoutError:
+                    warm = False
+                    self.emit_event(
+                        "log",
+                        f"[tts:init] warmup timed out for model_id={model_id}",
+                    )
+                self._warmup_status[model_id] = "ready" if warm else "failed"
                 if not warm:
-                    self.emit_event("log", f"[tts:init] warmup failed for model_id={model_id}")
+                    self.emit_event(
+                        "log",
+                        f"[tts:init] warmup failed for model_id={model_id}; initialization rejected",
+                    )
                     return False
                 self.emit_event("log", f"[tts:init] warmup finished for model_id={model_id}")
+            elif do_warmup:
+                self.emit_event("log", f"[tts:init] warmup already ready for model_id={model_id}")
 
             return True
 
@@ -116,14 +142,16 @@ class TTSService:
             if not model_id:
                 raise RuntimeError("No voice model selected")
 
-            lv = self._get_local_voice()
-            lv.select_model(model_id)
-            self._current_model_id = model_id
-
             out_abs = os.path.abspath(output_file)
             os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
 
-            return await lv.voiceover(text=text, output_file=out_abs, character=character)
+            lv = await asyncio.to_thread(self._get_local_voice)
+            # Выбор модели и синтез являются одной критической секцией. Иначе
+            # параллельный запрос мог сменить mutable active_model_instance.
+            async with get_scheduler().slot(Priority.TTS):
+                await asyncio.to_thread(lv.select_model, model_id)
+                self._current_model_id = model_id
+                return await lv.voiceover(text=text, output_file=out_abs, character=character)
 
         if m in ("get_triton_status", "refresh_triton_status"):
             if m == "get_triton_status" and self._triton_status_cache is not None:
@@ -183,7 +211,7 @@ class TTSService:
 
         return status
 
-    async def _best_effort_warmup(self, lv, model_id: str) -> bool:
+    async def _warmup_model(self, lv, model_id: str) -> bool:
         tmp_dir = os.path.abspath("temp")
         os.makedirs(tmp_dir, exist_ok=True)
         out = os.path.join(tmp_dir, f"tts_warmup_{model_id}_{uuid.uuid4()}.wav")
@@ -205,16 +233,7 @@ class TTSService:
             self.emit_event("log", f"[tts:warmup] probe generated for model_id={model_id}: {produced}")
             return True
 
-        except FileNotFoundError:
-            # "нет reference" или файлов модели — для warmup это допустимо, init уже прошёл
-            self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: missing reference/model asset")
-            return True
         except RuntimeError as e:
-            msg = str(e).lower()
-            # generic: "requires reference audio" и т.п.
-            if "reference" in msg and ("audio" in msg or "voice" in msg):
-                self.emit_event("log", f"[tts:warmup] skipped for model_id={model_id}: {e}")
-                return True
             self.emit_event("log", f"[tts:warmup] runtime error for model_id={model_id}: {e}")
             return False
         except Exception as exc:

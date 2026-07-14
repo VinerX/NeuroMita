@@ -131,15 +131,11 @@ class ReminderTool(Tool):
     def _get_reminder_system(self):
         if not self._char_id:
             return None
-        try:
-            from core.events import get_event_bus, Events
-            bus = get_event_bus()
-            res = bus.emit_and_wait(Events.Character.GET, {"character_id": self._char_id}, timeout=1.0)
-            char = res[0] if res else None
-            return getattr(char, "reminder_system", None)
-        except Exception as e:
-            logger.warning(f"[ReminderTool] Could not get character '{self._char_id}': {e}")
-            return None
+        from core.services import use
+        from services.contracts import CharacterRegistry
+
+        char = use(CharacterRegistry).get(self._char_id)
+        return getattr(char, "reminder_system", None)
 
     def run(self, action: str, text: str = None, due: str = None, n: int = None, **_) -> Any:
         rs = self._get_reminder_system()

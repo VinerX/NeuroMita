@@ -45,6 +45,7 @@ class ReleaseAsset:
     url: str
     size: int
     content_type: str = ""
+    digest: str = ""
 
 
 @dataclass
@@ -90,6 +91,25 @@ def has_launcher_release_assets(release: "Release") -> bool:
 def raw_release_has_launcher_assets(item: dict) -> bool:
     try:
         return has_launcher_release_assets(parse_release(item))
+    except Exception:
+        return False
+
+
+def has_python_release_assets(release: "Release") -> bool:
+    """True когда релиз реально несёт Python-сборку (full или patch).
+
+    В отличие от has_launcher_release_assets (любой launcher-ассет, включая
+    Unity), судим строго по наличию Python-файла: Unity-only релиз (например
+    v2026.07.12 с одним UnityBuild) не должен считаться доступным Python-
+    обновлением.
+    """
+    picked = pick_from_release(release)
+    return bool(picked.python_full or picked.python_patch)
+
+
+def raw_release_has_python_assets(item: dict) -> bool:
+    try:
+        return has_python_release_assets(parse_release(item))
     except Exception:
         return False
 
@@ -197,6 +217,7 @@ def parse_release(item: dict) -> Release:
             url=a.get("browser_download_url", ""),
             size=int(a.get("size") or 0),
             content_type=a.get("content_type", ""),
+            digest=str(a.get("digest") or ""),
         )
         for a in (item.get("assets") or [])
     ]

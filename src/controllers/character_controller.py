@@ -3,17 +3,19 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from core.events import get_event_bus, Events, Event
+from core.services import services
 from main_logger import logger
 from managers.character_manager import CharacterManager
+from services.character_registry import ManagedCharacterRegistry
+from services.contracts import CharacterRegistry
 
 
 class CharacterController:
     """
     Единственная точка владения персонажами:
     - хранит CharacterManager
-    - даёт доступ к текущему персонажу
-    - переключает текущего персонажа
-    - отдаёт плоский профиль для UI/озвучки
+    - регистрирует CharacterRegistry (чтение)
+    - обрабатывает команды-события (переключение, reload, clear)
     """
 
     def __init__(self, settings):
@@ -23,16 +25,14 @@ class CharacterController:
         initial_character_id = str(self.settings.get("CHARACTER") or "")
         self.character_manager = CharacterManager(initial_character_id=initial_character_id)
 
+        self.registry = services().register(
+            CharacterRegistry, ManagedCharacterRegistry(self.character_manager), replace=True
+        )
+
         self._subscribe_to_events()
 
     def _subscribe_to_events(self):
         eb = self.event_bus
-
-        eb.subscribe(Events.Character.GET_ALL, self._on_get_all, weak=False)
-        eb.subscribe(Events.Character.GET, self._on_get, weak=False)
-
-        eb.subscribe(Events.Character.GET_CURRENT_PROFILE, self._on_get_current_profile, weak=False)
-        eb.subscribe(Events.Character.GET_CURRENT_NAME, self._on_get_current_name, weak=False)
 
         eb.subscribe(Events.Character.SET_CURRENT, self._on_set_current, weak=False)
 
@@ -49,33 +49,6 @@ class CharacterController:
         if not character_id:
             return None
         return self.character_manager.get_character(str(character_id))
-
-    def _profile_from(self, ch) -> Dict[str, Any]:
-        if ch is None:
-            return {}
-        if hasattr(ch, "to_voice_profile"):
-            return ch.to_voice_profile()
-        return {
-            "character_id": str(getattr(ch, "char_id", "") or ""),
-            "name": str(getattr(ch, "name", "") or ""),
-        }
-
-    def _on_get_all(self, event: Event) -> List[str]:
-        return self.character_manager.get_all_characters()
-
-    def _on_get(self, event: Event):
-        data = event.data or {}
-        character_id = data.get("character_id")
-        if not character_id:
-            return None
-        return self.get_ref(str(character_id))
-
-    def _on_get_current_profile(self, event: Event):
-        return self._profile_from(self.get_current_ref())
-
-    def _on_get_current_name(self, event: Event):
-        ch = self.get_current_ref()
-        return str(getattr(ch, "name", "") or "")
 
     def _on_set_current(self, event: Event):
         data = event.data or {}
@@ -120,7 +93,5 @@ class CharacterController:
         return False
 
     def _on_clear_all_histories(self, event: Event):
-        for ch in self.character_manager.characters.values():
-            if hasattr(ch, "clear_history"):
-                ch.clear_history()
+        self.character_manager.clear_all_histories()
         return True

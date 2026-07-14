@@ -9,4 +9,3 @@
 [<Scripts/history_loader.script>]
 [<Structural/VariablesEffects.txt>]
 [<Scripts/event_handler.script>]
-[<../../Common/CommonContext.script>]

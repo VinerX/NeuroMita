@@ -270,7 +270,12 @@ def load_onnx(
     providers: строка или список провайдеров (например ["DmlExecutionProvider","CPUExecutionProvider"])
     """
     if providers is None:
-        providers = ["CUDAExecutionProvider"] if "CUDAExecutionProvider" in rt.get_available_providers() else ["CPUExecutionProvider"]
+        available = set(rt.get_available_providers())
+        providers = (
+            ["DmlExecutionProvider", "CPUExecutionProvider"]
+            if "DmlExecutionProvider" in available
+            else ["CPUExecutionProvider"]
+        )
     elif isinstance(providers, str):
         providers = [providers]
     else:

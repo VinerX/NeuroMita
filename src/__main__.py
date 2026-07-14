@@ -1,523 +1,303 @@
-### main.py
-import faulthandler
+from __future__ import annotations
 
-# Нативные «fatal exception» (в т.ч. при закрытии через крестик, #19) валятся в
-# stderr, а в оконном запуске stderr в никуда — поэтому такие падения раньше
-# не попадали в лог и были неотлаживаемы. Дублируем дамп faulthandler в файл
-# рядом с основным логом; файл держим открытым на всё время процесса.
-_crash_log_fh = None
-try:
-    _crash_log_fh = open("NeuroMitaCrash.log", "a", buffering=1, encoding="utf-8")
-    faulthandler.enable(file=_crash_log_fh, all_threads=True)
-except Exception:
-    faulthandler.enable()
-
-import pydantic.fields
-import uvicorn
+import multiprocessing as mp
 import os
 import sys
-import re
+from dataclasses import dataclass
 
-os.environ["QT_API"] = "pyqt6"
+from startup.startup_profiler import startup_trace
 
-# torch/MKL тянет libiomp5md.dll, onnxruntime — libomp140.dll. Когда обе OpenMP-рантайм
-# попадают в один процесс (shared AI-worker: RAG+ASR+TTS), падает OMP Error #15 → abort
-# (наблюдался краш с кодом 3 при инициализации RAG). Разрешаем сосуществование дублей.
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+startup_trace.claim_owner()
+startup_trace.mark("entry.module_loaded")
 
-from main_logger import logger
-from _version import __version__
+os.environ.setdefault("QT_API", "pyqt6")
+os.environ.setdefault("UV_LINK_MODE", "copy")
 
 
-def _log_uncaught_exception(exc_type, exc_value, exc_tb):
-    """Логировать любое неперехваченное исключение (в т.ч. при закрытии, #19),
-    чтобы оно попадало в NeuroMitaLogs.log, а не терялось в пустом stderr."""
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_tb)
-        return
-    logger.critical("Неперехваченное исключение", exc_info=(exc_type, exc_value, exc_tb))
+@dataclass(frozen=True)
+class StartupOptions:
+    mode: str = "full"
+    headless_run_seconds: float = 0.0
+    headless_status_interval: float = 60.0
 
 
-sys.excepthook = _log_uncaught_exception
-
-try:
-    import threading as _threading
-
-    def _log_thread_exception(args):
-        if issubclass(args.exc_type, SystemExit):
-            return
-        logger.critical(
-            f"Неперехваченное исключение в потоке {getattr(args.thread, 'name', '?')}",
-            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
-        )
-
-    _threading.excepthook = _log_thread_exception
-except Exception:
-    pass
-def create_startup_banner(title: str, version: str) -> str:
-    version_info = f"Version {version}"
-    
-    padding = 6
-    
-    content_width = max(len(title), len(version_info)) + padding
-    
-    if content_width % 2 != 0:
-        content_width += 1
-        
-    top_border = f"╔{'═' * content_width}╗"
-    bottom_border = f"╚{'═' * content_width}╝"
-    
-    empty_line = f"║{' ' * content_width}║"
-    title_line = f"║{title.center(content_width)}║"
-    version_line = f"║{version_info.center(content_width)}║"
-    
-    # Собираем и возвращаем финальный баннер
-    return (
-        f"{top_border}\n"
-        f"{empty_line}\n"
-        f"{title_line}\n"
-        f"{version_line}\n"
-        f"{empty_line}\n"
-        f"{bottom_border}"
-    )
-
-
-banner = create_startup_banner("NeuroMita", __version__)
-logger.success(f"\n\n{banner}\n\n")
-
-
-from dotenv import load_dotenv
-ENV_FILENAME = "features.env" 
-loaded = load_dotenv(dotenv_path=ENV_FILENAME)
-os.environ["WHISPER_ONNX_DEBUG"]="1"
-if loaded:
-    logger.notify(f"Переменные окружения успешно загружены из файла: {ENV_FILENAME}")
-else:
-    logger.notify(f"Файл окружения '{ENV_FILENAME}' не найден по пути: {ENV_FILENAME}. Используются системные переменные или значения по умолчанию.")
-
-# region Для исправления проблем с импортом динамично подгружаемых пакетов:
-import timeit
-import pickletools
-import logging.config
-import fileinput
-from win32 import win32file
-import pyworld
-import cProfile
-import filecmp
-import soxr
-
-try:
-    import google.api_core
-    import google.auth
-    from google.cloud import storage
-    from google.protobuf import empty_pb2
-    import google.protobuf.wrappers_pb2
-except Exception as e:
-    logger.warning(f"{e}")
-import xml.dom
-
-
-import modulefinder
-import sunau
-import xml.etree
-import xml.etree.ElementTree
-import os
-
-# os.environ["TEST_AS_AMD"] = "TRUE"
-
-if os.environ.get("VERBOSE_TRITON_LOGS", "0") == "1":
-    os.environ["TORCH_LOGS"] = "+dynamo"
-    os.environ["TORCHDYNAMO_VERBOSE"] = "1"
-    
-os.environ["UV_LINK_MODE"] = "copy"
-
-#region Переменные для путей
-current_file = os.path.abspath(__file__)
-# When running from a .pyz archive, __file__ is the pyz itself (one level),
-# not src/__main__.py (two levels). Detect and handle both cases.
-if current_file.lower().endswith(".pyz"):
-    base_dir = os.path.dirname(current_file)
-else:
-    base_dir = os.path.dirname(os.path.dirname(current_file))
-
-os.environ["NEUROMITA_BASE_DIR"] = base_dir
-if not os.environ.get("NEUROMITA_LIB_DIR"):
-    os.environ["NEUROMITA_LIB_DIR"] = os.path.join(base_dir, "Lib")
-if not os.environ.get("NEUROMITA_PROMPTS_DIR"):
-    os.environ["NEUROMITA_PROMPTS_DIR"] = os.path.join(base_dir, "Prompts")
-if not os.environ.get("NEUROMITA_HISTORIES_DIR"):
-    os.environ["NEUROMITA_HISTORIES_DIR"] = os.path.join(base_dir, "Histories")
-if not os.environ.get("NEUROMITA_MODELS_DIR"):
-    os.environ["NEUROMITA_MODELS_DIR"] = os.path.join(base_dir, "Models")
-if not os.environ.get("NEUROMITA_CHECKPOINTS_DIR"):
-    os.environ["NEUROMITA_CHECKPOINTS_DIR"] = os.path.join(base_dir, "checkpoints")
-
-libs_dir = os.environ["NEUROMITA_LIB_DIR"]
-if not os.path.exists(libs_dir):
-    os.makedirs(libs_dir)
-
-local_python = os.path.join(base_dir, "libs", "python", "python.exe")
-if os.path.exists(local_python):
-    os.environ["NEUROMITA_PYTHON"] = local_python
-else:
-    os.environ["NEUROMITA_PYTHON"] = sys.executable
-#endregion
-
-
-logger.info(f"Базовая директория: {os.environ['NEUROMITA_BASE_DIR']}")
-logger.info(f"Prompts: {os.environ['NEUROMITA_PROMPTS_DIR']}")
-logger.info(f"Histories: {os.environ['NEUROMITA_HISTORIES_DIR']}")
-logger.info(f"Checkpoints: {os.environ['NEUROMITA_CHECKPOINTS_DIR']}")
-logger.info(f"Python: {os.environ['NEUROMITA_PYTHON']}")
-logger.info(libs_dir)
-
-# Check for updates (before heavy imports)
-try:
-    from updater import check_for_updates as _check_for_updates, check_for_unity_updates as _check_for_unity_updates
-    import json as _json
-    _upd_settings: dict = {}
+def _parse_float(value: str, default: float, minimum: float = 0.0) -> float:
     try:
-        _settings_path = os.path.join(base_dir, "Settings", "settings.json")
-        with open(_settings_path, encoding="utf-8") as _f:
-            _upd_settings = _json.load(_f)
-    except Exception:
-        pass
-    _py_startup_update = bool(
-        _upd_settings.get("AUTO_UPDATE", _upd_settings.get("AUTO_UPDATE_CHECK", False))
+        return max(minimum, float(value))
+    except (TypeError, ValueError):
+        return max(minimum, float(default))
+
+
+def _normalize_mode(mode: str) -> str:
+    normalized = str(mode or "full").strip().lower()
+    if normalized in {"gui-only", "gui_only", "ui-only", "ui_only"}:
+        return "gui_only"
+    if normalized in {"headless", "server", "server-only", "server_only", "no-gui", "no_gui"}:
+        return "headless"
+    return "full"
+
+
+def _consume_startup_options(argv: list[str]) -> StartupOptions:
+    mode = _normalize_mode(os.environ.get("NEUROMITA_STARTUP_MODE", "full"))
+    run_seconds = _parse_float(os.environ.get("NEUROMITA_HEADLESS_RUN_SECONDS", "0"), 0.0)
+    status_interval = _parse_float(
+        os.environ.get("NEUROMITA_HEADLESS_STATUS_INTERVAL", "60"),
+        60.0,
     )
-    _unity_startup_update = bool(_upd_settings.get("AUTO_UPDATE_UNITY", False))
-
-    if _py_startup_update:
-        _check_for_updates(
-            base_dir=base_dir,
-            logger=logger,
-            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
-            tester_code=_upd_settings.get("TESTER_CODE") or None,
-            auto_update=True,
-            update_mode=_upd_settings.get("UPDATE_MODE", "diff"),
-            preserve_prompts=bool(_upd_settings.get("UPDATE_PRESERVE_PROMPTS", True)),
-        )
-
-    if _unity_startup_update:
-        _check_for_unity_updates(
-            base_dir=base_dir,
-            logger=logger,
-            unity_dir=_upd_settings.get("UNITY_INSTALL_DIR") or None,
-            channel=_upd_settings.get("UPDATE_CHANNEL", "stable"),
-            tester_code=_upd_settings.get("TESTER_CODE") or None,
-            auto_update=True,
-        )
-except Exception as _upd_err:
-    logger.warning(f"Update check failed: {_upd_err}")
-
-_libs_dir_norm = os.path.normcase(os.path.abspath(libs_dir))
-sys.path = [
-    p for p in sys.path
-    if os.path.normcase(os.path.abspath(p or "")) != _libs_dir_norm
-]
-sys.path.insert(0, libs_dir)
-import importlib.util, ctypes, pathlib, os
-
-# ── Torch CUDA bootstrap ──────────────────────────────────────────────
-# Должен выполняться ДО любого import torch в процессе.
-# Если стоит CPU-вариант, а GPU — NVIDIA, переустанавливаем на CUDA.
-try:
-    from core.backends import get_backend_service
-    from utils.gpu_utils import check_gpu_provider, format_primary_gpu_label
-    from utils.pip_installer import PipInstaller
-    _backend_service = get_backend_service()
-    _gpu = check_gpu_provider() or "CPU"
-    _gpu_label = format_primary_gpu_label()
-    _backend_ctx = {"gpu_vendor": _gpu, "libs_dir": libs_dir}
-    _backend_kind = _backend_service.preferred_torch_kind(_backend_ctx)
-    # Передаём libs_dir как target_dir — проверяем dist-info прямо в папке
-    # установки, а не через importlib.metadata (который может найти torch из
-    # другого Python-окружения).
-    _status = _backend_service.get_status(_backend_kind, ctx=_backend_ctx)
-    _plan = {"action": _status.action, "reason": _status.reason}
-    # Только реактивный апгрейд: если torch уже установлен в неправильном варианте.
-    # Первичную установку делает lazy bootstrap (embedding_handler / cross_encoder).
-    _installed_variant = _backend_service.get_installed_torch_variant(target_dir=libs_dir)
-    if _status.action == "reinstall" and _installed_variant is not None:
-        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action=reinstall (CPU→CUDA)")
-        _pip = PipInstaller(update_log=logger.info)
-        logger.info("Удаление CPU-варианта PyTorch перед установкой CUDA...")
-        _pip.uninstall_packages(
-            ["torch", "torchaudio"],
-            description="Удаление CPU-варианта PyTorch",
-        )
-        _status = _backend_service.install_backend(
-            _backend_kind,
-            pip_installer=_pip,
-            ctx=_backend_ctx,
-        )
-        if not _status.ok:
-            raise RuntimeError(_status.reason)
-    elif _status.action != "skip":
-        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action={_plan['action']} — отложено до первого использования")
-    else:
-        logger.info(f"Torch bootstrap (early): gpu={_gpu_label}, action=skip — {_plan.get('reason', '')}")
-except Exception as _torch_boot_err:
-    logger.warning(f"Torch early bootstrap failed: {_torch_boot_err}")
-# ──────────────────────────────────────────────────────────────────────
-
-# ort_spec = importlib.util.find_spec("onnxruntime")
-# capi_dir = pathlib.Path(ort_spec.origin).parent / "capi"
-# ctypes.WinDLL(str(capi_dir / "libiomp5md.dll"))
-
-try:
-    import onnxruntime  # noqa: F401
-except Exception:
-    onnxruntime = None
-
-from PyQt6.QtWidgets import QApplication
-
-
-
-config_path = os.path.join(libs_dir, "fairseq", "dataclass", "configs.py")
-if os.path.exists(config_path):
-    
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        source = f.read()
-
-    patched_source = re.sub(r"metadata=\{(.*?)help:", r'metadata={\1"help":', source)
-
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-
-    logger.success("Патч успешно применён к configs.py")
-
-audio_path = os.path.join(libs_dir, "tts_with_rvc", "lib", "audio.py")
-if os.path.exists(audio_path):
-
-    with open(audio_path, "r", encoding="utf-8") as f:
-        source = f.read()
-
-    patched_source = re.sub(
-        r"\bimport ffmpeg\b", 
-        'import importlib\nffmpeg = importlib.import_module("ffmpeg")', 
-        source
-    )
-
-    with open(audio_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-
-    logger.success("Патч успешно применён к audio.py")
-
-# Патч для triton windows_utils.py
-windows_utils_path = os.path.join(libs_dir, "triton", "windows_utils.py")
-if os.path.exists(windows_utils_path):
-    with open(windows_utils_path, "r", encoding="utf-8") as f:
-        source = f.read()
-    
-    patched_source = source.replace(
-        "output = subprocess.check_output(command, text=True).strip()",
-        "output = subprocess.check_output(\n            command, text=True, close_fds=True, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE\n        ).strip()"
-    )
-    
-    with open(windows_utils_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-        
-    logger.success("Патч успешно применён к windows_utils.py")
-else:
-    logger.info(f"Файл {windows_utils_path} не найден")
-
-
-# Патч для compiler.py
-compiler_path = os.path.join(libs_dir, "triton", "backends", "nvidia", "compiler.py")
-if os.path.exists(compiler_path):
-    with open(compiler_path, "r", encoding="utf-8") as f:
-        source = f.read()
-    
-    old_code = '@functools.lru_cache()\ndef get_ptxas_version():\n    version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"]).decode("utf-8")\n    return version'
-    new_code = '@functools.lru_cache()\ndef get_ptxas_version():\n    version = subprocess.check_output([_path_to_binary("ptxas")[0], "--version"], stderr=subprocess.PIPE, close_fds=True, stdin=subprocess.DEVNULL).decode("utf-8")\n    return version'
-    
-    patched_source = source.replace(old_code, new_code)
-    
-    with open(compiler_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-        
-    logger.success("Патч успешно применён к compiler.py")
-else:
-    logger.info(f"Файл {compiler_path} не найден")
-
-
-build_py_path = os.path.join(libs_dir, "triton", "runtime", "build.py")
-
-_triton_tcc_path = os.path.join(os.path.abspath(libs_dir), "triton", "runtime", "tcc", "tcc.exe")
-if os.path.exists(_triton_tcc_path):
-    os.environ["CC"] = _triton_tcc_path
-else:
-    # Не засоряем глобальный CC несуществующим Triton-компилятором:
-    # это ломает последующие pip/uv-установки (например numpy backend bootstrap).
-    current_cc = str(os.environ.get("CC", "") or "")
-    if current_cc.replace("/", "\\").lower() == _triton_tcc_path.replace("/", "\\").lower():
-        os.environ.pop("CC", None)
-
-if os.path.exists(build_py_path):
-    with open(build_py_path, "r", encoding="utf-8") as f:
-        source = f.read()
-                        
-    # Заменяем путь к tcc.exe
-    patched_source = source.replace(
-        'cc = os.path.join(sysconfig.get_paths()["platlib"], "triton", "runtime", "tcc", "tcc.exe")',
-        f'cc = os.path.join("{libs_dir}", "triton", "runtime", "tcc", "tcc.exe")'
-    )
-
-    with open(build_py_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-                        
-cache_py_path = os.path.join(libs_dir, "triton", "runtime", "cache.py")
-if os.path.exists(cache_py_path):
-    with open(cache_py_path, "r", encoding="utf-8") as f:
-        source = f.read()
-
-    old_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{pid}_{rnd_id}")'
-    new_line = 'temp_dir = os.path.join(self.cache_dir, f"tmp.pid_{str(pid)[:5]}_{str(rnd_id)[:5]}")'
-
-    # Выполняем замену
-    patched_source = source.replace(old_line, new_line)
-
-    # Записываем измененный файл
-    with open(cache_py_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-
-# ВРЕМЕННО ПОКА НЕ ВЫЙДЕТ ПАТЧ
-build_py_path = os.path.join(libs_dir, "triton", "runtime", "build.py")
-if os.path.exists(build_py_path):
-    with open(build_py_path, "r", encoding="utf-8") as f:
-        source = f.read()
-    old_line = 'cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", out]'
-    new_line = 'cc_cmd = [cc, src, "-O3", "-shared", "-Wno-psabi", "-o", out]'
-
-    patched_source = source.replace(old_line, new_line)
-
-    with open(build_py_path, "w", encoding="utf-8") as f:
-        f.write(patched_source)
-
-
-def ensure_project_root():
-    project_root_file = os.path.join(os.environ["NEUROMITA_BASE_DIR"], '.project-root')
-    
-    if not os.path.exists(project_root_file):
-        open(project_root_file, 'w').close()
-        logger.info(f"Файл '{project_root_file}' создан.")
-
-ensure_project_root()
-
-
-
-# Установка
-
-# Теперь делаю файлом с папкой, так как антивирусы ругаются)
-#pyinstaller --name NeuroMita --noconfirm --console --add-data "Prompts/*;Prompts" --add-data "Prompts/**/*;Prompts" Main.py
-
-# Скакать между версиями g4f
-#pip install --upgrade g4f==0.4.7.7
-#pip install --upgrade g4f==0.4.8.3
-#pip install --upgrade g4f
-
-#"""
-#Тестово, потом надо будет вот это вернуть
-#pyinstaller --name NeuroMita --noconfirm --add-data "Prompts/*;Prompts" --add-data "%USERPROFILE%\AppData\Local\Programs\Python\Python313\Lib\site-packages\emoji\unicode_codes\emoji.json;emoji\unicode_codes  --add-data "Prompts/**/*;Prompts" Main.py
-#"""
-
-
-
-# Старый вариант
-#pyinstaller --onefile --name NeuroMita --add-data "Prompts/*;Prompts" --add-data "Prompts/**/*;Prompts" Main.py
-
-# Не забудь рядом папку промптов и ffmpeg
-
-import threading
-
-from ui.windows.main_window import MainWindow
-from controllers.main_controller import MainController
-from core.events import get_event_bus
-from main_logger import logger
-from PyQt6.QtWidgets import QApplication
-import sys
-
-def _consume_startup_mode(argv: list[str]) -> str:
-    mode = str(os.environ.get("NEUROMITA_STARTUP_MODE", "full") or "full").strip().lower()
     remaining = [argv[0]]
 
     for arg in argv[1:]:
-        low = str(arg or "").strip().lower()
+        raw = str(arg or "").strip()
+        low = raw.lower()
         if low == "--gui-only":
             mode = "gui_only"
             continue
+        if low in {"--headless", "--server", "--server-only", "--no-gui"}:
+            mode = "headless"
+            continue
         if low.startswith("--startup-mode="):
-            mode = low.split("=", 1)[1] or mode
+            mode = _normalize_mode(raw.split("=", 1)[1])
+            continue
+        if low.startswith("--headless-run-seconds=") or low.startswith("--run-seconds="):
+            run_seconds = _parse_float(raw.split("=", 1)[1], run_seconds)
+            continue
+        if low.startswith("--headless-status-interval="):
+            status_interval = _parse_float(raw.split("=", 1)[1], status_interval)
+            continue
+        if low.startswith("--server-host="):
+            os.environ["NEUROMITA_SERVER_HOST"] = raw.split("=", 1)[1].strip()
+            continue
+        if low.startswith("--server-port="):
+            os.environ["NEUROMITA_SERVER_PORT"] = raw.split("=", 1)[1].strip()
             continue
         remaining.append(arg)
 
     argv[:] = remaining
+    return StartupOptions(
+        mode=mode,
+        headless_run_seconds=run_seconds,
+        headless_status_interval=status_interval,
+    )
 
-    if mode in {"gui-only", "gui_only", "ui-only", "ui_only"}:
-        return "gui_only"
-    return "full"
+
+def _run_gui(runtime, startup_mode: str) -> int:
+    logger = runtime.logger
+    QApplication = runtime.QApplication
+    if QApplication is None:
+        raise RuntimeError("GUI runtime was not initialized")
+
+    startup_trace.mark("gui.host.start")
+    logger.success("Функция main() запущена")
+    with startup_trace.phase("gui.qapplication_create"):
+        app = QApplication(sys.argv)
+    logger.info("QApplication создан")
+    from controllers.gui.qt_dispatch import install_qt_dispatcher
+    from controllers.gui.qt_logging import install_qt_message_logging
+
+    install_qt_message_logging(logger)
+
+    install_qt_dispatcher(app)
+
+    from ui.wheel_guard import install_combobox_wheel_guard
+
+    install_combobox_wheel_guard(app)
+
+    try:
+        from ui.app_icon import application_icon, set_app_user_model_id
+
+        # Закрепляем идентичность в панели задач ДО создания окон, иначе после
+        # перезапуска detached-процессом иконка наследуется от python.exe.
+        set_app_user_model_id()
+        app.setWindowIcon(application_icon())
+    except Exception:
+        pass
+
+    with startup_trace.phase("gui.shell_services_create"):
+        from controllers.settings_controller import SettingsController
+        from core.app_paths import settings_path
+        from core.services import services
+        from services.character_registry import SettingsOnlyCharacterRegistry
+        from services.contracts import (
+            AppVarsService,
+            ASRSettingsService,
+            CharacterRegistry,
+            GameLinkService,
+            LoopService,
+            SettingsService,
+            InstallableCatalogService,
+            HardwareInventoryService,
+        )
+        from services.game_link_service import DisconnectedGameLinkService
+        from services.loop_service import NoLoopService
+        from services.settings_service import DefaultAppVarsService
+
+        shell_settings_controller = SettingsController(
+            str(settings_path("settings.json", create_parent=True))
+        )
+        shell_settings_service = services().get(SettingsService)
+        if not services().is_registered(ASRSettingsService):
+            from services.asr_settings_service import ensure_asr_settings_service
+
+            ensure_asr_settings_service()
+        if not services().is_registered(HardwareInventoryService):
+            from services.hardware_inventory_service import WindowsHardwareInventoryService
+
+            services().register(
+                HardwareInventoryService,
+                WindowsHardwareInventoryService(),
+            )
+        if not services().is_registered(InstallableCatalogService):
+            from services.installable_catalog_service import DefaultInstallableCatalogService
+
+            services().register(
+                InstallableCatalogService,
+                DefaultInstallableCatalogService(shell_settings_service),
+            )
+        shell_game_link = DisconnectedGameLinkService()
+        services().register(GameLinkService, shell_game_link, replace=True)
+        services().register(LoopService, NoLoopService(), replace=True)
+        services().register(
+            CharacterRegistry,
+            SettingsOnlyCharacterRegistry(shell_settings_service),
+            replace=True,
+        )
+        services().register(
+            AppVarsService,
+            DefaultAppVarsService(shell_settings_service, shell_game_link),
+            replace=True,
+        )
+
+    with startup_trace.phase("gui.window_import"):
+        from controllers.gui.composition_root import GuiCompositionRoot
+
+    logger.info("Создаю GUI composition root...")
+    with startup_trace.phase("gui.window_create"):
+        gui_root = GuiCompositionRoot(shell_settings_controller)
+        main_window = gui_root.window
+    logger.info("GUI composition root создан")
+
+    main_window.show()
+    startup_trace.mark("gui.window_shown")
+    app.processEvents()
+    startup_trace.mark("gui.first_paint")
+    startup_trace.write()
+
+    from PyQt6.QtCore import QTimer
+    from startup.gui_backend_loader import GuiBackendLoader
+
+    def on_backend_ready(controller) -> None:
+        try:
+            with startup_trace.phase("gui.controller_attach"):
+                gui_root.attach_backend(controller)
+            QTimer.singleShot(0, main_window.load_chat_history)
+            startup_trace.mark("gui.backend_attached")
+            startup_trace.write()
+            home_page = getattr(main_window, "home_page", None)
+            if home_page is not None:
+                home_page.refresh_status_cards()
+        except Exception as exc:
+            logger.error(f"Failed to attach GUI backend: {exc}", exc_info=True)
+            try:
+                controller.close_app()
+            except Exception:
+                pass
+            on_backend_failed(exc)
+
+    def on_backend_failed(error: BaseException) -> None:
+        message = f"Backend startup failed: {type(error).__name__}: {error}"
+        logger.error(message)
+        gui_root.backend_failed(error)
+
+    backend_loader = GuiBackendLoader(
+        runtime=runtime,
+        startup_mode=startup_mode,
+        settings_controller=shell_settings_controller,
+        on_ready=on_backend_ready,
+        on_failed=on_backend_failed,
+        parent=app,
+    )
+    main_window.backend_loader = backend_loader
+    app.aboutToQuit.connect(backend_loader.request_shutdown)
+    app.aboutToQuit.connect(gui_root.close)
+
+    def close_shell_catalog() -> None:
+        try:
+            catalog = services().get_optional(InstallableCatalogService)
+            if catalog is not None:
+                catalog.close()
+        except Exception:
+            pass
+
+    app.aboutToQuit.connect(close_shell_catalog)
+
+    try:
+        from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
+
+        install_dark_titlebar_sync(app)
+        apply_dark_titlebar(main_window)
+    except Exception:
+        pass
+
+    QTimer.singleShot(0, main_window.activate_current_main_page)
+    QTimer.singleShot(0, backend_loader.start)
+    startup_trace.mark("gui.ready_for_event_loop")
+    startup_trace.write()
+    logger.info("Запускаю app.exec()...")
+    result = int(app.exec())
+    backend_loader.request_shutdown()
+    if not backend_loader.wait(timeout=5.0):
+        logger.warning("GUI backend startup thread did not stop within 5 seconds")
+    if result < 0:
+        logger.critical(
+            "Qt event loop terminated with an invalid negative exit code: %d",
+            result,
+        )
+        return 1
+    return result
+
+
+def _run_headless(runtime, options: StartupOptions) -> int:
+    from startup.headless_runtime import HeadlessOptions, HeadlessRuntimeHost
+
+    host = HeadlessRuntimeHost(
+        runtime,
+        HeadlessOptions(
+            run_seconds=options.headless_run_seconds,
+            status_interval=options.headless_status_interval,
+        ),
+    )
+    return host.run()
+
+
+def main() -> int:
+    mp.freeze_support()
+    options = _consume_startup_options(sys.argv)
+    startup_trace.configure(mode=options.mode)
+    startup_trace.mark("entry.options_parsed", mode=options.mode)
+
+    from startup.runtime_bootstrap import initialize_runtime
+
+    runtime = initialize_runtime(
+        __file__,
+        load_gui=options.mode != "headless",
+        defer_backend_bootstrap=options.mode != "headless",
+    )
+    startup_trace.mark("entry.runtime_initialized")
+    if options.mode == "headless":
+        return _run_headless(runtime, options)
+    return _run_gui(runtime, options.mode)
 
 
 if __name__ == "__main__":
-    logger.success("Функция main() запущена")
     try:
-        startup_mode = _consume_startup_mode(sys.argv)
-        app = QApplication(sys.argv)
-        logger.info("QApplication создан")
-
-        # Колёсико мыши не должно переключать значение свёрнутых комбобоксов
-        from ui.wheel_guard import install_combobox_wheel_guard
-        install_combobox_wheel_guard(app)
-
-        if sys.platform == 'win32':
-            import ctypes
-            myappid = 'mycompany.myproduct.subproduct.version' 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-
-        # Создаем пустой объект для контроллера
-        logger.info("Создаю MainController...")
-        controller = MainController(None, startup_mode=startup_mode)
-        logger.info("MainController создан")
-
-        # Инициализация сборщика данных для дообучения
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
         try:
-            from managers.finetune_collector import FineTuneCollector
-            from managers.generation_input_collector import GenerationInputCollector
-            FineTuneCollector.instance = FineTuneCollector()
-            GenerationInputCollector.instance = GenerationInputCollector()
-            logger.info("FineTuneCollector инициализирован")
-        except Exception as _ft_init_err:
-            logger.warning(f"FineTuneCollector не инициализирован: {_ft_init_err}")
-    
-        logger.info("Создаю MainWindow...")
-        main_win = MainWindow(controller.settings)
-        logger.info("MainWindow создан")
-        
-        # Обновляем ссылку на реальный view в контроллере
-        controller.update_view(main_win)
+            from main_logger import logger
 
-        main_win.load_chat_history()
-        
-        
-        logger.info("Показываю главное окно...")
-        # Keep native Windows title bars in sync with the app's dark theme for
-        # the main window and every top-level dialog created later.
-        try:
-            from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
-            install_dark_titlebar_sync(app, True)
-            apply_dark_titlebar(main_win, True)
+            logger.error("Ошибка в main()", exc_info=True)
         except Exception:
             pass
-        main_win.show()
-        logger.info("Запускаю app.exec()...")
-
-        
-        # При завершении приложения останавливаем систему событий
-        app.aboutToQuit.connect(controller.close_app)
-        
-        sys.exit(app.exec())
-    except Exception as e:
-        logger.error(f"Ошибка в main(): {e}", exc_info=True)
         raise

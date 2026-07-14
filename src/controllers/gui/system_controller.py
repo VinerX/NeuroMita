@@ -1,9 +1,8 @@
-import threading
 from pathlib import Path
 from PyQt6.QtCore import QTimer
 from main_logger import logger
 from core.events import Events, Event
-from utils.ffmpeg_installer import install_ffmpeg
+from core.task_supervisor import task_supervisor
 from .base_controller import BaseController
 
 class SystemController(BaseController):
@@ -14,7 +13,6 @@ class SystemController(BaseController):
     def subscribe_to_events(self):
         self.event_bus.subscribe(Events.GUI.UPDATE_DEBUG_INFO, self._on_update_debug_info, weak=False)
         self.event_bus.subscribe(Events.GUI.CHECK_AND_INSTALL_FFMPEG, self._on_check_and_install_ffmpeg, weak=False)
-        self.event_bus.subscribe(Events.GUI.GET_GUI_WINDOW_ID, self._on_get_gui_window_id, weak=False)
         
     def update_debug(self):
         logger.debug("SystemController: update_debug")
@@ -33,8 +31,12 @@ class SystemController(BaseController):
 
         if not ffmpeg_path.exists():
             logger.info("FFmpeg not found. Starting installation process in a separate thread.")
-            install_thread = threading.Thread(target=self._ffmpeg_install_thread_target, daemon=True)
-            install_thread.start()
+            task_supervisor().start_thread(
+                self,
+                "ffmpeg-install",
+                self._ffmpeg_install_thread_target,
+                replace=True,
+            )
         else:
             logger.info("FFmpeg found. No installation needed.")
             
@@ -45,6 +47,8 @@ class SystemController(BaseController):
         #     QTimer.singleShot(0, self.view._show_ffmpeg_installing_popup)
 
         logger.info("Starting FFmpeg installation attempt...")
+        from utils.ffmpeg_installer import install_ffmpeg
+
         success = install_ffmpeg()
         logger.info(f"FFmpeg installation attempt finished. Success: {success}")
 
@@ -52,7 +56,7 @@ class SystemController(BaseController):
         #     QTimer.singleShot(0, self.view._close_ffmpeg_installing_popup)
 
         if not success and self.view:
-            QTimer.singleShot(0, self.view._show_ffmpeg_error_popup)
+            self._ui(self.view._show_ffmpeg_error_popup)
             
     def _on_update_debug_info(self, event: Event):
         logger.debug("SystemController: получено событие UPDATE_DEBUG_INFO")

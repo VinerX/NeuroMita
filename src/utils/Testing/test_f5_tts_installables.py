@@ -76,6 +76,52 @@ class F5TTSInstallablesTests(unittest.TestCase):
         self.assertIn("пакет tts-with-rvc не найден", joined)
         self.assertIn("отсутствует файл checkpoints/F5-TTS/model.safetensors", joined)
 
+    def test_install_plan_final_check_uses_runtime_action_context(self):
+        plan = F5TTSInstallSpec.build_install_plan(
+            "high",
+            {
+                "gpu_vendor": "NVIDIA",
+                "target_dir": "old-target",
+                "python_paths": ["old-target"],
+                "strict_target": True,
+            },
+        )
+        final_action = next(
+            action
+            for action in plan.actions
+            if getattr(action, "type", "") == "call"
+            and int(getattr(action, "progress", 0) or 0) == 99
+        )
+
+        captured: dict = {}
+
+        def fake_final_check(model_id, ctx, callbacks=None):
+            captured["model_id"] = model_id
+            captured["ctx"] = dict(ctx)
+            captured["callbacks"] = callbacks
+            return True
+
+        callbacks = SimpleNamespace(log=lambda _message: None)
+        runtime_ctx = {
+            "target_dir": "staging-overlay",
+            "libs_dir": "staging-overlay",
+            "python_paths": ["staging-overlay", "cuda-backend"],
+            "strict_target": True,
+        }
+
+        with patch.object(F5TTSInstallSpec, "_final_check", side_effect=fake_final_check):
+            ok = final_action.fn(ctx=runtime_ctx, callbacks=callbacks)
+
+        self.assertTrue(ok)
+        self.assertEqual(captured["model_id"], "high")
+        self.assertEqual(captured["ctx"]["gpu_vendor"], "NVIDIA")
+        self.assertEqual(captured["ctx"]["target_dir"], "staging-overlay")
+        self.assertEqual(
+            captured["ctx"]["python_paths"],
+            ["staging-overlay", "cuda-backend"],
+        )
+        self.assertIs(captured["callbacks"], callbacks)
+
 
 if __name__ == "__main__":
     unittest.main()

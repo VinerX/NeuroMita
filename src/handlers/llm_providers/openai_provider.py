@@ -4,7 +4,11 @@ from __future__ import annotations
 from openai import OpenAI
 from main_logger import logger
 
-from .base import LLMRequest
+from .base import (
+    LLMRequest,
+    register_cancellable_resource,
+    resolve_total_timeout,
+)
 from .errors import build_provider_error
 from .openai_compatible import OpenAICompatibleProvider
 
@@ -27,8 +31,17 @@ class OpenAIProvider(OpenAICompatibleProvider):
             )
         try:
             if req.api_url:
-                return OpenAI(api_key=req.api_key, base_url=req.api_url)
-            return OpenAI(api_key=req.api_key)
+                client = OpenAI(
+                    api_key=req.api_key,
+                    base_url=req.api_url,
+                    timeout=resolve_total_timeout(req),
+                )
+            else:
+                client = OpenAI(
+                    api_key=req.api_key,
+                    timeout=resolve_total_timeout(req),
+                )
+            return register_cancellable_resource(req, client)
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
             raise build_provider_error(

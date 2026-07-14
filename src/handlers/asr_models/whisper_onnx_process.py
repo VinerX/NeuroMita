@@ -51,15 +51,11 @@ class WhisperOnnxProcessWorker:
 
         dev = (self.device or "auto").strip().lower()
 
-        if dev == "cuda":
-            return "CUDAExecutionProvider" if "CUDAExecutionProvider" in available else "CPUExecutionProvider"
         if dev == "dml":
             return "DmlExecutionProvider" if "DmlExecutionProvider" in available else "CPUExecutionProvider"
         if dev == "cpu":
             return "CPUExecutionProvider"
 
-        if "CUDAExecutionProvider" in available:
-            return "CUDAExecutionProvider"
         if "DmlExecutionProvider" in available:
             return "DmlExecutionProvider"
         return "CPUExecutionProvider"

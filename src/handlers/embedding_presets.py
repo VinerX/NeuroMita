@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from core.app_paths import settings_path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 try:
@@ -124,7 +127,53 @@ def resolve_model_settings() -> dict:
     }
 
 
+_CONFIG_CACHE_KEYS = (
+    "RAG_EMBED_PRESET_ID",
+    "RAG_EMBED_MODEL",
+    "RAG_EMBED_MODEL_CUSTOM",
+    "RAG_EMBED_QUERY_PREFIX",
+)
+
+_config_lock = Lock()
+_config_cache: Optional[tuple] = None  # (signature, cfg)
+
+
+def _config_signature() -> tuple:
+    return tuple(SettingsManager.get(key, None) for key in _CONFIG_CACHE_KEYS)
+
+
+def invalidate_embedding_config_cache() -> None:
+    """Сбросить кэш: содержимое пресета могло измениться при том же id."""
+    global _config_cache
+    with _config_lock:
+        _config_cache = None
+
+
 def resolve_full_config() -> Dict[str, Any]:
+    """Кэширующая обёртка. Один RAG-поиск дёргал это 7 раз, а каждый вызов уходил
+    в EventBus (sync EventBus RPC, timeout=2s) — то есть 7 потоков на запрос.
+
+    Кэш самоинвалидируется по сигнатуре настроек; при правке содержимого пресета
+    владельцы зовут invalidate_embedding_config_cache().
+    """
+    global _config_cache
+    signature = _config_signature()
+
+    with _config_lock:
+        cached = _config_cache
+    if cached is not None and cached[0] == signature:
+        return dict(cached[1])
+
+    cfg = _resolve_full_config_uncached()
+
+    # Сигнатуру берём ПОСЛЕ резолва: он сам может мигрировать легаси-настройки
+    # (проставить RAG_EMBED_PRESET_ID), и кэш под «старой» сигнатурой промахнулся бы.
+    with _config_lock:
+        _config_cache = (_config_signature(), cfg)
+    return dict(cfg)
+
+
+def _resolve_full_config_uncached() -> Dict[str, Any]:
     """Return full embedding config including provider routing info.
 
     Priority:
@@ -134,22 +183,17 @@ def resolve_full_config() -> Dict[str, Any]:
     # --- New path: RAG_EMBED_PRESET_ID ---
     preset_id = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
     if preset_id is not None:
-        # 1) Fast path via controller/event bus
+        # 1) Fast path via типизированный сервис (без шины — hot-path).
         try:
-            from core.events import get_event_bus, Events
-            bus = get_event_bus()
-            results = bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_FULL,
-                {"id": preset_id},
-                timeout=2.0,
-            )
-            cfg = results[0] if results else None
+            from core.services import use
+            from services.contracts import EmbeddingPresetService
+            cfg = use(EmbeddingPresetService).get_full(preset_id)
             if cfg and isinstance(cfg, dict):
                 return cfg
         except Exception:
             pass
 
-        # 2) Robust fallback without EventBus (important for worker/startup races)
+        # 2) Robust fallback без сервиса (важно для субпроцесса воркера / раннего старта)
         try:
             cfg = _resolve_from_preset_storage(preset_id)
             if cfg:
@@ -239,7 +283,7 @@ def _warn_legacy_fallback_once(chosen: str) -> None:
 
 
 def _load_preset_storage() -> Dict[str, Any]:
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     if not path.exists():
         return {}
     try:
@@ -249,7 +293,7 @@ def _load_preset_storage() -> Dict[str, Any]:
 
 
 def _save_preset_storage(data: Dict[str, Any]) -> bool:
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -349,7 +393,7 @@ def _resolve_from_preset_storage(preset_id: Any) -> Optional[Dict[str, Any]]:
     from presets.embedding_provider_presets import get_builtin_preset
 
     data: Dict[str, Any] = {}
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))

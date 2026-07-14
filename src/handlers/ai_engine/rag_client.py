@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from core.events import Events, get_event_bus
-
 
 def get_engine(timeout: float = 0.8):
+    # Через типизированный сервис, а не sync EventBus RPC: get_embeddings зовётся на
+    # hot-path (пул 'generation'), где синхронный сбор ответов шины запрещён
+    # guardrail'ом. timeout сохранён для совместимости сигнатуры, но не нужен.
     try:
-        res = get_event_bus().emit_and_wait(Events.AI.GET_ENGINE, timeout=timeout)
-        return res[0] if res else None
+        from core.services import use
+        from services.contracts import AIEngineService
+        return use(AIEngineService).get_engine()
     except Exception:
         return None
 
@@ -42,7 +44,10 @@ def get_embeddings(
     prefix: str = "",
     batch_size: Optional[int] = None,
     timeout_sec: Optional[float] = None,
+    priority: str = "hot",
 ):
+    """priority: "hot" — эмбеддинг запроса пользователя (его ждёт ответ Миты),
+    "bulk" — фоновая индексация, уступает hot в очереди к устройству."""
     n = len(texts or [])
     if timeout_sec is None:
         timeout_sec = max(30.0, min(3600.0, float(max(1, n)) * 20.0))
@@ -54,6 +59,7 @@ def get_embeddings(
             "query_prefix": str(query_prefix or ""),
             "prefix": str(prefix or ""),
             "batch_size": batch_size,
+            "priority": str(priority or "hot"),
         },
         timeout_sec=timeout_sec,
     )

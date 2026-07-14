@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from main_logger import logger
 from core.events import Events
+from core.executors import PoolSaturated, Pools, executors
 from handlers.llm_providers.errors import (
     LLMProviderError,
     build_configuration_error,
@@ -18,6 +19,7 @@ from utils import _, save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
 from handlers.llm_providers.base import LLMResponse
+from handlers.llm_providers.base import RequestCancellation
 
 
 class LLMRequestRunner:
@@ -41,6 +43,7 @@ class LLMRequestRunner:
         self.preset_resolver = preset_resolver
         self.event_bus = event_bus
         self.last_error: Optional[LLMProviderError] = None
+        self._timed_out_call = False
 
     def run(
         self,
@@ -57,6 +60,7 @@ class LLMRequestRunner:
         if messages is None:
             messages = []
         self.last_error = None
+        self._timed_out_call = False
 
         try:
             preset_chain = self.preset_resolver.resolve_chain(preset_id)
@@ -103,6 +107,8 @@ class LLMRequestRunner:
                 if chain_idx > 1:
                     logger.info(f"[LLMRequestRunner] Fallback preset '{preset_label}' succeeded.")
                 return response
+            if self._timed_out_call:
+                break
 
         # Вся цепочка пресетов исчерпана — терминальный отказ генерации.
         logger.error("All generation attempts failed across preset chain.")
@@ -138,12 +144,13 @@ class LLMRequestRunner:
         for attempt in range(1, max_attempts + 1):
             logger.info(f"{preset_tag} Generation attempt {attempt}/{max_attempts}")
 
-            try:
-                _base = os.environ.get("NEUROMITA_BASE_DIR", "")
-                _log_path = os.path.join(_base, "SavedMessages", "last_attempt_log") if _base else "SavedMessages/last_attempt_log"
-                save_combined_messages(messages, _log_path)
-            except Exception:
-                pass
+            if self._debug_dumps_enabled():
+                try:
+                    _base = os.environ.get("NEUROMITA_BASE_DIR", "")
+                    _log_path = os.path.join(_base, "SavedMessages", "last_attempt_log") if _base else "SavedMessages/last_attempt_log"
+                    executors().try_submit(Pools.DEBUG_DUMP, save_combined_messages, list(messages), _log_path)
+                except Exception:
+                    pass
 
             preset_attempt = self.preset_resolver.apply_key_rotation(base_preset, attempt)
             effective_model = (preset_attempt.api_model or "").strip()
@@ -169,6 +176,19 @@ class LLMRequestRunner:
                     time.sleep(retry_delay)
                 continue
 
+            req.extra = dict(getattr(req, "extra", None) or {})
+            req.extra.setdefault("http_timeout_seconds", float(request_timeout))
+            req.extra.setdefault(
+                "http_connect_timeout_seconds",
+                min(15.0, max(1.0, float(request_timeout))),
+            )
+            req.extra.setdefault(
+                "http_read_timeout_seconds",
+                max(1.0, float(request_timeout) - 5.0),
+            )
+            cancellation = RequestCancellation()
+            req.extra["_request_cancellation"] = cancellation
+
             validation_error = self._validate_request(req)
             if validation_error is not None:
                 self.last_error = validation_error
@@ -184,6 +204,7 @@ class LLMRequestRunner:
                     pm.generate,
                     args=(req,),
                     timeout=request_timeout,
+                    cancellation=cancellation,
                 )
                 if response and response.text:
                     self.last_error = None
@@ -213,13 +234,14 @@ class LLMRequestRunner:
                     )
                     logger.error(f"Generation attempt {attempt} returned no response object.")
             except concurrent.futures.TimeoutError:
+                self._timed_out_call = True
                 last_error_message = f"Attempt {attempt} timed out after {request_timeout}s."
                 logger.error(f"{preset_tag} {last_error_message}")
                 self.last_error = LLMProviderError(
                     provider=getattr(req, "provider_name", "unknown"),
                     friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
                     provider_message=last_error_message,
-                    retryable=True,
+                    retryable=False,
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
@@ -270,12 +292,57 @@ class LLMRequestRunner:
             ),
         )
 
-    def _call_with_timeout(self, func, args=(), kwargs=None, timeout: float = 30.0):
+    def _call_with_timeout(
+        self,
+        func,
+        args=(),
+        kwargs=None,
+        timeout: float = 30.0,
+        cancellation: RequestCancellation | None = None,
+    ):
+        """Вызвать func с ограничением по времени.
+
+        Раньше здесь был `with ThreadPoolExecutor(...)`: его __exit__ делает
+        shutdown(wait=True), поэтому после TimeoutError вызывающий всё равно
+        досиживал до конца HTTP-запроса — таймаут был декоративным. Плюс на
+        каждую попытку создавался новый пул.
+        """
         if kwargs is None:
             kwargs = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func, *args, **kwargs)
+        pool = executors().pool(Pools.LLM_HTTP)
+        try:
+            future = pool.try_submit(func, *args, **kwargs)
+        except PoolSaturated as exc:
+            raise RuntimeError(
+                "LLM HTTP pool is saturated by unfinished provider requests"
+            ) from exc
+        try:
             return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            if cancellation is not None:
+                cancellation.cancel()
+            future.cancel()
+            try:
+                future.result(timeout=min(1.0, max(0.1, float(timeout) * 0.05)))
+            except concurrent.futures.TimeoutError:
+                abandoned = pool.abandon(future)
+                logger.warning(
+                    "LLM provider did not stop within the cancellation grace period; "
+                    "the detached daemon worker will be ignored"
+                    + (" and its pool slot was replaced" if abandoned else "")
+                )
+            except Exception:
+                pass
+            raise
+
+    def _debug_dumps_enabled(self) -> bool:
+        env_value = str(os.environ.get("NEUROMITA_DEBUG_DUMPS", "")).strip().lower()
+        if env_value in {"1", "true", "yes", "on"}:
+            return True
+        try:
+            return bool(self.settings.get("DEBUG_SAVE_LLM_DUMPS", False))
+        except Exception:
+            return False
 
     def _validate_request(self, req) -> Optional[LLMProviderError]:
         provider = getattr(req, "provider_name", "unknown") or "unknown"

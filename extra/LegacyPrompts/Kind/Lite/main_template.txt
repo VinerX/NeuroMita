@@ -9,4 +9,3 @@
 [<Context/World.txt>]
 [<Main/player.txt>]
 [<Structural/VariablesEffects.script>]
-[<../../Common/CommonContext.script>]

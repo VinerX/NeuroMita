@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import re
 
 from core.events import get_event_bus, Events, Event
+from services.contracts import ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
 
@@ -52,18 +53,18 @@ def _apply_auth(url: str, headers: Dict[str, str], api_key: str, auth: Dict[str,
     return url, headers
 
 
-class ProtocolsController:
+class ProtocolsController(ProtocolBuilderService):
     def __init__(self):
         self.event_bus = get_event_bus()
         self._subscribe()
 
     def _subscribe(self) -> None:
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_LIST, self._on_get_protocol_list, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_FULL, self._on_get_protocol_full, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_TRANSFORM_LIST, self._on_get_transform_list, weak=False)
         self.event_bus.subscribe(Events.Protocols.BUILD_HTTP_REQUEST, self._on_build_http_request, weak=False)
 
     def _on_get_protocol_list(self, _event: Event) -> List[Dict[str, Any]]:
+        return self.list_protocols()
+
+    def list_protocols(self) -> List[Dict[str, Any]]:
         reg = get_protocol_registry()
         items: List[Dict[str, Any]] = []
         raw = getattr(reg, "_items", {}) or {}
@@ -89,6 +90,12 @@ class ProtocolsController:
         if not pid:
             return None
 
+        return self.get_protocol(pid)
+
+    def get_protocol(self, protocol_id: str) -> Optional[Dict[str, Any]]:
+        pid = str(protocol_id or "").strip()
+        if not pid:
+            return None
         reg = get_protocol_registry()
         proto = reg.get(pid)
         if not proto:
@@ -106,6 +113,9 @@ class ProtocolsController:
         }
 
     def _on_get_transform_list(self, _event: Event) -> List[Dict[str, Any]]:
+        return self.list_transforms()
+
+    def list_transforms(self) -> List[Dict[str, Any]]:
         try:
             from handlers.llm_providers.message_transforms import get_transform_catalog
             return list(get_transform_catalog() or [])
@@ -127,10 +137,25 @@ class ProtocolsController:
           {"url": str, "headers": dict, "safe_url": str}
         """
         data = event.data if isinstance(event.data, dict) else {}
-        protocol_id = str(data.get("protocol_id") or "").strip()
-        url = str(data.get("url") or "")
-        api_key = str(data.get("api_key") or "")
-        extra_headers = data.get("headers") or {}
+        return self.build_http_request(
+            protocol_id=str(data.get("protocol_id") or "").strip(),
+            url=str(data.get("url") or ""),
+            api_key=str(data.get("api_key") or ""),
+            headers=data.get("headers") or {},
+        )
+
+    def build_http_request(
+        self,
+        *,
+        protocol_id: str,
+        url: str,
+        api_key: str,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        protocol_id = str(protocol_id or "").strip()
+        url = str(url or "")
+        api_key = str(api_key or "")
+        extra_headers = headers or {}
         if not isinstance(extra_headers, dict):
             extra_headers = {}
 
@@ -160,6 +185,3 @@ def ensure_protocols_controller() -> ProtocolsController:
         _controller_singleton = ProtocolsController()
         logger.notify("ProtocolsController успешно инициализирован.")
     return _controller_singleton
-
-
-ensure_protocols_controller()

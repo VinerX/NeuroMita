@@ -1,7 +1,7 @@
 # src/ui/windows/asr_glossary_view.py
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QScrollArea,
@@ -13,9 +13,16 @@ try:
 except Exception:
     qta = None
 
-from core.events import get_event_bus, Events
 from utils import getTranslationVariant as _
 from styles.asr_model_styles import get_asr_stylesheet
+from ui.mvvm import mutable_payload
+from ui.windows.asr_glossary_presentation import (
+    AsrGlossaryState,
+    InstallAsrModel,
+    LoadAsrSettings,
+    RefreshAsrGlossary,
+    SetAsrOption,
+)
 
 
 class AsrModelListItemWidget(QWidget):
@@ -54,19 +61,15 @@ class AsrModelListItemWidget(QWidget):
 
 
 class AsrGlossaryView(QWidget):
-    request_install = pyqtSignal(str)
-    request_refresh = pyqtSignal()
-
-    asr_install_progress_signal = pyqtSignal(dict)
-    asr_install_finished_signal = pyqtSignal(dict)
-    asr_install_failed_signal = pyqtSignal(dict)
-
-    def __init__(self):
+    def __init__(self, view_model):
         super().__init__()
-        self.event_bus = get_event_bus()
 
+        self._view_model = view_model
         self._models: list[dict] = []
         self._current_engine: str | None = None
+        self._catalog_revision = -1
+        self._settings_revision = -1
+        self._install_revision = -1
 
         self.setWindowTitle(_("ASR Модели", "ASR Models"))
         self.setStyleSheet(get_asr_stylesheet())
@@ -74,28 +77,47 @@ class AsrGlossaryView(QWidget):
 
         self._build_ui()
 
-        self.asr_install_progress_signal.connect(self._on_install_progress_internal)
-        self.asr_install_finished_signal.connect(self._on_install_finished_internal)
-        self.asr_install_failed_signal.connect(self._on_install_failed_internal)
-
-        QTimer.singleShot(0, lambda: self.request_refresh.emit())
+        self._view_model.state_changed.connect(self.render)
 
     def refresh(self):
-        try:
-            res = self.event_bus.emit_and_wait(Events.Speech.GET_ASR_MODELS_GLOSSARY, timeout=2.0)
-            self._models = res[0] if res and isinstance(res[0], list) else []
-        except Exception:
-            self._models = []
-        self._rebuild_list(keep_selection=True)
+        self._view_model.dispatch(RefreshAsrGlossary())
 
-    def on_install_progress(self, model: str, progress: int, status: str):
-        self.asr_install_progress_signal.emit({"model": model, "progress": progress, "status": status})
+    def render(self, state: AsrGlossaryState) -> None:
+        self._set_refresh_loading(bool(state.loading))
+        if state.catalog_revision != self._catalog_revision:
+            self._catalog_revision = state.catalog_revision
+            self._models = [
+                dict(mutable_payload(item) or {}) for item in state.models
+            ]
+            self._rebuild_list(keep_selection=True)
 
-    def on_install_finished(self, model: str):
-        self.asr_install_finished_signal.emit({"model": model})
+        if (
+            state.settings_revision != self._settings_revision
+            and state.settings_engine_id == str(self._current_engine or "")
+        ):
+            self._settings_revision = state.settings_revision
+            self._render_settings_fields(
+                [dict(mutable_payload(item) or {}) for item in state.settings_schema],
+                dict(mutable_payload(state.settings_values) or {}),
+                str(state.settings_engine_id or ""),
+            )
 
-    def on_install_failed(self, model: str, error: str):
-        self.asr_install_failed_signal.emit({"model": model, "error": error})
+        if state.install_revision != self._install_revision:
+            self._install_revision = state.install_revision
+            self._render_install_state(state)
+
+    def _set_refresh_loading(self, loading: bool):
+        btn = getattr(self, "btn_refresh_list", None)
+        if btn is not None:
+            btn.setEnabled(not loading)
+
+        if not loading or self._models or self.list_widget.count():
+            return
+
+        self.list_widget.clear()
+        item = QListWidgetItem(_("Loading ASR models...", "Loading ASR models..."))
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self.list_widget.addItem(item)
 
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -130,7 +152,7 @@ class AsrGlossaryView(QWidget):
                 self.btn_refresh_list.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
             except Exception:
                 pass
-        self.btn_refresh_list.clicked.connect(lambda: self.request_refresh.emit())
+        self.btn_refresh_list.clicked.connect(self.refresh)
         search_row.addWidget(self.btn_refresh_list, 0)
 
         ll.addLayout(search_row, 0)
@@ -318,6 +340,7 @@ class AsrGlossaryView(QWidget):
 
         data = self._find_model(mid)
         self._render_model_detail(mid, data)
+        self._render_install_state(self._view_model.state)
 
     def _find_model(self, model_id: str) -> dict:
         for m in (self._models or []):
@@ -453,15 +476,14 @@ class AsrGlossaryView(QWidget):
             self.settings_layout.addStretch()
             return
 
-        schema_res = self.event_bus.emit_and_wait(
-            Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine_id}, timeout=1.0
-        )
-        schema = schema_res[0] if schema_res else []
+        loading = QLabel(_("Loading settings...", "Loading settings..."))
+        loading.setObjectName("Subtle")
+        self.settings_layout.addWidget(loading)
+        self.settings_layout.addStretch()
+        self._view_model.dispatch(LoadAsrSettings(str(engine_id)))
 
-        vals_res = self.event_bus.emit_and_wait(
-            Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine_id}, timeout=1.0
-        )
-        values = vals_res[0] if vals_res else {}
+    def _render_settings_fields(self, schema: list[dict], values: dict, engine_id: str):
+        self._clear_layout(self.settings_layout)
 
         if not schema:
             lbl = QLabel(_("Нет настроек для этой модели.", "No settings for this model."))
@@ -506,8 +528,8 @@ class AsrGlossaryView(QWidget):
                 if idx >= 0:
                     w.setCurrentIndex(idx)
                 w.currentTextChanged.connect(
-                    lambda v, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": v}
+                    lambda v, e=engine_id, k=key: self._view_model.dispatch(
+                        SetAsrOption(e, k, v)
                     )
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -516,8 +538,8 @@ class AsrGlossaryView(QWidget):
                 w = QCheckBox()
                 w.setChecked(bool(val))
                 w.toggled.connect(
-                    lambda state, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": bool(state)}
+                    lambda state, e=engine_id, k=key: self._view_model.dispatch(
+                        SetAsrOption(e, k, bool(state))
                     )
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -526,8 +548,8 @@ class AsrGlossaryView(QWidget):
             else:
                 w = QLineEdit("" if val is None else str(val))
                 w.editingFinished.connect(
-                    lambda ww=w, e=engine_id, k=key: self.event_bus.emit(
-                        Events.Speech.SET_RECOGNIZER_OPTION, {"engine": e, "key": k, "value": ww.text().strip()}
+                    lambda ww=w, e=engine_id, k=key: self._view_model.dispatch(
+                        SetAsrOption(e, k, ww.text().strip())
                     )
                 )
                 rl.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -609,36 +631,34 @@ class AsrGlossaryView(QWidget):
         self.lbl_progress.setVisible(True)
         self.lbl_progress.setObjectName("Subtle")
         self.lbl_progress.setText(_("Подготовка...", "Preparing..."))
-        self.request_install.emit(self._current_engine)
+        self._view_model.dispatch(InstallAsrModel(self._current_engine))
 
-    def _on_install_progress_internal(self, data: dict):
-        if str(data.get("model") or "") != str(self._current_engine or ""):
+    def _render_install_state(self, state: AsrGlossaryState) -> None:
+        current = str(self._current_engine or "")
+        active = str(state.installing_model_id or "")
+        if active and active != current:
             return
-        status = str(data.get("status", "") or "")
-        progress = int(data.get("progress", 0) or 0)
-        self.lbl_progress.setVisible(True)
-        self.lbl_progress.setObjectName("Subtle")
-        self.lbl_progress.setText(f"{status} ({progress}%)")
+        visible = bool(
+            state.install_status
+            or state.install_error
+            or state.install_progress is not None
+        )
+        self.lbl_progress.setVisible(visible)
+        if state.install_error:
+            self.lbl_progress.setObjectName("ChipWarn")
+            self.lbl_progress.setText(_("Ошибка: ", "Error: ") + str(state.install_error))
+            self.btn_install.setEnabled(True)
+        elif state.install_progress == 100 and not active:
+            self.lbl_progress.setObjectName("ChipOk")
+            self.lbl_progress.setText(_("Успешно установлено", "Installed successfully"))
+            self.btn_install.setEnabled(False)
+        else:
+            self.lbl_progress.setObjectName("Subtle")
+            status = str(state.install_status or _("Подготовка...", "Preparing..."))
+            if state.install_progress is not None:
+                status = f"{status} ({state.install_progress}%)"
+            self.lbl_progress.setText(status)
+            self.btn_install.setEnabled(not bool(active))
         self.lbl_progress.style().unpolish(self.lbl_progress)
         self.lbl_progress.style().polish(self.lbl_progress)
 
-    def _on_install_finished_internal(self, data: dict):
-        if str(data.get("model") or "") != str(self._current_engine or ""):
-            return
-        self.lbl_progress.setVisible(True)
-        self.lbl_progress.setObjectName("ChipOk")
-        self.lbl_progress.setText(_("Успешно установлено", "Installed successfully"))
-        self.lbl_progress.style().unpolish(self.lbl_progress)
-        self.lbl_progress.style().polish(self.lbl_progress)
-        QTimer.singleShot(250, self.refresh)
-
-    def _on_install_failed_internal(self, data: dict):
-        if str(data.get("model") or "") != str(self._current_engine or ""):
-            return
-        err = str(data.get("error", "") or "")
-        self.lbl_progress.setVisible(True)
-        self.lbl_progress.setObjectName("ChipWarn")
-        self.lbl_progress.setText((_("Ошибка: ", "Error: ") + err) if err else _("Ошибка установки", "Install failed"))
-        self.lbl_progress.style().unpolish(self.lbl_progress)
-        self.lbl_progress.style().polish(self.lbl_progress)
-        self.btn_install.setEnabled(True)

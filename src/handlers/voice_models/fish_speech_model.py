@@ -1,24 +1,30 @@
+from __future__ import annotations
+
 import os
 import sys
-import importlib
 import traceback
 import hashlib
+import json
 from datetime import datetime
-import asyncio
 import subprocess
-from typing import Optional, Any, List, Dict
+from typing import TYPE_CHECKING, Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
 
-from core.events import Events
+from core.services import services
+from services.contracts import GuiInteractionService
 from utils import getTranslationVariant as _, get_character_voice_paths
 
 from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
+
 from handlers.voice_models.install_plan_helpers import (
+    patch_tts_with_rvc_audio,
     pip_uninstall_action,
     rvc_python_compat_error,
     warning_action,
@@ -37,7 +43,6 @@ class FishSpeechInstallSpec:
     @classmethod
     def requirements(cls, model_id: str, ctx: dict) -> list[InstallRequirement]:
         mid = str(model_id)
-        backend_kind = cls.required_backend(mid, ctx)
         backend_kind = cls.required_backend(model_id, ctx)
         req: list[InstallRequirement] = [
             InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
@@ -71,11 +76,6 @@ class FishSpeechInstallSpec:
         if sp:
             return str(sp)
         return os.environ.get("NEUROMITA_PYTHON", sys.executable)
-
-    @classmethod
-    def _ensure_sys_path(cls, libs_path_abs: str) -> None:
-        if libs_path_abs and libs_path_abs not in sys.path:
-            sys.path.insert(0, libs_path_abs)
 
     @classmethod
     def _apply_triton_patches(cls, libs_path_abs: str, log_cb) -> None:
@@ -166,58 +166,126 @@ class FishSpeechInstallSpec:
                 log_cb(_(f"Ошибка патча cache.py: {e}", f"Error patching cache.py: {e}"))
                 log_cb(traceback.format_exc())
 
+    @staticmethod
+    def _runtime_subprocess_env(python_paths: list[str]) -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
+        dll_paths: list[str] = []
+        for root in python_paths:
+            for candidate in (
+                root,
+                os.path.join(root, "torch", "lib"),
+                os.path.join(root, "onnxruntime", "capi"),
+            ):
+                if os.path.isdir(candidate):
+                    dll_paths.append(candidate)
+        if dll_paths:
+            env["PATH"] = os.pathsep.join(dll_paths + [env.get("PATH", "")])
+        return env
+
+    @staticmethod
+    def _track_subprocess(pip_installer, process) -> None:
+        register = getattr(pip_installer, "_set_active_process", None)
+        terminate = getattr(pip_installer, "_terminate_process", None)
+        if callable(register) and callable(terminate):
+            register(
+                process,
+                lambda: terminate(process, "Installation subprocess cancelled."),
+            )
+
+    @staticmethod
+    def _untrack_subprocess(pip_installer, process) -> None:
+        clear = getattr(pip_installer, "_clear_active_process", None)
+        if callable(clear):
+            clear(process)
+
     @classmethod
-    def _probe_triton_deps(cls, libs_path_abs: str) -> dict:
-        deps = {"cuda_found": False, "winsdk_found": False, "msvc_found": False}
-        if os.name != "nt":
-            return deps
-
-        cls._ensure_sys_path(libs_path_abs)
-        import importlib as _importlib
-        _importlib.invalidate_caches()
-
-        import triton  # noqa: F401
+    def _probe_triton_deps(
+        cls,
+        python_executable: str,
+        python_paths: list[str],
+        pip_installer,
+    ) -> tuple[bool, dict, str]:
+        script = r'''
+import importlib, json, os, sys, traceback
+sys.path[:0] = json.loads(sys.argv[1])
+result = {"cuda_found": False, "winsdk_found": False, "msvc_found": False}
+try:
+    importlib.invalidate_caches()
+    import triton  # noqa: F401
+    if os.name == "nt":
         from triton.windows_utils import find_cuda, find_winsdk, find_msvc
-
         try:
-            cuda_result = find_cuda()
-            if isinstance(cuda_result, (tuple, list)) and len(cuda_result) >= 1:
-                cuda_path = cuda_result[0]
-                deps["cuda_found"] = bool(cuda_path and os.path.exists(str(cuda_path)))
+            value = find_cuda()
+            result["cuda_found"] = bool(value and value[0] and os.path.exists(str(value[0])))
         except Exception:
-            deps["cuda_found"] = False
-
+            pass
         try:
-            winsdk_result = find_winsdk(False)
-            if isinstance(winsdk_result, (tuple, list)) and len(winsdk_result) >= 1:
-                winsdk_paths = winsdk_result[0]
-                deps["winsdk_found"] = isinstance(winsdk_paths, list) and bool(winsdk_paths)
+            value = find_winsdk(False)
+            result["winsdk_found"] = bool(value and isinstance(value[0], list) and value[0])
         except Exception:
-            deps["winsdk_found"] = False
-
+            pass
         try:
-            msvc_result = find_msvc(False)
-            cl_path = None
-            inc_paths, lib_paths = [], []
-            if isinstance(msvc_result, (tuple, list)):
-                if len(msvc_result) >= 1:
-                    cl_path = msvc_result[0]
-                if len(msvc_result) >= 2:
-                    inc_paths = msvc_result[1] or []
-                if len(msvc_result) >= 3:
-                    lib_paths = msvc_result[2] or []
-            deps["msvc_found"] = bool((cl_path and os.path.exists(str(cl_path))) or inc_paths or lib_paths)
+            value = find_msvc(False)
+            cl_path = value[0] if value and len(value) >= 1 else None
+            inc_paths = value[1] if value and len(value) >= 2 else []
+            lib_paths = value[2] if value and len(value) >= 3 else []
+            result["msvc_found"] = bool(
+                (cl_path and os.path.exists(str(cl_path))) or inc_paths or lib_paths
+            )
         except Exception:
-            deps["msvc_found"] = False
+            pass
+    print("NEUROMITA_TRITON_PROBE=" + json.dumps(result, sort_keys=True))
+except Exception:
+    traceback.print_exc()
+    raise
+'''
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        process = subprocess.Popen(
+            [python_executable, "-c", script, json.dumps(python_paths)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+            env=cls._runtime_subprocess_env(python_paths),
+        )
+        cls._track_subprocess(pip_installer, process)
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=120.0)
+            except subprocess.TimeoutExpired:
+                terminate = getattr(pip_installer, "_terminate_process", None)
+                if callable(terminate):
+                    terminate(process, "Triton dependency probe timed out.")
+                else:
+                    process.kill()
+                stdout, stderr = process.communicate()
+                output = "\n".join(part for part in (stdout, stderr) if part).strip()
+                return False, {}, output or "Triton dependency probe timed out"
+        finally:
+            cls._untrack_subprocess(pip_installer, process)
 
-        return deps
+        output = "\n".join(part for part in (stdout, stderr) if part).strip()
+        if process.returncode != 0:
+            return False, {}, output
+        marker = "NEUROMITA_TRITON_PROBE="
+        for line in reversed(stdout.splitlines()):
+            if line.startswith(marker):
+                try:
+                    return True, dict(json.loads(line[len(marker):])), output
+                except Exception:
+                    break
+        return False, {}, output or "Triton probe returned no result"
 
     @classmethod
     def _ensure_triton_ready_call(cls, mode: str):
         def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
             cb = callbacks
             ctx = ctx or {}
-            eb = ctx.get("event_bus")
 
             def log(m: str):
                 try:
@@ -237,52 +305,45 @@ class FishSpeechInstallSpec:
                 return False
 
             libs_path_abs = cls._libs_path_abs(pip_installer)
-            cls._ensure_sys_path(libs_path_abs)
+            python_paths = [
+                os.path.abspath(str(path))
+                for path in (ctx.get("python_paths") or [libs_path_abs])
+                if str(path).strip()
+            ]
+            script_path = cls._script_path(pip_installer)
 
             status(_("Применение патчей Triton...", "Applying Triton patches..."))
             cls._apply_triton_patches(libs_path_abs, log)
 
-            # Import check with VC redist retry dialog
-            import importlib as _importlib
             for attempt in range(2):
-                try:
-                    _importlib.invalidate_caches()
-                    if "triton" in sys.modules:
-                        try:
-                            del sys.modules["triton"]
-                        except Exception:
-                            pass
-                    import triton  # noqa: F401
+                probe_ok, deps, probe_output = cls._probe_triton_deps(
+                    script_path,
+                    python_paths,
+                    pip_installer,
+                )
+                if probe_ok:
                     break
-                except ImportError as e:
-                    msg = str(e)
-                    log(f"Triton import error: {msg}")
-                    if "DLL load failed while importing libtriton" in msg:
-                        status(_("Ошибка загрузки Triton! Проверьте VC++ Redistributable.", "Triton load error! Check VC++ Redistributable."))
-                        if callable(getattr(eb, "emit_and_wait", None)):
-                            res = eb.emit_and_wait(Events.Audio.SHOW_VC_REDIST_DIALOG, timeout=6000.0)
-                            choice = res[0] if res else "close"
-                            if choice == "retry" and attempt == 0:
-                                continue
-                        return False
+                log(f"Triton subprocess probe failed:\n{probe_output}")
+                if "DLL load failed while importing libtriton" in probe_output:
+                    status(_("Ошибка загрузки Triton! Проверьте VC++ Redistributable.", "Triton load error! Check VC++ Redistributable."))
+                    gui = services().get_optional(GuiInteractionService)
+                    if gui is not None and gui.confirm("vc_redist", {}) and attempt == 0:
+                        continue
                     return False
-                except Exception as e:
-                    log(traceback.format_exc())
-                    return False
+                return False
 
             # Dependencies dialog + optional init.py
-            if os.name == "nt" and callable(getattr(eb, "emit_and_wait", None)):
+            if os.name == "nt":
                 status(_("Проверка зависимостей Triton...", "Checking Triton dependencies..."))
-                deps = cls._probe_triton_deps(libs_path_abs)
                 # CUDA Toolkit больше не является обязательным требованием для
                 # компиляции ядра Triton — для линковки достаточно MSVC/VC++
                 # (фидбэк Артёма: «убрать там CUDA, оставить максимум msvc»).
                 # Диалог зависимостей показываем ТОЛЬКО когда чего-то не хватает,
                 # иначе не дёргаем пользователя лишним окном, если всё готово.
                 if not bool(deps.get("msvc_found")):
-                    res = eb.emit_and_wait(Events.Audio.SHOW_TRITON_DIALOG, deps, timeout=6000.0)
-                    choice = res[0] if res else "continue"
-                    if choice == "skip":
+                    gui = services().get_optional(GuiInteractionService)
+                    proceed = gui.confirm("triton", deps) if gui is not None else True
+                    if not proceed:
                         status(_("Инициализация ядра пропущена", "Kernel initialization skipped"))
                         return True
 
@@ -310,21 +371,29 @@ class FishSpeechInstallSpec:
                 return True
 
             status(_("Инициализация ядра Triton...", "Initializing Triton kernel..."))
-            script_path = cls._script_path(pip_installer)
-
             try:
                 temp_dir = "temp"
                 os.makedirs(temp_dir, exist_ok=True)
 
-                init_cmd = [script_path, "init.py"]
+                init_script = os.path.abspath("init.py")
+                wrapper = (
+                    "import json, runpy, sys\n"
+                    "sys.path[:0] = json.loads(sys.argv[1])\n"
+                    "runpy.run_path(sys.argv[2], run_name='__main__')\n"
+                )
+                init_cmd = [
+                    script_path,
+                    "-c",
+                    wrapper,
+                    json.dumps(python_paths),
+                    init_script,
+                ]
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 # init.py печатает кириллицу (.project-root, reference-текст). На
                 # не-UTF-8 локали (напр. греческой cp1253) дочерний print() падает
                 # с UnicodeEncodeError и роняет шаг. Форсим UTF-8 в дочернем
                 # процессе — как это уже делает pip_installer для своих сабпроцессов.
-                child_env = os.environ.copy()
-                child_env["PYTHONIOENCODING"] = "utf-8"
-                child_env["PYTHONUTF8"] = "1"
+                child_env = cls._runtime_subprocess_env(python_paths)
 
                 # Стримим вывод init.py построчно вживую. Раньше здесь был
                 # subprocess.run(capture_output=True), который копил ВЕСЬ вывод и
@@ -343,16 +412,20 @@ class FishSpeechInstallSpec:
                     creationflags=creationflags,
                     env=child_env,
                 )
-                if proc.stdout is not None:
-                    for line in proc.stdout:
-                        line = line.rstrip()
-                        if line:
-                            log(line)
-                    try:
-                        proc.stdout.close()
-                    except Exception:
-                        pass
-                proc.wait()
+                cls._track_subprocess(pip_installer, proc)
+                try:
+                    if proc.stdout is not None:
+                        for line in proc.stdout:
+                            line = line.rstrip()
+                            if line:
+                                log(line)
+                        try:
+                            proc.stdout.close()
+                        except Exception:
+                            pass
+                    proc.wait()
+                finally:
+                    cls._untrack_subprocess(pip_installer, proc)
 
                 ok = (proc.returncode == 0 and os.path.exists(os.path.join(temp_dir, "inited.wav")))
                 if ok:
@@ -444,12 +517,25 @@ class FishSpeechInstallSpec:
                 )
             )
 
+        if mid == "medium+low":
+            actions.append(
+                InstallAction(
+                    type="call",
+                    description=_(
+                        "Применение совместимости TTS/RVC...",
+                        "Applying TTS/RVC compatibility patch...",
+                    ),
+                    progress=90,
+                    fn=patch_tts_with_rvc_audio,
+                )
+            )
+
         actions.append(
             InstallAction(
                 type="call",
                 description=_("Проверка установки...", "Final check..."),
                 progress=99,
-                fn=lambda **_k: cls.is_installed(mid, ctx),
+                fn=lambda ctx=None, **_k: cls.is_installed(mid, dict(ctx or {})),
             )
         )
 

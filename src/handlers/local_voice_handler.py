@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import gc
 import os
 import traceback
 from typing import Dict, Optional, Any, List
 
 import ffmpeg
+from core.app_paths import settings_path
+from core.installables.helpers import build_runtime_ctx
 from main_logger import logger
-from utils import getTranslationVariant as _, get_character_voice_paths
+from utils import get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
 
 from handlers.voice_models.base_model import IVoiceModel
@@ -132,7 +135,7 @@ class LocalVoice:
             if model is None:
                 return False
 
-            ctx = {"gpu_vendor": self.provider or "CPU"}
+            ctx = build_runtime_ctx({"gpu_vendor": self.provider or "CPU"})
             return bool(model.__class__.is_model_installed(model_id, ctx))
         except Exception:
             return False
@@ -201,9 +204,32 @@ class LocalVoice:
                 pass
         self.active_model_instance = None
 
+    def shutdown(self) -> None:
+        seen: set[int] = set()
+        for model in self._registry.values():
+            marker = id(model)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                model.cleanup_state()
+            except Exception as exc:
+                logger.warning(f"Voice model cleanup failed for {type(model).__name__}: {exc}")
+
+        self.active_model_instance = None
+        self.current_model_id = None
+        self.first_compiled = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def load_model_settings(self, model_id: str) -> Dict[str, Any]:
         try:
-            settings_file = os.path.join("Settings", "voice_model_settings.json")
+            settings_file = str(settings_path("voice_model_settings.json", create_parent=True))
             if os.path.exists(settings_file):
                 import json
                 with open(settings_file, "r", encoding="utf-8") as f:
@@ -213,13 +239,6 @@ class LocalVoice:
         except Exception as e:
             logger.info(f"load_model_settings error for {model_id}: {e}")
             return {}
-
-    def is_cuda_available(self) -> bool:
-        try:
-            import torch
-            return bool(torch.cuda.is_available())
-        except Exception:
-            return False
 
     def convert_wav_to_stereo(
         self,

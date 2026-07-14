@@ -1,25 +1,24 @@
 import os
 import time
 import wave
-import asyncio
 import gc
 import multiprocessing as mp
 from multiprocessing import Queue, Process
 from threading import Thread, Event
 import queue
 from typing import Optional, List
-from collections import deque
 
 import numpy as np
 import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
+from core.task_supervisor import task_supervisor
 
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
 
 
 class WhisperOnnxRecognizer(SpeechRecognizerInterface):
@@ -34,13 +33,13 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             "id": "whisper_onnx",
             "name": "Whisper Large v3 turbo (ONNX)",
             "description": _(
-                "Офлайн Whisper в формате ONNX. Работает через onnxruntime, а на AMD/не‑NVIDIA может "
-                "использовать DirectML. Модель и файлы transformers скачиваются локально.",
-                "Offline Whisper in ONNX format. Runs via onnxruntime, and on AMD/non‑NVIDIA can "
-                "use DirectML. Model and transformers files are downloaded locally."
+                "Офлайн Whisper в формате ONNX. Использует DirectML на Windows для AMD, Intel и NVIDIA "
+                "с CPU fallback. Модель и файлы transformers скачиваются локально.",
+                "Offline Whisper in ONNX format. Uses DirectML on Windows for AMD, Intel, and NVIDIA "
+                "with CPU fallback. Model and transformers files are downloaded locally."
             ),
             "languages": ["Multilingual"],
-            "gpu_vendor": ["NVIDIA", "AMD"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("Локально", "Local"),
                 _("ONNX", "ONNX"),
@@ -59,7 +58,6 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         super().__init__(pip_installer, logger)
 
         self._torch = None
-        self._sd = None
         self._np = None
 
         self._current_gpu = None
@@ -88,7 +86,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
     def settings_spec(self):
         return [
             {"key": "device", "label_ru": "Устройство", "label_en": "Device",
-             "type": "combobox", "options": ["auto", "dml", "cpu", "cuda"], "default": "auto"},
+             "type": "combobox", "options": ["auto", "dml", "cpu"], "default": "auto"},
             {"key": "language", "label_ru": "Язык", "label_en": "Language",
              "type": "combobox", "options": ["ru", "en", "auto"], "default": "ru"},
             {"key": "max_tokens", "label_ru": "Макс. токенов", "label_en": "Max tokens",
@@ -187,15 +185,13 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return BackendKind.ONNX
 
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         return bool(st.get("ok"))
     
     def install_manifest(self) -> list[dict]:
@@ -281,10 +277,8 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
         try:
             import torch
-            import sounddevice as sd
             import numpy as np
             self._torch = torch
-            self._sd = sd
             self._np = np
         except Exception as e:
             self.logger.error(f"Whisper ONNX init imports failed: {e}")
@@ -309,94 +303,6 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             return self._transcribe_result
         self.logger.error("Whisper ONNX: таймаут транскрибации")
         return None
-
-    async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                              vad_model, active_flag, **kwargs) -> None:
-        if not self._is_initialized or not self._process or not self._process.is_alive():
-            self.logger.error("Whisper ONNX процесс не инициализирован")
-            return
-
-        sample_rate = int(kwargs.get("sample_rate", 16000))
-        chunk_size = int(kwargs.get("chunk_size", 512))
-        vad_threshold = float(kwargs.get("vad_threshold", 0.5))
-        silence_timeout = float(kwargs.get("silence_timeout", 1.0))
-        pre_buffer_duration = float(kwargs.get("pre_buffer_duration", 0.3))
-        max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
-
-        silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
-        pre_buffer_size = max(0, int(pre_buffer_duration * sample_rate / chunk_size))
-        max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
-
-        pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size > 0 else None
-        speech_buffer = []
-        is_speaking = False
-        silence_counter = 0
-        overflow_count = 0
-        loop = asyncio.get_running_loop()
-
-        try:
-            with self._sd.InputStream(
-                samplerate=sample_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=chunk_size,
-                device=microphone_index,
-            ) as stream:
-                while active_flag():
-                    try:
-                        audio_chunk, overflowed = await loop.run_in_executor(None, stream.read, chunk_size)
-                    except Exception as e:
-                        if not active_flag():
-                            break
-                        self.logger.warning(f"Input stream read aborted: {e}")
-                        break
-
-                    if not active_flag():
-                        break
-
-                    if overflowed:
-                        overflow_count += 1
-                        self.logger.warning("Переполнение буфера аудиопотока!")
-                        if overflow_count % 20 == 0:
-                            self.logger.warning(f"ASR overflow count: {overflow_count}")
-
-                    audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
-                    speech_prob = vad_model(audio_tensor, sample_rate).item()
-
-                    should_finalize = False
-                    if speech_prob > vad_threshold:
-                        if not is_speaking:
-                            is_speaking = True
-                            speech_buffer.clear()
-                            if pre_speech_buffer is not None:
-                                speech_buffer.extend(list(pre_speech_buffer))
-                        speech_buffer.append(audio_chunk)
-                        silence_counter = 0
-                        if len(speech_buffer) >= max_speech_chunks:
-                            should_finalize = True
-                    elif is_speaking:
-                        speech_buffer.append(audio_chunk)
-                        silence_counter += 1
-                        if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
-                            should_finalize = True
-                    elif pre_speech_buffer is not None:
-                        pre_speech_buffer.append(audio_chunk)
-
-                    if should_finalize and speech_buffer:
-                        audio_to_process = self._np.concatenate(speech_buffer)
-                        is_speaking = False
-                        speech_buffer.clear()
-                        silence_counter = 0
-
-                        text = await self.transcribe(audio_to_process, sample_rate)
-                        if text:
-                            await handle_voice_callback(text)
-                        else:
-                            await self._save_failed_audio(audio_to_process, sample_rate)
-
-        finally:
-            if overflow_count:
-                self.logger.warning(f"ASR stream overflows total: {overflow_count}")
 
     async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -425,7 +331,6 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         except Exception:
             pass
         self._torch = None
-        self._sd = None
         self._np = None
         self._is_initialized = False
 
@@ -490,8 +395,9 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
         self._stop_monitor.clear()
         self._process_initialized = False
-        self._monitor_thread = Thread(target=self._monitor_process, daemon=True)
-        self._monitor_thread.start()
+        self._monitor_thread = task_supervisor().start_thread(
+            self, "whisper-onnx-monitor", self._monitor_process, replace=True
+        )
 
         init_options = {
             "device": self.device,

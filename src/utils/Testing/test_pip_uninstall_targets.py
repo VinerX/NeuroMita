@@ -102,7 +102,8 @@ class CollectRemovalTargetsTests(unittest.TestCase):
 class RepairBrokenMetadataTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.lib = Path(self._tmp.name)
+        self.lib = Path(self._tmp.name) / ".staging" / "target"
+        self.lib.mkdir(parents=True)
         self.inst = _Installer(str(self.lib))
 
     def tearDown(self):
@@ -136,6 +137,18 @@ class RepairBrokenMetadataTests(unittest.TestCase):
         n = self.inst.repair_broken_target_metadata()
         self.assertEqual(n, 0)
         self.assertTrue(good.exists())
+
+    def test_active_target_is_never_repaired_destructively(self):
+        active = Path(self._tmp.name) / "environment" / "overlays" / "active"
+        active.mkdir(parents=True)
+        broken = active / "torch-2.7.1.dist-info"
+        broken.mkdir()
+        installer = _Installer(str(active))
+
+        n = installer.repair_broken_target_metadata()
+
+        self.assertEqual(n, 0)
+        self.assertTrue(broken.exists())
 
 
 if __name__ == "__main__":

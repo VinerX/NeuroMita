@@ -4,6 +4,8 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry, SettingsService, TaskService
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -80,12 +82,7 @@ async def _dispatch_task(
     if extra_task_data:
         task_data.update(extra_task_data)
 
-    task_result = event_bus.emit_and_wait(
-        Events.Task.CREATE_TASK,
-        {"type": task_type, "data": task_data},
-        timeout=5.0,
-    )
-    task = task_result[0] if task_result else None
+    task = use(TaskService).create_task(task_type, task_data)
 
     if task:
         server.client_tasks[ctx.client_id].add(task.uid)
@@ -152,12 +149,7 @@ class CreateTaskAction:
             if not cid:
                 return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
             try:
-                res = event_bus.emit_and_wait(
-                    Events.Character.GET,
-                    {"character_id": cid},
-                    timeout=1.0
-                )
-                ch = res[0] if res else None
+                ch = use(CharacterRegistry).get(cid)
                 if ch is not None and hasattr(ch, "get_stats_dict"):
                     v = ch.get_stats_dict()
                     if isinstance(v, dict):
@@ -248,8 +240,7 @@ class CreateTaskAction:
 
             last_idle_uid = server.last_idle_tasks.get(character_id)
             if last_idle_uid:
-                last_task_result = event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
-                last_task = last_task_result[0] if last_task_result else None
+                last_task = use(TaskService).get_task(last_idle_uid)
                 if last_task and last_task.status == TaskStatus.PENDING:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
@@ -258,24 +249,19 @@ class CreateTaskAction:
             if policy.use_pending_sysinfo:
                 collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
 
-            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                "type": "idle",
-                "data": {
-                    "character": character_id,
-                    "character_stats": character_stats,
-                    "message": data.get("message", "Player idle for 90 seconds"),
-                    "system_input": collected_sys,
-                    "client_id": ctx.client_id,
-                    "event_type": event_type,
-                    "req_id": req_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                }
-            }, timeout=5.0)
-
-            task = task_result[0] if task_result else None
+            task = use(TaskService).create_task("idle", {
+                "character": character_id,
+                "character_stats": character_stats,
+                "message": data.get("message", "Player idle for 90 seconds"),
+                "system_input": collected_sys,
+                "client_id": ctx.client_id,
+                "event_type": event_type,
+                "req_id": req_id,
+                "sender": sender,
+                "participants": participants,
+                "origin_message_id": origin_message_id,
+                "policy": policy_dict,
+            })
             if task:
                 server.client_tasks[ctx.client_id].add(task.uid)
                 server.last_idle_tasks[character_id] = task.uid
@@ -335,12 +321,7 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            react_enabled_res = event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": "REACT_ENABLED", "default": False},
-                timeout=0.8,
-            )
-            if not bool(react_enabled_res and react_enabled_res[0]):
+            if not bool(use(SettingsService).get("REACT_ENABLED", False)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
@@ -348,8 +329,7 @@ class CreateTaskAction:
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
             level_default = False if policy.react_level == 2 else True
-            level_res = event_bus.emit_and_wait(Events.Settings.GET_SETTING, {"key": level_key, "default": level_default}, timeout=0.8)
-            if not bool(level_res and level_res[0]):
+            if not bool(use(SettingsService).get(level_key, level_default)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
 

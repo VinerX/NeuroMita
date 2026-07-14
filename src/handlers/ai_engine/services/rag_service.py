@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
+from handlers.ai_engine.gpu_scheduler import Priority, get_scheduler
+
 
 class RAGService:
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
@@ -20,7 +22,17 @@ class RAGService:
         if m == "warmup_embeddings":
             model_name = str(payload.get("model_name") or "").strip()
             query_prefix = str(payload.get("query_prefix") or "")
-            return await asyncio.to_thread(self._warmup_embeddings_sync, model_name, query_prefix)
+            return await get_scheduler().run(
+                Priority.BULK, self._warmup_embeddings_sync, model_name, query_prefix
+            )
+
+        if m == "warmup_reranker":
+            model_name = str(payload.get("model_name") or "").strip()
+            return await get_scheduler().run(
+                Priority.BULK,
+                self._warmup_reranker_sync,
+                model_name,
+            )
 
         if m == "get_embeddings":
             texts = payload.get("texts") or []
@@ -29,7 +41,10 @@ class RAGService:
             prefix = payload.get("prefix")
             prefix = query_prefix if prefix is None else str(prefix or "")
             batch_size = payload.get("batch_size")
-            return await asyncio.to_thread(
+            # Эмбеддинг запроса пользователя обгоняет фоновую индексацию.
+            priority = Priority.parse(payload.get("priority"), default=Priority.HOT)
+            return await get_scheduler().run(
+                priority,
                 self._get_embeddings_sync,
                 list(texts or []),
                 model_name,
@@ -39,8 +54,6 @@ class RAGService:
             )
 
         if m == "rerank":
-            from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
-
             model_name = str(payload.get("model_name") or "").strip()
             query = str(payload.get("query") or "")
             candidates = list(payload.get("candidates") or [])
@@ -49,24 +62,52 @@ class RAGService:
             early_exit_score = float(payload.get("early_exit_score") or 0.0)
             total_candidates = int(payload.get("total_candidates") or len(candidates))
 
-            reranker = WorkerCrossEncoderReranker.get(model_name)
-            return await asyncio.to_thread(
-                reranker.rerank_payload,
+            return await get_scheduler().run(
+                Priority.RERANK,
+                self._rerank_sync,
+                model_name,
                 query,
                 candidates,
-                top_k=top_k,
-                alpha=alpha,
-                early_exit_score=early_exit_score,
-                total_candidates=total_candidates,
+                top_k,
+                alpha,
+                early_exit_score,
+                total_candidates,
             )
 
         if m == "get_reranker_status":
-            from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
-
             model_name = str(payload.get("model_name") or "").strip()
-            return WorkerCrossEncoderReranker.status(model_name)
+            return await asyncio.to_thread(self._reranker_status_sync, model_name)
 
         raise RuntimeError(f"Unknown rag method: {method}")
+
+
+    @staticmethod
+    def _rerank_sync(
+        model_name: str,
+        query: str,
+        candidates: list[Any],
+        top_k: int,
+        alpha: float,
+        early_exit_score: float,
+        total_candidates: int,
+    ):
+        from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
+
+        reranker = WorkerCrossEncoderReranker.get(model_name)
+        return reranker.rerank_payload(
+            query,
+            candidates,
+            top_k=top_k,
+            alpha=alpha,
+            early_exit_score=early_exit_score,
+            total_candidates=total_candidates,
+        )
+
+    @staticmethod
+    def _reranker_status_sync(model_name: str):
+        from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
+
+        return WorkerCrossEncoderReranker.status(model_name)
 
     def _warmup_embeddings_sync(self, model_name: str, query_prefix: str) -> bool:
         from handlers.embedding_handler import EmbeddingModelHandler
@@ -78,6 +119,14 @@ class RAGService:
             query_prefix=query_prefix,
         )
         return True
+
+    @staticmethod
+    def _warmup_reranker_sync(model_name: str) -> bool:
+        from handlers.ai_engine.rag_runtime import WorkerCrossEncoderReranker
+
+        if not model_name:
+            raise ValueError("RAG reranker model name is required")
+        return bool(WorkerCrossEncoderReranker.get(model_name)._ensure_loaded())
 
     def _get_embeddings_sync(
         self,

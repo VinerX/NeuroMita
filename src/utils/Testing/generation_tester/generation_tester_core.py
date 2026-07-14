@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.events import Events, get_event_bus, shutdown_event_bus
+from core.request_policy import RequestPolicy
+from core.services import use
+from services.contracts import CharacterRegistry, ChatGenerationRequest, GenerationService, ModelStateService
 from core.request_policy import resolve_policy
 from main_logger import logger
 
@@ -261,27 +264,40 @@ class GenerationTestRuntime:
         return self.runtime_base_dir / "SavedMessages" / "last_generation_input.json"
 
     def get_current_character_profile(self) -> Dict[str, Any]:
-        res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-        profile = res[0] if res else {}
-        return profile if isinstance(profile, dict) else {}
+        return use(CharacterRegistry).current_profile()
 
     def get_character_ref(self, character_id: str):
         if not character_id:
             return None
-        res = self.event_bus.emit_and_wait(
-            Events.Character.GET,
-            {"character_id": str(character_id)},
-            timeout=1.0,
+        return use(CharacterRegistry).get(str(character_id))
+
+    @staticmethod
+    def _generate_from_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Тестовый прогон одного chat-запроса через GenerationService."""
+        request = ChatGenerationRequest(
+            character_id=payload.get("character_id") or payload.get("char_id") or None,
+            user_input=payload.get("user_input", "") or "",
+            system_input=payload.get("system_input", "") or "",
+            image_data=list(payload.get("image_data") or []),
+            image_source=payload.get("image_source", "") or "",
+            event_type=payload.get("event_type", "chat") or "chat",
+            sender=payload.get("sender", "Player") or "Player",
+            participants=list(payload.get("participants") or []),
+            req_id=payload.get("req_id"),
+            origin_message_id=payload.get("origin_message_id"),
+            task_uid=payload.get("message_id"),
+            policy=RequestPolicy.from_dict(payload["policy"]) if isinstance(payload.get("policy"), dict) else None,
         )
-        return res[0] if res else None
+        result = use(GenerationService).generate_chat(request)
+        return asdict(result) if result is not None else None
 
     def set_current_character(self, character_id: str) -> None:
         if not character_id:
             return
-        self.event_bus.emit_and_wait(
+        self.event_bus.emit(
             Events.Character.SET_CURRENT,
             {"character_id": str(character_id)},
-            timeout=2.0,
+            sync=True,
         )
 
     def resolve_preset_id(self, preset: int | str | None) -> Optional[int]:
@@ -351,14 +367,8 @@ class GenerationTestRuntime:
             payload["character_id"] = char_id
 
         started_at = datetime.utcnow().isoformat() + "Z"
-        result_list = self.event_bus.emit_and_wait(
-            Events.Model.GENERATE_RESPONSE,
-            payload,
-            timeout=timeout,
-        )
-        result = result_list[0] if result_list else None
-        token_stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=2.0)
-        token_stats = token_stats_res[0] if token_stats_res else {}
+        result = self._generate_from_payload(payload)
+        token_stats = use(ModelStateService).token_stats()
         context = self.read_last_request_context()
         return {
             "started_at": started_at,
@@ -423,14 +433,8 @@ class GenerationTestRuntime:
             self.set_current_character(char_id)
 
         started_at = datetime.utcnow().isoformat() + "Z"
-        result_list = self.event_bus.emit_and_wait(
-            Events.Model.GENERATE_RESPONSE,
-            payload,
-            timeout=timeout,
-        )
-        result = result_list[0] if result_list else None
-        token_stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=2.0)
-        token_stats = token_stats_res[0] if token_stats_res else {}
+        result = self._generate_from_payload(payload)
+        token_stats = use(ModelStateService).token_stats()
         last_ctx = self.read_last_request_context()
         latest_input = self.read_last_generation_input()
         return {

@@ -4,7 +4,7 @@ import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from threading import Lock
+from threading import Lock, RLock
 from typing import Iterable, Tuple, Set, Optional, List
 
 
@@ -15,7 +15,7 @@ from typing import Iterable, Tuple, Set, Optional, List
 #   embedding_storage.py (blob I/O, indexing)
 class DatabaseManager:
     _instance = None
-    _lock = Lock()
+    _lock = RLock()
     _path_override: str | None = None  # set before first instantiation to use a custom DB path
 
     # FTS5 capability cache (per-process)
@@ -24,6 +24,8 @@ class DatabaseManager:
 
     # Required for concurrent QtSql reads while sqlite3 writes
     _BUSY_TIMEOUT_MS: int = 5000
+    _MIGRATION_TIMESTAMP_NORMALIZATION = "history_timestamp_iso_v1"
+    _MIGRATION_MESSAGE_ID_UNIQUE = "history_message_id_unique_v1"
 
     # Single source of truth: extra columns to ensure in history table.
     # (column_name -> SQL type). Base columns (id, character_id, role, content,
@@ -39,6 +41,7 @@ class DatabaseManager:
         "event_type": "TEXT",
         "req_id": "TEXT",
         "task_uid": "TEXT",
+        "turn_id": "TEXT",
         "is_deleted": "INTEGER DEFAULT 0",
         "structured_data": "TEXT",
         "thinking": "TEXT",
@@ -63,40 +66,45 @@ class DatabaseManager:
             return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
+        with DatabaseManager._lock:
+            if self._initialized:
+                return
 
-        if DatabaseManager._path_override:
-            self.db_path = DatabaseManager._path_override
-            os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        else:
-            histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
-            os.makedirs(histories_dir, exist_ok=True)
-            self.db_path = os.path.join(histories_dir, "world.db")
+            if DatabaseManager._path_override:
+                self.db_path = DatabaseManager._path_override
+                os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+            else:
+                histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+                os.makedirs(histories_dir, exist_ok=True)
+                self.db_path = os.path.join(histories_dir, "world.db")
 
-        # Ensure WAL + timeout are applied early
-        self._init_db()
-        self._initialized = True
+            self._wal_initialized = False
+            self._pragmas_lock = Lock()
+            self._init_db()
+            self._initialized = True
 
     def _apply_sqlite_pragmas(self, conn: sqlite3.Connection) -> None:
-        """
-        Enforce WAL mode + busy timeout for better concurrent read/write behavior.
-        - journal_mode=WAL is persisted in the database, but applying per-connection is safe.
-        - busy_timeout is per-connection, must be applied for every connection.
-        """
-        try:
-            # WAL is the key to allowing readers while another connection writes.
-            cur = conn.execute("PRAGMA journal_mode=WAL;")
-            row = cur.fetchone()
-            if row and str(row[0]).lower() != "wal":
-                logging.warning(f"SQLite PRAGMA journal_mode returned '{row[0]}' (expected 'wal').")
-        except Exception as e:
-            logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {e}")
+        """Apply persistent WAL once and connection-local pragmas on every connection."""
+        if not getattr(self, "_wal_initialized", False):
+            with self._pragmas_lock:
+                if not self._wal_initialized:
+                    try:
+                        cur = conn.execute("PRAGMA journal_mode=WAL;")
+                        row = cur.fetchone()
+                        if row and str(row[0]).lower() == "wal":
+                            self._wal_initialized = True
+                        else:
+                            logging.warning(
+                                f"SQLite PRAGMA journal_mode returned '{row[0] if row else None}' (expected 'wal')."
+                            )
+                    except Exception as e:
+                        logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {e}")
 
         try:
             conn.execute(f"PRAGMA busy_timeout = {int(self._BUSY_TIMEOUT_MS)};")
+            conn.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:
-            logging.warning(f"Failed to set PRAGMA busy_timeout={self._BUSY_TIMEOUT_MS}: {e}")
+            logging.warning(f"Failed to apply SQLite connection pragmas: {e}")
 
     def get_connection(self):
         # timeout (seconds) is sqlite3's busy timeout; we also set PRAGMA busy_timeout explicitly.
@@ -259,7 +267,7 @@ class DatabaseManager:
             self._fts5_checked = True
             return bool(ok)
 
-    def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> None:
+    def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> bool:
         """
         Create/maintain FTS5 tables + sync triggers safely.
 
@@ -287,14 +295,14 @@ class DatabaseManager:
                     conn.commit()
                 except Exception as e:
                     logging.warning(f"DB: failed to drop FTS triggers on commit: {e}")
-                return
+                return False
 
             cur = conn.cursor()
 
             hist_cols = self._get_table_columns_conn(conn, "history")
             mem_cols = self._get_table_columns_conn(conn, "memories")
             if not hist_cols or not mem_cols:
-                return
+                return False
 
             # Desired columns (based on base table availability)
             history_desired = ["content"]
@@ -323,7 +331,7 @@ class DatabaseManager:
                     conn.commit()
                 except Exception as e:
                     logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {e}")
-                return
+                return False
 
             # Use ACTUAL FTS columns
             history_fts_cols = table_cols("history_fts") or ["content"]
@@ -409,9 +417,55 @@ class DatabaseManager:
                 conn.commit()
             except Exception as e:
                 logging.warning(f"DB: FTS5 schema commit failed: {e}")
+                return False
+            return True
 
         except Exception as e:
             logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {e}")
+            return False
+
+    @staticmethod
+    def _fts5_schema_present(conn: sqlite3.Connection) -> bool:
+        required = {
+            ("table", "history_fts"),
+            ("table", "memories_fts"),
+            ("trigger", "history_fts_ai"),
+            ("trigger", "history_fts_ad"),
+            ("trigger", "history_fts_au"),
+            ("trigger", "memories_fts_ai"),
+            ("trigger", "memories_fts_ad"),
+            ("trigger", "memories_fts_au"),
+        }
+        try:
+            rows = conn.execute(
+                "SELECT type, name FROM sqlite_master "
+                "WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(name for _kind, name in required),
+            ).fetchall()
+        except Exception:
+            return False
+        return required.issubset({(str(kind), str(name)) for kind, name in rows})
+
+    @staticmethod
+    def _ensure_migration_table(cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+    @staticmethod
+    def _migration_applied(cursor: sqlite3.Cursor, name: str) -> bool:
+        cursor.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,))
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def _mark_migration(cursor: sqlite3.Cursor, name: str) -> None:
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)",
+            (name,),
+        )
 
     def rebuild_fts_indexes(self) -> bool:
         """
@@ -622,6 +676,7 @@ class DatabaseManager:
         }
 
         try:
+            self._ensure_migration_table(cursor)
             # --- ADD missing columns for each table ---
             for table, columns in desired.items():
                 try:
@@ -638,26 +693,89 @@ class DatabaseManager:
                         except Exception as e:
                             logging.warning(f"DB upgrade: failed to add '{col_name}' to '{table}' (ignored): {e}")
 
-            # --- Индекс против дублей history по (character_id, message_id, timestamp) ---
             try:
                 cursor.execute("PRAGMA table_info(history)")
                 hist_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
             except Exception:
                 hist_cols = set()
 
-            if {"character_id", "message_id", "timestamp"}.issubset(hist_cols):
+            if (
+                "timestamp" in hist_cols
+                and not self._migration_applied(
+                    cursor,
+                    self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                )
+            ):
                 try:
                     cursor.execute(
                         """
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_msg
-                        ON history(character_id, message_id, timestamp)
-                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
-                          AND timestamp  IS NOT NULL AND TRIM(timestamp)  != ''
+                        UPDATE history
+                        SET timestamp =
+                            CASE
+                                WHEN timestamp GLOB '__.__.____ __:__:__' THEN
+                                    substr(timestamp, 7, 4) || '-' || substr(timestamp, 4, 2) || '-' ||
+                                    substr(timestamp, 1, 2) || ' ' || substr(timestamp, 12, 8)
+                                WHEN timestamp GLOB '__.__.____ __:__' THEN
+                                    substr(timestamp, 7, 4) || '-' || substr(timestamp, 4, 2) || '-' ||
+                                    substr(timestamp, 1, 2) || ' ' || substr(timestamp, 12, 5) || ':00'
+                                WHEN timestamp GLOB '__:__' THEN date('now', 'localtime') || ' ' || timestamp || ':00'
+                                ELSE replace(timestamp, 'T', ' ')
+                            END
+                        WHERE timestamp IS NOT NULL AND TRIM(timestamp) != ''
+                          AND (
+                              timestamp GLOB '__.__.____ __:__*'
+                              OR timestamp GLOB '__:__'
+                              OR instr(timestamp, 'T') > 0
+                          )
                         """
                     )
-                    logging.info("DB upgrade: ensured UNIQUE index idx_history_unique_msg")
+                    self._mark_migration(
+                        cursor,
+                        self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                    )
                 except Exception as e:
-                    logging.warning(f"DB upgrade: failed to create UNIQUE index idx_history_unique_msg (ignored): {e}")
+                    logging.warning(f"DB upgrade: failed to normalize history timestamps (ignored): {e}")
+
+            if {"character_id", "message_id"}.issubset(hist_cols):
+                try:
+                    migration_applied = self._migration_applied(
+                        cursor,
+                        self._MIGRATION_MESSAGE_ID_UNIQUE,
+                    )
+                    if not migration_applied:
+                        active_filter = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                        cursor.execute("DROP INDEX IF EXISTS idx_history_unique_msg")
+                        cursor.execute(
+                            f"""
+                            DELETE FROM history
+                            WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                              {active_filter}
+                              AND id NOT IN (
+                                  SELECT MIN(id)
+                                  FROM history
+                                  WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                                    {active_filter}
+                                  GROUP BY character_id, message_id
+                              )
+                            """
+                        )
+                    deleted_predicate = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                    cursor.execute(
+                        f"""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_msg
+                        ON history(character_id, message_id)
+                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                          {deleted_predicate}
+                        """
+                    )
+                    if not migration_applied:
+                        self._mark_migration(
+                            cursor,
+                            self._MIGRATION_MESSAGE_ID_UNIQUE,
+                        )
+                    logging.info("DB upgrade: ensured message-id UNIQUE index")
+                except Exception as e:
+                    logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {e}")
 
             # --- Performance indexes for common queries ---
             for idx_sql in [
@@ -670,7 +788,8 @@ class DatabaseManager:
                     logging.warning(f"DB upgrade: failed to create index (ignored): {e}")
 
             # --- FTS5 lexical indexes (safe, optional) ---
-            self._ensure_fts5_schema(conn)
+            if not self._fts5_schema_present(conn):
+                self._ensure_fts5_schema(conn)
 
             # --- Ensure embeddings table exists (for DBs created before this code) ---
             try:
@@ -814,47 +933,49 @@ class DatabaseManager:
     # UI-facing DB helpers
     # ---------------------------
     def dedupe_history(self, character_id: Optional[str] = None) -> int:
-        """
-        Remove duplicate rows in `history` using criteria:
-          - same (character_id, content, timestamp)
-          - keep row with minimal id
-
-        If `character_id` is None/empty -> dedupe for ALL characters.
-        Returns number of deleted rows (best-effort; 0 on error).
-        """
+        """Remove idempotent duplicates, preferring message identity over content."""
         cid = (str(character_id).strip() if character_id is not None else "")
         conn = None
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-
-            # Be conservative: only dedupe meaningful rows (avoid deleting "empty" placeholders)
-            base_filter = """
-                content   IS NOT NULL AND TRIM(content)   != ''
-                AND timestamp IS NOT NULL AND TRIM(timestamp) != ''
-            """.strip()
+            hist_cols = self._get_table_columns_conn(conn, "history")
 
             params: list = []
+            char_filter = ""
             if cid:
-                base_filter = f"({base_filter}) AND character_id=?"
+                char_filter = " AND character_id = ?"
                 params.append(cid)
 
-            # base_filter is duplicated in CTE + DELETE -> params must be duplicated as well
-            all_params = params + params
-
-            sql = f"""
-            WITH keep AS (
-                SELECT MIN(id) AS id
-                FROM history
-                WHERE {base_filter}
-                GROUP BY character_id, content, timestamp
-            )
-            DELETE FROM history
-            WHERE {base_filter}
-              AND id NOT IN (SELECT id FROM keep)
-            """
-
-            cur.execute(sql, all_params)
+            if "message_id" in hist_cols:
+                active_filter = " AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                sql = f"""
+                DELETE FROM history
+                WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                  {active_filter}
+                  {char_filter}
+                  AND id NOT IN (
+                      SELECT MIN(id)
+                      FROM history
+                      WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                        {active_filter}
+                        {char_filter}
+                      GROUP BY character_id, message_id
+                  )
+                """
+                cur.execute(sql, params + params)
+            else:
+                base_filter = "content IS NOT NULL AND TRIM(content) != '' AND timestamp IS NOT NULL AND TRIM(timestamp) != ''"
+                sql = f"""
+                DELETE FROM history
+                WHERE {base_filter} {char_filter}
+                  AND id NOT IN (
+                      SELECT MIN(id) FROM history
+                      WHERE {base_filter} {char_filter}
+                      GROUP BY character_id, content, timestamp
+                  )
+                """
+                cur.execute(sql, params + params)
             cur.execute("SELECT changes()")
             deleted = int((cur.fetchone() or [0])[0] or 0)
 

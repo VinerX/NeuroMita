@@ -126,6 +126,75 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
 
         self.assertEqual(len(executor.jobs), 1)
 
+    def test_add_messages_commits_completed_turn_in_one_transaction(self) -> None:
+        turn_id = "turn:test-1"
+        row_ids = self.hm.add_messages(
+            [
+                {
+                    "message_id": "in:test-1",
+                    "turn_id": turn_id,
+                    "role": "user",
+                    "content": "question",
+                    "time": "01.01.2026 12:00:00",
+                },
+                {
+                    "message_id": "out:test-1",
+                    "turn_id": turn_id,
+                    "role": "assistant",
+                    "content": "answer",
+                    "time": "01.01.2026 12:00:01",
+                },
+            ]
+        )
+
+        self.assertEqual(len(row_ids), 2)
+        loaded = self.hm.load_history()["messages"]
+        self.assertEqual([item["content"] for item in loaded], ["question", "answer"])
+        self.assertEqual({item.get("turn_id") for item in loaded}, {turn_id})
+
+    def test_add_messages_rolls_back_entire_turn_on_insert_failure(self) -> None:
+        self.hm.add_message(
+            {
+                "message_id": "existing",
+                "role": "user",
+                "content": "existing",
+                "time": "01.01.2026 12:00:00",
+            }
+        )
+
+        original_insert = self.hm._insert_history_row_tx
+        rich_calls = {"count": 0}
+
+        def failing_rich(cursor, *, msg, is_active, dedupe=True):
+            rich_calls["count"] += 1
+            if rich_calls["count"] == 2:
+                raise RuntimeError("rich failure")
+            return original_insert(cursor, msg=msg, is_active=is_active, dedupe=dedupe)
+
+        with patch.object(self.hm, "_insert_history_row_tx", side_effect=failing_rich):
+            row_ids = self.hm.add_messages(
+                [
+                    {
+                        "message_id": "in:failed-turn",
+                        "turn_id": "turn:failed-turn",
+                        "role": "user",
+                        "content": "question",
+                        "time": "01.01.2026 12:01:00",
+                    },
+                    {
+                        "message_id": "out:failed-turn",
+                        "turn_id": "turn:failed-turn",
+                        "role": "assistant",
+                        "content": "answer",
+                        "time": "01.01.2026 12:01:01",
+                    },
+                ]
+            )
+
+        self.assertEqual(row_ids, [])
+        loaded = self.hm.load_history()["messages"]
+        self.assertEqual([item["content"] for item in loaded], ["existing"])
+
 
 if __name__ == "__main__":
     unittest.main()

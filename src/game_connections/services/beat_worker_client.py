@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from core.events import Events, get_event_bus
-
 
 def resolve_ai_engine(event_bus=None, *, timeout: float = 1.0):
-    eb = event_bus or get_event_bus()
+    # Через AIEngineService, а не sync EventBus RPC: get_music_beats исполняется в
+    # asyncio-loop сервера, где синхронный сбор ответов шины блокирует loop и
+    # запрещён guardrail'ом. event_bus/timeout — для совместимости сигнатуры.
     try:
-        res = eb.emit_and_wait(Events.AI.GET_ENGINE, timeout=float(timeout))
-        return res[0] if res else None
+        from core.services import use
+        from services.contracts import AIEngineService
+        return use(AIEngineService).get_engine()
     except Exception:
         return None
 

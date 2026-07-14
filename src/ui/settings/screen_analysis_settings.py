@@ -1,43 +1,27 @@
-from ui.gui_templates import create_settings_section, create_section_header
-from utils import getTranslationVariant as _
+from ui.gui_templates import create_settings_section
+from ui.settings.runtime_options import (
+    refresh_camera_options,
+    register_camera_options,
+    register_provider_options,
+    select_camera_option,
+)
 from main_logger import logger
-from core.events import get_event_bus, Events
+from utils import getTranslationVariant as _
 
-def get_camera_list():
-    try:
-        import cv2
-        camera_list = []
-        for i in range(5):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                camera_list.append(f"Camera {i}")
-                cap.release()
-        return camera_list if camera_list else [_("Камер не найдено", "No cameras found")]
-    except ImportError:
-        logger.warning("[screen_capture] OpenCV is not installed; camera enumeration is unavailable.")
-        return [_("Камер не найдено", "No cameras found")]
-
-def update_camera_list(gui):
-    if hasattr(gui, 'camera_combobox'):
-        current_text = gui.camera_combobox.currentText()
-        gui.camera_combobox.clear()
-        new_list = get_camera_list()
-        gui.camera_combobox.addItems(new_list)
-        if current_text in new_list:
-            gui.camera_combobox.setCurrentText(current_text)
+def update_camera_list(gui, *, force: bool = False):
+    if force:
+        refresh_camera_options(gui)
+    else:
+        register_camera_options(gui)
 
 def on_camera_selected(gui):
     if hasattr(gui, 'camera_combobox'):
-        selection = gui.camera_combobox.currentText()
-        if selection and "Camera" in selection:
-            try:
-                camera_index = int(selection.split(" ")[-1])
-                gui.settings.set("CAMERA_INDEX", camera_index)
-                logger.info(f"[screen_capture] Selected camera index: {camera_index}")
-            except (IndexError, ValueError):
-                logger.error(f"[screen_capture] Failed to parse camera index from '{selection}'")
+        select_camera_option(gui, gui.camera_combobox.currentText())
 
-def setup_screen_analysis_controls(gui, parent_layout):
+def setup_screen_analysis_controls(gui, parent_layout, *, runtime_options_view_model):
+    from ui.settings.runtime_options import attach_runtime_options_view_model
+
+    attach_runtime_options_view_model(gui, runtime_options_view_model)
     # No group header here: the page already carries the "Изображения и камера"
     # title, so a separate "Настройки экрана" heading just duplicated it.
 
@@ -93,8 +77,11 @@ def setup_screen_analysis_controls(gui, parent_layout):
             'type': 'text',
         },
         {'label': _('Включить захват с камеры', 'Enable Camera Capture'), 'key': 'ENABLE_CAMERA_CAPTURE', 'type': 'checkbutton', 'default_checkbutton': False},
-        {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE', 'type': 'combobox', 'options': get_camera_list(), 'default': get_camera_list()[0], 'command': lambda _: on_camera_selected(gui), 'widget_name': 'camera_combobox'},
-        {'label': _("Обновить список", "Refresh list"), 'type': 'button', 'command': lambda: update_camera_list(gui)},
+        {'label': _('Камера', 'Camera'), 'key': 'CAMERA_DEVICE', 'type': 'combobox',
+         'options': [_("Загрузка камер...", "Loading cameras...")],
+         'default': _("Загрузка камер...", "Loading cameras..."),
+         'command': lambda _: on_camera_selected(gui), 'widget_name': 'camera_combobox'},
+        {'label': _("Обновить список", "Refresh list"), 'type': 'button', 'command': lambda: update_camera_list(gui, force=True)},
         {'label': _('Интервал захвата (сек)', 'Capture Interval (sec)'), 'key': 'CAMERA_CAPTURE_INTERVAL', 'type': 'entry', 'default': '5.0', 'validation': gui.validate_float_positive},
         {'label': _('Сжатие (%)', 'Compression (%)'), 'key': 'CAMERA_CAPTURE_QUALITY', 'type': 'entry', 'default': '25', 'validation': gui.validate_positive_integer},
         {'label': _('Кадров в секунду', 'Frames per second'), 'key': 'CAMERA_CAPTURE_FPS', 'type': 'entry', 'default': '1', 'validation': gui.validate_positive_integer},
@@ -104,6 +91,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         {'label': _('Высота захвата', 'Capture Height'), 'key': 'CAMERA_CAPTURE_HEIGHT', 'type': 'entry', 'default': '480', 'validation': gui.validate_positive_integer},
     ]
     gui.camera_section = create_settings_section(gui, parent_layout, _("Настройки захвата с камеры", "Camera Capture Settings"), camera_analysis_config, icon_name="fa6s.camera")
+    update_camera_list(gui)
 
     # Третья CollapsibleSection
     frame_compression_config = [
@@ -121,16 +109,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
     create_settings_section(gui, parent_layout, _("Настройки угасания кадров", "Frame Regression Settings"), frame_compression_config, icon_name="fa6s.hourglass-half")
 
     # Четвёртая CollapsibleSection — описание изображений
-    # Список пресетов для vision-провайдера (тот же паттерн, что у REACT_PROVIDER_L1)
-    _vision_provider_names = [_('Текущий', 'Current')]
-    try:
-        _eb = get_event_bus()
-        _presets_meta = _eb.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-        if _presets_meta and _presets_meta[0]:
-            for _p in _presets_meta[0].get('custom', []):
-                _vision_provider_names.append(_p.name)
-    except Exception as _e:
-        logger.warning(f"[screen_analysis_settings] Не удалось загрузить список пресетов: {_e}")
+    _vision_provider_names = [_("Текущий", "Current")]
 
     image_description_config = [
         {
@@ -199,6 +178,7 @@ def setup_screen_analysis_controls(gui, parent_layout):
         },
     ]
     create_settings_section(gui, parent_layout, _("Описание изображений", "Image Description"), image_description_config, icon_name="fa6s.comment-dots")
+    register_provider_options(gui, ("IMAGE_DESCRIPTION_PROVIDER",))
     # Detail depends on EITHER inline OR non-native mode being on (both use it)
     _wire_detail_dependency(gui)
 
@@ -373,7 +353,7 @@ def _setup_image_cleanup_section(gui, parent_layout) -> None:
             'validation': gui.validate_positive_integer,
         },
     ]
-    section = create_settings_section(
+    create_settings_section(
         gui, parent_layout,
         _("Хранение и очистка изображений", "Image Storage & Cleanup"),
         cleanup_config,

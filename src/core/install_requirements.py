@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Any, Dict, List, Tuple, FrozenSet
 import os
 import importlib.util
+import importlib.machinery
+from pathlib import Path
 
 from core.backends import BackendKind, get_backend_service
 
@@ -21,10 +23,11 @@ PipCheckFn = Callable[[str, dict], bool]
 @dataclass(frozen=True)
 class InstallRequirement:
     id: str
-    kind: str  # "python_module" | "python_dist" | "file" | "backend"
+    kind: str  # python_module | python_module_any | python_dist | file | backend
     required: bool = True
 
     module: Optional[str] = None
+    modules: Tuple[str, ...] = ()
 
     spec: Optional[str] = None
     dist: Optional[str] = None
@@ -45,13 +48,53 @@ def _should_check(req: InstallRequirement, ctx: dict) -> bool:
         return False
 
 
-def _check_python_module(module: str) -> bool:
+def _target_paths(ctx: Optional[dict] = None) -> list[str]:
+    ctx = ctx or {}
+    values = [
+        ctx.get("libs_dir"),
+        ctx.get("lib_dir"),
+        ctx.get("target_dir"),
+        *(ctx.get("python_paths") or []),
+    ]
+    if not bool(ctx.get("strict_target", False)):
+        values.append(os.environ.get("NEUROMITA_LIB_DIR"))
+    result: list[str] = []
+    for value in values:
+        path = os.path.abspath(str(value or "").strip()) if value else ""
+        if path and path not in result and os.path.isdir(path):
+            result.append(path)
+    return result
+
+
+def _check_python_module(module: str, ctx: Optional[dict] = None) -> bool:
     if not module:
         return False
-    try:
-        return importlib.util.find_spec(module) is not None
-    except Exception:
+    parts = [part for part in str(module).split(".") if part]
+    if not parts:
         return False
+    # При явном --target сначала проверяем именно управляемый каталог. Иначе
+    # пакет из системного/launcher site-packages мог замаскировать отсутствие
+    # компонента в Lib либо его несовместимую версию.
+    for root in _target_paths(ctx):
+        candidate = Path(root).joinpath(*parts)
+        if candidate.is_dir() or candidate.with_suffix(".py").is_file():
+            return True
+        try:
+            if importlib.machinery.PathFinder.find_spec(parts[0], [root]) is not None:
+                return True
+        except Exception:
+            pass
+    if not bool((ctx or {}).get("strict_target", False)):
+        try:
+            if importlib.util.find_spec(module) is not None:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _check_any_python_module(modules: Tuple[str, ...], ctx: Optional[dict] = None) -> bool:
+    return any(_check_python_module(module, ctx) for module in modules if str(module or "").strip())
 
 
 def _resolve_path(req: InstallRequirement, ctx: dict) -> str:
@@ -83,19 +126,32 @@ def register_pip_checker(
             raise ValueError("register_pip_checker: either module or fn must be provided")
 
         def _mod_check(_spec: str, _ctx: dict) -> bool:
-            return _check_python_module(mod)
+            return _check_python_module(mod, _ctx)
 
         fn = _mod_check
 
     _PIP_CHECKERS[(base, ex_key)] = fn
 
 
-def _get_installed_dist_version(dist: str) -> Optional[str]:
+def _get_installed_dist_version(dist: str, ctx: Optional[dict] = None) -> Optional[str]:
     if not dist:
         return None
 
     dn = dist.strip()
     candidates = [dn, dn.replace("_", "-"), dn.replace("-", "_")]
+
+    wanted = _norm_pkg_name(dn)
+    for root in _target_paths(ctx):
+        try:
+            for distribution in importlib_metadata.distributions(path=[root]):
+                name = str(distribution.metadata.get("Name") or "")
+                if _norm_pkg_name(name) == wanted:
+                    return str(distribution.version)
+        except Exception:
+            continue
+
+    if bool((ctx or {}).get("strict_target", False)):
+        return None
 
     seen = set()
     for c in candidates:
@@ -129,12 +185,12 @@ def is_pip_spec_satisfied(spec: str, ctx: Optional[dict] = None) -> bool:
             except Exception:
                 return False
 
-        installed = _get_installed_dist_version(base)
+        installed = _get_installed_dist_version(base, ctx)
         if installed:
             return True
 
         module_guess = base.replace("-", "_")
-        return _check_python_module(module_guess)
+        return _check_python_module(module_guess, ctx)
 
     try:
         req = Requirement(s)
@@ -154,23 +210,30 @@ def is_pip_spec_satisfied(spec: str, ctx: Optional[dict] = None) -> bool:
     if fn is None:
         fn = _PIP_CHECKERS.get((base, None))
 
-    if fn is not None:
+    installed = _get_installed_dist_version(base, ctx)
+    if installed:
+        if req.specifier:
+            try:
+                if not bool(req.specifier.contains(installed, prereleases=True)):
+                    return False
+            except Exception:
+                return False
+        if fn is None:
+            return True
         try:
             return bool(fn(s, ctx))
         except Exception:
             return False
 
-    installed = _get_installed_dist_version(base)
-    if not installed:
-        return False
-
-    if not req.specifier:
-        return True
-
-    try:
-        return bool(req.specifier.contains(installed, prereleases=True))
-    except Exception:
-        return False
+    # Some embedded/portable layouts contain importable modules without usable
+    # distribution metadata. Registered module checkers also verify that a
+    # matching *.dist-info is not masking a missing or broken import package.
+    if fn is not None:
+        try:
+            return bool(fn(s, ctx))
+        except Exception:
+            return False
+    return False
 
 
 def missing_pip_specs(specs: List[str], ctx: Optional[dict] = None) -> List[str]:
@@ -214,20 +277,32 @@ def check_requirements(requirements: list[InstallRequirement], ctx: Optional[dic
 
         if req.kind == "python_module":
             extra["module"] = req.module
-            ok = _check_python_module(req.module or "")
+            ok = _check_python_module(req.module or "", ctx)
+
+        elif req.kind == "python_module_any":
+            modules = tuple(str(item or "").strip() for item in req.modules if str(item or "").strip())
+            extra["modules"] = list(modules)
+            ok = _check_any_python_module(modules, ctx)
 
         elif req.kind == "python_dist":
             spec = (req.spec or "").strip()
             dist = (req.dist or "").strip()
             if spec:
                 extra["spec"] = spec
-                ok = is_pip_spec_satisfied(spec, ctx=ctx)
+                if not dist:
+                    try:
+                        from packaging.requirements import Requirement
+
+                        dist = Requirement(spec).name
+                    except Exception:
+                        dist = spec.split(";", 1)[0].split("[", 1)[0].strip()
                 if dist:
                     extra["dist"] = dist
-                    extra["version"] = _get_installed_dist_version(dist)
+                    extra["version"] = _get_installed_dist_version(dist, ctx)
+                ok = is_pip_spec_satisfied(spec, ctx=ctx)
             elif dist:
                 extra["dist"] = dist
-                extra["version"] = _get_installed_dist_version(dist)
+                extra["version"] = _get_installed_dist_version(dist, ctx)
                 ok = extra["version"] is not None
             else:
                 ok = False
@@ -259,7 +334,13 @@ def check_requirements(requirements: list[InstallRequirement], ctx: Optional[dic
                 missing_optional.append(req.id)
 
     return {
-        "ok": all_ok and len(missing_required) == 0,
+        # Компонент считается установленным, если на месте все ОБЯЗАТЕЛЬНЫЕ
+        # зависимости. Отсутствие опциональной (напр. pyaudio у Google-ASR) не
+        # должно ронять is_installed() — иначе post-install check падал с
+        # «missing: unknown» и компонент невозможно было поставить.
+        # (all_ok здесь включал и опциональные провалы — это и был баг.)
+        "ok": len(missing_required) == 0,
+        "all_ok": all_ok,
         "missing_required": missing_required,
         "missing_optional": missing_optional,
         "details": details,
@@ -272,4 +353,10 @@ register_pip_checker("onnxruntime-directml", module="onnxruntime")
 register_pip_checker("optimum", extras=["onnxruntime"], module="optimum.onnxruntime")
 register_pip_checker("g4f", module="g4f")
 register_pip_checker("tts-with-rvc", module="tts_with_rvc")
-register_pip_checker("tts-with-rvc-onnx", module="tts_with_rvc_onnx")
+register_pip_checker(
+    "tts-with-rvc-onnx",
+    fn=lambda _spec, ctx: _check_any_python_module(
+        ("tts_with_rvc_onnx", "tts_with_rvc"),
+        ctx,
+    ),
+)
