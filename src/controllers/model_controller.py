@@ -1284,6 +1284,17 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["custom_params"] = _custom_params
         effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
 
+        # intents: hidden from the model by default. Can be unlocked via the
+        # SCHEMA_INTENTS_ENABLED setting or a per-character DSL variable of the
+        # same name, without any further Python changes.
+        _schema_intents = bool(self.settings.get("SCHEMA_INTENTS_ENABLED", False))
+        if not _schema_intents:
+            try:
+                _schema_intents = bool(char.get_variable("SCHEMA_INTENTS_ENABLED", False))
+            except Exception:
+                _schema_intents = False
+        effective_capabilities["schema_intents"] = _schema_intents
+
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
         original_image_data = image_data  # kept for history storage

@@ -104,6 +104,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     if not caps.get("schema_reasoning", True):
                         excl.add("reasoning")
                     segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                    if not caps.get("schema_intents", False):
+                        segment_excl.add("intents")
                     params["response_format"] = model_cls.openai_response_format(
                         exclude_fields=excl or None,
                         exclude_segment_fields=segment_excl or None,

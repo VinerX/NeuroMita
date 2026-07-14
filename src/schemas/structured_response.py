@@ -24,6 +24,19 @@ from typing import Any, Dict, List, Optional, Union, Type
 
 from pydantic import BaseModel, Field, model_validator, create_model
 
+try:
+    from main_logger import logger
+except Exception:  # pragma: no cover - schema must import even without logging
+    import logging
+
+    logger = logging.getLogger("structured_response")
+
+
+# Python-side version of the structured-response protocol. The model never
+# supplies this value; it is stamped into the outgoing result dict so downstream
+# consumers (Unity, debug dumps) can tell which response contract produced it.
+RESPONSE_PROTOCOL_VERSION = 2
+
 def _to_gemini_schema(schema: dict) -> dict:
     """
     Convert a Pydantic-generated JSON Schema to a Gemini-compatible responseSchema.
@@ -163,6 +176,20 @@ class ToolCall(BaseModel):
         return self
 
 
+class SegmentIntent(BaseModel):
+    """A structured intent Unity can consume (inventory, interactions, ...).
+
+    This is an internal-only channel: by default the field is stripped from the
+    schema the model sees (see ``schema_intents`` capability). The parser still
+    accepts and forwards intents whenever the field is present, so a future mode
+    (special setting, DSL variable, custom prompt) can enable them without any
+    Python changes.
+    """
+
+    type: str = Field(..., description="Intent type identifier, e.g. 'inventory.collect'")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Intent payload object")
+
+
 class ResponseSegment(BaseModel):
     """A single segment of the response tied to a chunk of displayed text."""
 
@@ -179,11 +206,56 @@ class ResponseSegment(BaseModel):
     interactions: List[str] = Field(default_factory=list, description="Interaction commands")
     face_params: List[str] = Field(default_factory=list, description="Face parameter adjustments")
 
+    # Structured intents forwarded to Unity. Hidden from the model schema by
+    # default; sanitized here so malformed entries are dropped, not raised.
+    intents: List[SegmentIntent] = Field(default_factory=list, description="Structured intents (type + payload) forwarded to the game runtime")
+
     start_game: Optional[str] = Field(default=None, description="Game ID to start")
     end_game: Optional[str] = Field(default=None, description="Game ID to end")
     target: Optional[str] = Field(default=None, description="Target character name for this segment")
     hint: Optional[str] = Field(default=None, description="Hint text to display")
     allow_sleep: Optional[bool] = Field(default=None, description="Whether to allow sleep")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_intents(cls, data: Any) -> Any:
+        """Drop malformed intents before per-item validation.
+
+        Rules: ``type`` must be a non-empty string; ``payload`` defaults to an
+        empty dict when missing/invalid. Unknown intent types are *not* blocked
+        here — they are logged upstream and passed through. Invalid entries are
+        discarded with a warning instead of failing the whole response.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("intents")
+        if raw is None:
+            return data
+        if not isinstance(raw, list):
+            raw = [raw]
+
+        cleaned: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                logger.warning("[StructuredResponse] Dropping non-object intent: %r", item)
+                continue
+            itype = item.get("type")
+            if not isinstance(itype, str) or not itype.strip():
+                logger.warning("[StructuredResponse] Dropping intent with invalid type: %r", item)
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                if payload is not None:
+                    logger.warning(
+                        "[StructuredResponse] Intent '%s' payload is not an object, defaulting to {}",
+                        itype,
+                    )
+                payload = {}
+            cleaned.append({"type": itype.strip(), "payload": payload})
+
+        data = dict(data)
+        data["intents"] = cleaned
+        return data
 
 
 class StructuredResponse(BaseModel):
@@ -267,6 +339,22 @@ class StructuredResponse(BaseModel):
             "Keys and their meaning are described in the response format instructions."
         )
     )
+
+    @model_validator(mode="after")
+    def _sanitize_stat_changes(self) -> "StructuredResponse":
+        """Soft-guard stat deltas: non-finite (NaN/inf) values collapse to 0.
+
+        Per-turn magnitude limits and total-range clamping are applied later,
+        at the point where the change is committed to character state, so the
+        configured scale stays the single source of truth.
+        """
+        import math
+
+        for field in ("attitude_change", "boredom_change", "stress_change"):
+            value = getattr(self, field, 0.0)
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                setattr(self, field, 0.0)
+        return self
 
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
