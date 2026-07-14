@@ -1,6 +1,7 @@
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
 [<../../Common/Security.txt>]
+[<../../Common/ProjectInfo.txt>]
 [<Main/main.txt>]
 [<Main/common.txt>]
 [<Context/mita_history.txt>]

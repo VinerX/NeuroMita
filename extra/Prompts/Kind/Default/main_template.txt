@@ -1,6 +1,7 @@
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
 [<../../Common/Security.txt>]
+[<../../Common/ProjectInfo.txt>]
 [<Main/common.txt>]
 [<Main/main.txt>]
 [<Main/player.txt>]
