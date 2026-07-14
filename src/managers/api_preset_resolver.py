@@ -5,6 +5,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
+from core.services import use
+from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
 
@@ -220,8 +222,7 @@ class ApiPresetResolver:
         if not display_name:
             return None
         try:
-            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = meta_res[0] if meta_res else None
+            meta = use(ApiPresetService).list_meta()
             if not meta:
                 return None
 
@@ -308,21 +309,14 @@ class ApiPresetResolver:
         if not preset_id:
             return None
         try:
-            preset_data = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL,
-                {"id": int(preset_id)},
-                timeout=1.0,
-            )
-            if preset_data and preset_data[0]:
-                return preset_data[0]
+            return use(ApiPresetService).get_full(int(preset_id))
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to load preset via bus: {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] Failed to load preset: {e}", exc_info=True)
         return None
 
     def _pick_fallback_preset_id(self) -> Optional[int]:
         try:
-            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = meta_res[0] if meta_res else None
+            meta = use(ApiPresetService).list_meta()
             if not meta:
                 return None
 
@@ -359,23 +353,20 @@ class ApiPresetResolver:
         extra_headers: Dict[str, str] | None,
     ) -> tuple[str, Dict[str, str]]:
         """
-        Asks ProtocolsController to produce final url+headers according to protocol auth rules.
-        Falls back to registry-local minimal behavior if no subscriber.
+        Asks ProtocolBuilderService to produce final url+headers according to protocol auth rules.
+        Falls back to registry-local minimal behavior if the service is unavailable.
         """
-        payload = {
-            "protocol_id": str(protocol_id or "").strip(),
-            "url": str(url or ""),
-            "api_key": str(api_key or ""),
-            "headers": dict(extra_headers or {}),
-        }
-
         try:
-            res = self.event_bus.emit_and_wait(Events.Protocols.BUILD_HTTP_REQUEST, payload, timeout=1.0)
-            built = res[0] if res else None
+            built = use(ProtocolBuilderService).build_http_request(
+                protocol_id=str(protocol_id or "").strip(),
+                url=str(url or ""),
+                api_key=str(api_key or ""),
+                headers=dict(extra_headers or {}),
+            )
             if isinstance(built, dict) and built.get("url") and isinstance(built.get("headers"), dict):
                 return str(built["url"]), dict(built["headers"])
         except Exception as e:
-            logger.warning(f"[ApiPresetResolver] BUILD_HTTP_REQUEST failed, fallback: {e}")
+            logger.warning(f"[ApiPresetResolver] build_http_request failed, fallback: {e}")
 
         # Fallback (should rarely happen): use protocol registry directly
         reg = get_protocol_registry()

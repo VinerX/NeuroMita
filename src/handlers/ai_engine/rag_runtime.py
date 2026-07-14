@@ -105,13 +105,10 @@ class WorkerCrossEncoderReranker:
                 return False
 
             try:
-                from handlers.embedding_handler import _ensure_torch_and_transformers
                 from managers.rag.install_spec import TARGET_RERANKER, ensure_runtime_ready
                 from managers.settings_manager import SettingsManager
 
                 ensure_runtime_ready(TARGET_RERANKER)
-                _ensure_torch_and_transformers()
-
                 import torch
 
                 cache_dir = _checkpoints_dir()

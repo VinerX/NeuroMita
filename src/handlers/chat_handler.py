@@ -3,7 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
-from utils import _, mask_sensitive
+from utils import _, mask_sensitive, redact_image_payloads
 
 from characters.character import Character
 
@@ -20,6 +20,21 @@ from utils.openrouter_routing import (
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
+from core.executors import Pools, executors
+from core.services import use
+from services.contracts import GameLinkService
+
+
+def _debug_dumps_enabled(settings: Any) -> bool:
+    import os
+
+    env_value = str(os.environ.get("NEUROMITA_DEBUG_DUMPS", "")).strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return bool(settings.get("DEBUG_SAVE_LLM_DUMPS", False))
+    except Exception:
+        return False
 
 
 def _save_last_request_context(req, character_name: str = "") -> None:
@@ -47,7 +62,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
             "dialect_id": getattr(req, "dialect_id", None),
             "character_name": character_name or "",
             "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
-            "messages": getattr(req, "messages", []),
+            "messages": redact_image_payloads(getattr(req, "messages", [])),
         }
         with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
@@ -87,7 +102,7 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
                 "dialect_id": getattr(req, "dialect_id", None),
                 "character_name": "",
                 "extra": extra_raw,
-                "messages": getattr(req, "messages", []),
+                "messages": redact_image_payloads(getattr(req, "messages", [])),
             }
 
         usage = getattr(response, "usage", None)
@@ -202,7 +217,7 @@ class ChatModel:
         request_options = dict(request_options_override or {})
         max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
         retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
-        request_timeout = float(request_options.get("request_timeout", 45) or 45)
+        request_timeout = float(request_options.get("request_timeout", 240) or 240)
         suppress_failure_events = bool(request_options.get("suppress_failure_events", False))
 
         self._log_generation_start(preset_id)
@@ -269,7 +284,16 @@ class ChatModel:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
             _char = getattr(self, "current_character", None)
-            _save_last_request_context(req, character_name=getattr(_char, "name", "") or "")
+            if _debug_dumps_enabled(self.settings):
+                try:
+                    executors().try_submit(
+                        Pools.DEBUG_DUMP,
+                        _save_last_request_context,
+                        req,
+                        character_name=getattr(_char, "name", "") or "",
+                    )
+                except Exception:
+                    pass
             return req
 
         try:
@@ -296,15 +320,7 @@ class ChatModel:
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
                     char = self.current_character
-                    game_connected = False
-                    try:
-                        from core.events import Events
-                        res = self.event_bus.emit_and_wait(
-                            Events.Server.GET_GAME_CONNECTION, timeout=0.3
-                        )
-                        game_connected = bool(res[0]) if res else False
-                    except Exception:
-                        game_connected = False
+                    game_connected = bool(use(GameLinkService).is_connected())
                     sample_id = fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text.text,
@@ -324,13 +340,18 @@ class ChatModel:
             cleaned_response = self._clean_response(response_text.text)
             if cleaned_response:
                 response_text.text = cleaned_response
-                if _last_req[0]:
-                    _save_last_response_context(
-                        _last_req[0],
-                        response_text,
-                        raw_response_text=raw_response_text,
-                        cleaned_response_text=cleaned_response,
-                    )
+                if _last_req[0] and _debug_dumps_enabled(self.settings):
+                    try:
+                        executors().try_submit(
+                            Pools.DEBUG_DUMP,
+                            _save_last_response_context,
+                            _last_req[0],
+                            response_text,
+                            raw_response_text=raw_response_text,
+                            cleaned_response_text=cleaned_response,
+                        )
+                    except Exception:
+                        pass
                 return response_text, True
             logger.warning("Response became empty after cleaning.")
             response_text.text = None

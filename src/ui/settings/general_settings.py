@@ -1,4 +1,5 @@
 from ui.gui_templates import create_settings_section, create_section_header
+from ui.settings.settings_access import get_setting, settings_store
 from utils import getTranslationVariant as _
 
 
@@ -7,7 +8,7 @@ def _on_section_toggled(gui, category=None, value=None):
     try:
         from ui.widgets.settings_panel import apply_section_visibility, set_section_enabled
         if category is not None:
-            set_section_enabled(str(category), bool(value))
+            set_section_enabled(str(category), bool(value), settings_store(gui))
         apply_section_visibility(gui)
     except Exception:
         pass
@@ -33,7 +34,7 @@ def _on_sandbox_panel_toggled(gui, key=None, value=None):
     try:
         from ui.widgets.sandbox_panels import apply_sandbox_panel_visibility, set_panel_enabled
         if key is not None:
-            set_panel_enabled(str(key), bool(value))
+            set_panel_enabled(str(key), bool(value), settings_store(gui))
         apply_sandbox_panel_visibility(gui)
     except Exception:
         pass
@@ -190,9 +191,7 @@ def setup_general_settings_controls(self, parent):
 
     # ── Профиль памяти ──────────────────────────────────────────────────────
     from ui.settings.memory_profile import apply_memory_profile, detect_memory_profile, KEY_TO_LABEL_RU, KEY_TO_LABEL_EN
-    from managers.settings_manager import SettingsManager as _SM
-
-    _lang = _SM.get('LANGUAGE', 'RU')
+    _lang = get_setting(self, 'LANGUAGE', 'RU')
     _key_map = KEY_TO_LABEL_EN if _lang == 'EN' else KEY_TO_LABEL_RU
     _detected_key = detect_memory_profile(self)
     _detected_label = _key_map.get(_detected_key, _('Сбалансированный', 'Balanced'))

@@ -9,7 +9,7 @@ import qtawesome as qta
 
 from ui.gui_templates import create_section_header, SettingsBodyWidget
 from ui.widgets.tr_combobox import TRQComboBox
-from managers.settings_manager import InnerCollapsibleSection
+from ui.widgets.settings_sections import InnerCollapsibleSection
 from utils import getTranslationVariant as _
 from localization.live import register_if_tr, tr_set
 

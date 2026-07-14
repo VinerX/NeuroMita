@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QWidget
 
 from ui.pages.settings.section_registry import get_settings_section_specs
 from ui.pages.settings.settings_page_widget import SettingsPage, normalize_mode
+from ui.settings.settings_access import settings_store
 
 # ---------------------------------------------------------------------------
 # Per-section enable/disable
@@ -51,7 +52,7 @@ def _section_key(cat: str) -> str:
     return f"SECTION_{cat.upper()}_ENABLED"
 
 
-def is_section_enabled(cat: str) -> bool:
+def is_section_enabled(cat: str, settings) -> bool:
     """Whether the category should appear in the UI.
 
     'general' is always enabled (it hosts the section toggles). Unknown
@@ -61,23 +62,13 @@ def is_section_enabled(cat: str) -> bool:
     if cat not in SECTION_DEFAULTS:
         return True
     default = SECTION_DEFAULTS[cat]
-    try:
-        from managers.settings_manager import SettingsManager
-
-        return bool(SettingsManager.get(_section_key(cat), default))
-    except Exception:
-        return default
+    return bool(settings.get(_section_key(cat), default))
 
 
-def set_section_enabled(cat: str, enabled: bool) -> None:
+def set_section_enabled(cat: str, enabled: bool, settings) -> None:
     if cat in ALWAYS_ON_SECTIONS or cat not in SECTION_DEFAULTS:
         return
-    try:
-        from managers.settings_manager import SettingsManager
-
-        SettingsManager.set(_section_key(cat), bool(enabled))
-    except Exception:
-        pass
+    settings.set(_section_key(cat), bool(enabled))
 
 
 def apply_section_visibility(gui) -> None:
@@ -89,10 +80,10 @@ def apply_section_visibility(gui) -> None:
 
     # Fallback for early-startup / detached usage: drive raw button maps.
     for cat, btn in getattr(gui, "settings_buttons", {}).items():
-        btn.setVisible(is_section_enabled(cat))
+        btn.setVisible(is_section_enabled(cat, settings_store(gui)))
 
     active = getattr(gui, "current_settings_category", None)
-    if active and not is_section_enabled(active) and hasattr(gui, "show_settings_category"):
+    if active and not is_section_enabled(active, settings_store(gui)) and hasattr(gui, "show_settings_category"):
         gui.show_settings_category(active)
 
     try:
@@ -104,7 +95,7 @@ def apply_section_visibility(gui) -> None:
 
     sidebar = getattr(gui, "shell_sidebar", None)
     if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
-        sidebar.apply_section_visibility(is_section_enabled)
+        sidebar.apply_section_visibility(lambda key: is_section_enabled(key, settings_store(gui)))
 
 
 def apply_interface_mode(gui, mode_value=None):
@@ -113,8 +104,9 @@ def apply_interface_mode(gui, mode_value=None):
     apply_section_visibility(gui)
 
 
-def create_settings_page(gui) -> QWidget:
-    page = SettingsPage(gui)
+def create_settings_page(gui, view_model, section_builder) -> QWidget:
+    page = SettingsPage(gui, view_model, section_builder)
+    view_model.setParent(page)
     gui.settings_page = page
     return page
 

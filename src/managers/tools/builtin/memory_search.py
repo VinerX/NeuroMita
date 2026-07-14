@@ -244,7 +244,7 @@ class MemorySearchTool(Tool):
 
         try:
             from managers.rag.rag_manager import RAGManager
-            rag = RAGManager(self._char_id)
+            rag = RAGManager.for_character(self._char_id)
             results: List[Dict] = rag.search_relevant(
                 query,
                 limit=fetch_limit,

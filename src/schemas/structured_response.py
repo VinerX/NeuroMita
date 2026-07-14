@@ -93,6 +93,52 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+def _remove_schema_properties(schema: dict, field_names: set[str]) -> None:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+
+    for field_name in field_names:
+        properties.pop(field_name, None)
+
+    required = schema.get("required")
+    if isinstance(required, list):
+        schema["required"] = [name for name in required if name not in field_names]
+
+
+def _remove_segment_schema_properties(schema: dict, field_names: set[str]) -> None:
+    """Remove selected fields from the nested ``segments.items`` schema."""
+    if not field_names:
+        return
+
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+
+    segments_schema = properties.get("segments")
+    if not isinstance(segments_schema, dict):
+        return
+
+    items_schema = segments_schema.get("items")
+    targets: list[dict] = []
+    if isinstance(items_schema, dict):
+        targets.append(items_schema)
+
+        ref = str(items_schema.get("$ref") or "")
+        if ref.startswith("#/$defs/"):
+            definition = schema.get("$defs", {}).get(ref[len("#/$defs/"):])
+            if isinstance(definition, dict):
+                targets.append(definition)
+
+    seen: set[int] = set()
+    for target in targets:
+        marker = id(target)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        _remove_schema_properties(target, field_names)
+
+
 
 
 class ToolCall(BaseModel):
@@ -228,9 +274,17 @@ class StructuredResponse(BaseModel):
         return " ".join(p for p in parts if p).strip()
 
     @classmethod
-    def openai_response_format(cls, exclude_fields: set = None, custom_params: list = None) -> dict:
+    def openai_response_format(
+        cls,
+        exclude_fields: set = None,
+        custom_params: list = None,
+        exclude_segment_fields: set = None,
+    ) -> dict:
         """
         Return the ``response_format`` payload for the OpenAI API.
+
+        ``exclude_segment_fields`` removes fields from the nested segment
+        schema while keeping the internal Pydantic model backward-compatible.
 
         Format::
 
@@ -253,10 +307,9 @@ class StructuredResponse(BaseModel):
                 cf_props[key] = {"type": _type_map.get(p.get("type", "string"), "string")}
             schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
-            for f in exclude_fields:
-                schema.get("properties", {}).pop(f, None)
-                if "required" in schema:
-                    schema["required"] = [r for r in schema["required"] if r != f]
+            _remove_schema_properties(schema, exclude_fields)
+        if exclude_segment_fields:
+            _remove_segment_schema_properties(schema, exclude_segment_fields)
         return {
             "type": "json_schema",
             "json_schema": {
@@ -272,7 +325,12 @@ class StructuredResponse(BaseModel):
         return cls.model_json_schema()
 
     @classmethod
-    def gemini_schema_dict(cls, exclude_fields: set = None, custom_params: list = None) -> dict:
+    def gemini_schema_dict(
+        cls,
+        exclude_fields: set = None,
+        custom_params: list = None,
+        exclude_segment_fields: set = None,
+    ) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
 
@@ -287,6 +345,8 @@ class StructuredResponse(BaseModel):
         Args:
             exclude_fields: optional set of top-level field names to remove
                 from the schema (e.g. {"custom_fields"} when no custom_params).
+            exclude_segment_fields: optional set of fields to remove from the
+                nested ``segments`` item schema.
             custom_params: list of custom param dicts from config.json; when
                 provided, patches custom_fields.properties so Gemini allows
                 the declared keys (without this Gemini strips all keys from
@@ -317,10 +377,9 @@ class StructuredResponse(BaseModel):
                 cf_props[key] = {"type": gemini_type, "nullable": True}
             schema["properties"]["custom_fields"]["properties"] = cf_props
         if exclude_fields:
-            for f in exclude_fields:
-                schema.get("properties", {}).pop(f, None)
-                if "required" in schema:
-                    schema["required"] = [r for r in schema["required"] if r != f]
+            _remove_schema_properties(schema, exclude_fields)
+        if exclude_segment_fields:
+            _remove_segment_schema_properties(schema, exclude_segment_fields)
         return schema
 
 

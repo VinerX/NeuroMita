@@ -4,6 +4,10 @@ import asyncio
 import gc
 from typing import Any, Callable, Optional
 
+import numpy as np
+
+from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
+
 
 class ASRService:
     """
@@ -90,33 +94,47 @@ class ASRService:
         self._engine_id = engine_id
         self._engine_settings = engine_settings or {}
 
-        rec = self._get_recognizer(engine_id)
+        rec = await asyncio.to_thread(self._get_recognizer, engine_id)
         if rec is None:
             return False
 
         try:
             if hasattr(rec, "apply_settings"):
-                rec.apply_settings(self._engine_settings)
+                await asyncio.to_thread(rec.apply_settings, self._engine_settings)
         except Exception:
             pass
 
-        if hasattr(rec, "is_installed"):
+        if hasattr(rec, "status"):
             try:
-                if not rec.is_installed():
+                status = await asyncio.to_thread(
+                    rec.status,
+                    {"engine_settings": dict(self._engine_settings)},
+                )
+                if not bool(status.ready):
                     return False
             except Exception:
-                pass
+                return False
 
-        ok = await rec.init()
+        # Most legacy recognizer ``init`` implementations are declared async but
+        # perform imports, model loading and filesystem/network work
+        # synchronously. Run their private event loop off the shared AI loop.
+        ok = await asyncio.to_thread(lambda: asyncio.run(rec.init()))
         if not ok:
             return False
 
-        vad_model = None
-        if engine_id != "google":
-            vad_model = await self._get_vad_model()
+        vad_model = await self._get_vad_model()
+        capture = AudioCaptureService(self._logger)
 
         self._active = True
-        self.emit_event("status", {"running": True})
+        service_loop = asyncio.get_running_loop()
+        capture_ready = service_loop.create_future()
+
+        def _mark_capture_ready() -> None:
+            def _resolve() -> None:
+                if not capture_ready.done():
+                    capture_ready.set_result(True)
+
+            service_loop.call_soon_threadsafe(_resolve)
 
         async def _handle_text(text: str):
             t = (text or "").strip()
@@ -126,32 +144,99 @@ class ASRService:
         def _active_flag():
             return bool(self._active)
 
+        def _speech_probability(audio: np.ndarray, rate: int) -> float:
+            import torch
+
+            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+            return float(vad_model(tensor, rate).item())
+
+        async def _transcribe_segment(audio: np.ndarray, rate: int) -> None:
+            text = await rec.transcribe(audio, rate)
+            if text:
+                await _handle_text(text)
+
         async def _runner():
+            failed = False
             try:
-                await rec.live_recognition(
-                    mic_index,
-                    _handle_text,
-                    vad_model,
-                    _active_flag,
-                    sample_rate=sample_rate,
-                    chunk_size=chunk_size,
-                    vad_threshold=vad_threshold,
-                    silence_timeout=silence_timeout,
-                    pre_buffer_duration=pre_buffer_duration,
-                    max_speech_duration=max_speech_duration,
+                await asyncio.to_thread(
+                    lambda: asyncio.run(
+                        capture.run(
+                            microphone_index=mic_index,
+                            config=AudioCaptureConfig(
+                                sample_rate=sample_rate,
+                                chunk_size=chunk_size,
+                                vad_threshold=vad_threshold,
+                                silence_timeout=silence_timeout,
+                                pre_buffer_duration=pre_buffer_duration,
+                                max_speech_duration=max_speech_duration,
+                            ),
+                            is_active=_active_flag,
+                            speech_probability=_speech_probability,
+                            on_segment=_transcribe_segment,
+                            on_ready=_mark_capture_ready,
+                        )
+                    )
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Без этого события ошибка цикла (не открылся микрофон, VAD не
-                # принял чанк и т.п.) умирала молча, а GUI продолжал считать,
-                # что распознавание работает.
-                self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
+                failed = True
+                if not capture_ready.done():
+                    capture_ready.set_exception(e)
+                else:
+                    self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
             finally:
                 self._active = False
-                self.emit_event("status", {"running": False})
+                if not capture_ready.done():
+                    capture_ready.set_exception(
+                        RuntimeError("Audio capture stopped before the microphone became ready")
+                    )
+                elif not failed:
+                    self.emit_event("status", {"running": False})
 
         self._task = asyncio.create_task(_runner())
+        try:
+            await asyncio.wait_for(asyncio.shield(capture_ready), timeout=10.0)
+        except asyncio.CancelledError:
+            self._active = False
+            if not capture_ready.done():
+                capture_ready.cancel()
+            if self._task is not None:
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+            raise
+        except Exception as exc:
+            self._active = False
+            if not capture_ready.done():
+                capture_ready.cancel()
+            task = self._task
+            if task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                except Exception:
+                    pass
+            self._task = None
+            if isinstance(exc, asyncio.TimeoutError):
+                message = (
+                    f"Микрофон {mic_index} не передал аудиоданные за 10 секунд; "
+                    "устройство или аудиодрайвер не отвечает"
+                )
+            else:
+                message = str(exc).strip() or f"Не удалось запустить микрофон {mic_index}"
+            raise RuntimeError(message) from exc
+
+        if self._task.done() or not self._active:
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+            raise RuntimeError(
+                f"ASR audio capture on microphone {mic_index} stopped during startup"
+            )
+
+        self.emit_event("status", {"running": True})
         return True
 
     async def _stop_live_internal(self):
@@ -159,12 +244,10 @@ class ASRService:
 
         if self._task is not None:
             try:
-                self._task.cancel()
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=5.0)
             except asyncio.TimeoutError:
-                pass
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
             except Exception:
                 pass
             finally:
@@ -172,7 +255,7 @@ class ASRService:
 
         if self._recognizer is not None:
             try:
-                self._recognizer.cleanup()
+                await asyncio.to_thread(self._recognizer.cleanup)
             except Exception:
                 pass
             finally:
@@ -185,19 +268,16 @@ class ASRService:
         if self._vad_model is not None:
             return self._vad_model
 
-        try:
-            from handlers.embedding_handler import _ensure_torch_and_transformers
-            _ensure_torch_and_transformers()
-            import torch
-        except Exception as e:
-            raise RuntimeError(f"torch not available for VAD: {e}") from None
+        def load() -> Any:
+            import torch  # noqa: F401
 
-        try:
-            from silero_vad import load_silero_vad
-        except Exception as e:
-            raise RuntimeError(f"silero_vad not available: {e}") from None
+            try:
+                from silero_vad import load_silero_vad
+            except Exception as e:
+                raise RuntimeError(f"silero_vad not available: {e}") from None
+            return load_silero_vad()
 
-        self._vad_model = load_silero_vad()
+        self._vad_model = await asyncio.to_thread(load)
         return self._vad_model
 
     def _unload_vad_model(self):
@@ -214,23 +294,10 @@ class ASRService:
         if self._recognizer is not None and self._engine_id == engine_id:
             return self._recognizer
 
-        # Ленивая загрузка классов
-        from handlers.asr_models.google_recognizer import GoogleRecognizer
-        from handlers.asr_models.gigaam_recognizer import GigaAMRecognizer
-        from handlers.asr_models.gigaam_onnx_recognizer import GigaAMOnnxRecognizer
-        from handlers.asr_models.whisper_recognizer import WhisperRecognizer
-        from handlers.asr_models.whisper_onnx_recognizer import WhisperOnnxRecognizer
+        from handlers.asr_models.registry import create_recognizer, engine_class
 
-        reg = {
-            "google": GoogleRecognizer,
-            "gigaam": GigaAMRecognizer,
-            "gigaam_onnx": GigaAMOnnxRecognizer,
-            "whisper": WhisperRecognizer,
-            "whisper_onnx": WhisperOnnxRecognizer,
-        }
-
-        cls = reg.get(str(engine_id or "").strip())
-        if not cls:
+        normalized = str(engine_id or "").strip()
+        if engine_class(normalized) is None:
             return None
 
         if self._logger is None:
@@ -246,5 +313,9 @@ class ASRService:
             except Exception:
                 self._pip_installer = None
 
-        self._recognizer = cls(self._pip_installer, self._logger)
+        self._recognizer = create_recognizer(
+            normalized,
+            self._pip_installer,
+            self._logger,
+        )
         return self._recognizer

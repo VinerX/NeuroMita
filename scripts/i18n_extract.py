@@ -31,6 +31,8 @@ from pathlib import Path
 TR_FUNCS = {"_", "getTranslationVariant", "t", "_g"}
 # Функции с сигнатурой (lang, ru, en) — ключ/инлайн сдвинуты на один аргумент.
 TR_FUNCS_LANG_FIRST = {"translate_for_language"}
+# Live-локализация виджетов: первый аргумент — сам виджет, затем (ru, en).
+TR_FUNCS_WIDGET_FIRST = {"tr_set": (1, 2), "tr_tab_text": (2, 3)}
 
 
 def _const_str(node: ast.expr | None) -> str | None:
@@ -38,6 +40,33 @@ def _const_str(node: ast.expr | None) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     return None
+
+
+def _source_pairs(tree: ast.AST) -> list[tuple[str, str]]:
+    """Extract static ``*_SOURCES`` maps used by long-lived localized views.
+
+    Such maps keep translation source pairs unevaluated until render time, so
+    the regular ``_(ru, en)`` call scanner cannot see their literal values.
+    """
+    pairs: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = [target.id for target in targets if isinstance(target, ast.Name)]
+        if not any(name.endswith("_SOURCES") for name in names):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            continue
+        for item in value.values:
+            if not isinstance(item, (ast.Tuple, ast.List)) or len(item.elts) < 2:
+                continue
+            ru = _const_str(item.elts[0])
+            en = _const_str(item.elts[1])
+            if ru is not None:
+                pairs.append((ru, en or ""))
+    return pairs
 
 
 def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
@@ -64,6 +93,8 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
     total = 0
     dynamic = 0
 
+    pairs.extend(_source_pairs(tree))
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -76,10 +107,14 @@ def scan_file(path: Path) -> tuple[list[tuple[str, str]], int, int, str | None]:
         else:
             name = None
         lang_first = name in TR_FUNCS_LANG_FIRST
-        if name not in TR_FUNCS and not lang_first:
+        widget_first = TR_FUNCS_WIDGET_FIRST.get(name)
+        if name not in TR_FUNCS and not lang_first and widget_first is None:
             continue
         # Сдвиг аргументов для (lang, ru, en) против (ru, en).
-        ru_idx, en_idx = (1, 2) if lang_first else (0, 1)
+        if widget_first is not None:
+            ru_idx, en_idx = widget_first
+        else:
+            ru_idx, en_idx = (1, 2) if lang_first else (0, 1)
         if len(node.args) <= ru_idx:
             continue
         ru = _const_str(node.args[ru_idx])

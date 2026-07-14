@@ -22,11 +22,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.events import Events, get_event_bus
-from main_logger import logger
+from ui.mvvm import immutable_payload, mutable_payload
+from ui.windows.ai_hub.settings_presentation import (
+    AIHubSettingsChanged,
+    AIHubSettingsState,
+    AIHubSettingsWarning,
+    ApplyAIHubSettingsRows,
+    ResetAIHubSettings,
+    SaveAIHubSettings,
+    SelectAIHubSettingsComponent,
+)
 from utils import getTranslationVariant as _
 
-from .helpers import meta_from_row, status_from_row
 from .schema_renderer import SchemaForm
 
 
@@ -35,13 +42,19 @@ class SettingsPanel(QWidget):
 
     request_install_view = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
-        self._rows: list[dict[str, Any]] = []
-        self._category: str | None = None
+        self._view_model = view_model
         self._current_id: str | None = None
+        self._components_revision = -1
+        self._form_revision = -1
+        self._errors_revision = -1
+        self._rendering = False
         self._build()
+        self._view_model.state_changed.connect(self.render)
+        self._view_model.effect_emitted.connect(self.handle_effect)
+        self.destroyed.connect(lambda *_: self._view_model.close())
+        self.render(self._view_model.state)
 
     # ---------------------------------------------------------- build
     def _build(self) -> None:
@@ -57,9 +70,9 @@ class SettingsPanel(QWidget):
         ll.setContentsMargins(14, 14, 14, 14)
         ll.setSpacing(10)
 
-        header = QLabel(_("Установленные модели", "Installed models"))
-        header.setObjectName("AIHubSettingsListHeader")
-        ll.addWidget(header)
+        self._header = QLabel(_("Установленные модели", "Installed models"))
+        self._header.setObjectName("AIHubSettingsListHeader")
+        ll.addWidget(self._header)
 
         self._list = QListWidget()
         self._list.setObjectName("AIHubSettingsModelList")
@@ -144,10 +157,12 @@ class SettingsPanel(QWidget):
 
     # ---------------------------------------------------------- public API
     def apply_data(self, rows: list[dict[str, Any]], category: str | None) -> None:
-        """Refresh the installed-models list for the given category."""
-        self._rows = list(rows or [])
-        self._category = category
-        self._rebuild_list()
+        self._view_model.dispatch(
+            ApplyAIHubSettingsRows(
+                rows=immutable_payload(list(rows or [])),
+                category=category,
+            )
+        )
 
     def select_component(self, component_id: str) -> None:
         """Select an installed model by id. No-op if not installed in the
@@ -163,33 +178,27 @@ class SettingsPanel(QWidget):
                 self._list.setCurrentItem(item)
                 return
 
-    # ---------------------------------------------------------- list
-    def _installed_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        category = self._category
-        for row in self._rows:
-            meta = meta_from_row(row)
-            if category and str(meta.get("category") or "") != category:
-                continue
-            status = status_from_row(row)
-            if not (status.get("installed") or status.get("ready") or str(status.get("code") or "") in ("installed", "ready")):
-                continue
-            # Only show configurable rows. We don't have a flag in metadata,
-            # but the GET_SETTINGS_SCHEMA call returns [] for non-configurable
-            # components, so we use that filter lazily in selection.
-            rows.append(row)
-        return rows
+    def retranslate(self) -> None:
+        """Refresh shell labels without disturbing the edited form values."""
+        self._header.setText(_("Установленные модели", "Installed models"))
+        self._btn_reset.setText(_("Сбросить", "Reset"))
+        self._btn_save.setText(_("Сохранить", "Save"))
+        if not self._current_id:
+            self._title.setText(_("Нет установленных моделей", "No installed models"))
+            self._empty.setText(
+                _(
+                    "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
+                    "No models installed in this category.\nGo to the «Install» section to add one.",
+                )
+            )
 
-    def _rebuild_list(self) -> None:
-        prev_id = self._current_id
+    # ---------------------------------------------------------- list
+    def _rebuild_list(self, state: AIHubSettingsState) -> None:
+        prev_id = state.selected_component_id or self._current_id
         self._list.blockSignals(True)
         try:
             self._list.clear()
-            rows = self._installed_rows()
-            for row in rows:
-                meta = meta_from_row(row)
-                cid = str(meta.get("id") or "")
-                title = str(meta.get("title") or cid or "-")
+            for cid, title in state.components:
                 item = QListWidgetItem(title)
                 item.setData(Qt.ItemDataRole.UserRole, cid)
                 self._list.addItem(item)
@@ -233,118 +242,22 @@ class SettingsPanel(QWidget):
             self._set_empty_state()
             return
 
-        self._current_id = component_id
-        self._title.setText(item.text())
-        self._subtitle.setText("")
-        self._dirty_dot.setVisible(False)
-        self._status_lbl.setText("")
-        self._form.clear_field_errors()
-
-        schema = self._fetch_schema(component_id)
-        if not schema:
-            self._set_form_visible(False)
-            self._empty.setText(
-                _(
-                    "У этой модели нет настроек.",
-                    "This model has no settings.",
-                )
-            )
-            self._empty.setVisible(True)
-            self._set_actions_enabled(False)
-            return
-
-        self._empty.setVisible(False)
-        self._set_form_visible(True)
-
-        values = self._fetch_values(component_id)
-        self._form.set_schema(schema)
-        self._form.set_values(values)
-        self._set_actions_enabled(True)
-        self._update_dirty()
-
-    # ---------------------------------------------------------- bus calls
-    def _fetch_schema(self, component_id: str) -> list[dict[str, Any]]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.GET_SETTINGS_SCHEMA,
-                {"component_id": component_id},
-                timeout=4.0,
-            )
-            schema = res[0] if res else []
-            return list(schema or [])
-        except Exception as exc:
-            logger.error(f"AI Hub: settings_schema fetch failed: {exc}")
-            return []
-
-    def _fetch_values(self, component_id: str) -> dict[str, Any]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.LOAD_SETTINGS,
-                {"component_id": component_id},
-                timeout=4.0,
-            )
-            values = res[0] if res else {}
-            return dict(values or {})
-        except Exception as exc:
-            logger.error(f"AI Hub: settings load failed: {exc}")
-            return {}
-
-    def _save_values(self, component_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Installable.SAVE_SETTINGS,
-                {"component_id": component_id, "values": values},
-                timeout=6.0,
-            )
-            return res[0] if res else {"ok": False, "errors": {"_": "no response"}}
-        except Exception as exc:
-            logger.error(f"AI Hub: settings save failed: {exc}")
-            return {"ok": False, "errors": {"_": str(exc)}}
+        if component_id != self._view_model.state.selected_component_id:
+            self._view_model.dispatch(SelectAIHubSettingsComponent(component_id))
 
     # ---------------------------------------------------------- actions
     def _on_save(self) -> None:
-        if not self._current_id:
+        if not self._view_model.state.selected_component_id:
             return
         values = self._form.values()
-        self._form.clear_field_errors()
-        result = self._save_values(self._current_id, values)
-        if result.get("ok"):
-            self._status_lbl.setText(_("Сохранено", "Saved"))
-            self._dirty_dot.setVisible(False)
-            self._form.set_values(values)  # rebase "original" snapshot
-            return
-
-        errors = result.get("errors") if isinstance(result.get("errors"), dict) else {}
-        for key, message in errors.items():
-            if key == "_":
-                continue
-            self._form.set_field_error(str(key), str(message))
-        if errors.get("_"):
-            QMessageBox.warning(
-                self,
-                _("Сохранение настроек", "Save settings"),
-                str(errors.get("_") or _("Не удалось сохранить настройки.", "Failed to save settings.")),
-            )
-        else:
-            self._status_lbl.setText(_("Проверьте ошибки", "Check errors"))
+        self._view_model.dispatch(SaveAIHubSettings(immutable_payload(values)))
 
     def _on_reset(self) -> None:
-        if not self._current_id:
-            return
-        values = self._fetch_values(self._current_id)
-        self._form.set_values(values)
-        self._form.clear_field_errors()
-        self._dirty_dot.setVisible(False)
-        self._status_lbl.setText(_("Сброшено", "Reset"))
+        self._view_model.dispatch(ResetAIHubSettings())
 
     def _on_form_changed(self) -> None:
-        self._update_dirty()
-
-    def _update_dirty(self) -> None:
-        dirty = self._form.is_dirty()
-        self._dirty_dot.setVisible(dirty)
-        if dirty:
-            self._status_lbl.setText(_("Есть несохранённые изменения", "Unsaved changes"))
+        if not self._rendering:
+            self._view_model.dispatch(AIHubSettingsChanged())
 
     def _set_form_visible(self, visible: bool) -> None:
         for w in self.findChildren(QScrollArea, "AIHubSettingsScroll"):
@@ -353,3 +266,58 @@ class SettingsPanel(QWidget):
     def _set_actions_enabled(self, enabled: bool) -> None:
         self._btn_save.setEnabled(enabled)
         self._btn_reset.setEnabled(enabled)
+
+    def render(self, state: AIHubSettingsState) -> None:
+        self._rendering = True
+        try:
+            if state.components_revision != self._components_revision:
+                self._components_revision = state.components_revision
+                self._rebuild_list(state)
+
+            self._current_id = state.selected_component_id or None
+            title = next(
+                (title for cid, title in state.components if cid == state.selected_component_id),
+                _("Выберите модель", "Select a model"),
+            )
+            self._title.setText(title)
+
+            if state.form_revision != self._form_revision:
+                self._form_revision = state.form_revision
+                schema = list(mutable_payload(state.schema) or [])
+                values = dict(mutable_payload(state.values) or {})
+                self._form.clear_field_errors()
+                if schema:
+                    self._form.set_schema(schema)
+                    self._form.set_values(values)
+                    self._empty.setVisible(False)
+                    self._set_form_visible(True)
+                else:
+                    self._set_form_visible(False)
+                    self._empty.setText(
+                        state.status_text
+                        or _("У этой модели нет настроек.", "This model has no settings.")
+                    )
+                    self._empty.setVisible(True)
+
+            if state.errors_revision != self._errors_revision:
+                self._errors_revision = state.errors_revision
+                self._form.clear_field_errors()
+                errors = dict(mutable_payload(state.field_errors) or {})
+                for key, message in errors.items():
+                    self._form.set_field_error(str(key), str(message))
+
+            self._dirty_dot.setVisible(bool(state.dirty))
+            self._status_lbl.setText(str(state.status_text or ""))
+            self._list.setEnabled(not state.saving)
+            enabled = bool(state.schema) and not state.loading and not state.saving
+            self._set_actions_enabled(enabled)
+        finally:
+            self._rendering = False
+
+    def handle_effect(self, effect) -> None:
+        if isinstance(effect, AIHubSettingsWarning):
+            QMessageBox.warning(
+                self,
+                _("Сохранение настроек", "Save settings"),
+                effect.message,
+            )

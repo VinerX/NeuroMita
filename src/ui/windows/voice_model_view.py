@@ -5,16 +5,26 @@ import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QLineEdit, QComboBox, QCheckBox,
-    QMessageBox, QListWidget, QListWidgetItem, QSplitter, QTabWidget
+    QListWidget, QListWidgetItem, QSplitter, QTabWidget
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QCursor
 
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
-from core.events import get_event_bus, Events
-from ui.async_bus import run_async
-from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
+from ui.windows.voice_model_presentation import (
+    CloseVoiceModels,
+    InstallVoiceModel,
+    OpenVoiceDocumentation,
+    RefreshVoiceModels,
+    RequestVoiceDescription,
+    SaveVoiceSettings,
+    UninstallVoiceModel,
+    VoiceDescriptionEffect,
+    VoiceModelsState,
+    VoiceOperationRejectedEffect,
+)
+from ui.mvvm import mutable_payload
 
 from main_logger import logger
 
@@ -650,31 +660,16 @@ class ModelListItemWidget(QWidget):
 class VoiceModelSettingsView(QWidget):
 
     run_ui_task_signal = pyqtSignal(object)
-    update_description_signal = pyqtSignal(str)
-    clear_description_signal = pyqtSignal()
-    install_started_signal = pyqtSignal(str)
-    install_finished_signal = pyqtSignal(dict)
-    uninstall_started_signal = pyqtSignal(str)
-    uninstall_finished_signal = pyqtSignal(dict)
-    refresh_panels_signal = pyqtSignal()
-    refresh_settings_signal = pyqtSignal()
 
-    ask_question_signal = pyqtSignal(str, str, object, object)
-    create_voice_action_window_signal = pyqtSignal(str, str, object, object)
-
-    open_vc_redist_dialog = pyqtSignal(object)            # result_holder
-    open_triton_dialog = pyqtSignal(dict, object)         # deps, result_holder
-
-    def __init__(self, auto_initialize: bool = True):
+    def __init__(self, view_model, *, auto_initialize: bool = True):
         super().__init__()
+        self.view_model = view_model
 
         self.setWindowTitle(_("Настройки и Установка Локальных Моделей", "Settings and Installation of Local Models"))
         self.setMinimumSize(900, 650)
         self.resize(1100, 720)
 
         self.setStyleSheet(get_stylesheet())
-
-        self.event_bus = get_event_bus()
 
         self._cached_dependencies_status = None
         self.models_data = []
@@ -687,8 +682,7 @@ class VoiceModelSettingsView(QWidget):
         self.detail = None
 
         self._initialized = False
-        self._refresh_ticket = 0
-        self._deps_refresh_ticket = 0
+        self._rendered_revision = -1
         self.btn_save = None
         self._baseline_values: dict[str, object] = {}
         self._dirty_keys: set[str] = set()
@@ -696,25 +690,9 @@ class VoiceModelSettingsView(QWidget):
 
         self._build_ui()
 
-        self.update_description_signal.connect(self._on_update_description)
-        self.clear_description_signal.connect(self._on_clear_description)
-        self.install_started_signal.connect(self._on_install_started)
-        self.install_finished_signal.connect(self._on_install_finished)
-        self.uninstall_started_signal.connect(self._on_uninstall_started)
-        self.uninstall_finished_signal.connect(self._on_uninstall_finished)
-        self.refresh_panels_signal.connect(self._on_refresh_panels)
-        self.refresh_settings_signal.connect(self._on_refresh_settings)
-        self.ask_question_signal.connect(self._on_ask_question)
-        self.create_voice_action_window_signal.connect(self._on_create_voice_action_window)
         self.run_ui_task_signal.connect(self._run_ui_task, type=Qt.ConnectionType.QueuedConnection)
-        self.open_vc_redist_dialog.connect(
-            self._slot_open_vc_redist_dialog,
-            type=Qt.ConnectionType.BlockingQueuedConnection
-        )
-        self.open_triton_dialog.connect(
-            self._slot_open_triton_dialog,
-            type=Qt.ConnectionType.BlockingQueuedConnection
-        )
+        self.view_model.state_changed.connect(self.render)
+        self.view_model.effect_emitted.connect(self.handle_effect)
 
         if auto_initialize:
             self.refresh_all()
@@ -724,48 +702,41 @@ class VoiceModelSettingsView(QWidget):
             fn()
 
     def refresh_all(self):
-        """
-        Вызывай при показе окна:
-        - 1-й раз: полноценная инициализация данных;
-        - далее: обновление данных и UI.
-        """
-        self._refresh_ticket += 1
-        ticket = self._refresh_ticket
         if self.list is not None and not self.models_data:
             self.list.clear()
             self.list.addItem(QListWidgetItem(_("Loading models...", "Loading models...")))
+        self.view_model.dispatch(RefreshVoiceModels())
 
-        def worker():
-            return {
-                "models_data": self._get_models_data(),
-                "installed_models": self._get_installed_models(),
-                "dependencies_status": self._get_dependencies_status(),
-            }
+    def render(self, state: VoiceModelsState) -> None:
+        if state.revision != self._rendered_revision:
+            self._rendered_revision = state.revision
+            if state.revision > 0:
+                self._apply_refresh_snapshot(
+                    {
+                        "models_data": tuple(
+                            mutable_payload(item) for item in state.models
+                        ),
+                        "installed_models": state.installed_models,
+                        "dependencies_status": mutable_payload(
+                            state.dependencies_status
+                        ) or {},
+                    }
+                )
+        busy = state.operation is not None
+        if busy:
+            text = _("Загрузка...", "Downloading...") if state.operation == "install" else _("Удаление...", "Uninstalling...")
+            self.detail.set_button_text(text)
+            self.detail.set_button_enabled(False)
+        elif self._initialized:
+            self._on_selection_changed()
+        if state.error:
+            logger.warning("Voice Models presentation error: %s", state.error)
 
-        def apply(snapshot: dict):
-            if ticket != self._refresh_ticket:
-                return
-            self._apply_refresh_snapshot(snapshot)
-
-        run_async(self, worker, apply, name="voice-model-view-refresh")
-        return
-
-        if not self._initialized:
-            self._initialize_data()
-            self._initialized = True
-            return
-
-        self.models_data = self._get_models_data()
-        self.installed_models = self._get_installed_models()
-        self._cached_dependencies_status = self._get_dependencies_status()
-
-        self._on_clear_description()
-        self._populate_list()
-        if self.list and self.list.count() and self.list.currentRow() < 0:
-            self.list.setCurrentRow(0)
-
-        self.refresh_dependencies_panel()
-        self._on_selection_changed()
+    def handle_effect(self, effect) -> None:
+        if isinstance(effect, VoiceDescriptionEffect):
+            self._on_update_description(effect.text)
+        elif isinstance(effect, VoiceOperationRejectedEffect):
+            logger.info(effect.message)
 
     def _apply_refresh_snapshot(self, snapshot: dict):
         self.models_data = list(snapshot.get("models_data") or [])
@@ -854,8 +825,8 @@ class VoiceModelSettingsView(QWidget):
         self.detail.set_settings_changed_callback(self._on_current_setting_changed)
         # description hover callbacks
         self.detail.set_description_callbacks(
-            lambda key: self.event_bus.emit(Events.VoiceModel.UPDATE_DESCRIPTION, key),
-            lambda: self.event_bus.emit(Events.VoiceModel.CLEAR_DESCRIPTION)
+            lambda key: self.view_model.dispatch(RequestVoiceDescription(str(key))),
+            lambda: self.view_model.dispatch(RequestVoiceDescription(None)),
         )
         # wiring install/uninstall
         self.detail.install_clicked.connect(self._on_install_clicked)
@@ -920,18 +891,15 @@ class VoiceModelSettingsView(QWidget):
         self._apply_gpu_status()
         self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
-    # ---------- EventBus helpers ----------
+    # ---------- Presentation helpers ----------
     def _get_models_data(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA)
-        return results[0] if results else []
+        return [mutable_payload(item) for item in self.view_model.state.models]
 
     def _get_installed_models(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS)
-        return results[0] if results else set()
+        return set(self.view_model.state.installed_models)
 
     def _get_dependencies_status(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEPENDENCIES_STATUS)
-        return results[0] if results else {}
+        return dict(mutable_payload(self.view_model.state.dependencies_status) or {})
 
     def _apply_gpu_status(self):
         st = self._cached_dependencies_status or {}
@@ -975,8 +943,6 @@ class VoiceModelSettingsView(QWidget):
             row = QHBoxLayout()
             row.setSpacing(16)
             for text, ok in [
-                (_("CUDA Toolkit:", "CUDA Toolkit:"), st.get("cuda_found", False)),
-                (_("Windows SDK:", "Windows SDK:"), st.get("winsdk_found", False)),
                 (_("MSVC:", "MSVC:"), st.get("msvc_found", False))
             ]:
                 sub = QHBoxLayout()
@@ -990,16 +956,18 @@ class VoiceModelSettingsView(QWidget):
             row.addStretch()
             layout.addLayout(row)
 
-            if not (st.get("cuda_found") and st.get("winsdk_found") and st.get("msvc_found")):
+            if not st.get("msvc_found"):
                 warn = QHBoxLayout()
-                wlab = QLabel(_("⚠️ Для моделей Fish Speech+ / +RVC могут потребоваться все компоненты.",
-                                "⚠️ Fish Speech+ / +RVC models may require all components."))
+                wlab = QLabel(_("⚠️ Для Fish Speech+ / +RVC нужен MSVC (VC++ Build Tools).",
+                                "⚠️ Fish Speech+ / +RVC requires MSVC (VC++ Build Tools)."))
                 wlab.setStyleSheet("color: orange; font-weight: bold;")
                 warn.addWidget(wlab)
                 link = QLabel(_("[Документация]", "[Documentation]"))
                 link.setObjectName("Link")
                 link.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                link.mousePressEvent = lambda e: self.event_bus.emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html")
+                link.mousePressEvent = lambda e: self.view_model.dispatch(
+                    OpenVoiceDocumentation("installation_guide.html")
+                )
                 warn.addWidget(link)
                 warn.addStretch()
                 layout.addLayout(warn)
@@ -1152,74 +1120,20 @@ class VoiceModelSettingsView(QWidget):
         if not model_data:
             return
 
-        self.event_bus.emit(Events.VoiceModel.INSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.view_model.dispatch(InstallVoiceModel(model_id))
 
     def _on_uninstall_clicked(self, model_id: str):
-        self.event_bus.emit(Events.VoiceModel.UNINSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.view_model.dispatch(UninstallVoiceModel(model_id))
 
     def _on_save_clicked(self):
         if not self._dirty_keys:
             return
         logger.info(f"Voice settings changed: {len(self._dirty_keys)} keys: {sorted(self._dirty_keys)}")
-        self.event_bus.emit(Events.VoiceModel.SAVE_SETTINGS)
+        self.view_model.dispatch(SaveVoiceSettings(self.get_all_section_values()))
         QTimer.singleShot(0, self._capture_baseline)
 
     def _on_close_clicked(self):
-        self.event_bus.emit(Events.VoiceModel.CLOSE_DIALOG)
-
-    # ---------- Install/Uninstall UI state ----------
-    def _on_install_started(self, model_id):
-        self.detail.set_button_text(_("Загрузка...", "Downloading..."))
-        self.detail.set_button_enabled(False)
-
-    def _on_install_finished(self, data):
-        self.refresh_all()
-
-    def _on_uninstall_started(self, model_id):
-        self.detail.set_button_text(_("Удаление...", "Uninstalling..."))
-        self.detail.set_button_enabled(False)
-
-    def _on_uninstall_finished(self, data):
-        self.refresh_all()
-
-    def _on_refresh_panels(self):
-        self.refresh_all()
-        return
-        self.models_data = self._get_models_data()
-        self.installed_models = self._get_installed_models()
-        self._populate_list()
-
-    def _on_refresh_settings(self):
-        self.refresh_all()
-        return
-        self._cached_dependencies_status = self._get_dependencies_status()
-        self._apply_gpu_status()
-        # Пересобрать вкладку "Зависимости" с актуальными данными
-        self.refresh_dependencies_panel()
-        self._on_selection_changed()
-
-    # ---------- API for controller compatibility ----------
-    def set_button_text(self, model_id, text):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            self.detail.set_button_text(text)
-
-    def set_button_enabled(self, model_id, enabled):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            self.detail.set_button_enabled(enabled)
-
-    def get_section_values(self, model_id):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            return self.detail.get_current_settings_values()
-        return {}
+        self.view_model.dispatch(CloseVoiceModels(self.get_all_section_values()))
 
     def get_all_section_values(self):
         # сохраняем настройки только текущей выбранной модели
@@ -1230,39 +1144,6 @@ class VoiceModelSettingsView(QWidget):
             values[mid] = self.detail.get_current_settings_values()
         return values
 
-    # ---------- Dialog helpers for controller ----------
-    @pyqtSlot(str, str, object, object)
-    def _on_ask_question(self, title, message, result_holder, local_loop):
-        reply = QMessageBox.question(
-            self, title, message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        result_holder["answer"] = (reply == QMessageBox.StandardButton.Yes)
-        local_loop.quit()
-
-    @pyqtSlot(str, str, object, object)
-    def _on_create_voice_action_window(self, title, status, result_holder, local_loop):
-        from ui.windows.voice_action_windows import VoiceActionWindow
-        window = VoiceActionWindow(self.window() or self, title, status)
-        window.show()
-        result_holder["window"] = window
-        local_loop.quit()
-
-    # ---------- Messages ----------
-    def show_warning(self, title, message):
-        QMessageBox.warning(self, title, message)
-
-    def show_critical(self, title, message):
-        QMessageBox.critical(self, title, message)
-
-    def show_question(self, title, message):
-        reply = QMessageBox.question(
-            self, title, message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        return reply == QMessageBox.StandardButton.Yes
-    
     def _clear_layout(self, layout):
         """Утилита для рекурсивной очистки любого QLayout."""
         while layout.count():
@@ -1280,19 +1161,6 @@ class VoiceModelSettingsView(QWidget):
             self._clear_layout(self.deps_container)
             self._build_dependencies_panel(self.deps_container)
 
-    # ---------- Deps Windows ----------
-    @pyqtSlot(object)
-    def _slot_open_vc_redist_dialog(self, result_holder: dict):
-        dlg = VCRedistWarningDialog(parent=self.window() or self)
-        dlg.exec()
-        result_holder["choice"] = dlg.get_choice()  # 'retry' | 'close'
-
-    @pyqtSlot(dict, object)
-    def _slot_open_triton_dialog(self, deps: dict, result_holder: dict):
-        dlg = TritonDependenciesDialog(parent=self.window() or self, dependencies_status=deps)
-        dlg.exec()
-        result_holder["choice"] = dlg.get_choice()  # 'continue' | 'skip'
-        
     # ---- extra ---
     def _current_model_id(self) -> str | None:
         cur = self.list.currentItem() if self.list else None

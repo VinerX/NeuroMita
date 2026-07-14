@@ -1,9 +1,10 @@
 # src/handlers/asr_models/google_recognizer.py
-import asyncio
 from typing import Optional
 import numpy as np
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.backends import BackendKind
+from core.installables.helpers import build_runtime_ctx
 from core.install_requirements import InstallRequirement, check_requirements
 from utils import getTranslationVariant as _
 
@@ -11,7 +12,7 @@ from utils import getTranslationVariant as _
 class GoogleRecognizer(SpeechRecognizerInterface):
     """
     Pip-установку НЕ делает.
-    - pip_install_steps(ctx) отдаёт что поставить (SpeechRecognition + optional pyaudio)
+    - pip_install_steps(ctx) отдаёт зависимости адаптера Google и общего ASR-конвейера
     - install() ничего не скачивает (артефактов нет) и возвращает True
     - is_installed() проверяет наличие python-модулей по requirements
     """
@@ -40,7 +41,6 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
         self._sr = None
-        self._pending_tasks: set[asyncio.Task] = set()
 
     def settings_spec(self):
         return []
@@ -54,7 +54,8 @@ class GoogleRecognizer(SpeechRecognizerInterface):
     def requirements(self):
         return [
             InstallRequirement(id="speech_recognition", kind="python_module", module="speech_recognition", required=True),
-            InstallRequirement(id="pyaudio", kind="python_module", module="pyaudio", required=False),
+            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
+            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
         ]
 
     def pip_install_steps(self, ctx: dict):
@@ -62,16 +63,19 @@ class GoogleRecognizer(SpeechRecognizerInterface):
             {
                 "progress": 20,
                 "description": _("Установка SpeechRecognition...", "Installing SpeechRecognition..."),
-                "packages": ["SpeechRecognition"],
+                "packages": ["SpeechRecognition", "sounddevice", "silero-vad"],
                 "extra_args": None
             },
         ]
 
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return BackendKind.CPU
+
     def install_manifest(self) -> list[dict]:
         return []
 
-    def is_installed(self) -> bool:
-        st = check_requirements(self.requirements(), ctx={})
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        st = check_requirements(self.requirements(), ctx=build_runtime_ctx(ctx))
         return bool(st.get("ok"))
 
     async def install(self) -> bool:
@@ -110,154 +114,6 @@ class GoogleRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"Ошибка при распознавании Google: {e}")
             return None
 
-    def _check_microphone_permissions(self, microphone_index):
-        try:
-            import pyaudio
-            pa = pyaudio.PyAudio()
-            try:
-                device_info = pa.get_device_info_by_index(microphone_index)
-                if device_info["maxInputChannels"] == 0:
-                    return False, "Выбранное устройство не поддерживает аудио ввод"
-
-                try:
-                    test_stream = pa.open(
-                        format=pyaudio.paInt16,
-                        channels=1,
-                        rate=int(device_info["defaultSampleRate"]),
-                        input=True,
-                        input_device_index=microphone_index,
-                        frames_per_buffer=1024
-                    )
-                    test_stream.close()
-                    return True, "OK"
-                except Exception as stream_error:
-                    error_msg = str(stream_error).lower()
-                    if "invalid device" in error_msg:
-                        return False, "Устройство недоступно или отключено"
-                    if "unanticipated host error" in error_msg or "access denied" in error_msg:
-                        return False, "Нет разрешения на доступ к микрофону"
-                    return False, f"Ошибка доступа к микрофону: {stream_error}"
-            finally:
-                pa.terminate()
-        except Exception as e:
-            return False, f"Ошибка проверки микрофона: {e}"
-
-    async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                              vad_model, active_flag, **kwargs) -> None:
-        if self._sr is None:
-            self.logger.error("Модуль SpeechRecognition не инициализирован")
-            return
-
-        try:
-            mic_list = self._sr.Microphone.list_microphone_names()
-            if microphone_index >= len(mic_list):
-                self.logger.error(f"Индекс микрофона {microphone_index} выходит за пределы списка")
-                return
-        except Exception as e:
-            self.logger.error(f"Не удалось получить список микрофонов: {e}")
-            return
-
-        ok, err = self._check_microphone_permissions(microphone_index)
-        if not ok:
-            self.logger.error(f"Проблема с доступом к микрофону: {err}")
-            return
-
-        recognizer = self._sr.Recognizer()
-        recognizer.pause_threshold = 0.8
-        recognizer.non_speaking_duration = 0.3
-        recognizer.dynamic_energy_threshold = False
-
-        chunk_size = kwargs.get("chunk_size", 1024)
-        configs = [
-            {"sample_rate": 44100, "chunk_size": chunk_size},
-            {"sample_rate": 22050, "chunk_size": chunk_size},
-            {"sample_rate": 16000, "chunk_size": chunk_size},
-        ]
-
-        chosen_cfg = None
-        for cfg in configs:
-            try:
-                with self._sr.Microphone(
-                    device_index=microphone_index,
-                    sample_rate=cfg["sample_rate"],
-                    chunk_size=cfg["chunk_size"]
-                ) as test_source:
-                    try:
-                        recognizer.adjust_for_ambient_noise(test_source, duration=0.5)
-                    except Exception:
-                        pass
-                chosen_cfg = cfg
-                self.logger.info(
-                    f"Микрофон подключён: {mic_list[microphone_index]} "
-                    f"(sr={cfg['sample_rate']}, chunk={cfg['chunk_size']})"
-                )
-                break
-            except Exception as e:
-                self.logger.debug(f"Конфигурация {cfg} не подошла: {e}")
-
-        if chosen_cfg is None:
-            self.logger.error("Не удалось подключиться к микрофону ни по одной конфигурации")
-            return
-
-        source = self._sr.Microphone(
-            device_index=microphone_index,
-            sample_rate=chosen_cfg["sample_rate"],
-            chunk_size=chosen_cfg["chunk_size"],
-        )
-        try:
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        except Exception:
-            pass
-
-        loop = asyncio.get_running_loop()
-
-        def _bg_callback(rec, audio):
-            try:
-                text = rec.recognize_google(audio, language="ru-RU")
-                if text and text.strip():
-                    self.logger.info(f"Распознано (google): {text}")
-                    def _schedule(t=text):
-                        task = asyncio.create_task(handle_voice_callback(t))
-                        self._pending_tasks.add(task)
-                        task.add_done_callback(lambda done_task: self._pending_tasks.discard(done_task))
-                    loop.call_soon_threadsafe(_schedule)
-            except self._sr.UnknownValueError:
-                pass
-            except self._sr.RequestError as e:
-                self.logger.warning(f"Google API error (bg-thread): {e}")
-            except TimeoutError as e:
-                self.logger.warning(f"Google API timeout (bg-thread): {e}")
-            except Exception as e:
-                self.logger.exception(f"Ошибка в bg-callback: {e}")
-
-        stop_listening = recognizer.listen_in_background(
-            source,
-            _bg_callback,
-            phrase_time_limit=10,
-        )
-
-        self.logger.success("Микрофон готов к распознаванию (listen_in_background запущен).")
-
-        try:
-            while active_flag():
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            self.logger.info("live_recognition отменена пользователем.")
-        finally:
-            try:
-                stop_listening(wait_for_stop=False)
-            except Exception as e:
-                self.logger.warning(f"Ошибка при stop_listening: {e}")
-
-            self.logger.info("Микрофон (Google) корректно закрыт.")
-
     def cleanup(self) -> None:
-        pending = list(self._pending_tasks)
-        self._pending_tasks.clear()
-        for task in pending:
-            try:
-                task.cancel()
-            except Exception:
-                pass
         self._sr = None
         self._is_initialized = False

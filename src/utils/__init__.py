@@ -191,13 +191,45 @@ def load_json_file(filepath):
         return {}
 
 
+def redact_image_payloads(messages):
+    """Заменить base64-картинки заглушкой перед записью дампа на диск.
+
+    Дебаг-дампы писались вместе с полным base64: мегабайты JSON на каждый запрос
+    и на каждую попытку, синхронно, прямо в hot path.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    def _redact_chunk(chunk):
+        if not isinstance(chunk, dict) or chunk.get("type") != "image_url":
+            return chunk
+        url = str((chunk.get("image_url") or {}).get("url") or "")
+        if not url.startswith("data:"):
+            return chunk
+        out = dict(chunk)
+        out["image_url"] = {"url": f"<image redacted: {len(url)} chars>"}
+        return out
+
+    redacted = []
+    for message in messages:
+        if not isinstance(message, dict):
+            redacted.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            message = dict(message)
+            message["content"] = [_redact_chunk(c) for c in content]
+        redacted.append(message)
+    return redacted
+
+
 def save_combined_messages(combined_messages, output_folder="SavedMessages"):
     os.makedirs(output_folder, exist_ok=True)
     file_name = "combined_messages.json"
     file_path = os.path.join(output_folder, file_name)
     with open(file_path, 'w', encoding='utf-8') as file:
-        json.dump(combined_messages, file, ensure_ascii=False, indent=4)
-    logger.info(f"Сообщения сохранены в файл: {file_path}")
+        json.dump(redact_image_payloads(combined_messages), file, ensure_ascii=False, indent=4)
+    logger.debug(f"Сообщения сохранены в файл: {file_path}")
 
 
 def calculate_cost_for_combined_messages(self, combined_messages, cost_input_per_1000):

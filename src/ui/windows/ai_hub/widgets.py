@@ -33,6 +33,8 @@ class Chip(QLabel):
             self.setObjectName("AIHubChipMulti")
         elif variant == "onnx":
             self.setObjectName("AIHubChipOnnx")
+        elif variant == "not_recommended":
+            self.setObjectName("AIHubChipNotRecommended")
         else:
             self.setObjectName("AIHubChip")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -94,6 +96,9 @@ class CategoryButton(QFrame):
         self._count_lbl.setObjectName("AIHubCategoryCount")
         self._count_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._count_lbl, 0)
+
+    def setLabel(self, label: str) -> None:
+        self._label_lbl.setText(str(label or ""))
 
     def setCount(self, count: int) -> None:
         self._count_lbl.setText(str(count))
@@ -169,6 +174,9 @@ class Stat(QFrame):
         self._sub_lbl.setText(subline)
         self._sub_lbl.setVisible(bool(subline))
 
+    def setLabel(self, label: str) -> None:
+        self._label_lbl.setText(str(label or ""))
+
 
 class ModelCard(QFrame):
     """Single model row.
@@ -180,8 +188,7 @@ class ModelCard(QFrame):
       - installed     → green "Установлено" + ⋮ menu (Settings / Uninstall)
       - not installed → status icon + Install button
       - incompatible  → grey-out + red "Несовместимо" chip; the action button
-                        warns on click and lets the user proceed at their own
-                        risk
+                        is disabled
     """
 
     def __init__(
@@ -190,7 +197,6 @@ class ModelCard(QFrame):
         on_install: Callable[[str], None],
         on_uninstall: Callable[[str], None],
         on_open_settings: Callable[[str], None],
-        gpu_vendor: str,
         parent=None,
         on_reinstall: Callable[[str], None] | None = None,
     ):
@@ -200,27 +206,35 @@ class ModelCard(QFrame):
         self._on_uninstall = on_uninstall
         self._on_open_settings = on_open_settings
         self._on_reinstall = on_reinstall
-        self._gpu_vendor = (gpu_vendor or "CPU").upper()
-        # Кнопка установки этой карточки (None для уже установленных — там ⋮-меню).
         self._install_btn = None
         self._install_btn_text = ""
+        self._menu_btn = None
+        self._compatible = True
         self.setObjectName("AIHubModelCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._build()
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
-        from .constants import STATUS_LABELS, STATUS_ICONS
-        from .helpers import is_backend_compatible, meta_from_row, status_from_row
+        from .constants import STATUS_ICONS, status_label
+        from .helpers import (
+            meta_from_row,
+            status_from_row,
+        )
 
         meta = meta_from_row(self._row)
         status = status_from_row(self._row)
         status_code = str(status.get("code") or "unknown")
-        installed = bool(status.get("installed")) or status_code in ("ready", "installed")
+        installed = bool(status.get("ready")) or status_code == "ready"
         details = status.get("details") if isinstance(status.get("details"), dict) else {}
         update_available = installed and bool(details.get("update_available"))
-        backend = str(meta.get("backend") or "").strip().lower()
-        compatible = is_backend_compatible(backend, self._gpu_vendor)
+        compatibility = self._row.get("compatibility")
+        compatibility = compatibility if isinstance(compatibility, dict) else {}
+        compatible = bool(compatibility.get("supported", False))
+        not_recommended = compatible and not bool(compatibility.get("recommended", False))
+        compatibility_warning = str(compatibility.get("warning") or "").strip()
+        backend = str(compatibility.get("backend") or meta.get("backend") or "none").lower()
+        self._compatible = compatible
 
         # mark whole card visually as incompatible (drives QSS via property)
         self.setProperty("incompatible", "true" if (not compatible and not installed) else "false")
@@ -256,13 +270,26 @@ class ModelCard(QFrame):
         if not compatible and not installed:
             warn_chip = Chip(
                 _t("Несовместимо", "Incompatible"),
-                tooltip=_t(
+                tooltip=compatibility_warning or _t(
                     "Эта модель требует другого backend и не запустится на вашем оборудовании.",
                     "This model needs a different backend and won't run on your hardware.",
                 ),
             )
             warn_chip.setObjectName("AIHubChipDanger")
             title_row.addWidget(warn_chip, 0, Qt.AlignmentFlag.AlignTop)
+        elif not_recommended:
+            title_row.addWidget(
+                Chip(
+                    _t("Не рекомендуется", "Not recommended"),
+                    variant="not_recommended",
+                    tooltip=compatibility_warning or _t(
+                        "DirectML разрешён на NVIDIA, но CUDA-реализация обычно быстрее и лучше оптимизирована.",
+                        "DirectML is supported on NVIDIA, but the CUDA implementation is usually faster and better optimized.",
+                    ),
+                ),
+                0,
+                Qt.AlignmentFlag.AlignTop,
+            )
 
         info_col.addLayout(title_row)
 
@@ -334,7 +361,7 @@ class ModelCard(QFrame):
             else:
                 dot.setText("●")
                 dot.setStyleSheet(f"color: {icon_color};")
-            dot.setToolTip(STATUS_LABELS.get(status_code, status_code))
+            dot.setToolTip(status_label(status_code))
             root.addWidget(dot, 0)
 
         # ---- right: action button or ⋮ menu
@@ -362,15 +389,31 @@ class ModelCard(QFrame):
             btn.clicked.connect(self._show_menu)
             self._menu_btn = btn
         else:
-            btn = QPushButton(_t("Установить", "Install"))
+            btn = QPushButton(
+                _t("Установить", "Install")
+                if compatible
+                else _t("Недоступно", "Unavailable")
+            )
             if compatible:
                 btn.setObjectName("AIHubCardPrimary")
             else:
-                btn.setObjectName("AIHubCardPrimaryDim")
-            icon = qicon("fa5s.download", "white" if compatible else "#c8aaba")
+                btn.setObjectName("AIHubCardUnavailable")
+            icon = qicon("fa5s.download", "white" if compatible else "#77727c")
             if icon is not None:
                 btn.setIcon(icon)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if compatible
+                else Qt.CursorShape.ForbiddenCursor
+            )
+            btn.setEnabled(compatible)
+            if not compatible:
+                btn.setToolTip(
+                    _t(
+                        "Эта реализация не поддерживается обнаруженным оборудованием.",
+                        "This implementation is not supported by the detected hardware.",
+                    )
+                )
             btn.clicked.connect(self._handle_install_click)
             self._install_btn = btn
             self._install_btn_text = btn.text()
@@ -378,37 +421,62 @@ class ModelCard(QFrame):
 
     # ------------------------------------------------------------------
     def set_state(self, state: str) -> None:
-        """Состояние кнопки установки этой карточки относительно очереди.
-
-        Раньше во время любой установки блокировались ВСЕ кнопки (#26). По
-        фидбэку Артёма чужие кнопки должны оставаться активными и по клику
-        вставать в очередь — блокируется только та карточка, что уже ставится
-        или уже стоит в очереди.
-
-        state:
-          - "running"  → ставится прямо сейчас: «Установка…», выключена
-          - "queued"   → стоит в очереди: «В очереди», выключена
-          - "checking" → идёт проверка файлов на диске: «Проверка файлов…»,
-                          выключена (нельзя повторно кликнуть «Установить», #6)
-          - "idle"     → свободна: «Установить», активна (даже если рядом идёт
-                          другая установка)
-        """
+        """Apply the global catalog activity state to this card's actions."""
         btn = self._install_btn
+        menu = self._menu_btn
+        self.setProperty("activity", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+        if menu is not None:
+            menu.setEnabled(state == "idle")
+            menu.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if state == "idle"
+                else Qt.CursorShape.ForbiddenCursor
+            )
+            menu.setToolTip(
+                ""
+                if state == "idle"
+                else _t(
+                    "Дождитесь завершения текущей операции.",
+                    "Wait for the current operation to finish.",
+                )
+            )
+
         if btn is None:
-            # Установленные карточки используют ⋮-меню, отдельной кнопки нет.
             return
         if state == "running":
             btn.setEnabled(False)
             btn.setText(_t("Установка…", "Installing…"))
+            btn.setToolTip(_t("Установка выполняется", "Installation is running"))
         elif state == "queued":
             btn.setEnabled(False)
             btn.setText(_t("В очереди", "Queued"))
+            btn.setToolTip(_t("Операция находится в очереди", "Operation is queued"))
         elif state == "checking":
             btn.setEnabled(False)
-            btn.setText(_t("Проверка файлов…", "Checking files…"))
-        else:
-            btn.setEnabled(True)
             btn.setText(self._install_btn_text or _t("Установить", "Install"))
+            btn.setToolTip(
+                _t(
+                    "Дождитесь завершения проверки компонентов.",
+                    "Wait for the component check to finish.",
+                )
+            )
+        elif state == "global_busy":
+            btn.setEnabled(False)
+            btn.setText(self._install_btn_text or _t("Установить", "Install"))
+            btn.setToolTip(
+                _t(
+                    "Дождитесь завершения текущей установки.",
+                    "Wait for the current installation to finish.",
+                )
+            )
+        else:
+            btn.setEnabled(self._compatible)
+            btn.setText(self._install_btn_text or _t("Установить", "Install"))
+            if self._compatible:
+                btn.setToolTip("")
 
     # ------------------------------------------------------------------
     def _component_id(self) -> str:
@@ -416,12 +484,8 @@ class ModelCard(QFrame):
         return str(meta_from_row(self._row).get("id") or "").strip()
 
     def _handle_install_click(self) -> None:
-        from .helpers import is_backend_compatible, meta_from_row
-        meta = meta_from_row(self._row)
-        backend = str(meta.get("backend") or "").strip().lower()
-        if not is_backend_compatible(backend, self._gpu_vendor):
-            if not self._confirm_incompatible_install():
-                return
+        if not self._compatible:
+            return
         cid = self._component_id()
         if cid:
             # Мгновенно блокируем кнопку (оптимистично), не дожидаясь события
@@ -431,29 +495,6 @@ class ModelCard(QFrame):
             # (running/queued) выставит _apply_busy_state по событию очереди.
             self.set_state("queued")
             self._on_install(cid)
-
-    def _confirm_incompatible_install(self) -> bool:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(_t("Несовместимый backend", "Incompatible backend"))
-        box.setText(
-            _t(
-                "Эта модель требует другого backend.\n"
-                "Если переключиться на него, ранее установленные модели другого backend будут удалены.",
-                "This model requires a different backend.\n"
-                "Switching backends will uninstall packages from previously installed models.",
-            )
-        )
-        box.setInformativeText(
-            _t(
-                "Установить всё равно?",
-                "Install anyway?",
-            )
-        )
-        yes = box.addButton(_t("Установить", "Install"), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(_t("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        return box.clickedButton() is yes
 
     def _show_menu(self) -> None:
         from PyQt6.QtWidgets import QMenu
@@ -538,8 +579,3 @@ class ModelCard(QFrame):
         box.exec()
         if box.clickedButton() is yes:
             self._on_uninstall(cid)
-
-
-def _t(ru: str, en: str) -> str:
-    from utils import getTranslationVariant as _g
-    return _g(ru, en)

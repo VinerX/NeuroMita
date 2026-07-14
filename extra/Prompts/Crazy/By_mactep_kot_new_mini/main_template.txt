@@ -3,7 +3,6 @@
 [<Structural/VariableEffects.script>]
 [<Main/main.txt>]
 [<Main/main.script>]
-[<../../Common/CommonContext.script>]
 [<Context/examples.script>]
 [<Quests/quest.script>]
 [<Main/common.txt>]

@@ -1,8 +1,9 @@
 import abc
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_types import InstallPlan
 from core.installables import (
@@ -16,9 +17,12 @@ from core.installables import (
 )
 from core.installables.helpers import build_runtime_ctx, status_from_installed
 
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
+
 
 def _voice_settings_path() -> str:
-    return os.path.join("Settings", "voice_model_settings.json")
+    return str(settings_path("voice_model_settings.json", create_parent=True))
 
 
 def load_voice_model_settings(model_id: str) -> Dict[str, Any]:
@@ -121,6 +125,28 @@ class IVoiceModel(abc.ABC):
         return {}
 
     @classmethod
+    def default_settings_for_model(cls, model_id: str) -> Dict[str, Any]:
+        """Return the schema defaults for a model without persisting them."""
+        defaults: Dict[str, Any] = {}
+        config = cls._find_model_config(model_id)
+        for setting in config.get("settings") or []:
+            if not isinstance(setting, dict):
+                continue
+            key = str(setting.get("key") or "").strip()
+            options = setting.get("options")
+            if key and isinstance(options, dict) and "default" in options:
+                defaults[key] = options["default"]
+        return defaults
+
+    @classmethod
+    def resolve_settings_for_model(cls, model_id: str, values: Dict[str, Any] | None) -> Dict[str, Any]:
+        """Overlay persisted settings onto the model schema defaults."""
+        resolved = cls.default_settings_for_model(model_id)
+        if isinstance(values, dict):
+            resolved.update(values)
+        return resolved
+
+    @classmethod
     def create_installable_components(cls) -> List["IVoiceModel"]:
         return [cls(_InstallableVoiceParent(), model_id) for model_id in cls.supported_model_ids()]
 
@@ -220,7 +246,10 @@ class IVoiceModel(abc.ABC):
         return list(self._find_model_config(self.model_id).get("settings") or [])
 
     def load_settings(self) -> Dict[str, Any]:
-        return load_voice_model_settings(self.model_id)
+        return self.resolve_settings_for_model(
+            self.model_id,
+            load_voice_model_settings(self.model_id),
+        )
 
     def validate_settings(self, values: Dict[str, Any]) -> ValidationResult:
         return validate_voice_model_settings(self.settings_schema(), values)

@@ -1,3 +1,5 @@
+from ui.settings.settings_access import get_setting
+
 # src/ui/settings/memory_profile.py
 """
 Профили памяти — быстрый выбор объёма: лимит сообщений, воспоминаний и результатов RAG.
@@ -55,9 +57,9 @@ def detect_memory_profile(gui) -> str:
     """Вернуть ключ пресета ('optimized'/'balanced'/'large'/'custom') по текущим настройкам."""
     try:
         vals = (
-            int(gui.settings.get('MODEL_MESSAGE_LIMIT', 35)),
-            int(gui.settings.get('MEMORY_CAPACITY', 50)),
-            int(gui.settings.get('RAG_MAX_RESULTS', 50)),
+            int(get_setting(gui, 'MODEL_MESSAGE_LIMIT', 35)),
+            int(get_setting(gui, 'MEMORY_CAPACITY', 50)),
+            int(get_setting(gui, 'RAG_MAX_RESULTS', 50)),
         )
     except (TypeError, ValueError):
         return 'custom'
@@ -74,8 +76,7 @@ def sync_profile_label(gui) -> None:
     """
     try:
         key = detect_memory_profile(gui)
-        from managers.settings_manager import SettingsManager
-        lang = SettingsManager.get('LANGUAGE', 'RU')
+        lang = get_setting(gui, 'LANGUAGE', 'RU')
         label = KEY_TO_LABEL_EN[key] if lang == 'EN' else KEY_TO_LABEL_RU[key]
         combo = getattr(gui, 'MEMORY_PROFILE', None)
         if combo is not None and hasattr(combo, 'currentText'):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from core.task_supervisor import task_supervisor
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -162,7 +163,12 @@ class ModelPricingManager:
                     self._cache[cache_key] = (time.time(), info)
                     self._inflight.discard(cache_key)
 
-        threading.Thread(target=_run, name="pricing-fetch", daemon=True).start()
+        task_supervisor().start_thread(
+            self,
+            f"pricing-fetch-{protocol_id}-{model}",
+            _run,
+            replace=True,
+        )
 
     def _fetch_openrouter_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         models_url = self._build_openrouter_models_url(preset.api_url)

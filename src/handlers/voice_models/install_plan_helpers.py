@@ -31,7 +31,13 @@ def pip_uninstall_action(packages: list[str], *, description: str, progress: int
                 pass
             return False
 
-    return InstallAction(type="call", description=description, progress=int(progress), fn=_do_uninstall)
+    return InstallAction(
+        type="call",
+        description=description,
+        progress=int(progress),
+        fn=_do_uninstall,
+        environment_mutation=True,
+    )
 
 
 def remove_paths_action(paths: list[str], *, description: str, progress: int = 90) -> InstallAction:
@@ -144,3 +150,45 @@ def warning_action(message: str, *, progress: int = 1) -> InstallAction:
         return True
 
     return InstallAction(type="call", description=message, progress=int(progress), fn=_warn)
+
+
+def patch_tts_with_rvc_audio(
+    *,
+    pip_installer=None,
+    callbacks=None,
+    ctx=None,
+    **_kwargs,
+) -> bool:
+    target = getattr(pip_installer, "libs_path_abs", None) if pip_installer is not None else None
+    runtime_ctx = dict(ctx or {})
+    target = str(
+        target
+        or runtime_ctx.get("target_dir")
+        or runtime_ctx.get("libs_dir")
+        or ""
+    ).strip()
+    if not target:
+        return False
+
+    audio_path = os.path.join(target, "tts_with_rvc", "lib", "audio.py")
+    if not os.path.isfile(audio_path):
+        return True
+
+    try:
+        with open(audio_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        patched = source.replace(
+            "import ffmpeg",
+            'import importlib\nffmpeg = importlib.import_module("ffmpeg")',
+            1,
+        )
+        if patched != source:
+            with open(audio_path, "w", encoding="utf-8", newline="") as stream:
+                stream.write(patched)
+            if callbacks is not None:
+                callbacks.log("Patched tts_with_rvc/lib/audio.py")
+        return True
+    except Exception as exc:
+        if callbacks is not None:
+            callbacks.log(f"Failed to patch tts_with_rvc/lib/audio.py: {exc}")
+        return False

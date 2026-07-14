@@ -4,7 +4,7 @@ import os
 import hashlib
 from datetime import datetime
 import asyncio
-from typing import Optional, Any, List, Dict
+from typing import TYPE_CHECKING, Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
@@ -20,12 +20,16 @@ from handlers.voice_models.install_plan_helpers import (
     warning_action,
 )
 
+if TYPE_CHECKING:
+    from handlers.local_voice_handler import LocalVoice
+
 class F5TTSInstallSpec:
     @classmethod
     def _log_final_check_failure(cls, result: dict, callbacks=None) -> None:
         log = getattr(callbacks, "log", None) if callbacks is not None else None
         if not callable(log):
-            log = lambda *_: None
+            def log(*_args):
+                return None
 
         missing_required = list(result.get("missing_required") or [])
         details = list(result.get("details") or [])
@@ -257,12 +261,19 @@ class F5TTSInstallSpec:
             )
         )
 
+        ctx_outer = dict(ctx or {})
+
+        def _verify_install(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            verify_ctx = dict(ctx_outer)
+            verify_ctx.update(dict(ctx or {}))
+            return cls._final_check(mid, verify_ctx, callbacks=callbacks)
+
         actions.append(
             InstallAction(
                 type="call",
                 description=_("Проверка установки...", "Final check..."),
                 progress=99,
-                fn=lambda callbacks=None, **_k: cls._final_check(mid, ctx, callbacks=callbacks),
+                fn=_verify_install,
             )
         )
 

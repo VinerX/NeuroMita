@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from core.task_supervisor import task_supervisor
 from typing import Optional, List, Callable
 from main_logger import logger
 
@@ -14,8 +15,9 @@ class LifecycleManager:
         
     def start_event_loop(self):
         """Запуск asyncio event loop в отдельном потоке"""
-        self.loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
-        self.loop_thread.start()
+        self.loop_thread = task_supervisor().start_thread(
+            self, "lifecycle-event-loop", self._run_event_loop, replace=True
+        )
         self.loop_ready_event.wait()
         
     def _run_event_loop(self):

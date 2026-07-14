@@ -16,10 +16,13 @@ from core.backends import (
     BackendService,
     CUDA_INDEX_URL,
     ONNX_DIRECTML_PACKAGE,
+    ONNX_DIRECTML_SPEC,
+    ONNX_PACKAGE,
     TORCH_CUDA_PACKAGES,
     TORCH_VERSION,
     get_backend_service,
 )
+from core.backends.service import ONNX_VERSION
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
 from handlers.asr_handler import SpeechRecognition
@@ -182,6 +185,52 @@ class BackendServiceTests(unittest.TestCase):
         self.assertEqual(status.provider, "dml")
         self.assertIn("DmlExecutionProvider", status.onnx_providers)
 
+    def test_windows_onnx_backend_always_selects_directml_distribution(self):
+        for vendor in ("NVIDIA", "AMD", "INTEL", "CPU"):
+            with self.subTest(vendor=vendor):
+                self.assertEqual(
+                    self.service.preferred_onnx_provider(
+                        {
+                            "platform": "Windows",
+                            "gpu_vendor": vendor,
+                            "device": "cpu",
+                        }
+                    ),
+                    "dml",
+                )
+
+    def test_plain_onnxruntime_is_replaced_by_directml_on_windows(self):
+        _install_torch_cpu_stack(self.libs_dir)
+        _install_fake_dist(
+            self.libs_dir,
+            dist_name=ONNX_PACKAGE,
+            version=ONNX_VERSION,
+            module_name="onnxruntime",
+        )
+        self.service._write_backend_marker(
+            str(self.libs_dir),
+            BackendKind.ONNX,
+            "cpu",
+        )
+
+        status = self.service.get_status(
+            BackendKind.ONNX,
+            ctx={
+                "platform": "Windows",
+                "gpu_vendor": "NVIDIA",
+                "device": "cpu",
+                "libs_dir": str(self.libs_dir),
+            },
+        )
+
+        self.assertFalse(status.ok)
+        self.assertEqual(status.action, "reinstall")
+        self.assertIn(ONNX_DIRECTML_SPEC, status.install_packages)
+        self.assertEqual(
+            status.uninstall_packages,
+            (ONNX_PACKAGE, ONNX_DIRECTML_PACKAGE),
+        )
+
     def test_uv_overrides_pin_installed_backend_managed_packages(self):
         _install_torch_cpu_stack(self.libs_dir)
 
@@ -197,6 +246,31 @@ class BackendServiceTests(unittest.TestCase):
                 f"torchaudio=={TORCH_VERSION}",
                 "numpy==1.26.0",
             ),
+        )
+
+    def test_uv_overrides_use_authoritative_core_versions_despite_stale_metadata(self):
+        _install_fake_dist(self.libs_dir, dist_name="torch", version="2.6.0", module_name="torch")
+        _install_fake_dist(self.libs_dir, dist_name="torchaudio", version="2.6.0", module_name="torchaudio")
+        _install_fake_dist(self.libs_dir, dist_name="numpy", version="2.0.0", module_name="numpy")
+
+        overrides = self.service.build_uv_overrides(
+            BackendKind.ONNX,
+            requested_specs=["tts-with-rvc-onnx[dml]"],
+        )
+
+        self.assertIn(f"torch=={TORCH_VERSION}", overrides)
+        self.assertIn(f"torchaudio=={TORCH_VERSION}", overrides)
+        self.assertIn("numpy==1.26.0", overrides)
+        self.assertNotIn("torch==2.6.0", overrides)
+        self.assertNotIn("numpy==2.0.0", overrides)
+
+    def test_target_distribution_version_chooses_highest_duplicate_metadata(self):
+        _write_dist_info(self.libs_dir, "torchaudio", "2.6.0")
+        _write_dist_info(self.libs_dir, "torchaudio", "2.7.1")
+
+        self.assertEqual(
+            self.service._dist_version_in_target("torchaudio", str(self.libs_dir)),
+            "2.7.1",
         )
 
     def test_backend_requirement_fails_when_runtime_missing(self):
@@ -270,7 +344,9 @@ class BackendServiceTests(unittest.TestCase):
         pip_installer = Mock()
         pip_installer.install_package.return_value = True
 
-        with patch.object(self.service, "get_status", side_effect=[pending, ready]):
+        with patch.object(self.service, "get_status", side_effect=[pending, ready]), \
+             patch.object(self.service, "_onnx_variant", return_value="onnx_dml"), \
+             patch.object(self.service, "preferred_onnx_provider", return_value="cpu") as preferred:
             status = self.service.install_backend(
                 BackendKind.ONNX,
                 pip_installer=pip_installer,
@@ -282,6 +358,7 @@ class BackendServiceTests(unittest.TestCase):
         self.assertTrue(marker_path.exists())
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
         self.assertEqual(marker["onnx"]["provider"], "dml")
+        preferred.assert_not_called()
 
     def test_write_backend_marker_uses_atomic_replace(self):
         with patch("core.backends.service.os.replace", wraps=os.replace) as replace_mock:

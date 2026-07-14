@@ -723,6 +723,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         timer = QTimer()
         
         def process_queues():
+            nonlocal logged_command_q_none_warning_for_this_run
             if app_instance_ref["instance"] and app_instance_ref["instance"].is_closing:
                 _send_gui_closed("user_closed")
                 timer.stop()

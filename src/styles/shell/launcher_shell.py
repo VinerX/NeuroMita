@@ -287,7 +287,8 @@ def get_launcher_shell_stylesheet() -> str:
         background-color: {p.accent_soft};
     }}
     QWidget#LauncherShellSocialBlock,
-    QWidget#LauncherShellFooterBlock {{
+    QWidget#LauncherShellFooterBlock,
+    QWidget#LauncherShellLangPillsHost {{
         background: transparent;
     }}
     QFrame#LauncherShellSocialIconCard {{
@@ -315,9 +316,9 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill {{
-        background-color: rgba(255, 255, 255, 0.02);
-        color: {p.text};
-        border: 1px solid rgba(183, 75, 125, 0.26);
+        background: transparent;
+        color: {p.muted};
+        border: none;
         border-radius: 12px;
         padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -326,14 +327,13 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill:hover {{
-        background-color: {p.accent_soft};
+        background: transparent;
         color: {p.text};
-        border: 1px solid {p.border};
     }}
     QPushButton#LauncherShellLangPill[active="true"] {{
         background-color: {p.accent};
         color: white;
-        border: 1px solid rgba(130, 56, 88, 0.55);
+        border: none;
     }}
     QPushButton#LauncherShellLangGlobe {{
         background: transparent;

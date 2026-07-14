@@ -1,8 +1,13 @@
-from PyQt6.QtCore import QTimer, QEventLoop
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QMessageBox
 
 from main_logger import logger
 from core.events import Events, Event
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
+from core.services import services
+from services.contracts import LocalVoiceService, VoiceModelService
 from .base_controller import BaseController
+from .voice_models_view_model import VoiceModelsViewModel
 from utils import getTranslationVariant as _
 
 from ui.windows.voice_model_view import VoiceModelSettingsView
@@ -11,10 +16,68 @@ from ui.windows.voice_model_view import VoiceModelSettingsView
 class VoiceModelGuiController(BaseController):
     def __init__(self, main_controller, view):
         self._dialog = None
-        self._vm_view: VoiceModelSettingsView | None = VoiceModelSettingsView(auto_initialize=False)
+        self._view_model = VoiceModelsViewModel(
+            load_snapshot=self._load_view_snapshot,
+            install=self.request_install,
+            uninstall=self.request_uninstall,
+            save=self._save_values,
+            close_view=self._close_with_values,
+            open_documentation=self.open_documentation,
+            resolve_description=self._resolve_description,
+        )
+        self._vm_view: VoiceModelSettingsView | None = VoiceModelSettingsView(
+            self._view_model,
+            auto_initialize=False,
+        )
         super().__init__(main_controller, view)
 
         self._register_window_on_ready()
+
+
+    # Passive-view command/data boundary.
+    def model_catalog_snapshot(self):
+        service = services().get_optional(VoiceModelService)
+        return service.model_catalog_snapshot() if service is not None else []
+
+    def installed_models_snapshot(self):
+        service = services().get_optional(VoiceModelService)
+        return service.installed_models_snapshot() if service is not None else set()
+
+    def dependencies_status(self):
+        service = services().get_optional(VoiceModelService)
+        return service.dependencies_status() if service is not None else {}
+
+    def _load_view_snapshot(self) -> dict:
+        return {
+            "models_data": self.model_catalog_snapshot(),
+            "installed_models": self.installed_models_snapshot(),
+            "dependencies_status": self.dependencies_status(),
+        }
+
+    def request_install(self, model_id: str) -> bool:
+        return bool(self._on_install_model(Event(Events.VoiceModel.INSTALL_MODEL, {"model_id": str(model_id), "with_ui": True})))
+
+    def request_uninstall(self, model_id: str) -> bool:
+        return bool(self._on_uninstall_model(Event(Events.VoiceModel.UNINSTALL_MODEL, {"model_id": str(model_id), "with_ui": True})))
+
+    def save_view_settings(self) -> None:
+        self._on_save_settings(Event(Events.VoiceModel.SAVE_SETTINGS))
+
+    def close_view(self) -> None:
+        self._on_close_dialog(Event(Events.VoiceModel.CLOSE_DIALOG))
+
+    def update_description(self, key: str) -> None:
+        self._on_update_description(Event(Events.VoiceModel.UPDATE_DESCRIPTION, str(key)))
+
+    def clear_description(self) -> None:
+        self._on_clear_description(Event(Events.VoiceModel.CLEAR_DESCRIPTION))
+
+    def open_documentation(self, path: str) -> None:
+        self.event_bus.emit(Events.VoiceModel.OPEN_DOC, str(path))
+
+    def triton_status(self, *, refresh: bool = False) -> dict:
+        service = services().get_optional(LocalVoiceService)
+        return dict(service.triton_status(refresh=refresh) or {}) if service is not None else {}
 
     def _register_window_on_ready(self):
         if not self.view or not hasattr(self.view, "window_manager") or self.view.window_manager is None:
@@ -38,7 +101,6 @@ class VoiceModelGuiController(BaseController):
 
         self.event_bus.subscribe(Events.VoiceModel.UPDATE_DESCRIPTION, self._on_update_description, weak=False)
         self.event_bus.subscribe(Events.VoiceModel.CLEAR_DESCRIPTION, self._on_clear_description, weak=False)
-        self.event_bus.subscribe(Events.VoiceModel.GET_SECTION_VALUES, self._on_get_section_values, weak=False)
 
         self.event_bus.subscribe(Events.Audio.SHOW_VC_REDIST_DIALOG, self._on_show_vc_redist_dialog, weak=False)
         self.event_bus.subscribe(Events.Audio.SHOW_TRITON_DIALOG, self._on_show_triton_dialog, weak=False)
@@ -70,37 +132,36 @@ class VoiceModelGuiController(BaseController):
         self._dialog = dialog
         self._attach_view_to_dialog(dialog)
         if self._vm_view:
-            QTimer.singleShot(0, self._vm_view.refresh_all)
+            QTimer.singleShot(0, self._view_model.refresh)
 
     def _on_legacy_open_voice_models(self, event: Event):
         self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
 
     def _ask_question_in_vm_view(self, title: str, message: str) -> bool:
-        if not self._vm_view:
-            return False
-        holder = {"answer": False}
-        loop = QEventLoop()
-        self._vm_view.ask_question_signal.emit(title, message, holder, loop)
-        loop.exec()
-        return bool(holder.get("answer"))
+        parent = self._dialog or self._vm_view or self.view
+        reply = QMessageBox.question(
+            parent,
+            str(title),
+            str(message),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     def _on_install_model(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         model_id = data.get("model_id")
         if not model_id:
-            return
+            return False
 
         backend = self._backend()
         if backend is None:
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
-            return
+            return False
 
-        try:
-            models = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA, timeout=1.0)
-            models = models[0] if models else []
-            model_data = next((m for m in models if m.get("id") == model_id), None)
-        except Exception:
-            model_data = None
+        voice_models = services().get_optional(VoiceModelService)
+        models = voice_models.model_catalog_snapshot() if voice_models is not None else []
+        model_data = next((m for m in models if m.get("id") == model_id), None)
 
         if model_data and model_data.get("rtx30plus", False) and not backend.is_gpu_rtx30_or_40():
             gpu_info = backend.gpu_name if getattr(backend, "gpu_name", None) else "не определена"
@@ -119,7 +180,7 @@ class VoiceModelGuiController(BaseController):
 
             proceed = self._ask_question_in_vm_view(_("Предупреждение", "Warning"), message)
             if not proceed:
-                return
+                return False
 
         try:
             preflight = backend.get_install_preflight(str(model_id))
@@ -135,7 +196,7 @@ class VoiceModelGuiController(BaseController):
                     "message": preflight.get("message") or _("Установка этой модели сейчас недоступна.", "This model cannot be installed right now."),
                 },
             )
-            return
+            return False
 
         if preflight.get("ask"):
             proceed = self._ask_question_in_vm_view(
@@ -152,42 +213,35 @@ class VoiceModelGuiController(BaseController):
                             "message": cancel_message,
                         },
                     )
-                return
+                return False
 
         backend.start_install(
             str(model_id),
             with_ui=bool(data.get("with_ui", True)),
-            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
+            timeout_sec=float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC),
         )
+        return True
 
     def _on_uninstall_model(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
         model_id = data.get("model_id")
         if not model_id:
-            return
+            return False
 
         backend = self._backend()
         if backend is None:
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
-            return
+            return False
 
-        try:
-            models = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA, timeout=1.0)
-            models = models[0] if models else []
-            model_data = next((m for m in models if m.get("id") == model_id), None)
-            model_name = (model_data or {}).get("name", model_id)
-        except Exception:
-            model_name = model_id
+        voice_models = services().get_optional(VoiceModelService)
+        models = voice_models.model_catalog_snapshot() if voice_models is not None else []
+        model_data = next((m for m in models if m.get("id") == model_id), None)
+        model_name = (model_data or {}).get("name", model_id)
 
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Audio.CHECK_MODEL_INITIALIZED,
-                {"model_id": model_id, "strict": True},
-                timeout=1.2
-            )
-            is_initialized = bool(res and res[0])
-        except Exception:
-            is_initialized = False
+        local_voice = services().get_optional(LocalVoiceService)
+        is_initialized = bool(
+            local_voice and local_voice.check_initialized(str(model_id), strict=True)
+        )
 
         if is_initialized:
             self.event_bus.emit(
@@ -204,7 +258,7 @@ class VoiceModelGuiController(BaseController):
                     )
                 }
             )
-            return
+            return False
 
         message = _(
             f"Вы уверены, что хотите удалить модель '{model_name}'?\n\n"
@@ -215,51 +269,50 @@ class VoiceModelGuiController(BaseController):
 
         confirmed = self._ask_question_in_vm_view(_("Подтверждение Удаления", "Confirm Uninstallation"), message)
         if not confirmed:
-            return
+            return False
 
         backend.start_uninstall(
             str(model_id),
             with_ui=bool(data.get("with_ui", True)),
-            timeout_sec=float(data.get("timeout_sec", 3600.0) or 3600.0),
+            timeout_sec=float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC),
         )
+        return True
 
     def _on_install_started(self, event: Event):
-        if not self._vm_view:
-            return
         model_id = (event.data or {}).get("model_id")
         if model_id:
-            self._vm_view.install_started_signal.emit(str(model_id))
+            self._view_model.operation_started("install", str(model_id))
 
     def _on_install_finished(self, event: Event):
-        if not self._vm_view:
-            return
         payload = event.data or {}
-        self._vm_view.install_finished_signal.emit(payload)
-        if bool(payload.get("success")):
+        success = bool(payload.get("success"))
+        self._view_model.operation_finished(
+            success=success,
+            error=str(payload.get("error") or "") or None,
+        )
+        if success:
             self._after_models_changed()
 
     def _on_uninstall_started(self, event: Event):
-        if not self._vm_view:
-            return
         model_id = (event.data or {}).get("model_id")
         if model_id:
-            self._vm_view.uninstall_started_signal.emit(str(model_id))
+            self._view_model.operation_started("uninstall", str(model_id))
 
     def _on_uninstall_finished(self, event: Event):
-        if not self._vm_view:
-            return
         payload = event.data or {}
-        self._vm_view.uninstall_finished_signal.emit(payload)
-        if bool(payload.get("success")):
+        success = bool(payload.get("success"))
+        self._view_model.operation_finished(
+            success=success,
+            error=str(payload.get("error") or "") or None,
+        )
+        if success:
             self._after_models_changed()
 
     def _on_refresh_panels_requested(self, _event: Event):
-        if self._vm_view:
-            self._vm_view.refresh_panels_signal.emit()
+        self._view_model.refresh()
 
     def _on_refresh_settings_requested(self, _event: Event):
-        if self._vm_view:
-            self._vm_view.refresh_settings_signal.emit()
+        self._view_model.refresh()
 
     def _on_save_settings(self, event: Event):
         backend = self._backend()
@@ -273,7 +326,21 @@ class VoiceModelGuiController(BaseController):
             logger.error(f"Ошибка сохранения настроек локальных моделей: {e}", exc_info=True)
 
         self._after_models_changed()
-        QTimer.singleShot(0, self._vm_view.refresh_all)
+        self._view_model.refresh()
+
+    def _save_values(self, values: dict) -> None:
+        backend = self._backend()
+        if backend is None:
+            raise RuntimeError("VoiceModelController is not initialized")
+        backend.save_settings_values(dict(values))
+        self._after_models_changed()
+
+    def _close_with_values(self, values: dict) -> None:
+        self._save_values(values)
+        self.event_bus.emit(
+            Events.GUI.CLOSE_WINDOW,
+            {"window_id": "voice_models", "destroy": False},
+        )
 
     def _on_close_dialog(self, event: Event):
         self._on_save_settings(event)
@@ -317,48 +384,37 @@ class VoiceModelGuiController(BaseController):
                 QTimer.singleShot(0, self.view.update_local_voice_combobox)
 
     def _on_update_description(self, event: Event):
-        key = event.data
-        if not self._vm_view:
-            return
+        self._view_model.dispatch_description(event.data)
 
+    def _on_clear_description(self, event: Event):
+        self._view_model.dispatch_description(None)
+
+    def _resolve_description(self, key) -> str:
         backend = self._backend()
         if backend is None:
-            self._vm_view.update_description_signal.emit(self._vm_view._get_default_description())
-            return
-
+            return _("Select a model to see details.", "Select a model to see details.")
         try:
             models = backend.local_voice_models
             model_ids = {m.get("id") for m in (models or [])}
             if key in model_ids:
-                text = backend.model_descriptions.get(key, backend.default_description_text)
-            else:
-                text = backend.setting_descriptions.get(key, backend.default_description_text)
+                return str(backend.model_descriptions.get(key, backend.default_description_text))
+            if key:
+                return str(backend.setting_descriptions.get(key, backend.default_description_text))
+            return str(backend.default_description_text)
         except Exception:
-            text = self._vm_view._get_default_description()
+            return _("Select a model to see details.", "Select a model to see details.")
 
-        self._vm_view.update_description_signal.emit(text)
-
-    def _on_clear_description(self, event: Event):
-        if self._vm_view:
-            self._vm_view.clear_description_signal.emit()
-
-    def _on_get_section_values(self, event: Event):
-        if not self._vm_view:
-            return {}
-        model_id = event.data
-        return self._vm_view.get_section_values(model_id)
+    def close(self) -> None:
+        self._view_model.close()
+        super().close()
 
     def _on_show_vc_redist_dialog(self, event: Event):
         wm = getattr(self.view, "window_manager", None) if self.view else None
         if wm is not None:
             res = wm.show_dialog_blocking("vc_redist_dialog", {})
             return res.get("choice", "close")
-        # fallback
-        if not self._vm_view:
-            return "close"
-        holder = {}
-        self._vm_view.open_vc_redist_dialog.emit(holder)
-        return holder.get("choice", "close")
+        logger.error("VC runtime dialog requested without WindowManager")
+        return "close"
 
     def _on_show_triton_dialog(self, event: Event):
         deps = event.data or {}
@@ -366,9 +422,5 @@ class VoiceModelGuiController(BaseController):
         if wm is not None:
             res = wm.show_dialog_blocking("triton_deps_dialog", {"dependencies_status": deps})
             return res.get("choice", "skip")
-        # fallback
-        if not self._vm_view:
-            return "skip"
-        holder = {}
-        self._vm_view.open_triton_dialog.emit(deps, holder)
-        return holder.get("choice", "skip")
+        logger.error("Triton dependency dialog requested without WindowManager")
+        return "skip"

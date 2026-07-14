@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import re
 import threading
@@ -9,22 +8,46 @@ import sounddevice as sd
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import services, use
+from core.task_supervisor import task_supervisor
+from services.contracts import (
+    AudioStateService,
+    GameLinkService,
+    InstallableCatalogService,
+    LoopService,
+    SettingsService,
+    SpeechService,
+)
+from services.asr_settings_service import ensure_asr_settings_service
 from utils import getTranslationVariant as _
 
 
-class SpeechController:
+class SpeechController(SpeechService):
+    _SETTING_KEYS = frozenset({
+        "MIC_ACTIVE", "RECOGNIZER_TYPE", "SILENCE_THRESHOLD",
+        "VAD_THRESHOLD", "SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC",
+        "VOSK_SAMPLE_RATE", "CHUNK_SIZE", "VAD_PRE_BUFFER_DURATION_SEC",
+        "MAX_SPEECH_DURATION_SEC", "NM_MICROPHONE_ID", "NM_MICROPHONE_NAME",
+    })
+
     # Хвост после конца реплики: гасим затухание звука и задержку VAD,
     # который выдаёт текст уже после паузы.
     _MUTE_TAIL_SEC = 0.4
 
     def __init__(self):
-        self.settings = None
+        self.settings = use(SettingsService)
         self.device_id = 0
         self.selected_microphone = ""
         self.mic_recognition_active = False
         self.asr_is_ready = False
         self.instant_send = False
         self.events_bus = get_event_bus()
+        self.asr_settings = ensure_asr_settings_service()
+
+        self._glossary_lock = threading.RLock()
+        self._glossary_cache: list[dict] | None = None
+        self._glossary_loading = False
+        self._glossary_callbacks: list = []
 
         self._last_text = ""
         self._last_text_norm = ""
@@ -35,30 +58,19 @@ class SpeechController:
         self._mita_speaking = False        # открытое окно (локальное воспроизведение)
         self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
 
-        self._asr_settings_path = os.path.join("Settings", "asr_settings.json")
-        self._asr_settings = {
-            "engine": "google",
-            "models": {
-                "google": {},
-                "gigaam": {"device": "auto"}
-            }
-        }
-
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._SETTING_KEYS
+        )
         self._subscribe_to_events()
+        self._apply_settings_snapshot()
 
     # ——— settings json
     def _load_asr_settings(self):
-        try:
-            os.makedirs("Settings", exist_ok=True)
-            if os.path.exists(self._asr_settings_path):
-                with open(self._asr_settings_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        self._asr_settings.update(data)
-            if self._sanitize_asr_models():
-                self._save_asr_settings()
-        except Exception as e:
-            logger.error(f"ASR settings load error: {e}")
+        self._sanitize_asr_models()
+
+    @property
+    def _asr_settings(self) -> dict:
+        return self.asr_settings.snapshot()
 
     def _sanitize_asr_models(self) -> bool:
         """Чинит устаревшие/битые значения «model» в asr_settings.json.
@@ -86,52 +98,36 @@ class SpeechController:
                     f"ASR: модель '{model}' недопустима для '{engine}' — заменяю на '{default}'."
                 )
                 cfg["model"] = default
+                self.asr_settings.set_model_settings(engine, cfg)
                 changed = True
         return changed
-
-    def _save_asr_settings(self):
-        try:
-            os.makedirs("Settings", exist_ok=True)
-            with open(self._asr_settings_path, "w", encoding="utf-8") as f:
-                json.dump(self._asr_settings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"ASR settings save error: {e}")
 
     # ——— subscriptions
     def _subscribe_to_events(self):
         eb = self.events_bus
         eb.subscribe("speech_settings_loaded", self._on_speech_settings_loaded, weak=False)
-        eb.subscribe("setting_changed", self._on_setting_changed, weak=False)
 
-        eb.subscribe(Events.Speech.GET_INSTANT_SEND_STATUS, self._on_get_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SET_INSTANT_SEND_STATUS, self._on_set_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
         eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
-        eb.subscribe(Events.Speech.GET_MIC_STATUS, self._on_get_mic_status, weak=False)
-        eb.subscribe(Events.Speech.GET_USER_INPUT, self._on_get_user_input, weak=False)
 
         eb.subscribe(Events.Speech.SET_MICROPHONE, self._on_set_microphone, weak=False)
         eb.subscribe(Events.Speech.START_SPEECH_RECOGNITION, self._on_start_speech_recognition, weak=False)
         eb.subscribe(Events.Speech.STOP_SPEECH_RECOGNITION, self._on_stop_speech_recognition, weak=False)
         eb.subscribe(Events.Speech.RESTART_SPEECH_RECOGNITION, self._on_restart_speech_recognition, weak=False)
 
-        eb.subscribe(Events.Speech.GET_MICROPHONE_LIST, self._on_get_microphone_list, weak=False)
         eb.subscribe(Events.Speech.REFRESH_MICROPHONE_LIST, self._on_refresh_microphone_list, weak=False)
 
-        eb.subscribe(Events.Speech.GET_ASR_MODELS_GLOSSARY, self._on_get_asr_models_glossary, weak=False)
 
-        eb.subscribe(Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, self._on_get_recognizer_settings_schema, weak=False)
-        eb.subscribe(Events.Speech.GET_RECOGNIZER_SETTINGS, self._on_get_recognizer_settings, weak=False)
         eb.subscribe(Events.Speech.SET_RECOGNIZER_OPTION, self._on_set_recognizer_option, weak=False)
         eb.subscribe(Events.Speech.APPLY_RECOGNIZER_SETTINGS, self._on_apply_recognizer_settings, weak=False)
 
-        # INSTALL_ASR_MODEL больше не обрабатываем здесь.
-        # Установка уехала в handlers/asr_handler.py (через InstallController и Events.Install.*).
-        eb.subscribe(Events.Speech.CHECK_ASR_MODEL_INSTALLED, self._on_check_asr_model_installed, weak=False)
-        eb.subscribe(Events.Speech.GET_ASR_ENGINES_LIST, self._on_get_asr_engines_list, weak=False)
+        # INSTALL_ASR_MODEL и state queries не проходят через EventBus.
+        # Установка живёт в InstallController, чтение состояния — в SpeechService.
 
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started_backend, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized_backend, weak=False)
+        eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed_backend, weak=False)
 
     # ——— readiness tracking
     def _on_asr_init_started_backend(self, _event: Event):
@@ -142,13 +138,22 @@ class SpeechController:
         self.asr_is_ready = True
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
+    def _on_asr_failed_backend(self, _event: Event):
+        self.asr_is_ready = False
+        self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
     # ——— settings loaded
     def _on_speech_settings_loaded(self, event: Event):
-        self.settings = event.data.get('settings')
+        supplied = (event.data or {}).get('settings')
+        if supplied is not None:
+            self.settings = supplied
+        self._apply_settings_snapshot()
+
+    def _apply_settings_snapshot(self):
         self._load_asr_settings()
 
         engine = self.settings.get("RECOGNIZER_TYPE", self._asr_settings.get("engine", "google"))
-        self._asr_settings["engine"] = engine
+        self.asr_settings.set_selected_engine(engine)
 
         SpeechRecognition.set_recognizer_type(engine)
         SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
@@ -176,12 +181,14 @@ class SpeechController:
                     self._start_maybe_install()
                 except Exception as e:
                     logger.error(f"Автозапуск распознавания не удался: {e}")
-            threading.Thread(target=_delayed_start, daemon=True).start()
+            task_supervisor().start_thread(
+                self, "speech-delayed-start", _delayed_start, replace=True
+            )
 
     # ——— settings changed
-    def _on_setting_changed(self, event: Event):
-        key = event.data.get('key')
-        value = event.data.get('value')
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "MIC_ACTIVE":
             if bool(value):
@@ -201,8 +208,7 @@ class SpeechController:
                 SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
                 return
 
-            self._asr_settings["engine"] = engine
-            self._save_asr_settings()
+            self.asr_settings.set_selected_engine(engine)
 
             if self.mic_recognition_active:
                 SpeechRecognition.speech_recognition_stop()
@@ -257,15 +263,16 @@ class SpeechController:
     def _start_maybe_install_async(self):
         """Run the (potentially slow) ASR start off the caller's thread.
 
-        SETTING_CHANGED handlers fire on the event-bus thread; starting ASR
-        loads the model and can block for many seconds (CUDA init), which would
-        stall the whole bus. Always do it on a worker thread."""
+        Settings observers may run on the caller thread; starting ASR loads a
+        model and can block for many seconds. Always do it on a worker thread."""
         def _worker():
             try:
                 self._start_maybe_install()
             except Exception as e:
                 logger.error(f"Запуск распознавания не удался: {e}")
-        threading.Thread(target=_worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self, "speech-start", _worker, replace=True
+        )
 
     def _start_maybe_install(self):
         if self.mic_recognition_active:
@@ -294,23 +301,18 @@ class SpeechController:
             except Exception:
                 pass
 
-            try:
-                self.events_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
-            except Exception:
-                pass
-
             return
 
-        loop_res = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-        loop = loop_res[0] if loop_res else None
-        if loop:
-            self.asr_is_ready = False
-            started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop))
-            self.mic_recognition_active = started
-            if not started:
-                self._handle_start_failure()
-        else:
+        loop_service = use(LoopService)
+        if not loop_service.is_running():
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
+            return
+
+        self.asr_is_ready = False
+        started = bool(SpeechRecognition.speech_recognition_start(self.device_id or 0, loop_service.loop()))
+        self.mic_recognition_active = started
+        if not started:
             self._handle_start_failure()
 
     def _handle_start_failure(self):
@@ -336,6 +338,61 @@ class SpeechController:
             )
         })
 
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        try:
+            SpeechRecognition.speech_recognition_stop()
+        except Exception:
+            pass
+        self.mic_recognition_active = False
+        self.asr_is_ready = False
+        with self._glossary_lock:
+            self._glossary_callbacks.clear()
+        task_supervisor().cancel_owner(self, timeout=1.0)
+
+    def recognizer_settings_schema(self, engine: str) -> list[dict]:
+        return list(self._on_get_recognizer_settings_schema(Event(Events.Speech.GET_RECOGNIZER_SETTINGS_SCHEMA, {"engine": engine})) or [])
+
+    def recognizer_settings(self, engine: str) -> dict:
+        return dict(self._on_get_recognizer_settings(Event(Events.Speech.GET_RECOGNIZER_SETTINGS, {"engine": engine})) or {})
+
+    def mic_active(self) -> bool:
+        return bool(self.mic_recognition_active and self.asr_is_ready)
+
+    def microphone_list_async(self, callback) -> None:
+        self._on_get_microphone_list(
+            Event(Events.Speech.GET_MICROPHONE_LIST, {"callback": callback})
+        )
+
+    def asr_models_glossary_async(self, callback, *, refresh: bool = False) -> None:
+        self._on_get_asr_models_glossary(
+            Event(
+                Events.Speech.GET_ASR_MODELS_GLOSSARY,
+                {"callback": callback, "refresh": refresh},
+            )
+        )
+
+    def asr_model_installed_async(self, engine: str, callback) -> None:
+        model_type = str(engine or self._asr_settings.get("engine", "google"))
+
+        def worker() -> None:
+            try:
+                callback(bool(self._check_model_installed(model_type)), None)
+            except BaseException as exc:
+                try:
+                    callback(False, exc)
+                except Exception:
+                    pass
+
+        task_supervisor().start_thread(
+            self,
+            f"asr-installed-check:{model_type}:{time.monotonic_ns()}",
+            worker,
+        )
+
     # —— universal ASR settings IO
     def _on_get_recognizer_settings_schema(self, event: Event):
         if not self._asr_settings or not self._asr_settings.get("models"):
@@ -357,54 +414,32 @@ class SpeechController:
         value = data.get('value')
         if key is None:
             return
-        self._asr_settings.setdefault("models", {}).setdefault(engine, {})[key] = value
-        self._save_asr_settings()
+        self.asr_settings.set_model_option(engine, key, value)
         if engine == self._asr_settings.get("engine"):
-            SpeechRecognition.apply_settings(engine, self._asr_settings["models"][engine])
+            SpeechRecognition.apply_settings(engine, self.asr_settings.model_settings(engine))
 
     def _on_apply_recognizer_settings(self, event: Event):
         data = event.data or {}
         engine = data.get('engine') or self._asr_settings.get("engine", "google")
         settings = data.get('settings', {})
-        self._asr_settings.setdefault("models", {})[engine] = settings
-        self._save_asr_settings()
+        self.asr_settings.set_model_settings(engine, settings)
         if engine == self._asr_settings.get("engine"):
             SpeechRecognition.apply_settings(engine, settings)
 
     # —— install/check
-    def _on_check_asr_model_installed(self, event: Event):
-        data = event.data or {}
-        cb = data.get("callback")
-
-        model_type = (data or {}).get('model', self._asr_settings.get("engine", "google"))
-
-        if not cb:
-            return self._check_model_installed(model_type)
-
-        def worker():
-            try:
-                res = bool(self._check_model_installed(model_type))
-                try:
-                    cb(res, None)
-                except Exception:
-                    pass
-            except Exception as e:
-                try:
-                    cb(False, e)
-                except Exception:
-                    pass
-
-        threading.Thread(target=worker, daemon=True).start()
-        return None
-
-
     def _check_model_installed(self, model_type: str) -> bool:
         engine_settings = {}
         try:
             engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
         except Exception:
             engine_settings = {}
-        return SpeechRecognition.check_model_installed(model_type, settings=engine_settings)
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return False
+        return catalog.is_ready(
+            f"asr:{str(model_type or '').strip()}",
+            ctx={"engine_settings": dict(engine_settings)},
+        )
 
     def _on_get_asr_engines_list(self, _event: Event):
         return list(SpeechRecognition._registry.keys())
@@ -484,28 +519,19 @@ class SpeechController:
         self._last_text_norm = self._normalize_asr_text(text)
         self._last_text_time = now
 
-        try:
-            con = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.3)
-            connected = bool(con and con[0])
-            if connected:
-                engine = str(self._asr_settings.get("engine", "") or "")
-                self.events_bus.emit(getattr(Events.Server, "BROADCAST_ASR_TEXT", "broadcast_asr_text"), {
-                    "text": text,
-                    "engine": engine,
-                    "ts": time.time(),
-                })
-        except Exception:
-            pass
+        if use(GameLinkService).is_connected():
+            self.events_bus.emit(Events.Server.BROADCAST_ASR_TEXT, {
+                "text": text,
+                "engine": str(self._asr_settings.get("engine", "") or ""),
+                "ts": time.time(),
+            })
 
         if bool(self.settings.get("MIC_INSTANT_SENT")):
-            waiting = self.events_bus.emit_and_wait(Events.Audio.GET_WAITING_ANSWER, timeout=0.5)
-            waiting_answer = waiting[0] if waiting else False
+            audio = services().get_optional(AudioStateService)
+            waiting_answer = bool(audio and audio.is_waiting_answer())
             if not waiting_answer:
                 self._send_instant(text)
         else:
-            connected = self.events_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-            if connected and connected[0]:
-                pass
             logger.info(f"Распознано: {text}")
             self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
 
@@ -545,16 +571,16 @@ class SpeechController:
 
     def _on_start_speech_recognition(self, event: Event):
         dev_id = event.data.get('device_id', self.device_id)
-        loop_result = self.events_bus.emit_and_wait(Events.Core.GET_EVENT_LOOP, timeout=1.0)
-        loop = loop_result[0] if loop_result else None
-        if loop:
-            self.asr_is_ready = False
-            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop))
-            self.mic_recognition_active = started
-            if not started:
-                self._handle_start_failure()
-        else:
+        loop_service = use(LoopService)
+        if not loop_service.is_running():
             logger.error("Не удалось получить event loop для запуска распознавания речи")
+            self._handle_start_failure()
+            return
+
+        self.asr_is_ready = False
+        started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop_service.loop()))
+        self.mic_recognition_active = started
+        if not started:
             self._handle_start_failure()
 
     def _on_stop_speech_recognition(self, _event: Event):
@@ -573,10 +599,9 @@ class SpeechController:
             except Exception as e:
                 logger.error(f"Ошибка перезапуска распознавания: {e}")
 
-        threading.Thread(target=restart, daemon=True).start()
-
-    def _on_get_user_input(self, _event: Event):
-        return ""
+        task_supervisor().start_thread(
+            self, "speech-restart", restart, replace=True
+        )
 
     def _on_get_microphone_list(self, event: Event):
         data = event.data or {}
@@ -611,7 +636,11 @@ class SpeechController:
                 except Exception:
                     pass
 
-        threading.Thread(target=worker, daemon=True).start()
+        task_supervisor().start_thread(
+            self,
+            f"speech-background-{time.monotonic_ns()}",
+            worker,
+        )
         return None
 
     def _on_refresh_microphone_list(self, event: Event):
@@ -619,128 +648,97 @@ class SpeechController:
 
     def _on_get_asr_models_glossary(self, event: Event):
         data = event.data or {}
-        cb = data.get("callback")
+        callback = data.get("callback")
+        refresh = bool(data.get("refresh", False))
 
-        def compute():
+        with self._glossary_lock:
+            if self._glossary_cache is not None and not refresh:
+                cached = [dict(item) for item in self._glossary_cache]
+                if callable(callback):
+                    try:
+                        callback(cached, None)
+                    except Exception:
+                        pass
+                    return None
+                return cached
+
+            if callable(callback):
+                self._glossary_callbacks.append(callback)
+
+            if self._glossary_loading:
+                return [] if not callable(callback) else None
+
+            self._glossary_loading = True
+
+        def worker() -> None:
+            error = None
             try:
-                from core.install_requirements import check_requirements
-                from utils.gpu_utils import check_gpu_provider
-
-                try:
-                    gpu_vendor = check_gpu_provider() or "CPU"
-                except Exception:
-                    gpu_vendor = "CPU"
-
-                if not self._asr_settings or not self._asr_settings.get("models"):
-                    self._load_asr_settings()
-
-                models_map = self._asr_settings.get("models", {}) or {}
-                registry = getattr(SpeechRecognition, "_registry", {}) or {}
-                engines = list(registry.keys())
-                try:
-                    from core.installables import ComponentCategory, make_component_id
-                    from installables import get_installable_registry
-
-                    installable_registry = get_installable_registry()
-                except Exception:
-                    installable_registry = None
-                    ComponentCategory = None
-                    make_component_id = None
-
+                result = self._compute_asr_models_glossary(refresh=refresh)
+            except Exception as exc:
+                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {exc}", exc_info=True)
                 result = []
-                for engine in engines:
-                    engine_settings = models_map.get(engine, {}) or {}
+                error = exc
 
-                    inst = None
-                    try:
-                        inst = SpeechRecognition._new_instance(engine)
-                        if inst and hasattr(inst, "apply_settings"):
-                            inst.apply_settings(engine_settings)
-                    except Exception:
-                        inst = None
+            with self._glossary_lock:
+                self._glossary_cache = [dict(item) for item in result]
+                self._glossary_loading = False
+                callbacks = self._glossary_callbacks
+                self._glossary_callbacks = []
 
-                    meta = {}
-                    try:
-                        cfgs = inst.get_model_configs() if inst else (getattr(registry.get(engine), "MODEL_CONFIGS", []) or [])
-                        if isinstance(cfgs, list):
-                            for c in cfgs:
-                                if isinstance(c, dict) and str(c.get("id") or "") == str(engine):
-                                    meta = c
-                                    break
-                    except Exception:
-                        meta = {}
-
-                    reqs = []
-                    try:
-                        if inst and hasattr(inst, "requirements"):
-                            reqs = inst.requirements() or []
-                    except Exception:
-                        reqs = []
-
-                    ctx = {
-                        "device": engine_settings.get("device"),
-                        "gpu_vendor": gpu_vendor,
-                        "engine_settings": engine_settings,
-                    }
-
-                    status = check_requirements(reqs, ctx=ctx) if reqs else {
-                        "ok": True, "missing_required": [], "missing_optional": [], "details": []
-                    }
-                    component_id = ""
-                    component_status = None
-                    if installable_registry is not None and ComponentCategory is not None and make_component_id is not None:
-                        try:
-                            component_id = make_component_id(ComponentCategory.ASR, engine)
-                            component = installable_registry.get(component_id)
-                            if component is not None:
-                                component_status = component.status(ctx)
-                        except Exception:
-                            component_status = None
-
-                    installed = bool(component_status.ready) if component_status is not None else bool(status.get("ok"))
-                    missing_required = list(status.get("missing_required", []))
-                    details = list(status.get("details", []))
-                    if component_status is not None:
-                        if not component_status.ready and component_status.installed and not component_status.backend_ok:
-                            missing_required = ["backend"]
-                        details.append(component_status.as_dict())
-
-                    result.append({
-                        "id": engine,
-                        "component_id": component_id,
-                        "name": meta.get("name") or engine,
-                        "description": meta.get("description") or "",
-                        "languages": meta.get("languages", []) if isinstance(meta.get("languages"), list) else [],
-                        "gpu_vendor": meta.get("gpu_vendor", []) if isinstance(meta.get("gpu_vendor"), list) else [],
-                        "tags": meta.get("tags", []) if isinstance(meta.get("tags"), list) else [],
-                        "links": meta.get("links", []) if isinstance(meta.get("links"), list) else [],
-                        "installed": installed,
-                        "missing_required": missing_required,
-                        "missing_optional": status.get("missing_optional", []),
-                        "details": details,
-                    })
-
-                return result
-
-            except Exception as e:
-                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {e}", exc_info=True)
-                return []
-
-        if not cb:
-            return compute()
-
-        def worker():
-            try:
-                res = compute()
+            for cb in callbacks:
                 try:
-                    cb(res, None)
-                except Exception:
-                    pass
-            except Exception as e:
-                try:
-                    cb([], e)
+                    cb([dict(item) for item in result], error)
                 except Exception:
                     pass
 
-        threading.Thread(target=worker, daemon=True).start()
-        return None
+        task_supervisor().start_thread(
+            self,
+            "asr-glossary-catalog",
+            worker,
+            replace=True,
+        )
+        return [] if not callable(callback) else None
+
+    def _compute_asr_models_glossary(self, *, refresh: bool = False) -> list[dict]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return []
+
+        rows = catalog.list_rows(
+            include_status=True,
+            refresh=bool(refresh),
+            category="asr",
+            status_category="asr",
+        )
+        result: list[dict] = []
+        for row in rows:
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(metadata, dict) or not isinstance(status, dict):
+                continue
+
+            details = status.get("details")
+            details = dict(details) if isinstance(details, dict) else {}
+            missing_required = list(details.get("missing_required") or ())
+            if not bool(status.get("backend_ok", True)) and "backend" not in missing_required:
+                missing_required.append("backend")
+
+            result.append(
+                {
+                    "id": str(metadata.get("item_id") or ""),
+                    "component_id": str(metadata.get("id") or ""),
+                    "name": str(metadata.get("title") or metadata.get("item_id") or ""),
+                    "description": str(metadata.get("description") or ""),
+                    "languages": list(metadata.get("languages") or ()),
+                    "gpu_vendor": [],
+                    "tags": list(metadata.get("tags") or ()),
+                    "links": [],
+                    "installed": bool(status.get("ready", False)),
+                    "ready": bool(status.get("ready", False)),
+                    "status": dict(status),
+                    "missing_required": missing_required,
+                    "missing_optional": list(details.get("missing_optional") or ()),
+                    "details": [dict(status)],
+                }
+            )
+        return result

@@ -1,7 +1,23 @@
-# src/managers/tools/builtin/__init__.py
-from .calc import CalculatorTool
-from .google_search import GoogleSearchTool
-from .web_read import WebPageReaderTool
-from .web_search import WebSearchTool
+from __future__ import annotations
 
-__all__ = ["CalculatorTool", "WebPageReaderTool", "WebSearchTool","GoogleSearchTool"]
+from importlib import import_module
+
+_LAZY_EXPORTS = {
+    "CalculatorTool": ("managers.tools.builtin.calc", "CalculatorTool"),
+    "GoogleSearchTool": ("managers.tools.builtin.google_search", "GoogleSearchTool"),
+    "WebPageReaderTool": ("managers.tools.builtin.web_read", "WebPageReaderTool"),
+    "WebSearchTool": ("managers.tools.builtin.web_search", "WebSearchTool"),
+}
+
+
+def __getattr__(name: str):
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module_name, attribute = target
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+__all__ = sorted(_LAZY_EXPORTS)

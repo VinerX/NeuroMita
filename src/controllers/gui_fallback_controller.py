@@ -18,43 +18,23 @@ class GuiFallbackController:
     def _subscribe_to_events(self) -> None:
         eb = self.event_bus
 
-        eb.subscribe(Events.Character.GET_ALL, self._on_get_character_list, weak=False)
-        eb.subscribe(Events.Character.GET, self._on_get_character, weak=False)
-        eb.subscribe(Events.Character.GET_CURRENT_PROFILE, self._on_get_current_profile, weak=False)
-        eb.subscribe(Events.Character.GET_CURRENT_NAME, self._on_get_current_name, weak=False)
+        # Чтение персонажей идёт через SettingsOnlyCharacterRegistry (MainController).
         eb.subscribe(Events.Character.SET_CURRENT, self._on_set_current_character, weak=False)
 
-        eb.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_empty_list, weak=False)
-        eb.subscribe(Events.ApiPresets.GET_CURRENT_PRESET_ID, self._on_get_current_preset_id, weak=False)
         eb.subscribe(Events.ApiPresets.SET_CURRENT_PRESET_ID, self._on_set_current_preset_id, weak=False)
 
-        eb.subscribe(Events.Model.GET_DEBUG_INFO, self._on_get_debug_info, weak=False)
-        eb.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
-        eb.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_zero, weak=False)
         eb.subscribe(Events.Model.CALCULATE_COST, self._on_get_empty_dict, weak=False)
         eb.subscribe(Events.Model.SCHEDULE_G4F_UPDATE, self._on_schedule_update, weak=False)
 
-        eb.subscribe(Events.Server.GET_GAME_CONNECTION, self._on_noop_false, weak=False)
         eb.subscribe(Events.Server.STOP_SERVER, self._on_noop_true, weak=False)
-        eb.subscribe(Events.Telegram.GET_SILERO_STATUS, self._on_noop_false, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_noop_true, weak=False)
         eb.subscribe(Events.Telegram.STOP_SILERO, self._on_noop_true, weak=False)
-        eb.subscribe(Events.Speech.GET_MIC_STATUS, self._on_noop_false, weak=False)
 
-        eb.subscribe(Events.Capture.GET_SCREEN_CAPTURE_STATUS, self._on_noop_false, weak=False)
-        eb.subscribe(Events.Capture.GET_CAMERA_CAPTURE_STATUS, self._on_noop_false, weak=False)
         eb.subscribe(Events.Capture.CAPTURE_SCREEN, self._on_get_empty_list, weak=False)
-        eb.subscribe(Events.Capture.GET_CAMERA_FRAMES, self._on_get_empty_list, weak=False)
         eb.subscribe(Events.Capture.STOP_SCREEN_CAPTURE, self._on_noop_true, weak=False)
         eb.subscribe(Events.Capture.STOP_CAMERA_CAPTURE, self._on_noop_true, weak=False)
 
-        eb.subscribe(Events.VoiceModel.GET_MODEL_DATA, self._on_get_empty_list, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_INSTALLED_MODELS, self._on_get_empty_list, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_DEPENDENCIES_STATUS, self._on_get_empty_dict, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_DEFAULT_DESCRIPTION, self._on_get_voice_model_description, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_MODEL_DESCRIPTION, self._on_get_voice_model_description, weak=False)
 
-        eb.subscribe(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, self._on_get_empty_list, weak=False)
         eb.subscribe(Events.Audio.CHECK_MODEL_INITIALIZED, self._on_noop_false, weak=False)
         eb.subscribe(Events.Audio.SELECT_VOICE_MODEL, self._on_noop_false, weak=False)
         eb.subscribe(Events.Audio.INIT_VOICE_MODEL, self._on_noop_false, weak=False)
@@ -64,25 +44,6 @@ class GuiFallbackController:
         eb.subscribe(Events.Chat.CLEAR_CHAT, self._on_noop_true, weak=False)
         eb.subscribe(Events.Chat.STAGE_IMAGE, self._on_noop_true, weak=False)
         eb.subscribe(Events.Chat.CLEAR_STAGED_IMAGES, self._on_noop_true, weak=False)
-
-    def _on_get_character_list(self, _event: Event):
-        current = self._current_character_id()
-        return [current] if current else []
-
-    def _on_get_character(self, _event: Event):
-        character_id = self._current_character_id()
-        if not character_id:
-            return {}
-        return {"char_id": character_id, "name": character_id}
-
-    def _on_get_current_profile(self, _event: Event):
-        character_id = self._current_character_id()
-        if not character_id:
-            return {}
-        return {"character_id": character_id, "name": character_id}
-
-    def _on_get_current_name(self, _event: Event):
-        return self._current_character_id()
 
     def _on_get_current_preset_id(self, _event: Event):
         return self.settings.get("LAST_API_PRESET_ID", 0) if self.settings else 0

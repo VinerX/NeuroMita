@@ -22,6 +22,7 @@ PYTHON_FULL_REQUIRED_FILES = (
     "requirements.txt",
     "run.py",
     "run.bat",
+    "Launcher.exe",
     "init.py",
     "init_triton.bat",
     "libs/python/python.exe",

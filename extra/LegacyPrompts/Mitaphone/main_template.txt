@@ -8,4 +8,3 @@
 [<Context/examplesLong.txt>]
 [<Context/world.txt>]
 [<Main/player.txt>]
-[<../Common/CommonContext.script>]

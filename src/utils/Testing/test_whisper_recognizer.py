@@ -44,10 +44,13 @@ class WhisperRecognizerTests(unittest.TestCase):
         self.assertIn("pyyaml", (recognizer._last_requirements_probe_message or "").lower())
         self.assertIn("version=none", (recognizer._last_requirements_probe_message or "").lower())
 
-    def test_install_raises_readable_error_for_broken_pyyaml(self):
-        logger = Mock()
-        recognizer = WhisperRecognizer(pip_installer=None, logger=logger)
-        recognizer._last_requirements_probe_status = {
+    def test_describe_requirements_failure_readable_for_broken_pyyaml(self):
+        # Веса теперь качает download_http, install() артефакты не трогает и не
+        # бросает. Читаемая причина ("PyYAML looks corrupted") приходит из
+        # _describe_requirements_failure — её используют is_installed() и
+        # post-install диагностика.
+        recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())
+        broken_status = {
             "ok": False,
             "missing_required": ["pyyaml"],
             "details": [
@@ -59,10 +62,23 @@ class WhisperRecognizerTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(recognizer, "is_installed", return_value=False):
-            with self.assertRaisesRegex(RuntimeError, "PyYAML looks corrupted"):
-                import asyncio
-                asyncio.run(recognizer.install())
+        message = recognizer._describe_requirements_failure(broken_status)
+        self.assertIn("PyYAML looks corrupted", message)
+
+    def test_install_manifest_covers_ct2_files_for_turbo(self):
+        recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())
+        recognizer.whisper_model = "large-v3-turbo"
+
+        manifest = recognizer.install_manifest()
+        names = {item["dest"].replace("\\", "/").rsplit("/", 1)[-1] for item in manifest}
+
+        self.assertEqual(names, {"config.json", "preprocessor_config.json",
+                                 "tokenizer.json", "vocabulary.json", "model.bin"})
+        # Все ссылки — на реальный CT2-репозиторий turbo.
+        self.assertTrue(all(
+            "mobiuslabsgmbh/faster-whisper-large-v3-turbo" in item["url"]
+            for item in manifest
+        ))
 
     def test_diagnose_init_failure_explains_missing_pyyaml_dist_info(self):
         recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())

@@ -50,11 +50,10 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
 
     # 1) Кнопка в глоссарий
-    self.asr_manage_button = tr_set(QPushButton(), "Открыть AI Hub", "Open AI Hub")
+    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам AI Engine", "Open AI Engine settings")
     self.asr_manage_button.setObjectName("SecondaryButton")
-    self.asr_manage_button.setIcon(qta.icon("fa5s.list", color="#ffffff"))
+    self.asr_manage_button.setIcon(qta.icon("fa6s.microchip", color="#ffffff"))
     self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    root_lay.addWidget(self.asr_manage_button, 0)
 
     # 2) Доступные (установленные) модели + refresh
     engine_field = SettingsBodyWidget()
@@ -67,6 +66,15 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.recognizer_combobox, "Установленные модели распознавания", "Installed speech recognition models", "setToolTip")
     eng_h.addWidget(self.recognizer_combobox, 1)
 
+    self.asr_models_empty_status = tr_set(
+        QLabel(),
+        "Нет установленных моделей",
+        "No installed models",
+    )
+    self.asr_models_empty_status.setObjectName("SeparatorLabel")
+    self.asr_models_empty_status.setVisible(False)
+    eng_h.addWidget(self.asr_models_empty_status, 1)
+
     self.asr_refresh_button = QPushButton()
     self.asr_refresh_button.setObjectName("SecondaryButton")
     self.asr_refresh_button.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
@@ -75,6 +83,7 @@ def build_microphone_settings_ui(self, parent_layout):
     eng_h.addWidget(self.asr_refresh_button, 0)
 
     root_lay.addWidget(make_row(_("Модель", "Model"), engine_field, label_w))
+    root_lay.addWidget(self.asr_manage_button, 0)
 
     # 3) Текущий микрофон + refresh
     mic_field = SettingsBodyWidget()

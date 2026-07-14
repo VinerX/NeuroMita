@@ -1,49 +1,44 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 
-from ui.pages.news_support import (
-    NEWS_REPO,
-    build_release_news_items,
-    get_news_content,
-    get_news_releases,
-    invalidate_news_releases,
-    load_news_releases_async,
-)
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem, create_news_page
+from ui.mvvm import mutable_payload
+from ui.pages.news_presentation import (
+    ActivateNewsPage,
+    NewsPageState,
+    NewsPageUpdated,
+    RefreshNewsPage,
+)
 from utils import _
 
 
 class NewsPage(QWidget):
-    # Сигнал перепрыгивает результат фоновой загрузки релизов в GUI-поток.
-    _releases_ready = pyqtSignal(object)
-
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions):
+        super().__init__(parent)
+        self._page_actions = page_actions
         self.setObjectName("NewsPage")
 
         self._page_widget = None
         self._pending_focus_release_id = ""
+        self._state = NewsPageState()
         self._root_layout = QVBoxLayout(self)
         self._root_layout.setContentsMargins(0, 0, 0, 0)
         self._root_layout.setSpacing(0)
 
-        self._releases_ready.connect(self._on_releases_ready)
-        self._sync_host_exports()
-        # Первый показ использует уже прогретый на старте кэш (#8) — без
-        # invalidate, иначе повторно ходили бы в сеть при каждом открытии
-        # страницы. Принудительное обновление — только по кнопке «Обновить».
-        self._load_content()
-
-    def _sync_host_exports(self):
-        self.gui.news_page = self
+        self._view_model = view_model
+        self._view_model.setParent(self)
+        self._view_model.state_changed.connect(self.render)
+        self._view_model.effect_emitted.connect(self.handle_effect)
+        self.destroyed.connect(lambda *_: self._view_model.close())
+        self._view_model.dispatch(ActivateNewsPage())
 
     def _build_page_widget(self, *, loading: bool = False) -> QWidget:
-        repo_url = f"https://github.com/{NEWS_REPO}/releases"
+        repository = self._state.repository
+        repo_url = f"https://github.com/{repository}/releases"
         if loading:
             items = [
                 NewsItem(
@@ -57,13 +52,13 @@ class NewsPage(QWidget):
             ]
         else:
             # Кэш уже прогрет фоновой загрузкой — build не ходит в сеть.
-            items = build_release_news_items(self.gui)
+            items = list(self._state.items)
         return create_news_page(
             title=_("Релизы NeuroMita", "NeuroMita releases"),
             subtitle=_(
                 "Лента публичных релизов с GitHub ({repo}): changelog, бета-сборки и ссылки на полные заметки.",
                 "GitHub release feed ({repo}): changelog, beta builds and links to full notes.",
-            ).format(repo=NEWS_REPO),
+            ).format(repo=repository),
             items=items,
             header_actions=[
                 DashboardAction(_("Обновить", "Refresh"), callback=self.refresh_content, icon_name="fa6s.rotate-right"),
@@ -84,31 +79,24 @@ class NewsPage(QWidget):
         self._root_layout.addWidget(new_widget)
 
     def refresh_content(self):
-        # Кнопка «Обновить»: принудительно сбрасываем кэш и тянем ленту заново.
-        invalidate_news_releases(self.gui)
-        self._load_content()
+        self._view_model.dispatch(RefreshNewsPage(force=True))
 
-    def _load_content(self):
-        # Не блокируем GUI: показываем плейсхолдер «Загрузка…» и грузим ленту
-        # в фоне (из кэша, если он уже прогрет). Готовый список придёт сигналом
-        # _releases_ready на GUI-поток.
-        self._set_page_widget(self._build_page_widget(loading=True))
-        QTimer.singleShot(0, lambda: load_news_releases_async(self.gui, lambda releases: self._releases_ready.emit(releases)))
+    def render(self, state: NewsPageState) -> None:
+        self._state = state
+        self._set_page_widget(self._build_page_widget(loading=state.loading))
 
-    def _on_releases_ready(self, releases):
-        self._set_page_widget(self._build_page_widget())
-
-        if self._pending_focus_release_id:
+        if not state.loading and self._pending_focus_release_id:
             release_id = self._pending_focus_release_id
             self._pending_focus_release_id = ""
             QTimer.singleShot(0, lambda rid=release_id: self.focus_release(rid))
 
-        home_page = getattr(self.gui, "home_page", None)
-        if home_page is not None and hasattr(home_page, "refresh_news_content"):
-            home_page.refresh_news_content()
+    def handle_effect(self, effect) -> None:
+        if not isinstance(effect, NewsPageUpdated):
+            return
+        self._page_actions.refresh_home_news()
 
     def on_activated(self):
-        pass
+        self._view_model.dispatch(ActivateNewsPage())
 
     def focus_release(self, release_id: str) -> bool:
         target_id = str(release_id or "").strip()
@@ -134,11 +122,11 @@ class NewsPage(QWidget):
         return True
 
     def get_news_releases(self):
-        return get_news_releases(self.gui)
+        return list(mutable_payload(self._state.releases) or [])
 
     def get_news_content(self) -> str:
-        return get_news_content(self.gui)
+        return str(self._state.content or "")
 
 
-def build_news_page(window) -> QWidget:
-    return NewsPage(window)
+def build_news_page(parent, view_model, page_actions) -> QWidget:
+    return NewsPage(parent, view_model, page_actions)

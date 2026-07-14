@@ -9,7 +9,15 @@ from handlers.llm_providers.errors import build_provider_error, coerce_provider_
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
 
-from .base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from .base import (
+    BaseProvider,
+    LLMRequest,
+    LLMResponse,
+    check_request_cancelled,
+    normalize_usage_payload,
+    register_cancellable_resource,
+    resolve_requests_timeout,
+)
 
 
 class GeminiProvider(BaseProvider):
@@ -197,7 +205,11 @@ class GeminiProvider(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
-                schema = model_cls.gemini_schema_dict(exclude_fields=excl or None)
+                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                schema = model_cls.gemini_schema_dict(
+                    exclude_fields=excl or None,
+                    exclude_segment_fields=segment_excl or None,
+                )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:
@@ -221,13 +233,16 @@ class GeminiProvider(BaseProvider):
 
         _t0 = _time.time()
         try:
+            check_request_cancelled(req)
             response = requests.post(
                 req.api_url,
                 headers=headers,
                 json=data,
                 stream=need_stream,
-                timeout=120,
+                timeout=resolve_requests_timeout(req),
             )
+            register_cancellable_resource(req, response)
+            check_request_cancelled(req)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=req.api_url)
             logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
@@ -247,10 +262,11 @@ class GeminiProvider(BaseProvider):
             )
             logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}")
             logger.debug(f"[GeminiProvider] raw error payload: {payload}")
+            response.close()
             raise provider_error
 
         if need_stream:
-            return self._handle_gemini_stream(response, req.stream_cb)
+            return self._handle_gemini_stream(response, req, req.stream_cb)
 
         try:
             response_data = response.json()
@@ -276,13 +292,15 @@ class GeminiProvider(BaseProvider):
                 think_block = "<think>" + "\n".join(think_texts) + "</think>"
                 response_text = think_block + "\n" + response_text
 
-            return LLMResponse(
+            result = LLMResponse(
                 text=response_text,
                 usage=self._extract_usage(response_data),
                 model=(response_data.get("modelVersion") if isinstance(response_data, dict) else None) or req.model,
                 provider_name=self.name,
                 raw=response_data if isinstance(response_data, dict) else {},
             )
+            response.close()
+            return result
         except Exception as e:
             logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
             provider_error = build_provider_error(
@@ -292,9 +310,18 @@ class GeminiProvider(BaseProvider):
                 url=req.api_url,
             )
             logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            try:
+                response.close()
+            except Exception:
+                pass
             raise provider_error from e
 
-    def _handle_gemini_stream(self, response, stream_callback: callable = None) -> LLMResponse:
+    def _handle_gemini_stream(
+        self,
+        response,
+        req: LLMRequest,
+        stream_callback: callable = None,
+    ) -> LLMResponse:
         full_response_parts = []
         json_buffer = ""
         decoder = json.JSONDecoder()
@@ -303,6 +330,7 @@ class GeminiProvider(BaseProvider):
 
         try:
             for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+                check_request_cancelled(req)
                 json_buffer += chunk
                 while json_buffer.strip():
                     try:
@@ -348,6 +376,11 @@ class GeminiProvider(BaseProvider):
             provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
             logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
             raise provider_error from e
+        finally:
+            try:
+                response.close()
+            except Exception:
+                logger.debug("[GeminiProvider] Failed to close HTTP stream", exc_info=True)
 
     def _extract_usage(self, response_data):
         if not isinstance(response_data, dict):

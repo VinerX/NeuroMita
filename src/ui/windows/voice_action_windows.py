@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QProgressBar,
-    QApplication, QWidget, QPushButton, QFileDialog
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPlainTextEdit, QProgressBar,
+    QApplication, QWidget, QPushButton, QFileDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QTime
 from PyQt6.QtGui import QFont, QTextCursor, QGuiApplication
@@ -18,6 +18,10 @@ from collections import deque
 # и одиночные ESC-последовательности (\x1bX), и OSC/прочие escape-формы.
 ANSI_RE = re.compile(r'\x1b(?:\[.*?[@-~]|\].*?(?:\x1b\\|\x07))')
 
+# Незавершённая ANSI-последовательность в конце чанка (ESC без финального байта):
+# её нельзя стрипать сразу — финальный байт придёт со следующим PTY-чтением.
+TRAILING_ANSI_RE = re.compile(r'\x1b(?:\][^\x07\x1b]*|\[[0-9;?]*)?$')
+
 
 def strip_ansi(s: str) -> str:
     """Удаляет ANSI escape-коды из строки."""
@@ -30,6 +34,7 @@ class VoiceInstallationWindow(QDialog):
     progress_updated = pyqtSignal(int)
     status_updated = pyqtSignal(str)
     log_updated = pyqtSignal(str)
+    raw_log_updated = pyqtSignal(str)
     window_closed = pyqtSignal()
     minimized = pyqtSignal()
 
@@ -62,7 +67,7 @@ class VoiceInstallationWindow(QDialog):
                 QLabel {
                     color: #f3edf6;
                 }
-                QTextEdit {
+                QTextEdit, QPlainTextEdit {
                     background-color: #07070f;
                     color: #d8d2e4;
                     border: 1px solid #252236;
@@ -99,7 +104,7 @@ class VoiceInstallationWindow(QDialog):
             self.setStyleSheet("""
                 QDialog { background-color: #1e1e1e; }
                 QLabel { color: #ffffff; }
-                QTextEdit {
+                QTextEdit, QPlainTextEdit {
                     background-color: #101010;
                     color: #cccccc;
                     border: 1px solid #333;
@@ -125,9 +130,17 @@ class VoiceInstallationWindow(QDialog):
             """)
 
         self._full_log_lines: list[str] = []
+        self._raw_log_chunks: list[str] = []
+        self._raw_pending_chunks: deque[str] = deque()
+        # Хвост незакрытой ANSI-последовательности, разорванной на границе
+        # PTY-чтения: держим до следующего чанка, иначе strip_ansi её пропустит
+        # и в Raw log посыплются «□[32m»-артефакты (выглядит как сломанная кодировка).
+        self._raw_ansi_carry: str = ""
         self._display_lines: deque[str] = deque()
         self._max_display_blocks: int = 200
         self._snapshot_lines: list[str] = []
+        self._overview_lines: deque[str] = deque(maxlen=16)
+        self._last_overview_line = ""
 
         self._start_time = QTime.currentTime()
         self._elapsed_timer = QTimer(self)
@@ -205,10 +218,39 @@ class VoiceInstallationWindow(QDialog):
         self._disk_timer.start()
         self._update_disk_free()
 
-        self.log_text = QTextEdit()
+        self.install_tabs = QTabWidget()
+        self.install_tabs.setDocumentMode(True)
+
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        self.overview_text = QTextEdit()
+        self.overview_text.setReadOnly(True)
+        self.overview_text.setFont(QFont("Segoe UI", 9))
+        overview_layout.addWidget(self.overview_text, 1)
+        self.install_tabs.addTab(overview_page, _("Ход установки", "Installation"))
+
+        raw_page = QWidget()
+        raw_layout = QVBoxLayout(raw_page)
+        raw_layout.setContentsMargins(0, 0, 0, 0)
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setUndoRedoEnabled(False)
+        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.log_text.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.log_text, 1)
+        raw_layout.addWidget(self.log_text, 1)
+        self.install_tabs.addTab(raw_page, _("Raw log", "Raw log"))
+        self.install_tabs.currentChanged.connect(self._on_install_tab_changed)
+        layout.addWidget(self.install_tabs, 1)
+
+        # pip/uv may emit hundreds of lines in a short burst. Rebuilding the
+        # QTextEdit HTML for every line made the installer UI itself expensive.
+        # Keep the complete raw stream in memory and repaint it in short batches.
+        self._raw_flush_timer = QTimer(self)
+        self._raw_flush_timer.setSingleShot(True)
+        self._raw_flush_timer.setInterval(80)
+        self._raw_flush_timer.timeout.connect(self._flush_raw_log)
+        self._append_overview_line(initial_status or _("Подготовка...", "Preparing..."))
 
         hint_text = reopen_hint_text or _(
             "Это окно можно закрыть — установка продолжится в фоне. "
@@ -246,6 +288,7 @@ class VoiceInstallationWindow(QDialog):
         self.progress_updated.connect(self._on_progress_update, type=Qt.ConnectionType.QueuedConnection)
         self.status_updated.connect(self._on_status_update, type=Qt.ConnectionType.QueuedConnection)
         self.log_updated.connect(self._on_log_update, type=Qt.ConnectionType.QueuedConnection)
+        self.raw_log_updated.connect(self._on_raw_log_update, type=Qt.ConnectionType.QueuedConnection)
 
         if parent and hasattr(parent, 'geometry'):
             parent_rect = parent.geometry()
@@ -264,6 +307,7 @@ class VoiceInstallationWindow(QDialog):
             self.progress_updated.emit,
             self.status_updated.emit,
             self.log_updated.emit,
+            self.raw_log_updated.emit,
         )
 
     def showEvent(self, event):
@@ -364,6 +408,8 @@ class VoiceInstallationWindow(QDialog):
             issues.append(f"⚠ {warnings}")
         self.issues_label.setStyleSheet("color: #ff5555;" if errors else "color: #ffb86c;")
         self.issues_label.setText("   " + "  ".join(issues) if issues else "")
+        if errors:
+            self._show_raw_log()
 
         stage = str(stats.get("stage") or "")
         badge = {
@@ -411,6 +457,9 @@ class VoiceInstallationWindow(QDialog):
     def _on_status_update(self, message: str):
         message = strip_ansi(message)
         self.status_label.setText(message)
+        self._append_overview_line(message)
+        if self._is_error_line(message):
+            self._show_raw_log()
         # Вынимаем ETA из сообщения, если есть
         m = re.search(r'\(\s*ETA\s+([^)]+)\)', message, flags=re.IGNORECASE)
         if m:
@@ -429,41 +478,84 @@ class VoiceInstallationWindow(QDialog):
             return html_escape(plain)
 
     def _render_display_lines(self):
-        scrollbar = self.log_text.verticalScrollBar()
-        old_value = scrollbar.value()
-        stick_to_bottom = old_value >= max(0, scrollbar.maximum() - 12)
-        # Формируем HTML из текущего окна строк
+        # Raw output has its own exact subprocess stream. Never reconstruct it
+        # from the parsed/normalized semantic log.
+        self._flush_raw_log()
+
+    def _render_overview(self):
+        activity_html = "".join(
+            f"<div style='margin:0 0 6px 0;'>{self._colorize_line(line)}</div>"
+            for line in self._overview_lines
+        )
         snapshot_html = ""
         if self._snapshot_lines:
             snapshot_html = (
-                f"<div style='margin:8px 0 0 0; padding:6px; background:{self._snapshot_bg}; "
-                f"border:1px solid {self._snapshot_border}; border-radius:6px;'>"
-                "<pre style='font-family:Consolas,monospace; font-size:9pt; "
-                f"margin:0; color:{self._snapshot_fg};'>"
+                f"<div style='margin:10px 0 0 0; padding:8px; background:{self._snapshot_bg}; "
+                f"border:1px solid {self._snapshot_border}; border-radius:7px;'>"
+                "<div style='font-weight:600; margin-bottom:5px;'>"
+                + html_escape(_("Текущие операции", "Current operations"))
+                + "</div><pre style='font-family:Consolas,monospace; font-size:9pt; margin:0; "
+                f"color:{self._snapshot_fg};'>"
                 + html_escape("\n".join(self._snapshot_lines))
                 + "</pre></div>"
             )
-        html = (
-            "<div style='white-space: pre-wrap; font-family:Consolas,monospace; font-size:9pt; margin:0;'>"
-            + "<br/>".join(self._display_lines) +
-            "</div>"
-            + snapshot_html
-        )
-        self.log_text.setHtml(html)
-        if stick_to_bottom:
-            self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-            self.log_text.ensureCursorVisible()
-        else:
-            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+        self.overview_text.setHtml(activity_html + snapshot_html)
+        self.overview_text.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _append_overview_line(self, text: str):
+        clean = strip_ansi(str(text or "")).strip()
+        if not clean or clean == self._last_overview_line:
+            return
+        self._last_overview_line = clean
+        self._overview_lines.append(clean)
+        self._render_overview()
+
+    @staticmethod
+    def _is_error_line(text: str) -> bool:
+        low = str(text or "").lower()
+        return any(token in low for token in (
+            "error", "ошибка", "failed", "traceback", "exception", "critical",
+            "no solution found", "не пройдена",
+        ))
+
+    def _show_raw_log(self):
+        self.install_tabs.setCurrentIndex(1)
+        self._flush_raw_log()
+
+    def _on_install_tab_changed(self, index: int):
+        if index == 1:
+            self._flush_raw_log()
+
+    def _schedule_raw_flush(self, *, immediate: bool = False):
+        if immediate:
+            self._raw_flush_timer.stop()
+            self._flush_raw_log()
+            return
+        if not self._raw_flush_timer.isActive():
+            self._raw_flush_timer.start()
+
+    def _flush_raw_log(self):
+        # The raw tab is a literal decoded subprocess stream. It is intentionally
+        # not colorized, normalized, line-split or mixed with __STATS__ protocol
+        # frames used by the visual tab.
+        if self.install_tabs.currentIndex() != 1 or not self._raw_pending_chunks:
+            return
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        while self._raw_pending_chunks:
+            cursor.insertText(self._raw_pending_chunks.popleft())
+        self.log_text.setTextCursor(cursor)
+        self.log_text.ensureCursorVisible()
 
     def _render_snapshot(self, lines: list[str]):
         self._snapshot_lines = list(lines)
-        self._render_display_lines()
+        self._render_overview()
 
     def _append_log_chunk(self, text: str):
         if not text:
             return
         # Разбиваем на строки, добавляем в full, поддерживаем окно последних строк
+        contains_error = False
         for ln in text.splitlines():
             plain = strip_ansi(ln)
             if not plain.strip():
@@ -473,17 +565,20 @@ class VoiceInstallationWindow(QDialog):
             self._display_lines.append(colored)
             while len(self._display_lines) > self._max_display_blocks:
                 self._display_lines.popleft()
-        self._render_display_lines()
+            if self._is_error_line(plain):
+                contains_error = True
+            elif any(marker in plain.lower() for marker in (
+                "installing:", "resolved ", "prepared ", "installed ",
+                "successfully installed", "download", "using cached",
+            )):
+                self._append_overview_line(plain)
+        if contains_error:
+            self._show_raw_log()
 
     def _rebuild_display_from_full(self):
-        # Берём последние N строк из полного лога и пересобираем окно
-        if not self._full_log_lines:
-            self._display_lines.clear()
-            self._render_display_lines()
-            return
-        last = self._full_log_lines[-self._max_display_blocks:]
-        self._display_lines = deque((self._colorize_line(s) for s in last), maxlen=self._max_display_blocks)
-        self._render_display_lines()
+        # Parsed lines belong to the visual overview only. Raw output is retained
+        # independently in _raw_log_chunks and is never reconstructed here.
+        return
 
     def _on_log_update(self, text: str):
         if text.startswith("__STATS__"):
@@ -511,22 +606,49 @@ class VoiceInstallationWindow(QDialog):
         # Окно показа — только последние строки, но полный лог сохраняем отдельно
         self._append_log_chunk(text)
 
+    def _on_raw_log_update(self, text: str):
+        if text is None:
+            return
+        chunk = str(text)
+        if not chunk:
+            return
+        # PTY-поток UV/pip приходит с ANSI-кодами цвета и живой перерисовки
+        # прогресса. QPlainTextEdit их не интерпретирует, поэтому raw ESC-байты
+        # рендерились как «□[32m» — пользователь видит «сломанную кодировку».
+        # Чистим ANSI (и одиночные ESC), но держим хвост незакрытой
+        # последовательности, разорванной на границе чтения, до следующего чанка.
+        buffered = self._raw_ansi_carry + chunk
+        self._raw_ansi_carry = ""
+        m = TRAILING_ANSI_RE.search(buffered)
+        if m:
+            self._raw_ansi_carry = buffered[m.start():]
+            buffered = buffered[:m.start()]
+        clean = strip_ansi(buffered).replace("\x1b", "")
+        if not clean:
+            return
+        self._raw_log_chunks.append(clean)
+        self._raw_pending_chunks.append(clean)
+        self._schedule_raw_flush()
+
+    def _raw_log_text(self) -> str:
+        return "".join(self._raw_log_chunks)
+
     def _copy_log(self):
-        QGuiApplication.clipboard().setText("\n".join(self._full_log_lines) or "")
+        QGuiApplication.clipboard().setText(self._raw_log_text() or "\n".join(self._full_log_lines) or "")
 
     def _save_log(self):
         fname, _selected_filter = QFileDialog.getSaveFileName(self, _("Сохранить лог", "Save Log"), "install_log.txt", "Text Files (*.txt)")
         if fname:
             try:
                 with open(fname, "w", encoding="utf-8") as f:
-                    f.write("\n".join(self._full_log_lines))
+                    f.write(self._raw_log_text() or "\n".join(self._full_log_lines))
             except Exception as ex:
                 logger.error(f"Не удалось сохранить лог: {ex}")
 
     def _clear_log_screen_only(self):
         # Очистка только видимой области; полный лог остаётся для копирования/сохранения
         self._display_lines.clear()
-        self._render_display_lines()
+        self.log_text.clear()
 
     def finalize(self):
         """Mark the task as finished so the window may actually close."""
@@ -553,6 +675,9 @@ class VoiceInstallationWindow(QDialog):
     def update_log(self, text: str):
         self.log_updated.emit(text)
 
+    def update_raw_log(self, text: str):
+        self.raw_log_updated.emit(text)
+
 
 class VoiceActionWindow(QDialog):
     status_updated = pyqtSignal(str)
@@ -577,7 +702,7 @@ class VoiceActionWindow(QDialog):
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; }
             QLabel { color: #ffffff; }
-            QTextEdit {
+            QTextEdit, QPlainTextEdit {
                 background-color: #101010;
                 color: #cccccc;
                 border: 1px solid #333;
@@ -664,7 +789,7 @@ class VoiceActionWindow(QDialog):
             )
 
         QTimer.singleShot(0, self._recalc_max_blocks_and_refresh)
-    
+
     def _update_elapsed(self):
         secs = self._start_time.secsTo(QTime.currentTime())
         if secs < 0:
@@ -811,12 +936,13 @@ class VoiceActionWindow(QDialog):
 
 
 class VCRedistWarningDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, open_documentation, parent=None):
         super().__init__(parent)
+        self._open_documentation = open_documentation
         self.setWindowTitle(_("⚠️ Ошибка загрузки Triton", "⚠️ Triton Load Error"))
         self.setModal(True)
         self.setMinimumSize(500, 250)
-        
+
         self.setStyleSheet("""
             QDialog { background-color: #1e1e1e; }
             QLabel { color: #ffffff; }
@@ -831,16 +957,16 @@ class VCRedistWarningDialog(QDialog):
             #RetryButton { background-color: #b74b7d; }
             #RetryButton:hover { background-color: #c04c80; }
         """)
-        
+
         self.choice = 'close'
-        
+
         layout = QVBoxLayout(self)
-        
+
         title_label = QLabel(_("Ошибка импорта Triton (DLL Load Failed)", "Triton Import Error (DLL Load Failed)"))
         title_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         title_label.setStyleSheet("color: orange;")
         layout.addWidget(title_label)
-        
+
         info_text = _(
             "Не удалось загрузить библиотеку для Triton (возможно, отсутствует VC++ Redistributable).\n"
             "Установите последнюю версию VC++ Redistributable (x64) с сайта Microsoft\n"
@@ -852,43 +978,51 @@ class VCRedistWarningDialog(QDialog):
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        
+
         layout.addStretch()
-        
+
         button_layout = QHBoxLayout()
-        
+
         docs_button = QPushButton(_("Документация", "Documentation"))
         docs_button.clicked.connect(self._on_docs_clicked)
         button_layout.addWidget(docs_button)
-        
+
         button_layout.addStretch()
-        
+
         close_button = QPushButton(_("Закрыть", "Close"))
         close_button.clicked.connect(lambda: self._set_choice_and_accept('close'))
         button_layout.addWidget(close_button)
-        
+
         retry_button = QPushButton(_("Попробовать снова", "Retry"))
         retry_button.setObjectName("RetryButton")
         retry_button.clicked.connect(lambda: self._set_choice_and_accept('retry'))
         button_layout.addWidget(retry_button)
-        
+
         layout.addLayout(button_layout)
-    
+
     def _on_docs_clicked(self):
-        from core.events import get_event_bus, Events
-        get_event_bus().emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html#vc_redist")
-    
+        self._open_documentation("installation_guide.html#vc_redist")
+
     def _set_choice_and_accept(self, choice):
         self.choice = choice
         self.accept()
-    
+
     def get_choice(self):
         return self.choice
 
 
 class TritonDependenciesDialog(QDialog):
-    def __init__(self, parent=None, dependencies_status=None):
+    def __init__(
+        self,
+        *,
+        open_documentation,
+        refresh_status,
+        parent=None,
+        dependencies_status=None,
+    ):
         super().__init__(parent)
+        self._open_documentation = open_documentation
+        self._refresh_status = refresh_status
         self.setWindowTitle(_("⚠️ Зависимости Triton", "⚠️ Triton Dependencies"))
         self.setModal(True)
         self.setMinimumSize(700, 350)
@@ -920,20 +1054,20 @@ class TritonDependenciesDialog(QDialog):
             }
             #ContinueButton:hover { background-color: #c04c80; }
         """)
-        
+
         self.choice = 'skip'
         self.dependencies_status = dependencies_status or {}
-        
+
         layout = QVBoxLayout(self)
-        
+
         title_label = QLabel(_("Статус зависимостей Triton:", "Triton Dependency Status:"))
         title_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         layout.addWidget(title_label)
-        
+
         self.status_layout = QHBoxLayout()
         self._update_status_display()
         layout.addLayout(self.status_layout)
-        
+
         self.warning_label = QLabel(_("⚠️ Для компиляции ядра Triton нужен MSVC (VC++ Build Tools)!",
                                      "⚠️ Triton kernel compilation requires MSVC (VC++ Build Tools)!"))
         self.warning_label.setStyleSheet("color: orange; font-weight: bold;")
@@ -942,98 +1076,90 @@ class TritonDependenciesDialog(QDialog):
         msvc_found = self.dependencies_status.get('msvc_found', False)
         self.warning_label.setVisible(not msvc_found)
         layout.addWidget(self.warning_label)
-        
+
         info_text = _(
-            "Если компоненты не найдены, установите их согласно документации.\n"
-            "Вы также можете попробовать инициализировать модель вручную,\n"
-            "запустив `init_triton.bat` в корневой папке программы.",
-            "If components are not found, install them according to the documentation.\n"
-            "You can also try initializing the model manually\n"
-            "by running `init_triton.bat` in the program's root folder."
+            "Для Fish Speech+ нужен только Microsoft VC++ Build Tools.\n"
+            "Triton Windows уже содержит TinyCC и не требует Windows SDK или CUDA Toolkit.\n"
+            "Установите VC++ Build Tools, затем обновите статус. Если компиляция всё равно не сработает,\n"
+            "попробуйте ручную инициализацию через `init_triton.bat` в корне программы.",
+            "Fish Speech+ only requires Microsoft VC++ Build Tools.\n"
+            "Triton Windows already includes TinyCC and does not require the Windows SDK or CUDA Toolkit.\n"
+            "Install VC++ Build Tools, then refresh the status. If compilation still fails,\n"
+            "try manual initialization with `init_triton.bat` in the program's root folder."
         )
         info_label = QLabel(info_text)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
-        
+
         layout.addStretch()
-        
+
         button_layout = QHBoxLayout()
-        
+
         docs_button = QPushButton(_("Открыть документацию", "Open Documentation"))
         docs_button.clicked.connect(self._on_docs_clicked)
         button_layout.addWidget(docs_button)
-        
+
         refresh_button = QPushButton(_("Обновить статус", "Refresh Status"))
         refresh_button.clicked.connect(self._on_refresh_status)
         button_layout.addWidget(refresh_button)
-        
+
         button_layout.addStretch()
-        
+
         skip_button = QPushButton(_("Пропустить инициализацию", "Skip Initialization"))
         skip_button.clicked.connect(lambda: self._set_choice_and_accept('skip'))
         button_layout.addWidget(skip_button)
-        
+
         continue_button = QPushButton(_("Продолжить инициализацию", "Continue Initialization"))
         continue_button.setObjectName("ContinueButton")
         continue_button.clicked.connect(lambda: self._set_choice_and_accept('continue'))
         button_layout.addWidget(continue_button)
-        
+
         layout.addLayout(button_layout)
-    
+
     def _update_status_display(self):
         while self.status_layout.count():
             item = self.status_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
-        # CUDA убран из обязательных требований (фидбэк Артёма) — для компиляции
-        # ядра Triton нужен только MSVC/VC++. Windows SDK оставляем как
-        # вспомогательную информацию, CUDA больше не показываем.
+
         items = [
             ("MSVC (VC++):", self.dependencies_status.get('msvc_found', False)),
-            ("Windows SDK:", self.dependencies_status.get('winsdk_found', False)),
         ]
-        
+
         for text, found in items:
             item_widget = QWidget()
             item_layout = QHBoxLayout(item_widget)
             item_layout.setContentsMargins(0, 0, 15, 0)
-            
+
             label = QLabel(text)
             label.setFont(QFont("Segoe UI", 9))
             item_layout.addWidget(label)
-            
+
             status_text = _("Найден", "Found") if found else _("Не найден", "Not Found")
             status_color = "#4CAF50" if found else "#F44336"
             status_label = QLabel(status_text)
             status_label.setFont(QFont("Segoe UI", 9))
             status_label.setStyleSheet(f"color: {status_color};")
             item_layout.addWidget(status_label)
-            
+
             self.status_layout.addWidget(item_widget)
-        
+
         self.status_layout.addStretch()
-        
+
         if hasattr(self, 'warning_label'):
             msvc_found = self.dependencies_status.get('msvc_found', False)
             self.warning_label.setVisible(not msvc_found)
-    
+
     def _on_refresh_status(self):
-        from core.events import get_event_bus, Events
-        event_bus = get_event_bus()
-        
-        results = event_bus.emit_and_wait(Events.Audio.REFRESH_TRITON_STATUS, timeout=5.0)
-        if results and results[0]:
-            self.dependencies_status = results[0]
-            self._update_status_display()
-    
+        self.dependencies_status = dict(self._refresh_status() or {})
+        self._update_status_display()
+
     def _on_docs_clicked(self):
-        from core.events import get_event_bus, Events
-        get_event_bus().emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html")
-    
+        self._open_documentation("installation_guide.html")
+
     def _set_choice_and_accept(self, choice):
         self.choice = choice
         self.accept()
-    
+
     def get_choice(self):
         return self.choice

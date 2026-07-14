@@ -4,22 +4,28 @@ import asyncio
 import threading
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import services
+from core.task_supervisor import task_supervisor
+from services.contracts import LoopService
+from services.loop_service import AsyncioLoopService
 
 
 class LoopController:
+    """Владелец asyncio-loop. Регистрирует LoopService."""
+
     def __init__(self):
         self.event_bus = get_event_bus()
 
         self.loop_ready_event = threading.Event()
         self.loop = None
-        self.asyncio_thread = threading.Thread(target=self.start_asyncio_loop, daemon=True)
-        self.asyncio_thread.start()
 
-        self._subscribe_to_events()
+        services().register(LoopService, AsyncioLoopService(lambda: self.loop), replace=True)
 
-    def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Core.GET_EVENT_LOOP, self._on_get_event_loop, weak=False)
-        self.event_bus.subscribe(Events.Core.RUN_IN_LOOP, self._on_run_in_loop, weak=False)
+        self.asyncio_thread = task_supervisor().start_thread(
+            self,
+            "application-asyncio-loop",
+            self.start_asyncio_loop,
+        )
 
     def start_asyncio_loop(self):
         try:
@@ -77,31 +83,3 @@ class LoopController:
             except Exception as e:
                 logger.error(f"Ошибка при закрытии loop: {e}")
 
-    def _on_get_event_loop(self, event: Event):
-        if hasattr(self, 'loop') and self.loop and not self.loop.is_closed():
-            return self.loop
-        return None
-
-    def _on_run_in_loop(self, event: Event):
-        """Универсальный обработчик для запуска корутин в loop"""
-        coro = event.data.get('coroutine')
-        callback = event.data.get('callback')
-
-        if not coro:
-            logger.error("Не передана корутина для запуска")
-            return
-
-        if self.loop and self.loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-            if callback:
-                def handle_result():
-                    try:
-                        result = future.result()
-                        callback(result, None)
-                    except Exception as e:
-                        callback(None, e)
-                threading.Thread(target=handle_result, daemon=True).start()
-        else:
-            logger.error("Loop не готов для выполнения корутины")
-            if callback:
-                callback(None, Exception("Loop not ready"))

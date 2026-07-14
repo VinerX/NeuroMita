@@ -2,15 +2,19 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Iterable
 from dataclasses import dataclass, asdict, field
 from urllib.parse import urlparse
 
+from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 
 from utils import _
 import threading
+from core.task_supervisor import task_supervisor
 import requests
 
 from presets.provider_host_metadata import infer_provider_currency
@@ -70,7 +74,7 @@ class UserPreset:
     fallbacks: List[Dict[str, Any]] = field(default_factory=list)
 
 
-class ApiPresetsController:
+class ApiPresetsController(ApiPresetService):
     _MISTRAL_EASTER_EGG_MODEL_ID = "la-chaton-fat"
     _MISTRAL_EASTER_EGG_MODEL_INFO = {
         "id": _MISTRAL_EASTER_EGG_MODEL_ID,
@@ -96,9 +100,9 @@ class ApiPresetsController:
     def __init__(self):
         self.event_bus = get_event_bus()
 
-        self.templates_path = Path("Settings/api_templates.json")
-        self.presets_path = Path("Settings/api_presets.json")
-        self.legacy_path = Path("Settings/presets.json")
+        self.templates_path = settings_path("api_templates.json", create_parent=True)
+        self.presets_path = settings_path("api_presets.json", create_parent=True)
+        self.legacy_path = settings_path("presets.json", create_parent=True)
 
         self.templates: Dict[int, ApiTemplate] = {}
         self.presets: Dict[int, UserPreset] = {}
@@ -336,8 +340,6 @@ class ApiPresetsController:
             logger.error(f"Ошибка при миграции старых ключей API: {e}", exc_info=True)
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_LIST, self._on_get_preset_list, weak=False)
-        self.event_bus.subscribe(Events.ApiPresets.GET_PRESET_FULL, self._on_get_preset_full, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_CUSTOM_PRESET, self._on_save_custom_preset, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.DELETE_CUSTOM_PRESET, self._on_delete_custom_preset, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.EXPORT_PRESET, self._on_export_preset, weak=False)
@@ -345,7 +347,6 @@ class ApiPresetsController:
         self.event_bus.subscribe(Events.ApiPresets.TEST_CONNECTION, self._on_test_connection, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_PRESET_STATE, self._on_save_preset_state, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.LOAD_PRESET_STATE, self._on_load_preset_state, weak=False)
-        self.event_bus.subscribe(Events.ApiPresets.GET_CURRENT_PRESET_ID, self._on_get_current_preset_id, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SET_CURRENT_PRESET_ID, self._on_set_current_preset_id, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.UPDATE_PRESET_MODELS, self._on_update_preset_models, weak=False)
         self.event_bus.subscribe(Events.ApiPresets.SAVE_PRESETS_ORDER, self._on_save_presets_order, weak=False)
@@ -358,7 +359,7 @@ class ApiPresetsController:
 
             if self.presets_path.exists():
                 self._load_presets_only()
-                logger.info(f"Loaded {len(self.templates)} templates (refreshed from code) and {len(self.presets)} user presets")
+                logger.info(f"Loaded {len(self.templates)} templates and {len(self.presets)} user presets")
                 return
 
             if self.legacy_path.exists():
@@ -378,11 +379,16 @@ class ApiPresetsController:
         code_templates: Dict[int, ApiTemplate] = {p["id"]: ApiTemplate(**p) for p in API_TEMPLATES_DATA}
 
         file_templates_raw: Dict[int, Dict[str, Any]] = {}
+        existing_payload: Dict[str, Any] = {}
         if self.templates_path.exists():
             try:
                 with open(self.templates_path, "r", encoding="utf-8") as f:
                     tdata = json.load(f)
-                file_templates_raw = {int(k): v for k, v in tdata.get("templates", {}).items()}
+                existing_payload = tdata if isinstance(tdata, dict) else {}
+                file_templates_raw = {
+                    int(k): v
+                    for k, v in existing_payload.get("templates", {}).items()
+                }
             except Exception as e:
                 logger.warning(f"Failed to read existing api_templates.json for merge: {e}")
 
@@ -396,8 +402,14 @@ class ApiPresetsController:
             tpl.known_models = sorted(list(merged_models), reverse=True)
 
         self.templates = code_templates
-        self._save_templates()
-        logger.info(f"Refreshed templates from code and saved. Total templates: {len(self.templates)}")
+        current_payload = {
+            "templates": {str(template.id): asdict(template) for template in self.templates.values()}
+        }
+        if existing_payload == current_payload:
+            logger.info(f"API templates unchanged. Total templates: {len(self.templates)}")
+        else:
+            self._atomic_write_json(self.templates_path, current_payload)
+            logger.info(f"API templates refreshed from code. Total templates: {len(self.templates)}")
 
     def _user_preset_from_dict(self, raw: Any, fallback_id: Optional[int] = None) -> Optional[UserPreset]:
         if not isinstance(raw, dict):
@@ -785,6 +797,9 @@ class ApiPresetsController:
     # ---------- Обработчики событий ----------
 
     def _on_get_preset_list(self, event: Event):
+        return self.list_meta()
+
+    def list_meta(self) -> Dict[str, Any]:
         from managers.protocol_registry import get_protocol_registry
         reg = get_protocol_registry()
 
@@ -833,6 +848,13 @@ class ApiPresetsController:
 
     def _on_get_preset_full(self, event: Event):
         preset_id = (event.data or {}).get("id")
+        try:
+            preset_id = int(preset_id)
+        except Exception:
+            return None
+        return self.get_full(preset_id)
+
+    def get_full(self, preset_id: int) -> Optional[Dict[str, Any]]:
         try:
             preset_id = int(preset_id)
         except Exception:
@@ -919,6 +941,11 @@ class ApiPresetsController:
         self.event_bus.emit(Events.ApiPresets.PRESET_SAVED, {"id": preset_id})
         return preset_id
 
+    def save_custom(self, data: Dict[str, Any]) -> Optional[int]:
+        return self._on_save_custom_preset(
+            Event(Events.ApiPresets.SAVE_CUSTOM_PRESET, {"data": dict(data or {})})
+        )
+
     def _on_delete_custom_preset(self, event: Event):
         preset_id = (event.data or {}).get("id")
         try:
@@ -937,6 +964,13 @@ class ApiPresetsController:
             return True
         return False
 
+    def delete_custom(self, preset_id: int) -> bool:
+        return bool(
+            self._on_delete_custom_preset(
+                Event(Events.ApiPresets.DELETE_CUSTOM_PRESET, {"id": preset_id})
+            )
+        )
+
     def _on_save_presets_order(self, event: Event):
         order = (event.data or {}).get("order", None)
         if order is None:
@@ -944,6 +978,13 @@ class ApiPresetsController:
         self.presets_order = self._normalize_presets_order(order)
         self._save_presets()
         return True
+
+    def save_order(self, order: Iterable[int]) -> bool:
+        return bool(
+            self._on_save_presets_order(
+                Event(Events.ApiPresets.SAVE_PRESETS_ORDER, {"order": list(order or [])})
+            )
+        )
 
     def _on_export_preset(self, event: Event):
         preset_id = (event.data or {}).get("id")
@@ -964,6 +1005,13 @@ class ApiPresetsController:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(preset_dict, f, indent=2, ensure_ascii=False)
         return True
+
+    def export_preset(self, preset_id: int, path: str) -> bool:
+        return bool(
+            self._on_export_preset(
+                Event(Events.ApiPresets.EXPORT_PRESET, {"id": preset_id, "path": path})
+            )
+        )
 
     def _on_import_preset(self, event: Event):
         path = (event.data or {}).get("path")
@@ -1008,6 +1056,11 @@ class ApiPresetsController:
             logger.error(f"Failed to import preset: {e}", exc_info=True)
             return None
 
+    def import_preset(self, path: str) -> Optional[int]:
+        return self._on_import_preset(
+            Event(Events.ApiPresets.IMPORT_PRESET, {"path": path})
+        )
+
     def _on_test_connection(self, event: Event):
         preset_id = (event.data or {}).get("id")
         base_id = (event.data or {}).get("base")
@@ -1047,11 +1100,13 @@ class ApiPresetsController:
         if not key and preset_id and preset_id in self.presets:
             key = str(self.presets[preset_id].key or "").strip()
 
-        threading.Thread(
-            target=self._sync_test_connection,
+        task_supervisor().start_thread(
+            self,
+            "api-preset-connection-test",
+            self._sync_test_connection,
             args=(preset_id or 0, p_tpl, key),
-            daemon=True
-        ).start()
+            replace=True,
+        )
 
     @staticmethod
     def _normalize_test_model_id(raw_model_id: Any) -> str:
@@ -1253,19 +1308,12 @@ class ApiPresetsController:
         protocol_id = str(getattr(tpl, "protocol_id", "") or "").strip()
         url = str(tpl.test_url or "")
 
-        # через протокол-фабрику собираем url+headers
-        res = self.event_bus.emit_and_wait(
-            Events.Protocols.BUILD_HTTP_REQUEST,
-            {
-                "protocol_id": protocol_id,
-                "url": url,
-                "api_key": str(key or ""),
-                "headers": {},
-            },
-            timeout=1.0
+        built = use(ProtocolBuilderService).build_http_request(
+            protocol_id=protocol_id,
+            url=url,
+            api_key=str(key or ""),
+            headers={},
         )
-
-        built = res[0] if res else None
         if not isinstance(built, dict):
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
@@ -1398,6 +1446,16 @@ class ApiPresetsController:
         self.preset_states[preset_id] = state
         return True
 
+    def save_state(self, preset_id: int, state: Dict[str, Any]) -> bool:
+        return bool(
+            self._on_save_preset_state(
+                Event(
+                    Events.ApiPresets.SAVE_PRESET_STATE,
+                    {"id": preset_id, "state": dict(state or {})},
+                )
+            )
+        )
+
     def _on_load_preset_state(self, event: Event):
         preset_id = (event.data or {}).get("id")
         try:
@@ -1421,12 +1479,37 @@ class ApiPresetsController:
 
         return state
 
+    def load_state(self, preset_id: int) -> Dict[str, Any]:
+        return dict(
+            self._on_load_preset_state(
+                Event(Events.ApiPresets.LOAD_PRESET_STATE, {"id": preset_id})
+            )
+            or {}
+        )
+
     def _on_get_current_preset_id(self, event: Event):
         return self.current_preset_id
+
+    def current_id(self) -> Optional[int]:
+        pid = self.current_preset_id
+        try:
+            return int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _on_set_current_preset_id(self, event: Event):
         preset_id = (event.data or {}).get("id")
         self.current_preset_id = preset_id
         if preset_id is not None:
-            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": "LAST_API_PRESET_ID", "value": int(preset_id)})
+            from core.services import use
+            from services.contracts import SettingsService
+
+            use(SettingsService).update("LAST_API_PRESET_ID", int(preset_id))
         return True
+
+    def set_current(self, preset_id: int | None) -> bool:
+        return bool(
+            self._on_set_current_preset_id(
+                Event(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": preset_id})
+            )
+        )

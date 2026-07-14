@@ -7,6 +7,14 @@ from PyQt6.QtWidgets import QMessageBox
 
 from main_logger import logger
 from core.events import Events, Event
+from core.services import services
+from core.task_supervisor import task_supervisor
+from services.contracts import (
+    InstallableCatalogService,
+    LocalVoiceService,
+    TelegramService,
+    VoiceModelService,
+)
 from .base_controller import BaseController
 
 from ui.dialogs.model_loading_dialog import create_model_loading_dialog
@@ -48,7 +56,13 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_refresh, weak=False)
         eb.subscribe(Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False)
 
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self._subscribe_settings(
+            self._on_setting_changed,
+            keys=(
+                "USE_VOICEOVER", "VOICEOVER_METHOD", "NM_CURRENT_VOICEOVER",
+                "LOCAL_VOICE_LOAD_LAST", "VOICE_LANGUAGE", "TG_AUTOCONNECT",
+            ),
+        )
 
         eb.subscribe(Events.Audio.UPDATE_MODEL_LOADING_STATUS, self._on_loading_status, weak=False)
         eb.subscribe(Events.Audio.FINISH_MODEL_LOADING, self._on_finish_loading, weak=False)
@@ -57,6 +71,7 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.VoiceModel.MODEL_INSTALL_FINISHED, self._on_models_changed, weak=False)
         eb.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_models_changed, weak=False)
         eb.subscribe(Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_models_changed, weak=False)
+        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_models_changed, weak=False)
 
         eb.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_tg_connected_event, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False)
@@ -68,18 +83,46 @@ class VoiceoverGuiController(BaseController):
         if self._installed_models_cache is not None and (now - self._installed_models_cache_ts) < 1.0:
             return set(self._installed_models_cache)
 
-        installed = set()
-        try:
-            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.6)
-            got = res[0] if res else None
-            if isinstance(got, (set, list, tuple)):
-                installed = set(str(x) for x in got)
-        except Exception:
-            installed = set()
+        installed = self._canonical_installed_model_ids()
 
         self._installed_models_cache = installed
         self._installed_models_cache_ts = now
         return set(installed)
+
+    @staticmethod
+    def _canonical_installed_model_ids() -> set[str]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return set()
+        return set(catalog.ready_item_ids("tts"))
+
+    def _initialize_local_model(self, model_id: str) -> None:
+        local_voice = services().get_optional(LocalVoiceService)
+        if local_voice is None:
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {
+                    "title": _("Ошибка", "Error"),
+                    "message": _(
+                        "Сервис локальной озвучки недоступен.",
+                        "Local voice service is unavailable.",
+                    ),
+                },
+            )
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
+            return
+        try:
+            local_voice.initialize_model(model_id)
+        except Exception as exc:
+            logger.error(
+                f"Failed to schedule local voice initialization for '{model_id}': {exc}",
+                exc_info=True,
+            )
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {"title": _("Ошибка", "Error"), "message": str(exc)},
+            )
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def autoload_last_model_on_startup(self):
         if self._autoload_done:
@@ -90,13 +133,18 @@ class VoiceoverGuiController(BaseController):
     def _on_refresh(self, _event: Event):
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
-    def _on_models_changed(self, _event: Event):
+    def _on_models_changed(self, event: Event):
+        payload = event.data if isinstance(event.data, dict) else {}
+        if "success" in payload and not bool(payload.get("success")):
+            return
+        self._installed_models_cache = None
+        self._installed_models_cache_ts = 0.0
+        self._model_id_to_name_ts = 0.0
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = str(data.get("key") or "").strip()
-        value = data.get("value", None)
+    def _on_setting_changed(self, change):
+        key = str(change.key or "").strip()
+        value = change.value
 
         relevant = {
             "USE_VOICEOVER",
@@ -113,68 +161,10 @@ class VoiceoverGuiController(BaseController):
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
-            if key == "USE_VOICEOVER" and bool(value):
-                self._maybe_warn_backend_missing()
             self._sync_everything(allow_autoload=False)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         self._ui(apply)
-
-    def _maybe_warn_backend_missing(self):
-        """Задача #1: при включении озвучки (Local) без установленного бэкенда
-        показываем плашку с тем, какой вариант будет поставлен по видеокарте.
-        Показывается один раз за сессию, чтобы не спамить."""
-        if getattr(self, "_backend_notice_shown", False) or not self.view:
-            return
-        # Локальная озвучка использует torch-бэкенд; для TG/прочего он не нужен.
-        if self._effective_method() != "Local":
-            return
-        try:
-            from core.backends.service import get_backend_service
-            variant = get_backend_service().get_installed_torch_variant()
-        except Exception:
-            variant = "cuda"  # при ошибке проверки — не пугаем пользователя
-        if variant and variant != "missing":
-            return
-
-        self._backend_notice_shown = True
-        try:
-            from utils.gpu_utils import (
-                get_primary_gpu_name, _classify_gpu_vendor, format_primary_gpu_label,
-            )
-            gpu_name = get_primary_gpu_name()
-            vendor = _classify_gpu_vendor(gpu_name or "")
-            gpu_label = gpu_name or format_primary_gpu_label()
-        except Exception:
-            vendor, gpu_label = "CPU", ""
-        is_nvidia = str(vendor).upper() == "NVIDIA"
-        backend_word = "CUDA" if is_nvidia else "CPU"
-        gpu_suffix_ru = f" ({gpu_label})" if gpu_label else ""
-        gpu_suffix_en = f" ({gpu_label})" if gpu_label else ""
-
-        box = QMessageBox(self.view)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(_("Бэкенд озвучки не установлен", "Voice backend not installed"))
-        box.setText(_(
-            f"Не установлен бэкенд озвучки. Судя по вашей видеокарте{gpu_suffix_ru} "
-            f"будет поставлен вариант {backend_word}.\n\nЕсли вы не согласны — "
-            f"установите бэкенд самостоятельно через AI Hub.",
-            f"The voice backend is not installed. Based on your GPU{gpu_suffix_en} "
-            f"the {backend_word} variant will be installed.\n\nIf you disagree — "
-            f"install the backend yourself via the AI Hub.",
-        ))
-        open_btn = box.addButton(_("Открыть AI Hub", "Open AI Hub"),
-                                 QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(_("Позже", "Later"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is open_btn:
-            try:
-                self.event_bus.emit(
-                    Events.GUI.SHOW_WINDOW,
-                    {"window_id": "ai_hub", "payload": {"category": "backend"}},
-                )
-            except Exception as exc:
-                logger.error(f"Failed to open AI Hub (backend) from notice: {exc}")
 
     # ---------- Telegram ----------
     def _on_tg_connected_event(self, event: Event):
@@ -240,12 +230,8 @@ class VoiceoverGuiController(BaseController):
                 if not self._tg_poll_active:
                     break
 
-                connected = None
-                try:
-                    res = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.7)
-                    connected = bool(res and res[0])
-                except Exception:
-                    connected = None
+                telegram = services().get_optional(TelegramService)
+                connected = telegram.is_silero_connected() if telegram is not None else None
 
                 if connected is not None:
                     self._tg_connected = connected
@@ -255,10 +241,15 @@ class VoiceoverGuiController(BaseController):
                     self._ui(lambda: self._sync_tg_button_and_icon_only())
 
                 interval = 1.0 if self._tg_connecting else 5.0
-                time.sleep(interval)
+                if self._tg_poll_stop.wait(interval):
+                    break
 
-        self._tg_poll_thread = threading.Thread(target=worker, daemon=True)
-        self._tg_poll_thread.start()
+        self._tg_poll_thread = task_supervisor().start_thread(
+            self,
+            "telegram-status-poll",
+            worker,
+            replace=True,
+        )
 
     def _sync_tg_button_and_icon_only(self):
         self._update_tg_connect_button()
@@ -366,14 +357,7 @@ class VoiceoverGuiController(BaseController):
                 return
             self._emit_voice_icon_state()
 
-            def progress_callback(status_type: str, message: str):
-                if status_type == "status":
-                    self._ui(lambda: self._set_loading_status(message))
-
-            self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-                "model_id": model_id,
-                "progress_callback": progress_callback,
-            })
+            self._initialize_local_model(model_id)
 
         self._ui(apply)
 
@@ -393,40 +377,12 @@ class VoiceoverGuiController(BaseController):
             self._apply_model_status(chip, btn, "loading", _("Checking...", "Checking..."), None, "")
 
         def worker():
-            installed_ids: set[str] = set()
-            try:
-                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-                got = res[0] if res else None
-                if isinstance(got, (set, list, tuple)):
-                    installed_ids = {str(x) for x in got}
-            except Exception:
-                installed_ids = set()
+            local_voice = services().get_optional(LocalVoiceService)
+            installed_ids = self._canonical_installed_model_ids()
 
             installed = model_id in installed_ids
-            initialized = False
-            selected = None
-
-            if installed:
-                try:
-                    res = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED,
-                        {"model_id": model_id},
-                        timeout=0.7,
-                    )
-                    initialized = bool(res and res[0])
-                except Exception:
-                    initialized = False
-
-                if initialized:
-                    try:
-                        res = self.event_bus.emit_and_wait(
-                            Events.Audio.SELECT_VOICE_MODEL,
-                            {"model_id": model_id},
-                            timeout=1.0,
-                        )
-                        selected = bool(res and res[0])
-                    except Exception:
-                        selected = False
+            initialized = bool(installed and local_voice and local_voice.check_initialized(model_id))
+            selected = bool(local_voice.select_model(model_id)) if initialized and local_voice else None
 
             return {
                 "model_id": model_id,
@@ -473,14 +429,7 @@ class VoiceoverGuiController(BaseController):
                 return
             self._emit_voice_icon_state_from_snapshot(state)
 
-            def progress_callback(status_type: str, message: str):
-                if status_type == "status":
-                    self._ui(lambda: self._set_loading_status(message))
-
-            self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-                "model_id": current_id,
-                "progress_callback": progress_callback,
-            })
+            self._initialize_local_model(current_id)
 
         self._run_async(worker, apply, name=f"voiceover-select:{model_id}")
 
@@ -572,30 +521,12 @@ class VoiceoverGuiController(BaseController):
             initialized = False
             current_model_id = self._current_model_id_from_settings()
 
-            try:
-                res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
-                cfgs = res[0] if res and isinstance(res[0], list) else []
-            except Exception:
-                cfgs = []
-
-            try:
-                res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-                got = res[0] if res else None
-                if isinstance(got, (set, list, tuple)):
-                    installed_ids = {str(x) for x in got}
-            except Exception:
-                installed_ids = set()
-
-            if current_model_id:
-                try:
-                    res = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED,
-                        {"model_id": current_model_id},
-                        timeout=0.7,
-                    )
-                    initialized = bool(res and res[0])
-                except Exception:
-                    initialized = False
+            local_voice = services().get_optional(LocalVoiceService)
+            voice_models = services().get_optional(VoiceModelService)
+            cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
+            installed_ids = self._canonical_installed_model_ids()
+            if current_model_id and local_voice is not None:
+                initialized = bool(local_voice.check_initialized(current_model_id))
 
             return {
                 "cfgs": cfgs,
@@ -659,7 +590,7 @@ class VoiceoverGuiController(BaseController):
             return mp
 
         try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
             for m in LOCAL_VOICE_MODELS:
                 mid = str(m.get("id") or "").strip()
                 name = str(m.get("name") or mid).strip()
@@ -671,6 +602,7 @@ class VoiceoverGuiController(BaseController):
 
     def _set_local_voice_loading_placeholders(self):
         cb = getattr(self.view, "local_voice_combobox", None)
+        self._set_local_model_selector_state(has_models=False, loading=True)
         if cb is not None and cb.count() == 0:
             cb.blockSignals(True)
             try:
@@ -683,6 +615,18 @@ class VoiceoverGuiController(BaseController):
         if chip is not None and btn is not None and not chip.isVisible():
             self._apply_model_status(chip, btn, "loading", _("Проверка...", "Checking..."), None, "")
 
+    def _set_local_model_selector_state(self, *, has_models: bool, loading: bool = False) -> None:
+        combo = getattr(self.view, "local_voice_combobox", None)
+        empty = getattr(self.view, "local_voice_empty_status", None)
+        settings_button = getattr(self.view, "local_model_settings_btn", None)
+        if combo is not None:
+            combo.setVisible(bool(has_models or loading))
+            combo.setEnabled(bool(has_models))
+        if empty is not None:
+            empty.setVisible(bool(not has_models and not loading))
+        if settings_button is not None:
+            settings_button.setVisible(bool(has_models))
+
     def _update_local_models_combobox_from_snapshot(self, installed_ids: set[str], current_model_id: str) -> str:
         cb = getattr(self.view, "local_voice_combobox", None)
         if cb is None:
@@ -691,6 +635,7 @@ class VoiceoverGuiController(BaseController):
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
         items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
+        self._set_local_model_selector_state(has_models=bool(items))
 
         cb.blockSignals(True)
         try:
@@ -733,14 +678,7 @@ class VoiceoverGuiController(BaseController):
 
         self._emit_voice_icon_state_from_snapshot({**state, "current_model_id": model_id})
 
-        def progress_callback(status_type: str, message: str):
-            if status_type == "status":
-                self._ui(lambda: self._set_loading_status(message))
-
-        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-            "model_id": model_id,
-            "progress_callback": progress_callback,
-        })
+        self._initialize_local_model(model_id)
 
     def _sync_local_model_status_from_snapshot(self, state: dict):
         chip = getattr(self.view, "local_model_status_chip", None)
@@ -842,11 +780,8 @@ class VoiceoverGuiController(BaseController):
 
     def _select_model_async(self, model_id: str, on_done=None, *, show_error: bool = True):
         def worker():
-            try:
-                res = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id}, timeout=1.0)
-                return bool(res and res[0])
-            except Exception:
-                return False
+            local_voice = services().get_optional(LocalVoiceService)
+            return bool(local_voice and local_voice.select_model(model_id))
 
         def apply(ok: bool):
             if not ok and show_error:
@@ -965,7 +900,7 @@ class VoiceoverGuiController(BaseController):
             })
             return
 
-        installed_ids = self._installed_models_cache
+        installed_ids = getattr(self, "_installed_models_cache", None)
         if installed_ids is None:
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
                 "category": "voice",
@@ -985,7 +920,7 @@ class VoiceoverGuiController(BaseController):
         # Установлена, но не инициализирована — жёлтый "warn", а не зелёный.
         # Данные об инициализации берём из кэша, который ведёт snapshot-путь
         # (никаких блокирующих CHECK_MODEL_INITIALIZED в пути индикатора).
-        initialized = model_id in self._initialized_models_cache
+        initialized = model_id in getattr(self, "_initialized_models_cache", set())
         self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
             "category": "voice",
             "state": "green" if initialized else "warn",
@@ -1071,11 +1006,8 @@ class VoiceoverGuiController(BaseController):
         if self._model_id_to_name and (now - ts) < 30.0:
             return
 
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=1.5)
-            cfgs = res[0] if res and isinstance(res[0], list) else []
-        except Exception:
-            cfgs = []
+        voice_models = services().get_optional(VoiceModelService)
+        cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
 
         mp: dict[str, str] = {}
         for c in cfgs or []:
@@ -1088,7 +1020,7 @@ class VoiceoverGuiController(BaseController):
 
         if not mp:
             try:
-                from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
+                from presets.local_voice_models import LOCAL_VOICE_MODELS
                 for m in LOCAL_VOICE_MODELS:
                     mid = str(m.get("id") or "").strip()
                     name = str(m.get("name") or mid).strip()
@@ -1105,18 +1037,12 @@ class VoiceoverGuiController(BaseController):
         if cb is None:
             return
 
-        installed_ids = set()
-        try:
-            res = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS, timeout=0.7)
-            got = res[0] if res else None
-            if isinstance(got, (set, list, tuple)):
-                installed_ids = set(str(x) for x in got)
-        except Exception:
-            installed_ids = set()
+        installed_ids = self._canonical_installed_model_ids()
 
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
         items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
+        self._set_local_model_selector_state(has_models=bool(items))
 
         cb.blockSignals(True)
         try:
@@ -1174,14 +1100,7 @@ class VoiceoverGuiController(BaseController):
             return
         self._emit_voice_icon_state()
 
-        def progress_callback(status_type: str, message: str):
-            if status_type == "status":
-                self._ui(lambda: self._set_loading_status(message))
-
-        self.event_bus.emit(Events.Audio.INIT_VOICE_MODEL, {
-            "model_id": model_id,
-            "progress_callback": progress_callback,
-        })
+        self._initialize_local_model(model_id)
 
     # ---------- local loading dialog ----------
     def _show_loading_dialog(self, model_id: str) -> bool:
@@ -1259,59 +1178,51 @@ class VoiceoverGuiController(BaseController):
         self._loading_status_label = None
 
     # ---------- GPU compatibility gate ----------
-    def _detected_gpu_vendor(self) -> str:
-        """NVIDIA | AMD | INTEL | CPU. Кэшируем — железо в рамках сессии не меняется."""
-        cached = getattr(self, "_gpu_vendor_cache", None)
-        if cached is not None:
-            return cached
-        vendor = "CPU"
+    def _model_catalog_row(self, model_id: str) -> dict[str, Any]:
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            return {}
         try:
-            from utils.gpu_utils import get_primary_gpu_name, _classify_gpu_vendor
-            vendor = str(_classify_gpu_vendor(get_primary_gpu_name() or "") or "CPU").upper()
-        except Exception:
-            vendor = "CPU"
-        self._gpu_vendor_cache = vendor
-        return vendor
+            return dict(catalog.get_row(f"tts:{model_id}", include_status=False) or {})
+        except Exception as exc:
+            logger.warning(f"Cannot evaluate compatibility for voice model '{model_id}': {exc}")
+            return {}
 
-    def _model_gpu_vendors(self, model_id: str) -> list[str]:
-        try:
-            from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
-            for m in LOCAL_VOICE_MODELS:
-                if str(m.get("id") or "") == model_id:
-                    return [str(v).upper() for v in (m.get("gpu_vendor") or [])]
-        except Exception:
-            pass
-        return []
-
-    def _is_model_gpu_compatible(self, model_id: str) -> bool:
-        vendors = self._model_gpu_vendors(model_id)
-        if not vendors:
-            return True                      # неизвестная модель — не мешаем
-        if "CPU" in vendors:
-            return True                      # умеет CPU-фолбэк → совместима с любым железом
-        return self._detected_gpu_vendor() in vendors
+    def _model_compatibility(self, model_id: str) -> dict[str, Any]:
+        row = self._model_catalog_row(model_id)
+        verdict = dict(row.get("compatibility") or {})
+        if verdict:
+            return verdict
+        return {
+            "supported": False,
+            "gpu_vendor": "UNKNOWN",
+            "warning": _(
+                "Не удалось проверить совместимость модели. Обновите AI Hub и повторите попытку.",
+                "Model compatibility could not be verified. Refresh AI Hub and try again.",
+            ),
+        }
 
     def _confirm_gpu_compatibility(self, model_id: str) -> bool:
         """True — можно инициализировать; False — юзер отменил из-за несовместимости."""
-        if self._is_model_gpu_compatible(model_id):
+        compatibility = self._model_compatibility(model_id)
+        if bool(compatibility.get("supported")):
             return True
         if not self.view:
             return False
 
         model_name = self._model_id_to_name.get(model_id, model_id)
-        vendors = ", ".join(self._model_gpu_vendors(model_id)) or "NVIDIA"
-        detected = self._detected_gpu_vendor()
+        vendors = str(compatibility.get("backend") or "AI")
+        detected = str(compatibility.get("gpu_vendor") or "UNKNOWN")
+        warning = str(compatibility.get("warning") or "").strip()
 
         box = QMessageBox(self.view)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle(_("Несовместимая модель", "Incompatible model"))
         box.setText(_(
-            f"Модель «{model_name}» рассчитана на GPU {vendors}, а у вас определилась {detected}.\n\n"
-            f"Инициализация, скорее всего, не запустится (нет CUDA) или будет крайне медленной. "
-            f"Выберите ONNX/CPU-вариант модели.\n\nВсё равно попробовать запустить?",
-            f"The model \"{model_name}\" targets a {vendors} GPU, but {detected} was detected.\n\n"
-            f"Initialization will most likely fail (no CUDA) or be extremely slow. "
-            f"Pick an ONNX/CPU variant instead.\n\nTry to start it anyway?",
+            f"Модель «{model_name}» использует backend {vendors}, несовместимый с устройством {detected}.\n\n"
+            f"{warning}\n\nВсё равно попробовать запустить?",
+            f"The model \"{model_name}\" uses the {vendors} backend, which is incompatible with {detected}.\n\n"
+            f"{warning}\n\nTry to start it anyway?",
         ))
         yes_btn = box.addButton(_("Всё равно запустить", "Start anyway"),
                                 QMessageBox.ButtonRole.AcceptRole)
@@ -1328,19 +1239,12 @@ class VoiceoverGuiController(BaseController):
         return model_id in self._get_installed_models_set()
 
     def _check_initialized(self, model_id: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id}, timeout=0.7)
-            return bool(res and res[0])
-        except Exception:
-            return False
+        local_voice = services().get_optional(LocalVoiceService)
+        return bool(local_voice and local_voice.check_initialized(model_id))
 
     def _select_model(self, model_id: str) -> bool:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id}, timeout=1.0)
-            return bool(res and res[0])
-        except Exception as e:
-            logger.error(f"SELECT_VOICE_MODEL failed: {e}", exc_info=True)
-            return False
+        local_voice = services().get_optional(LocalVoiceService)
+        return bool(local_voice and local_voice.select_model(model_id))
 
     # ---------- settings ----------
     def _save_setting(self, key: str, value: Any):
@@ -1355,7 +1259,7 @@ class VoiceoverGuiController(BaseController):
         except Exception:
             pass
 
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
+        super()._save_setting(key, value)
 
     def _get_setting(self, key: str, default=None):
         try:

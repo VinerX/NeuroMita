@@ -20,18 +20,14 @@ from main_logger import logger
 
 
 class ExportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
+        self._view_model = view_model
         self.setWindowTitle(tr("Экспорт данных дообучения", "Export Finetune Data"))
         self.setMinimumWidth(500)
         self.setModal(True)
 
-        self._collector = None
-        try:
-            from managers.finetune_collector import FineTuneCollector
-            self._collector = FineTuneCollector.instance
-        except Exception:
-            pass
+        self._collector_available = self._view_model.export_available()
 
         self._build_ui()
         self._populate_characters()
@@ -157,10 +153,10 @@ class ExportDialog(QDialog):
     # ── Populate ──────────────────────────────────────────────────────────────
 
     def _populate_characters(self):
-        if not self._collector:
+        if not self._collector_available:
             return
         try:
-            stats = self._collector.get_stats()
+            stats = self._view_model.export_stats()
             for char_id, count in sorted(stats.get("by_character", {}).items()):
                 item = QListWidgetItem(f"{char_id}  ({count} {tr('записей', 'records')})")
                 item.setData(Qt.ItemDataRole.UserRole, char_id)
@@ -201,12 +197,12 @@ class ExportDialog(QDialog):
     # ── Count update ──────────────────────────────────────────────────────────
 
     def _update_count(self):
-        if not self._collector:
+        if not self._collector_available:
             self._count_label.setText(tr("Сбор данных не активен", "Collector not active"))
             return
         try:
             filters = self._build_filters()
-            samples = self._collector.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             n = len(samples)
             self._count_label.setText(tr("Записей подходит: ", "Records matched: ") + str(n))
             self._export_btn.setEnabled(n > 0)
@@ -216,12 +212,12 @@ class ExportDialog(QDialog):
     # ── Export ────────────────────────────────────────────────────────────────
 
     def _do_export(self):
-        if not self._collector:
+        if not self._collector_available:
             return
 
         try:
             filters = self._build_filters()
-            samples = self._collector.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             if not samples:
                 QMessageBox.information(
                     self,
@@ -245,10 +241,11 @@ class ExportDialog(QDialog):
             if not path:
                 return
 
-            if is_sharegpt:
-                count = self._collector.export_sharegpt(samples, path)
-            else:
-                count = self._collector.export_raw_jsonl(samples, path)
+            count = self._view_model.export_to_file(
+                samples,
+                path,
+                sharegpt=is_sharegpt,
+            )
 
             QMessageBox.information(
                 self,

@@ -1,19 +1,33 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
-from managers.rag.rag_manager import RAGManager
 import base64
 import json
 import datetime
 import re
 import copy
+import threading
 from typing import Optional, Any
-import base64
 
 from handlers.chat_handler import ChatModel
-from utils import _
-from core.events import get_event_bus, Events, Event
+from utils import _, redact_image_payloads
+from core.character_locks import character_lock
+from core.events import Event, EventDelivery, Events, get_event_bus
+from core.executors import Pools, executors
+from core.services import services, use
 from main_logger import logger
+from services.contracts import (
+    CharacterRegistry,
+    ChatGenerationRequest,
+    ChatGenerationResult,
+    GenerationService,
+    ModelStateService,
+    PromptBuildRequest,
+    PromptBuilderService,
+    UtilityGenerationRequest,
+    UtilityGenerationResult,
+    SettingsService,
+)
 
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.game_state_manager import GameState
@@ -23,6 +37,7 @@ from managers.history_ui_projector import HistoryUiProjector
 from managers.model_pricing_manager import ModelPricingManager
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
+from services.runtime_capabilities import runtime_capabilities
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -38,7 +53,6 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
-
 
 def _render_tools_for_prompt(schema: list) -> str:
     """Format tool JSON schema list into a human-readable prompt block."""
@@ -75,21 +89,25 @@ def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
     return clean, json_str
 
 
-class ModelController:
+class ModelController(GenerationService, ModelStateService):
     """
     ModelController:
-    - генерирует ответы (Events.Model.GENERATE_RESPONSE)
+    - реализует GenerationService (generate_chat / generate_utility)
     - хранит game_state + temporary system infos
     - занимается UI-пейджингом истории (LOAD_HISTORY/LOAD_MORE_HISTORY)
     - считает токены/стоимость
 
     Персонажи:
     - НЕ создаются здесь
-    - берутся через Events.Character.* (единый источник истины)
+    - берутся через CharacterRegistry (единый источник истины)
     """
 
     def __init__(self, settings):
         self.settings = settings
+        self._settings_service = use(SettingsService)
+        self._settings_subscription = self._settings_service.subscribe(
+            self._on_setting_changed
+        )
         self.event_bus = get_event_bus()
 
         # UI history paging
@@ -112,7 +130,8 @@ class ModelController:
         self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
-        self._temporary_system_infos: list[dict] = []
+        self._temporary_system_infos: dict[str, list[dict]] = {}
+        self._temporary_system_infos_lock = threading.Lock()
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
@@ -122,83 +141,52 @@ class ModelController:
 
         self._refresh_chat_model_character_refs()
 
+        services().register(GenerationService, self, replace=True)
         self._subscribe_to_events()
 
     # ---------------------------------------------------------------------
-    # Character resolution via Events.Character.*
+    # Character resolution via CharacterRegistry
     # ---------------------------------------------------------------------
 
+    @property
+    def _characters(self) -> CharacterRegistry:
+        return use(CharacterRegistry)
+
     def _get_current_character_id(self) -> Optional[str]:
-        res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-        profile = res[0] if res else None
-        if not isinstance(profile, dict):
-            return None
-        cid = profile.get("character_id")
-        return str(cid) if cid else None
+        return self._characters.current_id() or None
 
     def _get_character_ref(self, character_id: str):
-        if not character_id:
-            return None
-        res = self.event_bus.emit_and_wait(
-            Events.Character.GET,
-            {"character_id": str(character_id)},
-            timeout=1.0
-        )
-        return res[0] if res else None
+        return self._characters.get(str(character_id)) if character_id else None
 
     def _get_current_character_ref(self):
-        cid = self._get_current_character_id()
-        if not cid:
-            return None
-        return self._get_character_ref(cid)
+        return self._characters.current()
 
     def _refresh_chat_model_character_refs(self):
-        """
-        Заполняем ссылки в ChatModel для обратной совместимости.
-        Вся логика построена через Events.Character.* (никаких DI).
-        """
-        current = self._get_current_character_ref()
+        """Refresh only the active runtime; do not materialize every character."""
+        current = self._characters.current()
         self.model.current_character = current
-
-        # Попытаемся собрать registry персонажей (только если нужно)
-        chars_map = {}
-        all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        all_ids = all_ids_res[0] if all_ids_res else None
-        if isinstance(all_ids, list):
-            for cid in all_ids:
-                try:
-                    ch = self._get_character_ref(str(cid))
-                    if ch is not None and hasattr(ch, "char_id"):
-                        chars_map[ch.char_id] = ch
-                except Exception:
-                    continue
-
-        self.model.characters = chars_map
-        self.model.GameMaster = chars_map.get("GameMaster")
+        if current is not None and hasattr(current, "char_id"):
+            self.model.characters = {str(current.char_id): current}
+            self.model.GameMaster = current if str(current.char_id) == "GameMaster" else None
+        else:
+            self.model.characters = {}
+            self.model.GameMaster = None
 
     # ---------------------------------------------------------------------
     # Subscriptions
     # ---------------------------------------------------------------------
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
         self.event_bus.subscribe(Events.Server.SET_GAME_DATA, self._on_set_game_data, weak=False)
         self.event_bus.subscribe(Events.Model.ADD_TEMPORARY_SYSTEM_INFO, self._on_add_temporary_system_info, weak=False)
         self.event_bus.subscribe(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, self._on_peek_temporary_system_infos, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GENERATE_RESPONSE, self._on_generate_response, weak=False)
-
         self.event_bus.subscribe(Events.Model.LOAD_HISTORY, self._on_load_history, weak=False)
         self.event_bus.subscribe(Events.Model.LOAD_MORE_HISTORY, self._on_load_more_history, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_DEBUG_INFO, self._on_get_debug_info, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -206,9 +194,9 @@ class ModelController:
     # Model settings
     # ---------------------------------------------------------------------
 
-    def _on_setting_changed(self, event: Event):
-        key = (event.data or {}).get("key")
-        value = (event.data or {}).get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "CHARACTER":
             self.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": str(value or "")})
@@ -218,6 +206,12 @@ class ModelController:
 
         if hasattr(self.model, "cfg") and self.model.cfg:
             self.model.cfg.apply_setting(key, value)
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
@@ -231,17 +225,65 @@ class ModelController:
         self.game_state.update_from_event_data(event.data or {})
 
     def _on_add_temporary_system_info(self, event: Event):
-        content = (event.data or {}).get("content", "")
+        data = event.data or {}
+        content = data.get("content", "")
         if not content:
             return False
-        self._temporary_system_infos.append({"role": "system", "content": str(content)})
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        if not character_id:
+            return False
+        with self._temporary_system_infos_lock:
+            self._temporary_system_infos.setdefault(character_id, []).append(
+                {"role": "system", "content": str(content)}
+            )
         return True
 
     def _on_peek_temporary_system_infos(self, event: Event):
-        return list(self._temporary_system_infos)
+        data = event.data or {}
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        with self._temporary_system_infos_lock:
+            return list(self._temporary_system_infos.get(character_id, ()))
+
+    def _consume_temporary_system_infos(self, character_id: str, reserved: list[dict]) -> None:
+        if not character_id or not reserved:
+            return
+        with self._temporary_system_infos_lock:
+            current = list(self._temporary_system_infos.get(character_id, ()))
+            if not current:
+                return
+            for used in reserved:
+                for index, candidate in enumerate(current):
+                    if candidate is used or candidate == used:
+                        current.pop(index)
+                        break
+            if current:
+                self._temporary_system_infos[character_id] = current
+            else:
+                self._temporary_system_infos.pop(character_id, None)
 
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
+
+    def _remote_only_structured_segment_fields(self) -> list[str]:
+        capabilities = runtime_capabilities(settings=self.settings)
+        return list(capabilities.structured_segment_exclude_fields)
+
+    @staticmethod
+    def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:
+        excluded = {
+            str(name).strip()
+            for name in (capabilities or {}).get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        if not excluded:
+            return
+
+        for segment in getattr(structured, "segments", ()) or ():
+            for field_name in excluded:
+                if not hasattr(segment, field_name):
+                    continue
+                current = getattr(segment, field_name, None)
+                setattr(segment, field_name, [] if isinstance(current, list) else None)
 
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
@@ -278,13 +320,11 @@ class ModelController:
     def _capture_generation_input(
         self,
         *,
-        raw_event_data: dict,
+        request: ChatGenerationRequest,
         char_id: str,
         char_name: str,
-        event_type: str,
-        preset_id_override: Any,
         policy: RequestPolicy,
-        build_prompt_payload: dict,
+        prompt_request: PromptBuildRequest,
         original_image_data: Any,
         image_data_after_processing: Any,
         image_descriptions: dict[str, str] | None,
@@ -299,30 +339,48 @@ class ModelController:
             if not collector.is_enabled():
                 return
 
-            incoming_event = copy.deepcopy(raw_event_data or {})
-            if "stream_callback" in incoming_event:
-                incoming_event["stream_callback"] = "<omitted>"
-
-            build_prompt_copy = {
-                key: copy.deepcopy(value)
-                for key, value in (build_prompt_payload or {}).items()
-                if key != "character_ref"
+            incoming = {
+                "user_input": request.user_input,
+                "system_input": request.system_input,
+                "image_source": request.image_source,
+                "event_type": request.event_type,
+                "sender": request.sender,
+                "participants": list(request.participants or []),
+                "req_id": request.req_id,
+                "origin_message_id": request.origin_message_id,
+                "task_uid": request.task_uid,
+                "streaming": request.stream_callback is not None,
             }
-            build_prompt_copy["image_data"] = self._summarize_image_data_for_capture(
-                build_prompt_copy.get("image_data")
-            )
+
+            prompt_snapshot = {
+                "event_type": prompt_request.event_type,
+                "user_input": prompt_request.user_input,
+                "system_input": prompt_request.system_input,
+                "rag_context": prompt_request.rag_context,
+                "hidden_user_context": prompt_request.hidden_user_context,
+                "memory_limit": prompt_request.memory_limit,
+                "is_game_master": prompt_request.is_game_master,
+                "save_missed_history": prompt_request.save_missed_history,
+                "separate_prompts": prompt_request.separate_prompts,
+                "image_quality": copy.deepcopy(prompt_request.image_quality),
+                "extra_system_infos": copy.deepcopy(prompt_request.extra_system_infos),
+                "game_state": copy.deepcopy(prompt_request.game_state),
+                "sender": prompt_request.sender,
+                "participants": list(prompt_request.participants or []),
+                "capabilities": copy.deepcopy(prompt_request.capabilities),
+                "image_data": self._summarize_image_data_for_capture(prompt_request.image_data),
+            }
 
             record = {
                 "character_id": char_id,
                 "character_name": char_name,
-                "event_type": event_type,
-                "preset_id_override": preset_id_override,
+                "event_type": request.event_type,
                 "policy": policy.to_dict(),
-                "incoming_event": incoming_event,
+                "incoming_event": incoming,
                 "original_image_data": self._summarize_image_data_for_capture(original_image_data),
                 "processed_image_data": self._summarize_image_data_for_capture(image_data_after_processing),
                 "image_descriptions": copy.deepcopy(image_descriptions or {}),
-                "build_prompt_payload": build_prompt_copy,
+                "build_prompt_payload": prompt_snapshot,
             }
             collector.save_capture(record)
         except Exception as e:
@@ -337,7 +395,7 @@ class ModelController:
             return None
         cid = data.get("character_id") or data.get("char_id") or data.get("character")
         return str(cid) if cid else None
-    
+
     def _normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
             return []
@@ -346,9 +404,7 @@ class ModelController:
         if not isinstance(participants, list):
             return []
 
-        all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
-        id_set = set(str(x) for x in all_ids)
+        id_set = set(str(x) for x in self._characters.all_ids())
 
         out: list[str] = []
         seen = set()
@@ -714,6 +770,22 @@ class ModelController:
         finally:
             self.loading_more_history = False
 
+    def debug_info(self, character_id: str | None = None) -> str:
+        ch = self._get_character_ref(character_id) if character_id else self._get_current_character_ref()
+        if ch and hasattr(ch, "current_variables_string"):
+            return ch.current_variables_string()
+        return "Debug info not available"
+
+    def token_stats(self) -> dict[str, Any]:
+        return self._build_token_stats()
+
+    def schedule_g4f_update(self, version: str = "latest") -> bool:
+        logger.warning(
+            "g4f automatic installation and update scheduling are disabled; "
+            "an already installed package may still be used"
+        )
+        return False
+
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
         requested_cid = self._normalize_character_id_from_data(data)
@@ -728,37 +800,65 @@ class ModelController:
     # ---------------------------------------------------------------------
 
     def _cache_base_prompt(self, character_id: str, event_type: str, messages: list[dict]) -> None:
+        """Кэш промпта для подсчёта токенов.
+
+        Раньше здесь был deepcopy всего промпта — вместе с base64-картинками, на
+        каждый ответ. Картинки в кэше не нужны: ContextCounter считает image_url
+        фиксированной ценой, поэтому редакция url не меняет число токенов.
+        """
         if not character_id or not isinstance(messages, list):
             return
 
-        safe = copy.deepcopy(messages)
+        safe = redact_image_payloads(list(messages))
         if safe and isinstance(safe[-1], dict) and safe[-1].get("role") == "user":
             safe = safe[:-1]
 
         self._base_prompt_cache[(character_id, event_type)] = safe
 
-    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
-        def _is_current_label(label: str | None) -> bool:
-            s = str(label or "").strip()
-            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+    @staticmethod
+    def _is_current_preset_label(label: str | None) -> bool:
+        s = str(label or "").strip()
+        return s in ("", "Current", "Текущий", _("Текущий", "Current"))
 
-        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
-            if label is None or _is_current_label(label):
-                return None
-            s = str(label).strip()
-            try:
-                return int(s)
-            except ValueError:
-                pass
-            try:
-                return self.preset_resolver.resolve_preset_id_by_name(s)
-            except Exception:
-                return None
+    def _preset_id_from_label(self, label: str | None) -> Optional[int]:
+        if label is None or self._is_current_preset_label(label):
+            return None
+        s = str(label).strip()
+        try:
+            return int(s)
+        except ValueError:
+            pass
+        try:
+            return self.preset_resolver.resolve_preset_id_by_name(s)
+        except Exception:
+            return None
 
+    def _char_provider_label(self, character_id: str, character_name: str) -> str:
         label = self.settings.get(f"CHAR_PROVIDER_{character_id}", None)
         if label is None and character_name:
             label = self.settings.get(f"CHAR_PROVIDER_{character_name}", None)
-        return _resolve_label_to_preset_id(label)
+        return str(label if label is not None else "Current")
+
+    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
+        return self._preset_id_from_label(self._char_provider_label(character_id, character_name))
+
+    def _resolve_preset_id(
+        self, event_type: str, policy: RequestPolicy, char_id: str, char_name: str
+    ) -> Optional[int]:
+        if event_type != "react":
+            return self._resolve_chat_preset_id(char_id, char_name)
+
+        lvl = int(getattr(policy, "react_level", None) or 1)
+        default_label = self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))
+        key = "REACT_PROVIDER_L2" if lvl == 2 else "REACT_PROVIDER_L1"
+        label = str(self.settings.get(key, default_label))
+
+        preset_id = self._preset_id_from_label(label)
+        if preset_id is None:
+            preset_id = self._resolve_chat_preset_id(char_id, char_name)
+
+        logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
+        return preset_id
 
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
@@ -770,20 +870,13 @@ class ModelController:
         if not base:
             return cid, [], 0
 
-        user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
-        user_text = user_input_res[0] if user_input_res else ""
-
-        try:
-            extra_infos_res = self.event_bus.emit_and_wait(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, timeout=1.0)
-            extra_infos = extra_infos_res[0] if extra_infos_res and isinstance(extra_infos_res[0], list) else []
-        except Exception:
-            extra_infos = []
-
+        # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
+        # возвращал "", то есть это был поход на шину за пустой строкой.
         messages = list(base)
-        if extra_infos:
-            messages.extend([x for x in extra_infos if isinstance(x, dict)])
+        with self._temporary_system_infos_lock:
+            temporary = list(self._temporary_system_infos.get(cid, ()))
+        messages.extend([x for x in temporary if isinstance(x, dict)])
 
-        messages = self.context_counter.with_user_text(messages, str(user_text or ""))
         return cid, messages, self.context_counter.count_tokens(messages)
 
     def _build_token_stats(self) -> dict[str, Any]:
@@ -986,44 +1079,91 @@ class ModelController:
         clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
         return clean, description
 
-    def _on_generate_response(self, event: Event):
-        data = event.data or {}
-        try:
-            original_event_data = copy.deepcopy(data)
-        except Exception:
-            original_event_data = dict(data)
+    # ---------------------------------------------------------------------
+    # GenerationService: служебная одноразовая генерация
+    # ---------------------------------------------------------------------
 
-        user_input = data.get("user_input", "") or ""
-        visible_user_input = user_input
-        system_input = data.get("system_input", "") or ""
-        image_data = data.get("image_data", []) or []
-        image_source = str(data.get("image_source") or "").strip().lower()
-        stream_callback = data.get("stream_callback", None)
-        event_type = (data.get("event_type") or "chat") or "chat"
+    def generate_utility(self, request: UtilityGenerationRequest) -> UtilityGenerationResult:
+        """Сжатие истории / graph extraction: один запрос, без истории и персонажа.
 
-        sender = str(data.get("sender") or "Player")
-        participants = data.get("participants") or []
+        Ни RAG, ни промпт-сборка, ни запись в историю тут не участвуют.
+        """
+        char_ref = self._get_character_ref(request.character_id)
+        char_name = str(getattr(char_ref, "name", "") or "") or request.character_id or "Мита"
 
-        preset_id_override = data.get("preset_id", None)
-        character_id_override = self._normalize_character_id_from_data(data)
+        # Один user-месседж: запрос из одного лишь system-сообщения часть
+        # провайдеров (в т.ч. маршруты OpenRouter) отклоняет с HTTP 400.
+        messages = [{"role": "user", "content": request.prompt}] if request.prompt else []
 
-        req_id = str(data.get("req_id") or "") or None
-        task_uid = str(data.get("message_id") or "") or None
-        request_options_override = data.get("request_options_override")
-        return_details = bool(data.get("return_details", False))
+        if request.kind == "compress":
+            self.event_bus.emit(Events.Model.ON_COMPRESSION_STARTED, {
+                "character_id": request.character_id,
+                "character_name": char_name,
+            })
 
-        policy_dict = data.get("policy")
-        policy = (
-            RequestPolicy.from_dict(policy_dict)
-            if isinstance(policy_dict, dict)
-            else resolve_policy(model_event_type=str(event_type or "chat"))
+        logger.info(
+            f"[ModelController] {request.kind}: sending {len(messages)} messages, "
+            f"preset_id={request.preset_id}, char='{request.character_id}'"
         )
 
-        char = None
-        if character_id_override:
-            char = self._get_character_ref(str(character_id_override))
+        try:
+            # Обычный текст, а не сегментный JSON Миты: иначе провайдер навяжет
+            # response_format схемы StructuredResponse и сводка вернётся пустой.
+            result = self.model.generate(
+                messages,
+                stream_callback=None,
+                preset_id=request.preset_id,
+                capabilities_override={"structured_output": False},
+                request_options_override={
+                    "max_attempts": request.max_attempts,
+                    "retry_delay": request.retry_delay,
+                    "request_timeout": request.request_timeout,
+                    "suppress_failure_events": True,
+                },
+            )
+            if result and result.text:
+                return UtilityGenerationResult(
+                    ok=True,
+                    text=result.text,
+                    provider=getattr(result, "provider_name", None),
+                )
+
+            logger.warning(f"[ModelController] {request.kind}: model.generate() returned empty/None")
+            last_error = getattr(self.model, "last_error", None)
+            fallback_msg = getattr(result, "error_message", "") if result else ""
+            return UtilityGenerationResult(
+                ok=False,
+                error=(
+                    last_error.to_user_message()
+                    if last_error and hasattr(last_error, "to_user_message")
+                    else fallback_msg
+                ),
+                details=(
+                    last_error.to_console_summary()
+                    if last_error and hasattr(last_error, "to_console_summary")
+                    else fallback_msg
+                ),
+                status_code=getattr(last_error, "status_code", None) if last_error else None,
+                retryable=bool(getattr(last_error, "retryable", False)) if last_error else False,
+                retry_after_sec=getattr(last_error, "retry_after_seconds", None) if last_error else None,
+                provider=getattr(last_error, "provider", None) if last_error else None,
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при {request.kind}: {e}", exc_info=True)
+            return UtilityGenerationResult(ok=False, error=str(e), details=str(e))
+        finally:
+            if request.kind == "compress":
+                self.event_bus.emit(Events.Model.ON_COMPRESSION_FINISHED)
+
+    # ---------------------------------------------------------------------
+    # GenerationService: пользовательская генерация
+    # ---------------------------------------------------------------------
+
+    def generate_chat(self, request: ChatGenerationRequest) -> Optional[ChatGenerationResult]:
+        if request.character_id:
+            char = self._get_character_ref(str(request.character_id))
             if char is None:
-                logger.error(f"GENERATE_RESPONSE: неизвестный character_id='{character_id_override}' (нет фолбэка на current).")
+                logger.error(f"generate_chat: неизвестный character_id='{request.character_id}'.")
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                     "error": _("Неизвестный персонаж.", "Unknown character.")
                 })
@@ -1038,100 +1178,42 @@ class ModelController:
             })
             return None
 
+        # Пул GENERATION многопоточный: два запроса к одной Мите (реплика игрока и
+        # idle-событие из игры) иначе украли бы друг у друга consume_pending_targets()
+        # и перемешали инкременты attitude/boredom. Разные персонажи идут параллельно.
+        with character_lock(getattr(char, "char_id", "") or ""):
+            return self._generate_chat_locked(request, char)
+
+    def _generate_chat_locked(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+        user_input = request.user_input or ""
+        visible_user_input = user_input
+        system_input = request.system_input or ""
+        image_data = list(request.image_data or [])
+        image_source = str(request.image_source or "").strip().lower()
+        stream_callback = request.stream_callback
+        event_type = request.event_type or "chat"
+
+        sender = str(request.sender or "Player")
+        participants = list(request.participants or [])
+
+        req_id = request.req_id or None
+        task_uid = request.task_uid or None
+        origin_message_id = request.origin_message_id or None
+
+        policy = request.policy or resolve_policy(model_event_type=str(event_type))
+
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
-        preset_id = preset_id_override
 
-        _rag_skip = event_type in ("compress", "graph_extract") or policy.react_level == 1
-        if bool(self.settings.get("RAG_ENABLED", False)) and not _rag_skip:
+        rag_context = ""
+        if bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
             prompt_set_path = getattr(char, "base_data_path", None)
-            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
-
-        if event_type in ("compress", "graph_extract"):
-            messages = []
-            if system_input:
-                # И сжатие, и граф-извлечение — это разовая задача с одним
-                # запросом. Кладём контент в user-сообщение, а не в system:
-                # запрос из одного лишь system-сообщения часть провайдеров
-                # (в т.ч. маршруты OpenRouter) отклоняет с HTTP 400, и это
-                # не зависит от опции tail_system_to_user.
-                messages.append({"role": "user", "content": system_input})
-
-            preset_id = preset_id_override
-
-            if event_type == "compress":
-                # Отдельное событие статуса сжатия (не ON_STARTED_RESPONSE_GENERATION,
-                # чтобы не путать с реальной генерацией и не залипать).
-                self.event_bus.emit(Events.Model.ON_COMPRESSION_STARTED, {
-                    "character_id": char_id,
-                    "character_name": char_name or char_id or "Мита",
-                })
-
-            logger.info(
-                f"[ModelController] {event_type}: sending {len(messages)} messages, "
-                f"preset_id={preset_id}, char='{char_id}'"
-            )
-
-            try:
-                # Сжатие/граф-извлечение — обычный текст, а не сегментный JSON
-                # Миты. Иначе провайдер навязывает response_format схемы
-                # StructuredResponse, и сводка возвращается пустой.
-                result = self.model.generate(
-                    messages,
-                    stream_callback=None,
-                    preset_id=preset_id,
-                    capabilities_override={"structured_output": False},
-                    request_options_override=request_options_override,
-                )
-                if not result or not result.text:
-                    logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
-                    if return_details:
-                        last_error = getattr(self.model, "last_error", None)
-                        return {
-                            "ok": False,
-                            "text": "",
-                            "error": (
-                                last_error.to_user_message()
-                                if last_error and hasattr(last_error, "to_user_message")
-                                else getattr(result, "error_message", "") if result else ""
-                            ),
-                            "details": (
-                                last_error.to_console_summary()
-                                if last_error and hasattr(last_error, "to_console_summary")
-                                else getattr(result, "error_message", "") if result else ""
-                            ),
-                            "status_code": getattr(last_error, "status_code", None) if last_error else None,
-                            "retryable": bool(getattr(last_error, "retryable", False)) if last_error else False,
-                            "retry_after_sec": getattr(last_error, "retry_after_seconds", None) if last_error else None,
-                            "provider": getattr(last_error, "provider", None) if last_error else None,
-                        }
-                    return None
-                if return_details:
-                    return {
-                        "ok": True,
-                        "text": result.text,
-                        "error": "",
-                        "details": "",
-                        "status_code": None,
-                        "retryable": False,
-                        "retry_after_sec": None,
-                        "provider": getattr(result, "provider_name", None),
-                    }
-                return result.text
-            except Exception as e:
-                logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
-                return None
-            finally:
-                # Симметрично ON_STARTED_RESPONSE_GENERATION: гасим статус
-                # «Сжатие истории…». Без этого он висел до watchdog (4 мин), а с
-                # частым фоновым сжатием — воспринимался как ложный «думает».
-                if event_type == "compress":
-                    self.event_bus.emit(Events.Model.ON_COMPRESSION_FINISHED)
+            rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         game_state = self.game_state.to_prompt_dict()
 
-        extra_system_infos = list(self._temporary_system_infos or [])
-        self._temporary_system_infos.clear()
+        with self._temporary_system_infos_lock:
+            extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
 
         cfg = getattr(self.model, "cfg", None)
 
@@ -1156,7 +1238,11 @@ class ModelController:
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
         is_game_master = (char_id == "GameMaster")
-        disable_history_compression = bool(data.get("disable_history_compression", False))
+
+        # Пресет резолвим ДО capabilities. Раньше capabilities брались у текущего
+        # пресета, а запрос уходил в пресет персонажа — structured_output мог не
+        # совпадать с тем, что реально поддерживает провайдер.
+        preset_id = self._resolve_preset_id(event_type, policy, char_id, char_name)
 
         effective_capabilities = {}
         try:
@@ -1169,6 +1255,10 @@ class ModelController:
             )
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+
+        remote_only_segment_fields = self._remote_only_structured_segment_fields()
+        if remote_only_segment_fields:
+            effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
@@ -1194,8 +1284,6 @@ class ModelController:
         effective_capabilities["custom_params"] = _custom_params
         effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
 
-        data["capabilities"] = dict(effective_capabilities)
-
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
         original_image_data = image_data  # kept for history storage
@@ -1210,7 +1298,7 @@ class ModelController:
                 "This is what the character is currently seeing with their own eyes, not a player photo, selfie, or drawing. "
                 "Describe the scene strictly from the character's point of view."
             )
-        elif image_source == "mita_camera" or str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
+        elif image_source == "mita_camera":
             _image_context_hint = (
                 "These frames were explicitly marked as coming from the character's own in-game camera. "
                 "This is the character's current visual perception, not a player-uploaded image, selfie, or drawing. "
@@ -1276,106 +1364,50 @@ class ModelController:
             except Exception as _desc_exc:
                 logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
 
-        build_prompt_payload = {
-            "character_id": char_id,
-            "character_ref": char,
-            "event_type": event_type,
-            "user_input": user_input,
-            "system_input": system_input,
-            "hidden_user_context": hidden_user_context,
-            "image_data": image_data,
-            "memory_limit": memory_limit,
-            "is_game_master": is_game_master,
-            "save_missed_history": save_missed_history,
-            "image_quality": image_quality_cfg,
-            "separate_prompts": separate_prompts,
-            "extra_system_infos": extra_system_infos,
-            "game_state": game_state,
-            "disable_history_compression": disable_history_compression,
-            "sender": sender,
-            "participants": participants,
-            "policy": policy.to_dict(),
-            "capabilities": effective_capabilities,
-        }
+        prompt_request = PromptBuildRequest(
+            character=char,
+            event_type=event_type,
+            policy=policy,
+            user_input=user_input,
+            system_input=system_input,
+            rag_context=rag_context,
+            hidden_user_context=hidden_user_context,
+            image_data=image_data,
+            memory_limit=memory_limit,
+            is_game_master=is_game_master,
+            save_missed_history=save_missed_history,
+            image_quality=image_quality_cfg,
+            separate_prompts=separate_prompts,
+            extra_system_infos=extra_system_infos,
+            game_state=game_state,
+            sender=sender,
+            participants=participants,
+            capabilities=effective_capabilities,
+        )
         self._capture_generation_input(
-            raw_event_data=original_event_data,
+            request=request,
             char_id=char_id,
             char_name=char_name,
-            event_type=event_type,
-            preset_id_override=preset_id_override,
             policy=policy,
-            build_prompt_payload=build_prompt_payload,
+            prompt_request=prompt_request,
             original_image_data=original_image_data,
             image_data_after_processing=image_data,
             image_descriptions=image_descriptions,
         )
 
         try:
-            prompt_res = self.event_bus.emit_and_wait(
-                Events.Prompt.BUILD_PROMPT,
-                build_prompt_payload,
-                timeout=10.0
-            )
+            prompt_data = use(PromptBuilderService).build(prompt_request)
         except Exception as e:
-            logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
+            logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
             })
             return None
 
-        if not prompt_res or not isinstance(prompt_res[0], dict):
-            logger.error("BUILD_PROMPT не вернул валидный результат")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
-            })
-            return None
-
-        prompt_data = prompt_res[0]
-        combined_messages = prompt_data.get("messages", []) or []
+        combined_messages = prompt_data.messages
 
         if event_type == "chat":
             self._cache_base_prompt(char_id, "chat", combined_messages)
-
-        preset_id: Optional[int] = None
-
-        def _is_current_label(label: str | None) -> bool:
-            s = str(label or "").strip()
-            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
-
-        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
-            if label is None or _is_current_label(label):
-                return None
-            s = str(label).strip()
-            try:
-                return int(s)
-            except ValueError:
-                pass
-            try:
-                return self.preset_resolver.resolve_preset_id_by_name(s)
-            except Exception:
-                return None
-
-        def _get_char_provider_label(cid: str, cname: str) -> str:
-            v = self.settings.get(f"CHAR_PROVIDER_{cid}", None)
-            if v is None and cname:
-                v = self.settings.get(f"CHAR_PROVIDER_{cname}", None)
-            return str(v if v is not None else "Current")
-
-        if event_type == "react":
-            lvl = int(getattr(policy, "react_level", None) or 1)
-
-            if lvl == 2:
-                label = str(self.settings.get("REACT_PROVIDER_L2", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
-            else:
-                label = str(self.settings.get("REACT_PROVIDER_L1", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
-
-            preset_id = _resolve_label_to_preset_id(label)
-            if preset_id is None:
-                preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
-
-            logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
-        else:
-            preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
         active_pricing = None
         try:
@@ -1443,7 +1475,7 @@ class ModelController:
 
             if is_structured_output:
                 sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
-                return self._process_structured_output(
+                structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
                     usage=llm_response.usage,
@@ -1453,7 +1485,8 @@ class ModelController:
                     char=char,
                     char_id=char_id,
                     char_name=char_name,
-                    data=data,
+                    origin_message_id=origin_message_id,
+                    capabilities=effective_capabilities,
                     policy=policy,
                     sender=sender,
                     participants=participants,
@@ -1472,6 +1505,9 @@ class ModelController:
                     structured_model_cls=structured_model_cls,
                     sample_id=sample_id,
                 )
+                if structured_result is not None:
+                    self._consume_temporary_system_infos(char_id, extra_system_infos)
+                return structured_result
 
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
@@ -1509,8 +1545,6 @@ class ModelController:
 
             assistant_message_id = ""
             if policy.write_to_history:
-                origin_message_id = str(data.get("origin_message_id") or "") or None
-
                 assistant_message_id = self.event_writer.write_turn(
                     responder_character_id=char_id,
                     sender=sender,
@@ -1544,6 +1578,8 @@ class ModelController:
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
 
+            self._consume_temporary_system_infos(char_id, extra_system_infos)
+
             created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
@@ -1561,15 +1597,15 @@ class ModelController:
                 except Exception:
                     voice_profile = None
 
-            return {
-                "text": final_text,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": target,
-                "targets": targets,
-                "think": think_text or None,
-                "message_id": assistant_message_id,
-            }
+            return ChatGenerationResult(
+                text=final_text,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                target=target,
+                targets=targets,
+                think=think_text or None,
+                message_id=assistant_message_id,
+            )
 
         except Exception as e:
             logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
@@ -1584,7 +1620,9 @@ class ModelController:
     def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
         # ---------------------------------------------------------------------
         # RAG выполняется ДО BUILD_PROMPT
-        # результаты кладутся в system prompt
+        # Возвращает готовый RAG-блок отдельным сообщением. Исходный
+        # system_input (событие или служебная инструкция) не изменяется:
+        # актуальная инструкция должна оставаться после справочного контекста.
         # Templates can be customized per prompt set via Structural/ files:
         #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
         from utils.template_loader import load_optional_template
@@ -1596,7 +1634,9 @@ class ModelController:
             final_input = system_input
         if final_input:
             try:
-                rag = RAGManager(char_id)
+                from managers.rag.rag_manager import RAGManager
+
+                rag = RAGManager.for_character(char_id)
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
@@ -1690,14 +1730,13 @@ class ModelController:
                         if forgotten_count > 0:
                             rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
-                        separator = "\n\n" if system_input else ""
-                        system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
-                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"[{char_id}] RAG blocks built as separate message "
                             f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
+                        return rag_block
             except Exception as e:
                 logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
-        return system_input
+        return ""
 
     # ---------------------------------------------------------------------
     # Structured Output processing
@@ -1714,7 +1753,8 @@ class ModelController:
         char,
         char_id: str,
         char_name: str,
-        data: dict,
+        origin_message_id: str | None,
+        capabilities: dict,
         policy,
         sender: str,
         participants: list,
@@ -1732,7 +1772,7 @@ class ModelController:
         image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
         sample_id: str | None = None,
-    ) -> dict | None:
+    ) -> Optional[ChatGenerationResult]:
         try:
             structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
         except StructuredResponseParseError as e:
@@ -1770,14 +1810,16 @@ class ModelController:
             )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            return {
-                "text": processed,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": fallback_target,
-                "targets": fallback_targets,
-                "think": think_text or None,
-            }
+            return ChatGenerationResult(
+                text=processed,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                target=fallback_target,
+                targets=fallback_targets,
+                think=think_text or None,
+            )
+
+        self._sanitize_structured_segment_fields(structured, capabilities)
 
         # Apply structured response processing (behavior changes, memory, game tags)
         char.process_structured_response(
@@ -1811,7 +1853,8 @@ class ModelController:
                 char=char,
                 char_id=char_id,
                 char_name=char_name,
-                data=data,
+                origin_message_id=origin_message_id,
+                capabilities=capabilities,
                 policy=policy,
                 sender=sender,
                 participants=participants,
@@ -1883,7 +1926,6 @@ class ModelController:
 
         assistant_message_id = ""
         if policy.write_to_history:
-            origin_message_id = str(data.get("origin_message_id") or "") or None
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
             assistant_message_id = self.event_writer.write_turn(
@@ -1954,16 +1996,16 @@ class ModelController:
             except Exception:
                 voice_profile = None
 
-        return {
-            "text": final_text,
-            "character_id": char_id,
-            "voice_profile": voice_profile,
-            "target": target,
-            "targets": targets,
-            "think": think_text or None,
-            "structured": result_dict,
-            "message_id": assistant_message_id,
-        }
+        return ChatGenerationResult(
+            text=final_text,
+            character_id=char_id,
+            voice_profile=voice_profile,
+            target=target,
+            targets=targets,
+            think=think_text or None,
+            structured=result_dict,
+            message_id=assistant_message_id,
+        )
 
     # ---------------------------------------------------------------------
     # Tool call handler (structured output tools)
@@ -1981,7 +2023,8 @@ class ModelController:
         char,
         char_id: str,
         char_name: str,
-        data: dict,
+        origin_message_id: str | None,
+        capabilities: dict,
         policy,
         sender: str,
         participants: list,
@@ -1998,7 +2041,7 @@ class ModelController:
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
-    ) -> dict | None:
+    ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
         1. Emit first response to UI.
@@ -2045,7 +2088,6 @@ class ModelController:
 
         first_assistant_message_id = ""
         if policy.write_to_history:
-            origin_message_id = str(data.get("origin_message_id") or "") or None
             first_assistant_message_id = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
@@ -2080,7 +2122,7 @@ class ModelController:
             "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Emit tool executing indicator for UI
         self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
@@ -2109,7 +2151,7 @@ class ModelController:
             "character_id": "",
             "character_name": "",
             "speaker_name": "",
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Build tool result message(s) for the second LLM call.
         # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:
@@ -2147,7 +2189,7 @@ class ModelController:
         llm_response_2 = self.model.generate(
             combined_messages_v2,
             preset_id=preset_id,
-            capabilities_override=(data.get("capabilities") or None),
+            capabilities_override=(capabilities or None),
             structured_model=structured_model_cls,
         )
 
@@ -2161,15 +2203,16 @@ class ModelController:
                 "error": error_message
             })
             # Return first response as fallback
-            return {
-                "text": first_text,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": target,
-                "targets": targets,
-                "think": think_text or None,
-                "structured": result_dict,
-            }
+            return ChatGenerationResult(
+                text=first_text,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                target=target,
+                targets=targets,
+                think=think_text or None,
+                structured=result_dict,
+                message_id=first_assistant_message_id,
+            )
 
         visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
         merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
@@ -2194,7 +2237,8 @@ class ModelController:
             char=char,
             char_id=char_id,
             char_name=char_name,
-            data=data,
+            origin_message_id=origin_message_id,
+            capabilities=capabilities,
             policy=policy,
             sender=sender,
             participants=participants,
@@ -2219,19 +2263,14 @@ class ModelController:
     # ---------------------------------------------------------------------
 
     def _on_reload_prompts_async(self, event: Event):
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            "coroutine": self._async_reload_prompts(),
-            "callback": None
-        })
+        # Скачивание промптов — блокирующий IO, ему не нужен asyncio-loop.
+        executors().submit(Pools.IO, self._reload_prompts)
 
-    async def _async_reload_prompts(self):
+    def _reload_prompts(self):
         try:
             from utils.prompt_downloader import PromptDownloader
-            import asyncio
 
-            downloader = PromptDownloader()
-            loop = asyncio.get_event_loop()
-            success = await loop.run_in_executor(None, downloader.download_and_replace_prompts)
+            success = PromptDownloader().download_and_replace_prompts()
 
             if success:
                 cid = self._get_current_character_id()

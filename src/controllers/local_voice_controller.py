@@ -5,10 +5,18 @@ from typing import Any, Dict, Optional
 
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
+from core.services import use
+from services.contracts import (
+    CharacterRegistry,
+    InstallableCatalogService,
+    LocalVoiceService,
+    LoopService,
+    SettingsService,
+)
 from utils import getTranslationVariant as _
 
 
-class LocalVoiceController:
+class LocalVoiceController(LocalVoiceService):
     """
     GUI-side proxy для локальной озвучки.
     Вся тяжёлая часть живёт в ai worker service='tts'.
@@ -38,52 +46,34 @@ class LocalVoiceController:
     def _get_engine(self):
         if self._engine is not None:
             return self._engine
+        # Через AIEngineService, а не через синхронный EventBus-запрос (см. rag_client/beat_worker).
         try:
-            res = self.event_bus.emit_and_wait(Events.AI.GET_ENGINE, timeout=0.8)
-            self._engine = res[0] if res else None
+            from services.contracts import AIEngineService
+            self._engine = use(AIEngineService).get_engine()
         except Exception:
             self._engine = None
         return self._engine
 
     def _get_setting(self, key: str, default=None):
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": default},
-                timeout=0.8
-            )
-            return res[0] if res else default
-        except Exception:
-            return default
+        return use(SettingsService).get(key, default)
 
     def _get_settings_obj(self):
-        try:
-            res = self.event_bus.emit_and_wait(Events.Settings.GET_SETTINGS, timeout=0.8)
-            return res[0] if res else None
-        except Exception:
-            return None
+        return use(SettingsService)
 
     def _save_setting(self, key: str, value: Any) -> None:
-        try:
-            self.event_bus.emit(Events.Settings.SAVE_SETTING, {"key": key, "value": value})
-        except Exception:
-            pass
+        use(SettingsService).update(key, value)
 
     def _subscribe_to_events(self):
         eb = self.event_bus
 
         eb.subscribe(Events.Audio.OPEN_VOICE_MODEL_SETTINGS, self._on_open_voice_model_settings, weak=False)
-        eb.subscribe(Events.Audio.GET_TRITON_STATUS, self._on_get_triton_status, weak=False)
         eb.subscribe(Events.Audio.REFRESH_TRITON_STATUS, self._on_refresh_triton_status, weak=False)
-        eb.subscribe(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, self._on_get_all_local_model_configs, weak=False)
 
         eb.subscribe(Events.Audio.CHECK_MODEL_INSTALLED, self._on_check_model_installed, weak=False)
         eb.subscribe(Events.Audio.CHECK_MODEL_INITIALIZED, self._on_check_model_initialized, weak=False)
         eb.subscribe(Events.Audio.SELECT_VOICE_MODEL, self._on_select_voice_model, weak=False)
-        eb.subscribe(Events.Audio.INIT_VOICE_MODEL, self._on_init_voice_model, weak=False)
         eb.subscribe(Events.Audio.CHANGE_VOICE_LANGUAGE, self._on_change_voice_language, weak=False)
 
-        eb.subscribe(Events.Audio.LOCAL_SEND_VOICE_REQUEST, self._on_local_send_voice_request, weak=False)
         eb.subscribe(Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False)
 
     def _on_open_voice_model_settings(self, _event: Event):
@@ -95,6 +85,35 @@ class LocalVoiceController:
     def _voice_language(self) -> str:
         return str(self._get_setting("VOICE_LANGUAGE", "ru") or "ru").strip().lower()
 
+    async def _ensure_model_environment(
+        self,
+        model_id: str,
+        *,
+        initialize: bool = False,
+    ) -> None:
+        engine = self._get_engine()
+        activate = getattr(engine, "activate_environment", None) if engine is not None else None
+        if not callable(activate):
+            raise RuntimeError("AI engine does not support managed runtime environments")
+        validation_method = "init_model" if initialize else None
+        validation_payload = (
+            {"model_id": str(model_id), "warmup": True}
+            if initialize
+            else None
+        )
+        ok = await asyncio.to_thread(
+            activate,
+            "tts",
+            str(model_id),
+            category="tts",
+            timeout=20.0,
+            validation_method=validation_method,
+            validation_payload=validation_payload,
+            validation_timeout=3600.0 if initialize else 20.0,
+        )
+        if not ok:
+            raise RuntimeError(f"Failed to activate runtime environment for voice model '{model_id}'")
+
     async def _engine_call_async(self, method: str, payload: Optional[dict] = None, timeout: Optional[float] = None):
         eng = self._get_engine()
         if eng is None:
@@ -102,6 +121,30 @@ class LocalVoiceController:
 
         fut = eng.call("tts", method, payload or {})
         return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+
+    def model_configs(self) -> list[dict[str, Any]]:
+        return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
+
+    def is_installed(self, model_id: str) -> bool:
+        return bool(self._on_check_model_installed(Event(Events.Audio.CHECK_MODEL_INSTALLED, {"model_id": model_id})))
+
+    def check_initialized(self, model_id: str, *, strict: bool = False) -> bool:
+        return bool(self._on_check_model_initialized(Event(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id, "strict": strict})))
+
+    def select_model(self, model_id: str) -> bool:
+        return bool(self._on_select_voice_model(Event(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id})))
+
+    def initialize_model(self, model_id: str):
+        normalized = str(model_id or "").strip()
+        if not normalized:
+            raise ValueError("model_id is required")
+        return use(LoopService).run(self._async_init_model(normalized))
+
+    def triton_status(self, *, refresh: bool = False) -> dict[str, Any]:
+        event = Event(Events.Audio.REFRESH_TRITON_STATUS if refresh else Events.Audio.GET_TRITON_STATUS)
+        handler = self._on_refresh_triton_status if refresh else self._on_get_triton_status
+        result = handler(event)
+        return dict(result or {})
 
     # -------------------- model configs --------------------
 
@@ -137,29 +180,12 @@ class LocalVoiceController:
         if not model_id:
             return False
 
-        cached = self._installed_cache.get(model_id)
-        if cached is not None:
-            return bool(cached)
-
         try:
-            eng = self._get_engine()
-            if not eng:
-                return False
-            cfut = eng.call("tts", "check_installed", {"model_id": model_id})
-
-            def _done(f):
-                try:
-                    ok = bool(f.result())
-                    self._installed_cache[model_id] = ok
-                    self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
-                except Exception:
-                    self._installed_cache[model_id] = False
-
-            cfut.add_done_callback(_done)
+            ready = bool(use(InstallableCatalogService).is_ready(f"tts:{model_id}"))
         except Exception:
-            pass
-
-        return False
+            ready = False
+        self._installed_cache[model_id] = ready
+        return ready
 
     def _on_check_model_initialized(self, event: Event):
         model_id = str((event.data or {}).get("model_id") or "").strip()
@@ -174,7 +200,7 @@ class LocalVoiceController:
 
         eng = self._get_engine()
         if not eng:
-            return True if strict else (bool(cached) if cached is not None else False)
+            return False if strict else (bool(cached) if cached is not None else False)
 
         if strict:
             try:
@@ -183,7 +209,8 @@ class LocalVoiceController:
                 self._initialized_cache[model_id] = ok
                 return ok
             except Exception:
-                return True
+                self._initialized_cache[model_id] = False
+                return False
 
         try:
             cfut = eng.call("tts", "check_initialized", {"model_id": model_id})
@@ -211,37 +238,19 @@ class LocalVoiceController:
 
         self._save_setting("NM_CURRENT_VOICEOVER", model_id)
 
-        try:
-            eng = self._get_engine()
-            if eng:
-                eng.call("tts", "select_model", {"model_id": model_id})
-        except Exception:
-            pass
-
         self._initialized_cache.pop(model_id, None)
         return True
 
-    def _on_init_voice_model(self, event: Event):
-        model_id = str((event.data or {}).get("model_id") or "").strip()
-        progress_callback = (event.data or {}).get("progress_callback")
-        if not model_id:
-            return
-
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            "coroutine": self._async_init_model(model_id, progress_callback)
-        })
-
-    async def _async_init_model(self, model_id: str, progress_callback=None):
+    async def _async_init_model(self, model_id: str):
         try:
             logger.info(f"LocalVoiceController init start: model_id='{model_id}'")
-            if progress_callback:
-                progress_callback("status", _("Инициализация модели...", "Initializing model..."))
-
-            ok = await self._engine_call_async(
-                "init_model",
-                {"model_id": model_id, "warmup": True},
-                timeout=3600.0
+            self.event_bus.emit(
+                Events.Audio.UPDATE_MODEL_LOADING_STATUS,
+                {"status": _("Инициализация модели...", "Initializing model...")},
             )
+
+            await self._ensure_model_environment(model_id, initialize=True)
+            ok = True
 
             if ok:
                 logger.info(f"LocalVoiceController init done: model_id='{model_id}'")
@@ -386,7 +395,47 @@ class LocalVoiceController:
             character_id=character_id,
             voice_profile=voice_profile,
         )
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {"coroutine": coro})
+        use(LoopService).run(coro)
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        character_id: Optional[str] = None,
+        voice_profile: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
+        registry = use(CharacterRegistry)
+
+        if not resolved_profile and isinstance(character_id, str) and character_id:
+            character = registry.get(character_id)
+            if character is not None and hasattr(character, "to_voice_profile"):
+                resolved_profile = character.to_voice_profile()
+        if not resolved_profile:
+            resolved_profile = registry.current_profile() or None
+
+        output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
+        absolute_audio_path = os.path.abspath(output_file)
+        os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
+        model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
+
+        initialize = not bool(self._initialized_cache.get(model_id, False))
+        await self._ensure_model_environment(model_id, initialize=initialize)
+        if initialize:
+            self._initialized_cache[model_id] = True
+        result_path = await self._engine_call_async(
+            "synthesize",
+            {
+                "text": text,
+                "output_file": absolute_audio_path,
+                "character": resolved_profile,
+                "model_id": model_id,
+            },
+            timeout=3600.0,
+        )
+        if not result_path:
+            raise RuntimeError("Local voiceover failed: empty result")
+        return str(result_path)
 
     async def _async_local_voiceover(
         self,
@@ -396,53 +445,14 @@ class LocalVoiceController:
         voice_profile: Optional[dict] = None,
     ):
         try:
-            resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
-
-            if not resolved_profile and isinstance(character_id, str) and character_id:
-                character_res = self.event_bus.emit_and_wait(
-                    Events.Character.GET,
-                    {"character_id": character_id},
-                    timeout=3.0
-                )
-                ch = character_res[0] if character_res else None
-                if ch is not None and hasattr(ch, "to_voice_profile"):
-                    resolved_profile = ch.to_voice_profile()
-
-            if not resolved_profile:
-                current_res = self.event_bus.emit_and_wait(
-                    Events.Character.GET_CURRENT_PROFILE,
-                    timeout=3.0
-                )
-                cc = current_res[0] if current_res else None
-                if isinstance(cc, dict):
-                    resolved_profile = cc
-
-            output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
-            absolute_audio_path = os.path.abspath(output_file)
-            os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
-
-            model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
-
-            result_path = await self._engine_call_async(
-                "synthesize",
-                {
-                    "text": text,
-                    "output_file": absolute_audio_path,
-                    "character": resolved_profile,
-                    "model_id": model_id,
-                },
-                timeout=3600.0
+            result = await self.synthesize(
+                text, character_id=character_id, voice_profile=voice_profile
             )
-
             if future and not future.done():
-                if result_path:
-                    future.set_result(result_path)
-                else:
-                    future.set_exception(Exception("Local voiceover failed: empty result"))
-
-        except Exception as e:
+                future.set_result(result)
+        except Exception as exc:
             if future and not future.done():
                 try:
-                    future.set_exception(e)
+                    future.set_exception(exc)
                 except Exception:
                     pass

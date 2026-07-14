@@ -1,13 +1,18 @@
 import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
+    QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
     QSizePolicy, QPushButton, QSlider
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
-from core.events import get_event_bus, Events
+from ui.settings.voiceover_settings.presentation import (
+    OpenAIEngineSettings,
+    OpenVoiceAIHub,
+    RestartVoiceService,
+    StartTelegramVoice,
+)
 
 try:
     import qtawesome as qta
@@ -15,7 +20,8 @@ except Exception:
     qta = None
 
 
-def build_voiceover_settings_ui(self, parent_layout):
+def build_voiceover_settings_ui(self, parent_layout, *, actions):
+    self._voiceover_settings_view_model = actions
     sidebar_w = getattr(self, "SETTINGS_SIDEBAR_WIDTH", 50)
     right_pad = max(8, min(14, int(sidebar_w * 0.22)))
 
@@ -67,7 +73,7 @@ def build_voiceover_settings_ui(self, parent_layout):
 
         {'label': _('Подключиться к Telegram', 'Connect Telegram'),
          'type': 'button',
-         'command': (lambda: get_event_bus().emit(Events.Telegram.START_SILERO, {"source": "ui", "force": True})),
+         'command': (lambda: actions.dispatch(StartTelegramVoice())),
          'widget_name': 'tg_connect_button'},
 
         {'label': _('Канал/Сервис', "Channel/Service"), 'key': 'AUDIO_BOT',
@@ -136,6 +142,13 @@ def build_voiceover_settings_ui(self, parent_layout):
     label_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
 
     self.local_voice_combobox = QComboBox()
+    self.local_voice_empty_status = tr_set(
+        QLabel(),
+        "Нет установленных моделей",
+        "No installed models",
+    )
+    self.local_voice_empty_status.setObjectName("SeparatorLabel")
+    self.local_voice_empty_status.setVisible(False)
 
     # Шестерёнка справа от модели → настройки конкретной модели (AI Hub, раздел TTS).
     self.local_model_settings_btn = QPushButton()
@@ -158,16 +171,14 @@ def build_voiceover_settings_ui(self, parent_layout):
             mid = self.local_voice_combobox.currentData()
         if not mid:
             mid = self.settings.get("NM_CURRENT_VOICEOVER")
-        payload = {"category": "tts"}
         mid = str(mid or "").strip()
-        if mid:
-            payload["component_id"] = f"tts:{mid}"
-        get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": payload})
+        actions.dispatch(OpenVoiceAIHub(mid or None))
 
     self.local_model_settings_btn.clicked.connect(_open_current_model_settings)
 
     local_model_layout.addWidget(label_container)
     local_model_layout.addWidget(self.local_voice_combobox, 1)
+    local_model_layout.addWidget(self.local_voice_empty_status, 1)
     local_model_layout.addWidget(self.local_model_settings_btn, 0)
     local_layout.addWidget(local_model_row)
 
@@ -258,11 +269,11 @@ def build_voiceover_settings_ui(self, parent_layout):
 
         {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
          'type': 'button',
-         'command': (lambda: get_event_bus().emit(Events.AI.RESTART_SERVICE, {"service": "tts"}))},
+         'command': (lambda: actions.dispatch(RestartVoiceService()))},
 
-        {'label': _('Открыть AI Hub', 'Open AI Hub'),
+        {'label': _('Перейти к настройкам AI Engine', 'Open AI Engine settings'),
          'type': 'button',
-         'command': (lambda: get_event_bus().emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}}))}
+         'command': (lambda: actions.dispatch(OpenAIEngineSettings()))}
     ]
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
         local_config.insert(2, {
