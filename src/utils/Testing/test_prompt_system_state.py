@@ -185,5 +185,49 @@ class ReplyDefaultsTests(unittest.TestCase):
         self.assertEqual(char.get_variable("REPLY_HARD_MAX_WORDS"), 120)
 
 
+class ExamplesProfileTests(unittest.TestCase):
+    class _VarCharacter:
+        def __init__(self, preset=None):
+            self.variables = dict(preset or {})
+
+        def get_variable(self, name, default=None):
+            return self.variables.get(name, default)
+
+        def set_variable(self, name, value):
+            self.variables[name] = value
+
+    def _controller(self, settings):
+        c = PromptController()
+        c._get_setting = lambda key, default=None: settings.get(key, default)
+        return c
+
+    def test_manual_setting_wins(self):
+        c = self._controller({"EXAMPLES_PROFILE": "compact", "MAX_MODEL_TOKENS": 200000})
+        char = self._VarCharacter({"EXAMPLES_PROFILE_OVERRIDE": "none"})
+        self.assertEqual(c._resolve_examples_profile(char), "compact")
+
+    def test_character_override_used_when_no_manual(self):
+        c = self._controller({"MAX_MODEL_TOKENS": 200000})
+        char = self._VarCharacter({"EXAMPLES_PROFILE_OVERRIDE": "clean"})
+        self.assertEqual(c._resolve_examples_profile(char), "clean")
+
+    def test_auto_by_context_window(self):
+        char = self._VarCharacter()
+        self.assertEqual(self._controller({"MAX_MODEL_TOKENS": 8000})._resolve_examples_profile(char), "compact")
+        self.assertEqual(self._controller({"MAX_MODEL_TOKENS": 20000})._resolve_examples_profile(char), "clean")
+        self.assertEqual(self._controller({"MAX_MODEL_TOKENS": 128000})._resolve_examples_profile(char), "full")
+
+    def test_default_full_when_unknown(self):
+        char = self._VarCharacter()
+        self.assertEqual(self._controller({})._resolve_examples_profile(char), "full")
+
+    def test_examples_script_has_all_branches(self):
+        script = (Path(__file__).resolve().parents[3] / "extra" / "Prompts" / "Crazy" /
+                  "Default" / "Context" / "examples.script").read_text(encoding="utf-8")
+        for token in ['EXAMPLES_PROFILE == "none"', 'EXAMPLES_PROFILE == "compact"',
+                      'EXAMPLES_PROFILE == "clean"', "examplesLong.txt"]:
+            self.assertIn(token, script)
+
+
 if __name__ == "__main__":
     unittest.main()

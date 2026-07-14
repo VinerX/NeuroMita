@@ -174,6 +174,42 @@ class PromptController(PromptBuilderService):
             if current is None or (isinstance(current, str) and not current.strip()):
                 character.set_variable(key, default)
 
+    _EXAMPLES_PROFILES = ("full", "clean", "compact", "none")
+
+    def _resolve_examples_profile(self, character) -> str:
+        """Resolve the EXAMPLES_PROFILE for this build.
+
+        Precedence: explicit user setting > per-character override
+        (EXAMPLES_PROFILE_OVERRIDE variable) > automatic default from the
+        model's context window > "full" (which preserves current behavior).
+        """
+        manual = str(self._get_setting("EXAMPLES_PROFILE", "") or "").strip().lower()
+        if manual in self._EXAMPLES_PROFILES:
+            return manual
+
+        try:
+            override = character.get_variable("EXAMPLES_PROFILE_OVERRIDE", None)
+        except Exception:
+            override = None
+        if isinstance(override, str) and override.strip().lower() in self._EXAMPLES_PROFILES:
+            return override.strip().lower()
+
+        try:
+            ctx = int(self._get_setting("MAX_MODEL_TOKENS", 0) or 0)
+        except Exception:
+            ctx = 0
+        try:
+            compact_max = int(self._get_setting("EXAMPLES_COMPACT_MAX_CONTEXT", 12000) or 12000)
+            clean_max = int(self._get_setting("EXAMPLES_CLEAN_MAX_CONTEXT", 24000) or 24000)
+        except Exception:
+            compact_max, clean_max = 12000, 24000
+
+        if 0 < ctx <= compact_max:
+            return "compact"
+        if 0 < ctx <= clean_max:
+            return "clean"
+        return "full"
+
     def _setup_character_for_prompt(self, character, event_type: str):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
         character.set_variable("SYSTEM_DATETIME", now_str)
@@ -204,6 +240,10 @@ class PromptController(PromptBuilderService):
         # all segments, not per segment. Set only when the character/mode/custom
         # prompt has not already provided its own value, so overrides win.
         self._apply_reply_defaults(character)
+
+        # Examples profile (full/clean/compact/none) resolved fresh each build,
+        # so DSL example selectors read a concrete value.
+        character.set_variable("EXAMPLES_PROFILE", self._resolve_examples_profile(character))
 
         chosen_template = None
 
