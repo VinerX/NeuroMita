@@ -576,6 +576,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
         def completed(result: dict[str, Any]) -> None:
             python_applied = bool(result.get("python_applied"))
+            python_pending_restart = bool(result.get("python_pending_restart"))
             if result.get("cancelled") or cancel_event.is_set():
                 self._set_progress(
                     _("Установка отменена.", "Installation cancelled."),
@@ -598,6 +599,16 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                         err=details or _("неизвестная ошибка", "unknown error")
                     ),
                     0,
+                    100,
+                    busy=False,
+                )
+            elif python_pending_restart:
+                self._set_progress(
+                    _(
+                        "Перезапустите приложение, чтобы завершить обновление Python.",
+                        "Restart the application to finish the Python update.",
+                    ),
+                    100,
                     100,
                     busy=False,
                 )

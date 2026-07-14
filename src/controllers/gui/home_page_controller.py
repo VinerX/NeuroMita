@@ -332,6 +332,7 @@ class HomePageController(QObject):
 
         base_dir = self.base_dir()
         results: dict[str, dict[str, Any]] = {}
+        python_pending_restart = False
         if update_python:
             python_result = check_for_updates(
                 base_dir=base_dir,
@@ -350,7 +351,8 @@ class HomePageController(QObject):
                 stop_event=stop_event,
             )
             results["python"] = python_result.as_dict()
-        if update_unity and not stop_event.is_set():
+            python_pending_restart = python_result.status == "waiting_for_restart"
+        if update_unity and not stop_event.is_set() and not python_pending_restart:
             unity_result = check_for_unity_updates(
                 base_dir=base_dir,
                 logger=logger_adapter,
@@ -372,6 +374,7 @@ class HomePageController(QObject):
         return {
             "ok": bool(selected_results) and all(bool(item.get("ok")) for item in selected_results),
             "python_applied": bool(python_result.get("changed")),
+            "python_pending_restart": python_pending_restart,
             "cancelled": bool(stop_event.is_set()) or any(bool(item.get("cancelled")) for item in selected_results),
             "results": results,
         }
