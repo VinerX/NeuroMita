@@ -67,9 +67,9 @@ SET LOCAL p_schema_fields = """  "segments": [
       "allow_sleep": true/false
     }
   ],
-  "attitude_change": <number -5..5>,
-  "boredom_change": <number -5..5>,
-  "stress_change": <number -5..5>,
+  "attitude_change": <number, usually -2..2; 0 is normal>,
+  "boredom_change": <number, usually -2..2; 0 is normal>,
+  "stress_change": <number, usually -2..2; 0 is normal>,
   "memory_add": ["priority|content", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
@@ -97,9 +97,9 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
       "allow_sleep": true/false
     }
   ],
-  "attitude_change": <number -5..5>,
-  "boredom_change": <number -5..5>,
-  "stress_change": <number -5..5>,
+  "attitude_change": <number, usually -2..2; 0 is normal>,
+  "boredom_change": <number, usually -2..2; 0 is normal>,
+  "stress_change": <number, usually -2..2; 0 is normal>,
   "memory_add": ["priority|content" or "priority|content|entity1,entity2", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
@@ -120,7 +120,7 @@ Field descriptions:
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
-- attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
@@ -146,7 +146,7 @@ Field descriptions:
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
-- attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - memory_add format: "priority|content" or "priority|content|entity1,entity2"  priority = low | normal | high | critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical

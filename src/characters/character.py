@@ -1140,137 +1140,73 @@ class Character:
         self.app_vars = app_vars.copy()
         logger.debug(f"[{self.char_id}] App vars updated: {list(self.app_vars.keys())}")
 
-    def adjust_attitude(self, amount: float):
-        current = self.get_variable("attitude", 60.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
+    def _stat_change_hard_limit(self) -> float:
+        """Absolute per-response change cap (existing scale, configurable).
 
-        min_bound = self.get_variable("attitude_min", 0.0)
-        max_bound = self.get_variable("attitude_max", 100.0)
+        Defaults to 6.0 — the prior hard-coded bound. A normal reply is expected
+        to stay well within this (about -2..+2, enforced softly through the
+        prompt); larger jumps remain possible for genuinely significant moments.
+        """
+        try:
+            return abs(float(self.get_variable("STAT_CHANGE_HARD_LIMIT", 6.0)))
+        except Exception:
+            return 6.0
 
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
+    def _stat_bound(self, key: str, default: float):
+        value = self.get_variable(key, default)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
 
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
+    def _adjust_bounded_stat(self, name: str, amount: float, default_current: float) -> None:
+        """Apply a per-response delta to a bounded stat.
+
+        A zero delta is a valid, common outcome and leaves the value unchanged.
+        The delta is clamped to the configurable hard limit; the result is
+        clamped to the stat's [min, max] bounds so totals never leave the scale.
+        """
+        current = self.get_variable(name, default_current)
+        try:
+            current = float(current)
+        except Exception:
+            current = float(default_current)
+
+        limit = self._stat_change_hard_limit()
+        amount = clamp(round(float(amount), 2), -limit, limit)
+
+        min_val = self._stat_bound(f"{name}_min", 0.0)
+        max_val = self._stat_bound(f"{name}_max", 100.0)
 
         if (min_val is not None and max_val is not None) and max_val < min_val:
             logger.error(
-                f"[{self.char_id}] Invalid config: attitude_max ({max_val}) is less than attitude_min ({min_val})."
+                f"[{self.char_id}] Invalid config: {name}_max ({max_val}) is less than {name}_min ({min_val})."
             )
             min_val, max_val = None, None
 
         new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
+        if min_val is not None and max_val is not None:
             new_value = clamp(new_value, min_val, max_val)
+        elif min_val is not None:
+            new_value = max(new_value, min_val)
+        elif max_val is not None:
+            new_value = min(new_value, max_val)
 
-        self.set_variable("attitude", new_value)
+        self.set_variable(name, new_value)
         logger.info(
-            f"[{self.char_id}] Attitude changed by {amount:.2f} to {self.get_variable('attitude'):.2f}"
+            f"[{self.char_id}] {name.capitalize()} changed by {amount:.2f} to {float(self.get_variable(name)):.2f}"
         )
+
+    def adjust_attitude(self, amount: float):
+        self._adjust_bounded_stat("attitude", amount, 60.0)
 
     def adjust_boredom(self, amount: float):
-        current = self.get_variable("boredom", 10.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
-
-        min_bound = self.get_variable("boredom_min", 0.0)
-        max_bound = self.get_variable("boredom_max", 100.0)
-
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
-
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
-
-        if (min_val is not None and max_val is not None) and max_val < min_val:
-            logger.error(
-                f"[{self.char_id}] Invalid config: boredom_max ({max_val}) is less than boredom_min ({min_val})."
-            )
-            min_val, max_val = None, None
-
-        new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
-            new_value = clamp(new_value, min_val, max_val)
-
-        self.set_variable("boredom", new_value)
-        logger.info(
-            f"[{self.char_id}] Boredom changed by {amount:.2f} to {self.get_variable('boredom'):.2f}"
-        )
+        self._adjust_bounded_stat("boredom", amount, 10.0)
 
     def adjust_stress(self, amount: float):
-        current = self.get_variable("stress", 5.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
-
-        min_bound = self.get_variable("stress_min", 0.0)
-        max_bound = self.get_variable("stress_max", 100.0)
-
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
-
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
-
-        if (min_val is not None and max_val is not None) and max_val < min_val:
-            logger.error(
-                f"[{self.char_id}] Invalid config: stress_max ({max_val}) is less than stress_min ({min_val})."
-            )
-            min_val, max_val = None, None
-
-        new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
-            new_value = clamp(new_value, min_val, max_val)
-
-        self.set_variable("stress", new_value)
-        logger.info(
-            f"[{self.char_id}] Stress changed by {amount:.2f} to {self.get_variable('stress'):.2f}"
-        )
+        self._adjust_bounded_stat("stress", amount, 5.0)
 
     def to_voice_profile(self) -> Dict[str, Any]:
         """
