@@ -37,6 +37,96 @@ def _debug_dumps_enabled(settings: Any) -> bool:
         return False
 
 
+_SECTION_MARKERS = (
+    ("[MiSide World State]", "MiSide World State"),
+    ("[System State]", "System State"),
+    ("[Behavior State]", "System State"),
+    ("[Current State]", "System State"),
+    ("[Pending Reminders]", "reminders"),
+    ("[HISTORY SUMMARY]", "history"),
+    ("[Core Memory", "core memories"),
+    ("<active_memory>", "memories"),
+    ("<relevant_memories>", "memories"),
+    ("# score=RAG", "memories"),
+    ("<past_context>", "memories"),
+    ("<entity_knowledge>", "memories"),
+)
+
+
+def _message_text(msg: Dict[str, Any]) -> str:
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(c.get("text", "")) for c in content
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+    return ""
+
+
+def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
+    role = str(msg.get("role") or "")
+    if role == "user":
+        return "user input" if is_last_user else "history"
+    if role == "assistant":
+        return "history"
+    if role == "event":
+        return "system input"
+    text = _message_text(msg).lstrip()
+    head = text[:60]
+    for marker, section in _SECTION_MARKERS:
+        if text.startswith(marker) or marker in head:
+            return section
+    return "character prompts"
+
+
+def _compute_token_usage(messages: Any) -> Dict[str, Any]:
+    """Per-message and per-section token counts for the debug dump.
+
+    Uses the shared ContextCounter/tiktoken. Providers with an unknown
+    tokenizer degrade gracefully: counts are omitted with a clear note rather
+    than raising or blocking the dump.
+    """
+    if not isinstance(messages, list) or not messages:
+        return {"available": False, "note": "no messages"}
+    try:
+        from managers.context_counter import ContextCounter
+        counter = ContextCounter()
+    except Exception as e:
+        return {"available": False, "note": f"ContextCounter unavailable: {e}"}
+    if not counter.available:
+        return {"available": False, "note": "tiktoken unavailable — token counts omitted"}
+
+    last_user_idx = -1
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and str(m.get("role")) == "user":
+            last_user_idx = i
+
+    per_message = []
+    by_section: Dict[str, int] = {}
+    total = 0
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict):
+            continue
+        try:
+            n = int(counter.count_tokens([m]))
+        except Exception:
+            n = 0
+        section = _classify_message_section(m, i == last_user_idx)
+        per_message.append({"index": i, "role": m.get("role"), "section": section, "tokens": n})
+        by_section[section] = by_section.get(section, 0) + n
+        total += n
+
+    return {
+        "available": True,
+        "encoding": counter.encoding_model,
+        "total": total,
+        "by_section": by_section,
+        "per_message": per_message,
+    }
+
+
 def _save_last_request_context(req, character_name: str = "") -> None:
     """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
     import json
@@ -54,6 +144,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
         out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
         os.makedirs(out_dir, exist_ok=True)
         extra_raw = getattr(req, "extra", {}) or {}
+        messages = redact_image_payloads(getattr(req, "messages", []))
         record = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "model": getattr(req, "model", None),
@@ -62,7 +153,8 @@ def _save_last_request_context(req, character_name: str = "") -> None:
             "dialect_id": getattr(req, "dialect_id", None),
             "character_name": character_name or "",
             "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
-            "messages": redact_image_payloads(getattr(req, "messages", [])),
+            "token_usage": _compute_token_usage(messages),
+            "messages": messages,
         }
         with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
