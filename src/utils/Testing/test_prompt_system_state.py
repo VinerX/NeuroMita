@@ -85,8 +85,8 @@ class PromptSystemStateTests(unittest.TestCase):
             remote_only=True,
             voice_enabled=True,
             voice_method="Local",
-            microphone_enabled=False,
-            image_status="disabled",
+            speech_recognition_available=False,
+            vision_state="unavailable",
         )
 
         content = message["content"]
@@ -94,8 +94,8 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertIn("communicating with the Player online through the NeuroMita computer program", content)
         self.assertIn("they may come to your home later", content)
         self.assertIn("Your voice (TTS): enabled; method: Local. This is your voice.", content)
-        self.assertIn("The Player's voice (microphone): disabled.", content)
-        self.assertIn("Your sight (image recognition): disabled.", content)
+        self.assertIn("You currently receive only typed text from the Player.", content)
+        self.assertIn("Your sight (image recognition): unavailable.", content)
         self.assertIn("Do not use world or game commands such as switching lights or moving around.", content)
         self.assertIn("program-level commands", content)
         self.assertNotIn("Structured output", content)
@@ -105,16 +105,53 @@ class PromptSystemStateTests(unittest.TestCase):
             remote_only=False,
             voice_enabled=False,
             voice_method="Local",
-            microphone_enabled=True,
-            image_status="enabled",
+            speech_recognition_available=True,
+            vision_state="native",
         )
 
         content = message["content"]
         self.assertIn("while the game runtime is connected", content)
         self.assertIn("Your voice (TTS): disabled.", content)
-        self.assertIn("The Player's voice (microphone): enabled.", content)
-        self.assertIn("Your sight (image recognition): enabled.", content)
+        self.assertIn("The Player's speech is received through voice recognition.", content)
+        self.assertIn("Your sight (image recognition): available.", content)
         self.assertNotIn("it is separate from your own voice", content)
+
+    def test_description_fallback_counts_as_available_sight(self):
+        message = PromptController._format_system_state_message(
+            remote_only=None,
+            voice_enabled=False,
+            voice_method="Local",
+            speech_recognition_available=False,
+            vision_state="description_fallback",
+        )
+        self.assertIn("Your sight (image recognition): available.", message["content"])
+
+    def test_vision_state_resolution(self):
+        controller = PromptController()
+        settings = {}
+        controller._get_setting = lambda key, default=None: settings.get(key, default)
+
+        settings.clear()
+        settings.update({"ENABLE_IMAGE_ANALYSIS": True})
+        self.assertEqual(controller._resolve_vision_state(), "native")
+
+        settings.clear()
+        settings.update({"IMAGE_DESCRIPTION_ENABLED": True, "IMAGE_DESCRIPTION_PROVIDER": "gemini"})
+        self.assertEqual(controller._resolve_vision_state(), "description_fallback")
+
+        # Fallback enabled but no provider configured -> unavailable
+        settings.clear()
+        settings.update({"IMAGE_DESCRIPTION_ENABLED": True, "IMAGE_DESCRIPTION_PROVIDER": "  "})
+        self.assertEqual(controller._resolve_vision_state(), "unavailable")
+
+        settings.clear()
+        self.assertEqual(controller._resolve_vision_state(), "unavailable")
+
+    def test_speech_recognition_falls_back_to_setting_without_service(self):
+        controller = PromptController()
+        controller._get_setting = lambda key, default=None: {"MIC_ACTIVE": True}.get(key, default)
+        # No SpeechService registered in the test process -> setting is used.
+        self.assertTrue(controller._resolve_speech_recognition_available())
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from services.contracts import (
     PromptBuildResult,
     PromptBuilderService,
     SettingsService,
+    SpeechService,
 )
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
@@ -56,10 +57,17 @@ class PromptController(PromptBuilderService):
         remote_only: bool | None,
         voice_enabled: bool,
         voice_method: str,
-        microphone_enabled: bool,
-        image_status: str,
+        speech_recognition_available: bool,
+        vision_state: str,
     ) -> Dict[str, str]:
-        """Собирает служебное состояние, не попадающее в историю диалога."""
+        """Собирает служебное состояние, не попадающее в историю диалога.
+
+        ``speech_recognition_available`` — фактическая доступность ASR (сервис
+        готов, микрофон найден, распознавание идёт), а не только настройка.
+        ``vision_state`` — эффективное состояние зрения: ``native`` /
+        ``description_fallback`` / ``unavailable`` — Мите сообщаем прежде всего,
+        может ли она реально получить информацию об изображении.
+        """
         lines = ["[System State]"]
 
         if remote_only is True:
@@ -85,32 +93,64 @@ class PromptController(PromptBuilderService):
             lines.append("Your voice (TTS): disabled. The Player can only receive your written replies.")
 
         lines.append(
-            "The Player's voice (microphone): enabled. This is how you hear the Player."
-            if microphone_enabled
-            else "The Player's voice (microphone): disabled. You cannot hear the Player's voice."
+            "The Player's speech is received through voice recognition."
+            if speech_recognition_available
+            else "You currently receive only typed text from the Player."
         )
-        lines.append(
-            "Your sight (image recognition): enabled. You can use screenshots and images as visual information."
-            if image_status == "enabled"
-            else "Your sight (image recognition): disabled. You cannot see screenshots or images."
-        )
+
+        if vision_state in ("native", "description_fallback"):
+            lines.append(
+                "Your sight (image recognition): available. "
+                "You can perceive images and screenshots that are shared with you."
+            )
+        else:
+            lines.append(
+                "Your sight (image recognition): unavailable. "
+                "You cannot see screenshots or images right now."
+            )
         return {"role": "system", "content": "\n".join(lines)}
+
+    def _resolve_speech_recognition_available(self) -> bool:
+        """Фактическая доступность ASR, а не только настройка MIC_ACTIVE.
+
+        ``SpeechService.mic_active()`` = микрофон активен И ASR-модель готова
+        (``mic_recognition_active and asr_is_ready``). Читает только атрибуты —
+        безопасно для hot-path сборки промпта. При отсутствии сервиса падаем на
+        настройку.
+        """
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            try:
+                return bool(speech.mic_active())
+            except Exception:
+                pass
+        return bool(self._get_setting("MIC_ACTIVE", False))
+
+    def _resolve_vision_state(self) -> str:
+        """Единое effective vision state.
+
+        native             — изображения уходят напрямую в основную модель;
+        description_fallback — модель не видит, но настроен vision-провайдер,
+                               который описывает изображения текстом;
+        unavailable        — ни то, ни другое не доступно.
+        """
+        if bool(self._get_setting("ENABLE_IMAGE_ANALYSIS", False)):
+            return "native"
+        if bool(self._get_setting("IMAGE_DESCRIPTION_ENABLED", False)) and str(
+            self._get_setting("IMAGE_DESCRIPTION_PROVIDER", "") or ""
+        ).strip():
+            return "description_fallback"
+        return "unavailable"
 
     def _build_system_state_message(self) -> Dict[str, str]:
         remote_only = runtime_capabilities().remote_only
-
-        image_status = (
-            "enabled"
-            if bool(self._get_setting("ENABLE_IMAGE_ANALYSIS", False))
-            else "disabled"
-        )
 
         return self._format_system_state_message(
             remote_only=remote_only,
             voice_enabled=bool(self._get_setting("USE_VOICEOVER", False)),
             voice_method=str(self._get_setting("VOICEOVER_METHOD", "Local") or "Local"),
-            microphone_enabled=bool(self._get_setting("MIC_ACTIVE", False)),
-            image_status=image_status,
+            speech_recognition_available=self._resolve_speech_recognition_available(),
+            vision_state=self._resolve_vision_state(),
         )
 
     def _setup_character_for_prompt(self, character, event_type: str):
