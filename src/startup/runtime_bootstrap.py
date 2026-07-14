@@ -328,6 +328,16 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
             if python_recovery.changed:
                 logger.info("Recovered an interrupted Python installation; restarting.")
                 raise SystemExit(42)
+            if python_recovery.status == "waiting_for_restart":
+                logger.info(
+                    "A running launcher file is still locked; handing recovery to a "
+                    "detached launcher process."
+                )
+                from utils.app_restart import spawn_detached_run
+
+                if spawn_detached_run():
+                    raise SystemExit(0)
+                raise SystemExit(1)
             if not python_recovery.ok and python_recovery.status not in {
                 "waiting_for_credentials"
             }:

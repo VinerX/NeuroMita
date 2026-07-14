@@ -63,6 +63,13 @@ class UpdateCancelled(RuntimeError):
     pass
 
 
+class UpdateFilesLocked(RuntimeError):
+    def __init__(self, paths: list[Path]) -> None:
+        self.paths = tuple(paths)
+        preview = ", ".join(str(path) for path in self.paths[:3])
+        super().__init__(f"Could not apply {len(self.paths)} locked staged file(s): {preview}")
+
+
 @dataclass(frozen=True, slots=True)
 class UpdateResult:
     component: str
@@ -94,27 +101,39 @@ class UpdateResult:
         }
 
 
-def _copy_file_over(src: Path, dst: Path, log) -> bool:
+def _copy_file_over(
+    src: Path,
+    dst: Path,
+    log,
+    *,
+    locked_retry_seconds: float = 0.0,
+) -> bool:
     """Скопировать src поверх dst, переживая занятый файл. True — если записан."""
     if dst.is_dir():
         shutil.rmtree(dst, ignore_errors=True)
-    try:
-        shutil.copy2(src, dst)
-        return True
-    except PermissionError:
-        # Файл занят (например запущенный python.exe сам себя) — пробуем
-        # удалить и записать заново.
+    deadline = time.monotonic() + max(0.0, float(locked_retry_seconds))
+    while True:
         try:
-            if dst.exists():
-                dst.unlink()
             shutil.copy2(src, dst)
             return True
         except OSError as exc:
-            log(f"Could not overwrite {dst}: {exc}")
-            return False
+            is_locked = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32, 33}
+            if not is_locked:
+                raise
+            if time.monotonic() >= deadline:
+                log(f"Could not overwrite {dst}: {exc}")
+                return False
+            time.sleep(0.25)
 
 
-def _overlay_dir(staging: Path, base_path: Path, log, preserve_prompts: bool = False) -> None:
+def _overlay_dir(
+    staging: Path,
+    base_path: Path,
+    log,
+    preserve_prompts: bool = False,
+    *,
+    locked_retry_seconds: float = 0.0,
+) -> None:
     """Наложить содержимое staging поверх base_path как diff.
 
     Пишем только реально изменившиеся файлы и НИКОГДА не удаляем то, чего нет
@@ -156,13 +175,17 @@ def _overlay_dir(staging: Path, base_path: Path, log, preserve_prompts: bool = F
                     continue
             except OSError:
                 pass
-            if _copy_file_over(src, dst, log):
+            if _copy_file_over(
+                src,
+                dst,
+                log,
+                locked_retry_seconds=locked_retry_seconds,
+            ):
                 copied += 1
             else:
                 failed.append(dst)
     if failed:
-        preview = ", ".join(str(path) for path in failed[:3])
-        raise OSError(f"Could not apply {len(failed)} staged file(s): {preview}")
+        raise UpdateFilesLocked(failed)
     msg = f"Overlay update into {base_path}: {copied} written, {skipped} unchanged"
     if preserve_prompts:
         msg += f", {preserved} prompts kept"
@@ -249,6 +272,7 @@ def _install_full_archive(
     on_extract_progress: Optional[Callable[[int, int], None]] = None,
     on_stage_ready: Optional[Callable[[], None]] = None,
     on_apply_started: Optional[Callable[[], None]] = None,
+    locked_retry_seconds: float = 0.0,
     stop_event=None,
 ) -> None:
     """Установка обновления. Распаковка идёт в чистую временную папку (там
@@ -317,7 +341,13 @@ def _install_full_archive(
         if mode == "full":
             _full_replace(staging, base_path, log, preserve_prompts)
         else:
-            _overlay_dir(staging, base_path, log, preserve_prompts)
+            _overlay_dir(
+                staging,
+                base_path,
+                log,
+                preserve_prompts,
+                locked_retry_seconds=locked_retry_seconds,
+            )
         _verify_python_application(
             staging,
             base_path,
@@ -1055,6 +1085,24 @@ def check_for_updates(
             archive_sha256=archive_hash,
         )
 
+    except UpdateFilesLocked as error:
+        _set_python_operation_phase(base_path, "waiting_for_restart", error=str(error))
+        log(
+            "Running launcher files will be replaced during the controlled restart.",
+            "warning",
+        )
+        if restart_on_success:
+            raise SystemExit(42)
+        return UpdateResult(
+            component="python",
+            ok=True,
+            status="waiting_for_restart",
+            changed=True,
+            restart_required=True,
+            version=remote_tag,
+            error=str(error),
+            archive_sha256=archive_hash,
+        )
     except (UpdateCancelled, ArchiveCancelled) as error:
         _set_python_operation_phase(base_path, "cancelled", error=str(error))
         log("Python update cancelled; downloaded data was kept for resume.", "warning")
@@ -1106,8 +1154,27 @@ def resume_pending_python_update(
     base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
     state = read_json(_python_journal_path(base_path))
     phase = str(state.get("phase") or "")
-    if not state or phase in {"", "completed", "cancelled", "failed"}:
+    failed_from_locked_file = phase == "failed" and "Could not apply" in str(
+        state.get("error") or ""
+    )
+    if not state or phase in {"", "completed", "cancelled"} or (
+        phase == "failed" and not failed_from_locked_file
+    ):
         return UpdateResult(component="python", ok=True, status="no_pending_operation")
+    if (
+        (phase == "waiting_for_restart" or failed_from_locked_file)
+        and os.environ.get("NEUROMITA_DETACHED_RESTART") != "1"
+    ):
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="waiting_for_restart",
+            restart_required=True,
+            version=str(state.get("version") or ""),
+            error=str(state.get("error") or "Running launcher files are locked"),
+            archive_sha256=str(state.get("archive_sha256") or ""),
+            recovered=True,
+        )
 
     effective_tester_code = tester_code or os.environ.get("TESTER_CODE") or None
     if phase == "waiting_for_credentials" and not effective_tester_code:
@@ -1189,6 +1256,7 @@ def resume_pending_python_update(
             on_extract_progress=on_extract_progress,
             on_stage_ready=stage_ready,
             on_apply_started=apply_started,
+            locked_retry_seconds=5.0,
             stop_event=stop_event,
         )
         _set_python_operation_phase(
@@ -1207,6 +1275,18 @@ def resume_pending_python_update(
             changed=True,
             restart_required=True,
             version=version,
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
+    except UpdateFilesLocked as error:
+        _set_python_operation_phase(base_path, "waiting_for_restart", error=str(error))
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="waiting_for_restart",
+            restart_required=True,
+            version=version,
+            error=str(error),
             archive_sha256=archive_hash,
             recovered=True,
         )

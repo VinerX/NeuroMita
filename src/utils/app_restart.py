@@ -16,7 +16,7 @@ from pathlib import Path
 from main_logger import logger
 
 
-def _spawn_detached_run() -> bool:
+def spawn_detached_run() -> bool:
     """Запустить новый процесс run.py отдельно от текущего. True — удалось."""
     base_dir_raw = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
     if not base_dir_raw:
@@ -38,10 +38,12 @@ def _spawn_detached_run() -> bool:
         creationflags = 0
         creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) or 0)
         creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0) or 0)
+        detached_env = dict(os.environ)
+        detached_env["NEUROMITA_DETACHED_RESTART"] = "1"
         subprocess.Popen(
             [str(python_exe), str(run_script)],
             cwd=str(base_dir),
-            env=dict(os.environ),
+            env=detached_env,
             close_fds=(sys.platform == "win32"),
             creationflags=creationflags,
         )
@@ -65,7 +67,7 @@ def restart_app() -> bool:
 
     app = QApplication.instance()
 
-    if _spawn_detached_run():
+    if spawn_detached_run():
         if app is not None:
             QTimer.singleShot(100, app.quit)
             QTimer.singleShot(400, lambda: os._exit(0))

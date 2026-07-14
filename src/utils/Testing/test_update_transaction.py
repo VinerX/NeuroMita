@@ -327,6 +327,60 @@ def test_python_apply_resumes_from_verified_stage_without_redownload(tmp_path: P
     assert read_json(_python_journal_path(base))["phase"] == "completed"
 
 
+def test_locked_python_update_waits_for_explicit_detached_handoff(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    (base / "Launcher.exe").write_bytes(b"old")
+    staging = _python_staging_path(base)
+    staging.mkdir()
+    (staging / "Launcher.exe").write_bytes(b"new")
+    archive_hash = "c" * 64
+    manifest = build_install_manifest(
+        staging,
+        component="python",
+        version="v2",
+        archive_sha256=archive_hash,
+    )
+    write_install_manifest(staging, manifest)
+    atomic_write_json(
+        _python_stage_marker(staging),
+        {"schema": 1, "archive_sha256": archive_hash},
+    )
+    archive = tmp_path / "missing.zip"
+    atomic_write_json(
+        _python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "waiting_for_restart",
+            "authorized": True,
+            "version": "v2",
+            "archive_name": archive.name,
+            "archive_url": "https://example/missing.zip",
+            "archive_path": str(archive),
+            "archive_sha256": archive_hash,
+            "mode": "diff",
+            "error": "Could not apply locked Launcher.exe",
+        },
+    )
+    monkeypatch.delenv("NEUROMITA_DETACHED_RESTART", raising=False)
+
+    waiting = resume_pending_python_update(base_dir=str(base))
+
+    assert waiting.status == "waiting_for_restart"
+    assert (base / "Launcher.exe").read_bytes() == b"old"
+    monkeypatch.setenv("NEUROMITA_DETACHED_RESTART", "1")
+
+    recovered = resume_pending_python_update(base_dir=str(base))
+
+    assert recovered.ok and recovered.changed
+    assert (base / "Launcher.exe").read_bytes() == b"new"
+
+
 def test_archive_member_cannot_escape_staging_directory(tmp_path: Path) -> None:
     archive = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive, "w") as output:
