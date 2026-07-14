@@ -131,9 +131,12 @@ Rules:
 - reminder_delete format: reminder ID number as string, e.g. "3"
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
 - custom_fields: Fill ALL declared custom fields every message. Never leave custom_fields empty if it appears in the schema.
-- Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
-- Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
+- Length applies to the TOTAL spoken text across ALL segments, never to a single segment. JSON, commands, emotions, animations and other technical fields do NOT count toward it.
+- Ordinary reply: usually 1-3 segments, about [{REPLY_TARGET_MIN_WORDS}]-[{REPLY_TARGET_MAX_WORDS}] words total.
+- Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
+- A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
+- Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
 - You can use the command "Continue" in commands to say more immediately.
 - Do NOT repeat commands from previous messages."""
 
@@ -159,9 +162,12 @@ Rules:
 - custom_fields: Fill ALL declared custom fields every message. Never leave custom_fields empty if it appears in the schema.
 - entities: Notable named entities mentioned this turn. Format: "name:type". Types: person|place|thing|concept. Omit if nothing notable.
 - relations: Relation triples this turn. Format: "subject|predicate|object". Omit if no clear relations.
-- Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands trigger when that segment's text is displayed.
-- Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
+- Length applies to the TOTAL spoken text across ALL segments, never to a single segment. JSON, commands, emotions, animations and other technical fields do NOT count toward it.
+- Ordinary reply: usually 1-3 segments, about [{REPLY_TARGET_MIN_WORDS}]-[{REPLY_TARGET_MAX_WORDS}] words total.
+- Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
+- A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
+- Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
 - You can use the command "Continue" to say more immediately.
 - Do NOT repeat commands from previous messages."""
 

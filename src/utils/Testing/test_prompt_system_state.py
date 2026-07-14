@@ -154,5 +154,36 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertTrue(controller._resolve_speech_recognition_available())
 
 
+class ReplyDefaultsTests(unittest.TestCase):
+    class _VarCharacter:
+        def __init__(self, preset=None):
+            self.variables = dict(preset or {})
+
+        def get_variable(self, name, default=None):
+            return self.variables.get(name, default)
+
+        def set_variable(self, name, value):
+            self.variables[name] = value
+
+    def test_reply_defaults_applied_when_missing(self):
+        controller = PromptController()
+        char = self._VarCharacter()
+        controller._apply_reply_defaults(char)
+        self.assertEqual(char.get_variable("REPLY_TARGET_MIN_WORDS"), 25)
+        self.assertEqual(char.get_variable("REPLY_TARGET_MAX_WORDS"), 70)
+        self.assertEqual(char.get_variable("REPLY_HARD_MAX_WORDS"), 120)
+        self.assertEqual(char.get_variable("REPLY_MAX_SEGMENTS"), 4)
+        self.assertEqual(char.get_variable("REPLY_STYLE"), "concise")
+
+    def test_character_override_wins(self):
+        controller = PromptController()
+        char = self._VarCharacter({"REPLY_TARGET_MAX_WORDS": 40, "REPLY_STYLE": "verbose"})
+        controller._apply_reply_defaults(char)
+        self.assertEqual(char.get_variable("REPLY_TARGET_MAX_WORDS"), 40)
+        self.assertEqual(char.get_variable("REPLY_STYLE"), "verbose")
+        # unspecified ones still get defaults
+        self.assertEqual(char.get_variable("REPLY_HARD_MAX_WORDS"), 120)
+
+
 if __name__ == "__main__":
     unittest.main()

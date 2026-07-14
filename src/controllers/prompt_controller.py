@@ -153,6 +153,27 @@ class PromptController(PromptBuilderService):
             vision_state=self._resolve_vision_state(),
         )
 
+    # Reply-length / segmentation defaults. The common prompt sets these; a
+    # character, mode or custom prompt may override any of them by setting the
+    # variable itself (these only fill in what is missing).
+    _REPLY_DEFAULTS = {
+        "REPLY_TARGET_MIN_WORDS": 25,
+        "REPLY_TARGET_MAX_WORDS": 70,
+        "REPLY_HARD_MAX_WORDS": 120,
+        "REPLY_SEGMENT_MAX_WORDS": 50,
+        "REPLY_MAX_SEGMENTS": 4,
+        "REPLY_STYLE": "concise",
+    }
+
+    def _apply_reply_defaults(self, character) -> None:
+        for key, default in self._REPLY_DEFAULTS.items():
+            try:
+                current = character.get_variable(key, None)
+            except Exception:
+                current = None
+            if current is None or (isinstance(current, str) and not current.strip()):
+                character.set_variable(key, default)
+
     def _setup_character_for_prompt(self, character, event_type: str):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
         character.set_variable("SYSTEM_DATETIME", now_str)
@@ -178,6 +199,11 @@ class PromptController(PromptBuilderService):
         character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", False))
         character.set_variable("CUSTOM_PARAMS_SCHEMA",
                                _build_custom_params_schema(getattr(character, "custom_params", [])))
+
+        # Reply length / segmentation defaults. Applied to the *total* text of
+        # all segments, not per segment. Set only when the character/mode/custom
+        # prompt has not already provided its own value, so overrides win.
+        self._apply_reply_defaults(character)
 
         chosen_template = None
 
