@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from core.events import Events, get_event_bus, shutdown_event_bus
 from core.request_policy import RequestPolicy
 from core.services import use
-from services.contracts import CharacterRegistry, ChatGenerationRequest, GenerationService
+from services.contracts import CharacterRegistry, ChatGenerationRequest, GenerationService, ModelStateService
 from core.request_policy import resolve_policy
 from main_logger import logger
 
@@ -294,10 +294,10 @@ class GenerationTestRuntime:
     def set_current_character(self, character_id: str) -> None:
         if not character_id:
             return
-        self.event_bus.emit_and_wait(
+        self.event_bus.emit(
             Events.Character.SET_CURRENT,
             {"character_id": str(character_id)},
-            timeout=2.0,
+            sync=True,
         )
 
     def resolve_preset_id(self, preset: int | str | None) -> Optional[int]:
@@ -368,8 +368,7 @@ class GenerationTestRuntime:
 
         started_at = datetime.utcnow().isoformat() + "Z"
         result = self._generate_from_payload(payload)
-        token_stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=2.0)
-        token_stats = token_stats_res[0] if token_stats_res else {}
+        token_stats = use(ModelStateService).token_stats()
         context = self.read_last_request_context()
         return {
             "started_at": started_at,
@@ -435,8 +434,7 @@ class GenerationTestRuntime:
 
         started_at = datetime.utcnow().isoformat() + "Z"
         result = self._generate_from_payload(payload)
-        token_stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=2.0)
-        token_stats = token_stats_res[0] if token_stats_res else {}
+        token_stats = use(ModelStateService).token_stats()
         last_ctx = self.read_last_request_context()
         latest_input = self.read_last_generation_input()
         return {

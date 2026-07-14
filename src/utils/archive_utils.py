@@ -9,9 +9,39 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.task_supervisor import task_supervisor
+
 
 class PasswordError(Exception):
     """Archive is encrypted and the provided password is missing or wrong."""
+
+
+class ArchiveCancelled(RuntimeError):
+    """Archive extraction was cancelled before the target became active."""
+
+
+def _validate_member_names(names: list[str]) -> None:
+    for raw_name in names:
+        normalized = str(raw_name or "").replace("\\", "/")
+        path = Path(normalized)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"Unsafe archive member path: {raw_name}")
+
+
+def _archive_format(archive: Path) -> str:
+    """Detect supported archive formats by signature, then fall back to extension."""
+    try:
+        with archive.open("rb") as source:
+            signature = source.read(8)
+    except OSError:
+        signature = b""
+    if signature.startswith(b"7z\xbc\xaf'\x1c"):
+        return ".7z"
+    if signature.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return ".zip"
+    if signature.startswith(b"Rar!\x1a\x07"):
+        return ".rar"
+    return archive.suffix.lower()
 
 
 def format_bytes(size: int) -> str:
@@ -101,6 +131,7 @@ def _run_command_with_heartbeat(
     description: str,
     logger=None,
     interval_sec: float = 10.0,
+    stop_event=None,
 ) -> tuple[int, str]:
     log = make_logger(logger)
     started = time.monotonic()
@@ -113,10 +144,23 @@ def _run_command_with_heartbeat(
         errors="replace",
     )
 
+    next_heartbeat = started + max(1.0, interval_sec)
     while proc.poll() is None:
-        time.sleep(interval_sec)
-        elapsed = int(time.monotonic() - started)
-        log(f"{description} still running: {archive_name}, elapsed={elapsed}s")
+        if stop_event is not None and stop_event.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3.0)
+            proc.communicate()
+            raise ArchiveCancelled(f"Extraction cancelled: {archive_name}")
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            elapsed = int(now - started)
+            log(f"{description} still running: {archive_name}, elapsed={elapsed}s")
+            next_heartbeat = now + max(1.0, interval_sec)
+        time.sleep(0.2)
 
     output, _ = proc.communicate()
     return proc.returncode or 0, output or ""
@@ -127,6 +171,7 @@ def _extract_with_7z(
     target: Path,
     password: Optional[str] = None,
     logger=None,
+    stop_event=None,
 ) -> bool:
     log = make_logger(logger)
     exe = find_7z_executable()
@@ -158,6 +203,7 @@ def _extract_with_7z(
             archive_name=archive.name,
             description="External 7z extraction",
             logger=logger,
+            stop_event=stop_event,
         )
         if code != 0:
             if _looks_like_password_error(output):
@@ -172,7 +218,7 @@ def _extract_with_7z(
             shutil.move(str(child), str(target / child.name))
         log(f"External 7z extraction finished: {archive.name}")
         return True
-    except PasswordError:
+    except (PasswordError, ArchiveCancelled):
         raise
     except Exception as exc:
         log(f"External 7z extractor failed with exception: {exc}.", "warning")
@@ -187,6 +233,7 @@ def _extract_with_winrar(
     target: Path,
     password: Optional[str] = None,
     logger=None,
+    stop_event=None,
 ) -> bool:
     log = make_logger(logger)
     exe = find_winrar_executable()
@@ -216,6 +263,7 @@ def _extract_with_winrar(
             archive_name=archive.name,
             description="WinRAR extraction",
             logger=logger,
+            stop_event=stop_event,
         )
         if code != 0:
             if _looks_like_password_error(output):
@@ -230,7 +278,7 @@ def _extract_with_winrar(
             shutil.move(str(child), str(target / child.name))
         log(f"WinRAR extraction finished: {archive.name}")
         return True
-    except PasswordError:
+    except (PasswordError, ArchiveCancelled):
         raise
     except Exception as exc:
         log(f"WinRAR extractor failed with exception: {exc}.", "warning")
@@ -244,6 +292,7 @@ def _extract_zip_with_expand_archive(
     archive: Path,
     target: Path,
     logger=None,
+    stop_event=None,
 ) -> bool:
     log = make_logger(logger)
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
@@ -272,6 +321,7 @@ def _extract_zip_with_expand_archive(
             archive_name=archive.name,
             description="Expand-Archive extraction",
             logger=logger,
+            stop_event=stop_event,
         )
         if code != 0:
             summary = output.strip().splitlines()
@@ -284,6 +334,8 @@ def _extract_zip_with_expand_archive(
             shutil.move(str(child), str(target / child.name))
         log(f"Expand-Archive extraction finished: {archive.name}")
         return True
+    except ArchiveCancelled:
+        raise
     except Exception as exc:
         log(f"Expand-Archive failed with exception: {exc}.", "warning")
         shutil.rmtree(stage_dir, ignore_errors=True)
@@ -298,6 +350,7 @@ def _extract_zip_python(
     password: Optional[str] = None,
     logger=None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    stop_event=None,
 ) -> None:
     pwd = password.encode("utf-8") if password else None
     log = make_logger(logger)
@@ -315,6 +368,8 @@ def _extract_zip_python(
             )
             try:
                 for index, member in enumerate(zf.infolist(), start=1):
+                    if stop_event is not None and stop_event.is_set():
+                        raise ArchiveCancelled(f"Extraction cancelled: {archive.name}")
                     out_path = target / member.filename
                     if member.is_dir():
                         out_path.mkdir(parents=True, exist_ok=True)
@@ -322,7 +377,13 @@ def _extract_zip_python(
 
                     out_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member, pwd=pwd) as src, open(out_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst, length=1024 * 1024)
+                        while True:
+                            if stop_event is not None and stop_event.is_set():
+                                raise ArchiveCancelled(f"Extraction cancelled: {archive.name}")
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            dst.write(chunk)
 
                     extracted_size += max(0, int(member.file_size or 0))
                     now = time.monotonic()
@@ -350,6 +411,7 @@ def _extract_7z_python(
     target: Path,
     password: Optional[str] = None,
     logger=None,
+    stop_event=None,
 ) -> None:
     try:
         import py7zr
@@ -357,17 +419,23 @@ def _extract_7z_python(
         raise RuntimeError("py7zr is not installed; cannot open .7z archives") from exc
 
     log = make_logger(logger)
-    stop_event = threading.Event()
+    heartbeat_stop = threading.Event()
 
     def heartbeat():
         started = time.monotonic()
-        while not stop_event.wait(10.0):
+        while not heartbeat_stop.wait(10.0):
             elapsed = int(time.monotonic() - started)
             log(f"7z extraction still running: {archive.name}, elapsed={elapsed}s")
 
     try:
-        hb = threading.Thread(target=heartbeat, daemon=True)
-        hb.start()
+        task_supervisor().start_thread(
+            heartbeat_stop,
+            f"7z-heartbeat:{archive.name}",
+            heartbeat,
+            cancel_event=heartbeat_stop,
+        )
+        if stop_event is not None and stop_event.is_set():
+            raise ArchiveCancelled(f"Extraction cancelled: {archive.name}")
         with py7zr.SevenZipFile(archive, mode="r", password=password or None) as zf:
             if zf.needs_password() and not password:
                 raise PasswordError("Archive is password-protected")
@@ -382,6 +450,8 @@ def _extract_7z_python(
             except Exception:
                 log(f"7z extraction started: {archive.name}")
             zf.extractall(path=target)
+        if stop_event is not None and stop_event.is_set():
+            raise ArchiveCancelled(f"Extraction cancelled: {archive.name}")
         log(f"7z extraction finished: {archive.name}")
     except py7zr.exceptions.PasswordRequired as exc:
         raise PasswordError(str(exc)) from exc
@@ -390,7 +460,8 @@ def _extract_7z_python(
             raise PasswordError("Wrong tester code") from exc
         raise ValueError(f"Bad 7z: {archive.name}") from exc
     finally:
-        stop_event.set()
+        heartbeat_stop.set()
+        task_supervisor().cancel_owner(heartbeat_stop, timeout=0.5)
 
 
 def _flatten_single_root(dest: Path, logger=None) -> None:
@@ -430,22 +501,54 @@ def extract_archive(
     password: Optional[str] = None,
     logger=None,
     on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    stop_event=None,
 ) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    suffix = archive.suffix.lower()
+    suffix = _archive_format(archive)
+    declared_suffix = archive.suffix.lower()
+    if suffix != declared_suffix:
+        make_logger(logger)(
+            f"Archive format detected as {suffix} despite {declared_suffix or 'missing'} extension: "
+            f"{archive.name}"
+        )
 
     if suffix == ".zip":
-        if not _extract_with_7z(archive, target, password, logger=logger):
-            if not _extract_with_winrar(archive, target, password, logger=logger):
-                if not _extract_zip_with_expand_archive(archive, target, logger=logger):
-                    _extract_zip_python(archive, target, password, logger=logger, on_progress=on_extract_progress)
+        with zipfile.ZipFile(archive) as source:
+            _validate_member_names([item.filename for item in source.infolist()])
     elif suffix == ".7z":
-        if not _extract_with_7z(archive, target, password, logger=logger):
-            if not _extract_with_winrar(archive, target, password, logger=logger):
-                _extract_7z_python(archive, target, password, logger=logger)
+        try:
+            import py7zr
+
+            with py7zr.SevenZipFile(archive, mode="r", password=password or None) as source:
+                _validate_member_names([str(item.filename) for item in source.list()])
+        except ImportError:
+            pass
+        except py7zr.exceptions.PasswordRequired as exc:
+            raise PasswordError(str(exc)) from exc
+        except py7zr.exceptions.Bad7zFile as exc:
+            if password:
+                raise PasswordError("Wrong tester code") from exc
+            raise ValueError(f"Bad 7z: {archive.name}") from exc
+
+    if suffix == ".zip":
+        if not _extract_with_7z(archive, target, password, logger=logger, stop_event=stop_event):
+            if not _extract_with_winrar(archive, target, password, logger=logger, stop_event=stop_event):
+                if not _extract_zip_with_expand_archive(archive, target, logger=logger, stop_event=stop_event):
+                    _extract_zip_python(
+                        archive,
+                        target,
+                        password,
+                        logger=logger,
+                        on_progress=on_extract_progress,
+                        stop_event=stop_event,
+                    )
+    elif suffix == ".7z":
+        if not _extract_with_7z(archive, target, password, logger=logger, stop_event=stop_event):
+            if not _extract_with_winrar(archive, target, password, logger=logger, stop_event=stop_event):
+                _extract_7z_python(archive, target, password, logger=logger, stop_event=stop_event)
     elif suffix == ".rar":
-        if not _extract_with_7z(archive, target, password, logger=logger):
-            if not _extract_with_winrar(archive, target, password, logger=logger):
+        if not _extract_with_7z(archive, target, password, logger=logger, stop_event=stop_event):
+            if not _extract_with_winrar(archive, target, password, logger=logger, stop_event=stop_event):
                 raise RuntimeError("No available extractor for .rar archives")
     else:
         raise ValueError(f"Unsupported archive type: {archive.name}")

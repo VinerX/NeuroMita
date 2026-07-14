@@ -1,5 +1,6 @@
 import asyncio
 import time
+from concurrent.futures import Future
 from typing import Any, Optional
 
 from handlers.telegram_handler import TelegramBotHandler
@@ -11,8 +12,14 @@ from services.contracts import LoopService, SettingsService, TelegramService
 
 
 class TelegramController(TelegramService):
+    _SETTING_KEYS = frozenset({
+        "USE_VOICEOVER", "VOICEOVER_METHOD", "TG_AUTOCONNECT",
+        "NM_TELEGRAM_API_ID", "NM_TELEGRAM_API_HASH", "NM_TELEGRAM_PHONE",
+        "TG_MIN_REQUEST_INTERVAL", "SILERO_TIME", "AUDIO_BOT",
+    })
+
     def __init__(self):
-        self.settings: Any = None
+        self.settings: Any = use(SettingsService)
         self.event_bus = get_event_bus()
 
         self.bot_handler: Optional[TelegramBotHandler] = None
@@ -32,18 +39,21 @@ class TelegramController(TelegramService):
         self._start_cooldown_sec: float = 20.0
 
         self._voice_queue: asyncio.Queue | None = None
+        self._queue_worker_task: asyncio.Task[Any] | None = None
         self._last_tg_request_ts: float = 0.0
         self._min_request_interval: float = 0.0
 
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._SETTING_KEYS
+        )
         self._subscribe_to_events()
+        self._attach_running_loop()
+        self._load_settings_snapshot(reason="initial")
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe("telegram_settings_loaded", self._on_telegram_settings_loaded, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
 
-        self.event_bus.subscribe(Events.Telegram.TELEGRAM_SEND_VOICE_REQUEST, self._on_send_voice_request, weak=False)
         self.event_bus.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_set_silero_connected, weak=False)
-        self.event_bus.subscribe(Events.Telegram.GET_SILERO_STATUS, self._on_get_silero_status, weak=False)
 
         self.event_bus.subscribe(Events.Core.LOOP_READY, self._on_loop_ready, weak=False)
 
@@ -53,31 +63,42 @@ class TelegramController(TelegramService):
         self.event_bus.subscribe(start_evt, self._on_start_requested, weak=False)
         self.event_bus.subscribe(stop_evt, self._on_stop_requested, weak=False)
 
+    def _attach_running_loop(self) -> None:
+        try:
+            loop_service = use(LoopService)
+            if not loop_service.is_running():
+                return
+            self._loop = loop_service.loop()
+            loop_service.run(self._init_queue_and_start_worker())
+        except Exception:
+            self._loop = None
+
     # ---------------- settings / status ----------------
     def _on_telegram_settings_loaded(self, event: Event):
         data = event.data or {}
-        self.api_id = data.get("api_id", "") or ""
-        self.api_hash = data.get("api_hash", "") or ""
-        self.phone = data.get("phone", "") or ""
-        self.settings = data.get("settings", None)
+        supplied = data.get("settings")
+        if supplied is not None:
+            self.settings = supplied
+        self._load_settings_snapshot(reason="telegram_settings_loaded")
 
-        if self.settings:
-            try:
-                self._min_request_interval = float(self.settings.get("TG_MIN_REQUEST_INTERVAL", 0) or 0)
-            except Exception:
-                self._min_request_interval = 0.0
+    def _load_settings_snapshot(self, *, reason: str) -> None:
+        settings = self.settings or use(SettingsService)
+        self.api_id = settings.get("NM_TELEGRAM_API_ID", "") or ""
+        self.api_hash = settings.get("NM_TELEGRAM_API_HASH", "") or ""
+        self.phone = settings.get("NM_TELEGRAM_PHONE", "") or ""
+        try:
+            self._min_request_interval = float(settings.get("TG_MIN_REQUEST_INTERVAL", 0) or 0)
+        except Exception:
+            self._min_request_interval = 0.0
 
         logger.info(
             f"Telegram настройки загружены: api_id={SH(self.api_id)}, api_hash={SH(self.api_hash)}, phone={SH(self.phone)}"
         )
+        self._maybe_autoconnect(reason=reason)
 
-        # После загрузки настроек попробуем автоподключиться (без спама — есть кулдаун)
-        self._maybe_autoconnect(reason="telegram_settings_loaded")
-
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = data.get("key")
-        value = data.get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "SILERO_TIME" and self.bot_handler:
             try:
@@ -308,38 +329,111 @@ class TelegramController(TelegramService):
         self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        try:
+            loop_service = use(LoopService)
+            if loop_service.is_running():
+                future = loop_service.run(self._shutdown_queue_worker())
+                try:
+                    future.result(timeout=5.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.stop_silero_async(source="shutdown")
+
     # ---------------- voice requests ----------------
-    def _on_send_voice_request(self, event: Event):
-        data = event.data or {}
-        text = data.get('text', '')
-        speaker_command = data.get('speaker_command', '')
-        mid = data.get('id', 0)
-        future = data.get('future')
+    async def send_voice(
+        self,
+        text: str,
+        speaker_command: str,
+        message_id: int = 0,
+    ) -> str:
+        owner_loop = self._loop
+        current_loop = asyncio.get_running_loop()
+        if owner_loop is None or not owner_loop.is_running():
+            owner_loop = current_loop
+            self._loop = owner_loop
 
-        if not self._voice_queue or not self._loop:
-            logger.error("Очередь голосовых запросов не инициализирована")
-            if future and not future.done():
-                future.set_exception(Exception("Voice queue not initialized"))
-            return
+        if not self._voice_queue:
+            if owner_loop is current_loop:
+                await self._init_queue_and_start_worker()
+            else:
+                init_future = asyncio.run_coroutine_threadsafe(
+                    self._init_queue_and_start_worker(), owner_loop
+                )
+                await asyncio.wrap_future(init_future)
+        if not self._loop or not self._voice_queue:
+            raise RuntimeError("Telegram voice queue is not initialized")
 
+        result: Future[str] = Future()
         item = {
-            'text': text,
-            'speaker_command': speaker_command,
-            'mid': mid,
-            'future': future,
+            "text": str(text or ""),
+            "speaker_command": str(speaker_command or ""),
+            "mid": int(message_id or 0),
+            "future": result,
         }
         self._loop.call_soon_threadsafe(self._voice_queue.put_nowait, item)
-        logger.debug(f"TG voice request добавлен в очередь (размер: {self._voice_queue.qsize() + 1})")
+        return await asyncio.wrap_future(result)
+
 
     async def _init_queue_and_start_worker(self):
-        self._voice_queue = asyncio.Queue()
+        if self._voice_queue is None:
+            self._voice_queue = asyncio.Queue()
+        task = self._queue_worker_task
+        if task is not None and not task.done():
+            return
         logger.info("TG voice queue создана, запускаем worker")
-        asyncio.ensure_future(self._queue_worker())
+        task = asyncio.create_task(self._queue_worker(), name="telegram-voice-queue")
+        self._queue_worker_task = task
+
+        def log_failure(done: asyncio.Task[Any]) -> None:
+            if done.cancelled():
+                return
+            try:
+                error = done.exception()
+            except Exception:
+                return
+            if error is not None:
+                logger.error(
+                    f"TG voice queue worker terminated: {error}",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(log_failure)
+
+    async def _shutdown_queue_worker(self) -> None:
+        task = self._queue_worker_task
+        self._queue_worker_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        queue = self._voice_queue
+        if queue is None:
+            return
+        while True:
+            try:
+                item = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            future = item.get("future") if isinstance(item, dict) else None
+            if future is not None and not future.done():
+                future.set_exception(RuntimeError("Telegram controller shut down"))
+            queue.task_done()
 
     async def _queue_worker(self):
         logger.info("TG voice queue worker запущен")
         while True:
-            item = await self._voice_queue.get()
+            try:
+                item = await self._voice_queue.get()
+            except asyncio.CancelledError:
+                logger.info("TG voice queue worker stopped")
+                raise
             future = item.get('future')
             try:
                 if not self.bot_handler or not self.bot_handler_ready:

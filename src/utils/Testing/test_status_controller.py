@@ -11,7 +11,6 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.gui.status_controller import StatusController
-from core.response_status import response_status_kind
 
 
 class _SignalStub:
@@ -48,11 +47,10 @@ class StatusControllerTests(unittest.TestCase):
 
         self.assertEqual(view.show_thinking_signal.calls, ["Мита"])
 
-    def test_started_response_shows_compression_status_in_compression_context(self):
+    def test_compression_started_uses_dedicated_status_event(self):
         controller, view = self._make_controller()
 
-        with response_status_kind("compression"):
-            controller._on_started_response(SimpleNamespace(data={"character_name": "Мита"}))
+        controller._on_compression_started(SimpleNamespace(data={}))
 
         self.assertEqual(
             view.show_thinking_signal.calls,

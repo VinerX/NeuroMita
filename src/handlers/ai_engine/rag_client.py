@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 
 def get_engine(timeout: float = 0.8):
-    # Через типизированный сервис, а не emit_and_wait: get_embeddings зовётся на
+    # Через типизированный сервис, а не sync EventBus RPC: get_embeddings зовётся на
     # hot-path (пул 'generation'), где синхронный сбор ответов шины запрещён
     # guardrail'ом. timeout сохранён для совместимости сигнатуры, но не нужен.
     try:

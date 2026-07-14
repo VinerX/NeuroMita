@@ -41,26 +41,13 @@ class ConversationEventWriter:
             return f"{prefix}:{base_s}"
         return f"{prefix}:{uuid.uuid4().hex}"
 
-    def _has_message_id_recent(self, messages: list[dict], message_id: str, tail: int = 300) -> bool:
-        if not message_id or not isinstance(messages, list):
-            return False
-        for m in messages[-tail:]:
-            if isinstance(m, dict) and str(m.get("message_id") or "") == message_id:
-                return True
-        return False
-
     def _append_history_message(self, ch_ref, msg: dict) -> bool:
         if ch_ref is None or not isinstance(msg, dict):
             return False
 
         try:
-            history_data = ch_ref.history_manager.load_history()
-            messages = history_data.get("messages", []) or []
-            if not isinstance(messages, list):
-                messages = []
-
             mid = str(msg.get("message_id") or "")
-            if mid and self._has_message_id_recent(messages, mid):
+            if mid and ch_ref.history_manager.contains_message_id(mid):
                 return False
 
             #messages.append(msg)
@@ -71,6 +58,30 @@ class ConversationEventWriter:
             logger.warning(
                 f"[ConversationEventWriter] append failed for {getattr(ch_ref,'char_id','?')}: {e}",
                 exc_info=True
+            )
+            return False
+
+    def _append_history_messages(self, ch_ref, messages: list[dict]) -> bool:
+        if ch_ref is None:
+            return False
+        payload = [dict(msg) for msg in messages or [] if isinstance(msg, dict)]
+        if not payload:
+            return False
+
+        try:
+            batch_append = getattr(ch_ref, "add_messages_to_history", None)
+            if callable(batch_append):
+                batch_append(payload)
+                return True
+
+            for msg in payload:
+                self._append_history_message(ch_ref, msg)
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"[ConversationEventWriter] batch append failed for "
+                f"{getattr(ch_ref, 'char_id', '?')}: {exc}",
+                exc_info=True,
             )
             return False
 
@@ -93,6 +104,32 @@ class ConversationEventWriter:
 
             self._append_history_message(ch, local)
 
+    def _fanout_turn(
+        self,
+        user_event: dict | None,
+        assistant_event: dict,
+        participants: list[str],
+    ) -> None:
+        for pid in participants:
+            if not pid or pid == "Player":
+                continue
+
+            ch = self._get_character_ref(pid)
+            if ch is None:
+                continue
+
+            local_messages: list[dict] = []
+            for event_msg in (user_event, assistant_event):
+                if not isinstance(event_msg, dict):
+                    continue
+                local = dict(event_msg)
+                speaker = str(local.get("speaker") or "")
+                local["role"] = "assistant" if pid == speaker else "user"
+                local.setdefault("sender", speaker)
+                local_messages.append(local)
+
+            self._append_history_messages(ch, local_messages)
+
     def _build_user_event_message(
         self,
         *,
@@ -105,6 +142,7 @@ class ConversationEventWriter:
         image_descriptions: dict[str, str] | None,
         event_type: str,
         req_id: str | None,
+        turn_id: str,
     ) -> Optional[dict]:
         has_text = bool(str(user_input or "").strip())
         has_images = bool(image_data)
@@ -140,7 +178,8 @@ class ConversationEventWriter:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "turn_id": turn_id,
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "content": chunks,
         }
         if image_source:
@@ -162,6 +201,7 @@ class ConversationEventWriter:
         thinking: str | None = None,
         llm_usage: dict | None = None,
         sample_id: str | None = None,
+        turn_id: str,
     ) -> dict:
         msg = {
             "message_id": self._make_message_id("out", task_uid),
@@ -171,7 +211,8 @@ class ConversationEventWriter:
             "target": target,
             "participants": list(participants),
             "event_type": event_type,
-            "time": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "turn_id": turn_id,
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "content": final_text,
         }
         if structured_data:
@@ -228,7 +269,7 @@ class ConversationEventWriter:
         thinking: str | None = None,
         llm_usage: dict | None = None,
         sample_id: str | None = None,
-    ) -> None:
+    ) -> str:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
         assistant_target = str(assistant_target or "Player")
@@ -243,6 +284,8 @@ class ConversationEventWriter:
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
 
+        turn_id = self._make_message_id("turn", task_uid or req_id)
+
         user_event = None
         if not (sender != "Player" and origin_message_id):
             user_event = self._build_user_event_message(
@@ -255,6 +298,7 @@ class ConversationEventWriter:
                 image_descriptions=image_descriptions,
                 event_type=event_type,
                 req_id=req_id,
+                turn_id=turn_id,
             )
 
         assistant_event = self._build_assistant_event_message(
@@ -268,9 +312,8 @@ class ConversationEventWriter:
             thinking=thinking,
             llm_usage=llm_usage,
             sample_id=sample_id,
+            turn_id=turn_id,
         )
 
-        if user_event is not None:
-            self._fanout_event(user_event, pts)
-        self._fanout_event(assistant_event, pts)
+        self._fanout_turn(user_event, assistant_event, pts)
         return str(assistant_event.get("message_id") or "")

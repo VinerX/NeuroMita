@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 
 def resolve_ai_engine(event_bus=None, *, timeout: float = 1.0):
-    # Через AIEngineService, а не emit_and_wait: get_music_beats исполняется в
+    # Через AIEngineService, а не sync EventBus RPC: get_music_beats исполняется в
     # asyncio-loop сервера, где синхронный сбор ответов шины блокирует loop и
     # запрещён guardrail'ом. event_bus/timeout — для совместимости сигнатуры.
     try:

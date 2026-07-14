@@ -7,6 +7,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFontMetrics
 
 from core.events import Events, Event
+from core.services import services
+from services.contracts import InstallableCatalogService, SpeechService
 from main_logger import logger
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
@@ -31,6 +33,7 @@ class MicrophoneSettingsController(BaseController):
         eb = self.event_bus
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
+        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_catalog_changed, weak=False)
 
         self._ui(self._bind_if_ready)
 
@@ -98,8 +101,8 @@ class MicrophoneSettingsController(BaseController):
         v.mic_mute_while_speaking_checkbox.stateChanged.connect(self._on_mute_while_speaking_toggled)
 
         if hasattr(v, "asr_manage_button") and v.asr_manage_button:
-            safe_disconnect(v.asr_manage_button.clicked, self._open_asr_glossary)
-            v.asr_manage_button.clicked.connect(self._open_asr_glossary)
+            safe_disconnect(v.asr_manage_button.clicked, self._open_ai_engine_settings)
+            v.asr_manage_button.clicked.connect(self._open_ai_engine_settings)
 
         if hasattr(v, "vad_apply_button") and v.vad_apply_button:
             safe_disconnect(v.vad_apply_button.clicked, self._on_apply_vad_params)
@@ -184,9 +187,9 @@ class MicrophoneSettingsController(BaseController):
         except Exception as e:
             logger.error(f"VAD params reset error: {e}")
 
-    def _open_asr_glossary(self):
+    def _open_ai_engine_settings(self):
         try:
-            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
+            self.view.show_settings_category("ai_engine", force=True)
         except Exception:
             pass
 
@@ -199,10 +202,7 @@ class MicrophoneSettingsController(BaseController):
             except Exception:
                 pass
 
-        try:
-            self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        except Exception:
-            pass
+        super()._save_setting(key, value)
 
     def _reset_init_status(self):
         v = self.view
@@ -235,6 +235,28 @@ class MicrophoneSettingsController(BaseController):
                 right = mid - 1
 
         return (result + ellipsis) if result else ellipsis
+
+    # SpeechService — ленивая optional-фича: если открыть настройки микрофона
+    # раньше, чем она поднялась, список залипал на «микрофоны не найдены» и не
+    # обновлялся сам (микрофон физически есть, распознавание потом работает).
+    # Пока сервис не появился — коротко повторяем запрос.
+    _SPEECH_WAIT_MAX = 25            # ~15 c при 600 мс
+    _SPEECH_WAIT_INTERVAL_MS = 600
+
+    def _speech_service_or_retry(self, retry_fn, counter_attr: str):
+        """Возвращает (service, gave_up). Если сервиса ещё нет — планирует
+        повтор retry_fn и возвращает (None, False); при исчерпании попыток —
+        (None, True), чтобы вызывающий показал финальную заглушку."""
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            setattr(self, counter_attr, 0)
+            return speech, False
+        ticks = int(getattr(self, counter_attr, 0))
+        if ticks < self._SPEECH_WAIT_MAX:
+            setattr(self, counter_attr, ticks + 1)
+            QTimer.singleShot(self._SPEECH_WAIT_INTERVAL_MS, lambda: self._ui(retry_fn))
+            return None, False
+        return None, True
 
     def refresh_microphones(self):
         v = self.view
@@ -298,10 +320,17 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        speech, gave_up = self._speech_service_or_retry(self.refresh_microphones, "_mic_speech_wait")
+        if speech is None:
+            if gave_up:
+                cb([_("Микрофоны не найдены", "No microphones found")], RuntimeError("Speech service is unavailable"))
+            # иначе оставляем «Загрузка...» до следующей попытки
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_MICROPHONE_LIST, {"callback": cb})
+            speech.microphone_list_async(cb)
         except Exception as e:
-            logger.error(f"GET_MICROPHONE_LIST emit error: {e}")
+            logger.error(f"Microphone list request failed: {e}")
+            cb([_("Ошибка загрузки", "Loading error")], e)
 
     def refresh_engines(self, select_engine: str | None = None):
         v = self.view
@@ -317,6 +346,10 @@ class MicrophoneSettingsController(BaseController):
             prev_engine = ""
 
         def show_loading():
+            v.recognizer_combobox.setVisible(True)
+            empty_status = getattr(v, "asr_models_empty_status", None)
+            if empty_status is not None:
+                empty_status.setVisible(False)
             v.recognizer_combobox.blockSignals(True)
             try:
                 v.recognizer_combobox.clear()
@@ -342,8 +375,15 @@ class MicrophoneSettingsController(BaseController):
                 engines: list[str] = []
                 for item in glossary:
                     try:
-                        if item.get("installed", False) and item.get("id"):
-                            engines.append(str(item["id"]))
+                        metadata = item.get("metadata") if isinstance(item, dict) else None
+                        status = item.get("status") if isinstance(item, dict) else None
+                        if (
+                            isinstance(metadata, dict)
+                            and isinstance(status, dict)
+                            and bool(status.get("ready", False))
+                            and metadata.get("item_id")
+                        ):
+                            engines.append(str(metadata["item_id"]))
                     except Exception:
                         pass
 
@@ -351,6 +391,10 @@ class MicrophoneSettingsController(BaseController):
                 try:
                     v.recognizer_combobox.clear()
                     if engines:
+                        v.recognizer_combobox.setVisible(True)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(False)
                         v.recognizer_combobox.setEnabled(True)
                         v.recognizer_combobox.addItems(engines)
 
@@ -362,7 +406,10 @@ class MicrophoneSettingsController(BaseController):
                             self._save_setting("RECOGNIZER_TYPE", v.recognizer_combobox.currentText())
                     else:
                         v.recognizer_combobox.setEnabled(False)
-                        v.recognizer_combobox.addItem(_("Нет установленных моделей", "No installed models"))
+                        v.recognizer_combobox.setVisible(False)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(True)
                 finally:
                     v.recognizer_combobox.blockSignals(False)
 
@@ -378,10 +425,20 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb([], RuntimeError("Installable catalog service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": cb})
+            catalog.list_rows_async(
+                cb,
+                include_status=True,
+                category="asr",
+                status_category="asr",
+            )
         except Exception as e:
-            logger.error(f"GET_ASR_MODELS_GLOSSARY emit error: {e}")
+            logger.error(f"ASR component catalog request failed: {e}")
+            cb([], e)
 
     def _apply_asr_install_status(self, engine: str):
         v = self.view
@@ -415,7 +472,11 @@ class MicrophoneSettingsController(BaseController):
                 if int(getattr(v, "_asr_installed_req_id", 0)) != req_id:
                     return
 
-                installed = bool(result) if error is None else False
+                installed = (
+                    bool(result.get("ready", False))
+                    if error is None and isinstance(result, dict)
+                    else False
+                )
                 try:
                     v.mic_active_checkbox.setEnabled(bool(installed))
                     if not installed:
@@ -425,10 +486,14 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {"model": engine, "callback": cb})
-        except Exception:
-            self._ui(lambda: v.mic_active_checkbox.setEnabled(False))
+            catalog.get_status_async(f"asr:{engine}", cb)
+        except Exception as exc:
+            cb({}, exc)
 
     def _on_mic_changed(self, index: int):
         v = self.view
@@ -506,6 +571,9 @@ class MicrophoneSettingsController(BaseController):
         data = event.data or {}
         if not self._is_asr_task(data):
             return
+        self._ui(self.refresh_engines)
+
+    def _on_catalog_changed(self, _event: Event):
         self._ui(self.refresh_engines)
 
     def _on_install_failed(self, event: Event):

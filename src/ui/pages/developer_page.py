@@ -15,11 +15,13 @@ from localization.live import tr_set
 
 
 class DeveloperPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, finetune_view_model, page_actions, settings):
+        super().__init__(parent)
+        self._page_actions = page_actions
+        self._settings = settings
+        self._finetune_view_model = finetune_view_model
         self.setObjectName("DeveloperPage")
-        self.gui.developer_page = self
+        self.destroyed.connect(lambda *_args: self._finetune_view_model.close())
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -47,7 +49,7 @@ class DeveloperPage(QWidget):
             actions=[
                 DashboardAction(
                     _("Sandbox", "Sandbox"),
-                    callback=lambda: self.gui.switch_main_page("sandbox"),
+                    callback=lambda: self._page_actions.switch_page("sandbox"),
                     icon_name="fa6s.flask",
                     accent=False,
                 ),
@@ -83,7 +85,14 @@ class DeveloperPage(QWidget):
 
         try:
             from ui.settings.debug_settings import setup_debug_panel_controls
-            setup_debug_panel_controls(self.gui, layout)
+            setup_debug_panel_controls(
+                layout,
+                settings=self._settings,
+                insert_system_message=self._page_actions.insert_debug_message,
+                save_snapshot=self._page_actions.save_debug_snapshot,
+                load_snapshot=self._page_actions.load_debug_snapshot,
+                view_context=self._page_actions.view_debug_context,
+            )
         except Exception as exc:
             err = QLabel(f"[debug_settings error] {exc}")
             err.setWordWrap(True)
@@ -102,7 +111,11 @@ class DeveloperPage(QWidget):
 
         try:
             from ui.settings.data_settings import setup_data_settings_controls
-            setup_data_settings_controls(self.gui, layout)
+            setup_data_settings_controls(
+                self,
+                layout,
+                view_model=self._finetune_view_model,
+            )
         except Exception as exc:
             err = QLabel(f"[data_settings error] {exc}")
             err.setWordWrap(True)
@@ -118,6 +131,22 @@ class DeveloperPage(QWidget):
     def on_deactivated(self):
         pass
 
+    @property
+    def settings(self):
+        return self._settings
 
-def build_developer_page(window) -> QWidget:
-    return DeveloperPage(window)
+    def _get_setting(self, key, default=None):
+        getter = getattr(self._settings, "get", None)
+        return getter(str(key), default) if callable(getter) else default
+
+    def _save_setting(self, key, value) -> None:
+        setter = getattr(self._settings, "set", None)
+        if callable(setter):
+            setter(str(key), value)
+
+
+
+def build_developer_page(parent, finetune_view_model, page_actions, settings) -> QWidget:
+    page = DeveloperPage(parent, finetune_view_model, page_actions, settings)
+    finetune_view_model.setParent(page)
+    return page

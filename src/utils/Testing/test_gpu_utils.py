@@ -6,53 +6,62 @@ from unittest.mock import patch
 from utils import gpu_utils
 
 
+class _Inventory:
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+
+    def snapshot(self, *, refresh=False):
+        del refresh
+        return self._snapshot
+
+
 class GpuUtilsTests(unittest.TestCase):
-    def setUp(self):
-        gpu_utils._CUDA_INFO_CACHE = []
-        gpu_utils._CUDA_INFO_TS = 0.0
-        gpu_utils._GPU_INFO_CACHE = None
-        gpu_utils._GPU_INFO_TS = 0.0
+    def test_get_cuda_devices_uses_canonical_inventory(self):
+        inventory = _Inventory(
+            {
+                "cuda": {
+                    "available": True,
+                    "devices": [
+                        {"ordinal": 0, "name": "NVIDIA GeForce RTX 4090"},
+                        {"ordinal": 1, "name": "NVIDIA GeForce RTX 4080"},
+                    ],
+                }
+            }
+        )
+        with patch("utils.gpu_utils._inventory", return_value=inventory):
+            self.assertEqual(gpu_utils.get_cuda_devices(), ["cuda:0", "cuda:1"])
+            self.assertEqual(
+                gpu_utils.get_gpu_name_by_id("cuda:1"),
+                "NVIDIA GeForce RTX 4080",
+            )
 
-    def test_get_cuda_devices_uses_nvidia_smi_without_torch(self):
-        with patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
-             patch(
-                 "utils.gpu_utils.subprocess.check_output",
-                 return_value="0, NVIDIA GeForce RTX 4090\n1, NVIDIA GeForce RTX 4080\n",
-             ) as check_output_mock:
-            devices = gpu_utils.get_cuda_devices()
-
-        self.assertEqual(devices, ["cuda:0", "cuda:1"])
-        check_output_mock.assert_called_once()
-
-    def test_get_gpu_name_by_id_reads_cached_nvidia_smi_info(self):
-        with patch("utils.gpu_utils.check_gpu_provider", return_value="NVIDIA"), \
-             patch(
-                 "utils.gpu_utils.subprocess.check_output",
-                 return_value="0, NVIDIA GeForce RTX 4090\n1, NVIDIA GeForce RTX 4080\n",
-             ):
-            self.assertEqual(gpu_utils.get_gpu_name_by_id("cuda:1"), "NVIDIA GeForce RTX 4080")
-
-    def test_get_cuda_devices_skips_probe_without_nvidia(self):
-        with patch("utils.gpu_utils.check_gpu_provider", return_value="CPU"), \
-             patch("utils.gpu_utils.subprocess.check_output") as check_output_mock:
-            devices = gpu_utils.get_cuda_devices()
-
-        self.assertEqual(devices, [])
-        check_output_mock.assert_not_called()
-
-    def test_get_primary_gpu_info_prefers_discrete_nvidia_name(self):
+    def test_get_cuda_devices_without_cuda_driver(self):
         with patch(
-            "utils.gpu_utils.subprocess.check_output",
-            return_value="Name\nIntel(R) Iris(R) Xe Graphics\nNVIDIA GeForce RTX 4060 Laptop GPU\n",
+            "utils.gpu_utils._inventory",
+            return_value=_Inventory({"cuda": {"available": False, "devices": []}}),
+        ):
+            self.assertEqual(gpu_utils.get_cuda_devices(), [])
+
+    def test_primary_gpu_info_is_adapter_snapshot_adapter(self):
+        snapshot = {
+            "vendor": "NVIDIA",
+            "source": "dxgi+ctypes",
+            "primary": {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"},
+            "adapters": [
+                {"name": "Intel(R) Iris(R) Xe Graphics"},
+                {"name": "NVIDIA GeForce RTX 4060 Laptop GPU"},
+            ],
+        }
+        with patch(
+            "utils.gpu_utils._inventory",
+            return_value=_Inventory(snapshot),
         ):
             info = gpu_utils.get_primary_gpu_info()
+            label = gpu_utils.format_primary_gpu_label()
 
         self.assertEqual(info["vendor"], "NVIDIA")
         self.assertEqual(info["name"], "NVIDIA GeForce RTX 4060 Laptop GPU")
-        self.assertEqual(
-            gpu_utils.format_primary_gpu_label(),
-            "NVIDIA GeForce RTX 4060 Laptop GPU",
-        )
+        self.assertEqual(label, "NVIDIA GeForce RTX 4060 Laptop GPU")
 
 
 if __name__ == "__main__":

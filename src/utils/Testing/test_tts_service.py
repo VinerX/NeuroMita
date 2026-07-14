@@ -12,11 +12,13 @@ class _FakeLocalVoice:
     def __init__(self, *, init_ok: bool = True, voiceover_result: str | Exception | None = None):
         self.init_ok = bool(init_ok)
         self.voiceover_result = voiceover_result
+        self.voiceover_calls = 0
 
     def initialize_model(self, _model_id: str, *, init: bool = False) -> bool:
         return self.init_ok
 
     async def voiceover(self, text: str, *, output_file: str, character=None):
+        self.voiceover_calls += 1
         result = self.voiceover_result
         if isinstance(result, Exception):
             raise result
@@ -47,11 +49,48 @@ class TTSServiceTests(unittest.TestCase):
         service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)
         service._local_voice = _FakeLocalVoice(init_ok=True, voiceover_result=RuntimeError("hubert timeout"))
 
-        ok = asyncio.run(service._best_effort_warmup(service._local_voice, "high+low"))
+        ok = asyncio.run(service._warmup_model(service._local_voice, "high+low"))
 
         self.assertFalse(ok)
         joined = "\n".join(logs)
         self.assertIn("[tts:warmup] runtime error for model_id=high+low: hubert timeout", joined)
+
+    def test_edge_model_init_warms_up_once(self):
+        logs: list[str] = []
+        service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)
+        service._local_voice = _FakeLocalVoice(init_ok=True, voiceover_result="ok")
+
+        first = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "edge_tts_rvc_onnx", "warmup": True},
+        ))
+        second = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "edge_tts_rvc_onnx", "warmup": True},
+        ))
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(service._warmup_status["edge_tts_rvc_onnx"], "ready")
+        self.assertEqual(service._local_voice.voiceover_calls, 1)
+        self.assertIn("warmup already ready", "\n".join(logs))
+
+    def test_failed_warmup_rejects_initialization(self):
+        logs: list[str] = []
+        service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)
+        service._local_voice = _FakeLocalVoice(
+            init_ok=True,
+            voiceover_result=RuntimeError("probe failed"),
+        )
+
+        ok = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "silero_rvc_onnx", "warmup": True},
+        ))
+
+        self.assertFalse(ok)
+        self.assertEqual(service._warmup_status["silero_rvc_onnx"], "failed")
+        self.assertIn("initialization rejected", "\n".join(logs))
 
 
 if __name__ == "__main__":

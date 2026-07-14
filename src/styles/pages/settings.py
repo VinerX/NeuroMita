@@ -456,4 +456,157 @@ QWidget#SettingsPageRoot QPushButton#ScopeToggleButton[active="true"] {
     background: {accent};
     color: #ffffff;
 }
+
+/* ========= AI Engine settings ========= */
+QWidget#SettingsPageRoot QFrame#AIEngineHardwarePanel,
+QWidget#SettingsPageRoot QFrame#AIEngineHubPanel,
+QWidget#SettingsPageRoot QFrame#AIEngineModePanel {
+    background-color: #111321;
+    border: 1px solid #292738;
+    border-radius: 16px;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineCardIcon {
+    background-color: rgba({accent_rgb}, 0.10);
+    border: 1px solid rgba({accent_rgb}, 0.22);
+    border-radius: 12px;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineCardTitle {
+    color: {text};
+    font-size: 11pt;
+    font-weight: 750;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineEyebrow {
+    color: {muted};
+    font-size: 8.5pt;
+    font-weight: 700;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineCardSubtitle,
+QWidget#SettingsPageRoot QLabel#AIEngineLoadingText,
+QWidget#SettingsPageRoot QLabel#AIEngineMaintenanceHint {
+    color: {muted};
+    font-size: 9pt;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineHardwareName {
+    color: {text};
+    font-size: 12pt;
+    font-weight: 700;
+}
+QWidget#SettingsPageRoot QWidget#AIEngineHardwareInfo {
+    background: transparent;
+    border: none;
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineLoadingSpinner:disabled {
+    background: transparent;
+    border: none;
+    padding: 0px;
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineIconButton {
+    background-color: #191b2a;
+    border: 1px solid #302e3e;
+    border-radius: 9px;
+    padding: 0px;
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineIconButton:hover {
+    background-color: rgba({accent_rgb}, 0.13);
+    border-color: rgba({accent_rgb}, 0.30);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChip,
+QWidget#SettingsPageRoot QLabel#AIEngineChipCuda,
+QWidget#SettingsPageRoot QLabel#AIEngineChipOnnx,
+QWidget#SettingsPageRoot QLabel#AIEngineChipGpu,
+QWidget#SettingsPageRoot QLabel#AIEngineChipWarning,
+QWidget#SettingsPageRoot QLabel#AIEngineChipSuccess {
+    padding: 3px 8px;
+    border-radius: 7px;
+    font-size: 8.5pt;
+    font-weight: 650;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChip {
+    color: {text};
+    background-color: rgba(255,255,255,0.055);
+    border: 1px solid rgba(255,255,255,0.09);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChipGpu,
+QWidget#SettingsPageRoot QLabel#AIEngineChipSuccess {
+    color: #a8f0c6;
+    background-color: rgba(67, 190, 119, 0.12);
+    border: 1px solid rgba(80, 210, 135, 0.24);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChipCuda {
+    color: #b9cfff;
+    background-color: rgba(74, 117, 230, 0.14);
+    border: 1px solid rgba(91, 139, 255, 0.28);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChipOnnx {
+    color: #d5b8ff;
+    background-color: rgba(143, 88, 220, 0.14);
+    border: 1px solid rgba(168, 111, 242, 0.25);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineChipWarning {
+    color: #f3bd74;
+    background-color: rgba(220, 145, 58, 0.12);
+    border: 1px solid rgba(240, 166, 74, 0.26);
+}
+QWidget#SettingsPageRoot QLabel#AIEngineModeDescription {
+    color: {muted};
+    background: transparent;
+    border: none;
+    padding: 3px 1px 1px 1px;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineModeWarning {
+    color: #f0a64a;
+    background-color: rgba(230, 139, 45, 0.08);
+    border: 1px solid rgba(240, 166, 74, 0.20);
+    border-radius: 9px;
+    padding: 9px 11px;
+}
+QWidget#SettingsPageRoot QFrame#AIEngineBackendNotice[severity="warning"] {
+    background-color: rgba(230, 139, 45, 0.08);
+    border: 1px solid rgba(240, 166, 74, 0.20);
+    border-radius: 9px;
+}
+QWidget#SettingsPageRoot QFrame#AIEngineBackendNotice[severity="info"] {
+    background-color: rgba(88, 135, 220, 0.08);
+    border: 1px solid rgba(116, 160, 235, 0.20);
+    border-radius: 9px;
+}
+QWidget#SettingsPageRoot QFrame#AIEngineBackendNotice[severity="warning"] QLabel#AIEngineBackendNoticeText {
+    color: #f0a64a;
+}
+QWidget#SettingsPageRoot QFrame#AIEngineBackendNotice[severity="info"] QLabel#AIEngineBackendNoticeText {
+    color: #9cc3ff;
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineApplyButton[dirty="true"] {
+    color: #ffffff;
+    font-weight: 700;
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 rgba({accent_rgb_alt}, 0.96),
+        stop: 1 rgba({slider_progress_rgb}, 0.98)
+    );
+    border: 1px solid rgba({accent_rgb_alt}, 0.70);
+    border-radius: 10px;
+    padding: 7px 14px;
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineApplyButton[dirty="true"]:hover {
+    background-color: rgba({accent_rgb}, 0.96);
+}
+QWidget#SettingsPageRoot QPushButton#AIEngineApplyButton:disabled {
+    color: #746f7b;
+    background-color: #222330;
+    border: 1px solid #343340;
+    border-radius: 10px;
+    padding: 7px 14px;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineEnvironmentPath {
+    color: {muted};
+    background-color: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+QWidget#SettingsPageRoot QLabel#AIEngineMaintenanceStatus {
+    color: {text};
+    font-weight: 600;
+}
 """

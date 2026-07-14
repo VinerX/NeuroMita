@@ -16,7 +16,7 @@ from game_connections.services.beat_backend_spec import (
     get_backend_status_snapshot,
     normalize_backend_choice,
 )
-from game_connections.services.beat_worker_client import call_beats_worker_sync, restart_beats_worker
+from game_connections.services.beat_worker_client import call_beats_worker_sync
 from handlers.voice_models.install_plan_helpers import pip_uninstall_action
 from utils import getTranslationVariant as _
 
@@ -59,18 +59,15 @@ def build_beat_install_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: dic
         ),
         InstallAction(
             type="call",
-            description=_("Перезапуск beat backend...", "Restarting beat backend..."),
-            progress=85,
-            fn=_restart_beats_service,
-        ),
-        InstallAction(
-            type="call",
             description=_(
-                "Проверка зависимостей beat backend...",
-                "Validating beat backend dependencies...",
+                "Проверка установленных пакетов beat backend...",
+                "Validating installed beat backend packages...",
             ),
             progress=99,
-            fn=lambda **kwargs: _backend_installed(backend_key, **kwargs),
+            fn=lambda **kwargs: _backend_installed_in_environment(
+                backend_key,
+                **kwargs,
+            ),
         ),
     ]
 
@@ -106,16 +103,11 @@ def build_beat_uninstall_plan(target_backend: str = BACKEND_BEAT_THIS, *, ctx: d
         ),
         InstallAction(
             type="call",
-            description=_("Перезапуск beat backend...", "Restarting beat backend..."),
-            progress=85,
-            fn=_restart_beats_service,
-        ),
-        InstallAction(
-            type="call",
             description=_("Проверка удаления beat-this...", "Validating beat-this removal..."),
             progress=99,
-            fn=lambda **_kwargs: not bool(
-                get_backend_status_snapshot(BACKEND_BEAT_THIS, ctx=build_beat_ctx(ctx))["backends"][BACKEND_BEAT_THIS]["available"]
+            fn=lambda **kwargs: not _backend_installed_in_environment(
+                BACKEND_BEAT_THIS,
+                **kwargs,
             ),
         ),
     ]
@@ -137,12 +129,6 @@ def build_beat_initialize_plan(preferred_backend: str = BACKEND_AUTO) -> Install
         )
 
     actions = [
-        InstallAction(
-            type="call",
-            description=_("Перезапуск beat backend...", "Restarting beat backend..."),
-            progress=20,
-            fn=_restart_beats_service,
-        ),
         InstallAction(
             type="call",
             description=_(
@@ -293,51 +279,38 @@ def _emit_install_task(payload: dict, *, with_ui: bool, event_name: str) -> None
     get_event_bus().emit(event_name, payload)
 
 
-def _restart_beats_service(*_args, **kwargs) -> bool:
-    ctx = kwargs.get("ctx") if isinstance(kwargs, dict) else None
-    callbacks = kwargs.get("callbacks") if isinstance(kwargs, dict) else None
-    event_bus = ctx.get("event_bus") if isinstance(ctx, dict) else None
-    ok = restart_beats_worker(timeout=15.0, event_bus=event_bus)
-    if not ok and callbacks is not None:
-        try:
-            callbacks.log("Beat backend restart failed: AI engine did not confirm service restart.")
-        except Exception:
-            pass
-    return bool(ok)
-
-
 def _initialize_beats_service(preferred_backend: str) -> bool:
+    from game_connections.services.beat_service import get_beat_service
+
     return bool(
-        call_beats_worker_sync(
-            "initialize_backend",
-            {
-                "backend_preference": normalize_backend_choice(preferred_backend),
-                "strict": True,
-            },
-            timeout=180.0,
+        get_beat_service().initialize_backend(
+            backend_preference=normalize_backend_choice(preferred_backend)
         )
     )
 
 
-def _backend_installed(preferred_backend: str, *, callbacks=None, **_kwargs) -> bool:
-    try:
-        payload = call_beats_worker_sync(
-            "get_backend_status",
-            {"backend_preference": normalize_backend_choice(preferred_backend)},
-            timeout=15.0,
-        )
-    except Exception as exc:
-        _log_beat_validation(callbacks, f"Beat backend validation failed: {exc}")
-        return False
-
+def _backend_installed_in_environment(
+    preferred_backend: str,
+    *,
+    callbacks=None,
+    ctx=None,
+    **_kwargs,
+) -> bool:
     preferred = normalize_backend_choice(preferred_backend)
-    target = payload.get("resolved_backend") if preferred == BACKEND_AUTO else preferred
+    snapshot = get_backend_status_snapshot(
+        preferred,
+        ctx=build_beat_ctx(dict(ctx or {})),
+    )
+    target = snapshot.get("resolved_backend") if preferred == BACKEND_AUTO else preferred
     if target == BACKEND_DSP:
         return True
-    backends = payload.get("backends") if isinstance(payload.get("backends"), dict) else {}
+    backends = snapshot.get("backends") if isinstance(snapshot.get("backends"), dict) else {}
     backend_state = backends.get(target) if isinstance(backends, dict) else None
     if not isinstance(backend_state, dict):
-        _log_beat_validation(callbacks, f"Beat backend validation failed: missing status for '{target}'.")
+        _log_beat_validation(
+            callbacks,
+            f"Beat backend validation failed: missing status for '{target}'.",
+        )
         return False
 
     ok = bool(backend_state.get("installed") or backend_state.get("available"))

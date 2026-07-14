@@ -1,18 +1,16 @@
 import datetime
 import re
 import os
+import threading
 from typing import Dict, List, Any, Optional
 import json
 
 from DSL.path_resolver import LocalPathResolver
 from DSL.post_dsl_engine import PostDslInterpreter
-from managers.memory_manager import MemoryManager
-from managers.history_manager import HistoryManager
 from utils import clamp
 from core.events import get_event_bus, Events
 from core.services import use
 from services.contracts import AppVarsService, SettingsService
-import os
 
 from managers.game_manager import GameManager
 from schemas.structured_response import StructuredResponse
@@ -116,15 +114,9 @@ class Character:
         )
 
         self._pending_targets: list[str] = []
-
-        self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
-        self.memory_system = MemoryManager(self.char_id)
-        self.memory_system.prompt_set_path = self.base_data_path
-
-        from managers.reminder_manager import ReminderManager
-        self.reminder_system = ReminderManager(self.char_id)
-
-        self.load_history()
+        self._resource_manager = None
+        self._runtime_loaded = False
+        self._runtime_load_lock = threading.RLock()
 
         from managers.dsl_manager import create_dsl_interpreter
         self.dsl_interpreter = create_dsl_interpreter(self)
@@ -144,6 +136,41 @@ class Character:
         self.set_variable("playingGame", False)
         self.set_variable("game_id", None)
         self.game_manager = GameManager(self)
+
+    def bind_resource_manager(self, manager) -> None:
+        self._resource_manager = manager
+        manager.register_character(self.char_id, self.name, self.base_data_path)
+
+    def _resources(self):
+        manager = self._resource_manager
+        if manager is None:
+            from managers.character_resource_manager import get_character_resource_manager
+
+            manager = get_character_resource_manager()
+            self.bind_resource_manager(manager)
+        return manager
+
+    @property
+    def history_manager(self):
+        return self._resources().history_for(self.char_id, self.name)
+
+    @property
+    def memory_system(self):
+        return self._resources().memory_for(self.char_id, self.name)
+
+    @property
+    def reminder_system(self):
+        return self._resources().reminders_for(self.char_id, self.name)
+
+    def ensure_runtime_loaded(self) -> None:
+        if self._runtime_loaded:
+            return
+        with self._runtime_load_lock:
+            if self._runtime_loaded:
+                return
+            self.load_history()
+            self.memory_system.load_memories()
+            self._runtime_loaded = True
 
     def load_config(self):
         from managers.character_config_manager import CharacterConfigManager
@@ -212,7 +239,7 @@ class Character:
 
     def flush_variables(self):
         """Batch-write all dirty variables to DB in a single transaction."""
-        if not self._dirty_vars or not hasattr(self, "history_manager"):
+        if not self._dirty_vars:
             return
         to_flush = {k: self.variables[k] for k in self._dirty_vars if k in self.variables}
         if to_flush:
@@ -318,6 +345,9 @@ class Character:
         self.base_data_path = os.path.join(self._character_prompts_root(), self.prompt_set_name)
         self.set_variable("PROMPT_SET_NAME", self.prompt_set_name)
         self.set_variable("PROMPT_SET_PATH", self.base_data_path)
+        manager = getattr(self, "_resource_manager", None)
+        if manager is not None:
+            manager.update_prompt_set_path(self.char_id, self.base_data_path)
 
     def _log_prompt_set_problems_if_any(self):
         base = str(getattr(self, "base_data_path", "") or "")
@@ -971,8 +1001,10 @@ class Character:
         self._log_prompt_set_problems_if_any()
 
         self.load_config()
+        self._resources().update_prompt_set_path(self.char_id, self.base_data_path)
         self.load_history()
         self.memory_system.load_memories()
+        self._runtime_loaded = True
         self.set_variable(
             "SYSTEM_DATETIME", datetime.datetime.now().isoformat(" ", "minutes")
         )
@@ -1062,6 +1094,10 @@ class Character:
         # или просто не хранить его в классе Character, полагаясь на history_manager.load_history()
         # Но чтобы не ломать старую логику, которая может ожидать messages внутри history_data,
         # оставим всё как есть, просто база обновляется инкрементально.
+
+    def add_messages_to_history(self, messages: List[Dict[str, str]]):
+        """Atomically append one completed dialog turn for this character."""
+        return self.history_manager.add_messages(messages)
 
     # endregion
 

@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QScrollArea
 from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
-from managers.settings_manager import SettingsManager
 from styles.theme import get_theme
+from ui.settings.settings_access import set_setting
 
 
 class SettingsResizeHandle(QWidget):
@@ -107,7 +107,10 @@ class SettingsOverlay(QWidget):
         parent = self.parentWidget()
         if parent is not None and hasattr(parent, "SETTINGS_PANEL_WIDTH"):
             parent.SETTINGS_PANEL_WIDTH = int(new_width)
-        SettingsManager.set("SETTINGS_PANEL_WIDTH", int(new_width))
+        parent = self.parentWidget()
+        if parent is None:
+            raise RuntimeError("SettingsOverlay requires an owning settings view")
+        set_setting(parent, "SETTINGS_PANEL_WIDTH", int(new_width))
 
     def finish_resizing(self):
         self.setMinimumWidth(0)

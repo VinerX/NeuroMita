@@ -8,7 +8,7 @@ import datetime
 from typing import Any
 
 from main_logger import logger
-from core.events import get_event_bus, Events, Event
+from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from managers.task_manager import TaskStatus
@@ -251,7 +251,6 @@ class ChatController:
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Chat.SEND_MESSAGE, self._on_send_message, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_LLM_PROCESSING_STATUS, self._on_get_llm_processing_status, weak=False)
         self.event_bus.subscribe("send_periodic_image_request", self._on_send_periodic_image_request, weak=False)
         self.event_bus.subscribe(Events.Chat.CLEAR_CHAT, self._on_clear_chat, weak=False)
 
@@ -323,11 +322,15 @@ class ChatController:
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
-        Раньше это была корутина, внутри которой стоял блокирующий emit_and_wait —
+        Раньше это была корутина, внутри которой стоял блокирующий sync EventBus RPC —
         то есть на всё время генерации замирал весь asyncio-loop (озвучка, сервер
         игры, telegram), а вызывающий поток шины стоял на fut.result(600).
         """
         eff_policy = None
+        stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
+        stream_started = False
+        stream_finished = False
+        stream_current_role = None
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
@@ -344,37 +347,47 @@ class ChatController:
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
             effective_character_name = self._resolve_character_name(character_id)
             
-            self._stream_current_role = None
-
             def on_think_chunk(think_chunk: str):
-                if self._stream_current_role != "think":
-                    # При первом чанке размышлений подготавливаем UI
+                nonlocal stream_current_role, stream_started
+                if stream_current_role != "think":
                     self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                        "stream_id": stream_id,
                         "character_id": character_id or "",
                         "character_name": effective_character_name,
                         "speaker_name": effective_character_name,
-                        "role": "think"
-                    }, sync=True)
-                    self._stream_current_role = "think"
+                        "role": "think",
+                    }, delivery=EventDelivery.ORDERED)
+                    stream_current_role = "think"
+                    stream_started = True
 
-                # Отправляем чанки размышлений в UI в реальном времени
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": think_chunk, "role": "think"}, sync=True)
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
+                    "stream_id": stream_id,
+                    "chunk": think_chunk,
+                    "role": "think",
+                }, delivery=EventDelivery.ORDERED)
 
             stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
             stream_json_filter  = StructuredJsonStreamFilter() if is_streaming else None
 
             def _emit_visible_assistant(text: str):
+                nonlocal stream_current_role, stream_started
                 if not text:
                     return
-                if self._stream_current_role != "assistant":
+                if stream_current_role != "assistant":
                     self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                        "stream_id": stream_id,
                         "character_id": character_id or "",
                         "character_name": effective_character_name,
                         "speaker_name": effective_character_name,
-                        "role": "assistant"
-                    }, sync=True)
-                    self._stream_current_role = "assistant"
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {"chunk": text, "role": "assistant"}, sync=True)
+                        "role": "assistant",
+                    }, delivery=EventDelivery.ORDERED)
+                    stream_current_role = "assistant"
+                    stream_started = True
+                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
+                    "stream_id": stream_id,
+                    "chunk": text,
+                    "role": "assistant",
+                }, delivery=EventDelivery.ORDERED)
 
             def stream_callback_handler(chunk: str):
                 if not eff_policy.echo_to_ui:
@@ -412,7 +425,7 @@ class ChatController:
                         "role": "system",
                         "content": system_input,
                         "message_id": f"sys:{uuid.uuid4().hex}",
-                        "time": datetime.datetime.now().strftime("%H:%M"),
+                        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "system",
@@ -420,7 +433,7 @@ class ChatController:
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             if image_data and eff_policy.echo_to_ui and not images_shown:
                 img_display_role = "assistant" if image_source == "mita_camera" else "user"
@@ -438,7 +451,7 @@ class ChatController:
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
 
             result: ChatGenerationResult | None = use(GenerationService).generate_chat(
                 ChatGenerationRequest(
@@ -552,9 +565,14 @@ class ChatController:
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI,
-                                    {"structured_data": structured_data} if structured_data else {},
-                                    sync=True)
+                if not stream_started and response_text:
+                    _emit_visible_assistant(response_text)
+
+                finish_payload = {"stream_id": stream_id}
+                if structured_data:
+                    finish_payload["structured_data"] = structured_data
+                self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, delivery=EventDelivery.ORDERED)
+                stream_finished = True
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
@@ -571,7 +589,7 @@ class ChatController:
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
                         "speaker_name": effective_character_name or ""
-                    }, sync=True)
+                    }, delivery=EventDelivery.ORDERED)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
                     "response": response_text if response_text is not None else "...",
@@ -584,7 +602,7 @@ class ChatController:
                     "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
-                }, sync=True)
+                }, delivery=EventDelivery.ORDERED)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
@@ -603,6 +621,15 @@ class ChatController:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
             return None
         finally:
+            if stream_started and not stream_finished:
+                try:
+                    self.event_bus.emit(
+                        Events.GUI.FINISH_STREAM_UI,
+                        {"stream_id": stream_id, "aborted": True},
+                        delivery=EventDelivery.ORDERED,
+                    )
+                except Exception:
+                    pass
             self._exit_generation()
 
     def _submit_request(self, **kwargs) -> None:
@@ -826,8 +853,12 @@ class ChatController:
 
         if _is_sys_as_user:
             # Keep the system-as-user message, only remove the assistant response
-            history_data["messages"] = messages[:last_assistant_idx]
-            character.history_manager.save_history(history_data)
+            assistant = messages[last_assistant_idx]
+            message_id = str(assistant.get("message_id") or "")
+            if message_id:
+                character.history_manager.delete_messages_from(message_id)
+            else:
+                character.history_manager.delete_messages_from_row(assistant.get("_history_row_id"))
             widgets_to_remove = self._count_widgets_for_slice(messages[last_assistant_idx:])
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
             self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
@@ -838,8 +869,12 @@ class ChatController:
 
         # Remove both the user and assistant messages to avoid duplication on re-send
         cut_idx = last_user_idx if last_user_idx is not None else last_assistant_idx
-        history_data["messages"] = messages[:cut_idx]
-        character.history_manager.save_history(history_data)
+        cut_message = messages[cut_idx]
+        message_id = str(cut_message.get("message_id") or "")
+        if message_id:
+            character.history_manager.delete_messages_from(message_id)
+        else:
+            character.history_manager.delete_messages_from_row(cut_message.get("_history_row_id"))
 
         widgets_to_remove = self._count_widgets_for_slice(messages[cut_idx:])
         self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
@@ -959,8 +994,11 @@ class ChatController:
                             break
 
             # Cut history: remove user message + everything after
-            history_data["messages"] = messages[:target_idx]
-            character.history_manager.save_history(history_data)
+            message_id = str(target_msg.get("message_id") or "")
+            if message_id:
+                character.history_manager.delete_messages_from(message_id)
+            else:
+                character.history_manager.delete_messages_from_row(target_msg.get("_history_row_id"))
 
             # Widgets removed = everything from target_idx to end of current display
             widgets_to_remove = self._count_widgets_for_slice(messages[target_idx:])
@@ -990,8 +1028,12 @@ class ChatController:
                     break
 
             cut_idx = preceding_user_idx if preceding_user_idx is not None else target_idx
-            history_data["messages"] = messages[:cut_idx]
-            character.history_manager.save_history(history_data)
+            cut_message = messages[cut_idx]
+            cut_message_id = str(cut_message.get("message_id") or "")
+            if cut_message_id:
+                character.history_manager.delete_messages_from(cut_message_id)
+            else:
+                character.history_manager.delete_messages_from_row(cut_message.get("_history_row_id"))
 
             widgets_to_remove = self._count_widgets_for_slice(messages[cut_idx:])
             self.event_bus.emit(Events.GUI.REMOVE_LAST_CHAT_WIDGETS, {"count": widgets_to_remove})
@@ -1004,8 +1046,14 @@ class ChatController:
 
         elif target_role == "system":
             # Keep the system message, delete everything after, trigger generation
-            history_data["messages"] = messages[:target_idx + 1]
-            character.history_manager.save_history(history_data)
+            message_id = str(target_msg.get("message_id") or "")
+            if message_id:
+                character.history_manager.delete_messages_after(message_id)
+            else:
+                character.history_manager.delete_messages_from_row(
+                    target_msg.get("_history_row_id"),
+                    include_target=False,
+                )
 
             widgets_to_remove = self._count_widgets_for_slice(messages[target_idx + 1:])
             if widgets_to_remove > 0:
@@ -1048,7 +1096,7 @@ class ChatController:
             "role": role,
             "content": content,
             "message_id": f"sys:{uuid.uuid4().hex}",
-            "time": datetime.datetime.now().strftime("%H:%M"),
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         character.history_manager.append_message(message)
         logger.info(f"[ChatController] Сообщение сохранено, эмитим RELOAD_CHAT_HISTORY")

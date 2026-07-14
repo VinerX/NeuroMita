@@ -15,16 +15,36 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from utils.archive_utils import PasswordError, extract_archive, format_bytes, make_logger, wipe_dir
+from services.update_transaction import (
+    DirectoryInstallTransaction,
+    UpdateTransactionError,
+    atomic_write_json,
+    build_install_manifest,
+    file_sha256,
+    install_manifest_name,
+    read_json,
+    verify_install_manifest,
+    write_install_manifest,
+)
+from utils.archive_utils import (
+    ArchiveCancelled,
+    PasswordError,
+    extract_archive,
+    format_bytes,
+    make_logger,
+    wipe_dir,
+)
 from utils.release_assets import (
     Release,
     ReleaseAsset,
@@ -32,11 +52,46 @@ from utils.release_assets import (
     find_latest_unity_asset,
     parse_release,
     pick_from_release,
-    raw_release_has_launcher_assets,
+    raw_release_has_python_assets,
 )
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
 _LOG_PREFIX = "[updater]"
+
+
+class UpdateCancelled(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateResult:
+    component: str
+    ok: bool
+    status: str
+    changed: bool = False
+    cancelled: bool = False
+    restart_required: bool = False
+    version: str = ""
+    error: str = ""
+    archive_sha256: str = ""
+    recovered: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.ok and self.changed)
+
+    def as_dict(self) -> dict:
+        return {
+            "component": self.component,
+            "ok": self.ok,
+            "status": self.status,
+            "changed": self.changed,
+            "cancelled": self.cancelled,
+            "restart_required": self.restart_required,
+            "version": self.version,
+            "error": self.error,
+            "archive_sha256": self.archive_sha256,
+            "recovered": self.recovered,
+        }
 
 
 def _copy_file_over(src: Path, dst: Path, log) -> bool:
@@ -77,11 +132,14 @@ def _overlay_dir(staging: Path, base_path: Path, log, preserve_prompts: bool = F
     всё равно добавляются.
     """
     copied = skipped = preserved = 0
+    failed: list[Path] = []
     for root, _dirs, files in os.walk(staging):
         rel = Path(root).relative_to(staging)
         dst_root = base_path / rel
         dst_root.mkdir(parents=True, exist_ok=True)
         for name in files:
+            if not rel.parts and name == install_manifest_name():
+                continue
             src = Path(root) / name
             dst = dst_root / name
             if (
@@ -100,6 +158,11 @@ def _overlay_dir(staging: Path, base_path: Path, log, preserve_prompts: bool = F
                 pass
             if _copy_file_over(src, dst, log):
                 copied += 1
+            else:
+                failed.append(dst)
+    if failed:
+        preview = ", ".join(str(path) for path in failed[:3])
+        raise OSError(f"Could not apply {len(failed)} staged file(s): {preview}")
     msg = f"Overlay update into {base_path}: {copied} written, {skipped} unchanged"
     if preserve_prompts:
         msg += f", {preserved} prompts kept"
@@ -125,6 +188,8 @@ def _full_replace(staging: Path, base_path: Path, log, preserve_prompts: bool = 
     wipe_dir(base_path)
     base_path.mkdir(parents=True, exist_ok=True)
     for item in staging.iterdir():
+        if item.name == install_manifest_name():
+            continue
         target = base_path / item.name
         if target.exists():
             if target.is_dir():
@@ -134,7 +199,10 @@ def _full_replace(staging: Path, base_path: Path, log, preserve_prompts: bool = 
                     target.unlink()
                 except OSError:
                     pass
-        shutil.move(str(item), str(target))
+        if item.is_dir():
+            shutil.copytree(item, target)
+        else:
+            shutil.copy2(item, target)
 
     if prompts_backup and prompts_backup.exists():
         # Локальные промпты накладываем поверх релизных — локальные версии
@@ -145,6 +213,28 @@ def _full_replace(staging: Path, base_path: Path, log, preserve_prompts: bool = 
     log(f"Full replace into {base_path} finished.")
 
 
+def _verify_python_application(
+    staging: Path,
+    base_path: Path,
+    *,
+    preserve_prompts: bool,
+) -> None:
+    manifest = verify_install_manifest(staging)
+    files = manifest.get("files") or {}
+    for relative, record in files.items():
+        relative_path = Path(str(relative))
+        if preserve_prompts and relative_path.parts and relative_path.parts[0].casefold() == "prompts":
+            continue
+        target = base_path / relative_path
+        if not target.is_file():
+            raise UpdateTransactionError(f"Applied Python file is missing: {relative}")
+        expected_size = int(record.get("size") or 0)
+        if target.stat().st_size != expected_size:
+            raise UpdateTransactionError(f"Applied Python file size mismatch: {relative}")
+        if file_sha256(target) != str(record.get("sha256") or "").lower():
+            raise UpdateTransactionError(f"Applied Python file hash mismatch: {relative}")
+
+
 def _install_full_archive(
     archive: Path,
     base_path: Path,
@@ -152,6 +242,14 @@ def _install_full_archive(
     log,
     mode: str = "diff",
     preserve_prompts: bool = False,
+    *,
+    staging: Path | None = None,
+    archive_sha256: str = "",
+    logger=None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    on_stage_ready: Optional[Callable[[], None]] = None,
+    on_apply_started: Optional[Callable[[], None]] = None,
+    stop_event=None,
 ) -> None:
     """Установка обновления. Распаковка идёт в чистую временную папку (там
     надёжно срабатывает выравнивание единственного корневого каталога — иначе
@@ -165,22 +263,71 @@ def _install_full_archive(
 
     preserve_prompts — сохранять локальные промпты (см. _overlay_dir/_full_replace).
     """
-    staging = Path(tempfile.gettempdir()) / "neuromita_update_extract"
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
+    staging = staging or (Path(tempfile.gettempdir()) / "neuromita_update_extract")
+    marker = staging.parent / f".{staging.name}.ready.json"
+    marker_state = read_json(marker)
+    reusable = bool(
+        staging.is_dir()
+        and archive_sha256
+        and str(marker_state.get("archive_sha256") or "") == archive_sha256
+    )
+    if reusable:
+        try:
+            verify_install_manifest(staging)
+        except Exception:
+            reusable = False
+    if not reusable:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        marker.unlink(missing_ok=True)
+        staging.mkdir(parents=True, exist_ok=True)
     try:
-        # extract_archive сам выровняет единственный корневой каталог; staging
-        # чистый, поэтому это срабатывает надёжно.
-        extract_archive(archive, staging, password)
+        if not reusable:
+            extract_archive(
+                archive,
+                staging,
+                password,
+                logger=logger,
+                on_extract_progress=on_extract_progress,
+                stop_event=stop_event,
+            )
+            manifest = build_install_manifest(
+                staging,
+                component="python",
+                version="",
+                archive_sha256=archive_sha256,
+            )
+            write_install_manifest(staging, manifest)
+            atomic_write_json(
+                marker,
+                {
+                    "schema": 1,
+                    "archive": str(archive),
+                    "archive_sha256": archive_sha256,
+                    "created_at": int(time.time()),
+                },
+            )
+        if on_stage_ready is not None:
+            on_stage_ready()
+        if stop_event is not None and stop_event.is_set():
+            raise UpdateCancelled("Installation cancelled")
+        if on_apply_started is not None:
+            on_apply_started()
         base_path.mkdir(parents=True, exist_ok=True)
         if mode == "full":
             _full_replace(staging, base_path, log, preserve_prompts)
         else:
             _overlay_dir(staging, base_path, log, preserve_prompts)
+        _verify_python_application(
+            staging,
+            base_path,
+            preserve_prompts=preserve_prompts,
+        )
         log(f"Installed update contents into {base_path}")
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    except Exception:
+        if not marker.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 # ── Repo / version helpers ────────────────────────────────────────────────────
@@ -266,10 +413,14 @@ def _published_sort_key(release: dict) -> str:
     return str(release.get("published_at") or release.get("created_at") or "")
 
 
-def _select_release(repo: str, channel: str) -> Optional[Release]:
-    """Return newest release suitable for the given channel as a Release.
+def _select_python_release(repo: str, channel: str) -> Optional[Release]:
+    """Return newest release that actually ships a Python build for the channel.
 
-    stable: последний опубликованный НЕ-prerelease (GitHub /releases/latest).
+    Судим по РЕАЛЬНОМУ наличию Python-ассета (full/patch), а не по любому
+    launcher-ассету: Unity-only релиз (напр. v2026.07.12 с единственным
+    UnityBuild) не должен восприниматься как доступное Python-обновление.
+
+    stable: последний опубликованный НЕ-prerelease с Python-сборкой.
     beta:   то же самое, но с учётом prerelease — берём самый свежий по
             published_at. Список из /releases GitHub отдаёт в порядке
             created_at (дата тега), из-за чего более старый по публикации
@@ -277,7 +428,7 @@ def _select_release(repo: str, channel: str) -> Optional[Release]:
     """
     raws = [
         r for r in _fetch_releases(repo)
-        if not r.get("draft") and raw_release_has_launcher_assets(r)
+        if not r.get("draft") and raw_release_has_python_assets(r)
     ]
     if channel == "stable":
         raws = [r for r in raws if not r.get("prerelease")]
@@ -289,59 +440,168 @@ def _select_release(repo: str, channel: str) -> Optional[Release]:
 
 # ── Download ──────────────────────────────────────────────────────────────────
 
+def _expected_sha256(digest: str | None) -> str:
+    text = str(digest or "").strip().lower()
+    if text.startswith("sha256:"):
+        text = text.split(":", 1)[1]
+    return text if re.fullmatch(r"[0-9a-f]{64}", text) else ""
+
+
+def _archive_meta_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".meta.json")
+
+
+def _validate_cached_archive(
+    path: Path,
+    *,
+    url: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> str:
+    if not path.is_file():
+        return ""
+    actual_size = path.stat().st_size
+    if expected_size > 0 and actual_size != expected_size:
+        return ""
+    meta = read_json(_archive_meta_path(path))
+    cached_hash = str(meta.get("sha256") or "").lower()
+    actual_hash = file_sha256(path)
+    if expected_sha256 and actual_hash != expected_sha256:
+        return ""
+    if cached_hash and cached_hash != actual_hash:
+        _archive_meta_path(path).unlink(missing_ok=True)
+    atomic_write_json(
+        _archive_meta_path(path),
+        {"schema": 1, "url": url, "size": actual_size, "sha256": actual_hash},
+    )
+    return actual_hash
+
+
 def _download(
     url: str,
     dest: Path,
     on_progress: Optional[Callable[[int, int], None]] = None,
     retries: int = 3,
     stop_event=None,
-) -> None:
-    """Stream url to dest (atomic replace via .part file).
+    *,
+    expected_size: int = 0,
+    expected_sha256: str = "",
+) -> str:
+    """Resume a streamed download and atomically publish a verified archive."""
+    import requests
 
-    on_progress(downloaded_bytes, total_bytes) is called periodically.
-    stop_event: threading.Event — set it to cancel the download.
-    """
-    import requests  # already in requirements.txt
+    expected_size = max(0, int(expected_size or 0))
+    expected_sha256 = _expected_sha256(expected_sha256)
+    cached_hash = _validate_cached_archive(
+        dest,
+        url=url,
+        expected_size=expected_size,
+        expected_sha256=expected_sha256,
+    )
+    if cached_hash:
+        if on_progress is not None:
+            size = dest.stat().st_size
+            on_progress(size, expected_size or size)
+        return cached_hash
+
+    if dest.exists():
+        dest.unlink(missing_ok=True)
+        _archive_meta_path(dest).unlink(missing_ok=True)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    chunk_size = 1 << 16
+    partial = dest.with_suffix(dest.suffix + ".part")
+    partial_meta_path = _archive_meta_path(partial)
+    partial_meta = read_json(partial_meta_path)
+    if partial.exists() and str(partial_meta.get("url") or "") != str(url):
+        partial.unlink(missing_ok=True)
+        partial_meta_path.unlink(missing_ok=True)
 
-    last_err: Optional[Exception] = None
+    chunk_size = 1 << 16
+    last_error: Optional[Exception] = None
     for attempt in range(1, retries + 1):
+        if stop_event is not None and stop_event.is_set():
+            raise UpdateCancelled("Download cancelled")
         try:
-            with requests.get(
-                url, stream=True, timeout=30, headers={"User-Agent": _USER_AGENT}
-            ) as r:
-                r.raise_for_status()
-                total = int(r.headers.get("Content-Length") or 0)
-                downloaded = 0
-                last_report = time.monotonic()
-                with open(tmp, "wb") as f:
-                    for piece in r.iter_content(chunk_size=chunk_size):
-                        if stop_event is not None and stop_event.is_set():
-                            raise RuntimeError("Cancelled")
-                        if not piece:
-                            continue
-                        f.write(piece)
-                        downloaded += len(piece)
-                        now = time.monotonic()
-                        if on_progress and (now - last_report) >= 0.2:
-                            on_progress(downloaded, total)
-                            last_report = now
-                if on_progress:
-                    on_progress(downloaded, total or downloaded)
-            tmp.replace(dest)
-            return
-        except Exception as e:
-            last_err = e
-            tmp.unlink(missing_ok=True)
+            offset = partial.stat().st_size if partial.exists() else 0
+            partial_meta = read_json(partial_meta_path)
+            headers = {"User-Agent": _USER_AGENT}
+            if offset > 0:
+                headers["Range"] = f"bytes={offset}-"
+                validator = str(partial_meta.get("etag") or partial_meta.get("last_modified") or "")
+                if validator:
+                    headers["If-Range"] = validator
+
+            with requests.get(url, stream=True, timeout=30, headers=headers) as response:
+                if response.status_code != 416:
+                    response.raise_for_status()
+                    resumed = response.status_code == 206 and offset > 0
+                    if not resumed:
+                        offset = 0
+                    content_range = str(response.headers.get("Content-Range") or "")
+                    match = re.search(r"/(\d+)$", content_range)
+                    response_total = int(match.group(1)) if match else 0
+                    if response_total <= 0:
+                        content_length = int(response.headers.get("Content-Length") or 0)
+                        response_total = content_length + offset if resumed else content_length
+                    total = expected_size or response_total
+                    atomic_write_json(
+                        partial_meta_path,
+                        {
+                            "schema": 1,
+                            "url": url,
+                            "expected_size": expected_size,
+                            "etag": str(response.headers.get("ETag") or partial_meta.get("etag") or ""),
+                            "last_modified": str(
+                                response.headers.get("Last-Modified")
+                                or partial_meta.get("last_modified")
+                                or ""
+                            ),
+                        },
+                    )
+                    downloaded = offset
+                    last_report = time.monotonic()
+                    with partial.open("ab" if resumed else "wb") as output:
+                        for piece in response.iter_content(chunk_size=chunk_size):
+                            if stop_event is not None and stop_event.is_set():
+                                raise UpdateCancelled("Download cancelled")
+                            if not piece:
+                                continue
+                            output.write(piece)
+                            downloaded += len(piece)
+                            now = time.monotonic()
+                            if on_progress is not None and (now - last_report) >= 0.2:
+                                on_progress(downloaded, total)
+                                last_report = now
+                    if on_progress is not None:
+                        on_progress(downloaded, total or downloaded)
+                elif not (expected_size > 0 and offset == expected_size):
+                    response.raise_for_status()
+
+            actual_size = partial.stat().st_size if partial.exists() else 0
+            if expected_size > 0 and actual_size != expected_size:
+                raise RuntimeError(f"Downloaded size mismatch: {actual_size} != {expected_size}")
+            actual_hash = file_sha256(partial)
+            if expected_sha256 and actual_hash != expected_sha256:
+                partial.unlink(missing_ok=True)
+                partial_meta_path.unlink(missing_ok=True)
+                raise RuntimeError("Downloaded archive SHA-256 mismatch")
+            os.replace(partial, dest)
+            partial_meta_path.unlink(missing_ok=True)
+            atomic_write_json(
+                _archive_meta_path(dest),
+                {"schema": 1, "url": url, "size": actual_size, "sha256": actual_hash},
+            )
+            return actual_hash
+        except UpdateCancelled:
+            raise
+        except Exception as error:
+            last_error = error
             if stop_event is not None and stop_event.is_set():
-                raise RuntimeError("Cancelled") from e
+                raise UpdateCancelled("Download cancelled") from error
             if attempt < retries:
                 time.sleep(1.5 * attempt)
 
-    raise RuntimeError(f"Download failed after {retries} attempts: {last_err}")
+    raise RuntimeError(f"Download failed after {retries} attempts: {last_error}")
 
 
 # ── Archive extraction ────────────────────────────────────────────────────────
@@ -369,6 +629,104 @@ def _fetch_latest_unity_release_asset(
     return find_latest_unity_asset(releases, channel)
 
 
+def _python_journal_path(base_path: Path) -> Path:
+    return base_path.parent / f".{base_path.name}.update-state" / "python" / "operation.json"
+
+
+def _python_staging_path(base_path: Path) -> Path:
+    return base_path.parent / f".{base_path.name}.python-update-stage"
+
+
+def _python_stage_marker(staging: Path) -> Path:
+    return staging.parent / f".{staging.name}.ready.json"
+
+
+def _python_download_dir(base_path: Path) -> Path:
+    return base_path.parent / f".{base_path.name}.update-download"
+
+
+def _set_python_operation_phase(base_path: Path, phase: str, **changes) -> dict:
+    journal = _python_journal_path(base_path)
+    state = read_json(journal)
+    state.update(changes)
+    state.update(
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base_path.resolve()),
+            "phase": str(phase),
+            "updated_at": int(time.time()),
+        }
+    )
+    state.setdefault("created_at", int(time.time()))
+    atomic_write_json(journal, state)
+    return state
+
+
+def _begin_python_operation(
+    base_path: Path,
+    *,
+    version: str,
+    asset: ReleaseAsset,
+    mode: str,
+    preserve_prompts: bool,
+    is_patch: bool,
+) -> dict:
+    journal = _python_journal_path(base_path)
+    previous = read_json(journal)
+    same_operation = (
+        str(previous.get("version") or "") == str(version)
+        and str(previous.get("archive_url") or "") == str(asset.url)
+    )
+    created_at = int(previous.get("created_at") or time.time()) if same_operation else int(time.time())
+    state = {
+        "schema": 1,
+        "component": "python",
+        "target": str(base_path.resolve()),
+        "phase": "created",
+        "authorized": True,
+        "version": str(version),
+        "archive_name": str(asset.name),
+        "archive_url": str(asset.url),
+        "archive_size": int(asset.size or 0),
+        "archive_digest": str(asset.digest or ""),
+        "archive_path": str(_python_download_dir(base_path) / asset.name),
+        "staging": str(_python_staging_path(base_path)),
+        "mode": str(mode),
+        "preserve_prompts": bool(preserve_prompts),
+        "is_patch": bool(is_patch),
+        "created_at": created_at,
+        "updated_at": int(time.time()),
+    }
+    if same_operation:
+        for key in ("archive_sha256", "error"):
+            if previous.get(key):
+                state[key] = previous[key]
+    atomic_write_json(journal, state)
+    return state
+
+
+def _python_stage_is_reusable(staging: Path, archive_sha256: str) -> bool:
+    marker = read_json(_python_stage_marker(staging))
+    if not staging.is_dir() or not archive_sha256:
+        return False
+    if str(marker.get("archive_sha256") or "") != str(archive_sha256):
+        return False
+    try:
+        verify_install_manifest(staging)
+        return True
+    except Exception:
+        return False
+
+
+def _cleanup_python_reserve(base_path: Path, archive: Path) -> None:
+    staging = _python_staging_path(base_path)
+    shutil.rmtree(staging, ignore_errors=True)
+    _python_stage_marker(staging).unlink(missing_ok=True)
+    archive.unlink(missing_ok=True)
+    _archive_meta_path(archive).unlink(missing_ok=True)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_python_update_info(
@@ -380,7 +738,7 @@ def get_python_update_info(
     local_version = _get_current_version()
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
 
-    release = _select_release(repo, channel)
+    release = _select_python_release(repo, channel)
     if release is None:
         return {
             "ok": False,
@@ -391,6 +749,8 @@ def get_python_update_info(
 
     remote_tag = str(release.tag or "")
     available = bool(remote_tag) and _is_newer(remote_tag, local_version)
+    picked = pick_from_release(release)
+    python_asset = picked.python_patch or picked.python_full
     return {
         "ok": True,
         "component": "python",
@@ -404,6 +764,9 @@ def get_python_update_info(
         "body": str(release.body or ""),
         "published_at": str(release.published_at or ""),
         "html_url": str(release.html_url or ""),
+        "asset_name": python_asset.name if python_asset is not None else "",
+        "asset_size": int(python_asset.size or 0) if python_asset is not None else 0,
+        "asset_digest": str(python_asset.digest or "") if python_asset is not None else "",
     }
 
 
@@ -454,6 +817,8 @@ def get_unity_update_info(
         "published_at": str(release.published_at or ""),
         "html_url": str(release.html_url or ""),
         "asset_name": getattr(unity_asset, "name", "") if unity_asset is not None else "",
+        "asset_size": int(getattr(unity_asset, "size", 0) or 0) if unity_asset is not None else 0,
+        "asset_digest": str(getattr(unity_asset, "digest", "") or "") if unity_asset is not None else "",
     }
 
 def check_for_updates(
@@ -462,32 +827,19 @@ def check_for_updates(
     channel: str = "stable",
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    on_stage: Optional[Callable[[str, int, int, bool], None]] = None,
     auto_update: Optional[bool] = None,
     restart_on_success: bool = True,
     update_mode: str = "diff",
     preserve_prompts: bool = False,
-) -> bool:
-    """Check for Python-part updates. Apply automatically if AUTO_UPDATE=1.
+    stop_event=None,
+) -> UpdateResult:
+    """Check and optionally install the Python component update.
 
-    Args:
-        base_dir:    Game root directory (where NeuroMita.pyz lives).
-        logger:      Logger with info/warning/success/notify methods.
-        channel:     "stable" or "beta".
-        tester_code: Password for encrypted test archives.
-        on_progress: Callback(downloaded_bytes, total_bytes) for UI progress.
-        auto_update: Force auto-apply behavior instead of reading env/config only.
-        update_mode: "diff" (наложение поверх, только изменённые файлы) или
-            "full" (полная перезапись папки). Применяется к полному архиву;
-            патчи всегда накладываются diff'ом.
-        preserve_prompts: не перезаписывать локальные промпты при обновлении.
-        restart_on_success: при True (по умолчанию, для автообновления на
-            старте) после установки делает sys.exit(42) — run.bat/run.py
-            перезапускают игру. При False (вызов из UI) не выходит, а
-            возвращает True, чтобы вызывающий сам предложил перезапуск.
-
-    Returns:
-        True, если обновление установлено и нужен перезапуск (актуально при
-        restart_on_success=False; иначе процесс завершится через sys.exit).
+    The result distinguishes availability, completed installation, cancellation,
+    missing credentials, and a real failure. UI callers keep
+    ``restart_on_success`` false so they can offer a controlled restart.
     """
     log = make_logger(logger, _LOG_PREFIX)
 
@@ -504,26 +856,27 @@ def check_for_updates(
 
     log(f"Checking for updates ({repo}, channel={channel}, mode={update_mode}) ...")
 
-    release = _select_release(repo, channel)
+    release = _select_python_release(repo, channel)
     if release is None:
-        log("Could not reach GitHub to check for updates", "warning")
-        return
+        message = "Could not reach GitHub to check for updates"
+        log(message, "warning")
+        return UpdateResult(component="python", ok=False, status="check_failed", error=message)
 
     remote_tag = release.tag
     if not remote_tag:
-        return
+        return UpdateResult(component="python", ok=False, status="check_failed", error="Release tag is empty")
 
     if not _is_newer(remote_tag, local_version):
         log(f"Up to date: {local_version}")
-        return
+        return UpdateResult(component="python", ok=True, status="current", version=local_version)
 
     log(f"New version available: {remote_tag} (current: {local_version})", "notify")
 
     if not auto_update:
-        log("Auto-update is disabled (AUTO_UPDATE=0). Set AUTO_UPDATE=1 in features.env to enable.")
-        return
+        log(f"Python update {remote_tag} is available; waiting for user selection.")
+        return UpdateResult(component="python", ok=True, status="available", version=remote_tag)
 
-    # Select best Python asset
+    # _select_python_release only returns releases with a Python archive.
     picked = pick_from_release(release)
     is_patch = False
     python_asset = None
@@ -535,89 +888,637 @@ def check_for_updates(
         python_asset = picked.python_full
 
     if python_asset is None:
-        # Plain fallback: first .zip in assets
+        # Plain fallback: first .zip that не является Unity-сборкой (иначе можно
+        # ошибочно скачать 300+ МБ UnityBuild как Python-обновление).
         python_asset = next(
-            (a for a in release.assets if a.name.lower().endswith(".zip")),
+            (
+                a for a in release.assets
+                if a.name.lower().endswith(".zip") and "unitybuild" not in a.name.lower()
+            ),
             None,
         )
         if python_asset is None:
-            log("No suitable Python asset found in release", "warning")
-            return
+            message = "No suitable Python asset found in release"
+            log(message, "warning")
+            return UpdateResult(component="python", ok=False, status="check_failed", error=message)
 
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
     base_path = Path(base_dir)
-    dl_dir = base_path / "_update_download"
+    dl_dir = _python_download_dir(base_path)
     dl_dir.mkdir(parents=True, exist_ok=True)
     temp_archive = dl_dir / python_asset.name
 
-    if temp_archive.exists() and temp_archive.stat().st_size > 0:
-        log(f"Cached archive found, skipping download: {temp_archive}")
-    else:
-        log(f"Downloading {python_asset.name} ...")
-        try:
-            _download(python_asset.url, temp_archive, on_progress=on_progress)
-        except Exception as e:
-            log(f"Download failed: {e}", "error")
-            temp_archive.unlink(missing_ok=True)
-            return
+    staging = _python_staging_path(base_path)
+    active_archive = temp_archive
+    archive_hash = ""
+    _begin_python_operation(
+        base_path,
+        version=remote_tag,
+        asset=python_asset,
+        mode="diff" if is_patch else update_mode,
+        preserve_prompts=preserve_prompts,
+        is_patch=is_patch,
+    )
 
-    log(f"Applying update to {base_path} ...")
+    def stage_ready() -> None:
+        _set_python_operation_phase(
+            base_path,
+            "stage_ready",
+            archive_sha256=archive_hash,
+            archive_path=str(active_archive),
+        )
+
+    def apply_started() -> None:
+        _set_python_operation_phase(
+            base_path,
+            "applying",
+            archive_sha256=archive_hash,
+            archive_path=str(active_archive),
+        )
+        _emit_stage(on_stage, "Applying update", 3, 4, False)
+
     try:
+        _set_python_operation_phase(base_path, "downloading")
+        _emit_stage(on_stage, "Downloading", 1, 4, True)
+        archive_hash = _download(
+            python_asset.url,
+            temp_archive,
+            on_progress=on_progress,
+            stop_event=stop_event,
+            expected_size=int(python_asset.size or 0),
+            expected_sha256=_expected_sha256(python_asset.digest),
+        )
+        _set_python_operation_phase(
+            base_path,
+            "archive_verified",
+            archive_sha256=archive_hash,
+            archive_path=str(temp_archive),
+        )
+        _emit_stage(on_stage, "Extracting", 2, 4, True)
+        log(f"Applying update to {base_path} ...")
         if is_patch:
             try:
-                # Патч по своей природе аддитивный — всегда накладываем diff'ом
-                # (наложение поверх, без wipe), режим full к нему не применяем.
+                _set_python_operation_phase(base_path, "extracting")
                 _install_full_archive(
                     temp_archive, base_path, tester_code, log,
                     mode="diff", preserve_prompts=preserve_prompts,
+                    staging=staging,
+                    archive_sha256=archive_hash,
+                    logger=logger,
+                    on_extract_progress=on_extract_progress,
+                    on_stage_ready=stage_ready,
+                    on_apply_started=apply_started,
+                    stop_event=stop_event,
                 )
+            except (PasswordError, ArchiveCancelled, UpdateCancelled):
+                raise
             except Exception as e:
                 log(f"Patch failed ({e}), falling back to full update ...", "warning")
                 temp_archive.unlink(missing_ok=True)
+                _archive_meta_path(temp_archive).unlink(missing_ok=True)
                 full_asset = _fetch_full_fallback_asset(repo, channel)
                 if full_asset is None:
-                    log("No full release found for fallback", "error")
-                    return
+                    raise RuntimeError("No full release found for fallback")
                 full_archive = dl_dir / full_asset.name
+                active_archive = full_archive
+                _begin_python_operation(
+                    base_path,
+                    version=remote_tag,
+                    asset=full_asset,
+                    mode=update_mode,
+                    preserve_prompts=preserve_prompts,
+                    is_patch=False,
+                )
+                _set_python_operation_phase(base_path, "downloading")
                 log(f"Downloading full release {full_asset.name} ...")
-                _download(full_asset.url, full_archive, on_progress=on_progress)
+                archive_hash = _download(
+                    full_asset.url,
+                    full_archive,
+                    on_progress=on_progress,
+                    stop_event=stop_event,
+                    expected_size=int(full_asset.size or 0),
+                    expected_sha256=_expected_sha256(full_asset.digest),
+                )
+                _set_python_operation_phase(
+                    base_path,
+                    "archive_verified",
+                    archive_sha256=archive_hash,
+                    archive_path=str(full_archive),
+                )
+                _set_python_operation_phase(base_path, "extracting")
                 _install_full_archive(
                     full_archive, base_path, tester_code, log,
                     mode=update_mode, preserve_prompts=preserve_prompts,
+                    staging=staging,
+                    archive_sha256=archive_hash,
+                    logger=logger,
+                    on_extract_progress=on_extract_progress,
+                    on_stage_ready=stage_ready,
+                    on_apply_started=apply_started,
+                    stop_event=stop_event,
                 )
-                full_archive.unlink(missing_ok=True)
         else:
+            _set_python_operation_phase(base_path, "extracting")
             _install_full_archive(
                 temp_archive, base_path, tester_code, log,
                 mode=update_mode, preserve_prompts=preserve_prompts,
+                staging=staging,
+                archive_sha256=archive_hash,
+                logger=logger,
+                on_extract_progress=on_extract_progress,
+                on_stage_ready=stage_ready,
+                on_apply_started=apply_started,
+                stop_event=stop_event,
             )
-            temp_archive.unlink(missing_ok=True)
+        _set_python_operation_phase(
+            base_path,
+            "completed",
+            completed_at=int(time.time()),
+            archive_sha256=archive_hash,
+        )
+        _cleanup_python_reserve(base_path, active_archive)
+        _emit_stage(on_stage, "Completed", 4, 4, False)
 
         if restart_on_success:
             log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
-            # Exit code 42 signals launch.py / run.bat to restart.
-            # Continuing from stale .pyz offsets would cause ZipImportError.
             sys.exit(42)
 
-        # Вызов из UI: не выходим сами — отдаём управление вызывающему,
-        # чтобы тот спросил пользователя про перезапуск. Продолжать работу
-        # без рестарта рискованно (старый .pyz уже заменён), поэтому
-        # перезапуск всё равно нужен — просто по кнопке.
         log(f"Update {remote_tag} installed successfully. Restart required.", "success")
-        return True
+        return UpdateResult(
+            component="python",
+            ok=True,
+            status="installed",
+            changed=True,
+            restart_required=True,
+            version=remote_tag,
+            archive_sha256=archive_hash,
+        )
 
-    except PasswordError:
-        # Архив валидный, пароль не установлен — не выкидываем, юзер вернётся
-        # с TESTER_CODE и не качает заново. base_path при ошибке не стёрт,
-        # так как распаковка идёт во временную папку до wipe.
+    except (UpdateCancelled, ArchiveCancelled) as error:
+        _set_python_operation_phase(base_path, "cancelled", error=str(error))
+        log("Python update cancelled; downloaded data was kept for resume.", "warning")
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="cancelled",
+            cancelled=True,
+            version=remote_tag,
+            error=str(error),
+            archive_sha256=archive_hash,
+        )
+    except PasswordError as error:
+        _set_python_operation_phase(base_path, "waiting_for_credentials", error=str(error))
         log("Archive is password-protected. Set TESTER_CODE in settings to unlock.", "error")
-        log(f"Archive kept for retry: {temp_archive}")
-    except Exception as e:
-        log(f"Update failed: {e}", "error")
-        temp_archive.unlink(missing_ok=True)
+        log(f"Archive kept for retry: {active_archive}")
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="waiting_for_credentials",
+            version=remote_tag,
+            error=str(error),
+            archive_sha256=archive_hash,
+        )
+    except Exception as error:
+        _set_python_operation_phase(base_path, "failed", error=str(error))
+        log(f"Update failed: {error}", "error")
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="failed",
+            version=remote_tag,
+            error=str(error),
+            archive_sha256=archive_hash,
+        )
 
-    return False
+
+def resume_pending_python_update(
+    *,
+    base_dir: Optional[str] = None,
+    tester_code: Optional[str] = None,
+    logger=None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    on_stage: Optional[Callable[[str, int, int, bool], None]] = None,
+    stop_event=None,
+) -> UpdateResult:
+    """Finish a previously authorized Python install from its durable reserve."""
+    base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
+    state = read_json(_python_journal_path(base_path))
+    phase = str(state.get("phase") or "")
+    if not state or phase in {"", "completed", "cancelled", "failed"}:
+        return UpdateResult(component="python", ok=True, status="no_pending_operation")
+
+    effective_tester_code = tester_code or os.environ.get("TESTER_CODE") or None
+    if phase == "waiting_for_credentials" and not effective_tester_code:
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="waiting_for_credentials",
+            version=str(state.get("version") or ""),
+            error=str(state.get("error") or "Tester code is required"),
+        )
+
+    asset = ReleaseAsset(
+        name=str(state.get("archive_name") or ""),
+        url=str(state.get("archive_url") or ""),
+        size=int(state.get("archive_size") or 0),
+        digest=str(state.get("archive_digest") or ""),
+    )
+    version = str(state.get("version") or "")
+    if not asset.name or not asset.url or not version:
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="failed",
+            error="Pending Python update journal is incomplete",
+        )
+
+    archive = Path(str(state.get("archive_path") or _python_download_dir(base_path) / asset.name))
+    staging = _python_staging_path(base_path)
+    archive_hash = str(state.get("archive_sha256") or "")
+    log = make_logger(logger, _LOG_PREFIX)
+
+    def stage_ready() -> None:
+        _set_python_operation_phase(
+            base_path,
+            "stage_ready",
+            archive_sha256=archive_hash,
+            archive_path=str(archive),
+        )
+
+    def apply_started() -> None:
+        _set_python_operation_phase(
+            base_path,
+            "applying",
+            archive_sha256=archive_hash,
+            archive_path=str(archive),
+        )
+        _emit_stage(on_stage, "Applying update", 3, 4, False)
+
+    try:
+        if not _python_stage_is_reusable(staging, archive_hash):
+            _set_python_operation_phase(base_path, "downloading")
+            _emit_stage(on_stage, "Downloading", 1, 4, True)
+            archive_hash = _download(
+                asset.url,
+                archive,
+                on_progress=on_progress,
+                stop_event=stop_event,
+                expected_size=int(asset.size or 0),
+                expected_sha256=_expected_sha256(asset.digest),
+            )
+            _set_python_operation_phase(
+                base_path,
+                "archive_verified",
+                archive_sha256=archive_hash,
+                archive_path=str(archive),
+            )
+        _set_python_operation_phase(base_path, "extracting")
+        _emit_stage(on_stage, "Extracting", 2, 4, True)
+        _install_full_archive(
+            archive,
+            base_path,
+            effective_tester_code,
+            log,
+            mode=str(state.get("mode") or "diff"),
+            preserve_prompts=bool(state.get("preserve_prompts", False)),
+            staging=staging,
+            archive_sha256=archive_hash,
+            logger=logger,
+            on_extract_progress=on_extract_progress,
+            on_stage_ready=stage_ready,
+            on_apply_started=apply_started,
+            stop_event=stop_event,
+        )
+        _set_python_operation_phase(
+            base_path,
+            "completed",
+            completed_at=int(time.time()),
+            archive_sha256=archive_hash,
+        )
+        _cleanup_python_reserve(base_path, archive)
+        _emit_stage(on_stage, "Completed", 4, 4, False)
+        log(f"Recovered Python update {version}; restart required.", "success")
+        return UpdateResult(
+            component="python",
+            ok=True,
+            status="installed",
+            changed=True,
+            restart_required=True,
+            version=version,
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
+    except (UpdateCancelled, ArchiveCancelled) as error:
+        _set_python_operation_phase(base_path, "cancelled", error=str(error))
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="cancelled",
+            cancelled=True,
+            version=version,
+            error=str(error),
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
+    except PasswordError as error:
+        _set_python_operation_phase(base_path, "waiting_for_credentials", error=str(error))
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="waiting_for_credentials",
+            version=version,
+            error=str(error),
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
+    except Exception as error:
+        _set_python_operation_phase(base_path, "failed", error=str(error))
+        log(f"Python update recovery failed: {error}", "error")
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="failed",
+            version=version,
+            error=str(error),
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
+
+
+def _emit_stage(
+    callback: Optional[Callable[[str, int, int, bool], None]],
+    name: str,
+    index: int,
+    total: int,
+    can_cancel: bool,
+) -> None:
+    if callback is not None:
+        callback(str(name), int(index), int(total), bool(can_cancel))
+
+
+def _copy_preserved_unity_data(source: Path, stage: Path) -> None:
+    user_data = source / "user_data"
+    if not user_data.is_dir():
+        return
+    destination = stage / "user_data"
+    if destination.exists():
+        shutil.rmtree(destination, ignore_errors=True)
+    shutil.copytree(user_data, destination)
+
+
+def _unity_transaction(base_path: Path, unity_path: Path, log) -> DirectoryInstallTransaction:
+    return DirectoryInstallTransaction(
+        component="unity",
+        target=unity_path,
+        state_root=base_path / "_update_state",
+        logger=log,
+    )
+
+
+def _verify_unity_install(path: Path, on_progress=None) -> dict:
+    manifest = verify_install_manifest(path, on_progress=on_progress)
+    if _find_unity_executable(path) is None:
+        raise UpdateTransactionError("Verified Unity staging has no executable")
+    version_file = path / "_version.txt"
+    expected_version = str(manifest.get("version") or "")
+    actual_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else ""
+    if not expected_version or actual_version != expected_version:
+        raise UpdateTransactionError("Installed Unity version marker does not match the manifest")
+    return manifest
+
+
+def _install_unity_asset(
+    *,
+    base_path: Path,
+    unity_path: Path,
+    version: str,
+    asset: ReleaseAsset,
+    tester_code: Optional[str],
+    logger,
+    on_progress: Optional[Callable[[int, int], None]],
+    on_extract_progress: Optional[Callable[[int, int], None]],
+    on_verify_progress: Optional[Callable[[int, int], None]],
+    on_stage: Optional[Callable[[str, int, int, bool], None]],
+    stop_event,
+    recovered: bool = False,
+) -> UpdateResult:
+    log = make_logger(logger, _LOG_PREFIX)
+    archive = base_path / "_update_download" / asset.name
+    transaction = _unity_transaction(base_path, unity_path, log)
+    transaction.begin(
+        {
+            "version": str(version),
+            "archive_url": str(asset.url),
+            "archive_name": str(asset.name),
+            "archive_path": str(archive),
+            "archive_size": int(asset.size or 0),
+            "archive_digest": str(asset.digest or ""),
+        }
+    )
+
+    try:
+        initial_phase = transaction.phase
+        if initial_phase in {"commit_prepared", "target_backed_up", "activated"}:
+            _emit_stage(on_stage, "Recovering installation", 6, 6, False)
+            if transaction.recover_commit(
+                lambda target: _verify_unity_install(target, on_verify_progress)
+            ):
+                archive.unlink(missing_ok=True)
+                _archive_meta_path(archive).unlink(missing_ok=True)
+                log(f"Unity update {version} recovered successfully.", "success")
+                return UpdateResult(
+                    component="unity",
+                    ok=True,
+                    status="installed",
+                    changed=True,
+                    version=version,
+                    recovered=True,
+                )
+
+        stage_ready = initial_phase in {"stage_ready", "commit_prepared"} and transaction.paths.stage.is_dir()
+        archive_hash = str(transaction.state.get("archive_sha256") or "")
+        if not stage_ready:
+            cached_hash = _validate_cached_archive(
+                archive,
+                url=asset.url,
+                expected_size=int(asset.size or 0),
+                expected_sha256=_expected_sha256(asset.digest),
+            )
+            if not cached_hash:
+                transaction.set_phase("downloading")
+                _emit_stage(on_stage, "Downloading", 1, 6, True)
+                log(f"Downloading Unity {asset.name} to {archive} ...")
+                archive_hash = _download(
+                    asset.url,
+                    archive,
+                    on_progress=on_progress,
+                    stop_event=stop_event,
+                    expected_size=int(asset.size or 0),
+                    expected_sha256=_expected_sha256(asset.digest),
+                )
+            else:
+                archive_hash = cached_hash
+                log(f"Verified cached archive: {archive} ({format_bytes(archive.stat().st_size)})")
+            transaction.set_phase("archive_verified", archive_sha256=archive_hash)
+
+        if stop_event is not None and stop_event.is_set():
+            raise UpdateCancelled("Installation cancelled")
+
+        if stage_ready:
+            try:
+                _emit_stage(on_stage, "Verifying staged files", 4, 6, False)
+                _verify_unity_install(transaction.paths.stage, on_verify_progress)
+            except Exception:
+                stage_ready = False
+
+        if not stage_ready:
+            transaction.set_phase("extracting")
+            stage = transaction.reset_stage()
+            _emit_stage(on_stage, "Extracting", 2, 6, True)
+            extract_archive(
+                archive,
+                stage,
+                tester_code,
+                logger=logger,
+                on_extract_progress=on_extract_progress,
+                stop_event=stop_event,
+            )
+            if stop_event is not None and stop_event.is_set():
+                raise UpdateCancelled("Installation cancelled")
+            if _find_unity_executable(stage) is None:
+                raise UpdateTransactionError("Unity archive does not contain an executable")
+            _copy_preserved_unity_data(unity_path, stage)
+            (stage / "_version.txt").write_text(version, encoding="utf-8")
+
+            transaction.set_phase("verifying_stage")
+            _emit_stage(on_stage, "Verifying staged files", 3, 6, False)
+            manifest = build_install_manifest(
+                stage,
+                component="unity",
+                version=version,
+                archive_sha256=archive_hash,
+                on_progress=on_verify_progress,
+                excluded_roots={"user_data"},
+            )
+            write_install_manifest(stage, manifest)
+            transaction.mark_stage_ready(tree_sha256=str(manifest.get("tree_sha256") or ""))
+
+        _emit_stage(on_stage, "Applying update", 5, 6, False)
+        transaction.commit(lambda target: _verify_unity_install(target, on_verify_progress))
+        _emit_stage(on_stage, "Completed", 6, 6, False)
+        archive.unlink(missing_ok=True)
+        _archive_meta_path(archive).unlink(missing_ok=True)
+        log(f"Unity update {version} installed and verified successfully.", "success")
+        return UpdateResult(
+            component="unity",
+            ok=True,
+            status="installed",
+            changed=True,
+            version=version,
+            archive_sha256=archive_hash,
+            recovered=recovered,
+        )
+    except (UpdateCancelled, ArchiveCancelled) as error:
+        transaction.set_phase("cancelled", error=str(error))
+        log("Unity installation cancelled; downloaded data was kept for resume.", "warning")
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="cancelled",
+            cancelled=True,
+            version=version,
+            error=str(error),
+            archive_sha256=str(transaction.state.get("archive_sha256") or ""),
+        )
+    except PasswordError as error:
+        transaction.set_phase("waiting_for_credentials", error=str(error))
+        log("Unity archive is password-protected. Set TESTER_CODE in settings.", "error")
+        log(f"Archive kept for retry: {archive}")
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="waiting_for_credentials",
+            version=version,
+            error=str(error),
+            archive_sha256=str(transaction.state.get("archive_sha256") or ""),
+        )
+    except Exception as error:
+        if transaction.phase != "rolled_back":
+            transaction.set_phase("failed", error=str(error))
+        log(f"Unity update failed: {error}", "error")
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="failed",
+            version=version,
+            error=str(error),
+            archive_sha256=str(transaction.state.get("archive_sha256") or ""),
+        )
+
+
+def resume_pending_unity_update(
+    *,
+    base_dir: Optional[str] = None,
+    unity_dir: Optional[str] = None,
+    tester_code: Optional[str] = None,
+    logger=None,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    on_verify_progress: Optional[Callable[[int, int], None]] = None,
+    on_stage: Optional[Callable[[str, int, int, bool], None]] = None,
+    stop_event=None,
+) -> UpdateResult:
+    base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
+    journal_state = read_json(base_path / "_update_state" / "unity" / "operation.json")
+    recorded_target = str(journal_state.get("target") or "")
+    target = (
+        Path(recorded_target)
+        if recorded_target
+        else Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
+    )
+    transaction = _unity_transaction(base_path, target, make_logger(logger, _LOG_PREFIX))
+    state = transaction.state
+    phase = str(state.get("phase") or "")
+    if not state or phase in {"", "completed", "rolled_back", "cancelled", "failed"}:
+        return UpdateResult(component="unity", ok=True, status="no_pending_operation")
+    effective_tester_code = tester_code or os.environ.get("TESTER_CODE") or None
+    if phase == "waiting_for_credentials" and not effective_tester_code:
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="waiting_for_credentials",
+            version=str(state.get("version") or ""),
+            error=str(state.get("error") or "Tester code is required"),
+        )
+    asset = ReleaseAsset(
+        name=str(state.get("archive_name") or ""),
+        url=str(state.get("archive_url") or ""),
+        size=int(state.get("archive_size") or 0),
+        digest=str(state.get("archive_digest") or ""),
+    )
+    if not asset.name or not asset.url or not state.get("version"):
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="failed",
+            error="Pending Unity update journal is incomplete",
+        )
+    return _install_unity_asset(
+        base_path=base_path,
+        unity_path=target,
+        version=str(state.get("version") or ""),
+        asset=asset,
+        tester_code=effective_tester_code,
+        logger=logger,
+        on_progress=on_progress,
+        on_extract_progress=on_extract_progress,
+        on_verify_progress=on_verify_progress,
+        on_stage=on_stage,
+        stop_event=stop_event,
+        recovered=True,
+    )
 
 
 def check_for_unity_updates(
@@ -628,128 +1529,49 @@ def check_for_unity_updates(
     tester_code: Optional[str] = None,
     on_progress: Optional[Callable[[int, int], None]] = None,
     on_extract_progress: Optional[Callable[[int, int], None]] = None,
+    on_verify_progress: Optional[Callable[[int, int], None]] = None,
+    on_stage: Optional[Callable[[str, int, int, bool], None]] = None,
     auto_update: Optional[bool] = None,
     stop_event=None,
-) -> None:
-    """Check for Unity-part updates. Apply automatically if AUTO_UPDATE_UNITY=1.
-
-    The Unity part is installed inside the Python part by default
-    (base_path/NeuroMita-Unity), or in the path specified by unity_dir.
-
-    Does NOT call sys.exit(42): Unity runs as a separate process, no Python
-    restart is needed after a Unity update.
-
-    Args:
-        base_dir:           Game root directory (Python part).
-        logger:             Logger with info/warning/success/notify methods.
-        unity_dir:          Override path for the Unity install directory.
-        channel:            "stable" or "beta".
-        tester_code:        Password for encrypted test archives.
-        on_progress:        Callback(downloaded_bytes, total_bytes) for download progress.
-        on_extract_progress: Callback(extracted_bytes, total_bytes) for extraction progress.
-        auto_update:        Force auto-apply behavior instead of reading env/config only.
-        stop_event:         threading.Event — set to cancel download.
-    """
+) -> UpdateResult:
     log = make_logger(logger, _LOG_PREFIX)
-
     repo = _get_repo()
     if auto_update is None:
         auto_update = os.environ.get("AUTO_UPDATE_UNITY", "0") == "1"
     channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
-
-    if base_dir is None:
-        base_dir = str(Path(sys.argv[0]).parent)
-    base_path = Path(base_dir)
-
+    base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
     unity_path = Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
-
     version_file = unity_path / "_version.txt"
     install_complete = _find_unity_executable(unity_path) is not None
-    local_version = (
-        version_file.read_text(encoding="utf-8").strip()
-        if version_file.exists()
-        else "0.0.0.0"
-    )
+    local_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "0.0.0.0"
 
     log(f"Checking Unity updates ({repo}, channel={channel}) ...")
-
     release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
-    if release is None:
-        log("Could not find a Unity release asset to check for updates", "warning")
-        return
-
-    remote_tag = release.tag
+    if release is None or unity_asset is None:
+        message = "Could not find a Unity release asset to check for updates"
+        log(message, "warning")
+        return UpdateResult(component="unity", ok=False, status="check_failed", error=message)
+    remote_tag = str(release.tag or "")
     if not remote_tag:
-        return
-
+        return UpdateResult(component="unity", ok=False, status="check_failed", error="Release tag is empty")
     if not _is_newer(remote_tag, local_version) and install_complete:
         log(f"Unity up to date: {local_version}")
-        return
-    if not install_complete:
-        log("Unity installation is incomplete or missing executable. Reinstalling current release.", "warning")
-
-    log(f"New Unity version available: {remote_tag} (current: {local_version})", "notify")
-
+        return UpdateResult(component="unity", ok=True, status="current", version=local_version)
     if not auto_update:
-        log("Unity auto-update is disabled (AUTO_UPDATE_UNITY=0). Enable in settings.")
-        return
+        log(f"Unity update {remote_tag} is available; waiting for user selection.")
+        return UpdateResult(component="unity", ok=True, status="available", version=remote_tag)
 
-    # Select Unity asset — _fetch_latest_unity_release_asset already returned the
-    # unity-bearing release together with its asset.
-    if unity_asset is None:
-        log("No Unity asset found in release", "warning")
-        return
-    unity_url = unity_asset.url
-    unity_name = unity_asset.name
-
-    dl_dir = base_path / "_update_download"
-    dl_dir.mkdir(parents=True, exist_ok=True)
-    temp_archive = dl_dir / unity_name
-
-    # Если архив уже скачан (например прошлый запуск свалился из-за
-    # отсутствия TESTER_CODE) — переиспользуем его, не качаем 392 МБ повторно.
-    if temp_archive.exists() and temp_archive.stat().st_size > 0:
-        log(
-            f"Cached archive found, skipping download: {temp_archive} "
-            f"({format_bytes(temp_archive.stat().st_size)})"
-        )
-    else:
-        log(f"Downloading Unity {unity_name} to {temp_archive} ...")
-        try:
-            _download(unity_url, temp_archive, on_progress=on_progress, stop_event=stop_event)
-        except RuntimeError as e:
-            if stop_event is not None and stop_event.is_set():
-                log("Unity download cancelled by user.", "warning")
-                temp_archive.unlink(missing_ok=True)
-                return
-            log(f"Unity download failed: {e}", "error")
-            temp_archive.unlink(missing_ok=True)
-            return
-        except Exception as e:
-            log(f"Unity download failed: {e}", "error")
-            temp_archive.unlink(missing_ok=True)
-            return
-
-    archive_size = temp_archive.stat().st_size if temp_archive.exists() else 0
-    log(
-        f"Installing Unity update to {unity_path} "
-        f"from {temp_archive.name} ({format_bytes(archive_size)}, suffix={temp_archive.suffix.lower()}) ..."
+    return _install_unity_asset(
+        base_path=base_path,
+        unity_path=unity_path,
+        version=remote_tag,
+        asset=unity_asset,
+        tester_code=tester_code,
+        logger=logger,
+        on_progress=on_progress,
+        on_extract_progress=on_extract_progress,
+        on_verify_progress=on_verify_progress,
+        on_stage=on_stage,
+        stop_event=stop_event,
     )
-    try:
-        log("Stage 1/3: cleaning target directory")
-        wipe_dir(unity_path, logger=logger)
-        log("Stage 2/3: extracting archive")
-        extract_archive(temp_archive, unity_path, tester_code, logger=logger, on_extract_progress=on_extract_progress)
-        log("Stage 3/3: writing installed version marker")
-        unity_path.mkdir(parents=True, exist_ok=True)
-        version_file.write_text(remote_tag, encoding="utf-8")
-        temp_archive.unlink(missing_ok=True)
-        log(f"Unity update {remote_tag} installed successfully.", "success")
-    except PasswordError:
-        # Архив валидный, просто нет пароля — оставляем для следующей попытки.
-        log("Unity archive is password-protected. Set TESTER_CODE in settings.", "error")
-        log(f"Archive kept for retry: {temp_archive}")
-    except Exception as e:
-        log(f"Unity update failed: {e}", "error")
-        temp_archive.unlink(missing_ok=True)

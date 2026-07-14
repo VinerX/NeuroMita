@@ -6,6 +6,8 @@ import sys
 from logging.handlers import QueueHandler, QueueListener
 from typing import Any, Optional
 
+from core.app_paths import runtime_log_path
+
 try:
     import colorlog
 except Exception:
@@ -118,7 +120,9 @@ class CustomLogger(logging.Logger):
         console_handler.addFilter(LocationFilter())
 
         # Файловый обработчик
-        file_handler = logging.FileHandler('NeuroMitaLogs.log', encoding='utf-8')
+        log_path = runtime_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
         file_handler.setFormatter(
             logging.Formatter(
                 '%(asctime)s - %(levelname)-8s '

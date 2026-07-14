@@ -13,6 +13,7 @@ from core.installables import (
     make_component_id,
 )
 from core.installables.helpers import noop_plan
+from core.runtime_environments import runtime_environments
 from utils import getTranslationVariant as _
 
 
@@ -26,6 +27,13 @@ def _cv2_installed() -> bool:
         return importlib.util.find_spec(_IMPORT_NAME) is not None
     except Exception:
         return False
+
+
+def _managed_record():
+    try:
+        return runtime_environments().active_for(category="dependency", item_id="opencv")
+    except Exception:
+        return None
 
 
 class OpenCVInstallableComponent:
@@ -63,7 +71,7 @@ class OpenCVInstallableComponent:
         )
 
     def status(self, ctx: dict[str, Any] | None = None) -> ComponentStatus:
-        installed = _cv2_installed()
+        installed = _managed_record() is not None or _cv2_installed()
         return ComponentStatus(
             id=self.id,
             code=ComponentStatusCode.INSTALLED if installed else ComponentStatusCode.NOT_INSTALLED,
@@ -77,7 +85,7 @@ class OpenCVInstallableComponent:
 
     def build_install_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
         clean = bool((ctx or {}).get("clean"))
-        if _cv2_installed() and not clean:
+        if (_managed_record() is not None or _cv2_installed()) and not clean:
             return InstallPlan(
                 actions=[],
                 already_installed=True,
@@ -90,43 +98,30 @@ class OpenCVInstallableComponent:
                     description=_("Установка OpenCV...", "Installing OpenCV..."),
                     progress=40,
                     packages=[_PACKAGE],
+                    # NumPy and other stable application packages are owned by
+                    # Lib/core. The optional layer contains only OpenCV itself.
+                    extra_args=["--no-deps"],
                 )
             ],
             ok_status=_("Done", "Done"),
         )
 
     def build_uninstall_plan(self, ctx: dict[str, Any] | None = None) -> InstallPlan:
-        if not _cv2_installed():
+        record = _managed_record()
+        if record is None:
+            if _cv2_installed():
+                return noop_plan(
+                    _(
+                        "OpenCV входит в системный core и отдельно не удаляется.",
+                        "OpenCV is owned by the system core and cannot be removed separately.",
+                    )
+                )
             return noop_plan(_("OpenCV is not installed.", "OpenCV is not installed."))
 
-        def _uninstall(*, pip_installer=None, callbacks=None, **_kwargs) -> bool:
-            if pip_installer is None:
-                return True
-            try:
-                # include_dependencies=False: сносим только opencv-python, не задевая
-                # numpy и прочее, общее с torch/RAG.
-                return bool(pip_installer.uninstall_packages(
-                    [_PACKAGE],
-                    _("Удаление OpenCV...", "Removing OpenCV..."),
-                    include_dependencies=False,
-                ))
-            except Exception as exc:
-                if callbacks is not None:
-                    try:
-                        callbacks.log(str(exc))
-                    except Exception:
-                        pass
-                return False
-
+        # The environment manager deactivates and removes the entire immutable
+        # optional layer. No package-by-package mutation of Lib/core is used.
         return InstallPlan(
-            actions=[
-                InstallAction(
-                    type="call",
-                    description=_("Удаление OpenCV...", "Removing OpenCV..."),
-                    progress=50,
-                    fn=_uninstall,
-                )
-            ],
+            actions=[],
             ok_status=_("Done", "Done"),
         )
 

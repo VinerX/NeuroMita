@@ -1,5 +1,3 @@
-import asyncio
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
@@ -12,9 +10,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from core.events import Events
-from core.services import use
-from services.contracts import LoopService
 from ui.widgets.launcher_shell_theme import PALETTE
 from utils import getTranslationVariant as _
 
@@ -161,7 +156,9 @@ def _build_auth_dialog(title: str, eyebrow: str, prompt: str, parent, *, is_pass
     return dialog, entry, submit_button
 
 
-def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
+def show_tg_code_dialog(parent, actions, request_id: str, *, error: str = ""):
+    from ui.dialogs.telegram_auth_presentation import RejectTelegramAuth, SubmitTelegramAuth
+
     dialog, code_entry, submit_button = _build_auth_dialog(
         _("Подтверждение Telegram", "Telegram confirmation"),
         "TELEGRAM LOGIN",
@@ -170,24 +167,26 @@ def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
         parent,
         error=error,
     )
+    submitted = {"value": False}
 
     def submit_code():
         code = code_entry.text().strip()
-        if code:
-            if code_future and not code_future.done():
-                loop_service = use(LoopService)
-                if loop_service.is_running():
-                    loop_service.loop().call_soon_threadsafe(code_future.set_result, code)
-            dialog.accept()
-        else:
+        if not code:
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
                                   _("Введите код подтверждения", "Enter the confirmation code"))
+            return
+        actions.dispatch(SubmitTelegramAuth(str(request_id), code))
+        submitted["value"] = True
+        dialog.accept()
 
     def on_reject():
-        if code_future and not code_future.done():
-            loop_service = use(LoopService)
-            if loop_service.is_running():
-                loop_service.loop().call_soon_threadsafe(code_future.set_exception, asyncio.CancelledError("Ввод кода отменен"))
+        if not submitted["value"]:
+            actions.dispatch(
+                RejectTelegramAuth(
+                    str(request_id),
+                    _("Ввод кода отменён", "Code entry cancelled"),
+                )
+            )
 
     submit_button.clicked.connect(submit_code)
     code_entry.returnPressed.connect(submit_code)
@@ -195,7 +194,9 @@ def show_tg_code_dialog(parent, code_future, event_bus, *, error: str = ""):
     dialog.exec()
 
 
-def show_tg_password_dialog(parent, password_future, event_bus, *, error: str = ""):
+def show_tg_password_dialog(parent, actions, request_id: str, *, error: str = ""):
+    from ui.dialogs.telegram_auth_presentation import RejectTelegramAuth, SubmitTelegramAuth
+
     dialog, password_entry, submit_button = _build_auth_dialog(
         _("Двухфакторная аутентификация", "Two-factor authentication"),
         "ACCOUNT SECURITY",
@@ -205,24 +206,26 @@ def show_tg_password_dialog(parent, password_future, event_bus, *, error: str = 
         is_password=True,
         error=error,
     )
+    submitted = {"value": False}
 
     def submit_password():
-        pwd = password_entry.text().strip()
-        if pwd:
-            if password_future and not password_future.done():
-                loop_service = use(LoopService)
-                if loop_service.is_running():
-                    loop_service.loop().call_soon_threadsafe(password_future.set_result, pwd)
-            dialog.accept()
-        else:
+        password = password_entry.text().strip()
+        if not password:
             QMessageBox.critical(dialog, _("Ошибка", "Error"),
                                   _("Введите пароль", "Enter the password"))
+            return
+        actions.dispatch(SubmitTelegramAuth(str(request_id), password))
+        submitted["value"] = True
+        dialog.accept()
 
     def on_reject():
-        if password_future and not password_future.done():
-            loop_service = use(LoopService)
-            if loop_service.is_running():
-                loop_service.loop().call_soon_threadsafe(password_future.set_exception, asyncio.CancelledError("Ввод пароля отменен"))
+        if not submitted["value"]:
+            actions.dispatch(
+                RejectTelegramAuth(
+                    str(request_id),
+                    _("Ввод пароля отменён", "Password entry cancelled"),
+                )
+            )
 
     submit_button.clicked.connect(submit_password)
     password_entry.returnPressed.connect(submit_password)

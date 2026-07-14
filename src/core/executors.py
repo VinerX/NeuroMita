@@ -1,6 +1,6 @@
 """Единый реестр именованных пулов потоков.
 
-Раньше пулы плодились по месту: executor-на-каждый-emit_and_wait,
+Раньше пулы плодились по месту,
 ThreadPoolExecutor(1) на каждый HTTP-вызов LLM, ad-hoc threading.Thread
 в контроллерах. Считать нагрузку и вводить backpressure было негде.
 
@@ -20,6 +20,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from core.daemon_executor import DaemonExecutor
+
 
 class Pools:
     GENERATION = "generation"
@@ -34,9 +36,6 @@ class Pools:
     DEBUG_DUMP = "debug-dump"
     # Асинхронная доставка подписчикам (emit).
     EVENT_BUS = "event-bus"
-    # Диспетчеризация emit_and_wait. Отдельный пул: медленный async-подписчик
-    # не должен съедать потоки, которых ждёт синхронный вызов.
-    EVENT_BUS_SYNC = "event-bus-sync"
 
 
 @dataclass(frozen=True)
@@ -45,17 +44,17 @@ class _PoolSpec:
     # Сколько задач всего допускается «в системе» (выполняются + ждут).
     # None — без ограничения (для пулов, где backpressure не нужен).
     capacity: Optional[int] = None
+    daemon_workers: bool = False
 
 
 _SPECS: Dict[str, _PoolSpec] = {
     Pools.GENERATION: _PoolSpec(max_workers=3, capacity=6),
     Pools.BACKGROUND_LLM: _PoolSpec(max_workers=1, capacity=4),
     Pools.IO: _PoolSpec(max_workers=6),
-    Pools.LLM_HTTP: _PoolSpec(max_workers=8),
-    Pools.DEBUG_DUMP: _PoolSpec(max_workers=1),
+    Pools.LLM_HTTP: _PoolSpec(max_workers=8, capacity=8, daemon_workers=True),
+    Pools.DEBUG_DUMP: _PoolSpec(max_workers=1, capacity=2),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
-    Pools.EVENT_BUS: _PoolSpec(max_workers=8),
-    Pools.EVENT_BUS_SYNC: _PoolSpec(max_workers=16),
+    Pools.EVENT_BUS: _PoolSpec(max_workers=8, capacity=512),
 }
 
 
@@ -72,11 +71,19 @@ class _BoundedPool:
     def __init__(self, name: str, spec: _PoolSpec) -> None:
         self.name = name
         self.spec = spec
-        self._executor = ThreadPoolExecutor(
-            max_workers=spec.max_workers, thread_name_prefix=name
-        )
+        if spec.daemon_workers:
+            self._executor = DaemonExecutor(
+                spec.max_workers,
+                thread_name_prefix=name,
+            )
+        else:
+            self._executor = ThreadPoolExecutor(
+                max_workers=spec.max_workers,
+                thread_name_prefix=name,
+            )
         self._lock = threading.Lock()
         self._inflight = 0
+        self._reservations: Dict[Future, bool] = {}
 
     @property
     def inflight(self) -> int:
@@ -85,24 +92,24 @@ class _BoundedPool:
 
     def submit(self, fn: Callable, *args, **kwargs) -> Future:
         """Ставит задачу, игнорируя capacity. Для задач, которые нельзя терять."""
-        return self._track(fn, args, kwargs)
-
-    def try_submit(self, fn: Callable, *args, **kwargs) -> Future:
-        """Ставит задачу или бросает PoolSaturated, если пул переполнен."""
-        capacity = self.spec.capacity
-        if capacity is not None:
-            with self._lock:
-                if self._inflight >= capacity:
-                    raise PoolSaturated(self.name, capacity)
-        return self._track(fn, args, kwargs)
-
-    def _track(self, fn: Callable, args: tuple, kwargs: dict) -> Future:
         with self._lock:
             self._inflight += 1
+        return self._submit_reserved(fn, args, kwargs)
 
+    def try_submit(self, fn: Callable, *args, **kwargs) -> Future:
+        """Атомарно резервирует слот или бросает PoolSaturated."""
+        capacity = self.spec.capacity
+        with self._lock:
+            if capacity is not None and self._inflight >= capacity:
+                raise PoolSaturated(self.name, capacity)
+            self._inflight += 1
+        return self._submit_reserved(fn, args, kwargs)
+
+    def _submit_reserved(self, fn: Callable, args: tuple, kwargs: dict) -> Future:
         def _release(_f: Future) -> None:
             with self._lock:
-                self._inflight -= 1
+                if self._reservations.pop(_f, None):
+                    self._inflight -= 1
 
         try:
             future = self._executor.submit(fn, *args, **kwargs)
@@ -110,10 +117,25 @@ class _BoundedPool:
             with self._lock:
                 self._inflight -= 1
             raise
+        with self._lock:
+            self._reservations[future] = True
         future.add_done_callback(_release)
         return future
 
+    def abandon(self, future: Future) -> bool:
+        if not isinstance(self._executor, DaemonExecutor):
+            return False
+        if not self._executor.abandon(future):
+            return False
+        with self._lock:
+            if self._reservations.pop(future, None):
+                self._inflight -= 1
+        return True
+
     def shutdown(self, wait: bool = False) -> None:
+        if isinstance(self._executor, DaemonExecutor):
+            self._executor.shutdown(cancel_futures=not wait)
+            return
         self._executor.shutdown(wait=wait, cancel_futures=not wait)
 
 

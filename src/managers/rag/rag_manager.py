@@ -18,7 +18,7 @@ from core.events import get_event_bus
 from core.services import use
 from services.contracts import EmbeddingService
 from main_logger import logger
-from ui.task_worker import TaskWorker
+from core.cancellation import TaskCancelledError
 
 
 from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger, extract_keywords, keyword_score
@@ -59,6 +59,14 @@ class RAGManager:
                 instance = cls(key)
                 cls._INSTANCES[key] = instance
             return instance
+
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        with cls._ACCESS_EXECUTOR_LOCK:
+            executor = cls._ACCESS_EXECUTOR
+            cls._ACCESS_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @classmethod
     def _get_access_executor(cls) -> ThreadPoolExecutor:
@@ -1169,7 +1177,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1208,7 +1216,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1233,7 +1241,7 @@ class RAGManager:
 
             return updated_count
 
-        except TaskWorker.CancelledError:
+        except TaskCancelledError:
             raise
         except Exception as e:
             logger.error(f"Error during re-indexing: {e}", exc_info=True)
@@ -1321,7 +1329,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1360,7 +1368,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1371,7 +1379,7 @@ class RAGManager:
             prog.done(processed=processed, updated=updated_count)
             return updated_count
 
-        except TaskWorker.CancelledError:
+        except TaskCancelledError:
             raise
         except Exception as e:
             logger.error(f"Error during full re-indexing: {e}", exc_info=True)

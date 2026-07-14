@@ -1,7 +1,6 @@
 # File: Modules/Chess/engine_handler.py
 import chess
 import chess.engine
-import threading
 import requests
 import gzip
 import shutil
@@ -12,6 +11,8 @@ import tarfile
 import stat # для chmod
 import queue # Для межпроцессного взаимодействия
 import time
+
+from core.task_supervisor import task_supervisor
 
 from .board_logic import PureBoardLogic # Используем относительный импорт
 
@@ -528,8 +529,12 @@ class ChessGameController:
                     if self.board_update_cb_gui: self.board_update_cb_gui()
 
 
-        thread = threading.Thread(target=_think, daemon=True)
-        thread.start()
+        task_supervisor().start_thread(
+            self,
+            "chess-engine-think",
+            _think,
+            replace=True,
+        )
 
     def _check_and_handle_game_over(self, moved_by="", san_move="", error_during_move=None):
         is_over, outcome_message = self.board_logic.is_game_over()
@@ -601,6 +606,7 @@ class ChessGameController:
 
     def shutdown_engine_process(self):
         print("CONSOLE (ChessGameController shutdown_engine_process): Запрос на остановку движка.")
+        task_supervisor().cancel_owner(self, timeout=1.0)
         if self.engine:
             print("CONSOLE (ChessGameController shutdown_engine_process): Движок существует, вызываем quit().")
             try:

@@ -1,37 +1,27 @@
 from __future__ import annotations
 
 import time
-from threading import Lock, Thread
+from threading import Lock
 from typing import List, Optional
 
 import numpy as np
 
 from core.events import Event, Events, get_event_bus
-from handlers.ai_engine.rag_client import (
-    get_embeddings as rag_get_embeddings,
-    warmup_embeddings as rag_warmup_embeddings,
-)
+from core.services import use
+from core.task_supervisor import task_supervisor
+from handlers.ai_engine.rag_client import get_embeddings as rag_get_embeddings
 from handlers.embedding_presets import (
     invalidate_embedding_config_cache,
     resolve_full_config,
     resolve_model_settings,
 )
 from main_logger import logger
-from managers.settings_manager import SettingsManager
-from services.contracts import EmbeddingService
-
-
-EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
-EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
+from services.contracts import AIEngineService, EmbeddingService, SettingsService
 
 
 class EmbeddingController(EmbeddingService):
     """
-    EventBus bridge for RAG embeddings.
-
-    The public contract stays the same (`rag_get_embedding(s)`), but the local
-    backend now lives inside `ai_engine` service='rag' instead of the main
-    process.
+    Typed RAG embedding service backed by ``ai_engine`` service='rag'.
     """
 
     # Раньше стояло 3600с: «вечное» ожидание маскировало зависший worker.
@@ -45,17 +35,23 @@ class EmbeddingController(EmbeddingService):
         "HF_TOKEN",
         "RAG_VECTOR_SEARCH_ENABLED",
         "RAG_EMBED_PRESET_ID",
+        "RAG_ENABLED",
+        "RAG_PRELOAD_EMBEDDINGS_MODEL",
     })
 
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
+        self.settings = use(SettingsService)
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed, keys=self._EMBED_SETTING_KEYS
+        )
         self.handler: object | None = None
         self._handler_failed: bool = False
         self._init_lock = Lock()
 
         self._subscribe_to_events()
 
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             logger.info("RAG is disabled in settings. Embedding backend warmup skipped.")
             return
 
@@ -65,12 +61,12 @@ class EmbeddingController(EmbeddingService):
         """Модель эмбеддингов нужна, когда включён векторный поиск (либо явный
         preload). Тогда её стоит грузить в фоне заранее — иначе первый RAG-запрос
         упирается в таймаут на «холодной» загрузке/скачивании весов с HuggingFace."""
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             return False
         if self._provider_name() != "local":
             return False
-        preload = bool(SettingsManager.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
-        vector = bool(SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False))
+        preload = bool(self.settings.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
+        vector = bool(self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False))
         return preload or vector
 
     def _maybe_start_warmup(self, *, reason: str) -> None:
@@ -78,11 +74,12 @@ class EmbeddingController(EmbeddingService):
             return
         if self.handler is not None or self._handler_failed:
             return
-        Thread(
-            target=self._warmup_local_backend,
-            name=f"embed-warmup-{reason}",
-            daemon=True,
-        ).start()
+        task_supervisor().start_thread(
+            self,
+            f"embed-warmup-{reason}",
+            self._warmup_local_backend,
+            replace=True,
+        )
 
     def _provider_name(self) -> str:
         try:
@@ -92,18 +89,13 @@ class EmbeddingController(EmbeddingService):
             return "local"
 
     def _subscribe_to_events(self) -> None:
-        self.event_bus.subscribe(EMBED_EVENT_NAME, self._on_get_embedding, weak=False)
-        self.event_bus.subscribe(EMBEDS_EVENT_NAME, self._on_get_embeddings, weak=False)
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         self.event_bus.subscribe(Events.RAG.MODEL_CHANGED, self._on_model_changed, weak=False)
         self.event_bus.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         # Содержимое пресета могло измениться при том же id — сигнатура настроек
         # этого не поймает, поэтому сбрасываем кэш конфига явно.
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_SAVED, self._on_preset_mutated, weak=False)
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_DELETED, self._on_preset_mutated, weak=False)
-        logger.notify(
-            f"EmbeddingController подписался на события: {EMBED_EVENT_NAME}, {EMBEDS_EVENT_NAME}"
-        )
+        logger.notify("EmbeddingController subscribed to RAG lifecycle facts")
 
     def _warmup_local_backend(self) -> None:
         # AI engine может подняться позже контроллера, а первый запуск модели —
@@ -124,9 +116,9 @@ class EmbeddingController(EmbeddingService):
     def _ensure_local_backend(self) -> bool:
         if self._handler_failed:
             return False
-        if not SettingsManager.get("RAG_ENABLED", False):
+        if not self.settings.get("RAG_ENABLED", False):
             return False
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
+        if not self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False):
             return False
         if self._provider_name() != "local":
             with self._init_lock:
@@ -140,10 +132,29 @@ class EmbeddingController(EmbeddingService):
             if self.handler is None and not self._handler_failed:
                 try:
                     ms = resolve_model_settings()
-                    rag_warmup_embeddings(
-                        model_name=ms["hf_name"],
-                        query_prefix=ms["query_prefix"],
-                    )
+                    engine_service = use(AIEngineService)
+                    engine = engine_service.get_engine()
+                    if engine is None:
+                        raise RuntimeError("AI engine not available")
+                    activate = getattr(engine, "activate_environment", None)
+                    if not callable(activate):
+                        raise RuntimeError("AI engine not available")
+                    if not activate(
+                        "rag",
+                        "embeddings",
+                        category="rag",
+                        runtime_slot="rag:embeddings",
+                        timeout=30.0,
+                        validation_method="warmup_embeddings",
+                        validation_payload={
+                            "model_name": ms["hf_name"],
+                            "query_prefix": ms["query_prefix"],
+                        },
+                        validation_timeout=3600.0,
+                    ):
+                        raise RuntimeError(
+                            "RAG embeddings environment could not be initialized"
+                        )
                     self.handler = object()
                 except Exception as e:
                     if "AI engine not available" in str(e):
@@ -169,9 +180,8 @@ class EmbeddingController(EmbeddingService):
         invalidate_embedding_config_cache()
         logger.info(f"EmbeddingController: MODEL_CHANGED event received: {data}")
 
-    def _on_setting_changed(self, event: Event) -> None:
-        data = event.data or {}
-        key = data.get("key", "")
+    def _on_setting_changed(self, change) -> None:
+        key = change.key
         if key not in self._EMBED_SETTING_KEYS:
             return
 
@@ -184,12 +194,22 @@ class EmbeddingController(EmbeddingService):
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
             self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
                 "key": key,
-                "value": data.get("value"),
+                "value": change.value,
             })
 
         # Включили векторный поиск / сменили модель — прогреваем в фоне сразу,
         # чтобы первый запрос не ждал холодную загрузку.
         self._maybe_start_warmup(reason=f"setting:{key}")
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        with self._init_lock:
+            self.handler = None
+            self._handler_failed = True
+        task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _on_install_task_finished(self, event: Event) -> None:
         data = event.data if isinstance(event.data, dict) else {}
@@ -205,33 +225,6 @@ class EmbeddingController(EmbeddingService):
 
         # Модель эмбеддингов только что доустановлена — прогреем в фоне.
         self._maybe_start_warmup(reason="install_finished")
-
-    def _on_get_embedding(self, event: Event) -> Optional[np.ndarray]:
-        data = event.data or {}
-        future = data.get("future")
-        vec = self.embed_one(text=data.get("text") or "", prefix=data.get("prefix") or "")
-        if future is not None:
-            try:
-                future.set_result(vec)
-            except Exception:
-                pass
-        return vec
-
-    def _on_get_embeddings(self, event: Event) -> List[Optional[np.ndarray]]:
-        data = event.data or {}
-        future = data.get("future")
-        results = self.embed_many(
-            texts=data.get("texts") or [],
-            prefix=data.get("prefix") or "",
-            batch_size=data.get("batch_size"),
-            priority=str(data.get("priority") or "hot"),
-        )
-        if future is not None:
-            try:
-                future.set_result(results)
-            except Exception:
-                pass
-        return results
 
     def embed_one(self, text: str, prefix: str = "") -> Optional[np.ndarray]:
         if not text or self._provider_name() != "local":

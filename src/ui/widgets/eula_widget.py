@@ -1,28 +1,25 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QTextEdit, QFrame, QButtonGroup, QRadioButton
 from PyQt6.QtGui import QFont
-from core.events import get_event_bus, Events
 from localization import available_languages, language_display_name, translate_for_language
-import sys
 from styles.theme import get_theme
 from utils import render_qss
 from ui.widgets.flow_layout import FlowLayout
+from ui.settings.settings_access import get_setting, set_setting
 
 class EULAWidget(QWidget):
     accepted = pyqtSignal()
     rejected = pyqtSignal()
     
-    def __init__(self, parent=None):
+    def __init__(self, settings_view_model, parent=None):
         super().__init__(parent)
-        self.event_bus = get_event_bus()
+        self.settings_view_model = settings_view_model
         self.setObjectName("EULAWidget")
         self.current_language = "ru"
         self._lang_buttons: dict[str, QRadioButton] = {}
-        try:
-            from managers.settings_manager import SettingsManager
-            self.current_language = str(SettingsManager.get("LANGUAGE", "RU") or "RU").strip().lower()
-        except Exception:
-            pass
+        self.current_language = str(
+            get_setting(self, "LANGUAGE", "RU") or "RU"
+        ).strip().lower()
         # Язык, с которым уже построен интерфейс под оверлеем: если на старте
         # пользователь выберет другой — после принятия предложим перезапуск.
         self._initial_language = self.current_language
@@ -238,14 +235,8 @@ class EULAWidget(QWidget):
         
     def _on_accept(self):
         # Сохраняем выбранный на стартовом экране язык интерфейса.
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'LANGUAGE',
-            'value': str(self.current_language or "ru").upper(),
-        })
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {
-            'key': 'EULA_ACCEPTED',
-            'value': True
-        })
+        set_setting(self, "LANGUAGE", str(self.current_language or "ru").upper())
+        set_setting(self, "EULA_ACCEPTED", True)
         self.accepted.emit()
 
     def language_changed_on_start(self) -> bool:
@@ -255,4 +246,3 @@ class EULAWidget(QWidget):
         
     def _on_reject(self):
         self.rejected.emit()
-        sys.exit(0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
+from pathlib import Path
 import datetime
 import base64
 import json
@@ -27,6 +28,14 @@ class HistoryController(HistoryService):
     _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
     _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
     _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
+    _DEFAULT_COMPRESSION_PROMPT = (
+        "Summarize the conversation below into a compact factual memory for "
+        "{current_character_name}. Preserve important events, decisions, "
+        "relationships, names, promises, and unresolved topics. Do not invent "
+        "facts. If a previous summary exists, merge it without duplicating "
+        "information.\n\nPrevious summary:\n{previous_summary}\n\n"
+        "Conversation:\n{history_messages}\n\nSummary:"
+    )
 
     # Режимы вывода сжатия истории (HISTORY_COMPRESSION_OUTPUT_TARGET):
     #   layered — слоистая сводка в истории (по умолчанию): новое пишется отдельным
@@ -44,6 +53,7 @@ class HistoryController(HistoryService):
         self._background_compression_inflight: set[str] = set()
         self._background_compression_timers: Dict[str, threading.Timer] = {}
         self._compression_cooldowns: Dict[str, float] = {}
+        self._closed = False
 
         services().register(HistoryService, self, replace=True)
         self._subscribe_to_events()
@@ -51,6 +61,25 @@ class HistoryController(HistoryService):
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.History.SAVE_AFTER_RESPONSE, self._on_save_after_response, weak=False)
         self.event_bus.subscribe(Events.History.MESSAGE_COMPLETED, self._on_message_completed, weak=False)
+
+    def close(self) -> None:
+        with self._compression_guard:
+            if getattr(self, "_closed", False):
+                return
+            self._closed = True
+            timers = tuple(self._background_compression_timers.values())
+            self._background_compression_timers.clear()
+            self._compression_cooldowns.clear()
+        for timer in timers:
+            timer.cancel()
+        self.event_bus.unsubscribe(
+            Events.History.SAVE_AFTER_RESPONSE,
+            self._on_save_after_response,
+        )
+        self.event_bus.unsubscribe(
+            Events.History.MESSAGE_COMPLETED,
+            self._on_message_completed,
+        )
 
     def _get_setting(self, key: str, default: Any = None) -> Any:
         return use(SettingsService).get(key, default)
@@ -416,12 +445,16 @@ class HistoryController(HistoryService):
         return new_summary, new_count
 
     def _start_background_compression(self, character) -> None:
+        if getattr(self, "_closed", False):
+            return
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         delay_sec = self._compression_background_delay_seconds()
         remaining_cooldown = self._get_compression_cooldown_remaining(char_id)
         self._schedule_background_compression(character, delay_sec=max(delay_sec, remaining_cooldown))
 
     def _schedule_background_compression(self, character, *, delay_sec: float) -> None:
+        if getattr(self, "_closed", False):
+            return
         char_id = getattr(character, "char_id", "Unknown") or "Unknown"
         timer = threading.Timer(
             max(0.0, float(delay_sec)),
@@ -432,6 +465,8 @@ class HistoryController(HistoryService):
         timer.name = f"history-compress-delay-{char_id}"
 
         with self._compression_guard:
+            if getattr(self, "_closed", False):
+                return
             previous_timer = self._background_compression_timers.get(char_id)
             if previous_timer is not None:
                 previous_timer.cancel()
@@ -448,6 +483,8 @@ class HistoryController(HistoryService):
         should_reschedule = False
         with self._compression_guard:
             self._background_compression_timers.pop(char_id, None)
+            if self._closed:
+                return
             if char_id in self._background_compression_inflight:
                 should_reschedule = True
             else:
@@ -545,19 +582,30 @@ class HistoryController(HistoryService):
         *,
         previous_summary: str = "",
     ) -> Optional[str]:
-        try:
-            template_path = str(self._get_setting(
-                "HISTORY_COMPRESSION_PROMPT_TEMPLATE",
-                "Prompts/System/compression_prompt.txt"
-            ))
-            with open(template_path, "r", encoding="utf-8") as f:
-                prompt_template = f.read()
-        except Exception as e:
-            logger.error(
-                f"[HistoryController] Ошибка чтения шаблона сжатия истории '{template_path}': {e}",
-                exc_info=True
-            )
-            return None
+        configured_template_path = str(self._get_setting(
+            "HISTORY_COMPRESSION_PROMPT_TEMPLATE",
+            "Prompts/System/compression_prompt.txt",
+        ) or "").strip()
+        prompt_template = ""
+        resolved_template_path = configured_template_path
+        if configured_template_path:
+            try:
+                from core.app_paths import base_dir
+
+                candidate = Path(configured_template_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = base_dir() / candidate
+                resolved_template_path = str(candidate.resolve())
+                prompt_template = candidate.read_text(encoding="utf-8").strip()
+            except Exception as exc:
+                logger.warning(
+                    "[HistoryController] Compression template unavailable at %s; "
+                    "using built-in fallback: %s",
+                    resolved_template_path,
+                    exc,
+                )
+        if not prompt_template:
+            prompt_template = self._DEFAULT_COMPRESSION_PROMPT
 
         try:
             formatted_messages = "\n".join([

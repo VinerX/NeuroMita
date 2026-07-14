@@ -1,4 +1,4 @@
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 import os
 import sys
 import time
@@ -17,10 +17,11 @@ from telethon.errors import (
 from utils.audio_converter import AudioConverter
 from handlers.audio_handler import AudioHandler
 from main_logger import logger
-from utils import SH, getTranslationVariant
+from utils import getTranslationVariant
 import platform
 from core.events import get_event_bus, Events
 from core.services import use
+from services.contracts import TelegramAuthService
 from services.contracts import GameLinkService, LoopService, SettingsService
 
 
@@ -69,9 +70,7 @@ class TelegramBotHandler:
                 app_version=app_version,
             )
         except Exception as e:
-            logger.info(f"Проблема в ините тг: {e}")
-            logger.info(SH(self.api_id))
-            logger.info(SH(self.api_hash))
+            logger.error(f"Проблема в ините Telegram-клиента: {e}")
 
     def reset_message_count(self):
         if time.time() - self.start_time > 60:
@@ -251,7 +250,7 @@ class TelegramBotHandler:
                     logger.info(f"Ошибка при удалении файла {sound_absolute_path}: {remove_error}")
 
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, absolute_wav_path)
-                # emit, а не emit_and_wait: подписчиков у SET_ID_SOUND нет, ответ
+                # emit, а не sync EventBus RPC: подписчиков у SET_ID_SOUND нет, ответ
                 # всё равно отбрасывался, а синхронный сбор внутри telegram
                 # asyncio-loop блокирует loop и падает guardrail'ом.
                 self.event_bus.emit(Events.Server.SET_ID_SOUND, {'id': message_id})
@@ -322,12 +321,9 @@ class TelegramBotHandler:
 
         last_error = ""
         for attempt in range(1, max_attempts + 1):
-            code_future = loop.create_future()
-            self.event_bus.emit(
-                Events.Telegram.PROMPT_FOR_TG_CODE,
-                {'future': code_future, 'error': last_error, 'attempt': attempt},
+            verification_code = await use(TelegramAuthService).request(
+                "code", error=last_error, attempt=attempt
             )
-            verification_code = await code_future
 
             try:
                 await self.client.sign_in(phone=self.phone, code=verification_code)
@@ -357,12 +353,9 @@ class TelegramBotHandler:
         """Ввод пароля 2FA с повторами при неверном пароле."""
         last_error = ""
         for attempt in range(1, max_attempts + 1):
-            password_future = loop.create_future()
-            self.event_bus.emit(
-                Events.Telegram.PROMPT_FOR_TG_PASSWORD,
-                {'future': password_future, 'error': last_error, 'attempt': attempt},
+            password = await use(TelegramAuthService).request(
+                "password", error=last_error, attempt=attempt
             )
-            password = await password_future
 
             try:
                 await self.client.sign_in(password=password)
@@ -413,7 +406,7 @@ class TelegramBotHandler:
         while attempts < max_attempts:
             attempts += 1
             try:
-                base_id = await self._get_last_chat_message_id()
+                await self._get_last_chat_message_id()
 
                 await self._safe_send_message(command, min_gap=1.2, count=True)
                 await asyncio.sleep(initial_delay)

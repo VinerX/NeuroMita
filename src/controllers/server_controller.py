@@ -1,4 +1,7 @@
 # File: src/controllers/server_controller.py
+import ipaddress
+import os
+import threading
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
@@ -17,6 +20,7 @@ class ServerEchoSuppressor:
         self._seen_in_ids: dict[str, deque[str]] = {}
         self._max_out_ids = int(max_out_ids_per_speaker)
         self._max_seen_in = int(max_seen_in_ids)
+        self._lock = threading.RLock()
 
     def register_outgoing(self, client_id: str, speaker: str, message_id: str, text: str):
         client_id = str(client_id or "")
@@ -28,22 +32,35 @@ class ServerEchoSuppressor:
             return
 
         key = (client_id, speaker)
-        dq = self._out_ids.get(key)
-        if dq is None:
-            dq = deque(maxlen=self._max_out_ids)
-            self._out_ids[key] = dq
+        with self._lock:
+            dq = self._out_ids.get(key)
+            if dq is None:
+                dq = deque(maxlen=self._max_out_ids)
+                self._out_ids[key] = dq
 
-        dq.append(message_id)
-        if text.strip():
-            self._out_text[key] = text.strip()
+            dq.append(message_id)
+            if text.strip():
+                self._out_text[key] = text.strip()
 
     def _seen_in(self, client_id: str) -> deque[str]:
         client_id = str(client_id or "")
-        dq = self._seen_in_ids.get(client_id)
-        if dq is None:
-            dq = deque(maxlen=self._max_seen_in)
-            self._seen_in_ids[client_id] = dq
-        return dq
+        with self._lock:
+            dq = self._seen_in_ids.get(client_id)
+            if dq is None:
+                dq = deque(maxlen=self._max_seen_in)
+                self._seen_in_ids[client_id] = dq
+            return dq
+
+    def forget_client(self, client_id: str) -> None:
+        client_id = str(client_id or "")
+        if not client_id:
+            return
+        with self._lock:
+            self._seen_in_ids.pop(client_id, None)
+            for mapping in (self._out_ids, self._out_text):
+                stale = [key for key in mapping if key[0] == client_id]
+                for key in stale:
+                    mapping.pop(key, None)
 
     def should_echo_incoming(
         self,
@@ -61,27 +78,38 @@ class ServerEchoSuppressor:
         if not client_id:
             return True
 
-        if incoming_message_id:
-            seen = self._seen_in(client_id)
-            if incoming_message_id in seen:
-                return False
-            seen.append(incoming_message_id)
+        with self._lock:
+            if incoming_message_id:
+                seen = self._seen_in(client_id)
+                if incoming_message_id in seen:
+                    return False
+                seen.append(incoming_message_id)
 
-        if sender == "Player":
+            if sender == "Player":
+                return True
+
+            if origin_message_id:
+                key = (client_id, sender)
+                dq = self._out_ids.get(key)
+                if dq and origin_message_id in dq:
+                    return False
+
+            key = (client_id, sender)
+            last = self._out_text.get(key, "")
+            if last and last == text.strip():
+                return False
+
             return True
 
-        if origin_message_id:
-            key = (client_id, sender)
-            dq = self._out_ids.get(key)
-            if dq and origin_message_id in dq:
-                return False
 
-        key = (client_id, sender)
-        last = self._out_text.get(key, "")
-        if last and last == text.strip():
-            return False
-
+def _is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().strip("[]")
+    if normalized.casefold() == "localhost":
         return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 class ServerController:
@@ -109,6 +137,11 @@ class ServerController:
         ]
 
         self.echo_suppressor = ServerEchoSuppressor()
+        self.settings = use(SettingsService)
+        self._settings_subscription = self.settings.subscribe(
+            self._on_setting_changed,
+            keys=set(self.settings_to_send) | {"GM_VOICE"},
+        )
 
         self._subscribe_to_events()
         self._init_server()
@@ -117,9 +150,6 @@ class ServerController:
         eb = self.event_bus
 
         eb.subscribe(Events.Server.STOP_SERVER, self._on_stop_server, weak=False)
-        eb.subscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server, weak=False)
-        eb.subscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection, weak=False)
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
         eb.subscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings, weak=False)
 
         eb.subscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested, weak=False)
@@ -133,9 +163,6 @@ class ServerController:
         if self.event_bus and not self._destroyed:
             eb = self.event_bus
             eb.unsubscribe(Events.Server.STOP_SERVER, self._on_stop_server)
-            eb.unsubscribe(Events.Server.GET_CHAT_SERVER, self._on_get_chat_server)
-            eb.unsubscribe(Events.Server.SET_GAME_CONNECTION, self._on_update_game_connection)
-            eb.unsubscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed)
             eb.unsubscribe(Events.Server.LOAD_SERVER_SETTINGS, self._on_load_server_settings)
 
             eb.unsubscribe(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, self._on_echo_chat_message_requested)
@@ -148,7 +175,32 @@ class ServerController:
 
     def _init_server(self):
         from game_connections.server import ChatServerNew
-        self.server = ChatServerNew()
+
+        host = str(
+            os.environ.get("NEUROMITA_SERVER_HOST")
+            or self._get_setting("SERVER_HOST", "127.0.0.1")
+            or "127.0.0.1"
+        ).strip()
+        raw_port = os.environ.get("NEUROMITA_SERVER_PORT")
+        if raw_port in (None, ""):
+            raw_port = self._get_setting("SERVER_PORT", 12345)
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid SERVER_PORT={raw_port!r}; using 12345")
+            port = 12345
+        if not 1 <= port <= 65535:
+            logger.warning(f"SERVER_PORT out of range: {port}; using 12345")
+            port = 12345
+
+        if not _is_loopback_host(host):
+            logger.warning(
+                f"Server is binding to non-loopback address {host}:{port}. "
+                "The game protocol has no network authentication; expose it only "
+                "on a trusted network or behind an authenticated tunnel."
+            )
+
+        self.server = ChatServerNew(host=host, port=port)
         try:
             transfer_dirs = ensure_shared_transfer_dirs()
             logger.info(f"Shared image transfer root: {transfer_dirs['root']}")
@@ -156,16 +208,11 @@ class ServerController:
             logger.warning(f"Failed to prepare shared image transfer directories: {e}")
         logger.info("Using new API server")
 
-        def _conn_cb(is_connected: bool, _client_id: str | None):
-            try:
-                self.event_bus.emit(Events.Server.SET_GAME_CONNECTION, {"is_connected": bool(is_connected)})
-            except Exception:
-                pass
+        def _conn_cb(client_connected: bool, client_id: str | None):
+            self.update_game_connection(client_connected, client_id)
 
-        try:
-            self.server.set_connection_callback(_conn_cb)
-        except Exception:
-            pass
+        self.server.set_connection_callback(_conn_cb)
+        self.server.set_settings_provider(self._prepare_loaded_settings_body)
 
         self._apply_initial_settings()
         self.start_server()
@@ -190,22 +237,31 @@ class ServerController:
             self.server.set_game_master_voice(False)
 
     def start_server(self):
-        if not self.running:
-            self.running = True
-            self.server.start()
+        if self.running:
+            return True
+        if not self.server:
+            return False
+
+        started = bool(self.server.start(timeout=5.0))
+        self.running = started
+        if started:
             logger.info("Server started")
+            return True
+
+        error = getattr(self.server, "startup_error", None)
+        logger.error(f"Server failed to start: {error or 'startup timeout'}")
+        return False
 
     def stop_server(self):
-        if not self.running:
-            logger.debug("Server already stopped")
+        if not self.server:
+            self.running = False
             return
 
         logger.info("Stopping server...")
         self.running = False
 
         try:
-            if self.server:
-                self.server.stop()
+            self.server.stop()
         except Exception as e:
             logger.error(f"Error while stopping server: {e}", exc_info=True)
 
@@ -223,10 +279,13 @@ class ServerController:
             return
 
         logger.info("Destroying ServerController...")
-        self._destroyed = True
-
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
         self._unsubscribe_from_events()
         self.stop_server()
+        self._destroyed = True
 
         try:
             from managers.task_manager import get_task_manager
@@ -238,28 +297,27 @@ class ServerController:
         self.server = None
         self.event_bus = None
 
-    def update_game_connection(self, is_connected):
+    def update_game_connection(self, client_connected, client_id: str | None = None):
         if self._destroyed or not self.event_bus:
             return
 
-        prev = bool(self.ConnectedToGame)
-        self.ConnectedToGame = bool(is_connected)
+        connections = getattr(self.server, "active_connections", None) if self.server else None
+        if isinstance(connections, dict):
+            self.ConnectedToGame = bool(connections)
+        else:
+            self.ConnectedToGame = bool(client_connected)
         self.game_link.set_connected(self.ConnectedToGame)
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
-        if self.ConnectedToGame and not prev and self.server:
+        if bool(client_connected) and client_id and self.server:
             try:
                 body = self._prepare_loaded_settings_body()
-                self.server.schedule_broadcast_loaded_settings(body)
-            except Exception:
-                pass
-
-    def _on_update_game_connection(self, event: Event):
-        if self._destroyed:
-            return
-        is_connected = (event.data or {}).get('is_connected', False)
-        self.update_game_connection(is_connected)
+                self.server.schedule_send_loaded_settings(client_id, body)
+            except Exception as exc:
+                logger.warning(f"Failed to send initial settings to {client_id}: {exc}")
+        elif not bool(client_connected) and client_id:
+            self.echo_suppressor.forget_client(client_id)
 
     def _probe_connection(self) -> Optional[bool]:
         """Живое состояние соединений сервера; None — если сказать нечего."""
@@ -281,12 +339,12 @@ class ServerController:
             return None
         return self.server
 
-    def _on_setting_changed(self, event: Event):
+    def _on_setting_changed(self, change):
         if self._destroyed or not self.server:
             return
 
-        key = (event.data or {}).get('key')
-        value = (event.data or {}).get('value')
+        key = change.key
+        value = change.value
 
         if key == 'IGNORE_GAME_REQUESTS':
             self.server.set_ignore_game_requests(bool(value))

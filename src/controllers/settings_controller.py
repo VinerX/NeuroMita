@@ -6,8 +6,6 @@ from typing import Dict, Any
 
 from managers.settings_manager import SettingsManager
 from main_logger import logger
-from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import QTimer
 from core.events import get_event_bus, Events, Event
 from core.services import services
 from services.contracts import SettingsService
@@ -31,59 +29,60 @@ class SettingsController:
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Settings.SAVE_SETTING, self._on_save_setting, weak=False)
 
-    def load_api_settings(self, update_model):
-        logger.info("Loading API settings")
+    def load_api_settings(self, update_model: bool = True):
+        """Compatibility bridge for the model preset only.
 
+        Local settings consumers read SettingsService directly. Telegram,
+        capture and speech controllers initialize from a registry snapshot and
+        therefore must not depend on a broadcast emitted during startup.
+        """
+        if not update_model:
+            return None
+
+        logger.info("Applying API preset to model runtime")
         preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
         try:
             from managers.api_preset_resolver import ApiPresetResolver
+
             resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
-            ps = resolver.resolve(int(preset_id) if preset_id else None)
-        except Exception as e:
-            logger.error(f"Failed to resolve API preset: {e}", exc_info=True)
-            ps = None
+            preset = resolver.resolve(int(preset_id) if preset_id else None)
+        except Exception as exc:
+            logger.error(f"Failed to resolve API preset: {exc}", exc_info=True)
+            return None
 
-        if ps and update_model:
-            model_settings = {
-                "api_key": ps.api_key,
-                "api_key_res": "\n".join([str(k).strip() for k in (ps.reserve_keys or []) if str(k).strip()]),
-                "api_url": ps.api_url,
-                "api_model": ps.api_model,
-                "protocol_id": ps.protocol_id,
-                "dialect_id": ps.dialect_id,
-                "provider_name": ps.provider_name,
-            }
-            self.event_bus.emit("model_settings_loaded", model_settings)
+        if preset is None:
+            return None
 
-        telegram_settings = {
-            "api_id": self.settings.get("NM_TELEGRAM_API_ID", ""),
-            "api_hash": self.settings.get("NM_TELEGRAM_API_HASH", ""),
-            "phone": self.settings.get("NM_TELEGRAM_PHONE", ""),
-            "settings": self.settings
+        model_settings = {
+            "api_key": preset.api_key,
+            "api_key_res": "\n".join(
+                str(key).strip()
+                for key in (preset.reserve_keys or [])
+                if str(key).strip()
+            ),
+            "api_url": preset.api_url,
+            "api_model": preset.api_model,
+            "protocol_id": preset.protocol_id,
+            "dialect_id": preset.dialect_id,
+            "provider_name": preset.provider_name,
         }
-        self.event_bus.emit("telegram_settings_loaded", telegram_settings)
-
-        capture_settings = {"settings": self.settings}
-        self.event_bus.emit("capture_settings_loaded", capture_settings)
-
-        speech_settings = {"settings": self.settings}
-        self.event_bus.emit("speech_settings_loaded", speech_settings)
-
-        logger.info("API settings applied")
+        self.event_bus.emit("model_settings_loaded", model_settings)
+        return model_settings
 
     def _on_save_setting(self, event: Event):
         key = event.data.get('key')
         value = event.data.get('value')
 
         if key:
-            self.settings.set(key, value)
-            self.settings.save_settings()
             self.update_setting(key, value)
 
     def update_setting(self, key, value):
         self.settings_service.update(key, value)
         logger.debug(f"Setting '{key}' applied with value: {value}")
+
+    def close(self) -> None:
+        return None
 
 
 

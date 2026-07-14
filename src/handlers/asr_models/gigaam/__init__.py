@@ -95,7 +95,11 @@ def _download_tokenizer(model_name: str, download_root: str) -> Optional[str]:
 
 def hash_path(ckpt_path: str) -> str:
     """Calculate binary file hash for checksum"""
-    return hashlib.md5(open(ckpt_path, "rb").read()).hexdigest()
+    digest = hashlib.md5()
+    with open(ckpt_path, "rb") as checkpoint_file:
+        while chunk := checkpoint_file.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _normalize_device(device: Optional[Union[str, torch.device]]) -> torch.device:

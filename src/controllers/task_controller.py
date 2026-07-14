@@ -14,14 +14,13 @@ class TaskController(TaskService):
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Task.CREATE_TASK, self._on_create_task, weak=False)
         self.event_bus.subscribe(Events.Task.UPDATE_TASK_STATUS, self._on_update_task_status, weak=False)
-        self.event_bus.subscribe(Events.Task.GET_TASK, self._on_get_task, weak=False)
         self.event_bus.subscribe(Events.Task.NOTIFY_TASK_UPDATE, self._on_notify_task_update, weak=False)
 
     # ── TaskService (прямой вызов из asyncio-loop сервера) ──────────────────
     def create_task(self, task_type: str, data: Dict[str, Any]) -> Task:
         task = self.task_manager.create_task(task_type, data)
         # Уведомляем сервер о создании задачи
-        self.event_bus.emit(Events.Task.TASK_CREATED, {'task': task})
+        self.event_bus.emit(Events.Task.TASK_CREATED, {'task': task.snapshot()})
         return task
 
     def get_task(self, uid: str) -> Optional[Task]:
@@ -34,7 +33,7 @@ class TaskController(TaskService):
         task = self.task_manager.update_task_status(uid, status, result, error)
         if task:
             # Уведомляем о изменении статуса
-            self.event_bus.emit(Events.Task.TASK_STATUS_CHANGED, {'task': task})
+            self.event_bus.emit(Events.Task.TASK_STATUS_CHANGED, {'task': task.snapshot()})
         return task
 
     # ── Bus-подписчики (тонкие делегаты) ────────────────────────────────────

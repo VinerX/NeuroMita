@@ -59,12 +59,12 @@ class ProtocolsController(ProtocolBuilderService):
         self._subscribe()
 
     def _subscribe(self) -> None:
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_LIST, self._on_get_protocol_list, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_PROTOCOL_FULL, self._on_get_protocol_full, weak=False)
-        self.event_bus.subscribe(Events.Protocols.GET_TRANSFORM_LIST, self._on_get_transform_list, weak=False)
         self.event_bus.subscribe(Events.Protocols.BUILD_HTTP_REQUEST, self._on_build_http_request, weak=False)
 
     def _on_get_protocol_list(self, _event: Event) -> List[Dict[str, Any]]:
+        return self.list_protocols()
+
+    def list_protocols(self) -> List[Dict[str, Any]]:
         reg = get_protocol_registry()
         items: List[Dict[str, Any]] = []
         raw = getattr(reg, "_items", {}) or {}
@@ -90,6 +90,12 @@ class ProtocolsController(ProtocolBuilderService):
         if not pid:
             return None
 
+        return self.get_protocol(pid)
+
+    def get_protocol(self, protocol_id: str) -> Optional[Dict[str, Any]]:
+        pid = str(protocol_id or "").strip()
+        if not pid:
+            return None
         reg = get_protocol_registry()
         proto = reg.get(pid)
         if not proto:
@@ -107,6 +113,9 @@ class ProtocolsController(ProtocolBuilderService):
         }
 
     def _on_get_transform_list(self, _event: Event) -> List[Dict[str, Any]]:
+        return self.list_transforms()
+
+    def list_transforms(self) -> List[Dict[str, Any]]:
         try:
             from handlers.llm_providers.message_transforms import get_transform_catalog
             return list(get_transform_catalog() or [])
@@ -176,6 +185,3 @@ def ensure_protocols_controller() -> ProtocolsController:
         _controller_singleton = ProtocolsController()
         logger.notify("ProtocolsController успешно инициализирован.")
     return _controller_singleton
-
-
-ensure_protocols_controller()

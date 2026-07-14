@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from core.app_paths import settings_path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
@@ -149,7 +151,7 @@ def invalidate_embedding_config_cache() -> None:
 
 def resolve_full_config() -> Dict[str, Any]:
     """Кэширующая обёртка. Один RAG-поиск дёргал это 7 раз, а каждый вызов уходил
-    в EventBus (emit_and_wait, timeout=2s) — то есть 7 потоков на запрос.
+    в EventBus (sync EventBus RPC, timeout=2s) — то есть 7 потоков на запрос.
 
     Кэш самоинвалидируется по сигнатуре настроек; при правке содержимого пресета
     владельцы зовут invalidate_embedding_config_cache().
@@ -281,7 +283,7 @@ def _warn_legacy_fallback_once(chosen: str) -> None:
 
 
 def _load_preset_storage() -> Dict[str, Any]:
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     if not path.exists():
         return {}
     try:
@@ -291,7 +293,7 @@ def _load_preset_storage() -> Dict[str, Any]:
 
 
 def _save_preset_storage(data: Dict[str, Any]) -> bool:
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -391,7 +393,7 @@ def _resolve_from_preset_storage(preset_id: Any) -> Optional[Dict[str, Any]]:
     from presets.embedding_provider_presets import get_builtin_preset
 
     data: Dict[str, Any] = {}
-    path = Path("Settings/embedding_presets.json")
+    path = settings_path("embedding_presets.json", create_parent=True)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))

@@ -1,19 +1,18 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
 
-from managers.rag.rag_manager import RAGManager
 import base64
 import json
 import datetime
 import re
 import copy
+import threading
 from typing import Optional, Any
-import base64
 
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
 from core.character_locks import character_lock
-from core.events import get_event_bus, Events, Event
+from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services, use
 from main_logger import logger
@@ -22,10 +21,12 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    ModelStateService,
     PromptBuildRequest,
     PromptBuilderService,
     UtilityGenerationRequest,
     UtilityGenerationResult,
+    SettingsService,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -36,6 +37,7 @@ from managers.history_ui_projector import HistoryUiProjector
 from managers.model_pricing_manager import ModelPricingManager
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
+from services.runtime_capabilities import runtime_capabilities
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -51,7 +53,6 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
-
 
 def _render_tools_for_prompt(schema: list) -> str:
     """Format tool JSON schema list into a human-readable prompt block."""
@@ -88,7 +89,7 @@ def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
     return clean, json_str
 
 
-class ModelController(GenerationService):
+class ModelController(GenerationService, ModelStateService):
     """
     ModelController:
     - реализует GenerationService (generate_chat / generate_utility)
@@ -103,6 +104,10 @@ class ModelController(GenerationService):
 
     def __init__(self, settings):
         self.settings = settings
+        self._settings_service = use(SettingsService)
+        self._settings_subscription = self._settings_service.subscribe(
+            self._on_setting_changed
+        )
         self.event_bus = get_event_bus()
 
         # UI history paging
@@ -125,7 +130,8 @@ class ModelController(GenerationService):
         self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
-        self._temporary_system_infos: list[dict] = []
+        self._temporary_system_infos: dict[str, list[dict]] = {}
+        self._temporary_system_infos_lock = threading.Lock()
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
@@ -156,40 +162,31 @@ class ModelController(GenerationService):
         return self._characters.current()
 
     def _refresh_chat_model_character_refs(self):
-        """Заполняем ссылки в ChatModel (он ещё держит их напрямую)."""
-        registry = self._characters
-        self.model.current_character = registry.current()
-
-        chars_map = {}
-        for cid in registry.all_ids():
-            ch = registry.get(str(cid))
-            if ch is not None and hasattr(ch, "char_id"):
-                chars_map[ch.char_id] = ch
-
-        self.model.characters = chars_map
-        self.model.GameMaster = chars_map.get("GameMaster")
+        """Refresh only the active runtime; do not materialize every character."""
+        current = self._characters.current()
+        self.model.current_character = current
+        if current is not None and hasattr(current, "char_id"):
+            self.model.characters = {str(current.char_id): current}
+            self.model.GameMaster = current if str(current.char_id) == "GameMaster" else None
+        else:
+            self.model.characters = {}
+            self.model.GameMaster = None
 
     # ---------------------------------------------------------------------
     # Subscriptions
     # ---------------------------------------------------------------------
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
         self.event_bus.subscribe(Events.Server.SET_GAME_DATA, self._on_set_game_data, weak=False)
         self.event_bus.subscribe(Events.Model.ADD_TEMPORARY_SYSTEM_INFO, self._on_add_temporary_system_info, weak=False)
         self.event_bus.subscribe(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, self._on_peek_temporary_system_infos, weak=False)
 
         self.event_bus.subscribe(Events.Model.LOAD_HISTORY, self._on_load_history, weak=False)
         self.event_bus.subscribe(Events.Model.LOAD_MORE_HISTORY, self._on_load_more_history, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_DEBUG_INFO, self._on_get_debug_info, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -197,9 +194,9 @@ class ModelController(GenerationService):
     # Model settings
     # ---------------------------------------------------------------------
 
-    def _on_setting_changed(self, event: Event):
-        key = (event.data or {}).get("key")
-        value = (event.data or {}).get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "CHARACTER":
             self.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": str(value or "")})
@@ -209,6 +206,12 @@ class ModelController(GenerationService):
 
         if hasattr(self.model, "cfg") and self.model.cfg:
             self.model.cfg.apply_setting(key, value)
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
@@ -222,17 +225,65 @@ class ModelController(GenerationService):
         self.game_state.update_from_event_data(event.data or {})
 
     def _on_add_temporary_system_info(self, event: Event):
-        content = (event.data or {}).get("content", "")
+        data = event.data or {}
+        content = data.get("content", "")
         if not content:
             return False
-        self._temporary_system_infos.append({"role": "system", "content": str(content)})
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        if not character_id:
+            return False
+        with self._temporary_system_infos_lock:
+            self._temporary_system_infos.setdefault(character_id, []).append(
+                {"role": "system", "content": str(content)}
+            )
         return True
 
     def _on_peek_temporary_system_infos(self, event: Event):
-        return list(self._temporary_system_infos)
+        data = event.data or {}
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        with self._temporary_system_infos_lock:
+            return list(self._temporary_system_infos.get(character_id, ()))
+
+    def _consume_temporary_system_infos(self, character_id: str, reserved: list[dict]) -> None:
+        if not character_id or not reserved:
+            return
+        with self._temporary_system_infos_lock:
+            current = list(self._temporary_system_infos.get(character_id, ()))
+            if not current:
+                return
+            for used in reserved:
+                for index, candidate in enumerate(current):
+                    if candidate is used or candidate == used:
+                        current.pop(index)
+                        break
+            if current:
+                self._temporary_system_infos[character_id] = current
+            else:
+                self._temporary_system_infos.pop(character_id, None)
 
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
+
+    def _remote_only_structured_segment_fields(self) -> list[str]:
+        capabilities = runtime_capabilities(settings=self.settings)
+        return list(capabilities.structured_segment_exclude_fields)
+
+    @staticmethod
+    def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:
+        excluded = {
+            str(name).strip()
+            for name in (capabilities or {}).get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        if not excluded:
+            return
+
+        for segment in getattr(structured, "segments", ()) or ():
+            for field_name in excluded:
+                if not hasattr(segment, field_name):
+                    continue
+                current = getattr(segment, field_name, None)
+                setattr(segment, field_name, [] if isinstance(current, list) else None)
 
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
@@ -305,6 +356,7 @@ class ModelController(GenerationService):
                 "event_type": prompt_request.event_type,
                 "user_input": prompt_request.user_input,
                 "system_input": prompt_request.system_input,
+                "rag_context": prompt_request.rag_context,
                 "hidden_user_context": prompt_request.hidden_user_context,
                 "memory_limit": prompt_request.memory_limit,
                 "is_game_master": prompt_request.is_game_master,
@@ -343,7 +395,7 @@ class ModelController(GenerationService):
             return None
         cid = data.get("character_id") or data.get("char_id") or data.get("character")
         return str(cid) if cid else None
-    
+
     def _normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
             return []
@@ -718,6 +770,22 @@ class ModelController(GenerationService):
         finally:
             self.loading_more_history = False
 
+    def debug_info(self, character_id: str | None = None) -> str:
+        ch = self._get_character_ref(character_id) if character_id else self._get_current_character_ref()
+        if ch and hasattr(ch, "current_variables_string"):
+            return ch.current_variables_string()
+        return "Debug info not available"
+
+    def token_stats(self) -> dict[str, Any]:
+        return self._build_token_stats()
+
+    def schedule_g4f_update(self, version: str = "latest") -> bool:
+        logger.warning(
+            "g4f automatic installation and update scheduling are disabled; "
+            "an already installed package may still be used"
+        )
+        return False
+
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
         requested_cid = self._normalize_character_id_from_data(data)
@@ -805,7 +873,9 @@ class ModelController(GenerationService):
         # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
         # возвращал "", то есть это был поход на шину за пустой строкой.
         messages = list(base)
-        messages.extend([x for x in self._temporary_system_infos if isinstance(x, dict)])
+        with self._temporary_system_infos_lock:
+            temporary = list(self._temporary_system_infos.get(cid, ()))
+        messages.extend([x for x in temporary if isinstance(x, dict)])
 
         return cid, messages, self.context_counter.count_tokens(messages)
 
@@ -1135,14 +1205,15 @@ class ModelController(GenerationService):
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
+        rag_context = ""
         if bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
             prompt_set_path = getattr(char, "base_data_path", None)
-            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+            rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         game_state = self.game_state.to_prompt_dict()
 
-        extra_system_infos = list(self._temporary_system_infos or [])
-        self._temporary_system_infos.clear()
+        with self._temporary_system_infos_lock:
+            extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
 
         cfg = getattr(self.model, "cfg", None)
 
@@ -1184,6 +1255,10 @@ class ModelController(GenerationService):
             )
         except Exception as e:
             logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+
+        remote_only_segment_fields = self._remote_only_structured_segment_fields()
+        if remote_only_segment_fields:
+            effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
@@ -1295,6 +1370,7 @@ class ModelController(GenerationService):
             policy=policy,
             user_input=user_input,
             system_input=system_input,
+            rag_context=rag_context,
             hidden_user_context=hidden_user_context,
             image_data=image_data,
             memory_limit=memory_limit,
@@ -1399,7 +1475,7 @@ class ModelController(GenerationService):
 
             if is_structured_output:
                 sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
-                return self._process_structured_output(
+                structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
                     usage=llm_response.usage,
@@ -1429,6 +1505,9 @@ class ModelController(GenerationService):
                     structured_model_cls=structured_model_cls,
                     sample_id=sample_id,
                 )
+                if structured_result is not None:
+                    self._consume_temporary_system_infos(char_id, extra_system_infos)
+                return structured_result
 
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
@@ -1499,6 +1578,8 @@ class ModelController(GenerationService):
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
 
+            self._consume_temporary_system_infos(char_id, extra_system_infos)
+
             created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
@@ -1539,7 +1620,9 @@ class ModelController(GenerationService):
     def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
         # ---------------------------------------------------------------------
         # RAG выполняется ДО BUILD_PROMPT
-        # результаты кладутся в system prompt
+        # Возвращает готовый RAG-блок отдельным сообщением. Исходный
+        # system_input (событие или служебная инструкция) не изменяется:
+        # актуальная инструкция должна оставаться после справочного контекста.
         # Templates can be customized per prompt set via Structural/ files:
         #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
         from utils.template_loader import load_optional_template
@@ -1551,6 +1634,8 @@ class ModelController(GenerationService):
             final_input = system_input
         if final_input:
             try:
+                from managers.rag.rag_manager import RAGManager
+
                 rag = RAGManager.for_character(char_id)
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
@@ -1645,14 +1730,13 @@ class ModelController(GenerationService):
                         if forgotten_count > 0:
                             rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
-                        separator = "\n\n" if system_input else ""
-                        system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
-                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"[{char_id}] RAG blocks built as separate message "
                             f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
+                        return rag_block
             except Exception as e:
                 logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
-        return system_input
+        return ""
 
     # ---------------------------------------------------------------------
     # Structured Output processing
@@ -1734,6 +1818,8 @@ class ModelController(GenerationService):
                 targets=fallback_targets,
                 think=think_text or None,
             )
+
+        self._sanitize_structured_segment_fields(structured, capabilities)
 
         # Apply structured response processing (behavior changes, memory, game tags)
         char.process_structured_response(
@@ -2036,7 +2122,7 @@ class ModelController(GenerationService):
             "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Emit tool executing indicator for UI
         self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
@@ -2065,7 +2151,7 @@ class ModelController(GenerationService):
             "character_id": "",
             "character_name": "",
             "speaker_name": "",
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Build tool result message(s) for the second LLM call.
         # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:

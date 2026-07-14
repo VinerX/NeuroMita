@@ -1,14 +1,18 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
-from ui.settings.provider_options import current_provider_options, load_api_provider_options_async
-from ui.settings.rag_memory_settings import (
+
+
+def setup_model_interaction_controls(
+    self,
+    parent,
+    *,
+    runtime_options_view_model,
     build_memory_section,
     build_rag_section,
-    build_rag_memory_section,  # обратная совместимость
-)
+):
+    from ui.settings.runtime_options import attach_runtime_options_view_model
 
-
-def setup_model_interaction_controls(self, parent):
+    attach_runtime_options_view_model(self, runtime_options_view_model)
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
 
     general_config = [
@@ -229,7 +233,9 @@ def setup_model_interaction_controls(self, parent):
         icon_name='fa5s.cogs'
     )
 
-    provider_options = current_provider_options()
+    from ui.settings.runtime_options import register_provider_options
+
+    provider_options = [_("Текущий", "Current")]
 
     react_settings_config = [
         {
@@ -301,10 +307,9 @@ def setup_model_interaction_controls(self, parent):
 
     build_memory_section(self, parent, provider_options)
     build_rag_section(self, parent, provider_options)
-    load_api_provider_options_async(
+    register_provider_options(
         self,
         ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
-        name="model-interaction-provider-options",
     )
 
     # Token pricing/context limits now come from the selected provider/preset,
