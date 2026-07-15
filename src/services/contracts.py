@@ -463,6 +463,7 @@ class ChatGenerationRequest:
     image_data: List[Any] = field(default_factory=list)
     image_source: str = ""
     stream_callback: Optional[Any] = None
+    stream_event_callback: Optional[Any] = None
     event_type: str = "chat"
     sender: str = "Player"
     participants: List[str] = field(default_factory=list)

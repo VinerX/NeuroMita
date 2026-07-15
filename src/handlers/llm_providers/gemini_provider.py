@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-
-import requests
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from main_logger import logger
 from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
@@ -15,9 +14,8 @@ from .base import (
     LLMResponse,
     check_request_cancelled,
     normalize_usage_payload,
-    register_cancellable_resource,
-    resolve_requests_timeout,
 )
+from .streaming import StreamAccumulator, iter_json_values, iter_sse_data, track_response_body
 
 
 class GeminiProvider(BaseProvider):
@@ -33,6 +31,17 @@ class GeminiProvider(BaseProvider):
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         return self.generate_request_gemini(req)
+
+    @staticmethod
+    def _request_url(req: LLMRequest, *, stream: bool) -> str:
+        url = str(req.api_url or "")
+        if not stream:
+            return url
+        parsed = urlsplit(url)
+        path = parsed.path.replace(":generateContent", ":streamGenerateContent")
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.setdefault("alt", "sse")
+        return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), parsed.fragment))
 
     def _supports_system_instruction(self, model: str) -> bool:
         m = (model or "").lower()
@@ -232,19 +241,17 @@ class GeminiProvider(BaseProvider):
         import time as _time
 
         _t0 = _time.time()
+        request_url = self._request_url(req, stream=need_stream)
         try:
-            check_request_cancelled(req)
-            response = requests.post(
-                req.api_url,
+            response = self.http_transport.post_json(
+                req,
+                request_url,
                 headers=headers,
-                json=data,
+                payload=data,
                 stream=need_stream,
-                timeout=resolve_requests_timeout(req),
             )
-            register_cancellable_resource(req, response)
-            check_request_cancelled(req)
         except Exception as e:
-            provider_error = coerce_provider_error(self.name, e, url=req.api_url)
+            provider_error = coerce_provider_error(self.name, e, url=request_url)
             logger.debug(
                 "[GeminiProvider] Transport failure delegated to request runner: %s",
                 provider_error.to_console_summary(),
@@ -253,6 +260,8 @@ class GeminiProvider(BaseProvider):
         logger.info(f"[GeminiProvider] Response received in {_time.time()-_t0:.1f}s, status={response.status_code}")
 
         if response.status_code != 200:
+            if need_stream:
+                response.read()
             try:
                 payload = response.json()
             except Exception:
@@ -261,7 +270,7 @@ class GeminiProvider(BaseProvider):
                 self.name,
                 status_code=response.status_code,
                 payload=payload,
-                url=req.api_url,
+                url=request_url,
             )
             logger.debug("[GeminiProvider] HTTP failure delegated to request runner: %s", provider_error.to_console_summary())
             logger.debug(f"[GeminiProvider] raw error payload: {payload}")
@@ -269,7 +278,7 @@ class GeminiProvider(BaseProvider):
             raise provider_error
 
         if need_stream:
-            return self._handle_gemini_stream(response, req, req.stream_cb)
+            return self._handle_gemini_stream(response, req)
 
         try:
             response_data = response.json()
@@ -325,56 +334,42 @@ class GeminiProvider(BaseProvider):
         self,
         response,
         req: LLMRequest,
-        stream_callback: callable = None,
     ) -> LLMResponse:
-        full_response_parts = []
-        json_buffer = ""
-        decoder = json.JSONDecoder()
-        usage = None
+        accumulator = StreamAccumulator(req, provider=self.name, model=req.model)
         response_model = None
+        finish_reason = None
 
         try:
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if "text/event-stream" in content_type:
+                values = (
+                    json.loads(data)
+                    for data in iter_sse_data(track_response_body(req, response.iter_lines()))
+                    if data.strip() != "[DONE]"
+                )
+            else:
+                values = iter_json_values(track_response_body(req, response.iter_text()))
+
+            for result in values:
                 check_request_cancelled(req)
-                json_buffer += chunk
-                while json_buffer.strip():
-                    try:
-                        result, index = decoder.raw_decode(json_buffer)
-                        if response_model is None and isinstance(result, dict):
-                            response_model = result.get("modelVersion")
-                        usage = usage or self._extract_usage(result)
+                if not isinstance(result, dict):
+                    continue
+                response_model = response_model or result.get("modelVersion")
+                usage = self._extract_usage(result)
+                if usage is not None:
+                    accumulator.set_usage(usage)
+                candidate = (result.get("candidates") or [{}])[0] or {}
+                finish_reason = candidate.get("finishReason") or finish_reason
+                parts = (candidate.get("content") or {}).get("parts") or []
+                for part in parts if isinstance(parts, list) else []:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("thought"):
+                        accumulator.add_reasoning(part.get("text"))
+                    else:
+                        accumulator.add_text(part.get("text"))
 
-                        parts = (
-                            result.get("candidates", [{}])[0]
-                            .get("content", {})
-                            .get("parts", [])
-                        )
-                        for part in (parts if isinstance(parts, list) else []):
-                            if not isinstance(part, dict):
-                                continue
-                            text = part.get("text", "")
-                            if not text:
-                                continue
-                            is_thought = bool(part.get("thought"))
-                            if stream_callback:
-                                if is_thought:
-                                    stream_callback(f"<think>{text}</think>")
-                                else:
-                                    stream_callback(text)
-                            if not is_thought:
-                                full_response_parts.append(text)
-
-                        json_buffer = json_buffer[index:].lstrip()
-                    except json.JSONDecodeError:
-                        break
-
-            # Стрим успешно дочитан до конца — отдаём накопленный текст.
-            return LLMResponse(
-                text="".join(full_response_parts),
-                usage=usage,
-                model=response_model,
-                provider_name=self.name,
-            )
+            return accumulator.complete(finish_reason=finish_reason, model=response_model)
         except Exception as e:
             # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,
             # чтобы runner ушёл в retry/фоллбэк, а не вернул обрезанный ответ.

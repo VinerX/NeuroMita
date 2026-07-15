@@ -21,6 +21,7 @@ from controllers.chat_controller import ChatController
 from core.events import Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services
+from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
@@ -73,6 +74,26 @@ class _BlockingGeneration(GenerationService):
         self.entered.release()
         self.release.wait(10)
         return ChatGenerationResult(text="ok", character_id="Crazy")
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _StreamingGeneration(GenerationService):
+    def __init__(self):
+        self.request = None
+
+    def generate_chat(self, request: ChatGenerationRequest):
+        self.request = request
+        request.stream_event_callback(LLMStreamEvent(
+            type=LLMStreamEventType.TEXT_DELTA,
+            request_id="request",
+            provider="common",
+            model="model",
+            sequence=1,
+            text="hello",
+        ))
+        return ChatGenerationResult(text="hello", character_id="Crazy")
 
     def generate_utility(self, request):
         raise AssertionError("не используется")
@@ -157,6 +178,18 @@ class ChatRequestPipelineTests(unittest.TestCase):
             len(failures), 3, "переполнение очереди генераций прошло молча"
         )
         self.assertIn("Слишком много запросов", failures[0].get("error", ""))
+
+    def test_chat_consumes_typed_stream_events_without_legacy_tag_bridge(self):
+        generation = _StreamingGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": True})
+
+        result = self.controller._run_request("hi", character_id="Crazy")
+
+        self.assertEqual(result, "hello")
+        self.assertIsNotNone(generation.request)
+        self.assertIsNone(generation.request.stream_callback)
+        self.assertTrue(callable(generation.request.stream_event_callback))
 
 
 if __name__ == "__main__":

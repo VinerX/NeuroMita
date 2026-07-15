@@ -19,6 +19,8 @@ from services.contracts import (
     ChatGenerationResult,
     GenerationService,
 )
+from services.llm_stream import LLMStreamEvent, LLMStreamEventType
+from services.stream_presentation import TextDeltaCoalescer
 
 
 class StructuredJsonStreamFilter:
@@ -151,77 +153,6 @@ class StructuredJsonStreamFilter:
         return ""
 
 
-class ThinkTagStreamFilter:
-    """
-    Streaming-time filter that prevents <think>...</think> from being echoed
-    into the normal assistant stream output. Accumulates think text separately.
-
-    Note: simple exact-tag matching (<think>, </think>) to keep it predictable.
-    """
-    START = "<think>"
-    END = "</think>"
-
-    def __init__(self, on_think_chunk=None):
-        self._buf = ""
-        self._in_think = False
-        self._think_parts: list[str] = []
-        self._keep_tail = max(len(self.START), len(self.END)) - 1
-        self.on_think_chunk = on_think_chunk
-
-    def feed(self, chunk: str) -> str:
-        if not chunk:
-            return ""
-        self._buf += str(chunk)
-        out = ""
-
-        while True:
-            if self._in_think:
-                idx = self._buf.find(self.END)
-                if idx == -1:
-                    if len(self._buf) > self._keep_tail:
-                        new_think = self._buf[:-self._keep_tail]
-                        self._think_parts.append(new_think)
-                        if self.on_think_chunk:
-                            self.on_think_chunk(new_think)
-                        self._buf = self._buf[-self._keep_tail:]
-                    break
-                new_think = self._buf[:idx]
-                self._think_parts.append(new_think)
-                if self.on_think_chunk:
-                    self.on_think_chunk(new_think)
-                self._buf = self._buf[idx + len(self.END):]
-                self._in_think = False
-            else:
-                idx = self._buf.find(self.START)
-                if idx == -1:
-                    if len(self._buf) > self._keep_tail:
-                        out += self._buf[:-self._keep_tail]
-                        self._buf = self._buf[-self._keep_tail:]
-                    break
-                out += self._buf[:idx]
-                self._buf = self._buf[idx + len(self.START):]
-                self._in_think = True
-
-        return out
-
-    def flush_visible(self) -> str:
-        """Вызывается в конце потока для сбора оставшегося видимого текста."""
-        if self._in_think:
-            if self._buf:
-                self._think_parts.append(self._buf)
-            self._in_think = False
-            self._buf = ""
-            return ""
-        # Сбрасываем буфер видимых символов, удержанных для поиска границ тегов
-        tail = self._buf
-        self._buf = ""
-        return tail
-
-    def think_text(self) -> str:
-        """Возвращает весь собранный текст размышлений."""
-        return "".join(self._think_parts).strip()
-
-
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
@@ -331,6 +262,9 @@ class ChatController:
         stream_started = False
         stream_finished = False
         stream_current_role = None
+        presentation_lock = threading.RLock()
+        assistant_coalescer = None
+        think_coalescer = None
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
@@ -346,63 +280,79 @@ class ChatController:
 
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
             effective_character_name = self._resolve_character_name(character_id)
-            
+
+            def append_stream_chunk(role: str, text: str) -> None:
+                if not text:
+                    return
+                with presentation_lock:
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
+                        "stream_id": stream_id,
+                        "chunk": text,
+                        "role": role,
+                    }, delivery=EventDelivery.ORDERED)
+
+            assistant_coalescer = TextDeltaCoalescer(
+                lambda text: append_stream_chunk("assistant", text)
+            )
+            think_coalescer = TextDeltaCoalescer(
+                lambda text: append_stream_chunk("think", text)
+            )
+
             def on_think_chunk(think_chunk: str):
                 nonlocal stream_current_role, stream_started
-                if stream_current_role != "think":
-                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                        "stream_id": stream_id,
-                        "character_id": character_id or "",
-                        "character_name": effective_character_name,
-                        "speaker_name": effective_character_name,
-                        "role": "think",
-                    }, delivery=EventDelivery.ORDERED)
-                    stream_current_role = "think"
-                    stream_started = True
+                if not think_chunk:
+                    return
+                with presentation_lock:
+                    if stream_current_role != "think":
+                        assistant_coalescer.flush()
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "think",
+                        }, delivery=EventDelivery.ORDERED)
+                        stream_current_role = "think"
+                        stream_started = True
+                    think_coalescer.push(think_chunk)
 
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
-                    "stream_id": stream_id,
-                    "chunk": think_chunk,
-                    "role": "think",
-                }, delivery=EventDelivery.ORDERED)
-
-            stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
-            stream_json_filter  = StructuredJsonStreamFilter() if is_streaming else None
+            stream_json_filter = StructuredJsonStreamFilter() if is_streaming else None
 
             def _emit_visible_assistant(text: str):
                 nonlocal stream_current_role, stream_started
                 if not text:
                     return
-                if stream_current_role != "assistant":
-                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                        "stream_id": stream_id,
-                        "character_id": character_id or "",
-                        "character_name": effective_character_name,
-                        "speaker_name": effective_character_name,
-                        "role": "assistant",
-                    }, delivery=EventDelivery.ORDERED)
-                    stream_current_role = "assistant"
-                    stream_started = True
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
-                    "stream_id": stream_id,
-                    "chunk": text,
-                    "role": "assistant",
-                }, delivery=EventDelivery.ORDERED)
+                with presentation_lock:
+                    if stream_current_role != "assistant":
+                        think_coalescer.flush()
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant",
+                        }, delivery=EventDelivery.ORDERED)
+                        stream_current_role = "assistant"
+                        stream_started = True
+                    assistant_coalescer.push(text)
 
-            def stream_callback_handler(chunk: str):
+            def flush_stream_output() -> None:
+                with presentation_lock:
+                    think_coalescer.flush()
+                    assistant_coalescer.flush()
+
+            def stream_event_handler(event: LLMStreamEvent):
                 if not eff_policy.echo_to_ui:
                     return
-                chunk_str = str(chunk or "")
-                if not chunk_str:
+                if event.type is LLMStreamEventType.REASONING_DELTA:
+                    if show_think_in_gui:
+                        on_think_chunk(event.text)
                     return
-
-                # 1. Filter out <think> blocks (emits them separately)
-                visible = stream_think_filter.feed(chunk_str) if stream_think_filter else chunk_str
-
-                # 2. Filter JSON structured output → emit only segment text
+                if event.type is not LLMStreamEventType.TEXT_DELTA:
+                    return
+                visible = event.text
                 if visible and stream_json_filter is not None:
                     visible = stream_json_filter.feed(visible)
-
                 _emit_visible_assistant(visible)
 
             if image_data:
@@ -460,7 +410,7 @@ class ChatController:
                     system_input=system_input,
                     image_data=list(image_data or []),
                     image_source=image_source,
-                    stream_callback=stream_callback_handler if is_streaming else None,
+                    stream_event_callback=stream_event_handler if is_streaming else None,
                     event_type=effective_event_type,
                     sender=sender,
                     participants=list(participants or []),
@@ -508,19 +458,16 @@ class ChatController:
 
             if is_streaming and eff_policy.echo_to_ui:
                 # Мы НЕ вызываем PREPARE_STREAM_UI здесь, так как он будет вызван
-                # динамически в stream_callback_handler при получении первого чанка
+                # динамически в stream_event_handler при получении первой дельты
                 # (либо для think, либо для assistant).
                 pass
 
             # Flush any held-back tail from stream filters
             if is_streaming and eff_policy.echo_to_ui:
-                tail = stream_think_filter.flush_visible() if stream_think_filter else ""
-                if tail and stream_json_filter is not None:
-                    tail = stream_json_filter.feed(tail)
-                if stream_json_filter is not None:
-                    tail = (tail or "") + stream_json_filter.flush_visible()
+                tail = stream_json_filter.flush_visible() if stream_json_filter is not None else ""
                 if tail:
                     _emit_visible_assistant(tail)
+                flush_stream_output()
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -571,6 +518,7 @@ class ChatController:
             if is_streaming and eff_policy.echo_to_ui:
                 if not stream_started and response_text:
                     _emit_visible_assistant(response_text)
+                flush_stream_output()
 
                 finish_payload = {"stream_id": stream_id}
                 if structured_data:
@@ -625,6 +573,10 @@ class ChatController:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
             return None
         finally:
+            if think_coalescer is not None:
+                think_coalescer.close(flush=True)
+            if assistant_coalescer is not None:
+                assistant_coalescer.close(flush=True)
             if stream_started and not stream_finished:
                 try:
                     self.event_bus.emit(

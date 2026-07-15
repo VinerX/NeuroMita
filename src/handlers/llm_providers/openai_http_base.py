@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-import requests
+import httpx
 
 from main_logger import logger
 from handlers.llm_providers.base import (
@@ -15,8 +15,6 @@ from handlers.llm_providers.base import (
     LLMResponse,
     check_request_cancelled,
     normalize_usage_payload,
-    register_cancellable_resource,
-    resolve_requests_timeout,
 )
 from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
 from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
@@ -25,6 +23,7 @@ from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
     normalize_openrouter_routing,
 )
+from handlers.llm_providers.streaming import StreamAccumulator, iter_sse_data, track_response_body
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -216,22 +215,17 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return payload
 
-    def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
-        check_request_cancelled(req)
+    def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> httpx.Response:
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
-        timeout = resolve_requests_timeout(req)
-        response = requests.post(
+        return self.http_transport.post_json(
+            req,
             request_url,
             headers=headers,
-            json=payload,
+            payload=payload,
             stream=req.stream,
-            timeout=timeout,
         )
-        register_cancellable_resource(req, response)
-        check_request_cancelled(req)
-        return response
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
@@ -265,6 +259,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             raise provider_error from e
 
         if resp.status_code == 400 and self._supports_structured_output(req):
+            if req.stream:
+                resp.read()
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             if rf_mode != "json_object" and "response_format" in payload:
                 try:
@@ -282,6 +278,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     resp = self._request(request_url, req, payload)
 
         if resp.status_code != 200:
+            if req.stream:
+                resp.read()
             try:
                 err = resp.json()
             except Exception:
@@ -382,31 +380,20 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
     def _handle_stream(
         self,
-        resp: requests.Response,
+        resp: httpx.Response,
         api_url: str,
         req: LLMRequest,
         stream_callback: Optional[callable] = None,
     ) -> LLMResponse:
-        parts: List[str] = []
-        usage = None
+        accumulator = StreamAccumulator(req, provider=self.name, model=req.model)
         finish_reason = None
         response_model = None
+        tool_calls: dict[int, dict[str, Any]] = {}
         chunk_error_count = 0
         last_chunk_error = ""
         try:
-            for line_bytes in resp.iter_lines(decode_unicode=False):
+            for chunk in iter_sse_data(track_response_body(req, resp.iter_lines())):
                 check_request_cancelled(req)
-                if not line_bytes:
-                    continue
-                try:
-                    line = line_bytes.decode("utf-8")
-                except UnicodeDecodeError:
-                    line = line_bytes.decode("utf-8", errors="replace")
-
-                if not line.startswith("data: "):
-                    continue
-
-                chunk = line[6:]
                 if chunk.strip() == "[DONE]":
                     break
 
@@ -414,16 +401,33 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     obj = json.loads(chunk)
                     if response_model is None:
                         response_model = obj.get("model")
-                    usage = usage or self._extract_usage(obj, api_url)
+                    chunk_usage = self._extract_usage(obj, api_url)
+                    if chunk_usage is not None:
+                        accumulator.set_usage(chunk_usage)
                     delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
                     fr = obj.get("choices", [{}])[0].get("finish_reason")
                     if fr:
                         finish_reason = fr
-                    text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
-                    if text:
-                        if stream_callback:
-                            stream_callback(text)
-                        parts.append(text)
+                    accumulator.add_text(delta.get("content", ""))
+                    accumulator.add_reasoning(delta.get("reasoning_content", ""))
+                    for tool_delta in delta.get("tool_calls") or []:
+                        if not isinstance(tool_delta, dict):
+                            continue
+                        index = int(tool_delta.get("index") or 0)
+                        state = tool_calls.setdefault(index, {"id": "", "name": "", "started": False})
+                        state["id"] = str(tool_delta.get("id") or state["id"])
+                        function = tool_delta.get("function") if isinstance(tool_delta.get("function"), dict) else {}
+                        state["name"] = str(function.get("name") or state["name"])
+                        if not state["started"] and (state["id"] or state["name"]):
+                            accumulator.tool_call_started(tool_call_id=state["id"], tool_name=state["name"])
+                            state["started"] = True
+                        arguments = str(function.get("arguments") or "")
+                        if arguments:
+                            accumulator.tool_call_delta(
+                                tool_call_id=state["id"],
+                                tool_name=state["name"],
+                                arguments_delta=arguments,
+                            )
                 except Exception as e:
                     chunk_error_count += 1
                     last_chunk_error = f"{type(e).__name__}: {e}"
@@ -445,24 +449,19 @@ class OpenAIHTTPProviderBase(BaseProvider):
             except Exception:
                 logger.debug(f"[{self.name}] Failed to close HTTP stream", exc_info=True)
 
-        error_message = None
-        if not parts:
+        for state in tool_calls.values():
+            if state["started"]:
+                accumulator.tool_call_completed(tool_call_id=state["id"], tool_name=state["name"])
+        response = accumulator.complete(finish_reason=finish_reason, model=response_model)
+        if not response.text:
             if chunk_error_count > 0:
-                error_message = (
+                response.error_message = (
                     "Provider stream ended without content. "
                     f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
                 )
             elif finish_reason and finish_reason != "stop":
-                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
-
-        return LLMResponse(
-            text="".join(parts) or None,
-            usage=usage,
-            model=response_model,
-            provider_name=self.name,
-            finish_reason=finish_reason,
-            error_message=error_message,
-        )
+                response.error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+        return response
 
     def _extract_usage(self, data: Any, api_url: str):
         if not isinstance(data, dict):

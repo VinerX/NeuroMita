@@ -1,6 +1,7 @@
 # src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
 import threading
+import time
 from typing import List, Dict, Callable, Optional, Any, Mapping
 from abc import ABC, abstractmethod
 
@@ -16,10 +17,53 @@ class RequestCancellation:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._callbacks: list[Callable[[], None]] = []
+        self._reason = ""
+        self._started_at = time.monotonic()
+        self._response_body_started = False
+        self._first_meaningful_event_at: Optional[float] = None
+        self._last_meaningful_event_at: Optional[float] = None
 
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
+
+    @property
+    def reason(self) -> str:
+        with self._lock:
+            return self._reason
+
+    @property
+    def started_at(self) -> float:
+        return self._started_at
+
+    @property
+    def has_meaningful_stream_event(self) -> bool:
+        with self._lock:
+            return self._first_meaningful_event_at is not None
+
+    @property
+    def response_body_started(self) -> bool:
+        with self._lock:
+            return self._response_body_started
+
+    def record_response_body_started(self) -> None:
+        with self._lock:
+            self._response_body_started = True
+
+    def record_meaningful_stream_event(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if self._first_meaningful_event_at is None:
+                self._first_meaningful_event_at = now
+            self._last_meaningful_event_at = now
+
+    def stream_activity(self) -> tuple[float, Optional[float], Optional[float]]:
+        with self._lock:
+            return (
+                self._started_at,
+                self._first_meaningful_event_at,
+                self._last_meaningful_event_at,
+            )
 
     def add_cancel_callback(self, callback: Callable[[], None]) -> None:
         call_now = False
@@ -34,10 +78,11 @@ class RequestCancellation:
             except Exception:
                 pass
 
-    def cancel(self) -> None:
+    def cancel(self, reason: str = "") -> None:
         with self._lock:
             if self._event.is_set():
                 return
+            self._reason = str(reason or "")
             self._event.set()
             callbacks = tuple(self._callbacks)
             self._callbacks.clear()
@@ -49,7 +94,7 @@ class RequestCancellation:
 
     def raise_if_cancelled(self) -> None:
         if self._event.is_set():
-            raise RequestCancelledError("LLM request was cancelled")
+            raise RequestCancelledError(self.reason or "LLM request was cancelled")
 
 
 def get_request_cancellation(req: "LLMRequest") -> Optional[RequestCancellation]:
@@ -64,46 +109,18 @@ def check_request_cancelled(req: "LLMRequest") -> None:
         token.raise_if_cancelled()
 
 
+def record_response_body_started(req: "LLMRequest") -> None:
+    token = get_request_cancellation(req)
+    if token is not None:
+        token.record_response_body_started()
+
+
 def register_cancellable_resource(req: "LLMRequest", resource: Any) -> Any:
     token = get_request_cancellation(req)
     close = getattr(resource, "close", None)
     if token is not None and callable(close):
         token.add_cancel_callback(close)
     return resource
-
-
-def resolve_requests_timeout(
-    req: "LLMRequest",
-    *,
-    default_total: float = 240.0,
-) -> tuple[float, float]:
-    extra = req.extra or {}
-
-    try:
-        total = max(
-            1.0,
-            float(extra.get("http_timeout_seconds") or default_total),
-        )
-    except (TypeError, ValueError):
-        total = max(1.0, float(default_total))
-
-    try:
-        connect = max(
-            1.0,
-            float(extra.get("http_connect_timeout_seconds") or min(15.0, total)),
-        )
-    except (TypeError, ValueError):
-        connect = min(15.0, total)
-
-    try:
-        read = max(
-            1.0,
-            float(extra.get("http_read_timeout_seconds") or total),
-        )
-    except (TypeError, ValueError):
-        read = total
-
-    return connect, read
 
 
 def resolve_total_timeout(
@@ -140,6 +157,7 @@ class LLMRequest:
 
     stream: bool = False
     stream_cb: Optional[Callable[[str], None]] = None
+    stream_event_cb: Optional[Callable[[Any], None]] = None
 
     tools_on: bool = False
     tools_mode: str = "native"
@@ -285,6 +303,16 @@ class BaseProvider(ABC):
     supports_streaming_with_tools: bool = False
     uses_custom_messages_handler: bool = False
 
+    def __init__(self, *, http_transport: Any = None) -> None:
+        if http_transport is None:
+            from .http_transport import LLMHttpTransport
+
+            http_transport = LLMHttpTransport()
+            self._owns_http_transport = True
+        else:
+            self._owns_http_transport = False
+        self.http_transport = http_transport
+
     @abstractmethod
     def is_applicable(self, req: LLMRequest) -> bool:
         pass
@@ -292,6 +320,10 @@ class BaseProvider(ABC):
     @abstractmethod
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
+
+    def close(self) -> None:
+        if self._owns_http_transport:
+            self.http_transport.close()
 
 
 __all__ = [

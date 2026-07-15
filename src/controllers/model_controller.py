@@ -212,6 +212,7 @@ class ModelController(GenerationService, ModelStateService):
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
+        self.model.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
@@ -349,7 +350,10 @@ class ModelController(GenerationService, ModelStateService):
                 "req_id": request.req_id,
                 "origin_message_id": request.origin_message_id,
                 "task_uid": request.task_uid,
-                "streaming": request.stream_callback is not None,
+                "streaming": (
+                    request.stream_callback is not None
+                    or request.stream_event_callback is not None
+                ),
             }
 
             prompt_snapshot = {
@@ -1191,6 +1195,7 @@ class ModelController(GenerationService, ModelStateService):
         image_data = list(request.image_data or [])
         image_source = str(request.image_source or "").strip().lower()
         stream_callback = request.stream_callback
+        stream_event_callback = request.stream_event_callback
         event_type = request.event_type or "chat"
 
         sender = str(request.sender or "Player")
@@ -1439,7 +1444,9 @@ class ModelController(GenerationService, ModelStateService):
             llm_response = self.model.generate(
                 combined_messages,
                 stream_callback=use_stream_cb,
+                stream_event_callback=(stream_event_callback if policy.allow_streaming else None),
                 preset_id=preset_id,
+                request_id=str(task_uid or req_id or origin_message_id or ""),
                 capabilities_override=effective_capabilities,
                 structured_model=structured_model_cls,
             )

@@ -1,5 +1,6 @@
 # src/handlers/chat_handler.py
 import re
+import threading
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
@@ -139,6 +140,9 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
 
 class ChatModel:
     def __init__(self, settings):
+        self._error_state = threading.local()
+        self._last_error_global = None
+        self._last_error_lock = threading.Lock()
         self.last_key = 0
         self.settings = settings
         self.event_bus = get_event_bus()
@@ -180,12 +184,30 @@ class ChatModel:
         self.HideAiData = True
         self.last_error = None
 
+    @property
+    def last_error(self):
+        if hasattr(self._error_state, "last_error"):
+            return self._error_state.last_error
+        with self._last_error_lock:
+            return self._last_error_global
+
+    @last_error.setter
+    def last_error(self, value) -> None:
+        self._error_state.last_error = value
+        with self._last_error_lock:
+            self._last_error_global = value
+
+    def close(self) -> None:
+        self.request_runner.close()
+
     def generate(
         self,
         messages: List[Dict[str, Any]],
         stream_callback: callable = None,
+        stream_event_callback: callable = None,
         preset_id: Optional[int] = None,
         *,
+        request_id: str = "",
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
@@ -195,7 +217,9 @@ class ChatModel:
         response, success = self._generate_chat_response(
             combined_messages=messages,
             stream_callback=stream_callback,
+            stream_event_callback=stream_event_callback,
             preset_id=preset_id,
+            request_id=request_id,
             capabilities_override=capabilities_override,
             request_options_override=request_options_override,
             structured_model=structured_model,
@@ -208,8 +232,10 @@ class ChatModel:
         self,
         combined_messages,
         stream_callback: callable = None,
+        stream_event_callback: callable = None,
         preset_id: Optional[int] = None,
         *,
+        request_id: str = "",
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
@@ -241,6 +267,8 @@ class ChatModel:
                 gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
                 force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
+            if request_id:
+                params["request_id"] = str(request_id)
 
             caps = dict(preset_settings.capabilities or {})
             if isinstance(capabilities_override, dict):
@@ -259,8 +287,12 @@ class ChatModel:
                 transforms=list(preset_settings.transforms or []),
                 capabilities=caps,
 
-                stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
+                stream=(
+                    bool(self.settings.get("ENABLE_STREAMING", False))
+                    and (stream_callback is not None or stream_event_callback is not None)
+                ),
                 stream_cb=stream_callback,
+                stream_event_cb=stream_event_callback,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,

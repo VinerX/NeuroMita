@@ -12,6 +12,7 @@ from .base import (
     LLMResponse,
     check_request_cancelled,
     normalize_usage_payload,
+    record_response_body_started,
     register_cancellable_resource,
 )
 from .errors import build_provider_error, coerce_provider_error
@@ -21,6 +22,7 @@ from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
     normalize_openrouter_routing,
 )
+from .streaming import StreamAccumulator
 
 
 class OpenAICompatibleProvider(BaseProvider, ABC):
@@ -36,6 +38,11 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
     def _get_model_to_use(self, req: LLMRequest) -> str:
         return req.model
+
+    def _release_client(self, client: Any) -> None:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
     @staticmethod
     def _stringify_error(value: Any, limit: int = 400) -> str:
@@ -166,12 +173,10 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             )
             raise provider_error from e
         finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    logger.debug(f"[{self.name}] Failed to close provider client", exc_info=True)
+            try:
+                self._release_client(client)
+            except Exception:
+                logger.debug(f"[{self.name}] Failed to release provider client", exc_info=True)
 
     def _map_unified_params(self, unified: Dict[str, Any], model_to_use: str) -> Dict[str, Any]:
         u = unified or {}
@@ -195,16 +200,21 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         return out
 
     def _handle_stream(self, completion, req: LLMRequest, stream_callback=None) -> LLMResponse:
-        parts: List[str] = []
-        final_usage = None
+        accumulator = StreamAccumulator(req, provider=self.name, model=req.model)
         finish_reason = None
+        response_model = None
+        tool_calls: dict[int, dict[str, Any]] = {}
         chunk_error_count = 0
         last_chunk_error = ""
         try:
             for chunk in completion:
+                record_response_body_started(req)
                 check_request_cancelled(req)
+                response_model = response_model or getattr(chunk, "model", None)
                 try:
-                    final_usage = final_usage or self._extract_usage(getattr(chunk, "usage", None))
+                    chunk_usage = self._extract_usage(getattr(chunk, "usage", None))
+                    if chunk_usage is not None:
+                        accumulator.set_usage(chunk_usage)
                 except Exception:
                     pass
 
@@ -214,16 +224,30 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 except Exception:
                     pass
 
-                text = ""
                 try:
                     if chunk.choices and chunk.choices[0].delta:
                         delta = chunk.choices[0].delta
-                        text = delta.content or ""
-                        # Qwen3 thinking-режим: контент идёт в reasoning_content
-                        if not text:
-                            text = getattr(delta, "reasoning_content", None) or ""
-                        if not text:
-                            text = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
+                        accumulator.add_text(delta.content or "")
+                        reasoning = getattr(delta, "reasoning_content", None) or ""
+                        if not reasoning:
+                            reasoning = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
+                        accumulator.add_reasoning(reasoning)
+                        for tool_delta in getattr(delta, "tool_calls", None) or []:
+                            index = int(getattr(tool_delta, "index", 0) or 0)
+                            state = tool_calls.setdefault(index, {"id": "", "name": "", "started": False})
+                            state["id"] = str(getattr(tool_delta, "id", None) or state["id"])
+                            function = getattr(tool_delta, "function", None)
+                            state["name"] = str(getattr(function, "name", None) or state["name"])
+                            if not state["started"] and (state["id"] or state["name"]):
+                                accumulator.tool_call_started(tool_call_id=state["id"], tool_name=state["name"])
+                                state["started"] = True
+                            arguments = str(getattr(function, "arguments", None) or "")
+                            if arguments:
+                                accumulator.tool_call_delta(
+                                    tool_call_id=state["id"],
+                                    tool_name=state["name"],
+                                    arguments_delta=arguments,
+                                )
                 except Exception as e:
                     chunk_error_count += 1
                     last_chunk_error = f"{type(e).__name__}: {e}"
@@ -232,10 +256,6 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                         logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
                     continue
 
-                if text:
-                    if stream_callback:
-                        stream_callback(text)
-                    parts.append(text)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e)
             logger.debug(
@@ -252,23 +272,19 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 except Exception:
                     logger.debug(f"[{self.name}] Failed to close provider stream", exc_info=True)
 
-        error_message = None
-        if not parts:
+        for state in tool_calls.values():
+            if state["started"]:
+                accumulator.tool_call_completed(tool_call_id=state["id"], tool_name=state["name"])
+        response = accumulator.complete(finish_reason=finish_reason, model=response_model)
+        if not response.text:
             if chunk_error_count > 0:
-                error_message = (
+                response.error_message = (
                     "Provider stream ended without content. "
                     f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
                 )
             elif finish_reason and finish_reason != "stop":
-                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
-
-        return LLMResponse(
-            text="".join(parts) or None,
-            usage=final_usage,
-            provider_name=self.name,
-            finish_reason=finish_reason,
-            error_message=error_message,
-        )
+                response.error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+        return response
 
     def _extract_usage(self, usage_obj: Any):
         if usage_obj is None:
