@@ -73,8 +73,8 @@ class MicrophoneSettingsController(BaseController):
         def safe_disconnect(qt_signal, slot):
             try:
                 qt_signal.disconnect(slot)
-            except Exception:
-                pass
+            except TypeError:
+                return
 
         safe_disconnect(v.mic_refresh_button.clicked, self.refresh_microphones)
         v.mic_refresh_button.clicked.connect(self.refresh_microphones)
