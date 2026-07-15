@@ -7,11 +7,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-import requests
-
 from main_logger import logger
 from managers.api_preset_resolver import PresetSettings
 from handlers.llm_providers.base import LLMUsage
+from handlers.llm_providers.http_transport import LLMHttpTransport
 from presets.provider_host_metadata import infer_provider_currency
 
 
@@ -110,10 +109,17 @@ class ModelPricingManager:
     # transient network blip does not disable cost estimation for the whole hour.
     _NEGATIVE_TTL_SECONDS = 30
 
-    def __init__(self):
+    def __init__(self, http_transport: LLMHttpTransport | None = None):
         self._cache: Dict[tuple[str, str], tuple[float, Optional[ModelPricingInfo]]] = {}
         self._lock = threading.Lock()
         self._inflight: set[tuple[str, str]] = set()
+        self._http_transport = http_transport or LLMHttpTransport()
+        self._owns_http_transport = http_transport is None
+
+    def close(self) -> None:
+        task_supervisor().cancel_owner(self, timeout=2.0)
+        if self._owns_http_transport:
+            self._http_transport.close()
 
     def resolve_for_preset(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         """Return cached pricing immediately and refresh in the background.
@@ -179,17 +185,20 @@ class ModelPricingManager:
         if preset.api_key and "Authorization" not in headers:
             headers["Authorization"] = f"Bearer {preset.api_key}"
 
-        resp = requests.get(models_url, headers=headers, timeout=3)
-        if resp.status_code != 200:
-            logger.debug(f"[ModelPricingManager] OpenRouter models HTTP {resp.status_code}")
-            return None
+        resp = self._http_transport.get(models_url, headers=headers, timeout=3)
+        try:
+            if resp.status_code != 200:
+                logger.debug(f"[ModelPricingManager] OpenRouter models HTTP {resp.status_code}")
+                return None
 
-        return self._extract_pricing_info_from_models_payload(
-            resp.json(),
-            wanted_model=str(preset.api_model or ""),
-            api_url=str(preset.api_url or ""),
-            source="openrouter_models_api",
-        )
+            return self._extract_pricing_info_from_models_payload(
+                resp.json(),
+                wanted_model=str(preset.api_model or ""),
+                api_url=str(preset.api_url or ""),
+                source="openrouter_models_api",
+            )
+        finally:
+            resp.close()
 
     def _fetch_openai_compatible_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         models_url = self._build_models_url(preset.api_url)
@@ -200,17 +209,20 @@ class ModelPricingManager:
         if preset.api_key and "Authorization" not in headers:
             headers["Authorization"] = f"Bearer {preset.api_key}"
 
-        resp = requests.get(models_url, headers=headers, timeout=3)
-        if resp.status_code != 200:
-            logger.debug(f"[ModelPricingManager] generic models HTTP {resp.status_code} for {models_url}")
-            return None
+        resp = self._http_transport.get(models_url, headers=headers, timeout=3)
+        try:
+            if resp.status_code != 200:
+                logger.debug(f"[ModelPricingManager] generic models HTTP {resp.status_code} for {models_url}")
+                return None
 
-        return self._extract_pricing_info_from_models_payload(
-            resp.json(),
-            wanted_model=str(preset.api_model or ""),
-            api_url=str(preset.api_url or ""),
-            source="openai_compatible_models_api",
-        )
+            return self._extract_pricing_info_from_models_payload(
+                resp.json(),
+                wanted_model=str(preset.api_model or ""),
+                api_url=str(preset.api_url or ""),
+                source="openai_compatible_models_api",
+            )
+        finally:
+            resp.close()
 
     def _extract_pricing_info_from_models_payload(
         self,

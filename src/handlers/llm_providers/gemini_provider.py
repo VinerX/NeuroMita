@@ -4,7 +4,7 @@ import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from main_logger import logger
-from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
+from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
 
@@ -270,6 +270,7 @@ class GeminiProvider(BaseProvider):
                 self.name,
                 status_code=response.status_code,
                 payload=payload,
+                response_headers=response.headers,
                 url=request_url,
             )
             logger.debug("[GeminiProvider] HTTP failure delegated to request runner: %s", provider_error.to_console_summary())
@@ -342,18 +343,41 @@ class GeminiProvider(BaseProvider):
         try:
             content_type = str(response.headers.get("content-type") or "").lower()
             if "text/event-stream" in content_type:
-                values = (
-                    json.loads(data)
-                    for data in iter_sse_data(track_response_body(req, response.iter_lines()))
-                    if data.strip() != "[DONE]"
-                )
+                def iter_sse_values():
+                    for data in iter_sse_data(track_response_body(req, response.iter_lines())):
+                        if data.strip() == "[DONE]":
+                            continue
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError as e:
+                            raise build_stream_error(
+                                self.name,
+                                payload=data[:500],
+                                provider_message=f"Invalid JSON in Gemini stream: {e}",
+                                code="stream.invalid_json",
+                                url=str(getattr(response, "url", req.api_url) or req.api_url),
+                            ) from e
+
+                values = iter_sse_values()
             else:
                 values = iter_json_values(track_response_body(req, response.iter_text()))
 
             for result in values:
                 check_request_cancelled(req)
                 if not isinstance(result, dict):
-                    continue
+                    raise build_stream_error(
+                        self.name,
+                        payload=result,
+                        provider_message="Gemini stream chunk is not a JSON object.",
+                        code="stream.invalid_payload",
+                        url=str(getattr(response, "url", req.api_url) or req.api_url),
+                    )
+                if result.get("error"):
+                    raise build_stream_error(
+                        self.name,
+                        payload=result,
+                        url=str(getattr(response, "url", req.api_url) or req.api_url),
+                    )
                 response_model = response_model or result.get("modelVersion")
                 usage = self._extract_usage(result)
                 if usage is not None:
@@ -373,7 +397,15 @@ class GeminiProvider(BaseProvider):
         except Exception as e:
             # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,
             # чтобы runner ушёл в retry/фоллбэк, а не вернул обрезанный ответ.
-            provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
+            if isinstance(e, json.JSONDecodeError):
+                provider_error = build_stream_error(
+                    self.name,
+                    provider_message=f"Invalid JSON in Gemini stream: {e}",
+                    code="stream.invalid_json",
+                    url=str(getattr(response, "url", req.api_url) or req.api_url),
+                )
+            else:
+                provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
             logger.debug(
                 "[GeminiProvider] Stream failure delegated to request runner: %s",
                 provider_error.to_console_summary(),

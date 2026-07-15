@@ -15,7 +15,7 @@ from .base import (
     record_response_body_started,
     register_cancellable_resource,
 )
-from .errors import build_provider_error, coerce_provider_error
+from .errors import build_provider_error, build_stream_error, coerce_provider_error
 from .message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
@@ -206,12 +206,17 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
         finish_reason = None
         response_model = None
         tool_calls: dict[int, dict[str, Any]] = {}
-        chunk_error_count = 0
-        last_chunk_error = ""
         try:
             for chunk in completion:
                 record_response_body_started(req)
                 check_request_cancelled(req)
+                chunk_payload = self._stream_chunk_payload(chunk)
+                if chunk_payload.get("error"):
+                    raise build_stream_error(
+                        self.name,
+                        payload=chunk_payload,
+                        url=req.api_url,
+                    )
                 response_model = response_model or getattr(chunk, "model", None)
                 try:
                     chunk_usage = self._extract_usage(getattr(chunk, "usage", None))
@@ -221,14 +226,11 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     pass
 
                 try:
-                    if chunk.choices and getattr(chunk.choices[0], "finish_reason", None):
-                        finish_reason = chunk.choices[0].finish_reason
-                except Exception:
-                    pass
-
-                try:
-                    if chunk.choices and chunk.choices[0].delta:
-                        delta = chunk.choices[0].delta
+                    choices = getattr(chunk, "choices", None) or []
+                    if choices and getattr(choices[0], "finish_reason", None):
+                        finish_reason = choices[0].finish_reason
+                    if choices and getattr(choices[0], "delta", None):
+                        delta = choices[0].delta
                         accumulator.add_text(delta.content or "")
                         reasoning = getattr(delta, "reasoning_content", None) or ""
                         if not reasoning:
@@ -251,12 +253,13 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                                     arguments_delta=arguments,
                                 )
                 except Exception as e:
-                    chunk_error_count += 1
-                    last_chunk_error = f"{type(e).__name__}: {e}"
-                    if chunk_error_count <= 3:
-                        preview = self._stringify_error(getattr(chunk, "model_dump", lambda: chunk)(), limit=240)
-                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
-                    continue
+                    raise build_stream_error(
+                        self.name,
+                        payload=chunk_payload,
+                        provider_message=f"Invalid provider stream chunk: {type(e).__name__}: {e}",
+                        code="stream.invalid_payload",
+                        url=req.api_url,
+                    ) from e
 
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e)
@@ -279,14 +282,27 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 accumulator.tool_call_completed(tool_call_id=state["id"], tool_name=state["name"])
         response = accumulator.complete(finish_reason=finish_reason, model=response_model)
         if not response.text:
-            if chunk_error_count > 0:
-                response.error_message = (
-                    "Provider stream ended without content. "
-                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
-                )
-            elif finish_reason and finish_reason != "stop":
+            if finish_reason and finish_reason != "stop":
                 response.error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
         return response
+
+    @staticmethod
+    def _stream_chunk_payload(chunk: Any) -> dict[str, Any]:
+        if isinstance(chunk, dict):
+            return dict(chunk)
+        model_dump = getattr(chunk, "model_dump", None)
+        if callable(model_dump):
+            try:
+                payload = model_dump()
+                if isinstance(payload, dict):
+                    model_extra = getattr(chunk, "model_extra", None)
+                    if isinstance(model_extra, dict):
+                        payload = {**model_extra, **payload}
+                    return payload
+            except Exception:
+                pass
+        model_extra = getattr(chunk, "model_extra", None)
+        return dict(model_extra) if isinstance(model_extra, dict) else {}
 
     def _extract_usage(self, usage_obj: Any):
         if usage_obj is None:

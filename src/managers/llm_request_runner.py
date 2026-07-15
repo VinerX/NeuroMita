@@ -275,17 +275,25 @@ class LLMRequestRunner:
                     )
             except concurrent.futures.TimeoutError:
                 last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
-                retryable_before_stream_body = bool(req.stream and not cancellation.response_body_started)
-                self._abort_chain = not retryable_before_stream_body
+                retryable_before_response = bool(
+                    (req.stream and not cancellation.response_body_started)
+                    or (
+                        not req.stream
+                        and not cancellation.response_headers_received
+                    )
+                )
+                self._abort_chain = not retryable_before_response
                 logger.debug("%s %s", preset_tag, last_error_message)
                 self.last_error = LLMProviderError(
                     provider=getattr(req, "provider_name", "unknown"),
                     friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
                     provider_message=last_error_message,
-                    retryable=retryable_before_stream_body,
+                    retryable=retryable_before_response,
                     code=(
                         "stream.timeout_before_body"
-                        if retryable_before_stream_body
+                        if req.stream and retryable_before_response
+                        else "request.timeout_before_response"
+                        if retryable_before_response
                         else "timeout.attempt"
                     ),
                     phase="stream" if req.stream else "request",
@@ -416,31 +424,32 @@ class LLMRequestRunner:
         try:
             future.result(timeout=min(1.0, max(0.1, float(grace_timeout) * 0.05)))
         except concurrent.futures.TimeoutError:
-            abandoned = pool.abandon(future)
-            if abandoned:
-                logger.warning(
-                    "LLM provider did not stop within the cancellation grace period; "
-                    "the detached daemon worker will be ignored and its pool slot was replaced "
-                    "| retired_workers=%s/%s",
-                    pool.retired_workers,
-                    pool.max_retired_workers,
-                )
-            else:
-                retired_workers = pool.retired_workers
-                retired_limit = pool.max_retired_workers
-                reason = (
-                    "retired-worker limit reached"
-                    if retired_limit is not None and retired_workers >= retired_limit
-                    else "replacement worker could not be started"
-                )
-                logger.error(
-                    "LLM provider did not stop and its worker could not be replaced (%s); "
-                    "the occupied pool slot will not be replaced until the provider returns "
-                    "| retired_workers=%s/%s",
-                    reason,
-                    retired_workers,
-                    retired_limit,
-                )
+            if not future.done():
+                abandoned = pool.abandon(future)
+                if abandoned:
+                    logger.warning(
+                        "LLM provider did not stop within the cancellation grace period; "
+                        "the detached daemon worker will be ignored and its pool slot was replaced "
+                        "| retired_workers=%s/%s",
+                        pool.retired_workers,
+                        pool.max_retired_workers,
+                    )
+                else:
+                    retired_workers = pool.retired_workers
+                    retired_limit = pool.max_retired_workers
+                    replacement_reason = (
+                        "retired-worker limit reached"
+                        if retired_limit is not None and retired_workers >= retired_limit
+                        else "replacement worker could not be started"
+                    )
+                    logger.error(
+                        "LLM provider did not stop and its worker could not be replaced (%s); "
+                        "the occupied pool slot will not be replaced until the provider returns "
+                        "| retired_workers=%s/%s",
+                        replacement_reason,
+                        retired_workers,
+                        retired_limit,
+                    )
         except Exception:
             pass
         raise concurrent.futures.TimeoutError(reason)

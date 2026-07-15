@@ -212,6 +212,7 @@ class ModelController(GenerationService, ModelStateService):
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
+        self.model_pricing_manager.close()
         self.model.close()
 
     def _on_character_current_changed(self, event: Event):

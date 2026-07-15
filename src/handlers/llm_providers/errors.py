@@ -455,6 +455,38 @@ def build_configuration_error(
     )
 
 
+def build_stream_error(
+    provider: str,
+    *,
+    payload: Any = None,
+    provider_message: Optional[str] = None,
+    code: str = "stream.provider_error",
+    url: Optional[str] = None,
+) -> LLMProviderError:
+    status_code = None
+    source = payload.get("error", payload) if isinstance(payload, dict) else payload
+    if isinstance(source, dict):
+        for key in ("status_code", "status", "http_status", "code"):
+            try:
+                candidate = int(source.get(key))
+            except (TypeError, ValueError):
+                continue
+            if 100 <= candidate <= 599:
+                status_code = candidate
+                break
+    error = build_provider_error(
+        provider,
+        status_code=status_code,
+        payload=payload,
+        provider_message=provider_message,
+        code=code,
+        phase="stream",
+        url=url,
+    )
+    error.retryable = False
+    return error
+
+
 def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] = None) -> LLMProviderError:
     if isinstance(exc, LLMProviderError):
         return exc

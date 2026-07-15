@@ -12,7 +12,12 @@ import httpx
 
 from main_logger import logger
 
-from .base import LLMRequest, check_request_cancelled, register_cancellable_resource
+from .base import (
+    LLMRequest,
+    check_request_cancelled,
+    record_response_headers_received,
+    register_cancellable_resource,
+)
 
 
 class TransportProfile(str, Enum):
@@ -143,6 +148,7 @@ class LLMHttpTransport:
             timeout=timeout.to_httpx(),
         )
         response = client.send(request, stream=True)
+        record_response_headers_received(req)
         register_cancellable_resource(req, response)
         if not stream:
             try:
@@ -157,6 +163,27 @@ class LLMHttpTransport:
             response.http_version,
             response.status_code,
             payload_size,
+        )
+        return response
+
+    def get(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | httpx.Timeout = 30.0,
+    ) -> httpx.Response:
+        client = self.client_for_url(url)
+        response = client.get(
+            url,
+            headers=dict(headers or {}),
+            timeout=timeout,
+        )
+        logger.debug(
+            "LLM metadata HTTP response | profile=%s | protocol=%s | status=%s",
+            TransportProfile.LOCAL.value if is_loopback_url(url) else TransportProfile.REMOTE.value,
+            response.http_version,
+            response.status_code,
         )
         return response
 

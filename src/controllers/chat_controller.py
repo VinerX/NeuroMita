@@ -291,11 +291,13 @@ class ChatController:
                         "role": role,
                     }, delivery=EventDelivery.ORDERED)
 
-            stream_coalescer = TextDeltaCoalescer(append_stream_chunk)
+            stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
 
             def on_think_chunk(think_chunk: str):
                 nonlocal stream_current_role, stream_started
                 if not think_chunk:
+                    return
+                if stream_coalescer is None:
                     return
                 if stream_current_role != "think":
                     stream_coalescer.flush()
@@ -318,6 +320,8 @@ class ChatController:
                 nonlocal stream_current_role, stream_started
                 if not text:
                     return
+                if stream_coalescer is None:
+                    return
                 if stream_current_role != "assistant":
                     stream_coalescer.flush()
                 with presentation_lock:
@@ -334,7 +338,8 @@ class ChatController:
                 stream_coalescer.push(text)
 
             def flush_stream_output() -> None:
-                stream_coalescer.flush()
+                if stream_coalescer is not None:
+                    stream_coalescer.flush()
 
             def stream_event_handler(event: LLMStreamEvent):
                 if not eff_policy.echo_to_ui:

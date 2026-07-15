@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -94,6 +95,14 @@ class _StreamingGeneration(GenerationService):
             text="hello",
         ))
         return ChatGenerationResult(text="hello", character_id="Crazy")
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _ImmediateGeneration(GenerationService):
+    def generate_chat(self, request: ChatGenerationRequest):
+        return ChatGenerationResult(text="ok", character_id="Crazy")
 
     def generate_utility(self, request):
         raise AssertionError("не используется")
@@ -190,6 +199,18 @@ class ChatRequestPipelineTests(unittest.TestCase):
         self.assertIsNotNone(generation.request)
         self.assertIsNone(generation.request.stream_callback)
         self.assertTrue(callable(generation.request.stream_event_callback))
+
+    def test_non_stream_request_does_not_create_presentation_coalescer(self):
+        services().register(GenerationService, _ImmediateGeneration(), replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+
+        with patch(
+            "controllers.chat_controller.TextDeltaCoalescer",
+            side_effect=AssertionError("coalescer must stay lazy"),
+        ):
+            result = self.controller._run_request("hi", character_id="Crazy")
+
+        self.assertEqual(result, "ok")
 
 
 if __name__ == "__main__":

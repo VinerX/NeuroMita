@@ -307,6 +307,8 @@ def iter_json_values(chunks: Iterable[str | bytes]) -> Iterator[Any]:
                 break
             yield value
             buffer = stripped[index:]
+    if buffer.strip():
+        raise json.JSONDecodeError("Incomplete or invalid JSON stream payload", buffer, 0)
 
 
 def _positive_float(value: Any, default: float) -> float:

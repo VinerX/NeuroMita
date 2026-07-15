@@ -16,7 +16,7 @@ from handlers.llm_providers.base import (
     check_request_cancelled,
     normalize_usage_payload,
 )
-from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
+from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
 from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
@@ -391,8 +391,6 @@ class OpenAIHTTPProviderBase(BaseProvider):
         finish_reason = None
         response_model = None
         tool_calls: dict[int, dict[str, Any]] = {}
-        chunk_error_count = 0
-        last_chunk_error = ""
         try:
             for chunk in iter_sse_data(track_response_body(req, resp.iter_lines())):
                 check_request_cancelled(req)
@@ -401,42 +399,57 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
                 try:
                     obj = json.loads(chunk)
-                    if response_model is None:
-                        response_model = obj.get("model")
-                    chunk_usage = self._extract_usage(obj, api_url)
-                    if chunk_usage is not None:
-                        accumulator.set_usage(chunk_usage)
-                    delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
-                    fr = obj.get("choices", [{}])[0].get("finish_reason")
-                    if fr:
-                        finish_reason = fr
-                    accumulator.add_text(delta.get("content", ""))
-                    accumulator.add_reasoning(delta.get("reasoning_content", ""))
-                    for tool_delta in delta.get("tool_calls") or []:
-                        if not isinstance(tool_delta, dict):
-                            continue
-                        index = int(tool_delta.get("index") or 0)
-                        state = tool_calls.setdefault(index, {"id": "", "name": "", "started": False})
-                        state["id"] = str(tool_delta.get("id") or state["id"])
-                        function = tool_delta.get("function") if isinstance(tool_delta.get("function"), dict) else {}
-                        state["name"] = str(function.get("name") or state["name"])
-                        if not state["started"] and (state["id"] or state["name"]):
-                            accumulator.tool_call_started(tool_call_id=state["id"], tool_name=state["name"])
-                            state["started"] = True
-                        arguments = str(function.get("arguments") or "")
-                        if arguments:
-                            accumulator.tool_call_delta(
-                                tool_call_id=state["id"],
-                                tool_name=state["name"],
-                                arguments_delta=arguments,
-                            )
-                except Exception as e:
-                    chunk_error_count += 1
-                    last_chunk_error = f"{type(e).__name__}: {e}"
-                    if chunk_error_count <= 3:
-                        preview = chunk[:240].replace("\n", "\\n")
-                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
+                except json.JSONDecodeError as e:
+                    raise build_stream_error(
+                        self.name,
+                        payload=chunk[:500],
+                        provider_message=f"Invalid JSON in provider stream: {e}",
+                        code="stream.invalid_json",
+                        url=api_url,
+                    ) from e
+                if not isinstance(obj, dict):
+                    raise build_stream_error(
+                        self.name,
+                        payload=obj,
+                        provider_message="Provider stream chunk is not a JSON object.",
+                        code="stream.invalid_payload",
+                        url=api_url,
+                    )
+                if obj.get("error"):
+                    raise build_stream_error(self.name, payload=obj, url=api_url)
+                if response_model is None:
+                    response_model = obj.get("model")
+                chunk_usage = self._extract_usage(obj, api_url)
+                if chunk_usage is not None:
+                    accumulator.set_usage(chunk_usage)
+                choices = obj.get("choices") or []
+                if not choices:
                     continue
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                delta = choice.get("delta", {}) or {}
+                fr = choice.get("finish_reason")
+                if fr:
+                    finish_reason = fr
+                accumulator.add_text(delta.get("content", ""))
+                accumulator.add_reasoning(delta.get("reasoning_content", ""))
+                for tool_delta in delta.get("tool_calls") or []:
+                    if not isinstance(tool_delta, dict):
+                        continue
+                    index = int(tool_delta.get("index") or 0)
+                    state = tool_calls.setdefault(index, {"id": "", "name": "", "started": False})
+                    state["id"] = str(tool_delta.get("id") or state["id"])
+                    function = tool_delta.get("function") if isinstance(tool_delta.get("function"), dict) else {}
+                    state["name"] = str(function.get("name") or state["name"])
+                    if not state["started"] and (state["id"] or state["name"]):
+                        accumulator.tool_call_started(tool_call_id=state["id"], tool_name=state["name"])
+                        state["started"] = True
+                    arguments = str(function.get("arguments") or "")
+                    if arguments:
+                        accumulator.tool_call_delta(
+                            tool_call_id=state["id"],
+                            tool_name=state["name"],
+                            arguments_delta=arguments,
+                        )
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=api_url)
             logger.debug(
@@ -456,12 +469,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 accumulator.tool_call_completed(tool_call_id=state["id"], tool_name=state["name"])
         response = accumulator.complete(finish_reason=finish_reason, model=response_model)
         if not response.text:
-            if chunk_error_count > 0:
-                response.error_message = (
-                    "Provider stream ended without content. "
-                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
-                )
-            elif finish_reason and finish_reason != "stop":
+            if finish_reason and finish_reason != "stop":
                 response.error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
         return response
 

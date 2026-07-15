@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import concurrent.futures
 import sys
 import threading
 from pathlib import Path
 
 import httpx
+import pytest
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from handlers.llm_providers.base import LLMRequest, LLMResponse, RequestCancellation, get_request_cancellation
+from handlers.llm_providers.base import (
+    LLMRequest,
+    LLMResponse,
+    RequestCancellation,
+    RequestCancelledError,
+    get_request_cancellation,
+)
 from handlers.llm_providers.common_provider import CommonProvider
 from handlers.llm_providers.errors import LLMProviderError, coerce_provider_error
 from handlers.llm_providers.gemini_provider import GeminiProvider
@@ -103,6 +111,34 @@ def test_transport_posts_json_with_phase_timeouts_and_returns_streamable_respons
         "write": 60.0,
         "pool": 10.0,
     }
+    response.close()
+    transport.close()
+
+
+def test_transport_get_reuses_profile_client_and_applies_timeout():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json={"data": []})
+
+    transport = LLMHttpTransport(
+        enable_http2=False,
+        client_factory=lambda _profile, _http2: httpx.Client(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    response = transport.get("https://example.test/v1/models", timeout=3.0)
+
+    assert response.json() == {"data": []}
+    assert captured["timeout"] == {
+        "connect": 3.0,
+        "read": 3.0,
+        "write": 3.0,
+        "pool": 3.0,
+    }
+    assert len(transport._clients) == 1
     response.close()
     transport.close()
 
@@ -278,6 +314,44 @@ def test_openai_compatible_provider_streams_sse_through_normalized_accumulator()
     transport.close()
 
 
+@pytest.mark.parametrize(
+    ("bad_event", "expected_code"),
+    [
+        ('{"error":{"message":"upstream failed"}}', "stream.provider_error"),
+        ("{not-json}", "stream.invalid_json"),
+    ],
+)
+def test_openai_compatible_stream_failure_never_returns_partial_success(bad_event, expected_code):
+    body = (
+        'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+        f"data: {bad_event}\n\n"
+        "data: [DONE]\n\n"
+    )
+    transport = LLMHttpTransport(
+        enable_http2=False,
+        client_factory=lambda _profile, _http2: httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))
+        ),
+    )
+    provider = CommonProvider(http_transport=transport)
+    req = LLMRequest(
+        model="local-model",
+        messages=[],
+        api_url="http://localhost:1234/v1",
+        provider_name="common",
+        stream=True,
+        extra={"_request_cancellation": RequestCancellation()},
+    )
+
+    with pytest.raises(LLMProviderError) as caught:
+        provider.generate(req)
+
+    assert caught.value.code == expected_code
+    assert not caught.value.retryable
+    assert get_request_cancellation(req).has_meaningful_stream_event
+    transport.close()
+
+
 def test_gemini_provider_uses_real_sse_endpoint_and_streams_deltas():
     requested_urls = []
     body = (
@@ -308,6 +382,70 @@ def test_gemini_provider_uses_real_sse_endpoint_and_streams_deltas():
     assert response.finish_reason == "STOP"
     assert requested_urls and ":streamGenerateContent" in requested_urls[0]
     assert "alt=sse" in requested_urls[0]
+    transport.close()
+
+
+def test_gemini_stream_error_never_returns_partial_success():
+    body = (
+        'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n'
+        'data: {"error":{"code":503,"message":"upstream failed"}}\n\n'
+    )
+    transport = LLMHttpTransport(
+        enable_http2=False,
+        client_factory=lambda _profile, _http2: httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    text=body,
+                )
+            )
+        ),
+    )
+    provider = GeminiProvider(http_transport=transport)
+    req = LLMRequest(
+        model="gemini-test",
+        messages=[{"role": "user", "content": "hi"}],
+        api_url="https://example.test/v1/models/gemini-test:generateContent?key=secret",
+        provider_name="gemini",
+        stream=True,
+        extra={"_request_cancellation": RequestCancellation()},
+    )
+
+    with pytest.raises(LLMProviderError) as caught:
+        provider.generate(req)
+
+    assert caught.value.code == "stream.provider_error"
+    assert caught.value.status_code == 503
+    assert not caught.value.retryable
+    transport.close()
+
+
+def test_gemini_http_error_preserves_retry_after_header():
+    transport = LLMHttpTransport(
+        enable_http2=False,
+        client_factory=lambda _profile, _http2: httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    429,
+                    headers={"Retry-After": "9"},
+                    json={"error": {"message": "rate limited"}},
+                )
+            )
+        ),
+    )
+    provider = GeminiProvider(http_transport=transport)
+    req = LLMRequest(
+        model="gemini-test",
+        messages=[{"role": "user", "content": "hi"}],
+        api_url="https://example.test/v1/models/gemini-test:generateContent?key=secret",
+        provider_name="gemini",
+    )
+
+    with pytest.raises(LLMProviderError) as caught:
+        provider.generate(req)
+
+    assert caught.value.retry_after_seconds == 9.0
     transport.close()
 
 
@@ -390,6 +528,48 @@ def test_stream_usage_is_capability_driven_for_http_and_sdk_adapters():
     sdk.generate(sdk_req)
     assert captured["stream_options"] == {"include_usage": True}
     sdk.close()
+
+
+def test_sdk_stream_error_never_returns_partial_success():
+    class Delta:
+        content = "hello"
+        reasoning_content = ""
+        model_extra = {}
+        tool_calls = []
+
+    class Choice:
+        finish_reason = None
+        delta = Delta()
+
+    class TextChunk:
+        model = "model"
+        usage = None
+        choices = [Choice()]
+
+        @staticmethod
+        def model_dump():
+            return {"choices": [{"delta": {"content": "hello"}}]}
+
+    class ErrorChunk:
+        model = "model"
+        usage = None
+        choices = []
+
+        @staticmethod
+        def model_dump():
+            return {"error": {"message": "upstream failed"}}
+
+    provider = _CapturingSdkProvider({})
+    req = _request()
+    req.stream = True
+    req.extra["_request_cancellation"] = RequestCancellation()
+
+    with pytest.raises(LLMProviderError) as caught:
+        provider._handle_stream(iter((TextChunk(), ErrorChunk())), req)
+
+    assert caught.value.code == "stream.provider_error"
+    assert not caught.value.retryable
+    provider.close()
 
 
 def test_stream_supervisor_distinguishes_first_event_and_idle_deadlines():
@@ -559,6 +739,119 @@ def test_stream_timeout_after_body_aborts_fallback_chain():
     assert response is not None and response.text is None
     assert calls == ["main"]
     runner.close()
+
+
+def test_non_stream_timeout_before_response_allows_fallback_preset():
+    calls = []
+
+    class ProviderManager:
+        def generate(self, req):
+            calls.append(req.model)
+            if req.model == "main":
+                cancellation = get_request_cancellation(req)
+                assert cancellation is not None
+                cancellation.wait(1.0)
+                cancellation.raise_if_cancelled()
+            return LLMResponse(text="fallback ok", model=req.model, provider_name="common")
+
+        def close(self):
+            return None
+
+    presets = [_runner_preset("main"), _runner_preset("fallback")]
+    runner = _runner_with_provider(presets, ProviderManager())
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=lambda _preset, model: LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name="common",
+            stream=False,
+        ),
+        max_attempts=1,
+        retry_delay=0.0,
+        request_timeout=0.05,
+    )
+
+    assert response is not None and response.text == "fallback ok"
+    assert calls == ["main", "fallback"]
+    runner.close()
+
+
+def test_non_stream_timeout_after_response_headers_aborts_fallback_chain():
+    calls = []
+
+    class ProviderManager:
+        def generate(self, req):
+            calls.append(req.model)
+            cancellation = get_request_cancellation(req)
+            assert cancellation is not None
+            cancellation.record_response_headers_received()
+            cancellation.wait(1.0)
+            cancellation.raise_if_cancelled()
+
+        def close(self):
+            return None
+
+    presets = [_runner_preset("main"), _runner_preset("fallback")]
+    runner = _runner_with_provider(presets, ProviderManager())
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=lambda _preset, model: LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name="common",
+            stream=False,
+        ),
+        max_attempts=1,
+        retry_delay=0.0,
+        request_timeout=0.05,
+    )
+
+    assert response is not None and response.text is None
+    assert calls == ["main"]
+    runner.close()
+
+
+def test_abort_future_does_not_retire_cooperatively_cancelled_worker():
+    class CompletedFuture:
+        @staticmethod
+        def cancel():
+            return False
+
+        @staticmethod
+        def result(timeout=None):
+            raise RequestCancelledError("cancelled")
+
+        @staticmethod
+        def done():
+            return True
+
+    class Pool:
+        retired_workers = 0
+        max_retired_workers = 8
+        abandon_calls = 0
+
+        def abandon(self, _future):
+            self.abandon_calls += 1
+            return True
+
+    pool = Pool()
+    with pytest.raises(concurrent.futures.TimeoutError):
+        LLMRequestRunner._abort_future(
+            CompletedFuture(),
+            pool,
+            RequestCancellation(),
+            reason="deadline",
+            grace_timeout=1.0,
+        )
+
+    assert pool.abandon_calls == 0
 
 
 def test_runner_uses_retry_after_with_a_reasonable_cap():

@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from .errors import LLMProviderError
 
 
-class RequestCancelledError(TimeoutError):
+class RequestCancelledError(RuntimeError):
     pass
 
 
@@ -19,6 +19,7 @@ class RequestCancellation:
         self._callbacks: list[Callable[[], None]] = []
         self._reason = ""
         self._started_at = time.monotonic()
+        self._response_headers_received = False
         self._response_body_started = False
         self._first_meaningful_event_at: Optional[float] = None
         self._last_meaningful_event_at: Optional[float] = None
@@ -45,6 +46,15 @@ class RequestCancellation:
     def response_body_started(self) -> bool:
         with self._lock:
             return self._response_body_started
+
+    @property
+    def response_headers_received(self) -> bool:
+        with self._lock:
+            return self._response_headers_received
+
+    def record_response_headers_received(self) -> None:
+        with self._lock:
+            self._response_headers_received = True
 
     def record_response_body_started(self) -> None:
         with self._lock:
@@ -116,6 +126,12 @@ def record_response_body_started(req: "LLMRequest") -> None:
     token = get_request_cancellation(req)
     if token is not None:
         token.record_response_body_started()
+
+
+def record_response_headers_received(req: "LLMRequest") -> None:
+    token = get_request_cancellation(req)
+    if token is not None:
+        token.record_response_headers_received()
 
 
 def register_cancellable_resource(req: "LLMRequest", resource: Any) -> Any:
@@ -348,6 +364,8 @@ __all__ = [
     "RequestCancelledError",
     "check_request_cancelled",
     "get_request_cancellation",
+    "record_response_body_started",
+    "record_response_headers_received",
     "register_cancellable_resource",
     "resolve_total_timeout",
     "normalize_usage_payload",
