@@ -1275,11 +1275,22 @@ class AppWindowBase(QMainWindow):
             self._pending_structured_data = None
             message_id = getattr(self, '_pending_message_id', None) or None
             self._pending_message_id = None
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        message_renderer.insert_message(self._chat_render_context, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data, message_id=message_id)
+        return message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            insert_at_start,
+            message_time,
+            structured_data=structured_data,
+            message_id=message_id,
+        )
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
+        if not self._chat_render_context.is_bound:
+            return False
         return message_renderer.insert_message(
             self._chat_render_context,
             role,
@@ -1289,6 +1300,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _on_prepare_stream_signal(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         return message_renderer.prepare_stream_slot(
@@ -1299,6 +1312,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _append_stream_chunk_slot(self, data):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
         return message_renderer.append_stream_chunk_slot(
@@ -1309,6 +1324,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _finish_stream_slot(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
@@ -1400,4 +1417,3 @@ class AppWindowBase(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
-

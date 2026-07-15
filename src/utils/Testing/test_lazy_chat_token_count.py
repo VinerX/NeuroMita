@@ -52,3 +52,28 @@ def test_hidden_token_stats_are_applied_after_label_exists():
     assert update_token_count(probe) is True
     assert probe.token_count_label.visible is False
     assert probe.token_count_label.text == "Tokens: Tokenizer not available"
+
+
+def test_live_chat_projection_is_skipped_until_lazy_chat_ui_exists():
+    update_chat = _load_method("_on_update_chat_signal")
+    probe = type("ProbeInstance", (), {})()
+    probe._chat_render_context = type("RenderContext", (), {"is_bound": False})()
+    probe._pending_structured_data = {"segments": [{"text": "reply"}]}
+    probe._pending_message_id = "message-id"
+
+    assert update_chat(probe, "assistant", "reply", False, "") is False
+    assert probe._pending_structured_data is None
+    assert probe._pending_message_id is None
+
+
+def test_stream_projection_is_skipped_until_lazy_chat_ui_exists():
+    probe = type("ProbeInstance", (), {})()
+    probe._chat_render_context = type("RenderContext", (), {"is_bound": False})()
+
+    for method_name, payload in (
+        ("_on_prepare_stream_signal", {}),
+        ("_append_stream_chunk_slot", {"chunk": "reply"}),
+        ("_finish_stream_slot", {}),
+    ):
+        method = _load_method(method_name)
+        assert method(probe, payload) is False

@@ -31,6 +31,11 @@ class ChatRenderContext:
     def bind_chat_window(self, chat_window: Any) -> None:
         self.chat_window = chat_window
 
+    @property
+    def is_bound(self) -> bool:
+        """Whether the lazy Sandbox chat surface is available for rendering."""
+        return self.chat_window is not None
+
     def set_font_size(self, font_size: int) -> None:
         self._chat_font_size = int(font_size)
 
