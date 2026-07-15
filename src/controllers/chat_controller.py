@@ -490,13 +490,17 @@ class ChatController:
             assistant_message_id = result.message_id
 
             if not response_text:
+                generation_error = str(getattr(result, "error", "") or "Empty response")
+                error_details = getattr(result, "error_details", None)
                 if task_uid:
+                    task_result = {"error_details": error_details} if error_details else None
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.FAILED_ON_GENERATION,
-                        "error": "Empty response"
+                        "result": task_result,
+                        "error": generation_error,
                     })
-                if eff_policy.echo_to_ui:
+                if eff_policy.echo_to_ui and not getattr(result, "error", ""):
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
 

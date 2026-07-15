@@ -111,11 +111,18 @@ class LLMRequestRunner:
                 break
 
         # Вся цепочка пресетов исчерпана — терминальный отказ генерации.
-        logger.error("All generation attempts failed across preset chain.")
+        terminal_summary = (
+            self.last_error.to_console_summary()
+            if self.last_error is not None
+            else "unknown generation failure"
+        )
+        logger.error("All generation attempts failed across preset chain: %s", terminal_summary)
         if self.last_error and not suppress_failure_events:
+            provider_error = self.last_error.to_payload()
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": self.last_error.to_user_message(),
                 "details": self.last_error.to_console_summary(),
+                "provider_error": provider_error,
             })
         if last_response is not None:
             return last_response
@@ -220,10 +227,14 @@ class LLMRequestRunner:
                         provider_message=last_error_message,
                         url=getattr(req, "api_url", None),
                     )
-                    logger.error(
-                        f"Generation attempt {attempt} returned no text. "
-                        f"provider={last_provider_name}, model={last_model_name}{finish_reason}, "
-                        f"error={last_error_message}"
+                    logger.debug(
+                        "Generation attempt %s returned no text; delegated to retry policy: "
+                        "provider=%s, model=%s%s, error=%s",
+                        attempt,
+                        last_provider_name,
+                        last_model_name,
+                        finish_reason,
+                        last_error_message,
                     )
                 else:
                     last_error_message = "Provider returned no response object."
@@ -232,11 +243,14 @@ class LLMRequestRunner:
                         provider_message=last_error_message,
                         url=getattr(req, "api_url", None),
                     )
-                    logger.error(f"Generation attempt {attempt} returned no response object.")
+                    logger.debug(
+                        "Generation attempt %s returned no response object; delegated to retry policy.",
+                        attempt,
+                    )
             except concurrent.futures.TimeoutError:
                 self._timed_out_call = True
                 last_error_message = f"Attempt {attempt} timed out after {request_timeout}s."
-                logger.error(f"{preset_tag} {last_error_message}")
+                logger.debug("%s %s", preset_tag, last_error_message)
                 self.last_error = LLMProviderError(
                     provider=getattr(req, "provider_name", "unknown"),
                     friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
@@ -251,15 +265,6 @@ class LLMRequestRunner:
                     e,
                     url=getattr(req, "api_url", None),
                 )
-                if isinstance(self.last_error, LLMProviderError):
-                    logger.error(
-                        f"{preset_tag} Error during generation attempt {attempt}: {self.last_error.to_console_summary()}"
-                    )
-                else:
-                    logger.error(
-                        f"{preset_tag} Error during generation attempt {attempt}: {self.last_error.to_console_summary()}",
-                        exc_info=True,
-                    )
 
             should_retry = bool(
                 attempt < max_attempts and (
@@ -267,20 +272,29 @@ class LLMRequestRunner:
                 )
             )
             if should_retry:
+                logger.warning(
+                    "%s Generation attempt %s/%s failed; retrying: %s",
+                    preset_tag,
+                    attempt,
+                    max_attempts,
+                    self.last_error.to_console_summary() if self.last_error else last_error_message,
+                )
                 if not suppress_failure_events:
-                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
+                    error_payload = self.last_error.to_payload() if self.last_error else None
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, {
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "provider_error": error_payload,
+                    })
                 time.sleep(retry_delay)
             elif attempt < max_attempts and self.last_error is not None:
-                logger.info(
+                logger.debug(
                     f"{preset_tag} Stopping retries after non-retryable failure: "
                     f"{self.last_error.to_console_summary()}"
                 )
                 break
 
-        if last_error_message:
-            logger.error(f"{preset_tag} All generation attempts failed. Last error: {last_error_message}")
-        else:
-            logger.error(f"{preset_tag} All generation attempts failed.")
+        logger.debug("%s Preset attempts exhausted: %s", preset_tag, last_error_message or "unknown failure")
         return LLMResponse(
             text=None,
             model=last_model_name,
@@ -290,6 +304,7 @@ class LLMRequestRunner:
                 if self.last_error
                 else last_error_message or "All generation attempts failed."
             ),
+            error_details=(self.last_error.to_payload() if self.last_error else None),
         )
 
     def _call_with_timeout(

@@ -1454,10 +1454,20 @@ class ModelController(GenerationService, ModelStateService):
                         error_message = self.model.get_last_error_message() or error_message
                     except Exception:
                         pass
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": error_message
-                })
-                return None
+                error_details = getattr(llm_response, "error_details", None) if llm_response else None
+                provider_error = getattr(self.model, "last_error", None)
+                if error_details is None and provider_error is not None and hasattr(provider_error, "to_payload"):
+                    error_details = provider_error.to_payload()
+                if provider_error is None:
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                        "error": error_message,
+                    })
+                return ChatGenerationResult(
+                    text="",
+                    character_id=char_id,
+                    error=error_message,
+                    error_details=error_details,
+                )
 
             raw_text = llm_response.text
             visible_raw, think_text = self._extract_think_blocks(str(raw_text))

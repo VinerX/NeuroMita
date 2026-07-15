@@ -386,6 +386,20 @@ class LLMProviderError(RuntimeError):
             parts.append(f"url={mask_sensitive(self.url)}")
         return " | ".join(parts)
 
+    def to_payload(self) -> dict[str, Any]:
+        """Serializable provider failure shared by UI and external clients."""
+        return {
+            "kind": "provider_error",
+            "provider": self.provider,
+            "message": self.to_user_message(),
+            "reason": mask_sensitive(_compact_text(self.provider_message)),
+            "status_code": self.status_code,
+            "code": self.code,
+            "retryable": bool(self.retryable),
+            "retry_after_seconds": self.retry_after_seconds,
+            "url": mask_sensitive(self.url) if self.url else None,
+        }
+
 
 def build_provider_error(
     provider: str,

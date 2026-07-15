@@ -210,6 +210,7 @@ class LLMResponse:
     provider_name: Optional[str] = None
     finish_reason: Optional[str] = None
     error_message: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
     raw: Dict[str, Any] = field(default_factory=dict)
 
 

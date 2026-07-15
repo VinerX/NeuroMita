@@ -159,7 +159,11 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=req.api_url)
-            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[%s] Provider failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         finally:
             close = getattr(client, "close", None)
@@ -234,7 +238,11 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     parts.append(text)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e)
-            logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[%s] Stream failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         finally:
             close = getattr(completion, "close", None)

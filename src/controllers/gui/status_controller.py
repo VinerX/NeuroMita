@@ -131,7 +131,10 @@ class StatusController(BaseController):
 
     def _on_failed_response(self, event: Event):
         logger.warning(f"StatusController: ON_FAILED_RESPONSE data={event.data}")
-        error_message = event.data.get("error", "Неизвестная ошибка") if event.data else "Неизвестная ошибка"
+        data = event.data if event and isinstance(getattr(event, "data", None), dict) else {}
+        provider_error = data.get("provider_error")
+        provider_message = provider_error.get("message") if isinstance(provider_error, dict) else ""
+        error_message = provider_message or data.get("error", "Неизвестная ошибка")
 
         if error_message and self._is_generic_generation_error(error_message):
             if self._last_detailed_error_text and (time.time() - self._last_detailed_error_ts) < 2.0:

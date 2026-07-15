@@ -245,7 +245,10 @@ class GeminiProvider(BaseProvider):
             check_request_cancelled(req)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=req.api_url)
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[GeminiProvider] Transport failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         logger.info(f"[GeminiProvider] Response received in {_time.time()-_t0:.1f}s, status={response.status_code}")
 
@@ -260,7 +263,7 @@ class GeminiProvider(BaseProvider):
                 payload=payload,
                 url=req.api_url,
             )
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}")
+            logger.debug("[GeminiProvider] HTTP failure delegated to request runner: %s", provider_error.to_console_summary())
             logger.debug(f"[GeminiProvider] raw error payload: {payload}")
             response.close()
             raise provider_error
@@ -302,14 +305,16 @@ class GeminiProvider(BaseProvider):
             response.close()
             return result
         except Exception as e:
-            logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
             provider_error = build_provider_error(
                 self.name,
                 provider_message=f"Gemini response parse error: {e}",
                 payload=getattr(response, "text", None),
                 url=req.api_url,
             )
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[GeminiProvider] Parse failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             try:
                 response.close()
             except Exception:
@@ -374,7 +379,10 @@ class GeminiProvider(BaseProvider):
             # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,
             # чтобы runner ушёл в retry/фоллбэк, а не вернул обрезанный ответ.
             provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
-            logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[GeminiProvider] Stream failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         finally:
             try:

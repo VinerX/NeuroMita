@@ -483,6 +483,8 @@ class ChatGenerationResult:
     think: Optional[str] = None
     structured: Optional[Dict[str, Any]] = None
     message_id: str = ""
+    error: str = ""
+    error_details: Optional[Dict[str, Any]] = None
 
 
 @dataclass

@@ -141,6 +141,7 @@ class AppWindowBase(QMainWindow):
         self._pending_history_payload = None
         self._token_refresh_pending = False
         self._history_load_inflight = False
+        self._pending_chat_error = None
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         from ui.app_icon import application_icon
@@ -415,6 +416,10 @@ class AppWindowBase(QMainWindow):
         self.scroll_to_bottom_anim = panel.scroll_to_bottom_anim
         self.mita_status = panel.mita_status
         self._on_chat_ui_ready()
+        if self._pending_chat_error:
+            pending_error = self._pending_chat_error
+            self._pending_chat_error = None
+            self._show_error_slot(pending_error)
 
     def bind_sandbox_page(self, page) -> None:
         """Bind the composed Sandbox surface for legacy controller adapters."""
@@ -915,9 +920,11 @@ class AppWindowBase(QMainWindow):
             self.mita_status.show_thinking(character_name)
 
     def _show_error_slot(self, error_message: str):
+        self._pending_chat_error = str(error_message or "")
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус ошибки: %s', error_message)
             self.mita_status.show_error(error_message)
+            self._pending_chat_error = None
 
     def _hide_status_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:

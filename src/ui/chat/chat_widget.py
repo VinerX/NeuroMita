@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QScrollBar, QPushButton,
     QGraphicsOpacityEffect, QLabel, QFrame,
 )
-from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF
+from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion, QLinearGradient, QPen
 import qtawesome as qta
 from styles.main_styles import get_theme
@@ -39,6 +39,8 @@ class ChatWidget(QFrame):
       [messages...]
       [TypingIndicator]  (hidden by default, no space when hidden)
     """
+
+    status_dismissed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,6 +103,21 @@ class ChatWidget(QFrame):
         )
         typing_layout.addWidget(self._typing_label)
         typing_layout.addStretch()
+
+        self._status_close_button = QPushButton("×")
+        self._status_close_button.setObjectName("ChatStatusCloseButton")
+        self._status_close_button.setFixedSize(22, 22)
+        self._status_close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_close_button.setToolTip(_tr("Закрыть", "Dismiss"))
+        self._status_close_button.setStyleSheet(
+            "QPushButton#ChatStatusCloseButton {"
+            " color: rgba(220,220,230,0.8); background: transparent; border: none;"
+            " font-size: 15px; font-weight: 700; padding: 0; }"
+            "QPushButton#ChatStatusCloseButton:hover { color: #ffffff; }"
+        )
+        self._status_close_button.clicked.connect(self._dismiss_status)
+        self._status_close_button.hide()
+        typing_layout.addWidget(self._status_close_button)
 
         # Add typing bar as last item in scroll container (after stretch + messages)
         self._layout.addWidget(self._typing_bar)
@@ -232,6 +249,7 @@ class ChatWidget(QFrame):
 
     def show_typing(self, name: str, avatar_pixmap=None):
         """Show typing indicator with character name and optional avatar."""
+        self._status_close_button.hide()
         self._typing_label.setText(_tr("{} печатает...", "{} is typing...").format(name))
         if avatar_pixmap and not avatar_pixmap.isNull():
             from PyQt6.QtGui import QPixmap
@@ -247,7 +265,7 @@ class ChatWidget(QFrame):
         if self._auto_scroll:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
-    def show_status(self, text: str, avatar_pixmap=None):
+    def show_status(self, text: str, avatar_pixmap=None, *, dismissible: bool = False):
         """Show a persistent status line without the typing suffix."""
         self._typing_label.setText(str(text or ""))
         if avatar_pixmap and not avatar_pixmap.isNull():
@@ -261,14 +279,20 @@ class ChatWidget(QFrame):
             self._typing_avatar.show()
         else:
             self._typing_avatar.hide()
+        self._status_close_button.setVisible(bool(dismissible))
         self._typing_bar.setMaximumHeight(32)
         self._typing_bar.show()
         if self._auto_scroll:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
     def hide_typing(self):
+        self._status_close_button.hide()
         self._typing_bar.setMaximumHeight(0)
         self._typing_bar.hide()
+
+    def _dismiss_status(self):
+        self.hide_typing()
+        self.status_dismissed.emit()
 
     # ── Scroll management ───────────────────────────────────────────────────
 

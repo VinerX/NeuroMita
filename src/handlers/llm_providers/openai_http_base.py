@@ -257,7 +257,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
             resp = self._request(request_url, req, payload)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=request_url)
-            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[%s] Transport failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
 
         if resp.status_code == 400 and self._supports_structured_output(req):
@@ -289,7 +293,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 response_headers=resp.headers,
                 url=request_url,
             )
-            logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
+            logger.debug(
+                "[%s] HTTP failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(err, limit=800)}")
             resp.close()
             raise provider_error
@@ -306,7 +314,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 payload=getattr(resp, "text", None),
                 url=request_url,
             )
-            logger.error(f"[{self.name}] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[%s] Parse failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             resp.close()
             raise provider_error from e
         resp.close()
@@ -327,7 +339,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 response_headers=resp.headers,
                 url=request_url,
             )
-            logger.error(f"[{self.name}] {provider_error.to_console_summary()}")
+            logger.debug(
+                "[%s] Payload failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(data, limit=800)}")
             raise provider_error
 
@@ -339,7 +355,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
             response_preview = self._stringify_error(data, limit=600)
             finish_suffix = f" finish_reason={finish_reason}." if finish_reason else ""
             error_message = f"Provider returned 200 OK but empty message content.{finish_suffix}"
-            logger.error(f"[{self.name}] {error_message} Raw response: {response_preview}")
+            logger.debug(
+                "[%s] Empty response delegated to request runner: %s Raw response: %s",
+                self.name,
+                error_message,
+                response_preview,
+            )
             return LLMResponse(
                 text=None,
                 usage=self._extract_usage(data, request_url),
@@ -412,7 +433,11 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     continue
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e, url=api_url)
-            logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[%s] Stream failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         finally:
             try:
