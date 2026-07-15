@@ -18,6 +18,7 @@ from ui.pages.settings.section_registry import (
     SettingsSectionSpec,
     get_settings_section_specs,
 )
+from ui.pages.settings.section_access import is_section_enabled
 from ui.pages.settings.settings_presentation import (
     PrepareSettingsSection,
     SettingsSectionFailed,
@@ -189,8 +190,6 @@ class SettingsPage(QWidget):
 
     def _section_enabled(self, category) -> bool:
         try:
-            from ui.widgets.settings_panel import is_section_enabled
-
             return is_section_enabled(category, self._settings)
         except Exception:
             return True

@@ -5,19 +5,23 @@ import json
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
 from main_logger import logger
 
-from .base import (
-    LLMRequest,
+from .request_lifecycle import (
     check_request_cancelled,
     record_response_headers_received,
     register_cancellable_resource,
 )
+
+
+class LLMRequestLike(Protocol):
+    api_url: str | None
+    extra: dict[str, Any]
 
 
 class TransportProfile(str, Enum):
@@ -52,7 +56,7 @@ class LLMTimeoutPolicy:
     @classmethod
     def for_request(
         cls,
-        req: LLMRequest,
+        req: LLMRequestLike,
         *,
         payload_size_bytes: int = 0,
         default_total: float = 240.0,
@@ -86,7 +90,7 @@ def estimate_json_size(payload: Any) -> int:
         return 0
 
 
-def resolve_httpx_timeout(req: LLMRequest, *, payload_size_bytes: int = 0) -> httpx.Timeout:
+def resolve_httpx_timeout(req: LLMRequestLike, *, payload_size_bytes: int = 0) -> httpx.Timeout:
     return LLMTimeoutPolicy.for_request(
         req,
         payload_size_bytes=payload_size_bytes,
@@ -129,7 +133,7 @@ class LLMHttpTransport:
 
     def post_json(
         self,
-        req: LLMRequest,
+        req: LLMRequestLike,
         url: str,
         *,
         headers: Mapping[str, str] | None,
@@ -213,7 +217,9 @@ class LLMHttpTransport:
                 max_keepalive_connections=4 if is_local else 8,
                 keepalive_expiry=30.0,
             ),
-            trust_env=True,
+            # Local model servers must never inherit a broken corporate/system proxy.
+            # Remote providers still respect HTTP(S)_PROXY and certificate settings.
+            trust_env=not is_local,
         )
 
 

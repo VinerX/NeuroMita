@@ -8,6 +8,8 @@ import traceback
 from typing import TYPE_CHECKING, List, Any, Optional, Tuple
 from contextlib import contextmanager
 
+from core.safe_eval import SafeEvalError, UnknownNameError, safe_eval_expression
+
 if TYPE_CHECKING:
     from character import Character
 
@@ -192,20 +194,15 @@ class DslInterpreter:
         line_content: str,
         sys_msgs: Optional[List[str]] = None,
     ):
-        safe_globals = {
-            "__builtins__": {
-                "str": str,
-                "int": int,
-                "float": float,
-                "len": len,
-                "round": round,
-                "abs": abs,
-                "max": max,
-                "min": min,
-                "True": True,
-                "False": False,
-                "None": None,
-            }
+        allowed_calls = {
+            "str": str,
+            "int": int,
+            "float": float,
+            "len": len,
+            "round": round,
+            "abs": abs,
+            "max": max,
+            "min": min,
         }
         combined_vars = {**self.character.variables, **getattr(self.character, "app_vars", {}), **self._local_vars}
 
@@ -229,14 +226,15 @@ class DslInterpreter:
         while True:
             try:
                 expr_to_eval = self._expand_inline_loads(expr, script_path_for_error=script_path_for_error, line_num=line_num, line_content=line_content, sys_msgs=sys_msgs)
-                if expr_to_eval.lstrip().startswith(("f'", 'f"', 'f"""')):
-                    return eval(expr_to_eval, safe_globals, combined_vars)
-                return eval(expr_to_eval, safe_globals, combined_vars)
-            except NameError as ne:
-                m = re.search(r"name '([^']+)' is not defined", str(ne))
-                if not m or fills >= max_missing_fills:
-                    _raise_dsl_error(ne)
-                var_name = m.group(1)
+                return safe_eval_expression(
+                    expr_to_eval,
+                    names=combined_vars,
+                    allowed_calls=allowed_calls,
+                )
+            except UnknownNameError as unknown_name:
+                if fills >= max_missing_fills:
+                    _raise_dsl_error(unknown_name)
+                var_name = unknown_name.name
                 dsl_execution_logger.debug("Auto-initializing unknown variable '%s' with None in local scope", var_name)
                 self._local_vars[var_name] = None
                 combined_vars[var_name] = None
@@ -255,11 +253,19 @@ class DslInterpreter:
                 )
                 fixed_locals = {k: (str(v) if isinstance(v, (int, float, bool, type(None))) else v) for k, v in combined_vars.items()}
                 try:
-                    if expr_to_eval.lstrip().startswith(("f'", 'f"', 'f"""')):
-                        return eval(expr_to_eval, safe_globals, fixed_locals)
-                    return eval(expr_to_eval, safe_globals, fixed_locals)
-                except Exception:
-                    _raise_dsl_error(e, f"Error evaluating '{expr_to_eval}' (even after auto-str cast attempt for TypeError): {type(e).__name__} - {e}")
+                    return safe_eval_expression(
+                        expr_to_eval,
+                        names=fixed_locals,
+                        allowed_calls=allowed_calls,
+                    )
+                except Exception as retry_error:
+                    _raise_dsl_error(
+                        retry_error,
+                        f"Error evaluating '{expr_to_eval}' after auto-str cast attempt: "
+                        f"{type(retry_error).__name__} - {retry_error}",
+                    )
+            except SafeEvalError as e:
+                _raise_dsl_error(e)
             except Exception as e:
                 _raise_dsl_error(e)
 

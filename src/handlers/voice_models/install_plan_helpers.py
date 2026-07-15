@@ -10,6 +10,9 @@ from core.install_types import InstallAction, InstallPlan
 from utils import getTranslationVariant as _
 
 
+_PYTHON_PROBE_TIMEOUT_SECONDS = 10.0
+
+
 def pip_uninstall_action(packages: list[str], *, description: str, progress: int = 20) -> InstallAction:
     pkgs = [str(p).strip() for p in (packages or []) if str(p).strip()]
 
@@ -87,6 +90,7 @@ def installer_python_version(python_path: str | None = None) -> tuple[int, int, 
             encoding="utf-8",
             errors="ignore",
             check=False,
+            timeout=_PYTHON_PROBE_TIMEOUT_SECONDS,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:

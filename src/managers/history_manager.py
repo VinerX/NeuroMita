@@ -37,6 +37,8 @@ class HistoryManager(CharacterScopedService):
     # when multiple HistoryManager instances exist for the same character.
     _CHAR_WRITE_LOCKS: ClassVar[dict[str, Lock]] = {}
     _CHAR_LOCKS_LOCK: ClassVar[Lock] = Lock()
+    _RAG_RETRY_BASE_SECONDS: ClassVar[float] = 2.0
+    _RAG_RETRY_MAX_SECONDS: ClassVar[float] = 60.0
 
     @classmethod
     def _get_char_write_lock(cls, storage_key: str) -> Lock:
@@ -75,15 +77,17 @@ class HistoryManager(CharacterScopedService):
         self.db = DatabaseManager()
 
         # Схема общая для всех персонажей и проверяется один раз на сервис.
-        self._history_cols: set[str] = set()
+        self._history_cols: set[str] = self.db.get_history_columns()
 
         # Character-local state remains data inside the single service instance.
         self._img_cache_locks: dict[str, Lock] = {}
         self._img_path_caches: dict[str, dict[str, str]] = {}
         self._rags: dict[str, object | None] = {}
         self._rag_initialized: set[str] = set()
-
-        self._ensure_history_schema()
+        self._rag_failures: dict[str, int] = {}
+        self._rag_retry_after: dict[str, float] = {}
+        self._rag_init_locks: dict[str, Lock] = {}
+        self._rag_init_locks_guard = Lock()
 
     @property
     def _write_lock(self) -> Lock:
@@ -102,29 +106,66 @@ class HistoryManager(CharacterScopedService):
     def _img_path_cache(self) -> dict[str, str]:
         return self._img_path_caches.setdefault(self.storage_key, {})
 
+    def _rag_init_lock_for(self, key: str) -> Lock:
+        with self._rag_init_locks_guard:
+            lock = self._rag_init_locks.get(key)
+            if lock is None:
+                lock = Lock()
+                self._rag_init_locks[key] = lock
+            return lock
+
     @property
     def rag(self):
         key = self.storage_key
         if key in self._rag_initialized:
             return self._rags.get(key)
-        self._rag_initialized.add(key)
-        try:
-            from managers.rag.rag_manager import RAGManager
 
-            self._rags[key] = RAGManager.for_character(key)
-        except Exception as exc:
-            logger.warning(
-                f"RAGManager init failed for {key} (RAG disabled for this session): {exc}",
-                exc_info=True,
-            )
-            self._rags[key] = None
-        return self._rags.get(key)
+        now = time.monotonic()
+        if now < self._rag_retry_after.get(key, 0.0):
+            return None
+
+        with self._rag_init_lock_for(key):
+            if key in self._rag_initialized:
+                return self._rags.get(key)
+            now = time.monotonic()
+            if now < self._rag_retry_after.get(key, 0.0):
+                return None
+
+            try:
+                from managers.rag.rag_manager import RAGManager
+
+                rag = RAGManager.for_character(key)
+            except Exception as exc:
+                failures = self._rag_failures.get(key, 0) + 1
+                self._rag_failures[key] = failures
+                delay = min(
+                    self._RAG_RETRY_MAX_SECONDS,
+                    self._RAG_RETRY_BASE_SECONDS * (2 ** min(failures - 1, 5)),
+                )
+                self._rag_retry_after[key] = time.monotonic() + delay
+                self._rags.pop(key, None)
+                logger.warning(
+                    "RAGManager init failed for %s; retry in %.1fs: %s",
+                    key,
+                    delay,
+                    exc,
+                    exc_info=True,
+                )
+                return None
+
+            self._rags[key] = rag
+            self._rag_initialized.add(key)
+            self._rag_failures.pop(key, None)
+            self._rag_retry_after.pop(key, None)
+            return rag
 
     @rag.setter
     def rag(self, value) -> None:
         key = self.storage_key
         self._rag_initialized.add(key)
         self._rags[key] = value
+        self._rag_failures.pop(key, None)
+        self._rag_retry_after.pop(key, None)
 
     # ---------------------------------------------------------------------
     # Embedding async helpers
@@ -152,61 +193,15 @@ class HistoryManager(CharacterScopedService):
     # Schema helpers
     # ---------------------------------------------------------------------
     def _refresh_history_columns(self) -> set[str]:
-        conn = self.db.get_connection()
         try:
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info(history)")
-            cols = set(row[1] for row in cur.fetchall() if row and len(row) > 1)
-            self._history_cols = cols
-            return cols
+            self._history_cols = self.db.get_history_columns(refresh=True)
         except Exception as e:
             logger.warning(f"Failed to read history schema: {e}", exc_info=True)
             self._history_cols = set()
-            return set()
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return set(self._history_cols)
 
     def _ensure_history_schema(self) -> None:
-        """
-        Пытается добавить недостающие колонки в history.
-        Даже если ALTER не получится, код ниже всё равно не упадёт,
-        потому что INSERT/SELECT строятся динамически по self._history_cols.
-        """
-        cols = self._refresh_history_columns()
-        if not cols:
-            return
-
-        to_add: list[tuple[str, str]] = []
-        for col, col_type in self._HISTORY_DESIRED_COLUMNS.items():
-            if col not in cols:
-                to_add.append((col, col_type))
-
-        if not to_add:
-            return
-
-        conn = self.db.get_connection()
-        try:
-            cur = conn.cursor()
-            for col, col_type in to_add:
-                try:
-                    cur.execute(f"ALTER TABLE history ADD COLUMN {self.db._q_ident(col)} {col_type}")
-                    logger.info(f"DB upgrade: added history.{col} {col_type}")
-                except Exception as e:
-                    # Не валим приложение: просто логируем
-                    logger.warning(f"DB upgrade: failed to add history.{col}: {e}")
-            conn.commit()
-        except Exception as e:
-            logger.warning(f"DB upgrade: failed to upgrade history table: {e}", exc_info=True)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        # обновим кеш после попытки миграции
+        """Compatibility hook: schema migration belongs to DatabaseManager startup."""
         self._refresh_history_columns()
 
     def dedupe_history(self) -> int:
@@ -215,7 +210,6 @@ class HistoryManager(CharacterScopedService):
         Delegates to DatabaseManager.dedupe_history() for single implementation.
         """
         try:
-            self._ensure_history_schema()
             if not self._history_cols:
                 return 0
             if "content" not in self._history_cols or "timestamp" not in self._history_cols:
@@ -753,13 +747,146 @@ class HistoryManager(CharacterScopedService):
             vals.append(0)
 
         for k in self._HISTORY_DESIRED_COLUMNS.keys():
-            if k in self._history_cols:
+            if k in self._history_cols and k not in cols:
                 cols.append(k)
                 vals.append(db_fields.get(k))
 
         placeholders = ", ".join(["?"] * len(cols))
         sql = f"INSERT INTO history ({', '.join(cols)}) VALUES ({placeholders})"
         return sql, tuple(vals), ts
+
+    def _build_history_update_payload(self, *, msg: dict, is_active: int) -> dict[str, Any]:
+        raw_ts = self._coerce_text(msg.get("time")) or self._coerce_text(msg.get("timestamp"))
+        ts = self._storage_timestamp(raw_ts)
+        db_fields = self._extract_history_db_fields(msg)
+        extra_meta = self._build_extra_meta_for_db(msg)
+        db_content, db_meta = self._prepare_message_for_db(
+            msg.get("role"),
+            msg.get("content"),
+            extra_meta,
+        )
+
+        payload: dict[str, Any] = {
+            "role": msg.get("role"),
+            "content": db_content,
+            "is_active": int(is_active),
+            "meta_data": db_meta,
+            "timestamp": ts,
+        }
+        if "is_deleted" in self._history_cols:
+            payload["is_deleted"] = 0
+        for key in self._HISTORY_DESIRED_COLUMNS:
+            if key in self._history_cols and key not in payload:
+                payload[key] = db_fields.get(key)
+        return payload
+
+    def _history_row_belongs_to_character_tx(self, cursor, row_id: int) -> bool:
+        deleted_clause = " AND is_deleted = 0" if "is_deleted" in self._history_cols else ""
+        cursor.execute(
+            f"SELECT 1 FROM history WHERE id = ? AND character_id = ?{deleted_clause} LIMIT 1",
+            (int(row_id), self.storage_key),
+        )
+        return cursor.fetchone() is not None
+
+    def _invalidate_history_embeddings_tx(self, cursor, row_id: int) -> None:
+        if "embedding" in self._history_cols:
+            cursor.execute(
+                "UPDATE history SET embedding = NULL WHERE id = ? AND character_id = ?",
+                (int(row_id), self.storage_key),
+            )
+        for table in ("embeddings", "sentence_embeddings"):
+            cursor.execute(
+                f"DELETE FROM {table} "
+                "WHERE source_table = 'history' AND source_id = ? AND character_id = ?",
+                (int(row_id), self.storage_key),
+            )
+
+    def _update_history_row_tx(
+        self,
+        cursor,
+        *,
+        row_id: int,
+        msg: dict,
+        is_active: int,
+    ) -> bool:
+        payload = self._build_history_update_payload(msg=msg, is_active=is_active)
+        cursor.execute(
+            "SELECT content FROM history WHERE id = ? AND character_id = ? LIMIT 1",
+            (int(row_id), self.storage_key),
+        )
+        previous = cursor.fetchone()
+        if previous is None:
+            raise ValueError(f"History row {row_id} does not belong to {self.storage_key}")
+
+        content_changed = str(previous[0] or "") != str(payload.get("content") or "")
+        assignments = ", ".join(f"{self.db._q_ident(column)} = ?" for column in payload)
+        cursor.execute(
+            f"UPDATE history SET {assignments} WHERE id = ? AND character_id = ?",
+            (*payload.values(), int(row_id), self.storage_key),
+        )
+        if content_changed:
+            self._invalidate_history_embeddings_tx(cursor, row_id)
+        return content_changed
+
+    def _resolve_snapshot_row_id_tx(
+        self,
+        cursor,
+        *,
+        msg: dict,
+        active_row_ids: list[int],
+        used_row_ids: set[int],
+        reserved_row_ids: set[int],
+    ) -> int | None:
+        raw_row_id = msg.get("_history_row_id")
+        try:
+            row_id = int(raw_row_id) if raw_row_id is not None else 0
+        except (TypeError, ValueError):
+            row_id = 0
+        if (
+            row_id > 0
+            and row_id not in used_row_ids
+            and self._history_row_belongs_to_character_tx(cursor, row_id)
+        ):
+            return row_id
+
+        existing = self._find_existing_history_row(
+            cursor,
+            message_id=self._coerce_text(msg.get("message_id")),
+        )
+        if existing is not None and existing[0] not in used_row_ids:
+            return int(existing[0])
+
+        for candidate in active_row_ids:
+            if candidate not in used_row_ids and candidate not in reserved_row_ids:
+                return candidate
+        return None
+
+    def _reserved_snapshot_row_ids_tx(self, cursor, messages: list[dict]) -> set[int]:
+        """Reserve rows explicitly referenced by later snapshot messages.
+
+        Without this pre-pass, a new message inserted at the beginning of a
+        snapshot could consume the first active row by position. The following
+        existing message would then lose its stable row identity even though it
+        carried ``_history_row_id`` or ``message_id``.
+        """
+        reserved: set[int] = set()
+        for msg in messages:
+            raw_row_id = msg.get("_history_row_id")
+            try:
+                row_id = int(raw_row_id) if raw_row_id is not None else 0
+            except (TypeError, ValueError):
+                row_id = 0
+            if row_id > 0 and self._history_row_belongs_to_character_tx(cursor, row_id):
+                reserved.add(row_id)
+                continue
+
+            existing = self._find_existing_history_row(
+                cursor,
+                message_id=self._coerce_text(msg.get("message_id")),
+            )
+            if existing is not None:
+                reserved.add(int(existing[0]))
+        return reserved
 
     def _find_existing_history_row(
         self,
@@ -853,7 +980,7 @@ class HistoryManager(CharacterScopedService):
         - всё остальное дублируем в meta_data
         """
         if not self._history_cols:
-            self._ensure_history_schema()
+            self._refresh_history_columns()
 
         with self._write_lock:
             conn = self.db.get_connection()
@@ -961,9 +1088,7 @@ class HistoryManager(CharacterScopedService):
                 except Exception:
                     variables[row[0]] = row[1]
 
-            # 2) Сообщения
-            # динамический SELECT по фактическим колонкам
-            self._ensure_history_schema()
+            # 2) Сообщения. Схема уже мигрирована DatabaseManager при старте.
             select_cols = self._history_select_columns()
 
             sql = f"""
@@ -1008,12 +1133,12 @@ class HistoryManager(CharacterScopedService):
         }
 
     def save_history(self, data):
-        messages = data.get("messages", []) or []
+        messages = [msg for msg in (data.get("messages", []) or []) if isinstance(msg, dict)]
         variables = data.get("variables", {}) or {}
 
         pending_embeddings: list[tuple[int, str]] = []
         if not self._history_cols:
-            self._ensure_history_schema()
+            self._refresh_history_columns()
 
         with self._write_lock:
             conn = self.db.get_connection()
@@ -1031,24 +1156,67 @@ class HistoryManager(CharacterScopedService):
                     )
 
                 cursor.execute(
-                    "DELETE FROM history WHERE character_id = ? AND is_active = 1",
+                    f"""
+                    SELECT id
+                    FROM history
+                    WHERE character_id = ? AND is_active = 1 {self._history_not_deleted_clause()}
+                    ORDER BY id ASC
+                    """,
                     (self.storage_key,),
                 )
+                active_row_ids = [int(row[0]) for row in cursor.fetchall() if row and row[0]]
+                used_row_ids: set[int] = set()
+                reserved_row_ids = self._reserved_snapshot_row_ids_tx(cursor, messages)
 
                 for msg in messages:
-                    if not isinstance(msg, dict):
-                        continue
                     if not msg.get("role"):
                         logger.warning(
                             f"[HistoryManager] save_history: пропущено сообщение без поля 'role': {str(msg)[:120]}"
                         )
                         continue
 
-                    row_id = self._insert_history_row_tx(cursor, msg=msg, is_active=1, dedupe=False)
+                    row_id = self._resolve_snapshot_row_id_tx(
+                        cursor,
+                        msg=msg,
+                        active_row_ids=active_row_ids,
+                        used_row_ids=used_row_ids,
+                        reserved_row_ids=reserved_row_ids,
+                    )
+                    content_changed = False
+                    if row_id is None:
+                        row_id = self._insert_history_row_tx(cursor, msg=msg, is_active=1, dedupe=False)
+                        content_changed = bool(row_id)
+                    else:
+                        content_changed = self._update_history_row_tx(
+                            cursor,
+                            row_id=row_id,
+                            msg=msg,
+                            is_active=1,
+                        )
+
                     if row_id:
+                        used_row_ids.add(int(row_id))
                         content_text = self._extract_text_for_embedding(msg.get("content"))
-                        if content_text:
+                        if content_changed and content_text:
                             pending_embeddings.append((int(row_id), content_text))
+
+                stale_active_ids = [row_id for row_id in active_row_ids if row_id not in used_row_ids]
+                if stale_active_ids:
+                    placeholders = ", ".join("?" for _ in stale_active_ids)
+                    if "is_deleted" in self._history_cols:
+                        cursor.execute(
+                            f"""
+                            UPDATE history
+                            SET is_active = 0, is_deleted = 1
+                            WHERE character_id = ? AND id IN ({placeholders})
+                            """,
+                            (self.storage_key, *stale_active_ids),
+                        )
+                    else:
+                        cursor.execute(
+                            f"DELETE FROM history WHERE character_id = ? AND id IN ({placeholders})",
+                            (self.storage_key, *stale_active_ids),
+                        )
 
                 conn.commit()
             except Exception as e:
@@ -1138,7 +1306,7 @@ class HistoryManager(CharacterScopedService):
         if not valid_messages:
             return []
         if not self._history_cols:
-            self._ensure_history_schema()
+            self._refresh_history_columns()
 
         committed: list[tuple[int, dict]] = []
         with self._write_lock:
@@ -1357,7 +1525,6 @@ class HistoryManager(CharacterScopedService):
         try:
             cursor = conn.cursor()
 
-            self._ensure_history_schema()
             select_cols = self._history_select_columns()
 
             sql = f"""

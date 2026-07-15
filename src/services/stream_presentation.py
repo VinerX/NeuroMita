@@ -14,10 +14,14 @@ class TextDeltaCoalescer:
         *,
         interval_seconds: float = 0.025,
         max_buffer_chars: int = 16_384,
+        flush_timeout_seconds: float = 5.0,
+        close_timeout_seconds: float = 2.0,
     ) -> None:
         self._emit = emit
         self._interval_seconds = max(0.001, float(interval_seconds))
         self._max_buffer_chars = max(1, int(max_buffer_chars))
+        self._flush_timeout_seconds = max(0.1, float(flush_timeout_seconds))
+        self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
         self._parts: list[str] = []
         self._buffer_chars = 0
         self._deadline: float | None = None
@@ -47,15 +51,23 @@ class TextDeltaCoalescer:
                 self._flush_requested = True
             self._condition.notify()
 
-    def flush(self) -> None:
+    def flush(self, *, timeout_seconds: float | None = None) -> bool:
+        timeout = self._flush_timeout_seconds if timeout_seconds is None else max(0.0, float(timeout_seconds))
         with self._condition:
             if self._closed and not self._parts and not self._emitting:
-                return
+                return True
             self._flush_requested = True
             self._condition.notify()
-            self._condition.wait_for(lambda: not self._parts and not self._emitting)
+            completed = self._condition.wait_for(
+                lambda: not self._parts and not self._emitting,
+                timeout=timeout,
+            )
+        if not completed:
+            logger.warning("Timed out while flushing coalesced stream text")
+        return completed
 
-    def close(self, *, flush: bool = True) -> None:
+    def close(self, *, flush: bool = True, timeout_seconds: float | None = None) -> bool:
+        timeout = self._close_timeout_seconds if timeout_seconds is None else max(0.0, float(timeout_seconds))
         with self._condition:
             if self._closed:
                 worker = self._worker
@@ -70,8 +82,12 @@ class TextDeltaCoalescer:
                 self._condition.notify_all()
                 worker = self._worker
         if worker is threading.current_thread():
-            return
-        worker.join()
+            return True
+        worker.join(timeout=timeout)
+        if worker.is_alive():
+            logger.warning("Timed out while closing stream presentation coalescer")
+            return False
+        return True
 
     def _run(self) -> None:
         while True:

@@ -80,6 +80,7 @@ class DatabaseManager:
 
             self._wal_initialized = False
             self._pragmas_lock = Lock()
+            self._history_columns_cache: Set[str] = set()
             self._init_db()
             self._initialized = True
 
@@ -631,6 +632,23 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
 
+        history_columns = [
+            ("character_id", "TEXT"),
+            ("role", "TEXT"),
+            ("content", "TEXT"),
+            ("timestamp", "TEXT"),
+            ("is_active", "INTEGER DEFAULT 1"),
+            ("meta_data", "TEXT"),
+            ("embedding", "BLOB"),
+            ("entities", "TEXT DEFAULT '[]'"),
+        ]
+        known_history_columns = {name for name, _definition in history_columns}
+        history_columns.extend(
+            (name, definition)
+            for name, definition in self.HISTORY_EXTRA_COLUMNS.items()
+            if name not in known_history_columns
+        )
+
         desired = {
             "memories": [
                 ("character_id", "TEXT"),
@@ -647,27 +665,7 @@ class DatabaseManager:
                 ("embedding", "BLOB"),
                 ("entities", "TEXT DEFAULT '[]'"),
             ],
-            "history": [
-                ("character_id", "TEXT"),
-                ("role", "TEXT"),
-                ("target", "TEXT"),
-                ("participants", "TEXT"),
-                ("tags", "TEXT"),
-                ("rag_id", "TEXT"),
-                ("message_id", "TEXT"),
-                ("speaker", "TEXT"),
-                ("sender", "TEXT"),
-                ("event_type", "TEXT"),
-                ("req_id", "TEXT"),
-                ("task_uid", "TEXT"),
-                ("content", "TEXT"),
-                ("timestamp", "TEXT"),
-                ("is_active", "INTEGER DEFAULT 1"),
-                ("is_deleted", "INTEGER DEFAULT 0"),
-                ("meta_data", "TEXT"),
-                ("embedding", "BLOB"),
-                ("entities", "TEXT DEFAULT '[]'"),
-            ],
+            "history": history_columns,
             "variables": [
                 ("character_id", "TEXT"),
                 ("key", "TEXT"),
@@ -838,12 +836,41 @@ class DatabaseManager:
             # --- Migrate old BLOB embeddings into separate table ---
             self._migrate_embeddings_to_table(cursor)
 
+            try:
+                cursor.execute("PRAGMA table_info(history)")
+                self._history_columns_cache = {
+                    row[1] for row in cursor.fetchall() if row and len(row) > 1
+                }
+            except Exception:
+                self._history_columns_cache = set()
+
             conn.commit()
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
+
+    def get_history_columns(self, *, refresh: bool = False) -> Set[str]:
+        """Return the migrated history schema without repeating PRAGMA on read paths."""
+        cached = set(getattr(self, "_history_columns_cache", set()) or set())
+        if cached and not refresh:
+            return cached
+
+        with DatabaseManager._lock:
+            cached = set(getattr(self, "_history_columns_cache", set()) or set())
+            if cached and not refresh:
+                return cached
+
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(history)")
+                cached = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+                self._history_columns_cache = cached
+                return set(cached)
+            finally:
+                conn.close()
 
     def _migrate_embeddings_to_table(self, cursor: sqlite3.Cursor) -> None:
         """Migrate BLOB embeddings from history/memories into the separate embeddings table.

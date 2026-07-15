@@ -9,6 +9,14 @@ class SafeEvalError(ValueError):
     """Raised when an expression uses disallowed syntax or names."""
 
 
+class UnknownNameError(SafeEvalError):
+    """Raised when an expression references a name absent from its scope."""
+
+    def __init__(self, name: str) -> None:
+        self.name = str(name)
+        super().__init__(f"Unknown name: {self.name}")
+
+
 _GENERAL_BINOPS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: lambda a, b: a + b,
     ast.Sub: lambda a, b: a - b,
@@ -128,7 +136,7 @@ class _SafeExpressionEvaluator:
             return self._names[node.id]
         if node.id in self._allowed_calls:
             return self._allowed_calls[node.id]
-        raise SafeEvalError(f"Unknown name: {node.id}")
+        raise UnknownNameError(node.id)
 
     def _visit_List(self, node: ast.List) -> Any:
         if not self._policy.allow_collections:
@@ -152,6 +160,36 @@ class _SafeExpressionEvaluator:
             self._visit(key): self._visit(value)
             for key, value in zip(node.keys, node.values)
         }
+
+    def _visit_JoinedStr(self, node: ast.JoinedStr) -> str:
+        if not self._policy.allow_collections:
+            raise SafeEvalError("Formatted strings are not allowed in this expression.")
+        return "".join(str(self._visit(value)) for value in node.values)
+
+    def _visit_FormattedValue(self, node: ast.FormattedValue) -> str:
+        if not self._policy.allow_collections:
+            raise SafeEvalError("Formatted strings are not allowed in this expression.")
+
+        value = self._visit(node.value)
+        if node.conversion == ord("s"):
+            value = str(value)
+        elif node.conversion == ord("r"):
+            value = repr(value)
+        elif node.conversion == ord("a"):
+            value = ascii(value)
+        elif node.conversion != -1:
+            raise SafeEvalError("Unsupported formatted-string conversion.")
+
+        if node.format_spec is None:
+            return str(value)
+
+        format_spec = self._visit(node.format_spec)
+        if not isinstance(format_spec, str):
+            raise SafeEvalError("Formatted-string format spec must evaluate to text.")
+        try:
+            return format(value, format_spec)
+        except (TypeError, ValueError) as exc:
+            raise SafeEvalError(f"Invalid formatted-string format spec: {exc}") from exc
 
     def _visit_BoolOp(self, node: ast.BoolOp) -> Any:
         if not self._policy.allow_bool_ops:

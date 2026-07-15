@@ -4,7 +4,7 @@ import os
 import hashlib
 from datetime import datetime
 import asyncio
-from typing import TYPE_CHECKING, Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
@@ -23,9 +23,7 @@ from installables.compatibility_specs import (
     F5_CPU_FALLBACK_COMPATIBILITY,
     F5_RVC_FALLBACK_COMPATIBILITY,
 )
-
-if TYPE_CHECKING:
-    from handlers.local_voice_handler import LocalVoice
+from handlers.voice_models.context import VoiceRuntimeContext
 
 class F5TTSInstallSpec:
     @classmethod
@@ -308,7 +306,7 @@ class F5TTSInstallSpec:
         )
 
 class F5TTSModel(IVoiceModel):
-    def __init__(self, parent: "LocalVoice", model_id: str, rvc_handler: Optional[IVoiceModel] = None):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str, rvc_handler: Optional[IVoiceModel] = None):
         super().__init__(parent, model_id)
         self.f5_pipeline_module = None
         self.current_f5_pipeline = None

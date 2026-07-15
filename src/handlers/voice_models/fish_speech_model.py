@@ -7,7 +7,7 @@ import hashlib
 import json
 from datetime import datetime
 import subprocess
-from typing import TYPE_CHECKING, Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
@@ -19,9 +19,7 @@ from utils import getTranslationVariant as _, get_character_voice_paths
 from core.backends import BackendKind
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
-
-if TYPE_CHECKING:
-    from handlers.local_voice_handler import LocalVoice
+from handlers.voice_models.context import VoiceRuntimeContext
 
 from handlers.voice_models.install_plan_helpers import (
     patch_tts_with_rvc_audio,
@@ -569,7 +567,7 @@ except Exception:
 
 
 class FishSpeechModel(IVoiceModel):
-    def __init__(self, parent: 'LocalVoice', model_id: str, rvc_handler: Optional[IVoiceModel] = None):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str, rvc_handler: Optional[IVoiceModel] = None):
         super().__init__(parent, model_id)
         self.fish_speech_module = None
         self.current_fish_speech = None

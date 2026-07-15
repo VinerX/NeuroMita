@@ -90,6 +90,27 @@ def test_transport_reuses_profile_clients_and_negotiates_http2_only_for_remote()
     transport.close()
 
 
+def test_local_transport_does_not_inherit_environment_proxy(monkeypatch):
+    created = []
+
+    class DummyClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("handlers.llm_providers.http_transport.httpx.Client", DummyClient)
+    transport = LLMHttpTransport(enable_http2=False)
+
+    transport.client_for_url("http://127.0.0.1:11434/v1")
+    transport.client_for_url("https://example.test/v1")
+
+    assert created[0]["trust_env"] is False
+    assert created[1]["trust_env"] is True
+    transport.close()
+
+
 def test_transport_posts_json_with_phase_timeouts_and_returns_streamable_response():
     captured = {}
 
@@ -276,6 +297,27 @@ def test_presentation_coalescer_reuses_one_worker_for_many_batches():
     assert worker.is_alive()
     assert len(emitted) == 50
     coalescer.close()
+
+
+def test_presentation_close_has_bounded_wait_when_consumer_is_stuck():
+    entered = threading.Event()
+    release = threading.Event()
+
+    def emit(_text):
+        entered.set()
+        release.wait(1.0)
+
+    coalescer = TextDeltaCoalescer(
+        emit,
+        interval_seconds=0.001,
+        close_timeout_seconds=0.01,
+    )
+    coalescer.push("chunk")
+    assert entered.wait(1.0)
+
+    assert coalescer.close(flush=True) is False
+    release.set()
+    assert coalescer.close(flush=True, timeout_seconds=1.0) is True
 
 
 def test_openai_compatible_provider_streams_sse_through_normalized_accumulator():

@@ -11,7 +11,7 @@ from typing import Optional, Any
 
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
-from core.character_locks import character_lock
+from core.character_locks import character_generation_lock, character_lock
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services, use
@@ -1183,13 +1183,12 @@ class ModelController(GenerationService, ModelStateService):
             })
             return None
 
-        # Пул GENERATION многопоточный: два запроса к одной Мите (реплика игрока и
-        # idle-событие из игры) иначе украли бы друг у друга consume_pending_targets()
-        # и перемешали инкременты attitude/boredom. Разные персонажи идут параллельно.
-        with character_lock(getattr(char, "char_id", "") or ""):
-            return self._generate_chat_locked(request, char)
+        # Полные генерации одной Миты идут последовательно, но этот gate не блокирует
+        # короткие state-lock секции фонового summary/переменных во время сетевого I/O.
+        with character_generation_lock(getattr(char, "char_id", "") or ""):
+            return self._generate_chat_serialized(request, char)
 
-    def _generate_chat_locked(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+    def _generate_chat_serialized(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
         user_input = request.user_input or ""
         visible_user_input = user_input
         system_input = request.system_input or ""
@@ -1285,7 +1284,8 @@ class ModelController(GenerationService, ModelStateService):
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
 
-        _custom_params = getattr(char, "custom_params", [])
+        with character_lock(char_id):
+            _custom_params = copy.deepcopy(getattr(char, "custom_params", []) or [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
         effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
@@ -1402,7 +1402,8 @@ class ModelController(GenerationService, ModelStateService):
         )
 
         try:
-            prompt_data = use(PromptBuilderService).build(prompt_request)
+            with character_lock(char_id):
+                prompt_data = use(PromptBuilderService).build(prompt_request)
         except Exception as e:
             logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
@@ -1532,14 +1533,26 @@ class ModelController(GenerationService, ModelStateService):
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
                 visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
-            processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
-
-            targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    targets = char.consume_pending_targets()
-                except Exception:
-                    targets = []
+            with character_lock(char_id):
+                processed = char.process_response_nlp_commands(
+                    visible_raw,
+                    self.settings.get("SAVE_MISSED_MEMORY", False),
+                )
+                targets: list[str] = []
+                if hasattr(char, "consume_pending_targets"):
+                    try:
+                        targets = char.consume_pending_targets()
+                    except Exception:
+                        targets = []
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             target = targets[-1] if targets else "Player"
 
             final_text = processed
@@ -1593,12 +1606,8 @@ class ModelController(GenerationService, ModelStateService):
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-            if hasattr(char, "flush_variables"):
-                char.flush_variables()
-
             self._consume_temporary_system_infos(char_id, extra_system_infos)
 
-            created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
@@ -1607,13 +1616,6 @@ class ModelController(GenerationService, ModelStateService):
                 "created_memory_ids": created_memory_ids,
                 "inline_graph_json": inline_graph_json,
             })
-
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
 
             return ChatGenerationResult(
                 text=final_text,
@@ -1799,23 +1801,25 @@ class ModelController(GenerationService, ModelStateService):
                 f"Falling back to legacy processing."
             )
             # Fallback to legacy tag-based processing
-            processed = char.process_response_nlp_commands(
-                visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
-            fallback_targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    fallback_targets = char.consume_pending_targets()
-                except Exception:
-                    fallback_targets = []
+            with character_lock(char_id):
+                processed = char.process_response_nlp_commands(
+                    visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
+                )
+                fallback_targets: list[str] = []
+                if hasattr(char, "consume_pending_targets"):
+                    try:
+                        fallback_targets = char.consume_pending_targets()
+                    except Exception:
+                        fallback_targets = []
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             fallback_target = fallback_targets[-1] if fallback_targets else "Player"
-
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
 
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
             self._store_last_usage(
@@ -1839,11 +1843,29 @@ class ModelController(GenerationService, ModelStateService):
 
         self._sanitize_structured_segment_fields(structured, capabilities)
 
-        # Apply structured response processing (behavior changes, memory, game tags)
-        char.process_structured_response(
-            structured,
-            save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
-        )
+        # Apply and snapshot character state in a short critical section. Tool
+        # execution and any follow-up provider request happen after this lock.
+        with character_lock(char_id):
+            char.process_structured_response(
+                structured,
+                save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
+            )
+            targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
+                try:
+                    targets = char.consume_pending_targets()
+                except Exception:
+                    targets = []
+            if hasattr(char, "flush_variables"):
+                char.flush_variables()
+            created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+            voice_profile = None
+            if hasattr(char, "to_voice_profile"):
+                try:
+                    voice_profile = char.to_voice_profile()
+                except Exception:
+                    voice_profile = None
+        target = targets[-1] if targets else "Player"
 
         # --- Tool call path ---
         _active_tools = enabled_tools or []
@@ -1889,6 +1911,8 @@ class ModelController(GenerationService, ModelStateService):
                 structured_model_cls=structured_model_cls,
                 sample_id=sample_id,
                 image_descriptions=image_descriptions,
+                targets=targets,
+                voice_profile=voice_profile,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1907,14 +1931,6 @@ class ModelController(GenerationService, ModelStateService):
         # Attach raw LLM JSON for the debug panel (not saved to history)
         result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
-
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
-        target = targets[-1] if targets else "Player"
 
         if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
             final_text = re.sub(
@@ -1977,9 +1993,6 @@ class ModelController(GenerationService, ModelStateService):
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-        if hasattr(char, "flush_variables"):
-            char.flush_variables()
-
         # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
         if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
@@ -1995,7 +2008,6 @@ class ModelController(GenerationService, ModelStateService):
                 logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
 
         # Notify graph extraction (and any future subscribers).
-        created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
         self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
             "character_id": char_id,
             "character_ref": char,
@@ -2006,13 +2018,6 @@ class ModelController(GenerationService, ModelStateService):
             "memories_already_tagged": True,
             "from_structured_output": True,
         })
-
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
 
         return ChatGenerationResult(
             text=final_text,
@@ -2059,6 +2064,8 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
+        targets: list[str] | None = None,
+        voice_profile=None,
     ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
@@ -2078,20 +2085,8 @@ class ModelController(GenerationService, ModelStateService):
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
+        targets = list(targets or [])
         target = targets[-1] if targets else "Player"
-
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
 
         # Write first turn to history
         usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
