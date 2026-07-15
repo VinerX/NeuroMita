@@ -1,5 +1,23 @@
+// Examples profile selection (EXAMPLES_PROFILE set by PromptController):
+//   full    — existing long examples (unchanged behavior)
+//   clean   — curated set without the most story-specific/copied lines
+//   compact — 8-12 short varied scenes for small context windows
+//   none    — no examples (personality + rules only)
+IF EXAMPLES_PROFILE == "none" THEN
+	RETURN ""
+ENDIF
+
+IF EXAMPLES_PROFILE == "compact" THEN
+	RETURN LOAD "Context/examplesCompact.txt"
+ENDIF
+
+IF EXAMPLES_PROFILE == "clean" THEN
+	RETURN LOAD "Context/examplesClean.txt"
+ENDIF
+
+// full (default) — unchanged
 IF secretExposed == True THEN
-		RETURN LOAD "Context/examplesLongCrazy.txt"
+	RETURN LOAD "Context/examplesLongCrazy.txt"
 ELSE
-		RETURN LOAD "Context/examplesLong.txt"
+	RETURN LOAD "Context/examplesLong.txt"
 ENDIF

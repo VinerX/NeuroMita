@@ -14,11 +14,12 @@ from controllers.model_controller import ModelController
 from schemas.structured_response import StructuredResponse
 from services.game_link_service import DisconnectedGameLinkService
 from services.contracts import GameLinkService
+from services.runtime_capabilities import UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS
 from core.services import services
 
 
 class StructuredResponseSandboxTests(unittest.TestCase):
-    _EXCLUDED = {"animations", "idle_animations", "emotions"}
+    _EXCLUDED = set(UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS)
 
     def test_debug_setting_can_disable_remote_exclusions(self):
         controller = object.__new__(ModelController)

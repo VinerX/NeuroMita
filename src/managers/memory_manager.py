@@ -249,12 +249,13 @@ class MemoryManager(CharacterScopedService):
             if need <= 0:
                 return
 
-            # Собираем всех кандидатов (Critical нельзя)
+            # Собираем всех кандидатов (Critical нельзя; islands защищены)
             cur.execute(
                 """
                 SELECT id, eternal_id, priority, date_created, content
                 FROM memories
                 WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                  AND (type IS NULL OR type NOT LIKE 'island:%')
                 """,
                 (self.storage_key,),
             )
@@ -408,24 +409,169 @@ class MemoryManager(CharacterScopedService):
                 pass
 
         # RAG опционален и не должен валить основной флоу
-        if self.rag:
-            try:
-                rag = self.rag
-                eid = int(new_id)
-                txt = str(content or "")
-
-                def _embed_job():
-                    try:
-                        rag.update_memory_embedding(eid, txt)
-                    except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
-
-                # В фон: не блокируем UI/генерацию ответа
-                self._get_embed_executor().submit(_embed_job)
-            except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+        self._schedule_embed(new_id, content)
 
         return new_id
+
+    def _schedule_embed(self, eternal_id, content) -> None:
+        """Schedule a background RAG (re)embedding for a memory. No-op without RAG."""
+        if not self.rag:
+            return
+        try:
+            rag = self.rag
+            eid = int(eternal_id)
+            txt = str(content or "")
+
+            def _embed_job():
+                try:
+                    rag.update_memory_embedding(eid, txt)
+                except Exception as e:
+                    logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+
+            self._get_embed_executor().submit(_embed_job)
+        except Exception as e:
+            logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+
+    def seed_rag_memory(self, content, priority="normal", entities=None) -> Optional[int]:
+        """Create a RAG-only memory: indexed and retrievable by search, but never
+        part of the always-on ``<active_memory>`` block.
+
+        Stored as ``is_forgotten=1`` so it stays out of the active block yet is
+        found by RAG (search ignores the forgotten flag). Deduplicates by exact
+        content — re-seeding the same fact updates it in place (no duplicates)
+        and keeps it RAG-only rather than promoting it into the active block.
+        """
+        if not content or not str(content).strip():
+            return None
+        content = str(content).strip()
+
+        cols = self._mem_cols()
+        has_forgotten = "is_forgotten" in cols
+        if not has_forgotten:
+            # Without the forget column we cannot keep a memory out of the active
+            # block; fall back to a normal (skip-if-exists) memory.
+            return self.add_memory(content, priority=priority, skip_if_exists=True, entities=entities)
+
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT eternal_id FROM memories WHERE character_id=? AND content=? LIMIT 1",
+                (self.storage_key, content),
+            )
+            row = cur.fetchone()
+            if row:
+                eid = int(row[0])
+                # Keep it RAG-only: undelete but force forgotten, refresh priority.
+                cur.execute(
+                    "UPDATE memories SET is_deleted=0, is_forgotten=1, priority=? "
+                    "WHERE character_id=? AND eternal_id=?",
+                    (priority, self.storage_key, eid),
+                )
+                conn.commit()
+                self._schedule_embed(eid, content)
+                self._calculate_total_characters()
+                return eid
+
+            cur.execute(
+                "SELECT MAX(eternal_id) FROM memories WHERE character_id = ?",
+                (self.storage_key,),
+            )
+            res = cur.fetchone()[0]
+            new_id = (res + 1) if res is not None else 1
+
+            date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            insert_cols = ["character_id", "eternal_id", "content", "priority",
+                           "type", "date_created", "is_deleted", "is_forgotten"]
+            insert_vals = [self.storage_key, new_id, content, priority,
+                           "fact", date, 0, 1]
+            if "entities" in cols and entities:
+                insert_cols.append("entities")
+                insert_vals.append(
+                    entities if isinstance(entities, str)
+                    else json.dumps(list(entities), ensure_ascii=False)
+                )
+            placeholders = ",".join(["?"] * len(insert_cols))
+            cur.execute(
+                f"INSERT INTO memories ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                tuple(insert_vals),
+            )
+            conn.commit()
+
+        self._schedule_embed(new_id, content)
+        return new_id
+
+    # Fixed, small set of running-summary "island" memories. Each type has at
+    # most one active memory per character; new information updates it in place
+    # instead of piling up competing duplicates.
+    ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts")
+
+    def upsert_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
+        """Insert-or-update the single running summary memory for an island type.
+
+        Returns the eternal_id of the island memory, or None if the type is
+        unknown or the content is empty. Enforces one active ``island:<type>``
+        per character; existing islands are rewritten (and reindexed via
+        ``update_memory``) rather than duplicated.
+        """
+        short = str(island_type or "").strip().lower()
+        if short.startswith("island:"):
+            short = short[len("island:"):]
+        if short not in self.ISLAND_TYPES:
+            logging.warning(f"[MemoryManager] upsert_island: unknown island type {island_type!r}, ignored.")
+            return None
+        if not content or not str(content).strip():
+            return None
+
+        full_type = f"island:{short}"
+        content = str(content).strip()
+
+        cols = self._mem_cols()
+        has_forgotten = "is_forgotten" in cols
+
+        existing_eid: Optional[int] = None
+        was_forgotten = False
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+                # Look up regardless of is_forgotten: a forgotten island must be
+                # reactivated and updated, never orphaned.
+                select_cols = "eternal_id" + (", is_forgotten" if has_forgotten else "")
+                cur.execute(
+                    f"SELECT {select_cols} FROM memories "
+                    "WHERE character_id=? AND type=? AND is_deleted=0 "
+                    "ORDER BY eternal_id LIMIT 1",
+                    (self.storage_key, full_type),
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_eid = int(row[0])
+                    was_forgotten = bool(row[1]) if has_forgotten and len(row) > 1 else False
+                    if was_forgotten:
+                        cur.execute(
+                            "UPDATE memories SET is_forgotten=0 "
+                            "WHERE character_id=? AND eternal_id=?",
+                            (self.storage_key, existing_eid),
+                        )
+                        conn.commit()
+        except Exception as e:
+            logging.warning(f"[MemoryManager] upsert_island lookup failed: {e}", exc_info=True)
+
+        if existing_eid is not None:
+            if was_forgotten:
+                # Content length changed while it was excluded from the active
+                # total — recompute so accounting stays correct.
+                self._calculate_total_characters()
+            updated = self.update_memory(number=existing_eid, content=content, priority=priority)
+            if updated:
+                return existing_eid
+            # Reactivation/update unexpectedly failed — fall through to create a
+            # fresh active island rather than silently reporting a false success.
+            logging.warning(
+                f"[MemoryManager] upsert_island: update of #{existing_eid} ({full_type}) failed, "
+                f"creating a new active island instead."
+            )
+
+        return self.add_memory(content=content, priority=priority, memory_type=full_type)
 
     def tag_with_entities(self, eternal_id: int, entity_names: list) -> bool:
         """Merge entity names into the entities column for a given memory."""
@@ -786,6 +932,7 @@ class MemoryManager(CharacterScopedService):
                         rows = conn.execute(
                             f"SELECT eternal_id, {_age_expr} as age{extra} "
                             f"FROM memories WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
+                            f"AND (type IS NULL OR type NOT LIKE 'island:%') "
                             f"AND LOWER(priority)=? AND {_age_expr} > ?",
                             (self.storage_key, prio, pre_days),
                         ).fetchall()

@@ -1215,6 +1215,17 @@ class ModelController(GenerationService, ModelStateService):
             prompt_set_path = getattr(char, "base_data_path", None)
             rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
+        # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
+        # they fire on precise player input, independent of RAG availability or
+        # embedding similarity of a two-digit message.
+        try:
+            from managers.core_memory_triggers import core_memory_context
+            _core_ctx = core_memory_context(user_input, character_id=char_id)
+            if _core_ctx:
+                rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+        except Exception as _core_err:
+            logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+
         game_state = self.game_state.to_prompt_dict()
 
         with self._temporary_system_infos_lock:
@@ -1289,6 +1300,17 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
         effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
+
+        # intents: hidden from the model by default. Can be unlocked via the
+        # SCHEMA_INTENTS_ENABLED setting or a per-character DSL variable of the
+        # same name, without any further Python changes.
+        _schema_intents = bool(self.settings.get("SCHEMA_INTENTS_ENABLED", False))
+        if not _schema_intents:
+            try:
+                _schema_intents = bool(char.get_variable("SCHEMA_INTENTS_ENABLED", False))
+            except Exception:
+                _schema_intents = False
+        effective_capabilities["schema_intents"] = _schema_intents
 
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
