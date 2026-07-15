@@ -87,6 +87,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 cleaned_messages = annotate_openrouter_prompt_cache(cleaned_messages, model_to_use)
 
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
+            if req.stream and self.should_request_stream_usage(req):
+                params["stream_options"] = {"include_usage": True}
             params.update(self._map_unified_params(req.extra or {}, model_to_use))
             if req.protocol_id == "openrouter_default":
                 extra_body = dict(params.get("extra_body") or {})

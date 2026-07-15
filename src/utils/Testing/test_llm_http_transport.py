@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import httpx
@@ -9,9 +10,9 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from handlers.llm_providers.base import LLMRequest, RequestCancellation
+from handlers.llm_providers.base import LLMRequest, LLMResponse, RequestCancellation, get_request_cancellation
 from handlers.llm_providers.common_provider import CommonProvider
-from handlers.llm_providers.errors import coerce_provider_error
+from handlers.llm_providers.errors import LLMProviderError, coerce_provider_error
 from handlers.llm_providers.gemini_provider import GeminiProvider
 from handlers.llm_providers.http_transport import (
     LLMHttpTransport,
@@ -19,6 +20,7 @@ from handlers.llm_providers.http_transport import (
     TransportProfile,
 )
 from handlers.llm_providers.openai_provider import OpenAIProvider
+from handlers.llm_providers.openai_compatible import OpenAICompatibleProvider
 from handlers.llm_providers.streaming import (
     LLMStreamEventType,
     StreamAccumulator,
@@ -28,6 +30,8 @@ from handlers.llm_providers.streaming import (
     iter_sse_data,
 )
 from services.stream_presentation import TextDeltaCoalescer
+from managers.api_preset_resolver import PresetSettings
+from managers.llm_request_runner import LLMRequestRunner
 
 
 def _request(url: str = "https://example.test/v1") -> LLMRequest:
@@ -193,11 +197,49 @@ def test_presentation_coalescer_batches_small_deltas_and_bounds_buffer():
     coalescer.push("cd")
     assert emitted == []
     coalescer.push("e")
+    coalescer.flush()
     assert emitted == ["abcde"]
 
     coalescer.push("tail")
     coalescer.close(flush=True)
     assert emitted == ["abcde", "tail"]
+
+
+def test_presentation_flush_is_a_barrier_for_inflight_emission():
+    entered = threading.Event()
+    release = threading.Event()
+    flushed = threading.Event()
+
+    def emit(_text):
+        entered.set()
+        release.wait(1.0)
+
+    coalescer = TextDeltaCoalescer(emit, interval_seconds=0.001)
+    coalescer.push("chunk")
+    assert entered.wait(1.0)
+
+    waiter = threading.Thread(target=lambda: (coalescer.flush(), flushed.set()))
+    waiter.start()
+    assert not flushed.wait(0.05)
+    release.set()
+    assert flushed.wait(1.0)
+    waiter.join(timeout=1.0)
+    coalescer.close()
+
+
+def test_presentation_coalescer_reuses_one_worker_for_many_batches():
+    emitted = []
+    coalescer = TextDeltaCoalescer(emitted.append, interval_seconds=60.0)
+    worker = coalescer._worker
+
+    for index in range(50):
+        coalescer.push(str(index))
+        coalescer.flush()
+
+    assert coalescer._worker is worker
+    assert worker.is_alive()
+    assert len(emitted) == 50
+    coalescer.close()
 
 
 def test_openai_compatible_provider_streams_sse_through_normalized_accumulator():
@@ -295,6 +337,61 @@ def test_openai_sdk_adapter_reuses_httpx_pool_and_disables_hidden_retries():
     transport.close()
 
 
+class _CapturingSdkProvider(OpenAICompatibleProvider):
+    name = "capturing-sdk"
+    supports_stream_usage = True
+
+    def __init__(self, captured):
+        super().__init__()
+        self._captured = captured
+
+    def is_applicable(self, req):
+        return True
+
+    def _get_client(self, req):
+        captured = self._captured
+
+        class Completions:
+            @staticmethod
+            def create(**kwargs):
+                captured.update(kwargs)
+                return iter(())
+
+        class Chat:
+            completions = Completions()
+
+        class Client:
+            chat = Chat()
+
+            @staticmethod
+            def close():
+                return None
+
+        return Client()
+
+
+def test_stream_usage_is_capability_driven_for_http_and_sdk_adapters():
+    common = CommonProvider()
+    req = _request()
+    req.stream = True
+    req.capabilities["supports_stream_usage"] = True
+
+    payload = common._build_payload(req, req.model, req.messages)
+    assert payload["stream_options"] == {"include_usage": True}
+
+    req.capabilities["supports_stream_usage"] = False
+    assert "stream_options" not in common._build_payload(req, req.model, req.messages)
+    common.close()
+
+    captured = {}
+    sdk = _CapturingSdkProvider(captured)
+    sdk_req = _request()
+    sdk_req.stream = True
+    sdk.generate(sdk_req)
+    assert captured["stream_options"] == {"include_usage": True}
+    sdk.close()
+
+
 def test_stream_supervisor_distinguishes_first_event_and_idle_deadlines():
     cancellation = RequestCancellation()
     policy = StreamDeadlinePolicy(
@@ -323,3 +420,197 @@ def test_stream_supervisor_distinguishes_first_event_and_idle_deadlines():
         assert "became idle" in str(exc)
     else:
         raise AssertionError("stream idle deadline was not enforced")
+
+
+class _RunnerSettings:
+    def get(self, key, default=None):
+        return default
+
+
+class _RunnerEvents:
+    def emit(self, *_args, **_kwargs):
+        return None
+
+
+class _RunnerResolver:
+    def __init__(self, presets):
+        self._presets = presets
+
+    def resolve_chain(self, _preset_id):
+        return list(self._presets)
+
+    def apply_key_rotation(self, preset, _attempt):
+        return preset
+
+
+def _runner_preset(name: str) -> PresetSettings:
+    return PresetSettings(
+        protocol_id="openai_compatible_default",
+        dialect_id="openai_chat_completions",
+        provider_name="common",
+        headers={},
+        transforms=[],
+        capabilities={"streaming": True},
+        api_key="",
+        api_url="http://localhost:1234/v1",
+        api_model=name,
+        preset_name=name,
+        reserve_keys=[],
+    )
+
+
+def _runner_with_provider(presets, provider_manager):
+    runner = LLMRequestRunner(_RunnerSettings(), _RunnerResolver(presets), _RunnerEvents())
+    runner.provider_manager.close()
+    runner.provider_manager = provider_manager
+    return runner
+
+
+def test_stream_timeout_before_body_allows_fallback_preset():
+    calls = []
+
+    class ProviderManager:
+        def generate(self, req):
+            calls.append(req.model)
+            if req.model == "main":
+                cancellation = get_request_cancellation(req)
+                assert cancellation is not None
+                cancellation.wait(1.0)
+                cancellation.raise_if_cancelled()
+            return LLMResponse(text="fallback ok", model=req.model, provider_name="common")
+
+        def close(self):
+            return None
+
+    presets = [_runner_preset("main"), _runner_preset("fallback")]
+    runner = _runner_with_provider(presets, ProviderManager())
+
+    def build_request(_preset, model):
+        return LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name="common",
+            stream=True,
+            stream_event_cb=lambda _event: None,
+            extra={
+                "stream_first_meaningful_timeout_seconds": 0.05,
+                "stream_watchdog_poll_seconds": 0.01,
+            },
+        )
+
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=build_request,
+        max_attempts=2,
+        retry_delay=0.0,
+        request_timeout=1.0,
+    )
+
+    assert response is not None and response.text == "fallback ok"
+    assert calls == ["main", "main", "fallback"]
+    runner.close()
+
+
+def test_stream_timeout_after_body_aborts_fallback_chain():
+    calls = []
+
+    class ProviderManager:
+        def generate(self, req):
+            calls.append(req.model)
+            cancellation = get_request_cancellation(req)
+            assert cancellation is not None
+            cancellation.record_response_body_started()
+            accumulator = StreamAccumulator(req, provider="common", model=req.model)
+            accumulator.add_text("partial")
+            cancellation.wait(1.0)
+            cancellation.raise_if_cancelled()
+            return accumulator.complete()
+
+        def close(self):
+            return None
+
+    presets = [_runner_preset("main"), _runner_preset("fallback")]
+    runner = _runner_with_provider(presets, ProviderManager())
+
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=lambda _preset, model: LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name="common",
+            stream=True,
+            stream_event_cb=lambda _event: None,
+            extra={
+                "stream_idle_timeout_seconds": 0.05,
+                "stream_watchdog_poll_seconds": 0.01,
+            },
+        ),
+        max_attempts=1,
+        retry_delay=0.0,
+        request_timeout=1.0,
+    )
+
+    assert response is not None and response.text is None
+    assert calls == ["main"]
+    runner.close()
+
+
+def test_runner_uses_retry_after_with_a_reasonable_cap():
+    calls = []
+    waits = []
+
+    class ProviderManager:
+        def generate(self, req):
+            calls.append(req.model)
+            if len(calls) == 1:
+                raise LLMProviderError(
+                    provider="common",
+                    friendly_message="rate limited",
+                    provider_message="rate limited",
+                    retryable=True,
+                    retry_after_seconds=10.0,
+                )
+            return LLMResponse(text="ok", model=req.model, provider_name="common")
+
+        def close(self):
+            return None
+
+    preset = _runner_preset("model")
+    runner = _runner_with_provider([preset], ProviderManager())
+
+    class WaitCapture:
+        @staticmethod
+        def wait(timeout):
+            waits.append(timeout)
+            return False
+
+        @staticmethod
+        def set():
+            return None
+
+    runner._shutdown_event = WaitCapture()
+
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=lambda _preset, model: LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name="common",
+        ),
+        max_attempts=2,
+        retry_delay=0.2,
+        request_timeout=1.0,
+    )
+
+    assert response is not None and response.text == "ok"
+    assert waits == [10.0]
+    runner.close()

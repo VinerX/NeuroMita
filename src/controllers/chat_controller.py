@@ -263,8 +263,7 @@ class ChatController:
         stream_finished = False
         stream_current_role = None
         presentation_lock = threading.RLock()
-        assistant_coalescer = None
-        think_coalescer = None
+        stream_coalescer = None
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
@@ -281,30 +280,27 @@ class ChatController:
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
             effective_character_name = self._resolve_character_name(character_id)
 
-            def append_stream_chunk(role: str, text: str) -> None:
+            def append_stream_chunk(text: str) -> None:
                 if not text:
                     return
                 with presentation_lock:
+                    role = stream_current_role or "assistant"
                     self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
                         "stream_id": stream_id,
                         "chunk": text,
                         "role": role,
                     }, delivery=EventDelivery.ORDERED)
 
-            assistant_coalescer = TextDeltaCoalescer(
-                lambda text: append_stream_chunk("assistant", text)
-            )
-            think_coalescer = TextDeltaCoalescer(
-                lambda text: append_stream_chunk("think", text)
-            )
+            stream_coalescer = TextDeltaCoalescer(append_stream_chunk)
 
             def on_think_chunk(think_chunk: str):
                 nonlocal stream_current_role, stream_started
                 if not think_chunk:
                     return
+                if stream_current_role != "think":
+                    stream_coalescer.flush()
                 with presentation_lock:
                     if stream_current_role != "think":
-                        assistant_coalescer.flush()
                         self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
                             "stream_id": stream_id,
                             "character_id": character_id or "",
@@ -314,7 +310,7 @@ class ChatController:
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "think"
                         stream_started = True
-                    think_coalescer.push(think_chunk)
+                stream_coalescer.push(think_chunk)
 
             stream_json_filter = StructuredJsonStreamFilter() if is_streaming else None
 
@@ -322,9 +318,10 @@ class ChatController:
                 nonlocal stream_current_role, stream_started
                 if not text:
                     return
+                if stream_current_role != "assistant":
+                    stream_coalescer.flush()
                 with presentation_lock:
                     if stream_current_role != "assistant":
-                        think_coalescer.flush()
                         self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
                             "stream_id": stream_id,
                             "character_id": character_id or "",
@@ -334,12 +331,10 @@ class ChatController:
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "assistant"
                         stream_started = True
-                    assistant_coalescer.push(text)
+                stream_coalescer.push(text)
 
             def flush_stream_output() -> None:
-                with presentation_lock:
-                    think_coalescer.flush()
-                    assistant_coalescer.flush()
+                stream_coalescer.flush()
 
             def stream_event_handler(event: LLMStreamEvent):
                 if not eff_policy.echo_to_ui:
@@ -573,10 +568,8 @@ class ChatController:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
             return None
         finally:
-            if think_coalescer is not None:
-                think_coalescer.close(flush=True)
-            if assistant_coalescer is not None:
-                assistant_coalescer.close(flush=True)
+            if stream_coalescer is not None:
+                stream_coalescer.close(flush=True)
             if stream_started and not stream_finished:
                 try:
                     self.event_bus.emit(

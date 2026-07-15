@@ -184,6 +184,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             "model": model_to_use,
             "messages": messages,
         }
+        if req.stream and self.should_request_stream_usage(req):
+            payload["stream_options"] = {"include_usage": True}
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
         self._apply_reasoning(payload, req)
 

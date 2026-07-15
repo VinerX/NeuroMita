@@ -31,7 +31,7 @@ API_PROTOCOLS_DATA = [
         "headers": {"HTTP-Referer": "https://github.com/Atm4x/NeuroMita", "X-Title": "NeuroMita"},
         # OpenRouter aggregates many providers — not all support json_schema,
         # so use json_object (softer mode, relies on prompt) to avoid 400 errors.
-        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "structured_output": True, "structured_output_mode": "json_object", "reasoning_control": "openrouter"},
+        "capabilities": {"tools_native": True, "streaming": True, "streaming_with_tools": False, "supports_stream_usage": True, "structured_output": True, "structured_output_mode": "json_object", "reasoning_control": "openrouter"},
         # OpenRouter accepts multiple system messages, so keep the stable prompt
         # blocks separate instead of merging them into one early system block.
         # Merging shifted every block behind a single message and made the

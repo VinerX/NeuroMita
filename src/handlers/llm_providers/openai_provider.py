@@ -17,6 +17,7 @@ from .openai_compatible import OpenAICompatibleProvider
 class OpenAIProvider(OpenAICompatibleProvider):
     name = "openai"
     priority = 10
+    supports_stream_usage = True
 
     def __init__(self, *, http_transport=None) -> None:
         super().__init__(http_transport=http_transport)

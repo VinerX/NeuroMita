@@ -96,6 +96,9 @@ class RequestCancellation:
         if self._event.is_set():
             raise RequestCancelledError(self.reason or "LLM request was cancelled")
 
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(max(0.0, float(timeout)))
+
 
 def get_request_cancellation(req: "LLMRequest") -> Optional[RequestCancellation]:
     extra = req.extra or {}
@@ -301,6 +304,7 @@ class BaseProvider(ABC):
     supports_tools_native: bool = False
     supports_streaming: bool = True
     supports_streaming_with_tools: bool = False
+    supports_stream_usage: bool = False
     uses_custom_messages_handler: bool = False
 
     def __init__(self, *, http_transport: Any = None) -> None:
@@ -320,6 +324,15 @@ class BaseProvider(ABC):
     @abstractmethod
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
+
+    def should_request_stream_usage(self, req: LLMRequest) -> bool:
+        capabilities = req.capabilities or {}
+        capability = capabilities.get("supports_stream_usage")
+        if capability is None:
+            capability = capabilities.get("stream_usage")
+        if capability is not None:
+            return bool(capability)
+        return bool(self.supports_stream_usage)
 
     def close(self) -> None:
         if self._owns_http_transport:

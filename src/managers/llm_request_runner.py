@@ -4,7 +4,6 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import threading
-import time
 from typing import Any, Callable, Optional
 
 from main_logger import logger
@@ -51,8 +50,9 @@ class LLMRequestRunner:
         self.preset_resolver = preset_resolver
         self.event_bus = event_bus
         self._run_state = threading.local()
+        self._shutdown_event = threading.Event()
         self.last_error = None
-        self._timed_out_call = False
+        self._abort_chain = False
         self.provider_manager = ProviderManager()
 
     @property
@@ -64,12 +64,12 @@ class LLMRequestRunner:
         self._run_state.last_error = value
 
     @property
-    def _timed_out_call(self) -> bool:
-        return bool(getattr(self._run_state, "timed_out_call", False))
+    def _abort_chain(self) -> bool:
+        return bool(getattr(self._run_state, "abort_chain", False))
 
-    @_timed_out_call.setter
-    def _timed_out_call(self, value: bool) -> None:
-        self._run_state.timed_out_call = bool(value)
+    @_abort_chain.setter
+    def _abort_chain(self, value: bool) -> None:
+        self._run_state.abort_chain = bool(value)
 
     def run(
         self,
@@ -86,7 +86,7 @@ class LLMRequestRunner:
         if messages is None:
             messages = []
         self.last_error = None
-        self._timed_out_call = False
+        self._abort_chain = False
 
         try:
             preset_chain = self.preset_resolver.resolve_chain(preset_id)
@@ -130,7 +130,7 @@ class LLMRequestRunner:
                 if chain_idx > 1:
                     logger.info(f"[LLMRequestRunner] Fallback preset '{preset_label}' succeeded.")
                 return response
-            if self._timed_out_call:
+            if self._abort_chain:
                 break
 
         # Вся цепочка пресетов исчерпана — терминальный отказ генерации.
@@ -206,7 +206,9 @@ class LLMRequestRunner:
                 if attempt < max_attempts:
                     if not suppress_failure_events:
                         self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                    time.sleep(retry_delay)
+                    if self._shutdown_event.wait(max(0.0, float(retry_delay))):
+                        self._abort_chain = True
+                        break
                 continue
 
             req.extra = dict(getattr(req, "extra", None) or {})
@@ -272,14 +274,21 @@ class LLMRequestRunner:
                         attempt,
                     )
             except concurrent.futures.TimeoutError:
-                self._timed_out_call = True
                 last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
+                retryable_before_stream_body = bool(req.stream and not cancellation.response_body_started)
+                self._abort_chain = not retryable_before_stream_body
                 logger.debug("%s %s", preset_tag, last_error_message)
                 self.last_error = LLMProviderError(
                     provider=getattr(req, "provider_name", "unknown"),
                     friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
                     provider_message=last_error_message,
-                    retryable=False,
+                    retryable=retryable_before_stream_body,
+                    code=(
+                        "stream.timeout_before_body"
+                        if retryable_before_stream_body
+                        else "timeout.attempt"
+                    ),
+                    phase="stream" if req.stream else "request",
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
@@ -291,6 +300,7 @@ class LLMRequestRunner:
                 )
 
             if req.stream and cancellation.response_body_started and self.last_error is not None:
+                self._abort_chain = True
                 self.last_error.retryable = False
                 self.last_error.code = self.last_error.code or (
                     "stream.interrupted_after_output"
@@ -319,7 +329,10 @@ class LLMRequestRunner:
                         "max_attempts": max_attempts,
                         "provider_error": error_payload,
                     })
-                time.sleep(retry_delay)
+                retry_wait = self._resolve_retry_delay(retry_delay, self.last_error)
+                if self._shutdown_event.wait(retry_wait):
+                    self._abort_chain = True
+                    break
             elif attempt < max_attempts and self.last_error is not None:
                 logger.debug(
                     f"{preset_tag} Stopping retries after non-retryable failure: "
@@ -404,11 +417,30 @@ class LLMRequestRunner:
             future.result(timeout=min(1.0, max(0.1, float(grace_timeout) * 0.05)))
         except concurrent.futures.TimeoutError:
             abandoned = pool.abandon(future)
-            logger.warning(
-                "LLM provider did not stop within the cancellation grace period; "
-                "the detached daemon worker will be ignored"
-                + (" and its pool slot was replaced" if abandoned else "")
-            )
+            if abandoned:
+                logger.warning(
+                    "LLM provider did not stop within the cancellation grace period; "
+                    "the detached daemon worker will be ignored and its pool slot was replaced "
+                    "| retired_workers=%s/%s",
+                    pool.retired_workers,
+                    pool.max_retired_workers,
+                )
+            else:
+                retired_workers = pool.retired_workers
+                retired_limit = pool.max_retired_workers
+                reason = (
+                    "retired-worker limit reached"
+                    if retired_limit is not None and retired_workers >= retired_limit
+                    else "replacement worker could not be started"
+                )
+                logger.error(
+                    "LLM provider did not stop and its worker could not be replaced (%s); "
+                    "the occupied pool slot will not be replaced until the provider returns "
+                    "| retired_workers=%s/%s",
+                    reason,
+                    retired_workers,
+                    retired_limit,
+                )
         except Exception:
             pass
         raise concurrent.futures.TimeoutError(reason)
@@ -422,7 +454,20 @@ class LLMRequestRunner:
         except Exception:
             return False
 
+    def _resolve_retry_delay(
+        self,
+        retry_delay: float,
+        error: Optional[LLMProviderError],
+    ) -> float:
+        try:
+            maximum = max(0.0, float(self.settings.get("LLM_MAX_RETRY_DELAY_SECONDS", 120.0)))
+        except Exception:
+            maximum = 120.0
+        provider_delay = float(getattr(error, "retry_after_seconds", 0.0) or 0.0)
+        return min(maximum, max(0.0, float(retry_delay), provider_delay))
+
     def close(self) -> None:
+        self._shutdown_event.set()
         self.provider_manager.close()
 
     def _validate_request(self, req) -> Optional[LLMProviderError]:

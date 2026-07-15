@@ -45,13 +45,19 @@ class _PoolSpec:
     # None — без ограничения (для пулов, где backpressure не нужен).
     capacity: Optional[int] = None
     daemon_workers: bool = False
+    max_retired_workers: Optional[int] = None
 
 
 _SPECS: Dict[str, _PoolSpec] = {
     Pools.GENERATION: _PoolSpec(max_workers=3, capacity=6),
     Pools.BACKGROUND_LLM: _PoolSpec(max_workers=1, capacity=4),
     Pools.IO: _PoolSpec(max_workers=6),
-    Pools.LLM_HTTP: _PoolSpec(max_workers=8, capacity=8, daemon_workers=True),
+    Pools.LLM_HTTP: _PoolSpec(
+        max_workers=8,
+        capacity=8,
+        daemon_workers=True,
+        max_retired_workers=8,
+    ),
     Pools.DEBUG_DUMP: _PoolSpec(max_workers=1, capacity=2),
     Pools.DB_WRITER: _PoolSpec(max_workers=1),
     Pools.EVENT_BUS: _PoolSpec(max_workers=8, capacity=512),
@@ -75,6 +81,7 @@ class _BoundedPool:
             self._executor = DaemonExecutor(
                 spec.max_workers,
                 thread_name_prefix=name,
+                max_retired_workers=spec.max_retired_workers,
             )
         else:
             self._executor = ThreadPoolExecutor(
@@ -131,6 +138,18 @@ class _BoundedPool:
             if self._reservations.pop(future, None):
                 self._inflight -= 1
         return True
+
+    @property
+    def retired_workers(self) -> int:
+        if isinstance(self._executor, DaemonExecutor):
+            return self._executor.retired_workers
+        return 0
+
+    @property
+    def max_retired_workers(self) -> Optional[int]:
+        if isinstance(self._executor, DaemonExecutor):
+            return self._executor.max_retired_workers
+        return 0
 
     def shutdown(self, wait: bool = False) -> None:
         if isinstance(self._executor, DaemonExecutor):
