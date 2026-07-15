@@ -1573,5 +1573,7 @@
   "⚠️ Модели Fish Speech+ / + RVC требуют всех компонентов!": "Modele",
   "⚠️ Ошибка загрузки Triton": "Eroare incarcare Triton",
   "✓ Успех": "Succes",
-  "✗ Ошибка": "Eroare"
+  "✗ Ошибка": "Eroare",
+  "Предупреждение о совместимости": "Avertisment de compatibilitate",
+  "Всё равно установить": "Instalează oricum"
 }
