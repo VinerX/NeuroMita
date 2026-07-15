@@ -134,7 +134,7 @@ class ProtocolVersionTests(unittest.TestCase):
 
 class SchemaVisibilityTests(unittest.TestCase):
     def test_intents_hidden_from_schema_by_default(self) -> None:
-        caps: dict = {}  # SCHEMA_INTENTS_ENABLED off
+        caps: dict = {}  # selected DSL template did not opt in
         seg_excl = _segment_excl_for_caps(caps)
         openai = StructuredResponse.openai_response_format(exclude_segment_fields=seg_excl)
         self.assertNotIn("intents", _openai_segment_props(openai))

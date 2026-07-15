@@ -442,6 +442,7 @@ class PromptBuildResult:
     messages: List[Dict[str, Any]]
     history_messages: List[Dict[str, Any]]
     user_message: Optional[Dict[str, Any]]
+    support_intents: bool = False
 
 
 class PromptBuilderService(ABC):
@@ -472,6 +473,7 @@ class ChatGenerationRequest:
     task_uid: Optional[str] = None
     policy: Optional[RequestPolicy] = None
     disable_history_compression: bool = False
+    game_state: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

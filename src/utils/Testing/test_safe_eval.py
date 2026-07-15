@@ -24,6 +24,20 @@ class _StubCharacter:
         self.variables = {"count": 3, "enabled": True}
         self.app_vars = {"suffix": "ok"}
 
+    def set_variable(self, name, value) -> None:
+        self.variables[name] = value
+
+
+class _StubResolver:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def resolve_path(self, path: str) -> str:
+        return path
+
+    def load_text(self, _path: str, _context: str) -> str:
+        return self.text
+
 
 class SafeEvalTests(unittest.TestCase):
     def _make_post_interpreter(self) -> PostDslInterpreter:
@@ -65,6 +79,24 @@ class SafeEvalTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             safe_eval_expression('f"{name.__class__}"', names={"name": "Mita"})
+
+    def test_main_template_declares_intent_support_explicitly(self) -> None:
+        character = _StubCharacter()
+        interpreter = DslInterpreter(
+            character,
+            resolver=_StubResolver("support_intents=True\n"),
+        )
+
+        blocks, messages = interpreter.process_main_template("main_template.txt")
+
+        self.assertEqual(blocks, [])
+        self.assertEqual(messages, [])
+        self.assertIs(interpreter.get_prompt_feature("support_intents"), True)
+        self.assertNotIn("support_intents", character.variables)
+
+        interpreter.resolver = _StubResolver("support_intents=False\n")
+        interpreter.process_main_template("main_template.txt")
+        self.assertIs(interpreter.get_prompt_feature("support_intents"), False)
 
     def test_legacy_dsl_uses_safe_evaluator_and_preserves_fallbacks(self) -> None:
         interp = DslInterpreter(_StubCharacter(), resolver=None)

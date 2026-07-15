@@ -27,6 +27,10 @@ BACKUP_COUNT = 3
 
 INSERT_PATTERN    = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 MANDATORY_INSERTS: set[str] = {"SYS_INFO"}
+PROMPT_FEATURE_PATTERN = re.compile(
+    r"^\s*(support_intents)\s*=\s*(true|false)\s*(?://.*)?$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 dsl_execution_logger = logging.getLogger("dsl_execution")
 dsl_script_logger = logging.getLogger("dsl_script")
@@ -171,8 +175,12 @@ class DslInterpreter:
         self.character = character
         self.resolver = resolver
         self._insert_values: dict[str, str] = {}
+        self._prompt_features: dict[str, Any] = {}
         self._local_vars: dict[str, Any] = {}
         self._declared_local_vars: set[str] = set()
+
+    def get_prompt_feature(self, name: str, default: Any = None) -> Any:
+        return self._prompt_features.get(str(name or "").strip().lower(), default)
 
     @contextmanager
     def _use_base(self, base_dir_resolved_id: str):
@@ -204,7 +212,12 @@ class DslInterpreter:
             "max": max,
             "min": min,
         }
-        combined_vars = {**self.character.variables, **getattr(self.character, "app_vars", {}), **self._local_vars}
+        combined_vars = {
+            **self.character.variables,
+            **getattr(self.character, "app_vars", {}),
+            **self._prompt_features,
+            **self._local_vars,
+        }
 
         def _raise_dsl_error(e: Exception, custom_msg: str = ""):
             err_msg = custom_msg or f"Error evaluating '{expr}': {type(e).__name__} - {e}"
@@ -447,7 +460,7 @@ class DslInterpreter:
                         if_stack.pop()
                         continue
 
-                    if skipping: 
+                    if skipping:
                         continue
 
                     parts = command_part_for_log.split(maxsplit=1)
@@ -726,9 +739,9 @@ class DslInterpreter:
         return text
 
     def set_insert(self, name: str, content: Any | None):
-        if content is None: 
+        if content is None:
             return
-        if isinstance(content, (list, tuple)): 
+        if isinstance(content, (list, tuple)):
             content = "\n".join(map(str, content))
         self._insert_values[name.upper()] = str(content)
 
@@ -773,7 +786,7 @@ class DslInterpreter:
                 script_path=resolved_path_id,
             )
         content = m.group(1)
-        if content.startswith("\n"): 
+        if content.startswith("\n"):
             content = content[1:]
         return content
 
@@ -781,6 +794,7 @@ class DslInterpreter:
         blocks: List[str] = []
         sys_msgs: List[str] = []
         resolved_main_template_id: str = ""
+        self._prompt_features.clear()
 
         try:
             char_ctx_filter.set_character_id(getattr(self.character, "char_id", "NO_CHAR_CTX"))
@@ -803,6 +817,9 @@ class DslInterpreter:
                     script_path=resolved_main_template_id,
                     original_exception=pre
                 ) from pre
+
+            for feature_name, raw_value in PROMPT_FEATURE_PATTERN.findall(raw_template_content):
+                self._prompt_features[feature_name.lower()] = raw_value.lower() == "true"
 
             file_paths_in_template = self.placeholder_pattern.findall(raw_template_content)
 
@@ -892,6 +909,9 @@ class DslInterpreter:
 
             def repl(m: re.Match) -> str:
                 name = m.group(1)
+                if name in self._prompt_features:
+                    value = self._prompt_features.get(name)
+                    return "" if value is None else str(value)
                 if name in self.character.variables:
                     return "" if self.character.variables.get(name) is None else str(self.character.variables.get(name))
                 app_vars = getattr(self.character, "app_vars", {}) or {}

@@ -200,6 +200,35 @@ class ChatRequestPipelineTests(unittest.TestCase):
         self.assertIsNone(generation.request.stream_callback)
         self.assertTrue(callable(generation.request.stream_event_callback))
 
+    def test_request_keeps_its_own_unity_context_snapshot(self):
+        generation = _StreamingGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+
+        snapshot = {
+            "world_state": "Player is standing.",
+            "runtime_events": ["Player stood up."],
+        }
+        self.controller._run_request(
+            "hi",
+            character_id="Crazy",
+            game_state=snapshot,
+        )
+
+        self.assertEqual(generation.request.game_state, snapshot)
+        self.assertIsNot(generation.request.game_state, snapshot)
+
+    def test_task_result_keeps_response_protocol_version(self):
+        result = ChatController._build_task_result(
+            "hello",
+            "Player",
+            {"response_protocol_version": 2, "segments": [{"text": "hello"}]},
+        )
+        self.assertEqual(result["response_protocol_version"], 2)
+
+        plain_result = ChatController._build_task_result("hello", "Player", None)
+        self.assertEqual(plain_result["response_protocol_version"], 2)
+
     def test_non_stream_request_does_not_create_presentation_coalescer(self):
         services().register(GenerationService, _ImmediateGeneration(), replace=True)
         self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})

@@ -210,7 +210,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     excl.add("reasoning")
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
                 # intents is an internal Unity channel — hidden from the model
-                # unless explicitly enabled (SCHEMA_INTENTS_ENABLED / DSL / prompt).
+                # unless the selected DSL main template explicitly enables support_intents.
                 if not caps.get("schema_intents", False):
                     segment_excl.add("intents")
                 payload["response_format"] = model_cls.openai_response_format(

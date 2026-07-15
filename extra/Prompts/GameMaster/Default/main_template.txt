@@ -1,3 +1,4 @@
+support_intents=True
 [<current_command.txt>]
 [<Game_master.txt>]
 [<../../Common/Dialogue.txt>]

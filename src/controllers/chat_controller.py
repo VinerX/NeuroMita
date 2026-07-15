@@ -21,6 +21,7 @@ from services.contracts import (
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from services.stream_presentation import TextDeltaCoalescer
+from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
 
 
 class StructuredJsonStreamFilter:
@@ -250,6 +251,7 @@ class ChatController:
         origin_message_id: str | None = None,
         policy: dict | None = None,
         images_shown: bool = False,
+        game_state: dict | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -418,6 +420,7 @@ class ChatController:
                     origin_message_id=origin_message_id,
                     task_uid=task_uid,
                     policy=eff_policy,
+                    game_state=dict(game_state or {}),
                 )
             )
 
@@ -624,12 +627,18 @@ class ChatController:
             origin_message_id=data.get("origin_message_id"),
             policy=data.get("policy"),
             images_shown=bool(data.get("images_shown", False)),
+            game_state=data.get("game_state"),
         )
 
     @staticmethod
     def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
         """Build the result dict for task_update, optionally including structured segments."""
-        result = {"response": response_text, "target": target, "targets": targets or []}
+        result = {
+            "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
+            "response": response_text,
+            "target": target,
+            "targets": targets or [],
+        }
         if structured_data:
             result["segments"] = structured_data.get("segments", [])
             result["attitude_change"] = structured_data.get("attitude_change", 0)
@@ -661,6 +670,7 @@ class ChatController:
             sender=self._normalize_sender(data),
             participants=self._normalize_participants(data.get("participants")),
             policy=data.get("policy"),
+            game_state=data.get("game_state"),
         )
 
     def _on_clear_chat(self, event: Event):

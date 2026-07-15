@@ -1226,7 +1226,11 @@ class ModelController(GenerationService, ModelStateService):
         except Exception as _core_err:
             logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
 
-        game_state = self.game_state.to_prompt_dict()
+        game_state = (
+            copy.deepcopy(request.game_state)
+            if request.game_state
+            else self.game_state.to_prompt_dict()
+        )
 
         with self._temporary_system_infos_lock:
             extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
@@ -1301,16 +1305,9 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["custom_params"] = _custom_params
         effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
 
-        # intents: hidden from the model by default. Can be unlocked via the
-        # SCHEMA_INTENTS_ENABLED setting or a per-character DSL variable of the
-        # same name, without any further Python changes.
-        _schema_intents = bool(self.settings.get("SCHEMA_INTENTS_ENABLED", False))
-        if not _schema_intents:
-            try:
-                _schema_intents = bool(char.get_variable("SCHEMA_INTENTS_ENABLED", False))
-            except Exception:
-                _schema_intents = False
-        effective_capabilities["schema_intents"] = _schema_intents
+        # The selected DSL template is the only owner of intent support. The
+        # capability is finalized after PromptController processes the template.
+        effective_capabilities["schema_intents"] = False
 
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
@@ -1432,6 +1429,21 @@ class ModelController(GenerationService, ModelStateService):
                 "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
             })
             return None
+
+        excluded_segment_fields = {
+            str(name).strip()
+            for name in effective_capabilities.get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        intents_available = bool(prompt_data.support_intents) and "intents" not in excluded_segment_fields
+        effective_capabilities["schema_intents"] = intents_available
+        if intents_available:
+            excluded_segment_fields.discard("intents")
+        else:
+            excluded_segment_fields.add("intents")
+        effective_capabilities["structured_segment_exclude_fields"] = tuple(
+            sorted(excluded_segment_fields)
+        )
 
         combined_messages = prompt_data.messages
 

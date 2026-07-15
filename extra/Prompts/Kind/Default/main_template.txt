@@ -1,3 +1,4 @@
+support_intents=True
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
 [<../../Common/Security.txt>]

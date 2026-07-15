@@ -20,7 +20,7 @@ from services.contracts import (
 #                emotions, movement, outfits, in-world games). Excluded from the
 #                schema and announced as unavailable when the game is not linked.
 #   program    — the NeuroMita program itself can act on it even with no game
-#                (commands routing, music, internal intents). Never excluded.
+#                (commands routing and music). Never excluded.
 #   shared     — pure content, always valid (text, target, hint).
 UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset(
     {
@@ -35,9 +35,10 @@ UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset(
         "allow_sleep",
         "start_game",
         "end_game",
+        "intents",
     }
 )
-PROGRAM_STRUCTURED_SEGMENT_FIELDS = frozenset({"commands", "music", "intents"})
+PROGRAM_STRUCTURED_SEGMENT_FIELDS = frozenset({"commands", "music"})
 SHARED_STRUCTURED_SEGMENT_FIELDS = frozenset({"text", "target", "hint"})
 
 # Back-compat alias: the fields dropped from the schema in remote-only mode are

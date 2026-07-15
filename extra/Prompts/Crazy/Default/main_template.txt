@@ -1,3 +1,4 @@
+support_intents=True
 [<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
