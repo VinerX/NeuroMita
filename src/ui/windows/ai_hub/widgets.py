@@ -35,6 +35,8 @@ class Chip(QLabel):
             self.setObjectName("AIHubChipOnnx")
         elif variant == "not_recommended":
             self.setObjectName("AIHubChipNotRecommended")
+        elif variant == "danger":
+            self.setObjectName("AIHubChipDanger")
         else:
             self.setObjectName("AIHubChip")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -210,6 +212,8 @@ class ModelCard(QFrame):
         self._install_btn_text = ""
         self._menu_btn = None
         self._compatible = True
+        self._not_recommended = False
+        self._compatibility_warning = ""
         self.setObjectName("AIHubModelCard")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._build()
@@ -235,6 +239,8 @@ class ModelCard(QFrame):
         compatibility_warning = str(compatibility.get("warning") or "").strip()
         backend = str(compatibility.get("backend") or meta.get("backend") or "none").lower()
         self._compatible = compatible
+        self._not_recommended = not_recommended
+        self._compatibility_warning = compatibility_warning
 
         # mark whole card visually as incompatible (drives QSS via property)
         self.setProperty("incompatible", "true" if (not compatible and not installed) else "false")
@@ -310,6 +316,20 @@ class ModelCard(QFrame):
         chips_row.setContentsMargins(0, 0, 0, 0)
         chips_row.setSpacing(6)
         chips_row.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+
+        for hardware_tag in compatibility.get("hardware_tags") or ():
+            if not isinstance(hardware_tag, dict):
+                continue
+            label = str(hardware_tag.get("label") or "").strip()
+            if not label:
+                continue
+            chips_row.addWidget(
+                Chip(
+                    label,
+                    variant=str(hardware_tag.get("variant") or "danger"),
+                    tooltip=str(hardware_tag.get("tooltip") or compatibility_warning),
+                )
+            )
 
         vram = str(meta.get("vram") or meta.get("vram_range") or "").strip()
         if vram:
@@ -486,6 +506,16 @@ class ModelCard(QFrame):
     def _handle_install_click(self) -> None:
         if not self._compatible:
             return
+        if self._not_recommended and self._compatibility_warning:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(_t("Предупреждение о совместимости", "Compatibility warning"))
+            box.setText(self._compatibility_warning)
+            proceed = box.addButton(_t("Всё равно установить", "Install anyway"), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(_t("Отмена", "Cancel"), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not proceed:
+                return
         cid = self._component_id()
         if cid:
             # Мгновенно блокируем кнопку (оптимистично), не дожидаясь события

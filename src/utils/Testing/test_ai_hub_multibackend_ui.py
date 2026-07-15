@@ -49,18 +49,16 @@ def _row(*, backend: str = "onnx", ready: bool = False, vendor: str = "NVIDIA") 
             "installed": ready,
         },
         "compatibility": evaluate_installable_compatibility(
-            component_id="asr:test",
             backend=backend,
-            gpu_vendor=vendor,
+            hardware={"vendor": vendor},
         ),
     }
 
 
 def test_nvidia_accepts_onnx_but_amd_rejects_cuda() -> None:
     verdict = lambda backend, vendor: evaluate_installable_compatibility(
-        component_id="asr:test",
         backend=backend,
-        gpu_vendor=vendor,
+        hardware={"vendor": vendor},
     )
     assert verdict("onnx", "NVIDIA")["supported"]
     assert verdict("cuda", "NVIDIA")["supported"]
@@ -126,6 +124,43 @@ def test_hardware_incompatible_backend_cannot_be_installed() -> None:
     button = card.findChild(QPushButton, "AIHubCardUnavailable")
     assert button is not None
     assert not button.isEnabled()
+
+
+def test_compute_capability_requirement_is_rendered_as_danger_tag() -> None:
+    _app()
+    row = _row(backend="cuda", vendor="NVIDIA")
+    row["compatibility"] = evaluate_installable_compatibility(
+        backend="cuda",
+        hardware={
+            "vendor": "NVIDIA",
+            "cuda": {"devices": [{"compute_major": 7, "compute_minor": 5}]},
+        },
+        compatibility={
+            "rules": [
+                {
+                    "code": "sm80",
+                    "effect": "not_recommended",
+                    "vendors": ["NVIDIA"],
+                    "minimum_compute_capability": 80,
+                    "tag": "RTX 30+",
+                    "tag_variant": "danger",
+                    "warning_en": "SM 8.0 or newer is recommended.",
+                }
+            ]
+        },
+        language="EN",
+    )
+    card = ModelCard(
+        row,
+        on_install=lambda _component_id: None,
+        on_uninstall=lambda _component_id: None,
+        on_open_settings=lambda _component_id: None,
+    )
+
+    tag = card.findChild(QLabel, "AIHubChipDanger")
+    assert tag is not None and tag.text() == "RTX 30+"
+    assert row["compatibility"]["supported"]
+    assert not row["compatibility"]["recommended"]
 
 
 def test_missing_canonical_compatibility_is_fail_closed() -> None:

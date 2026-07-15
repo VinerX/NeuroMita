@@ -812,6 +812,9 @@ class _InstallableController:
     def install_preview(self, component_id: str):
         return self._catalog.install_preview(str(component_id))
 
+    def hardware_snapshot(self):
+        return self._catalog.hardware_snapshot()
+
     def settings_schema(self, component_id: str):
         return self._catalog.settings_schema(str(component_id))
 

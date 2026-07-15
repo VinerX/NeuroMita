@@ -19,6 +19,10 @@ from handlers.voice_models.install_plan_helpers import (
     rvc_python_compat_error,
     warning_action,
 )
+from installables.compatibility_specs import (
+    F5_CPU_FALLBACK_COMPATIBILITY,
+    F5_RVC_FALLBACK_COMPATIBILITY,
+)
 
 if TYPE_CHECKING:
     from handlers.local_voice_handler import LocalVoice
@@ -320,6 +324,7 @@ class F5TTSModel(IVoiceModel):
             "min_vram": 4, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 4,
+            "compatibility": F5_CPU_FALLBACK_COMPATIBILITY,
             "languages": ["Russian", "English"],
             "intents": [_("Эмоции", "Emotion"), _("Качество", "Quality")],
             "description": _(
@@ -347,6 +352,7 @@ class F5TTSModel(IVoiceModel):
             "min_vram": 6, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 7,
+            "compatibility": F5_RVC_FALLBACK_COMPATIBILITY,
             "languages": ["Russian", "English"],
             "intents": [_("Эмоции", "Emotion"), _("Конверсия голоса", "Voice conversion")],
             "description": _(

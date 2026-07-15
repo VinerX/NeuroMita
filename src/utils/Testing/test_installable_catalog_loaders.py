@@ -18,6 +18,18 @@ def test_all_catalog_loaders_resolve_and_create_components() -> None:
         assert all(str(getattr(component, "id", "")).strip() for component in components), loader_path
 
 
+def test_manifest_backend_matches_canonical_component_definition() -> None:
+    components = {}
+    for loader_path in dict.fromkeys(entry.loader for entry in CATALOG_ENTRIES):
+        factory = LazyInstallableRegistry._resolve_loader(loader_path)
+        components.update({component.id: component for component in (factory() or ())})
+
+    for entry in CATALOG_ENTRIES:
+        component = components[entry.id]
+        assert entry.declared_backend == component.metadata().backend.value, entry.id
+        assert entry.declared_compatibility == component.metadata().compatibility.as_dict(), entry.id
+
+
 def test_tts_rvc_audio_patch_is_idempotent(tmp_path) -> None:
     audio_file = tmp_path / "tts_with_rvc" / "lib" / "audio.py"
     audio_file.parent.mkdir(parents=True)

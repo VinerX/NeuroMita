@@ -22,25 +22,6 @@ from services.contracts import (
     VoiceModelService,
 )
 
-try:
-    from utils.gpu_utils import (
-        check_gpu_provider,
-        format_primary_gpu_label,
-        get_cuda_devices,
-        get_gpu_name_by_id,
-        get_primary_gpu_name,
-    )
-except Exception:
-    def check_gpu_provider():
-        return None
-    def format_primary_gpu_label():
-        return "CPU"
-    def get_cuda_devices():
-        return []
-    def get_gpu_name_by_id(_id):
-        return None
-    def get_primary_gpu_name():
-        return None
 class VoiceModelController(VoiceModelService):
     """
     Backend-контроллер локальных голосовых моделей.
@@ -70,6 +51,7 @@ class VoiceModelController(VoiceModelService):
         self.detected_gpu_vendor = "CPU"
         self.detected_cuda_devices = []
         self.gpu_name = None
+        self._installable_catalog = services().get_optional(InstallableCatalogService)
         self._refresh_gpu_runtime_info()
 
         self.installed_models: set[str] = set()
@@ -77,8 +59,6 @@ class VoiceModelController(VoiceModelService):
 
         self.docs_manager = DocsManager()
         self.event_bus = get_event_bus()
-        self._installable_catalog = services().get_optional(InstallableCatalogService)
-
         self._last_voiceover_refresh_reload_ts: float = 0.0
 
         self.reload()
@@ -86,7 +66,6 @@ class VoiceModelController(VoiceModelService):
 
     def _subscribe_to_events(self):
         eb = self.event_bus
-        eb.subscribe(Events.VoiceModel.CHECK_GPU_RTX30_40, self._handle_check_gpu_rtx30_40, weak=False)
         eb.subscribe(Events.VoiceModel.OPEN_DOC, self._handle_open_doc, weak=False)
 
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
@@ -120,49 +99,32 @@ class VoiceModelController(VoiceModelService):
 
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
-    def _ctx(self) -> dict:
-        return {
-            "gpu_vendor": self.detected_gpu_vendor or "CPU",
-            "cuda_devices": list(self.detected_cuda_devices or []),
-            "gpu_name": self.gpu_name,
-            "platform": platform.system(),
-            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
-            "voice_language": str(SettingsManager.get("VOICE_LANGUAGE", "ru") or "ru").strip().lower(),
-        }
-
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
         had_cuda = bool(getattr(self, "detected_cuda_devices", None))
         old_vendor = str(getattr(self, "detected_gpu_vendor", "") or "").upper()
         old_name = str(getattr(self, "gpu_name", "") or "").strip()
 
+        catalog = self._installable_catalog or services().get_optional(InstallableCatalogService)
         try:
-            self.detected_gpu_vendor = check_gpu_provider()
+            snapshot = dict(catalog.hardware_snapshot() or {}) if catalog is not None else {}
         except Exception:
-            self.detected_gpu_vendor = "CPU"
-
-        try:
-            self.detected_cuda_devices = list(get_cuda_devices() or [])
-        except Exception:
-            self.detected_cuda_devices = []
-
-        self.gpu_name = None
-        if self.detected_cuda_devices:
-            try:
-                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
-            except Exception:
-                self.gpu_name = None
-        if not self.gpu_name:
-            try:
-                self.gpu_name = get_primary_gpu_name()
-            except Exception:
-                self.gpu_name = None
+            snapshot = {}
+        primary = snapshot.get("primary") if isinstance(snapshot.get("primary"), dict) else {}
+        cuda = snapshot.get("cuda") if isinstance(snapshot.get("cuda"), dict) else {}
+        self.detected_gpu_vendor = str(snapshot.get("vendor") or "CPU").strip().upper()
+        self.detected_cuda_devices = [
+            f"cuda:{int(device['ordinal'])}"
+            for device in (cuda.get("devices") or ())
+            if isinstance(device, dict) and device.get("ordinal") is not None
+        ]
+        self.gpu_name = str(primary.get("name") or "").strip() or None
 
         new_vendor = str(self.detected_gpu_vendor or "CPU").upper()
         new_name = str(self.gpu_name or "").strip()
         if new_vendor != old_vendor or new_name != old_name:
             logger.info(
                 "Detected GPU runtime: "
-                f"{format_primary_gpu_label()} "
+                f"{self.gpu_name or self.detected_gpu_vendor or 'CPU'} "
                 f"(cuda_devices={list(self.detected_cuda_devices or [])})"
             )
 
@@ -302,7 +264,6 @@ class VoiceModelController(VoiceModelService):
                 for row in catalog.list_rows(
                     include_status=True,
                     category="backend",
-                    ctx=self._ctx(),
                 ):
                     metadata = row.get("metadata") if isinstance(row, dict) else {}
                     canonical_status = row.get("status") if isinstance(row, dict) else {}
@@ -332,9 +293,6 @@ class VoiceModelController(VoiceModelService):
         setting_key = event.data
         with self._lock:
             return self.setting_descriptions.get(setting_key, self.default_description_text)
-
-    def _handle_check_gpu_rtx30_40(self, event: Event):
-        return self.is_gpu_rtx30_or_40()
 
     def _handle_open_doc(self, event: Event):
         self.open_doc(event.data)
@@ -556,7 +514,7 @@ class VoiceModelController(VoiceModelService):
                 result.append(normalized)
         return result
 
-    def _build_model_compatibility(self, model: dict, detected_vendor: str) -> dict[str, Any]:
+    def _build_model_compatibility(self, model: dict) -> dict[str, Any]:
         model_id = str(model.get("id") or "").strip()
         vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
         try:
@@ -566,7 +524,6 @@ class VoiceModelController(VoiceModelService):
             row = catalog.get_row(
                 f"tts:{model_id}",
                 include_status=False,
-                ctx={"gpu_vendor": self._normalize_gpu_vendor(detected_vendor)},
             )
             verdict = dict(row.get("compatibility") or {})
         except Exception as exc:
@@ -600,24 +557,29 @@ class VoiceModelController(VoiceModelService):
                 model = None
         model = model or {"id": mid, "name": mid}
 
-        compat = self._build_model_compatibility(model, self.detected_gpu_vendor)
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-        vendor = self._normalize_gpu_vendor(self.detected_gpu_vendor)
-        vendor_label = format_primary_gpu_label() if vendor != "CPU" else "CPU"
+        compat = self._build_model_compatibility(model)
+        vendor = self._normalize_gpu_vendor(compat.get("gpu_vendor"))
+        vendor_label = str(self.gpu_name or vendor or "CPU")
+        compatibility_warning = str(compat.get("warning") or "").strip()
+        needs_warning = bool(
+            compat.get("supported")
+            and not compat.get("recommended", True)
+            and compatibility_warning
+        )
 
-        if not compat["supported"] and not allow_unsupported:
+        if not compat["supported"]:
             return {
                 "blocked": True,
                 "title": _("Несовместимая модель", "Incompatible model"),
-                "message": _(
-                    f"Модель '{model.get('name', mid)}' не поддерживает текущий GPU ({vendor_label}).",
-                    f"The model '{model.get('name', mid)}' does not support the current GPU ({vendor_label}).",
+                "message": compatibility_warning or _(
+                    f"Модель '{model.get('name', mid)}' не поддерживает текущее устройство ({vendor_label}).",
+                    f"The model '{model.get('name', mid)}' does not support the current device ({vendor_label}).",
                 ),
             }
 
         try:
             catalog = services().get(InstallableCatalogService)
-            preview = catalog.install_preview(f"tts:{mid}", ctx=self._ctx())
+            preview = catalog.install_preview(f"tts:{mid}")
         except Exception as exc:
             logger.warning(f"Voice install preflight failed for '{mid}': {exc}")
             return {"blocked": False}
@@ -625,6 +587,13 @@ class VoiceModelController(VoiceModelService):
         backend_kind = str(preview.get("backend_kind") or "none")
         backend_status = dict(preview.get("backend_status") or {})
         if bool(preview.get("backend_ready")) or backend_kind in ("", "none"):
+            if needs_warning:
+                return {
+                    "blocked": False,
+                    "ask": True,
+                    "title": _("Предупреждение о совместимости", "Compatibility warning"),
+                    "message": compatibility_warning,
+                }
             return {"blocked": False}
 
         model_name = str(model.get("name") or mid)
@@ -665,6 +634,9 @@ class VoiceModelController(VoiceModelService):
                 "Install it now and add it to the install plan?",
             )
 
+        if needs_warning:
+            message = f"{compatibility_warning}\n\n{message}"
+
         return {
             "blocked": False,
             "ask": True,
@@ -678,9 +650,7 @@ class VoiceModelController(VoiceModelService):
     def refresh_installed_models(self):
         try:
             catalog = services().get(InstallableCatalogService)
-            installed = set(
-                catalog.ready_item_ids("tts", ctx=self._ctx())
-            )
+            installed = set(catalog.ready_item_ids("tts"))
         except Exception as exc:
             logger.error(f"Failed to read canonical TTS readiness: {exc}", exc_info=True)
             installed = set()
@@ -699,8 +669,6 @@ class VoiceModelController(VoiceModelService):
             logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
 
-        ctx = self._ctx()
-
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 
         operations = services().get_optional(InstallableOperationsService)
@@ -716,7 +684,6 @@ class VoiceModelController(VoiceModelService):
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
-                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
             }
         )
@@ -731,8 +698,6 @@ class VoiceModelController(VoiceModelService):
         except Exception as exc:
             logger.error(f"Unknown voice installable component for '{mid}': {exc}")
             return False
-
-        ctx = self._ctx()
 
         self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_STARTED, {"model_id": mid})
 
@@ -749,7 +714,6 @@ class VoiceModelController(VoiceModelService):
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
-                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
             }
         )
@@ -834,11 +798,12 @@ class VoiceModelController(VoiceModelService):
             force_fp32 = True
 
         for model in final_models:
-            compat = self._build_model_compatibility(model, detected_vendor)
+            compat = self._build_model_compatibility(model)
             model_vendors = compat["vendors"]
             model["gpu_vendor"] = model_vendors
             model["compat_supported"] = compat["supported"]
             model["compat_warning"] = compat["warning"]
+            model["compatibility"] = dict(compat)
             vendor_to_adapt_for = None
 
             if detected_vendor == "NVIDIA" and "NVIDIA" in model_vendors:
@@ -952,23 +917,6 @@ class VoiceModelController(VoiceModelService):
                         options["default"] = ""
 
         return final_models
-
-    def is_gpu_rtx30_or_40(self):
-        force_unsupported_str = os.environ.get("RTX_FORCE_UNSUPPORTED", "0")
-        force_unsupported = force_unsupported_str.lower() in ["true", "1", "t", "y", "yes"]
-        if force_unsupported:
-            return False
-
-        if self.detected_gpu_vendor != "NVIDIA" or not self.gpu_name:
-            return False
-
-        name_upper = self.gpu_name.upper()
-        if "RTX" in name_upper:
-            if any(f" {gen}" in name_upper or name_upper.endswith(gen) or f"-{gen}" in name_upper for gen in ["3050", "3060", "3070", "3080", "3090"]):
-                return True
-            if any(f" {gen}" in name_upper or name_upper.endswith(gen) or f"-{gen}" in name_upper for gen in ["4050", "4060", "4070", "4080", "4090"]):
-                return True
-        return False
 
     def open_doc(self, doc_name: str):
         self.docs_manager.open_doc(doc_name)

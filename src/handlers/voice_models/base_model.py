@@ -12,6 +12,7 @@ from core.installables import (
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
@@ -209,6 +210,7 @@ class IVoiceModel(abc.ABC):
             tags=tuple(tags),
             languages=tuple(str(item) for item in (config.get("languages") or []) if str(item).strip()),
             size=size,
+            compatibility=coerce_compatibility_spec(config.get("compatibility")),
         )
 
     def status(self, ctx: Dict[str, Any] | None = None) -> ComponentStatus:

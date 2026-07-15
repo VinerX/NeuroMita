@@ -35,6 +35,8 @@ class ASRSettingsServiceTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload, service.snapshot())
             self.assertEqual(service.revision, 2)
+            self.assertEqual(service.revision_for("google"), 2)
+            self.assertEqual(service.revision_for("gigaam"), 0)
             self.assertEqual([change.kind for change in changes], ["model", "option"])
 
             detached = service.snapshot()
@@ -54,6 +56,7 @@ class ASRSettingsServiceTests(unittest.TestCase):
 
             self.assertEqual(service.snapshot(), before)
             self.assertEqual(service.revision, 0)
+            self.assertEqual(service.revision_for("google"), 0)
 
 
 if __name__ == "__main__":
