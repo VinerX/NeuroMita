@@ -157,6 +157,38 @@ def _params(**kwargs):
     return build_unified_generation_params(**base)
 
 
+class PresetBoolOverrideTests(unittest.TestCase):
+    """Схемный CoT: переопределение пресета поверх глобальной настройки."""
+
+    def _resolve(self, global_value, overrides):
+        from controllers.model_controller import ModelController
+
+        ctl = ModelController.__new__(ModelController)
+        ctl.settings = _Settings({"SCHEMA_REASONING": global_value})
+        preset = types.SimpleNamespace(generation_overrides=overrides)
+        return ctl._resolve_preset_bool(preset, "schema_reasoning", "SCHEMA_REASONING", default=False)
+
+    def test_preset_can_enable_over_global_off(self):
+        self.assertTrue(self._resolve(False, {"schema_reasoning": {"enabled": True, "value": True}}))
+
+    def test_preset_can_disable_over_global_on(self):
+        self.assertFalse(self._resolve(True, {"schema_reasoning": {"enabled": True, "value": False}}))
+
+    def test_disabled_override_falls_back_to_global(self):
+        self.assertTrue(self._resolve(True, {"schema_reasoning": {"enabled": False, "value": False}}))
+
+    def test_no_overrides_uses_global(self):
+        self.assertTrue(self._resolve(True, {}))
+
+    def test_missing_preset_uses_global(self):
+        from controllers.model_controller import ModelController
+
+        ctl = ModelController.__new__(ModelController)
+        ctl.settings = _Settings({"SCHEMA_REASONING": True})
+        # резолв пресета мог упасть — тогда остаётся глобальная настройка
+        self.assertTrue(ctl._resolve_preset_bool(None, "schema_reasoning", "SCHEMA_REASONING", default=False))
+
+
 class ReasoningEffortParamTests(unittest.TestCase):
     """Глубина размышлений едет дальше только вместе с включённым thinking."""
 

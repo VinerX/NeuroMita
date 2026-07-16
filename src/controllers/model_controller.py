@@ -1062,6 +1062,19 @@ class ModelController(GenerationService, ModelStateService):
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _resolve_preset_bool(self, preset, override_key: str, setting_key: str, *, default: bool) -> bool:
+        """Булев флаг пресета поверх глобальной настройки.
+
+        Тот же трёхпозиционный контракт, что у enable_thinking: переопределение
+        существует только когда у него взведён enabled, иначе берётся глобальное
+        значение.
+        """
+        overrides = getattr(preset, "generation_overrides", None) or {}
+        spec = overrides.get(override_key) or {}
+        if spec.get("enabled"):
+            return bool(spec.get("value", default))
+        return bool(self.settings.get(setting_key, default))
+
     def _split_response_thinking(self, llm_response) -> tuple[str, str]:
         """Собрать размышления из обоих источников сразу.
 
@@ -1270,6 +1283,7 @@ class ModelController(GenerationService, ModelStateService):
         preset_id = self._resolve_preset_id(event_type, policy, char_id, char_name)
 
         effective_capabilities = {}
+        effective_preset = None
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
             effective_capabilities = dict(getattr(effective_preset, "capabilities", {}) or {})
@@ -1307,7 +1321,11 @@ class ModelController(GenerationService, ModelStateService):
         _custom_params = getattr(char, "custom_params", [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
-        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
+        # Схемный CoT — свойство конкретной модели, а не всей программы: локальной
+        # он нужен, чтобы думать вслух, большой хостовой только жжёт токены.
+        effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
+            effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
+        )
 
         # intents: hidden from the model by default. Can be unlocked via the
         # SCHEMA_INTENTS_ENABLED setting or a per-character DSL variable of the
