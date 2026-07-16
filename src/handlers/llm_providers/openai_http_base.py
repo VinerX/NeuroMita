@@ -13,6 +13,8 @@ from handlers.llm_providers.base import (
     BaseProvider,
     LLMRequest,
     LLMResponse,
+    StreamCallback,
+    StreamChannel,
     check_request_cancelled,
     normalize_usage_payload,
     register_cancellable_resource,
@@ -25,6 +27,10 @@ from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
     normalize_openrouter_routing,
 )
+
+# Уровни reasoning_effort, которые принимает LM Studio / llama.cpp.
+# "none" выставляется отдельно — это выключение, а не уровень.
+REASONING_EFFORT_LEVELS = ("low", "medium", "high")
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -117,6 +123,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
             OpenRouter model — unsupported models normalize it away).
           - "deepseek": the native DeepSeek `thinking` object, which defaults to
             "enabled" and must be explicitly disabled to skip reasoning.
+          - "reasoning_effort": OpenAI-style `reasoning_effort` string, where "none"
+            disables reasoning. Used by LM Studio / llama.cpp: local reasoning models
+            (Gemma 4, Qwen3) think by default, and chat_template_kwargs does not
+            reach the template there — reasoning_effort is the only switch that works.
           - otherwise (legacy/unknown): emit nothing. Generic OpenAI-compatible
             providers (e.g. Mistral) reject unknown `thinking` members with 4xx,
             so thinking is strictly opt-in via a declared reasoning_control.
@@ -146,6 +156,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if enabled and budget > 0:
                 thinking["budget_tokens"] = budget
             payload["thinking"] = thinking
+        elif transport == "reasoning_effort":
+            if not enabled:
+                payload["reasoning_effort"] = "none"
+            else:
+                effort = str(extra.get("reasoning_effort") or "").strip().lower()
+                payload["reasoning_effort"] = effort if effort in REASONING_EFFORT_LEVELS else "medium"
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
@@ -338,7 +354,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
         finish_reason = ((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None)
 
-        content = message.get("content") or message.get("reasoning_content") or ""
+        content, reasoning = self._resolve_content_and_reasoning(
+            str(message.get("content") or ""),
+            str(message.get("reasoning_content") or ""),
+        )
         if not content:
             response_preview = self._stringify_error(data, limit=600)
             finish_suffix = f" finish_reason={finish_reason}." if finish_reason else ""
@@ -361,6 +380,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
             provider_name=self.name,
             finish_reason=finish_reason,
             raw=data if isinstance(data, dict) else {},
+            reasoning=reasoning.strip() or None,
         )
 
     def _handle_stream(
@@ -368,9 +388,10 @@ class OpenAIHTTPProviderBase(BaseProvider):
         resp: requests.Response,
         api_url: str,
         req: LLMRequest,
-        stream_callback: Optional[callable] = None,
+        stream_callback: Optional[StreamCallback] = None,
     ) -> LLMResponse:
         parts: List[str] = []
+        reasoning_parts: List[str] = []
         usage = None
         finish_reason = None
         response_model = None
@@ -402,11 +423,20 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     fr = obj.get("choices", [{}])[0].get("finish_reason")
                     if fr:
                         finish_reason = fr
-                    text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
+                    # Каналы независимы: у reasoning-чанка поля content нет вовсе,
+                    # и склеивать их в один буфер нельзя — размышления утекут
+                    # в текст ответа без всякого разделителя.
+                    text = str(delta.get("content") or "")
                     if text:
                         if stream_callback:
-                            stream_callback(text)
+                            stream_callback(text, StreamChannel.CONTENT)
                         parts.append(text)
+
+                    thought = str(delta.get("reasoning_content") or "")
+                    if thought:
+                        if stream_callback:
+                            stream_callback(thought, StreamChannel.REASONING)
+                        reasoning_parts.append(thought)
                 except Exception as e:
                     chunk_error_count += 1
                     last_chunk_error = f"{type(e).__name__}: {e}"
@@ -424,8 +454,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
             except Exception:
                 logger.debug(f"[{self.name}] Failed to close HTTP stream", exc_info=True)
 
+        content, reasoning = self._resolve_content_and_reasoning(
+            "".join(parts), "".join(reasoning_parts)
+        )
+
         error_message = None
-        if not parts:
+        if not content:
             if chunk_error_count > 0:
                 error_message = (
                     "Provider stream ended without content. "
@@ -435,12 +469,13 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
 
         return LLMResponse(
-            text="".join(parts) or None,
+            text=content or None,
             usage=usage,
             model=response_model,
             provider_name=self.name,
             finish_reason=finish_reason,
             error_message=error_message,
+            reasoning=reasoning or None,
         )
 
     def _extract_usage(self, data: Any, api_url: str):

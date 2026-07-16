@@ -8,6 +8,7 @@ import datetime
 from typing import Any
 
 from main_logger import logger
+from handlers.llm_providers.base import StreamChannel
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
@@ -389,11 +390,19 @@ class ChatController:
                     "role": "assistant",
                 }, delivery=EventDelivery.ORDERED)
 
-            def stream_callback_handler(chunk: str):
+            def stream_callback_handler(chunk: str, channel: StreamChannel):
                 if not eff_policy.echo_to_ui:
                     return
                 chunk_str = str(chunk or "")
                 if not chunk_str:
+                    return
+
+                # Провайдер уже отделил размышления (reasoning_content у LM Studio,
+                # thought-части у Gemini) — фильтры тегов и JSON тут не нужны и
+                # только испортят текст.
+                if channel is StreamChannel.REASONING:
+                    if show_think_in_gui:
+                        on_think_chunk(chunk_str)
                     return
 
                 # 1. Filter out <think> blocks (emits them separately)

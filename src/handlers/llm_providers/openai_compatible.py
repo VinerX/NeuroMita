@@ -10,6 +10,8 @@ from .base import (
     BaseProvider,
     LLMRequest,
     LLMResponse,
+    StreamCallback,
+    StreamChannel,
     check_request_cancelled,
     normalize_usage_payload,
     register_cancellable_resource,
@@ -121,18 +123,17 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
             if completion and getattr(completion, "choices", None):
                 message = completion.choices[0].message
-                content = message.content
-                if not content:
-                    content = getattr(message, "reasoning_content", None)
-                if not content:
-                    content = (getattr(message, "model_extra", None) or {}).get("reasoning_content")
-                if not content:
+                reasoning = self._extract_sdk_reasoning(message)
+                if not reasoning:
                     try:
                         raw_dict = completion.model_dump()
                         msg_dict = (raw_dict.get("choices") or [{}])[0].get("message") or {}
-                        content = msg_dict.get("reasoning_content")
+                        reasoning = str(msg_dict.get("reasoning_content") or "")
                     except Exception:
-                        pass
+                        reasoning = ""
+                content, reasoning = self._resolve_content_and_reasoning(
+                    str(message.content or ""), reasoning
+                )
                 usage = self._extract_usage(getattr(completion, "usage", None))
                 finish_reason = None
                 try:
@@ -149,6 +150,7 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                         "Provider returned completion without message content."
                         + (f" finish_reason={finish_reason}." if finish_reason else "")
                     ),
+                    reasoning=reasoning.strip() or None,
                 )
 
             logger.warning(f"[{self.name}] No completion choices.")
@@ -192,8 +194,28 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
         return out
 
-    def _handle_stream(self, completion, req: LLMRequest, stream_callback=None) -> LLMResponse:
+    @staticmethod
+    def _extract_sdk_reasoning(obj: Any) -> str:
+        """Достать reasoning_content из объекта SDK.
+
+        Поле нестандартное, поэтому у одних сборок оно приходит атрибутом,
+        у других оседает в model_extra как неизвестное pydantic-поле.
+        """
+        if obj is None:
+            return ""
+        value = getattr(obj, "reasoning_content", None)
+        if not value:
+            value = (getattr(obj, "model_extra", None) or {}).get("reasoning_content")
+        return str(value or "")
+
+    def _handle_stream(
+        self,
+        completion,
+        req: LLMRequest,
+        stream_callback: Optional[StreamCallback] = None,
+    ) -> LLMResponse:
         parts: List[str] = []
+        reasoning_parts: List[str] = []
         final_usage = None
         finish_reason = None
         chunk_error_count = 0
@@ -213,15 +235,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     pass
 
                 text = ""
+                thought = ""
                 try:
                     if chunk.choices and chunk.choices[0].delta:
                         delta = chunk.choices[0].delta
-                        text = delta.content or ""
-                        # Qwen3 thinking-режим: контент идёт в reasoning_content
-                        if not text:
-                            text = getattr(delta, "reasoning_content", None) or ""
-                        if not text:
-                            text = (getattr(delta, "model_extra", None) or {}).get("reasoning_content", "")
+                        text = str(delta.content or "")
+                        thought = self._extract_sdk_reasoning(delta)
                 except Exception as e:
                     chunk_error_count += 1
                     last_chunk_error = f"{type(e).__name__}: {e}"
@@ -232,8 +251,13 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
 
                 if text:
                     if stream_callback:
-                        stream_callback(text)
+                        stream_callback(text, StreamChannel.CONTENT)
                     parts.append(text)
+
+                if thought:
+                    if stream_callback:
+                        stream_callback(thought, StreamChannel.REASONING)
+                    reasoning_parts.append(thought)
         except Exception as e:
             provider_error = coerce_provider_error(self.name, e)
             logger.error(f"[{self.name}] stream error: {provider_error.to_console_summary()}", exc_info=True)
@@ -246,8 +270,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 except Exception:
                     logger.debug(f"[{self.name}] Failed to close provider stream", exc_info=True)
 
+        content, reasoning = self._resolve_content_and_reasoning(
+            "".join(parts), "".join(reasoning_parts)
+        )
+
         error_message = None
-        if not parts:
+        if not content:
             if chunk_error_count > 0:
                 error_message = (
                     "Provider stream ended without content. "
@@ -257,11 +285,12 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                 error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
 
         return LLMResponse(
-            text="".join(parts) or None,
+            text=content or None,
             usage=final_usage,
             provider_name=self.name,
             finish_reason=finish_reason,
             error_message=error_message,
+            reasoning=reasoning or None,
         )
 
     def _extract_usage(self, usage_obj: Any):

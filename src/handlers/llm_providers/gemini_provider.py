@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import requests
 
@@ -13,6 +14,8 @@ from .base import (
     BaseProvider,
     LLMRequest,
     LLMResponse,
+    StreamCallback,
+    StreamChannel,
     check_request_cancelled,
     normalize_usage_payload,
     register_cancellable_resource,
@@ -290,9 +293,6 @@ class GeminiProvider(BaseProvider):
                         text_parts_list.append(t)
 
             response_text = "".join(text_parts_list) or "..."
-            if think_texts:
-                think_block = "<think>" + "\n".join(think_texts) + "</think>"
-                response_text = think_block + "\n" + response_text
 
             result = LLMResponse(
                 text=response_text,
@@ -300,6 +300,7 @@ class GeminiProvider(BaseProvider):
                 model=(response_data.get("modelVersion") if isinstance(response_data, dict) else None) or req.model,
                 provider_name=self.name,
                 raw=response_data if isinstance(response_data, dict) else {},
+                reasoning="\n".join(think_texts) or None,
             )
             response.close()
             return result
@@ -322,9 +323,10 @@ class GeminiProvider(BaseProvider):
         self,
         response,
         req: LLMRequest,
-        stream_callback: callable = None,
+        stream_callback: Optional[StreamCallback] = None,
     ) -> LLMResponse:
         full_response_parts = []
+        thought_parts = []
         json_buffer = ""
         decoder = json.JSONDecoder()
         usage = None
@@ -354,11 +356,13 @@ class GeminiProvider(BaseProvider):
                                 continue
                             is_thought = bool(part.get("thought"))
                             if stream_callback:
-                                if is_thought:
-                                    stream_callback(f"<think>{text}</think>")
-                                else:
-                                    stream_callback(text)
-                            if not is_thought:
+                                stream_callback(
+                                    text,
+                                    StreamChannel.REASONING if is_thought else StreamChannel.CONTENT,
+                                )
+                            if is_thought:
+                                thought_parts.append(text)
+                            else:
                                 full_response_parts.append(text)
 
                         json_buffer = json_buffer[index:].lstrip()
@@ -371,6 +375,7 @@ class GeminiProvider(BaseProvider):
                 usage=usage,
                 model=response_model,
                 provider_name=self.name,
+                reasoning="".join(thought_parts) or None,
             )
         except Exception as e:
             # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,

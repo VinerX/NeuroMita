@@ -18,7 +18,7 @@ from handlers.llm_providers.errors import (
 from utils import _, save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
-from handlers.llm_providers.base import LLMResponse
+from handlers.llm_providers.base import LLMResponse, StreamCallback
 from handlers.llm_providers.base import RequestCancellation
 
 
@@ -50,7 +50,7 @@ class LLMRequestRunner:
         *,
         messages: list,
         preset_id: Optional[int],
-        stream_callback: Optional[Callable[[str], None]],
+        stream_callback: Optional[StreamCallback],
         build_request: Callable[[PresetSettings, str], Any],
         max_attempts: int,
         retry_delay: float,

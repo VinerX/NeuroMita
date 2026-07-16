@@ -10,12 +10,14 @@ if str(_SRC_DIR) not in sys.path:
 from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
 
 
-def _req(*, enable_thinking=None, reasoning_control=None, thinking_budget=None):
+def _req(*, enable_thinking=None, reasoning_control=None, thinking_budget=None, reasoning_effort=None):
     extra = {}
     if enable_thinking is not None:
         extra["enable_thinking"] = enable_thinking
     if thinking_budget is not None:
         extra["thinking_budget"] = thinking_budget
+    if reasoning_effort is not None:
+        extra["reasoning_effort"] = reasoning_effort
     capabilities = {}
     if reasoning_control is not None:
         capabilities["reasoning_control"] = reasoning_control
@@ -57,6 +59,37 @@ class ApplyReasoningTests(unittest.TestCase):
             payload, _req(enable_thinking=False, reasoning_control="deepseek")
         )
         self.assertEqual(payload["thinking"], {"type": "disabled"})
+
+    def test_reasoning_effort_disabled_sends_none(self):
+        # LM Studio: единственный способ заглушить мысли Gemma 4 / Qwen3.
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload, _req(enable_thinking=False, reasoning_control="reasoning_effort")
+        )
+        self.assertEqual(payload["reasoning_effort"], "none")
+
+    def test_reasoning_effort_enabled_defaults_to_medium(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload, _req(enable_thinking=True, reasoning_control="reasoning_effort")
+        )
+        self.assertEqual(payload["reasoning_effort"], "medium")
+
+    def test_reasoning_effort_honours_explicit_level(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload,
+            _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="high"),
+        )
+        self.assertEqual(payload["reasoning_effort"], "high")
+
+    def test_reasoning_effort_rejects_unknown_level(self):
+        payload = {}
+        OpenAIHTTPProviderBase._apply_reasoning(
+            payload,
+            _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="ultra"),
+        )
+        self.assertEqual(payload["reasoning_effort"], "medium")
 
 
 if __name__ == "__main__":

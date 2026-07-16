@@ -1,10 +1,30 @@
 # src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
+from enum import Enum
 import threading
 from typing import List, Dict, Callable, Optional, Any, Mapping
 from abc import ABC, abstractmethod
 
+from main_logger import logger
+
 from .errors import LLMProviderError
+
+
+class StreamChannel(str, Enum):
+    """Канал стрим-чанка.
+
+    Провайдер обязан различать текст ответа и размышления модели: разные
+    модели отдают мысли по-разному (reasoning_content, thought-части Gemini,
+    <think>-теги внутри content), но выше по стеку это один контракт.
+    """
+
+    CONTENT = "content"
+    REASONING = "reasoning"
+
+
+# Второй аргумент всегда передаётся явно — молчаливого дефолта нет, иначе
+# мысли снова утекут в текст ответа.
+StreamCallback = Callable[[str, StreamChannel], None]
 
 
 class RequestCancelledError(TimeoutError):
@@ -139,7 +159,7 @@ class LLMRequest:
     capabilities: Dict[str, Any] = field(default_factory=dict)
 
     stream: bool = False
-    stream_cb: Optional[Callable[[str], None]] = None
+    stream_cb: Optional[StreamCallback] = None
 
     tools_on: bool = False
     tools_mode: str = "native"
@@ -211,6 +231,10 @@ class LLMResponse:
     finish_reason: Optional[str] = None
     error_message: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+
+    # Размышления, которые провайдер отдал отдельным каналом. В text их быть
+    # не должно: text — только то, что видит игрок.
+    reasoning: Optional[str] = None
 
 
 def _to_int(value: Any) -> int:
@@ -292,6 +316,24 @@ class BaseProvider(ABC):
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
 
+    def _resolve_content_and_reasoning(self, content: str, reasoning: str) -> tuple[str, str]:
+        """Развести текст ответа и размышления.
+
+        Норма: content — ответ, reasoning — мысли, и они не смешиваются.
+        Аварийный случай (часть сборок Qwen3): модель кладёт весь ответ в
+        reasoning-канал, оставляя content пустым — тогда мысли и есть ответ,
+        иначе пользователь получит пустоту.
+        """
+        if content:
+            return content, reasoning
+        if reasoning:
+            logger.warning(
+                f"[{getattr(self, 'name', '?')}] Empty content with non-empty reasoning — "
+                f"using reasoning as the answer (model ignores the content channel)."
+            )
+            return reasoning, ""
+        return "", ""
+
 
 __all__ = [
     "LLMRequest",
@@ -300,6 +342,8 @@ __all__ = [
     "BaseProvider",
     "RequestCancellation",
     "RequestCancelledError",
+    "StreamCallback",
+    "StreamChannel",
     "check_request_cancelled",
     "get_request_cancellation",
     "register_cancellable_resource",

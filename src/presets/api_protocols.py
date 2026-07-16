@@ -49,6 +49,26 @@ API_PROTOCOLS_DATA = [
         "transforms": [],
     },
     {
+        "id": "lmstudio_default",
+        "name": "LM Studio (OpenAI-compatible)",
+        "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
+        "provider": "common",
+        "auth": {"mode": "bearer"},
+        "headers": {},
+        # Отдельный протокол, а не generic: LM Studio понимает reasoning_effort
+        # ("none" глушит мысли локальных reasoning-моделей вроде Gemma 4 и Qwen3),
+        # тогда как произвольный OpenAI-совместимый сервер на неизвестный параметр
+        # ответит 4xx. json_schema LM Studio держит грамматикой — проверено.
+        "capabilities": {
+            "tools_native": True,
+            "streaming": True,
+            "streaming_with_tools": False,
+            "structured_output": True,
+            "reasoning_control": "reasoning_effort",
+        },
+        "transforms": [],
+    },
+    {
         "id": "aiio_default",
         "name": "Ai.iO (OpenAI-compatible)",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,

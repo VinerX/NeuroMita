@@ -1062,6 +1062,20 @@ class ModelController(GenerationService, ModelStateService):
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _split_response_thinking(self, llm_response) -> tuple[str, str]:
+        """Собрать размышления из обоих источников сразу.
+
+        Мысли приходят двумя разными путями: текстовыми <think>-тегами внутри
+        ответа (DeepSeek-R1 и прочие) и отдельным каналом провайдера
+        (reasoning_content у LM Studio, thought-части Gemini). Второй в text не
+        попадает вовсе, поэтому его надо забрать из самого ответа.
+        """
+        visible, think_text = self._extract_think_blocks(str(llm_response.text))
+        native = (getattr(llm_response, "reasoning", None) or "").strip()
+        if native:
+            think_text = f"{native}\n\n{think_text}" if think_text else native
+        return visible, think_text
+
     def _extract_image_description(self, text: str) -> tuple[str, str | None]:
         """
         Extracts <image_description>...</image_description> block from text.
@@ -1482,7 +1496,7 @@ class ModelController(GenerationService, ModelStateService):
                 return None
 
             raw_text = llm_response.text
-            visible_raw, think_text = self._extract_think_blocks(str(raw_text))
+            visible_raw, think_text = self._split_response_thinking(llm_response)
 
             if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
                 _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
@@ -2236,7 +2250,7 @@ class ModelController(GenerationService, ModelStateService):
                 message_id=first_assistant_message_id,
             )
 
-        visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
+        visible_raw_2, think_text_2 = self._split_response_thinking(llm_response_2)
         merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text
