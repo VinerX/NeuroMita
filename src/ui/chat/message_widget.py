@@ -502,6 +502,18 @@ class MessageWidget(QWidget):
     def set_time(self, ts: str): self._body.set_time(ts)
     def set_structured_ref(self, panel): self._structured_panel = panel
 
+    def set_message_id(self, message_id: str):
+        """Проставить id уже показанному пузырю.
+
+        При стриминге виджет рождается раньше, чем ответ записан в историю и
+        получил id, — без этого у него мёртвое контекстное меню.
+        """
+        self._message_id = message_id or None
+
+    def set_sample_id(self, sample_id: str):
+        """То же для finetune-сэмпла: он создаётся только после ответа модели."""
+        self._sample_id = sample_id or None
+
     def _add_rating_buttons(self, name_row, sample_id: str, font_size: int):
         try:
             import qtawesome as qta

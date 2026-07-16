@@ -1319,7 +1319,12 @@ class AppWindowBase(QMainWindow):
                 structured,
                 stream_id=stream_id,
             )
-        message_renderer.finish_stream_slot(self._chat_render_context, stream_id=stream_id)
+        message_renderer.finish_stream_slot(
+            self._chat_render_context,
+            stream_id=stream_id,
+            message_id=str(payload.get("message_id") or ""),
+            character_id=str(payload.get("character_id") or ""),
+        )
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====
     def _on_asr_install_progress(self, data: dict):

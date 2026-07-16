@@ -525,7 +525,9 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         name = _("Вы", "You")
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-    sample_id = _pop_sample_id_if_collecting(gui) if role == "assistant" else None
+    # sample_id здесь взять неоткуда: сэмпл сохраняется только после полного
+    # ответа модели, а пузырь создаётся на первом же чанке. Привязываем его
+    # в finish_stream_slot, когда он реально существует.
     message = MessageWidget(
         role=role,
         speaker_name=name,
@@ -534,7 +536,7 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         font_size=font_size,
         show_timestamp=show_ts,
         max_bubble_width=max_bw,
-        sample_id=sample_id,
+        sample_id=None,
         show_rating_controls=(
             role == "assistant" and _should_show_rating_controls(gui)
         ),
@@ -659,6 +661,8 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
             )
             if is_last:
                 widget.set_structured_ref(panel)
+                # Пузырь заменили — дальше меню и id вешаются на этот, последний.
+                state["message"] = widget
             gui.chat_window.add_message_widget(widget)
     elif len(target_groups) == 1:
         target, _ = target_groups[0]
@@ -677,7 +681,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     gui.chat_window.scroll_to_bottom()
 
 
-def finish_stream_slot(gui, stream_id="default"):
+def finish_stream_slot(gui, stream_id="default", message_id="", character_id=""):
     key = str(stream_id or "default")
     states = _stream_states(gui)
     state = states.get(key)
@@ -685,4 +689,17 @@ def finish_stream_slot(gui, stream_id="default"):
         return
     if state.get("role") == "think" or state.get("think_block") is not None:
         _finalize_streaming_think_block(gui, key, state=state)
+
+    # Стриминговый пузырь родился до того, как ответ получил message_id и
+    # finetune-сэмпл: только здесь оба уже существуют. Без этой привязки всё
+    # контекстное меню (регенерация, просмотр контекста) молча ничего не делает.
+    message = state.get("message")
+    if message is not None:
+        sample_id = _pop_sample_id_if_collecting(gui)
+        if sample_id:
+            message.set_sample_id(sample_id)
+        if message_id:
+            message.set_message_id(message_id)
+            _connect_widget_signals(gui, message, message_id, character_id or "")
+
     states.pop(key, None)

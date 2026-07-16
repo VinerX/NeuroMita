@@ -577,7 +577,14 @@ class ChatController:
                 if not stream_started and response_text:
                     _emit_visible_assistant(response_text)
 
-                finish_payload = {"stream_id": stream_id}
+                # message_id рождается только при записи в историю — то есть уже
+                # после того, как пузырь показан. Без него у стримингового
+                # сообщения не к чему привязать контекстное меню.
+                finish_payload = {
+                    "stream_id": stream_id,
+                    "message_id": assistant_message_id or "",
+                    "character_id": effective_character_id or "",
+                }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, delivery=EventDelivery.ORDERED)
