@@ -505,6 +505,8 @@
   "Генерация векторов...": "Generating embeddings...",
   "Генерация речи хорошего качества. Требует больше ресурсов, чем быстрые модели.": "Speech generation with good quality. Requires more resources than fast models.",
   "Генерация…": "Generating…",
+  "Глубина размышлений": "Reasoning effort",
+  "Глубина размышлений для локальных моделей через LM Studio / llama.cpp (Gemma 4, Qwen3): чем выше, тем длиннее мысли и больше потраченных токенов.\nРаботает только при включённом \"Режиме размышлений\" и только у провайдеров, которые понимают reasoning_effort — на остальных параметр не отправляется.": "Reasoning depth for local models via LM Studio / llama.cpp (Gemma 4, Qwen3): the higher, the longer the thoughts and the more tokens spent.\nRequires \"Enable thinking mode\", and only applies to providers that understand reasoning_effort — it is not sent to the others.",
   "Главная": "Home",
   "Главная статья": "Home article",
   "Глобально разрешает запуск встроенных игр (шахматы, морской бой).": "Globally allows launching built-in games (Chess, Sea Battle).",

@@ -50,6 +50,7 @@ class ModelRuntimeConfig:
     thinking_budget: float = 0.0
     log_probability: float = 0.0
     enable_thinking: bool | None = None  # None = не передавать параметр
+    reasoning_effort: str | None = None  # low/medium/high, только для reasoning_effort-транспорта
     gemini_thinking_budget: int | None = None  # -1=dynamic, 0=off, >0=token limit
 
     # costs/limits
@@ -98,6 +99,8 @@ class ModelRuntimeConfig:
                 self.thinking_budget = _to_float(value, self.thinking_budget)
             elif key == "ENABLE_THINKING":
                 self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
+            elif key == "MODEL_REASONING_EFFORT":
+                self.reasoning_effort = str(value).strip().lower() or None if value else None
             elif key == "GEMINI_THINKING_BUDGET":
                 self.gemini_thinking_budget = _to_int(value, 8192) if value != "" and value is not None else None
 
@@ -153,6 +156,7 @@ class ModelConfigLoader:
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
             enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
+            reasoning_effort=(str(s.get("MODEL_REASONING_EFFORT")).strip().lower() or None) if s.get("MODEL_REASONING_EFFORT") else None,
             gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 
             token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),

@@ -8,6 +8,7 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
+from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 
 def _req(*, enable_thinking=None, reasoning_control=None, thinking_budget=None, reasoning_effort=None):
@@ -90,6 +91,42 @@ class ApplyReasoningTests(unittest.TestCase):
             _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="ultra"),
         )
         self.assertEqual(payload["reasoning_effort"], "medium")
+
+
+class _Settings(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+
+def _params(**kwargs):
+    base = dict(
+        settings=_Settings(),
+        temperature=None,
+        max_response_tokens=None,
+        presence_penalty=None,
+        frequency_penalty=None,
+        log_probability=None,
+        top_k=None,
+        top_p=None,
+        thinking_budget=None,
+    )
+    base.update(kwargs)
+    return build_unified_generation_params(**base)
+
+
+class ReasoningEffortParamTests(unittest.TestCase):
+    """Глубина размышлений едет дальше только вместе с включённым thinking."""
+
+    def test_effort_passed_when_thinking_enabled(self):
+        self.assertEqual(
+            _params(enable_thinking=True, reasoning_effort="high")["reasoning_effort"], "high"
+        )
+
+    def test_effort_dropped_when_thinking_disabled(self):
+        self.assertNotIn("reasoning_effort", _params(enable_thinking=False, reasoning_effort="high"))
+
+    def test_effort_absent_by_default(self):
+        self.assertNotIn("reasoning_effort", _params(enable_thinking=True))
 
 
 if __name__ == "__main__":

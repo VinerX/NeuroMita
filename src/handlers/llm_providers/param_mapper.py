@@ -31,6 +31,7 @@ def build_unified_generation_params(
     top_p: float | None,
     thinking_budget: float | None,
     enable_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     gemini_thinking_budget: int | None = None,
     force_params: frozenset = frozenset(),
 ) -> Dict[str, Any]:
@@ -68,6 +69,11 @@ def build_unified_generation_params(
 
     if enable_thinking is not None:
         params["enable_thinking"] = enable_thinking
+
+    # Глубина размышлений имеет смысл только вместе с включённым thinking; провайдер
+    # применит её, только если протокол объявил reasoning_effort-транспорт.
+    if enable_thinking and reasoning_effort:
+        params["reasoning_effort"] = str(reasoning_effort)
 
     if (bool(settings.get("USE_GEMINI_THINKING_BUDGET")) or "gemini_thinking_budget" in force_params) and gemini_thinking_budget is not None:
         params["gemini_thinking_budget"] = int(gemini_thinking_budget)

@@ -47,6 +47,18 @@ def setup_model_interaction_controls(
                       'Выключите если модель кладёт ответ в reasoning_content вместо content.',
                       'For Qwen3 and similar models: enables thinking mode. '
                       'Disable if the model puts the response into reasoning_content instead of content.')},
+        {'label': _('Глубина размышлений', 'Reasoning effort'),
+         'key': 'MODEL_REASONING_EFFORT', 'type': 'combobox',
+         'options': ['low', 'medium', 'high'], 'default': 'medium',
+         'depends_on': 'ENABLE_THINKING',
+         'tooltip': _('Глубина размышлений для локальных моделей через LM Studio / llama.cpp '
+                      '(Gemma 4, Qwen3): чем выше, тем длиннее мысли и больше потраченных токенов.\n'
+                      'Работает только при включённом "Режиме размышлений" и только у провайдеров, '
+                      'которые понимают reasoning_effort — на остальных параметр не отправляется.',
+                      'Reasoning depth for local models via LM Studio / llama.cpp (Gemma 4, Qwen3): '
+                      'the higher, the longer the thoughts and the more tokens spent.\n'
+                      'Requires "Enable thinking mode", and only applies to providers that understand '
+                      'reasoning_effort — it is not sent to the others.')},
         {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
          'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
 

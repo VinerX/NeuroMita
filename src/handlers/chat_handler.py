@@ -334,6 +334,7 @@ class ChatModel:
                 top_p=cfg.top_p,
                 thinking_budget=cfg.thinking_budget,
                 enable_thinking=cfg.enable_thinking,
+                reasoning_effort=getattr(cfg, "reasoning_effort", None),
                 gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
                 force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
