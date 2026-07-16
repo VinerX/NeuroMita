@@ -32,6 +32,8 @@ class MitaStatusWidget(QWidget):
         self._dots_timer = None
         self._character_name = ""
         self._watchdog_timer = None
+        if self._chat is not None and hasattr(self._chat, "status_dismissed"):
+            self._chat.status_dismissed.connect(self._on_status_dismissed)
         self.hide()  # this widget itself is never shown
 
     def _get_chat(self):
@@ -50,6 +52,8 @@ class MitaStatusWidget(QWidget):
         return qta.icon(fallback, color=color).pixmap(24, 24)
 
     def show_thinking(self, payload="Мита"):
+        if self.current_state == "error":
+            return
         chat = self._get_chat()
         if isinstance(payload, dict):
             text = str(payload.get("text") or "").strip()
@@ -91,6 +95,8 @@ class MitaStatusWidget(QWidget):
             self._start_dots()
 
     def show_voicing(self, payload=None):
+        if self.current_state == "error":
+            return
         self.current_state = "voicing"
         self._stop_dots()
         self._arm_watchdog()
@@ -133,9 +139,11 @@ class MitaStatusWidget(QWidget):
         chat = self._get_chat()
         if chat:
             icon = qta.icon("fa6s.triangle-exclamation", color="#b74b7d").pixmap(24, 24)
-            chat.show_status(str(error_message), icon)
+            chat.show_status(str(error_message), icon, dismissible=True)
 
     def show_success(self, message=None):
+        if self.current_state == "error":
+            return
         if message is None:
             message = _("Готово", "Done")
         self.current_state = "success"
@@ -152,7 +160,7 @@ class MitaStatusWidget(QWidget):
         pass
 
     def hide_animated(self):
-        if self.current_state == "idle":
+        if self.current_state in ("idle", "error"):
             return
         self.current_state = "idle"
         self._stop_dots()
@@ -160,6 +168,11 @@ class MitaStatusWidget(QWidget):
         chat = self._get_chat()
         if chat:
             chat.hide_typing()
+
+    def _on_status_dismissed(self):
+        self.current_state = "idle"
+        self._stop_dots()
+        self._disarm_watchdog()
 
     def _arm_watchdog(self):
         self._disarm_watchdog()

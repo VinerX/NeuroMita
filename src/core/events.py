@@ -694,7 +694,6 @@ class Events:
         GET_MODEL_DESCRIPTION = "get_model_description"
         GET_SETTING_DESCRIPTION = "get_setting_description"
         GET_SECTION_VALUES = "get_section_values"
-        CHECK_GPU_RTX30_40 = "check_gpu_rtx30_40"
         INSTALL_MODEL = "install_voice_model"
         UNINSTALL_MODEL = "uninstall_voice_model"
         SAVE_SETTINGS = "save_voice_model_settings"

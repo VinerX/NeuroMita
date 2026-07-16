@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidg
 
 from utils import _
 from localization.live import register_if_tr
+from ui.pages.settings.section_access import is_section_enabled
 from ui.settings.settings_access import settings_store
 
 
@@ -52,8 +53,6 @@ def apply_capture_visibility(gui, mode=None):
     # The capture indicators (screen / camera) live behind the "screen"
     # settings section. `mode` is kept for backward compatibility but ignored.
     try:
-        from ui.widgets.settings_panel import is_section_enabled
-
         visible = is_section_enabled("screen", settings_store(gui))
     except Exception:
         visible = False

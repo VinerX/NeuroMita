@@ -9,6 +9,7 @@ from controllers.voice_model_controller import VoiceModelController
 from core.events import Event
 from core.installables.compatibility import evaluate_installable_compatibility
 from handlers.voice_models.edge_tts_rvc_model import EdgeTTSRVCOnnxModel
+from handlers.voice_models.f5_tts_model import F5TTSModel
 
 
 _F5_FIXTURE = [
@@ -97,8 +98,9 @@ class _ComponentStub:
 
 
 class _CatalogStub:
-    def __init__(self, components):
+    def __init__(self, components, *, gpu_vendor="INTEL"):
         self._components = list(components)
+        self.gpu_vendor = gpu_vendor
         self.seen_contexts = []
 
     def list_rows(self, **_kwargs):
@@ -127,19 +129,27 @@ class _CatalogStub:
         item_id = str(component_id).split(":", 1)[-1]
         return next(component for component in self._components if component.item_id == item_id)
 
-    def get_row(self, component_id, *, ctx=None, **_kwargs):
+    def get_row(self, component_id, **_kwargs):
         item_id = str(component_id).split(":", 1)[-1]
         backend = "onnx" if item_id.endswith("_onnx") else "cpu"
+        component = next(
+            (item for item in self._components if item.item_id == item_id),
+            None,
+        )
+        config = next(iter(component.get_model_configs()), {}) if component is not None else {}
+        compatibility = config.get("compatibility")
+        if compatibility is None and item_id in {"high", "high+low"}:
+            compatibility = F5TTSModel._find_model_config(item_id).get("compatibility")
         return {
             "compatibility": evaluate_installable_compatibility(
-                component_id=str(component_id),
                 backend=backend,
-                gpu_vendor=str((ctx or {}).get("gpu_vendor") or "CPU"),
+                hardware={"vendor": self.gpu_vendor},
+                compatibility=compatibility,
             )
         }
 
-    def ready_item_ids(self, category, *, ctx=None, **_kwargs):
-        self.seen_contexts.append({"category": category, "ctx": dict(ctx or {})})
+    def ready_item_ids(self, category, **_kwargs):
+        self.seen_contexts.append({"category": category})
         return tuple(
             component.item_id for component in self._components if component._installed
         )
@@ -200,7 +210,8 @@ class VoiceModelControllerTests(unittest.TestCase):
         controller = self._make_controller_stub()
         model = EdgeTTSRVCOnnxModel.MODEL_CONFIGS[0]
 
-        compatibility = controller._build_model_compatibility(model, "NVIDIA")
+        controller._installable_catalog.gpu_vendor = "NVIDIA"
+        compatibility = controller._build_model_compatibility(model)
 
         self.assertTrue(compatibility["supported"])
         self.assertTrue(compatibility["warning"])
@@ -235,7 +246,6 @@ class VoiceModelControllerTests(unittest.TestCase):
         controller.detected_cuda_devices = [0]
         controller.gpu_name = "RTX"
         controller.installed_models = set()
-        controller._ctx = lambda: {"gpu_vendor": "NVIDIA"}
         controller.get_default_model_structure = lambda: (_ for _ in ()).throw(
             AssertionError("config fallback should not be used when catalog is available")
         )
@@ -253,7 +263,6 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.installed_models, {"edge_tts_rvc_cuda"})
         self.assertEqual(catalog.seen_contexts[0]["category"], "tts")
-        self.assertEqual(catalog.seen_contexts[0]["ctx"]["gpu_vendor"], "NVIDIA")
 
 
     def test_default_model_structure_comes_from_main_process_installable_catalog(self):

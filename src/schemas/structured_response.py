@@ -179,11 +179,10 @@ class ToolCall(BaseModel):
 class SegmentIntent(BaseModel):
     """A structured intent Unity can consume (inventory, interactions, ...).
 
-    This is an internal-only channel: by default the field is stripped from the
-    schema the model sees (see ``schema_intents`` capability). The parser still
-    accepts and forwards intents whenever the field is present, so a future mode
-    (special setting, DSL variable, custom prompt) can enable them without any
-    Python changes.
+    The field is exposed to the model only when the selected DSL main template
+    declares ``support_intents=True`` and a connected Unity runtime can execute
+    it. The parser still accepts and forwards valid intent objects for protocol
+    compatibility.
     """
 
     type: str = Field(..., description="Intent type identifier, e.g. 'inventory.collect'")
@@ -206,8 +205,8 @@ class ResponseSegment(BaseModel):
     interactions: List[str] = Field(default_factory=list, description="Interaction commands")
     face_params: List[str] = Field(default_factory=list, description="Face parameter adjustments")
 
-    # Structured intents forwarded to Unity. Hidden from the model schema by
-    # default; sanitized here so malformed entries are dropped, not raised.
+    # Structured intents forwarded to Unity. Exposed by DSL opt-in and sanitized
+    # here so malformed entries are dropped instead of failing the whole reply.
     intents: List[SegmentIntent] = Field(default_factory=list, description="Structured intents (type + payload) forwarded to the game runtime")
 
     start_game: Optional[str] = Field(default=None, description="Game ID to start")

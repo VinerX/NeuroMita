@@ -68,8 +68,8 @@ _INSTALLATION_GUIDE_HTML = """
             <li><strong>Edge-TTS + RVC (low):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Silero + RVC (low+):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Fish Speech (medium):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов. <strong>Требуется NVIDIA GPU.</strong></li>
-            <li><strong>Fish Speech+ (medium+):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. <strong>Требуется NVIDIA GPU.</strong></li>
-            <li><strong>Fish Speech+RVC (medium+low):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. <strong>Требуется NVIDIA GPU.</strong></li>
+            <li><strong>Fish Speech+ (medium+):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong> (RTX 30xx, 40xx, 50xx и сопоставимые профессиональные модели).</li>
+            <li><strong>Fish Speech+RVC (medium+low):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong> (RTX 30xx, 40xx, 50xx и сопоставимые профессиональные модели).</li>
         </ul>
     </div>
     

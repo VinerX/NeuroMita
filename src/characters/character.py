@@ -9,6 +9,7 @@ from DSL.path_resolver import LocalPathResolver
 from DSL.post_dsl_engine import PostDslInterpreter
 from utils import clamp
 from core.events import get_event_bus, Events
+from core.safe_eval import safe_eval_expression
 from core.services import use
 from services.contracts import AppVarsService, SettingsService
 
@@ -19,6 +20,36 @@ from main_logger import logger
 
 RED_COLOR = "\033[91m"
 RESET_COLOR = "\033[0m"
+
+_CUSTOM_PARAM_FORMULA_CALLS = {
+    "max": max,
+    "min": min,
+    "abs": abs,
+    "int": int,
+    "float": float,
+    "round": round,
+}
+
+
+def _evaluate_custom_param_formula(
+    formula: str,
+    *,
+    variables: Dict[str, Any],
+    current: Any,
+    value: Any,
+    change_command: str,
+    variable_name: str,
+) -> Any:
+    eval_ctx = dict(variables)
+    eval_ctx["current"] = current
+    eval_ctx["value"] = value
+    eval_ctx[change_command] = value
+    eval_ctx[variable_name] = current
+    return safe_eval_expression(
+        formula,
+        names=eval_ctx,
+        allowed_calls=_CUSTOM_PARAM_FORMULA_CALLS,
+    )
 
 
 class Character:
@@ -525,10 +556,6 @@ class Character:
         # 2. Apply custom_params from config (порядок по гайду):
         #    1) клам change_min/change_max → 2) клам max_change (add) →
         #    3) formula или op → 4) клам min/max
-        _SAFE_BUILTINS: dict = {
-            "max": max, "min": min, "abs": abs,
-            "int": int, "float": float, "round": round,
-        }
         if _cf_raw:
             for param in self.custom_params:
                 var_name = param.get("name")
@@ -571,13 +598,14 @@ class Character:
 
                     # Шаг 4: применяем формулу или op
                     if formula:
-                        eval_ctx = dict(self.variables)
-                        eval_ctx.update(_SAFE_BUILTINS)
-                        eval_ctx["current"] = current
-                        eval_ctx["value"] = value
-                        eval_ctx[change_cmd] = value
-                        eval_ctx[var_name] = current
-                        new_val = eval(formula, {"__builtins__": {}}, eval_ctx)
+                        new_val = _evaluate_custom_param_formula(
+                            formula,
+                            variables=self.variables,
+                            current=current,
+                            value=value,
+                            change_command=change_cmd,
+                            variable_name=var_name,
+                        )
                     elif op == "add":
                         new_val = current + value
                     elif op == "set":

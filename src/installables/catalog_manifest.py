@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from core.installables.types import coerce_compatibility_spec
+from installables.compatibility_specs import (
+    F5_CPU_FALLBACK_COMPATIBILITY,
+    F5_RVC_FALLBACK_COMPATIBILITY,
+    FISH_CUDA_COMPATIBILITY,
+    FISH_SPEECH_BACKEND,
+    FISH_TRITON_COMPATIBILITY,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class InstallableCatalogEntry:
@@ -10,6 +19,23 @@ class InstallableCatalogEntry:
     loader: str
     metadata_ru: dict[str, Any]
     metadata_en: dict[str, Any]
+
+    @property
+    def declared_backend(self) -> str:
+        """Language-independent backend declared by the component manifest."""
+        ru_backend = str(self.metadata_ru.get("backend") or "none").strip().lower()
+        en_backend = str(self.metadata_en.get("backend") or "none").strip().lower()
+        if ru_backend != en_backend:
+            raise ValueError(f"Backend declaration differs between locales for {self.id}")
+        return ru_backend
+
+    @property
+    def declared_compatibility(self) -> dict[str, Any]:
+        ru_value = self.metadata_ru.get("compatibility") or {}
+        en_value = self.metadata_en.get("compatibility") or {}
+        if ru_value != en_value:
+            raise ValueError(f"Compatibility declaration differs between locales for {self.id}")
+        return coerce_compatibility_spec(ru_value).as_dict()
 
 
 CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
@@ -189,7 +215,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'category': 'tts',
          'title': 'Fish Speech',
          'description': 'Генерация речи хорошего качества. Требует больше ресурсов, чем быстрые модели.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
          'tags': ['Качество', 'Сбалансировано'],
          'languages': ['Russian',
@@ -204,13 +230,14 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~5 GB'},
+         'size': '~5 GB',
+         'compatibility': FISH_CUDA_COMPATIBILITY},
         metadata_en={'id': 'tts:medium',
          'item_id': 'medium',
          'category': 'tts',
          'title': 'Fish Speech',
          'description': 'High-quality speech generation. Requires more resources than fast models.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
          'tags': ['Quality', 'Balanced'],
          'languages': ['Russian',
@@ -225,7 +252,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~5 GB'},
+         'size': '~5 GB',
+         'compatibility': FISH_CUDA_COMPATIBILITY},
     ),
     InstallableCatalogEntry(
         id='tts:medium+',
@@ -236,9 +264,9 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'title': 'Fish Speech+',
          'description': 'Версия Fish Speech, скомпилированная под GPU. Требует больше места и современную '
                         'NVIDIA.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
-         'tags': ['Качество', 'RTX 30+/40+'],
+         'tags': ['Качество', 'Triton'],
          'languages': ['Russian',
                        'English',
                        'Chinese',
@@ -251,16 +279,17 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~10 GB'},
+         'size': '~10 GB',
+         'compatibility': FISH_TRITON_COMPATIBILITY},
         metadata_en={'id': 'tts:medium+',
          'item_id': 'medium+',
          'category': 'tts',
          'title': 'Fish Speech+',
          'description': 'A GPU-compiled version of Fish Speech. Requires more disk space and a modern NVIDIA '
                         'GPU.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
-         'tags': ['Quality', 'RTX 30+/40+'],
+         'tags': ['Quality', 'Triton'],
          'languages': ['Russian',
                        'English',
                        'Chinese',
@@ -273,7 +302,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~10 GB'},
+         'size': '~10 GB',
+         'compatibility': FISH_TRITON_COMPATIBILITY},
     ),
     InstallableCatalogEntry(
         id='tts:medium+low',
@@ -283,7 +313,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'category': 'tts',
          'title': 'Fish Speech+ + RVC',
          'description': 'Комбинация Fish Speech+ и RVC для высококачественного изменения тембра.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
          'tags': ['Качество', 'Конверсия голоса'],
          'languages': ['Russian',
@@ -298,13 +328,14 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~15 GB'},
+         'size': '~15 GB',
+         'compatibility': FISH_TRITON_COMPATIBILITY},
         metadata_en={'id': 'tts:medium+low',
          'item_id': 'medium+low',
          'category': 'tts',
          'title': 'Fish Speech+ + RVC',
          'description': 'Fish Speech+ combined with RVC for high-quality voice timbre conversion.',
-         'backend': 'cpu',
+         'backend': FISH_SPEECH_BACKEND,
          'legacy_kind': 'voice',
          'tags': ['Quality', 'Voice conversion'],
          'languages': ['Russian',
@@ -319,7 +350,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
                        'Italian',
                        'Polish',
                        'Portuguese'],
-         'size': '~15 GB'},
+         'size': '~15 GB',
+         'compatibility': FISH_TRITON_COMPATIBILITY},
     ),
     InstallableCatalogEntry(
         id='tts:high',
@@ -334,7 +366,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'legacy_kind': 'voice',
          'tags': ['Эмоции', 'Качество'],
          'languages': ['Russian', 'English'],
-         'size': '~4 GB'},
+         'size': '~4 GB',
+         'compatibility': F5_CPU_FALLBACK_COMPATIBILITY},
         metadata_en={'id': 'tts:high',
          'item_id': 'high',
          'category': 'tts',
@@ -344,7 +377,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'legacy_kind': 'voice',
          'tags': ['Emotions', 'Quality'],
          'languages': ['Russian', 'English'],
-         'size': '~4 GB'},
+         'size': '~4 GB',
+         'compatibility': F5_CPU_FALLBACK_COMPATIBILITY},
     ),
     InstallableCatalogEntry(
         id='tts:high+low',
@@ -358,7 +392,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'legacy_kind': 'voice',
          'tags': ['Эмоции', 'Конверсия голоса'],
          'languages': ['Russian', 'English'],
-         'size': '~7 GB'},
+         'size': '~7 GB',
+         'compatibility': F5_RVC_FALLBACK_COMPATIBILITY},
         metadata_en={'id': 'tts:high+low',
          'item_id': 'high+low',
          'category': 'tts',
@@ -368,7 +403,8 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'legacy_kind': 'voice',
          'tags': ['Emotions', 'Voice conversion'],
          'languages': ['Russian', 'English'],
-         'size': '~7 GB'},
+         'size': '~7 GB',
+         'compatibility': F5_RVC_FALLBACK_COMPATIBILITY},
     ),
     InstallableCatalogEntry(
         id='asr:google',

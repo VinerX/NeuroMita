@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -21,6 +22,7 @@ from controllers.chat_controller import ChatController
 from core.events import Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services
+from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
@@ -72,6 +74,34 @@ class _BlockingGeneration(GenerationService):
         self.threads.append(threading.current_thread().name)
         self.entered.release()
         self.release.wait(10)
+        return ChatGenerationResult(text="ok", character_id="Crazy")
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _StreamingGeneration(GenerationService):
+    def __init__(self):
+        self.request = None
+
+    def generate_chat(self, request: ChatGenerationRequest):
+        self.request = request
+        request.stream_event_callback(LLMStreamEvent(
+            type=LLMStreamEventType.TEXT_DELTA,
+            request_id="request",
+            provider="common",
+            model="model",
+            sequence=1,
+            text="hello",
+        ))
+        return ChatGenerationResult(text="hello", character_id="Crazy")
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _ImmediateGeneration(GenerationService):
+    def generate_chat(self, request: ChatGenerationRequest):
         return ChatGenerationResult(text="ok", character_id="Crazy")
 
     def generate_utility(self, request):
@@ -157,6 +187,59 @@ class ChatRequestPipelineTests(unittest.TestCase):
             len(failures), 3, "переполнение очереди генераций прошло молча"
         )
         self.assertIn("Слишком много запросов", failures[0].get("error", ""))
+
+    def test_chat_consumes_typed_stream_events_without_legacy_tag_bridge(self):
+        generation = _StreamingGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": True})
+
+        result = self.controller._run_request("hi", character_id="Crazy")
+
+        self.assertEqual(result, "hello")
+        self.assertIsNotNone(generation.request)
+        self.assertIsNone(generation.request.stream_callback)
+        self.assertTrue(callable(generation.request.stream_event_callback))
+
+    def test_request_keeps_its_own_unity_context_snapshot(self):
+        generation = _StreamingGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+
+        snapshot = {
+            "world_state": "Player is standing.",
+            "runtime_events": ["Player stood up."],
+        }
+        self.controller._run_request(
+            "hi",
+            character_id="Crazy",
+            game_state=snapshot,
+        )
+
+        self.assertEqual(generation.request.game_state, snapshot)
+        self.assertIsNot(generation.request.game_state, snapshot)
+
+    def test_task_result_keeps_response_protocol_version(self):
+        result = ChatController._build_task_result(
+            "hello",
+            "Player",
+            {"response_protocol_version": 2, "segments": [{"text": "hello"}]},
+        )
+        self.assertEqual(result["response_protocol_version"], 2)
+
+        plain_result = ChatController._build_task_result("hello", "Player", None)
+        self.assertEqual(plain_result["response_protocol_version"], 2)
+
+    def test_non_stream_request_does_not_create_presentation_coalescer(self):
+        services().register(GenerationService, _ImmediateGeneration(), replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+
+        with patch(
+            "controllers.chat_controller.TextDeltaCoalescer",
+            side_effect=AssertionError("coalescer must stay lazy"),
+        ):
+            result = self.controller._run_request("hi", character_id="Crazy")
+
+        self.assertEqual(result, "ok")
 
 
 if __name__ == "__main__":

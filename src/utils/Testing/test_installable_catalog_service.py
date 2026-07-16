@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,7 +15,9 @@ from core.backends import BackendKind
 from core.install_types import InstallAction, InstallPlan
 from core.installables.types import ComponentCategory, ComponentMetadata
 from installables.registry_builder import LazyInstallableRegistry
+from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec
 from services.installable_catalog_service import DefaultInstallableCatalogService
+from services.asr_settings_service import FileASRSettingsService
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -54,39 +58,140 @@ class _PreviewComponent:
 
 
 class InstallableCatalogServiceTests(unittest.TestCase):
-    def test_status_cache_isolated_by_canonical_context(self):
-        service = DefaultInstallableCatalogService()
+    def test_public_query_contract_has_no_caller_context(self):
+        from services.contracts import InstallableCatalogService
+
+        for method_name in (
+            "list_rows",
+            "get_row",
+            "get_status",
+            "is_ready",
+            "ready_item_ids",
+            "list_rows_async",
+            "get_status_async",
+            "install_preview",
+        ):
+            self.assertNotIn(
+                "ctx",
+                inspect.signature(getattr(InstallableCatalogService, method_name)).parameters,
+                method_name,
+            )
+
+    def test_operation_plan_rejects_hardware_and_settings_from_executor(self):
+        hardware = SimpleNamespace(
+            snapshot=lambda refresh=False: {
+                "vendor": "NVIDIA",
+                "platform": "Windows",
+                "primary": {"name": "RTX"},
+                "cuda": {"devices": [{"ordinal": 0}]},
+            }
+        )
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+        observed = {}
+        component = SimpleNamespace(
+            build_install_plan=lambda ctx: observed.setdefault("ctx", dict(ctx)) or InstallPlan(),
+        )
+
+        with patch.object(service, "require_component", return_value=component), \
+             patch("core.runtime_environments.runtime_environments", return_value=SimpleNamespace(
+                 component_context=lambda **kwargs: dict(kwargs["ctx"]),
+             )):
+            service.build_operation_plan(
+                "asr:google",
+                "install",
+                execution_ctx={
+                    "gpu_vendor": "AMD",
+                    "engine_settings": {"device": "cuda"},
+                    "target_dir": "X:/staging",
+                },
+            )
+
+        self.assertEqual(observed["ctx"]["gpu_vendor"], "NVIDIA")
+        self.assertNotEqual(observed["ctx"]["engine_settings"], {"device": "cuda"})
+        self.assertEqual(observed["ctx"]["target_dir"], "X:/staging")
+
+    def test_asr_setting_change_does_not_leave_unreachable_cache_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asr_settings = FileASRSettingsService(str(Path(tmp) / "asr.json"))
+            service = DefaultInstallableCatalogService(asr_settings=asr_settings)
+            self.addCleanup(service.close)
+            calls = []
+
+            def inspect(entry, _ctx):
+                calls.append(entry.id)
+                return {
+                    "id": entry.id,
+                    "code": "ready",
+                    "installed": True,
+                    "ready": True,
+                    "backend": entry.declared_backend,
+                    "backend_ok": True,
+                    "details": {},
+                }
+
+            with patch.object(service, "_prepare_runtime_registry"), \
+                 patch.object(service, "_component_context", wraps=service._component_context), \
+                 patch("core.runtime_environments.runtime_environments", return_value=SimpleNamespace(
+                     component_context=lambda **kwargs: dict(kwargs["ctx"]),
+                 )), \
+                 patch.object(service, "_inspect_component", side_effect=inspect):
+                service.get_status("asr:google")
+                service.get_status("asr:gigaam")
+                self.assertEqual(len(service._status_cache), 2)
+
+                asr_settings.set_model_option("google", "language", "ru-RU")
+                self.assertEqual(
+                    {key[0] for key in service._status_cache},
+                    {"asr:gigaam"},
+                )
+
+                service.get_status("asr:gigaam")
+                service.get_status("asr:google")
+
+            self.assertEqual(len(service._status_cache), 2)
+            self.assertEqual(calls.count("asr:gigaam"), 1)
+            self.assertEqual(calls.count("asr:google"), 2)
+
+    def test_status_context_is_owned_by_catalog(self):
+        hardware = SimpleNamespace(
+            snapshot=lambda refresh=False: {
+                "vendor": "AMD",
+                "platform": "Windows",
+                "primary": {"name": "Radeon"},
+                "cuda": {"devices": []},
+            }
+        )
+        service = DefaultInstallableCatalogService(hardware=hardware)
         self.addCleanup(service.close)
         calls = []
 
         def inspect(entry, ctx):
             calls.append(dict(ctx))
-            device = str(ctx.get("device") or "auto")
             return {
                 "id": entry.id,
-                "code": device,
+                "code": "ready",
                 "installed": True,
-                "ready": device == "cpu",
+                "ready": True,
                 "backend": "cpu",
-                "backend_ok": device == "cpu",
+                "backend_ok": True,
                 "details": {},
             }
 
         with patch.object(service, "_prepare_runtime_registry"), \
-             patch.object(
-                 service,
-                 "_component_context",
-                 side_effect=lambda _entry, *, ctx, refresh: dict(ctx or {}),
-             ), \
+             patch("core.runtime_environments.runtime_environments", return_value=SimpleNamespace(
+                 component_context=lambda **kwargs: dict(kwargs["ctx"]),
+             )), \
              patch.object(service, "_inspect_component", side_effect=inspect):
-            cpu = service.get_status("asr:google", ctx={"device": "cpu"})
-            cuda = service.get_status("asr:google", ctx={"device": "cuda"})
-            cpu_again = service.get_status("asr:google", ctx={"device": "cpu"})
+            status = service.get_status("asr:google")
+            status_again = service.get_status("asr:google")
+            with self.assertRaises(TypeError):
+                service.get_status("asr:google", ctx={"gpu_vendor": "NVIDIA"})
 
-        self.assertTrue(cpu["ready"])
-        self.assertFalse(cuda["ready"])
-        self.assertEqual(cpu_again, cpu)
-        self.assertEqual(len(calls), 2)
+        self.assertTrue(status["ready"])
+        self.assertEqual(status_again, status)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["gpu_vendor"], "AMD")
 
     def test_invalidation_rejects_late_probe_result(self):
         service = DefaultInstallableCatalogService(status_timeout_sec=2.0)
@@ -143,7 +248,15 @@ class InstallableCatalogServiceTests(unittest.TestCase):
 
         def inspect(_entry, _ctx):
             release.wait(2.0)
-            return {}
+            return {
+                "id": "asr:google",
+                "code": "ready",
+                "installed": True,
+                "ready": True,
+                "backend": "cpu",
+                "backend_ok": True,
+                "details": {},
+            }
 
         try:
             with patch.object(service, "_prepare_runtime_registry"), \
@@ -152,11 +265,68 @@ class InstallableCatalogServiceTests(unittest.TestCase):
                 started_at = time.monotonic()
                 status = service.get_status("asr:google")
                 elapsed = time.monotonic() - started_at
-            self.assertEqual(status["code"], "timeout")
+                self.assertFalse(service._status_cache)
+                release.set()
+                deadline = time.monotonic() + 1.0
+                while service._inflight and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                status_after_completion = service.get_status("asr:google")
+            self.assertEqual(status["code"], "unknown")
+            self.assertEqual(status["probe_state"], "timeout")
+            self.assertEqual(status_after_completion["code"], "ready")
             self.assertLess(elapsed, 0.5)
         finally:
             release.set()
             service.close()
+
+    def test_fish_speech_compatibility_is_driven_by_cuda_and_compute_capability(self):
+        def service_for(vendor, capability=None):
+            devices = []
+            if capability is not None:
+                devices.append(
+                    {
+                        "ordinal": 0,
+                        "compute_major": capability // 10,
+                        "compute_minor": capability % 10,
+                    }
+                )
+            hardware = SimpleNamespace(
+                snapshot=lambda refresh=False: {
+                    "vendor": vendor,
+                    "platform": "Windows",
+                    "primary": {"name": vendor},
+                    "cuda": {"available": bool(devices), "devices": devices},
+                }
+            )
+            instance = DefaultInstallableCatalogService(hardware=hardware)
+            self.addCleanup(instance.close)
+            return instance
+
+        amd = service_for("AMD")
+        old_nvidia = service_for("NVIDIA", 75)
+        modern_nvidia = service_for("NVIDIA", 89)
+
+        self.assertFalse(amd.get_row("tts:medium", include_status=False)["compatibility"]["supported"])
+        with patch.object(amd, "require_component") as require_component:
+            with self.assertRaises(RuntimeError):
+                amd.build_operation_plan("tts:medium", "install")
+            require_component.assert_not_called()
+        old_verdict = old_nvidia.get_row("tts:medium+", include_status=False)["compatibility"]
+        self.assertTrue(old_verdict["supported"])
+        self.assertFalse(old_verdict["recommended"])
+        self.assertEqual(old_verdict["compute_capability"], "sm_75")
+        self.assertEqual(old_verdict["hardware_tags"][0]["label"], "RTX 30+")
+        self.assertTrue(
+            modern_nvidia.get_row("tts:medium+", include_status=False)["compatibility"]["recommended"]
+        )
+
+    def test_fish_install_plan_has_no_private_vendor_gate(self):
+        with patch.object(FishSpeechInstallSpec, "is_installed", return_value=False):
+            plan = FishSpeechInstallSpec.build_install_plan("medium", {"gpu_vendor": "AMD"})
+
+        self.assertEqual(plan.required_backend, BackendKind.CUDA)
+        self.assertTrue(plan.actions)
+        self.assertNotIn("NVIDIA GPU", str(plan.actions[0].description))
 
     def test_component_readiness_has_one_cached_snapshot_for_all_consumers(self):
         service = DefaultInstallableCatalogService()

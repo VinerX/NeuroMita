@@ -43,12 +43,17 @@ class PromptLinterTests(unittest.TestCase):
         warnings = lint_prompts(self.tmp)
         self.assertIn("none-txt-include", self._kinds(warnings))
 
-    def test_intents_mention_when_disabled(self):
+    def test_intents_mention_requires_prompt_set_opt_in(self):
+        self._write("Char/Default/main_template.txt", "[<response.txt>]\n")
         self._write("Char/Default/response.txt", "You may emit intents in a segment.\n")
-        warnings = lint_prompts(self.tmp, schema_intents_enabled=False)
+        warnings = lint_prompts(self.tmp)
         self.assertIn("intents-mention", self._kinds(warnings))
-        # When enabled, that warning disappears.
-        warnings2 = lint_prompts(self.tmp, schema_intents_enabled=True)
+
+        self._write(
+            "Char/Default/main_template.txt",
+            "support_intents=True\n[<response.txt>]\n",
+        )
+        warnings2 = lint_prompts(self.tmp)
         self.assertNotIn("intents-mention", self._kinds(warnings2))
 
     def test_deprecated_item_in_structural(self):

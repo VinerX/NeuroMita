@@ -141,6 +141,7 @@ class AppWindowBase(QMainWindow):
         self._pending_history_payload = None
         self._token_refresh_pending = False
         self._history_load_inflight = False
+        self._pending_chat_error = None
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         from ui.app_icon import application_icon
@@ -415,6 +416,10 @@ class AppWindowBase(QMainWindow):
         self.scroll_to_bottom_anim = panel.scroll_to_bottom_anim
         self.mita_status = panel.mita_status
         self._on_chat_ui_ready()
+        if self._pending_chat_error:
+            pending_error = self._pending_chat_error
+            self._pending_chat_error = None
+            self._show_error_slot(pending_error)
 
     def bind_sandbox_page(self, page) -> None:
         """Bind the composed Sandbox surface for legacy controller adapters."""
@@ -915,9 +920,11 @@ class AppWindowBase(QMainWindow):
             self.mita_status.show_thinking(character_name)
 
     def _show_error_slot(self, error_message: str):
+        self._pending_chat_error = str(error_message or "")
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус ошибки: %s', error_message)
             self.mita_status.show_error(error_message)
+            self._pending_chat_error = None
 
     def _hide_status_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
@@ -1275,11 +1282,22 @@ class AppWindowBase(QMainWindow):
             self._pending_structured_data = None
             message_id = getattr(self, '_pending_message_id', None) or None
             self._pending_message_id = None
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        message_renderer.insert_message(self._chat_render_context, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data, message_id=message_id)
+        return message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            insert_at_start,
+            message_time,
+            structured_data=structured_data,
+            message_id=message_id,
+        )
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
+        if not self._chat_render_context.is_bound:
+            return False
         return message_renderer.insert_message(
             self._chat_render_context,
             role,
@@ -1289,6 +1307,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _on_prepare_stream_signal(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         return message_renderer.prepare_stream_slot(
@@ -1299,6 +1319,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _append_stream_chunk_slot(self, data):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
         return message_renderer.append_stream_chunk_slot(
@@ -1309,6 +1331,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _finish_stream_slot(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
@@ -1405,4 +1429,3 @@ class AppWindowBase(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
-

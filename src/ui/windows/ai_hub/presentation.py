@@ -10,6 +10,7 @@ from ui.mvvm import UiEffect, UiIntent
 @dataclass(frozen=True, slots=True)
 class AIHubState:
     rows: tuple[Any, ...] = ()
+    hardware: Any = ()
     loaded_once: bool = False
     refreshing: bool = False
     last_check_ts: dt.datetime | None = None

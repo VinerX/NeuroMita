@@ -1579,5 +1579,7 @@
   "⚠️ Модели Fish Speech+ / + RVC требуют всех компонентов!": "⚠️ Modelos Fish Speech+ / + RVC exigem todos os componentes!",
   "⚠️ Ошибка загрузки Triton": "⚠️ Erro ao carregar Triton",
   "✓ Успех": "✓ Sucesso",
-  "✗ Ошибка": "✗ Erro"
+  "✗ Ошибка": "✗ Erro",
+  "Предупреждение о совместимости": "Aviso de compatibilidade",
+  "Всё равно установить": "Instalar mesmo assim"
 }

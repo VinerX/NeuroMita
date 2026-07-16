@@ -16,7 +16,7 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from core.character_locks import character_lock
+from core.character_locks import character_generation_lock, character_lock
 
 
 class _Character:
@@ -44,12 +44,13 @@ class _Character:
 
 def _generation(character: _Character, target: str, results: list, errors: list):
     try:
-        with character_lock(character.char_id):
-            character.queue_target(target)
+        with character_generation_lock(character.char_id):
             time.sleep(0.005)
-            taken = character.consume_pending_targets()
-            character.bump_attitude(1)
-            results.append(taken)
+            with character_lock(character.char_id):
+                character.queue_target(target)
+                taken = character.consume_pending_targets()
+                character.bump_attitude(1)
+                results.append(taken)
     except Exception as exc:  # pragma: no cover
         errors.append(exc)
 
@@ -84,7 +85,7 @@ class CharacterSerializationTests(unittest.TestCase):
         reached = []
 
         def work(character: _Character):
-            with character_lock(character.char_id):
+            with character_generation_lock(character.char_id):
                 # Если бы блокировка была глобальной, барьер не собрался бы.
                 barrier.wait()
                 reached.append(character.char_id)
@@ -116,6 +117,27 @@ class CharacterSerializationTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "реентерабельный захват привёл к дедлоку")
         self.assertEqual(acquired, ["outer", "inner"])
         self.assertIs(character_lock("Crazy"), lock, "на один id должна быть одна блокировка")
+
+    def test_generation_gate_does_not_hold_character_state_lock(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def generation():
+            with character_generation_lock("Crazy"):
+                entered.set()
+                release.wait(1.0)
+
+        thread = threading.Thread(target=generation)
+        thread.start()
+        self.assertTrue(entered.wait(1.0))
+
+        state_lock = character_lock("Crazy")
+        self.assertTrue(state_lock.acquire(timeout=0.2))
+        state_lock.release()
+
+        release.set()
+        thread.join(1.0)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

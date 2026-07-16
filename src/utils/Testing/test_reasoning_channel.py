@@ -1,13 +1,16 @@
 """Размышления не должны утекать в текст ответа.
 
-Регресс, ради которого тесты и написаны: у reasoning-чанка нет поля content,
-и `delta.get("content") or delta.get("reasoning_content")` сваливался на мысли,
-склеивая их с ответом без разделителя. На LM Studio + Gemma 4 это выглядело так:
-148 чанков размышлений, потом 2 чанка ответа — и всё одной простынёй в чате.
+Регресс, ради которого тесты и написаны: reasoning-дельта не несёт поля content,
+и наивное `delta.get("content") or delta.get("reasoning_content")` сваливалось на
+мысли, склеивая их с ответом без разделителя. На LM Studio + Gemma 4 это
+выглядело так: 302 чанка размышлений, потом 82 чанка ответа — и всё одной
+простынёй в чате.
+
+Второй регресс, который тут закреплён: мысли нельзя протаскивать <think>-тегами
+внутри text — подписчик не должен парсить строку, чтобы понять, что ему пришло.
 """
 import json
 import sys
-import types
 import unittest
 from pathlib import Path
 
@@ -15,110 +18,107 @@ _SRC_DIR = Path(__file__).resolve().parents[2]
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+import httpx
+
 from handlers.llm_providers.base import LLMRequest, StreamChannel
-from handlers.llm_providers.openai_http_base import OpenAIHTTPProviderBase
+from handlers.llm_providers.common_provider import CommonProvider
+from handlers.llm_providers.http_transport import LLMHttpTransport
+from handlers.llm_providers.streaming import StreamAccumulator
 
 
-class _FakeResponse:
-    """Минимальный стенд под SSE-поток OpenAI-совместимого провайдера."""
-
-    def __init__(self, deltas):
-        self._deltas = deltas
-        self.closed = False
-
-    def iter_lines(self, decode_unicode=False):
-        for delta in self._deltas:
-            chunk = {"choices": [{"delta": delta, "finish_reason": None}], "model": "gemma-4-12b"}
-            yield f"data: {json.dumps(chunk)}".encode("utf-8")
-        yield b"data: [DONE]"
-
-    def close(self):
-        self.closed = True
+def _sse(*deltas: dict) -> str:
+    body = ""
+    for delta in deltas:
+        chunk = {"model": "gemma-4-12b", "choices": [{"delta": delta, "finish_reason": None}]}
+        body += f"data: {json.dumps(chunk)}\n\n"
+    body += 'data: {"model":"gemma-4-12b","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+    body += "data: [DONE]\n\n"
+    return body
 
 
-class _Provider(OpenAIHTTPProviderBase):
-    name = "test"
+class StreamChannelSplitTests(unittest.TestCase):
+    """Провайдер разводит каналы на всём пути от SSE до LLMResponse."""
 
-    def is_applicable(self, req):
-        return True
+    def _stream(self, *deltas: dict):
+        seen: list[tuple[StreamChannel, str]] = []
 
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=_sse(*deltas),
+            )
 
-def _req():
-    return LLMRequest(model="gemma-4-12b", messages=[])
-
-
-class StreamReasoningSplitTests(unittest.TestCase):
-    def setUp(self):
-        self.provider = _Provider()
-
-    def _run(self, deltas):
-        seen = []
-        resp = _FakeResponse(deltas)
-        result = self.provider._handle_stream(
-            resp, "http://127.0.0.1:1234/v1/chat/completions", _req(),
-            lambda text, channel: seen.append((channel, text)),
+        transport = LLMHttpTransport(
+            enable_http2=False,
+            client_factory=lambda _p, _h: httpx.Client(transport=httpx.MockTransport(handler)),
         )
-        return result, seen
+        try:
+            provider = CommonProvider(http_transport=transport)
+            req = LLMRequest(
+                model="gemma-4-12b",
+                messages=[{"role": "user", "content": "hi"}],
+                api_url="http://127.0.0.1:1234/v1/chat/completions",
+                provider_name="common",
+                stream=True,
+                stream_cb=lambda text, channel: seen.append((channel, text)),
+            )
+            return provider.generate(req), seen
+        finally:
+            transport.close()
 
     def test_reasoning_never_lands_in_text(self):
         # Так реально отдаёт LM Studio: сперва мысли, затем ответ.
-        result, seen = self._run([
+        response, _ = self._stream(
             {"reasoning_content": "Прикину, "},
             {"reasoning_content": "сколько будет."},
             {"content": "51"},
-        ])
+        )
 
-        self.assertEqual(result.text, "51")
-        self.assertEqual(result.reasoning, "Прикину, сколько будет.")
+        self.assertEqual(response.text, "51")
+        self.assertEqual(response.reasoning, "Прикину, сколько будет.")
 
     def test_channels_are_reported_separately(self):
-        _, seen = self._run([
-            {"reasoning_content": "думаю"},
-            {"content": "ответ"},
-        ])
+        _, seen = self._stream({"reasoning_content": "думаю"}, {"content": "ответ"})
 
-        self.assertEqual(seen, [
-            (StreamChannel.REASONING, "думаю"),
-            (StreamChannel.CONTENT, "ответ"),
-        ])
+        self.assertEqual(
+            seen,
+            [(StreamChannel.REASONING, "думаю"), (StreamChannel.CONTENT, "ответ")],
+        )
 
     def test_content_and_reasoning_in_one_delta_do_not_merge(self):
-        result, seen = self._run([{"content": "ответ", "reasoning_content": "мысль"}])
+        response, seen = self._stream({"content": "ответ", "reasoning_content": "мысль"})
 
-        self.assertEqual(result.text, "ответ")
-        self.assertEqual(result.reasoning, "мысль")
+        self.assertEqual(response.text, "ответ")
+        self.assertEqual(response.reasoning, "мысль")
         self.assertIn((StreamChannel.REASONING, "мысль"), seen)
 
-    def test_reasoning_only_stream_rescues_the_answer(self):
-        # Сломанные сборки Qwen3 кладут весь ответ в reasoning_content и
-        # оставляют content пустым — иначе игрок получит пустоту.
-        result, _ = self._run([{"reasoning_content": "весь ответ тут"}])
+    def test_text_carries_no_think_tags(self):
+        response, _ = self._stream({"reasoning_content": "мысль"}, {"content": "ответ"})
 
-        self.assertEqual(result.text, "весь ответ тут")
-        self.assertIsNone(result.reasoning)
-
-    def test_empty_stream_reports_error(self):
-        result, _ = self._run([{}])
-
-        self.assertIsNone(result.text)
-        self.assertIsNone(result.reasoning)
+        self.assertNotIn("<think>", response.text or "")
 
 
-class NonStreamReasoningSplitTests(unittest.TestCase):
-    def setUp(self):
-        self.provider = _Provider()
+class AccumulatorRescueTests(unittest.TestCase):
+    def test_answer_left_in_reasoning_channel_is_rescued(self):
+        # Сломанные сборки Qwen3 кладут весь ответ в reasoning-канал.
+        req = LLMRequest(model="qwen3", messages=[], stream=True)
+        accumulator = StreamAccumulator(req, provider="common", model="qwen3")
 
-    def test_reasoning_kept_out_of_text(self):
-        content, reasoning = self.provider._resolve_content_and_reasoning("51", "прикидываю")
+        accumulator.add_reasoning("весь ответ тут")
+        response = accumulator.complete(finish_reason="stop")
 
-        self.assertEqual(content, "51")
-        self.assertEqual(reasoning, "прикидываю")
+        self.assertEqual(response.text, "весь ответ тут")
+        self.assertIsNone(response.reasoning)
 
-    def test_answer_in_reasoning_is_rescued(self):
-        content, reasoning = self.provider._resolve_content_and_reasoning("", "ответ сюда")
+    def test_empty_stream_yields_no_text(self):
+        req = LLMRequest(model="qwen3", messages=[], stream=True)
+        accumulator = StreamAccumulator(req, provider="common", model="qwen3")
 
-        self.assertEqual(content, "ответ сюда")
-        self.assertEqual(reasoning, "")
+        response = accumulator.complete(finish_reason="stop")
+
+        self.assertIsNone(response.text)
+        self.assertIsNone(response.reasoning)
 
 
 if __name__ == "__main__":

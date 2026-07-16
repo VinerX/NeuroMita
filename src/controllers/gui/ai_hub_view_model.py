@@ -124,6 +124,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             )
             return {
                 "rows": list(rows or []),
+                "hardware": dict(self._catalog.hardware_snapshot() or {}),
                 "checked_at": dt.datetime.now(),
                 "included_status": bool(include_status),
             }
@@ -303,6 +304,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         included_status = bool(payload.get("included_status"))
         self.update_state(
             rows=tuple(immutable_payload(item) for item in rows),
+            hardware=immutable_payload(payload.get("hardware") or {}),
             loaded_once=True,
             refreshing=False,
             last_check_ts=payload.get("checked_at"),

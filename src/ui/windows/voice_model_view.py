@@ -1,6 +1,5 @@
 # voice_model_view.py
 
-import os
 import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -50,7 +49,6 @@ class ModelDetailView(QWidget):
         self.gpu_vendor = None
         self.gpu_name = None
         self.cuda_devices = []
-        self.rtx_check_func = None
 
         self._settings_changed_cb = None
         self.setting_widgets = {}
@@ -155,9 +153,6 @@ class ModelDetailView(QWidget):
         self.gpu_name = name
         self.cuda_devices = list(cuda_devices or [])
 
-    def set_rtx_check_func(self, func):
-        self.rtx_check_func = func
-
     # ---- actions ----
     def _on_install(self):
         if self.current_model_id:
@@ -200,14 +195,12 @@ class ModelDetailView(QWidget):
         self.btn_uninstall.setEnabled(installed)
         self.btn_install.setVisible(not installed)
 
-        # AMD compatibility check
         model = self._find_model(mid)
         is_supported = bool(model.get("compat_supported", True))
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
 
         can_install = True
         install_text = _("Установить", "Install")
-        if not is_supported and not allow_unsupported:
+        if not is_supported:
             can_install = False
             gpu_label = str(self.gpu_vendor or "GPU")
             install_text = _(f"Несовместимо с {gpu_label}", f"Incompatible with {gpu_label}")
@@ -387,15 +380,16 @@ class ModelDetailView(QWidget):
         # Meta chips (в одну строку, компактно)
         meta_chips = []
 
-        # RTX 30+/40+ ПЕРВЫМ (если требуется)
-        if model.get("rtx30plus", False):
-            meets = self.rtx_check_func() if callable(self.rtx_check_func) else False
+        compatibility = model.get("compatibility") if isinstance(model.get("compatibility"), dict) else {}
+        for hardware_tag in compatibility.get("hardware_tags") or ():
+            if not isinstance(hardware_tag, dict) or not str(hardware_tag.get("label") or "").strip():
+                continue
             meta_chips.append(
                 self._make_chip(
-                    "RTX 30+",
-                    "ok" if meets else "warn",
+                    str(hardware_tag.get("label")),
+                    "warn" if hardware_tag.get("variant") == "danger" else "info",
                     icon_names=["fa5s.bolt", "mdi.flash"],
-                    icon_color="#f2da6b"
+                    icon_color="#ff7b7b",
                 )
             )
 
@@ -477,22 +471,9 @@ class ModelDetailView(QWidget):
         else:
             self.langs_title.setVisible(False)
 
-        # AMD warning
         is_supported = bool(model.get("compat_supported", True))
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-        if self.gpu_vendor == "AMD" and not is_supported and allow_unsupported:
-            self.warning_label.setText(_("Может не работать на AMD!", "May not work on AMD!"))
-        elif self.gpu_vendor == "AMD" and not is_supported and not allow_unsupported:
-            self.warning_label.setText(_("Несовместимо с AMD.", "Incompatible with AMD."))
-        else:
-            self.warning_label.setText("")
-
-        # Описание модели — обычный абзац
         warning_text = str(model.get("compat_warning") or "").strip()
-        if not is_supported and allow_unsupported:
-            gpu_label = str(self.gpu_vendor or "GPU")
-            warning_text = warning_text or _(f"Может не работать на {gpu_label}.", f"May not work on {gpu_label}.")
-        elif not is_supported and not allow_unsupported:
+        if not is_supported and not warning_text:
             gpu_label = str(self.gpu_vendor or "GPU")
             warning_text = _(f"Несовместимо с {gpu_label}.", f"Incompatible with {gpu_label}.")
         self.warning_label.setText(warning_text)
@@ -635,12 +616,13 @@ class ModelListItemWidget(QWidget):
         self.name_label.setStyleSheet("color: #e6e6eb; font-size: 9pt;")
         main.addWidget(self.name_label)
         
-        # RTX 30+ значок (только если есть)
-        if self.model_data.get("rtx30plus") and qta:
+        compatibility = self.model_data.get("compatibility") if isinstance(self.model_data.get("compatibility"), dict) else {}
+        if compatibility.get("hardware_tags") and qta:
             rtx_icon = QLabel()
-            icon = qta.icon('fa5s.bolt', color='#ffa726')
+            icon = qta.icon('fa5s.bolt', color='#ff7b7b')
             rtx_icon.setPixmap(icon.pixmap(14, 14))
-            rtx_icon.setToolTip("RTX 30+ Required")
+            first_tag = compatibility["hardware_tags"][0]
+            rtx_icon.setToolTip(str(first_tag.get("tooltip") or first_tag.get("label") or ""))
             main.addWidget(rtx_icon)
         
         main.addStretch()
@@ -752,7 +734,6 @@ class VoiceModelSettingsView(QWidget):
 
         self.refresh_dependencies_panel()
         self._apply_gpu_status()
-        self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
         self._on_selection_changed()
 
     def ensure_initialized(self):
@@ -889,7 +870,6 @@ class VoiceModelSettingsView(QWidget):
 
         # Pass GPU info and RTX checker to detail
         self._apply_gpu_status()
-        self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
     # ---------- Presentation helpers ----------
     def _get_models_data(self):
@@ -921,13 +901,6 @@ class VoiceModelSettingsView(QWidget):
                 if value:
                     return str(value)
         return self._get_default_description()
-
-    def _check_gpu_rtx30_40(self):
-        st = self._cached_dependencies_status or {}
-        if "is_rtx30_or_40" in st:
-            return bool(st.get("is_rtx30_or_40"))
-        name = str(st.get("gpu_name") or "")
-        return bool(re.search(r"\bRTX\s*(30|40)\d{2}\b", name, re.IGNORECASE))
 
     # ---------- Dependencies tab ----------
     def _build_dependencies_panel(self, layout: QVBoxLayout):

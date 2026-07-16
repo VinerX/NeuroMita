@@ -28,6 +28,81 @@ class ComponentStatusCode(str, Enum):
 
 
 @dataclass(frozen=True)
+class CompatibilityRule:
+    code: str
+    effect: str = "warning"
+    vendors: tuple[str, ...] = ()
+    minimum_compute_capability: int | None = None
+    tag: str = ""
+    tag_variant: str = "danger"
+    warning_ru: str = ""
+    warning_en: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "effect": self.effect,
+            "vendors": list(self.vendors),
+            "minimum_compute_capability": self.minimum_compute_capability,
+            "tag": self.tag,
+            "tag_variant": self.tag_variant,
+            "warning_ru": self.warning_ru,
+            "warning_en": self.warning_en,
+        }
+
+
+@dataclass(frozen=True)
+class CompatibilitySpec:
+    supported_vendors: tuple[str, ...] = ()
+    rules: tuple[CompatibilityRule, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "supported_vendors": list(self.supported_vendors),
+            "rules": [rule.as_dict() for rule in self.rules],
+        }
+
+
+def coerce_compatibility_spec(value: CompatibilitySpec | dict[str, Any] | None) -> CompatibilitySpec:
+    if isinstance(value, CompatibilitySpec):
+        return value
+    data = value if isinstance(value, dict) else {}
+    rules: list[CompatibilityRule] = []
+    for item in data.get("rules") or ():
+        if not isinstance(item, dict):
+            continue
+        minimum = item.get("minimum_compute_capability")
+        try:
+            minimum = int(minimum) if minimum is not None else None
+        except (TypeError, ValueError):
+            minimum = None
+        rules.append(
+            CompatibilityRule(
+                code=str(item.get("code") or "compatibility_warning"),
+                effect=str(item.get("effect") or "warning").strip().lower(),
+                vendors=tuple(
+                    str(vendor).strip().upper()
+                    for vendor in (item.get("vendors") or ())
+                    if str(vendor).strip()
+                ),
+                minimum_compute_capability=minimum,
+                tag=str(item.get("tag") or "").strip(),
+                tag_variant=str(item.get("tag_variant") or "danger").strip().lower(),
+                warning_ru=str(item.get("warning_ru") or "").strip(),
+                warning_en=str(item.get("warning_en") or "").strip(),
+            )
+        )
+    return CompatibilitySpec(
+        supported_vendors=tuple(
+            str(vendor).strip().upper()
+            for vendor in (data.get("supported_vendors") or ())
+            if str(vendor).strip()
+        ),
+        rules=tuple(rules),
+    )
+
+
+@dataclass(frozen=True)
 class ComponentMetadata:
     id: str
     item_id: str
@@ -39,6 +114,7 @@ class ComponentMetadata:
     tags: tuple[str, ...] = ()
     languages: tuple[str, ...] = ()
     size: str = ""
+    compatibility: CompatibilitySpec = field(default_factory=CompatibilitySpec)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +128,7 @@ class ComponentMetadata:
             "tags": list(self.tags),
             "languages": list(self.languages),
             "size": self.size,
+            "compatibility": self.compatibility.as_dict(),
         }
 
 

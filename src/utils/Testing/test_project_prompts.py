@@ -39,6 +39,23 @@ class ProjectInfoTests(unittest.TestCase):
         self.assertNotIn("code 23", wk)
         self.assertNotIn("код 23", wk)
 
+    def test_intents_are_gated_by_prompt_set_metadata(self):
+        script = (PROMPTS / "Structural" / "response_format_json.script").read_text(encoding="utf-8")
+        self.assertIn("IF support_intents == True THEN", script)
+
+        prompt_sets = [
+            path for path in PROMPTS.rglob("main_template.txt")
+            if "Legacy" not in path.parts and "System" not in path.parts
+        ]
+        self.assertTrue(prompt_sets)
+        for path in prompt_sets:
+            text = path.read_text(encoding="utf-8")
+            self.assertRegex(
+                text,
+                r"(?im)^\s*support_intents\s*=\s*(?:true|false)\s*$",
+                f"prompt set must explicitly declare intent support: {path}",
+            )
+
     def test_reasoning_gated_in_text_schema(self):
         script = (PROMPTS / "Structural" / "response_format_json.script").read_text(encoding="utf-8")
         # The text-format instruction only describes the reasoning field inside

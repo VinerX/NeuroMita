@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from main_logger import logger
+from core.executor_registry import executors
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,8 +150,6 @@ class TaskSupervisor:
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Future[Any]:
-        from core.executors import executors
-
         normalized_name = str(name or getattr(fn, "__name__", "task"))
         owner_key = id(owner)
         owner_name = self._owner_name(owner)
@@ -467,6 +466,10 @@ class TaskSupervisor:
 
 
 _supervisor = TaskSupervisor()
+
+from core.daemon_executor import configure_default_supervisor
+
+configure_default_supervisor(_supervisor)
 
 
 def task_supervisor() -> TaskSupervisor:

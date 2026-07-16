@@ -76,13 +76,11 @@ class InstallableController(InstallableOperationsService):
 
     def _on_list(self, event: Event):
         data = event.data if isinstance(event.data, dict) else {}
-        ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
         return self.catalog.list_rows(
             include_status=bool(data.get("include_status", False)),
             refresh=bool(data.get("refresh", False)),
             category=data.get("category"),
             status_category=data.get("status_category"),
-            ctx=ctx,
         )
 
     def _on_get(self, event: Event):
@@ -105,7 +103,6 @@ class InstallableController(InstallableOperationsService):
             return self.catalog.get_status(
                 self._component_id(data),
                 refresh=bool(data.get("refresh", False)),
-                ctx=data.get("ctx") if isinstance(data.get("ctx"), dict) else {},
             )
         except Exception as exc:
             logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
@@ -178,30 +175,23 @@ class InstallableController(InstallableOperationsService):
 
         with_ui = bool(data.get("with_ui", True))
         timeout_sec = float(data.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
-        base_ctx = data.get("ctx") if isinstance(data.get("ctx"), dict) else {}
         # "Clean" reinstall: ignore the already-installed shortcut, force pip
         # reinstall and re-download artifacts (recovers from a broken/partial
         # download instead of refusing because files "exist").
         clean = bool(data.get("clean"))
 
         def runner(*_args, **kwargs) -> InstallPlan:
-            run_ctx = dict(base_ctx)
-            raw_ctx = kwargs.get("ctx") if isinstance(kwargs.get("ctx"), dict) else {}
-            run_ctx.update(raw_ctx)
-            run_ctx["clean"] = clean
+            execution_ctx = dict(kwargs.get("ctx") or {}) if isinstance(kwargs.get("ctx"), dict) else {}
             if kwargs.get("pip_installer") is not None:
-                run_ctx["pip_installer"] = kwargs.get("pip_installer")
+                execution_ctx["pip_installer"] = kwargs.get("pip_installer")
             if kwargs.get("callbacks") is not None:
-                run_ctx["callbacks"] = kwargs.get("callbacks")
-
-            if op == "install":
-                return component.build_install_plan(run_ctx)
-            if op == "uninstall":
-                return component.build_uninstall_plan(run_ctx)
-            plan = component.build_initialize_plan(run_ctx)
-            if plan is None:
-                return InstallPlan(actions=[], already_installed=True, already_installed_status="Nothing to initialize")
-            return plan
+                execution_ctx["callbacks"] = kwargs.get("callbacks")
+            return self.catalog.build_operation_plan(
+                component.id,
+                op,
+                clean=clean,
+                execution_ctx=execution_ctx,
+            )
 
         meta = {
             "kind": component.legacy_kind or component.category.value,

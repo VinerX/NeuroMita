@@ -159,29 +159,6 @@ class VoiceModelGuiController(BaseController):
             logger.error("VoiceModelGuiController: backend VoiceModelController не инициализирован.")
             return False
 
-        voice_models = services().get_optional(VoiceModelService)
-        models = voice_models.model_catalog_snapshot() if voice_models is not None else []
-        model_data = next((m for m in models if m.get("id") == model_id), None)
-
-        if model_data and model_data.get("rtx30plus", False) and not backend.is_gpu_rtx30_or_40():
-            gpu_info = backend.gpu_name if getattr(backend, "gpu_name", None) else "не определена"
-            if getattr(backend, "detected_gpu_vendor", None) and backend.detected_gpu_vendor != "NVIDIA":
-                gpu_info = f"{backend.detected_gpu_vendor} GPU"
-
-            model_name = model_data.get("name", model_id)
-            message = _(
-                f"Эта модель ('{model_name}') оптимизирована для NVIDIA RTX 30xx/40xx.\n\n"
-                f"Ваша видеокарта ({gpu_info}) может не обеспечить достаточной производительности.\n\n"
-                "Продолжить установку?",
-                f"This model ('{model_name}') is optimized for NVIDIA RTX 30xx/40xx.\n\n"
-                f"Your GPU ({gpu_info}) may be insufficient.\n\n"
-                "Continue installation?"
-            )
-
-            proceed = self._ask_question_in_vm_view(_("Предупреждение", "Warning"), message)
-            if not proceed:
-                return False
-
         try:
             preflight = backend.get_install_preflight(str(model_id))
         except Exception as exc:

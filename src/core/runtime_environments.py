@@ -1033,18 +1033,8 @@ class RuntimeEnvironmentManager:
                 self.register_backend_candidates((layer.layer_id,))
             return layer
 
-    def _load_registry(self) -> dict[str, Any]:
-        try:
-            data = json.loads(self.registry_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                data.setdefault("layout_version", _LAYOUT_VERSION)
-                data.setdefault("backend_profile", {"core_layer_ids": []})
-                data.setdefault("backend_candidates", {"core_layer_ids": []})
-                data.setdefault("runtime_selection", {})
-                data.setdefault("environments", {})
-                return data
-        except Exception:
-            pass
+    @staticmethod
+    def _default_registry() -> dict[str, Any]:
         return {
             "layout_version": _LAYOUT_VERSION,
             "backend_profile": {"core_layer_ids": []},
@@ -1052,6 +1042,33 @@ class RuntimeEnvironmentManager:
             "runtime_selection": {},
             "environments": {},
         }
+
+    def _load_registry(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return self._default_registry()
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Runtime environment registry is unreadable; using defaults | path=%s | error=%s",
+                self.registry_path,
+                exc,
+            )
+            return self._default_registry()
+
+        if not isinstance(data, dict):
+            logger.warning(
+                "Runtime environment registry has invalid root type; using defaults | path=%s",
+                self.registry_path,
+            )
+            return self._default_registry()
+
+        data.setdefault("layout_version", _LAYOUT_VERSION)
+        data.setdefault("backend_profile", {"core_layer_ids": []})
+        data.setdefault("backend_candidates", {"core_layer_ids": []})
+        data.setdefault("runtime_selection", {})
+        data.setdefault("environments", {})
+        return data
 
     def registry_snapshot(self) -> dict[str, Any]:
         return json.loads(json.dumps(self._load_registry()))

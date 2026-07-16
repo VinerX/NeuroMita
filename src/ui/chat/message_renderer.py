@@ -214,9 +214,13 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     widget.view_response_context_requested.connect(on_view_response_context)
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None):
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return False
+
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
-    chat_parent = gui.chat_window.get_layout_parent()
+    chat_parent = chat_window.get_layout_parent()
 
     if role == "structured":
         if not gui._get_setting("SHOW_STRUCTURED_IN_GUI", True):

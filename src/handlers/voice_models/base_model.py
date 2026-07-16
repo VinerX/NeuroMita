@@ -1,7 +1,7 @@
 import abc
 import json
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.app_paths import settings_path
 from core.backends import BackendKind
@@ -12,13 +12,12 @@ from core.installables import (
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, status_from_installed
-
-if TYPE_CHECKING:
-    from handlers.local_voice_handler import LocalVoice
+from handlers.voice_models.context import VoiceRuntimeContext
 
 
 def _voice_settings_path() -> str:
@@ -91,7 +90,7 @@ class IVoiceModel(abc.ABC):
     category = ComponentCategory.TTS
     legacy_kind = "voice"
 
-    def __init__(self, parent: "LocalVoice", model_id: str):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str):
         self.parent = parent
         self.model_id = str(model_id or "").strip()
         self.initialized = False
@@ -209,6 +208,7 @@ class IVoiceModel(abc.ABC):
             tags=tuple(tags),
             languages=tuple(str(item) for item in (config.get("languages") or []) if str(item).strip()),
             size=size,
+            compatibility=coerce_compatibility_spec(config.get("compatibility")),
         )
 
     def status(self, ctx: Dict[str, Any] | None = None) -> ComponentStatus:

@@ -43,8 +43,6 @@ from ui.windows.ai_hub.presentation import (
     SubmitComponentAction,
 )
 from main_logger import logger
-from core.services import services
-from services.contracts import HardwareInventoryService
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
@@ -109,6 +107,7 @@ class AIHubDialog(QDialog):
         self._settings_view_model = settings_view_model
         self._settings_binding = settings_binding
         self._rows: list[dict[str, Any]] = []
+        self._hardware: dict[str, Any] = {}
         self._selected_category = "tts"
         self._pending_category: str | None = None
         self._pending_component_id: str | None = None
@@ -737,6 +736,7 @@ class AIHubDialog(QDialog):
         previous_revision = getattr(self, "_rendered_revision", -1)
         self._rendered_revision = state.revision
         self._rows = [dict(mutable_payload(item) or {}) for item in state.rows]
+        self._hardware = dict(mutable_payload(state.hardware) or {})
         self._loaded_once = bool(state.loaded_once)
         self._refresh_inflight = bool(state.refreshing)
         self._last_check_ts = state.last_check_ts
@@ -925,16 +925,6 @@ class AIHubDialog(QDialog):
         rows.sort(key=_compat_rank)
         return rows
 
-    @staticmethod
-    def _hardware_snapshot() -> dict[str, Any]:
-        hardware = services().get_optional(HardwareInventoryService)
-        if hardware is None:
-            return {"vendor": "CPU", "primary": None}
-        try:
-            return dict(hardware.snapshot() or {})
-        except Exception:
-            return {"vendor": "CPU", "primary": None}
-
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
         # Remove every child widget but keep the trailing stretch.
@@ -1121,7 +1111,7 @@ class AIHubDialog(QDialog):
         installed = sum(1 for r in counted_rows if status_from_row(r).get("ready"))
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
-        hardware = self._hardware_snapshot()
+        hardware = self._hardware
         gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
         primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
         gpu_label = str(primary.get("name") or gpu_vendor)
@@ -1152,7 +1142,7 @@ class AIHubDialog(QDialog):
             self.stat_check.setValue("-", "")
 
     def _update_banner(self) -> None:
-        hardware = self._hardware_snapshot()
+        hardware = self._hardware
         gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
 
         row_cpu = self._row_by_id("backend:cpu")

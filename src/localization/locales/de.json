@@ -1822,5 +1822,7 @@
   "✓ Успех": "✓ Erfolg",
   "✕ Отменить": "✕ Abbrechen",
   "✗ Ошибка": "✗ Fehler",
-  "⟳ Обновить": "⟳ Aktualisieren"
+  "⟳ Обновить": "⟳ Aktualisieren",
+  "Предупреждение о совместимости": "Kompatibilitätswarnung",
+  "Всё равно установить": "Trotzdem installieren"
 }

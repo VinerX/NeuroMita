@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Sequence
 
 RELEASE_TAG_PATTERN = re.compile(r"^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$")
+_GIT_TIMEOUT_SECONDS = 30.0
+
 IGNORED_SUBJECT_RE = re.compile(
     r"(_version|\bbump\b|version bump|\[skip ci\]|tester code|release workflow|github actions?)",
     re.IGNORECASE,
@@ -57,6 +59,7 @@ class GitRepo:
             encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
         return proc.stdout.strip()
 
@@ -72,6 +75,7 @@ class GitRepo:
             encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
         return proc.returncode == 0
 

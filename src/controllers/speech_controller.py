@@ -428,18 +428,10 @@ class SpeechController(SpeechService):
 
     # —— install/check
     def _check_model_installed(self, model_type: str) -> bool:
-        engine_settings = {}
-        try:
-            engine_settings = (self._asr_settings.get("models", {}) or {}).get(model_type, {}) or {}
-        except Exception:
-            engine_settings = {}
         catalog = services().get_optional(InstallableCatalogService)
         if catalog is None:
             return False
-        return catalog.is_ready(
-            f"asr:{str(model_type or '').strip()}",
-            ctx={"engine_settings": dict(engine_settings)},
-        )
+        return catalog.is_ready(f"asr:{str(model_type or '').strip()}")
 
     def _on_get_asr_engines_list(self, _event: Event):
         return list(SpeechRecognition._registry.keys())

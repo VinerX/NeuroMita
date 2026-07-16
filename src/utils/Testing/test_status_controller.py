@@ -69,6 +69,39 @@ class StatusControllerTests(unittest.TestCase):
 
         self.assertEqual(view.show_voicing_signal.calls, [payload])
 
+    def test_terminal_provider_error_uses_structured_message(self):
+        controller, view = self._make_controller()
+
+        controller._on_failed_response(SimpleNamespace(data={
+            "error": "Generic failure",
+            "provider_error": {
+                "message": "Network error. Reason: write operation timed out",
+                "reason": "write operation timed out",
+                "retryable": True,
+            },
+        }))
+
+        self.assertEqual(
+            view.show_error_signal.calls,
+            ["Network error. Reason: write operation timed out"],
+        )
+
+    def test_retryable_attempt_only_pulses_without_terminal_error_banner(self):
+        controller, view = self._make_controller()
+
+        controller._on_failed_response_attempt(SimpleNamespace(data={
+            "attempt": 1,
+            "max_attempts": 5,
+            "provider_error": {
+                "message": "Network error. Reason: write operation timed out",
+                "reason": "write operation timed out",
+                "retryable": True,
+            },
+        }))
+
+        self.assertEqual(view.show_error_signal.calls, [])
+        self.assertEqual(view.pulse_error_signal.calls, [None])
+
 
 if __name__ == "__main__":
     unittest.main()

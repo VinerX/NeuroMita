@@ -13,6 +13,7 @@ from core.installables import (
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
@@ -103,6 +104,7 @@ class SpeechRecognizerInterface(ABC):
             legacy_kind=self.legacy_kind,
             tags=tuple(str(item) for item in (cfg.get("tags") or []) if str(item).strip()),
             languages=tuple(str(item) for item in (cfg.get("languages") or []) if str(item).strip()),
+            compatibility=coerce_compatibility_spec(cfg.get("compatibility")),
         )
 
     def status(self, ctx: dict | None = None) -> ComponentStatus:

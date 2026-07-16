@@ -1,11 +1,13 @@
 // response_format_json.script
 // Common structured-output format instruction included by per-character response_structure.txt files.
 //
-// DSL variables used (set by prompt_controller.py before template runs):
+// Runtime variables set by prompt_controller.py before template runs:
 //   SCHEMA_REASONING_ENABLED (bool) — include reasoning field in schema
 //   GRAPH_EXTRACTION_ENABLED (bool) — include entities/relations fields
 //   TOOLS_DESCRIPTION         (str)  — injected via [{TOOLS_DESCRIPTION}] in returned text
 //   CUSTOM_PARAMS_SCHEMA      (str)  — injected via [{CUSTOM_PARAMS_SCHEMA}] in returned text
+// Prompt metadata declared by the selected top-level template:
+//   support_intents           (bool) — expose Unity structured intents
 //
 // Per-character response_structure.txt should include this script via:
 //   [<../../Structural/response_format_json.script>]
@@ -49,6 +51,21 @@ ELSE
     SET LOCAL p_schema_game_fields = ""
 ENDIF
 
+IF support_intents == True THEN
+    SET LOCAL p_intents_schema_field = """
+      "intents": [{"type": "intent.type", "payload": {}}],"""
+    SET LOCAL p_intents_rules = """
+- "intents": Optional structured Unity actions. Use this field ONLY for intent types listed in [Unity Intent Contract].
+- Never invent intent types or payload keys. Prefer dedicated fields such as emotions, animations, interactions, clothes, music, face_params and allow_sleep when they already represent the action.
+"""
+    SET LOCAL p_intents_example = """
+      "intents": [{"type": "inventory.collect", "payload": {"object": "Apple"}}],"""
+ELSE
+    SET LOCAL p_intents_schema_field = ""
+    SET LOCAL p_intents_rules = ""
+    SET LOCAL p_intents_example = ""
+ENDIF
+
 SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -61,6 +78,7 @@ SET LOCAL p_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
+""" + p_intents_schema_field + """
       "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
@@ -91,6 +109,7 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
+""" + p_intents_schema_field + """
       "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
@@ -117,6 +136,7 @@ Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
 - "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+""" + p_intents_rules + """
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
@@ -148,6 +168,7 @@ Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
 - "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+""" + p_intents_rules + """
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
@@ -183,6 +204,7 @@ Example response:
     {
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
+""" + p_intents_example + """
       "commands": ["Walk to player"]
     },
     {
@@ -205,6 +227,7 @@ Example response:
     {
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
+""" + p_intents_example + """
       "commands": ["Walk to player"]
     },
     {
