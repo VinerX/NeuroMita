@@ -177,9 +177,11 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         # Wire generation override widgets
         for key, (chk, val_widget) in getattr(v, 'gen_override_widgets', {}).items():
             chk.toggled.connect(self._safe(self._on_field_changed, f"gen_override_enable_{key}"))
-            from PyQt6.QtWidgets import QCheckBox, QLineEdit
+            from PyQt6.QtWidgets import QCheckBox, QComboBox, QLineEdit
             if isinstance(val_widget, QCheckBox):
                 val_widget.toggled.connect(self._safe(self._on_field_changed, f"gen_override_value_{key}"))
+            elif isinstance(val_widget, QComboBox):
+                val_widget.currentTextChanged.connect(self._safe(self._on_field_changed, f"gen_override_value_{key}"))
             elif isinstance(val_widget, QLineEdit):
                 val_widget.textChanged.connect(self._safe(self._on_field_changed, f"gen_override_value_{key}"))
 

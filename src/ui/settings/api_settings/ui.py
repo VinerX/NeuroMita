@@ -285,6 +285,34 @@ def build_api_settings_ui(self, parent_layout):
     self.gen_overrides_section.add_widget(et_row)
     self.gen_override_widgets["enable_thinking"] = (et_enable_chk, et_val_chk)
 
+    # reasoning_effort override (выбор из списка)
+    re_row = SettingsBodyWidget()
+    re_lay = QHBoxLayout(re_row)
+    re_lay.setContentsMargins(0, 1, 0, 1)
+    re_lay.setSpacing(6)
+    re_enable_chk = QCheckBox()
+    re_enable_chk.setFixedWidth(18)
+    tr_set(re_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
+    re_lbl = tr_set(QLabel(), "Глубина размышлений", "Reasoning effort")
+    re_lbl.setMinimumWidth(130)
+    re_lbl.setMaximumWidth(130)
+    re_val_combo = QComboBox()
+    re_val_combo.addItems(["low", "medium", "high"])
+    re_val_combo.setCurrentText("medium")
+    re_val_combo.setEnabled(False)
+    re_val_combo.setMaximumWidth(80)
+    tr_set(re_val_combo,
+           "Работает только при включённом режиме мышления и у провайдеров, понимающих reasoning_effort (LM Studio, llama.cpp).",
+           "Requires thinking mode, and only applies to providers that understand reasoning_effort (LM Studio, llama.cpp).",
+           "setToolTip")
+    re_enable_chk.toggled.connect(re_val_combo.setEnabled)
+    re_lay.addWidget(re_enable_chk)
+    re_lay.addWidget(re_lbl)
+    re_lay.addWidget(re_val_combo)
+    re_lay.addStretch()
+    self.gen_overrides_section.add_widget(re_row)
+    self.gen_override_widgets["reasoning_effort"] = (re_enable_chk, re_val_combo)
+
     self.openrouter_routing_section = CollapsibleSection(
         _("OpenRouter routing", "OpenRouter routing"), self, icon_name="fa5s.sliders-h"
     )

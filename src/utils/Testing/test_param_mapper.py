@@ -98,6 +98,49 @@ class _Settings(dict):
         return super().get(key, default)
 
 
+class PresetReasoningOverrideTests(unittest.TestCase):
+    """Переопределение пресета бьёт глобальную настройку мышления."""
+
+    def _effective(self, global_settings, overrides):
+        from managers.model_config_loader import ModelConfigLoader
+
+        loader = ModelConfigLoader(_Settings(global_settings))
+        preset = types.SimpleNamespace(generation_overrides=overrides, preset_name="test")
+        return loader.effective_for_preset(loader.load(), preset, "gemma-4")
+
+    def test_preset_can_enable_effort_over_global_off(self):
+        cfg = self._effective(
+            {"ENABLE_THINKING": False},
+            {
+                "enable_thinking": {"enabled": True, "value": True},
+                "reasoning_effort": {"enabled": True, "value": "high"},
+            },
+        )
+        self.assertTrue(cfg.enable_thinking)
+        self.assertEqual(cfg.reasoning_effort, "high")
+
+    def test_preset_effort_overrides_global_effort(self):
+        cfg = self._effective(
+            {"ENABLE_THINKING": True, "MODEL_REASONING_EFFORT": "low"},
+            {"reasoning_effort": {"enabled": True, "value": "high"}},
+        )
+        self.assertEqual(cfg.reasoning_effort, "high")
+
+    def test_disabled_override_keeps_global(self):
+        cfg = self._effective(
+            {"ENABLE_THINKING": True, "MODEL_REASONING_EFFORT": "low"},
+            {"reasoning_effort": {"enabled": False, "value": "high"}},
+        )
+        self.assertEqual(cfg.reasoning_effort, "low")
+
+    def test_empty_override_value_does_not_wipe_global(self):
+        cfg = self._effective(
+            {"ENABLE_THINKING": True, "MODEL_REASONING_EFFORT": "low"},
+            {"reasoning_effort": {"enabled": True, "value": ""}},
+        )
+        self.assertEqual(cfg.reasoning_effort, "low")
+
+
 def _params(**kwargs):
     base = dict(
         settings=_Settings(),

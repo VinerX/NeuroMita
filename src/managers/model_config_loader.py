@@ -218,6 +218,15 @@ class ModelConfigLoader:
             forced.add("enable_thinking")
             applied.append(f"enable_thinking={cfg.enable_thinking}")
 
+        # reasoning_effort: строка low/medium/high, пустая = не переопределять
+        re_spec = overrides.get("reasoning_effort") or {}
+        if re_spec.get("enabled"):
+            val = str(re_spec.get("value") or "").strip().lower()
+            if val:
+                cfg.reasoning_effort = val
+                forced.add("reasoning_effort")
+                applied.append(f"reasoning_effort={val}")
+
         if applied:
             preset_name = getattr(preset_settings, "preset_name", "?")
             logger.info(f"[ModelConfigLoader] Preset '{preset_name}' overrides applied: {', '.join(applied)}")
@@ -225,7 +234,8 @@ class ModelConfigLoader:
                 f"[ModelConfigLoader] Effective config — temperature={cfg.temperature}, "
                 f"max_response_tokens={cfg.max_response_tokens}, top_p={cfg.top_p}, "
                 f"top_k={cfg.top_k}, presence_penalty={cfg.presence_penalty}, "
-                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}"
+                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}, "
+                f"reasoning_effort={cfg.reasoning_effort}"
             )
 
         cfg.preset_forced_params = frozenset(forced)
