@@ -1605,7 +1605,7 @@
   "Сбалансировано": "Balanced",
   "Сбор данных": "Data collection",
   "Сбор данных для дообучения": "Fine-tune data collection",
-  "Сбор данных для дообучения был отключён для этого сообщения.\nПоказан последний сохранённый запрос — он может не совпадать с этим сообщением.": "Finetune collection was disabled for this message.\nShowing the last saved request — it may not match this message.",
+  "Не удалось найти сохранённый запрос именно для этого сообщения (сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\nПоказан последний сохранённый запрос — он может не совпадать с этим сообщением.": "Couldn't find the saved request for this specific message (fine-tune collection may be off, or the record was trimmed by the history limit).\nShowing the last saved request — it may not match this message.",
   "Сбор и экспорт данных для дообучения модели. Параметры отладки переехали в Песочницу → Отладка.": "Collect and export data for fine-tuning. Debug parameters moved to Sandbox → Debug.",
   "Сборщик не инициализирован": "Collector not initialized",
   "Сбросить": "Reset",

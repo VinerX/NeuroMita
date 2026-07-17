@@ -491,6 +491,7 @@ class ChatController:
             think_text = result.think
             structured_data = result.structured
             assistant_message_id = result.message_id
+            sample_id = getattr(result, "sample_id", "") or ""
 
             if not response_text:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
@@ -579,6 +580,7 @@ class ChatController:
                     "stream_id": stream_id,
                     "message_id": assistant_message_id or "",
                     "character_id": effective_character_id or "",
+                    "sample_id": sample_id or "",
                 }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
@@ -613,6 +615,7 @@ class ChatController:
                     "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
+                    "sample_id": sample_id or "",
                 }, delivery=EventDelivery.ORDERED)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)

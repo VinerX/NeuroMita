@@ -309,9 +309,11 @@ class AppWindowBase(QMainWindow):
                 self,
                 _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
                 _(
-                    "Сбор данных для дообучения был отключён для этого сообщения.\n"
+                    "Не удалось найти сохранённый запрос именно для этого сообщения "
+                    "(сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\n"
                     "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
-                    "Finetune collection was disabled for this message.\n"
+                    "Couldn't find the saved request for this specific message "
+                    "(fine-tune collection may be off, or the record was trimmed by the history limit).\n"
                     "Showing the last saved request — it may not match this message.",
                 ),
                 level="info",
@@ -1277,11 +1279,14 @@ class AppWindowBase(QMainWindow):
         # Think/system messages must not steal it from the following assistant message.
         structured_data = None
         message_id = None
+        sample_id = None
         if role == "assistant":
             structured_data = getattr(self, '_pending_structured_data', None)
             self._pending_structured_data = None
             message_id = getattr(self, '_pending_message_id', None) or None
             self._pending_message_id = None
+            sample_id = getattr(self, '_pending_sample_id', None) or None
+            self._pending_sample_id = None
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
@@ -1293,6 +1298,7 @@ class AppWindowBase(QMainWindow):
             message_time,
             structured_data=structured_data,
             message_id=message_id,
+            sample_id=sample_id,
         )
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
@@ -1348,6 +1354,7 @@ class AppWindowBase(QMainWindow):
             stream_id=stream_id,
             message_id=str(payload.get("message_id") or ""),
             character_id=str(payload.get("character_id") or ""),
+            sample_id=str(payload.get("sample_id") or ""),
         )
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====

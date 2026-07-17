@@ -93,6 +93,20 @@ class FinishStreamBindingTests(unittest.TestCase):
 
         self.assertEqual(widget._sample_id, "smp-9")
 
+    def test_explicit_sample_id_wins_over_collector_pop(self):
+        # Надёжный id из payload должен использоваться напрямую, а не выдёргиваться
+        # из глобального _pending_sample_id коллектора (который мог устареть).
+        widget = MessageWidget(role="assistant", speaker_name="Mita", content_text="Привет")
+        gui = self._stream_with(widget, pending_sample="stale-pop")
+
+        message_renderer.finish_stream_slot(
+            gui, "default", message_id="msg-1", character_id="Crazy", sample_id="reliable-7"
+        )
+
+        self.assertEqual(widget._sample_id, "reliable-7")
+        # pop не тронут — резервный источник остаётся нетронутым
+        self.assertEqual(gui.chat_message_actions._pending, "stale-pop")
+
     def test_missing_message_id_leaves_widget_untouched(self):
         widget = MessageWidget(role="assistant", speaker_name="Mita", content_text="Привет")
         gui = self._stream_with(widget)

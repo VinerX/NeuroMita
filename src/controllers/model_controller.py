@@ -1691,6 +1691,7 @@ class ModelController(GenerationService, ModelStateService):
                 targets=targets,
                 think=think_text or None,
                 message_id=assistant_message_id,
+                sample_id=sample_id or "",
             )
 
         except Exception as e:
@@ -1905,6 +1906,7 @@ class ModelController(GenerationService, ModelStateService):
                 target=fallback_target,
                 targets=fallback_targets,
                 think=think_text or None,
+                sample_id=sample_id or "",
             )
 
         self._sanitize_structured_segment_fields(structured, capabilities)
@@ -2094,6 +2096,7 @@ class ModelController(GenerationService, ModelStateService):
             think=think_text or None,
             structured=result_dict,
             message_id=assistant_message_id,
+            sample_id=sample_id or "",
         )
 
     # ---------------------------------------------------------------------

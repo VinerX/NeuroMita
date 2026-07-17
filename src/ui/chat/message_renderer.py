@@ -716,7 +716,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     gui.chat_window.scroll_to_bottom()
 
 
-def finish_stream_slot(gui, stream_id="default", message_id="", character_id=""):
+def finish_stream_slot(gui, stream_id="default", message_id="", character_id="", sample_id=""):
     key = str(stream_id or "default")
     states = _stream_states(gui)
     state = states.get(key)
@@ -730,7 +730,9 @@ def finish_stream_slot(gui, stream_id="default", message_id="", character_id="")
     # контекстное меню (регенерация, просмотр контекста) молча ничего не делает.
     message = state.get("message")
     if message is not None:
-        sample_id = _pop_sample_id_if_collecting(gui)
+        # Надёжный id приходит в payload (из ChatGenerationResult); pop из
+        # коллектора — только запасной путь, если id не дотянули явно.
+        sample_id = str(sample_id or "") or _pop_sample_id_if_collecting(gui)
         if sample_id:
             message.set_sample_id(sample_id)
         if message_id:
