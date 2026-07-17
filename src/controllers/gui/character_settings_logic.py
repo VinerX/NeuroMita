@@ -1278,8 +1278,11 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
     QTimer.singleShot(0, gui._struct_migration_worker.start)
 
 
-def open_db_viewer(gui):
-    char_id = _selected_character_id(gui) or None
+def open_db_viewer(gui, character_id: str | None = None):
+    # Явно переданный character_id имеет приоритет: вызывающий (например, кнопка
+    # «История» в чат-панели) знает, с какой Митой идёт диалог. Иначе — падаем на
+    # выбранного в настройках персонажа, что для не-чатовых кнопок и требуется.
+    char_id = str(character_id or "").strip() or _selected_character_id(gui) or None
 
     dialog = DbViewerDialog(gui, character_id=char_id)
     dialog.exec()
