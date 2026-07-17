@@ -807,10 +807,12 @@ class ThinkBlockWidget(QFrame):
         self._header.setStyleSheet(f"color: #9CA3AF; font-weight: bold; font-size: {self._font_sm}pt; background: transparent; border: none;")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = lambda e: self.toggle()
-        if is_streaming: self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(speaker_name) + ".")
+        # Автор у размышлений не выводится — аватар и имя принадлежат основному
+        # пузырю ответа, а не мыслям (см. фидбэк по UI).
+        if is_streaming: self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + ".")
         else:
             arrow = "▶" if self._collapsed else "▼"
-            self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(speaker_name))
+            self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
         layout.addWidget(self._header)
 
         self._content_label = QLabel(self)
@@ -830,7 +832,7 @@ class ThinkBlockWidget(QFrame):
         self._collapsed = not self._collapsed
         self._content_label.setVisible(not self._collapsed)
         arrow = "▶" if self._collapsed else "▼"
-        self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
+        self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
 
     def append_content(self, text: str):
         self._content_text += text
@@ -839,7 +841,7 @@ class ThinkBlockWidget(QFrame):
     def finalize(self):
         self._is_streaming = False
         self._stop_animation()
-        self._header.setText("▼ 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
+        self._header.setText("▼ 💭 " + _("Размышления", "Reasoning"))
 
     def _start_animation(self):
         from PyQt6.QtCore import QTimer
@@ -856,4 +858,4 @@ class ThinkBlockWidget(QFrame):
         phases = [".  ", ".. ", "..."]
         self._anim_phase = (self._anim_phase + 1) % 3
         dots = phases[self._anim_phase]
-        self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(self._speaker_name) + dots)
+        self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + dots)

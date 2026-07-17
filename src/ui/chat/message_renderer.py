@@ -67,6 +67,11 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
     # Расчет точного отступа, чтобы рамка панели совпала с рамкой пузырька
     indent = AVATAR_SIZE + 16  # 36 + 8 (spacing) + 8 (tail)
 
+    # Ссылки для последующего «разжалования» аватара (см. _demote_think_avatar):
+    # у стриминговых размышлений аватар живёт только пока не появился пузырь ответа.
+    wrapper._nm_layout = lay
+    wrapper._nm_avatar = None
+
     if role == "assistant":
         if avatar_pixmap is not None:
             lay.setContentsMargins(0, 2, 0, 4)
@@ -76,6 +81,7 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
             avatar.setPixmap(avatar_pixmap)
             lay.setSpacing(8)
             lay.addWidget(avatar, 0, Qt.AlignmentFlag.AlignBottom)
+            wrapper._nm_avatar = avatar
         else:
             lay.setContentsMargins(indent, 2, 0, 4)
             lay.setSpacing(0)
@@ -91,6 +97,27 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
         lay.addWidget(panel)
 
     return wrapper
+
+
+def _demote_think_avatar(wrapper) -> None:
+    """Убрать аватар у стриминговых размышлений, когда пошёл ответ.
+
+    Пока модель размышляет, пузыря ответа ещё нет, поэтому аватар висит на блоке
+    размышлений — так он появляется сразу, а не с задержкой. Как только начинается
+    основной ответ (со своим аватаром), аватар размышлений снимаем и выравниваем
+    левый край рамки по телу пузыря — как в перезагруженной истории.
+    """
+    if wrapper is None:
+        return
+    avatar = getattr(wrapper, "_nm_avatar", None)
+    lay = getattr(wrapper, "_nm_layout", None)
+    if avatar is None or lay is None:
+        return
+    lay.removeWidget(avatar)
+    avatar.deleteLater()
+    wrapper._nm_avatar = None
+    lay.setSpacing(0)
+    lay.setContentsMargins(AVATAR_SIZE + 16, 2, 0, 4)
 
 STRUCTURED_MODE_OFF   = "Выкл"
 STRUCTURED_MODE_BRIEF = "Кратко"
@@ -260,12 +287,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[gui._think_block_counter - 1] = block
 
-        wrapped = _wrap_panel_aligned(
-            block,
-            "assistant",
-            parent=chat_parent,
-            avatar_pixmap=_get_avatar_pixmap(speaker_name, "assistant"),
-        )
+        # Без аватара: он принадлежит основному пузырю ответа. Отступ по
+        # indent-пути выравнивает левый край рамки размышлений с телом пузыря.
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 
@@ -478,6 +502,7 @@ def _stream_state(gui, stream_id: str, *, create: bool = False) -> dict | None:
             "speaker_name": "",
             "message": None,
             "think_block": None,
+            "think_wrapper": None,
         }
         states[key] = state
     return state
@@ -518,7 +543,11 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         _get_think_blocks(gui)[gui._think_block_counter - 1] = block
         state["think_block"] = block
 
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
+        # Аватар на время стриминга — чтобы он появился сразу с блоком размышлений;
+        # при переходе к ответу он снимается (_demote_think_avatar).
+        avatar_pixmap = _get_avatar_pixmap(name, "assistant") if name else None
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, avatar_pixmap=avatar_pixmap)
+        state["think_wrapper"] = wrapped
         gui.chat_window.add_message_widget(wrapped)
         return
 
@@ -587,7 +616,9 @@ def _finalize_streaming_think_block(gui, stream_id="default", *, state=None):
     block = state.get("think_block")
     if block:
         block.finalize()
+    _demote_think_avatar(state.get("think_wrapper"))
     state["think_block"] = None
+    state["think_wrapper"] = None
 
 
 def attach_structured_to_stream(gui, structured_data: dict, stream_id="default"):
