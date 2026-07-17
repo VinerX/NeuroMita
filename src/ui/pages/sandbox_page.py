@@ -1644,6 +1644,7 @@ class SandboxPage(QWidget):
             ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
             ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
             ("_show_sys_cb", "SHOW_SYSTEM_MESSAGES", False),
+            ("_show_tokens_cb", "SHOW_TOKEN_INFO", False),
         )
         for attr, key, default in pairs:
             w = getattr(self, attr, None)
@@ -1781,6 +1782,16 @@ class SandboxPage(QWidget):
         sys_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v))
         display_layout.addWidget(sys_cb)
         self._show_sys_cb = sys_cb
+
+        tokens_cb = tr_set(QCheckBox(), "Показывать статистику токенов/стоимости", "Show token/cost stats")
+        tokens_cb.setObjectName("SandboxCaptureToggle")
+        tokens_cb.setChecked(bool(self._setting("SHOW_TOKEN_INFO", False)))
+        tr_set(tokens_cb,
+               "Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. По умолчанию выключена.",
+               "Bottom-of-chat line with tokens, context fill, cache and cost. Off by default.", "setToolTip")
+        tokens_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_TOKEN_INFO", v))
+        display_layout.addWidget(tokens_cb)
+        self._show_tokens_cb = tokens_cb
         layout.addWidget(display_strip)
 
         # ── Контекст сессии ─────────────────────────────────────────────────
