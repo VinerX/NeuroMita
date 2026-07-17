@@ -970,6 +970,7 @@ class MemoryManager(CharacterScopedService):
                             f"""
                             UPDATE memories SET is_forgotten=1
                             WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
+                              AND (type IS NULL OR type NOT LIKE 'island:%')
                               AND LOWER(priority)=?
                               AND {_age_expr} > ?
                             """,

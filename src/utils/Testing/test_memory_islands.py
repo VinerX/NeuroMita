@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import datetime
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -190,6 +192,87 @@ class MemoryIslandUpsertTests(unittest.TestCase):
         # Reindex was scheduled — flush the single-worker embed executor.
         mm._get_embed_executor().submit(lambda: None).result(timeout=5)
         self.assertIn((b, "Player likes cats and tea"), fake.calls)
+
+
+class IslandTtlProtectionTests(unittest.TestCase):
+    """Islands must survive TTL cleanup in every MEMORY_TTL_MODE."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.mkdtemp(prefix="nm_island_ttl_")
+        DatabaseManager._instance = None
+        DatabaseManager._path_override = os.path.join(cls._tmp, "world.db")
+        from managers.memory_manager import MemoryManager
+        cls._MM = MemoryManager
+
+    @classmethod
+    def tearDownClass(cls):
+        DatabaseManager._instance = None
+        DatabaseManager._path_override = None
+
+    def _fresh_mm(self, name):
+        mm = self._MM(name)
+        mm.rag = None
+        mm._ensure_memories_schema()  # access_count / last_accessed columns
+        return mm
+
+    def _backdate(self, mm, eid, days):
+        old = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
+        with mm.db.connection() as conn:
+            conn.execute(
+                "UPDATE memories SET date_created=?, last_accessed=? "
+                "WHERE character_id=? AND eternal_id=?",
+                (old, old, mm.storage_key, eid),
+            )
+            conn.commit()
+
+    def _is_forgotten(self, mm, eid):
+        with mm.db.connection() as conn:
+            row = conn.execute(
+                "SELECT is_forgotten FROM memories WHERE character_id=? AND eternal_id=?",
+                (mm.storage_key, eid),
+            ).fetchone()
+        return int(row[0])
+
+    def _run_mode(self, mode, char_name):
+        mm = self._fresh_mm(char_name)
+        island_eid = mm.upsert_island("island:relationship", "we are close", priority="high")
+        normal_eid = mm.add_memory(content="an ordinary fact", priority="high")
+        self.assertIsNotNone(island_eid)
+        self.assertIsNotNone(normal_eid)
+
+        # Both far older than the TTL — only the non-island one must be forgotten.
+        self._backdate(mm, island_eid, days=100)
+        self._backdate(mm, normal_eid, days=100)
+
+        settings = {
+            "MEMORY_TTL_ENABLED": True,
+            "MEMORY_TTL_LOW_DAYS": 0,
+            "MEMORY_TTL_NORMAL_DAYS": 0,
+            "MEMORY_TTL_HIGH_DAYS": 10,
+            "MEMORY_TTL_MODE": mode,
+            "MEMORY_TTL_ACCESS_WEIGHT": 0.5,
+        }
+        with mock.patch(
+            "managers.memory_manager.SettingsManager.get",
+            side_effect=lambda key, default=None: settings.get(key, default),
+        ):
+            forgotten = mm.apply_ttl_cleanup()
+
+        self.assertEqual(self._is_forgotten(mm, island_eid), 0, f"island forgotten in {mode}")
+        self.assertEqual(self._is_forgotten(mm, normal_eid), 1, f"normal survived in {mode}")
+        self.assertEqual(forgotten, 1, f"exactly one memory forgotten in {mode}")
+
+    def test_island_survives_ttl_date_created(self):
+        self._run_mode("date_created", "TtlDateCreated")
+
+    def test_island_survives_ttl_last_accessed(self):
+        self._run_mode("last_accessed", "TtlLastAccessed")
+
+    def test_island_survives_ttl_access_weighted(self):
+        self._run_mode("access_weighted", "TtlAccessWeighted")
 
 
 class IslandRoutingTests(unittest.TestCase):
