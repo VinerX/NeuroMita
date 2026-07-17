@@ -69,12 +69,15 @@ class ApplyReasoningTests(unittest.TestCase):
         )
         self.assertEqual(payload["reasoning_effort"], "none")
 
-    def test_reasoning_effort_enabled_defaults_to_medium(self):
+    def test_reasoning_effort_enabled_without_level_sends_nothing(self):
+        # Без явного уровня ничего не шлём: reasoning-модели LM Studio думают по
+        # умолчанию, а "medium" на модели, знающей лишь on/off (gemma-4-12b-qat),
+        # даёт WARN и откат на 'on' — тот же результат, но с шумом в логах.
         payload = {}
         OpenAIHTTPProviderBase._apply_reasoning(
             payload, _req(enable_thinking=True, reasoning_control="reasoning_effort")
         )
-        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertNotIn("reasoning_effort", payload)
 
     def test_reasoning_effort_honours_explicit_level(self):
         payload = {}
@@ -84,13 +87,14 @@ class ApplyReasoningTests(unittest.TestCase):
         )
         self.assertEqual(payload["reasoning_effort"], "high")
 
-    def test_reasoning_effort_rejects_unknown_level(self):
+    def test_reasoning_effort_ignores_unknown_level(self):
+        # Мусорный уровень трактуем как «уровень не выбран» — не шлём ничего.
         payload = {}
         OpenAIHTTPProviderBase._apply_reasoning(
             payload,
             _req(enable_thinking=True, reasoning_control="reasoning_effort", reasoning_effort="ultra"),
         )
-        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertNotIn("reasoning_effort", payload)
 
 
 class _Settings(dict):

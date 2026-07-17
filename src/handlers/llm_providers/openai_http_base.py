@@ -160,7 +160,13 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 payload["reasoning_effort"] = "none"
             else:
                 effort = str(extra.get("reasoning_effort") or "").strip().lower()
-                payload["reasoning_effort"] = effort if effort in REASONING_EFFORT_LEVELS else "medium"
+                # Уровень шлём только если пользователь его явно выбрал. Без уровня
+                # не отправляем ничего: reasoning-модели LM Studio / llama.cpp
+                # (Gemma 4, Qwen3) думают по умолчанию, а посланный "medium"/"low"
+                # на модели, знающей лишь on/off (напр. gemma-4-12b-qat), даёт WARN
+                # и откат на 'on' — тот же результат, но с шумом в логах.
+                if effort in REASONING_EFFORT_LEVELS:
+                    payload["reasoning_effort"] = effort
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}

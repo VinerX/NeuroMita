@@ -31,27 +31,48 @@ class StructuredJsonStreamFilter:
 
     When the model returns a JSON object (structured output), the raw stream
     contains JSON syntax rather than readable text.  This filter extracts the
-    values of every ``"text"`` key found in the stream (i.e. segment texts)
-    and emits them in order, discarding all JSON scaffolding.
+    values of the ``"text"`` keys (segment texts, → канал "content") and of the
+    top-level ``"reasoning"`` key (→ канал "reasoning"), emitting them in order
+    and discarding all JSON scaffolding.
+
+    Разведение по каналам важно для локальных моделей: при json_schema-грамматике
+    (LM Studio + Gemma 4) нативный reasoning_content подавляется, и мысли модель
+    кладёт прямо в поле ``reasoning`` JSON-ответа. Без этого фильтра они бы либо
+    утекли в текст, либо не показались в окне размышлений вовсе.
 
     Activated lazily: call feed() with the first chunk; if it starts with ``{``
     the filter enters JSON mode automatically.
     """
 
-    KEY = '"text"'
+    # (канал, ключ) — ищем ближайший из ключей при сканировании.
+    _KEYS = (("reasoning", '"reasoning"'), ("content", '"text"'))
 
     def __init__(self):
         self._buf = ""
         self._state = "SCANNING"   # SCANNING | EXPECT_COLON | EXPECT_QUOTE | IN_VALUE
         self._escape_next = False
         self._json_mode = False    # set True once we see the leading {
+        self._pending_channel = "content"
+        self._current_channel = "content"
 
     def is_json_mode(self) -> bool:
         return self._json_mode
 
-    def feed(self, chunk: str) -> str:
-        """Return text to display; returns raw chunk unchanged if not in JSON mode."""
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        """Вернуть список (channel, text): channel — "content" или "reasoning".
+
+        Если поток не JSON — весь чанк отдаётся как ("content", chunk) без изменений.
+        """
         self._buf += str(chunk)
+        out: list[tuple[str, str]] = []
+
+        def emit(channel: str, text: str) -> None:
+            if not text:
+                return
+            if out and out[-1][0] == channel:
+                out[-1] = (channel, out[-1][1] + text)
+            else:
+                out.append((channel, text))
 
         # Detect JSON mode on the very first non-empty feed.
         # Some models wrap JSON in a markdown code fence (```json\n{...}\n```).
@@ -59,36 +80,45 @@ class StructuredJsonStreamFilter:
         if not self._json_mode:
             stripped = self._buf.lstrip()
             if not stripped:
-                return ""
+                return out
             # Skip optional ```json / ``` fence header
             if stripped.startswith("```"):
                 newline = stripped.find("\n")
                 if newline == -1:
                     # Haven't received the newline yet — wait for more data
-                    return ""
+                    return out
                 stripped = stripped[newline + 1:].lstrip()
                 if not stripped:
-                    return ""
+                    return out
             if stripped[0] == "{":
                 # Advance _buf to the actual '{' so the parser starts correctly
                 self._buf = stripped
                 self._json_mode = True
             else:
                 # Not JSON — pass through unchanged
-                out = self._buf
+                emit("content", self._buf)
                 self._buf = ""
                 return out
 
-        out = ""
+        max_key = max(len(key) for _, key in self._KEYS)
         while self._buf:
             if self._state == "SCANNING":
-                pos = self._buf.find(self.KEY)
-                if pos == -1:
-                    keep = len(self.KEY) - 1
+                best_pos = -1
+                best_channel = "content"
+                best_key = ""
+                for channel, key in self._KEYS:
+                    pos = self._buf.find(key)
+                    if pos != -1 and (best_pos == -1 or pos < best_pos):
+                        best_pos = pos
+                        best_channel = channel
+                        best_key = key
+                if best_pos == -1:
+                    keep = max_key - 1
                     if len(self._buf) > keep:
                         self._buf = self._buf[-keep:]
                     break
-                self._buf = self._buf[pos + len(self.KEY):]
+                self._buf = self._buf[best_pos + len(best_key):]
+                self._pending_channel = best_channel
                 self._state = "EXPECT_COLON"
 
             elif self._state == "EXPECT_COLON":
@@ -109,6 +139,7 @@ class StructuredJsonStreamFilter:
                     self._buf = self._buf[1:]
                     self._state = "IN_VALUE"
                     self._escape_next = False
+                    self._current_channel = self._pending_channel
                 else:
                     self._state = "SCANNING"
 
@@ -118,17 +149,17 @@ class StructuredJsonStreamFilter:
                 if self._escape_next:
                     self._escape_next = False
                     if c == "n":
-                        out += "\n"
+                        emit(self._current_channel, "\n")
                     elif c == "t":
-                        out += "\t"
+                        emit(self._current_channel, "\t")
                     elif c in ('"', "\\", "/"):
-                        out += c
+                        emit(self._current_channel, c)
                     elif c == "u":
                         if len(self._buf) >= 4:
                             try:
-                                out += chr(int(self._buf[:4], 16))
+                                emit(self._current_channel, chr(int(self._buf[:4], 16)))
                             except ValueError:
-                                out += "\\u" + self._buf[:4]
+                                emit(self._current_channel, "\\u" + self._buf[:4])
                             self._buf = self._buf[4:]
                         else:
                             # Not enough chars yet — restore state and wait for next chunk
@@ -139,20 +170,25 @@ class StructuredJsonStreamFilter:
                     self._escape_next = True
                 elif c == '"':
                     self._state = "SCANNING"
-                    if out and not out.endswith(" "):
-                        out += " "
+                    # Пробел-разделитель между текстами сегментов (не для reasoning —
+                    # оно одно). last content-кусок мог оканчиваться не пробелом.
+                    if self._current_channel == "content":
+                        emit("content", " ")
                 else:
-                    out += c
+                    emit(self._current_channel, c)
         return out
 
-    def flush_visible(self) -> str:
+    def flush_visible(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
         if self._state == "IN_VALUE":
             tail = self._buf
             self._buf = ""
             self._state = "SCANNING"
-            return tail
-        self._buf = ""
-        return ""
+            if tail:
+                out.append((self._current_channel, tail))
+        else:
+            self._buf = ""
+        return out
 
 
 class ChatController:
@@ -344,6 +380,16 @@ class ChatController:
                 if stream_coalescer is not None:
                     stream_coalescer.flush()
 
+            def _route_filtered(pieces) -> None:
+                # Фильтр разводит JSON-поток на каналы: reasoning → окно размышлений
+                # (если включено), content → основной пузырь ответа.
+                for channel, piece in pieces:
+                    if channel == "reasoning":
+                        if show_think_in_gui:
+                            on_think_chunk(piece)
+                    else:
+                        _emit_visible_assistant(piece)
+
             def stream_event_handler(event: LLMStreamEvent):
                 if not eff_policy.echo_to_ui:
                     return
@@ -354,9 +400,12 @@ class ChatController:
                 if event.type is not LLMStreamEventType.TEXT_DELTA:
                     return
                 visible = event.text
-                if visible and stream_json_filter is not None:
-                    visible = stream_json_filter.feed(visible)
-                _emit_visible_assistant(visible)
+                if not visible:
+                    return
+                if stream_json_filter is not None:
+                    _route_filtered(stream_json_filter.feed(visible))
+                else:
+                    _emit_visible_assistant(visible)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -468,9 +517,8 @@ class ChatController:
 
             # Flush any held-back tail from stream filters
             if is_streaming and eff_policy.echo_to_ui:
-                tail = stream_json_filter.flush_visible() if stream_json_filter is not None else ""
-                if tail:
-                    _emit_visible_assistant(tail)
+                if stream_json_filter is not None:
+                    _route_filtered(stream_json_filter.flush_visible())
                 flush_stream_output()
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
