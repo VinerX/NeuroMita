@@ -148,6 +148,9 @@ class ContextViewerDialog(QDialog):
         self._messages: List[Dict] = data.get("messages") or []
         self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
+        # Ответ модели в structured-режиме приходит одной JSON-строкой; по
+        # умолчанию разворачиваем её по строкам для читаемости.
+        self._format_response = True
 
         self.setWindowTitle(_("Просмотр контекста запроса и ответа", "Request / Response Context Viewer"))
         self.setMinimumSize(900, 600)
@@ -247,10 +250,39 @@ class ContextViewerDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        self._format_response_cb = QCheckBox(_("Форматировать ответ", "Format response"))
+        self._format_response_cb.setChecked(self._format_response)
+        self._format_response_cb.setToolTip(
+            _("Развернуть JSON-ответ по строкам", "Pretty-print the JSON response across lines")
+        )
+        self._format_response_cb.stateChanged.connect(self._on_format_response_toggled)
+        toolbar.addWidget(self._format_response_cb)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
         self._response_viewer = QTextBrowser()
         self._response_viewer.setOpenLinks(False)
         layout.addWidget(self._response_viewer)
         return tab
+
+    def _on_format_response_toggled(self):
+        self._format_response = self._format_response_cb.isChecked()
+        self._render_response_tab()
+
+    def _maybe_format_json(self, text: str) -> str:
+        """Если включено форматирование и text — валидный JSON, развернуть с отступами."""
+        if not self._format_response:
+            return text
+        stripped = (text or "").strip()
+        if not stripped or stripped[0] not in "{[":
+            return text
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return text
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
@@ -531,7 +563,7 @@ class ContextViewerDialog(QDialog):
             sections.append(
                 f"<hr style='border-color:{_BORDER}'>"
                 f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Model response', 'Model response')}</b></p>"
-                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_text)}</div>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(self._maybe_format_json(response_text))}</div>"
             )
         else:
             sections.append(
@@ -542,7 +574,7 @@ class ContextViewerDialog(QDialog):
             sections.append(
                 f"<hr style='border-color:{_BORDER}'>"
                 f"<p><b style='color:{_MUTED}'>{_('Raw response', 'Raw response')}</b></p>"
-                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(response_raw)}</div>"
+                f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(self._maybe_format_json(response_raw))}</div>"
             )
 
         self._response_viewer.setHtml(self._wrap("".join(sections)))
