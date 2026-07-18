@@ -118,9 +118,12 @@ _SECTION_STYLE = {
     "history":     ("🕰", "#60A5FA"),  # <past_context> / history
     "entity":      ("🕸", "#A78BFA"),  # <entity_knowledge> / graph
     "summary":     ("📜", "#F4D35E"),  # [HISTORY SUMMARY]
-    "state":       ("🕐", "#22D3EE"),  # [Current State]
+    "state":       ("🕐", "#22D3EE"),  # [Current State] — дата/время
+    "sysstate":    ("🔌", "#38BDF8"),  # [System State] — готовность программы/связи
     "behavior":    ("📊", "#F472B6"),  # состояние поведения
     "participant": ("👥", "#FBBF24"),  # участники диалога
+    "unity":       ("🕹", "#8B5CF6"),  # Unity runtime: rules / capabilities / intent / events
+    "world":       ("🏠", "#4ADE80"),  # [MiSide World State]
     "game":        ("🎮", "#4ADE80"),  # состояние мини-игры
     "default":     ("🏷", "#9CA3AF"),  # прочие теги/заголовки
 }
@@ -775,6 +778,14 @@ class ContextViewerDialog(QDialog):
             cat = "behavior"
         elif "participant" in key:
             cat = "participant"
+        # Unity/MiSide-блоки распознаём до generic "state"/"game": и
+        # "MiSide World State", и "System State" содержат "state".
+        elif "world" in key or "miside" in key:
+            cat = "world"
+        elif "unity" in key or "runtime" in key or "intent" in key or "capabilit" in key:
+            cat = "unity"
+        elif "system state" in key:
+            cat = "sysstate"
         elif "game" in key:
             cat = "game"
         elif "state" in key:
@@ -789,22 +800,30 @@ class ContextViewerDialog(QDialog):
         return icon, color, label
 
     def _classify_message_label(self, msg: dict, role: str, ordinal: int) -> str:
-        """Ярлык узла дерева: осмысленный для system-сообщений, обычный для остальных."""
-        icon = _ROLE_ICONS.get(role, "•")
-        if role != "system":
-            return f"{icon} {role} #{ordinal}"
+        """Ярлык узла дерева: осмысленный по заголовку блока для любой роли.
 
+        Заголовок распознаём и у не-system ролей: Unity/MiSide-блоки уходят с
+        ``role="event"`` (провайдер превращает их в ``user`` с префиксом
+        ``[RUNTIME EVENT]``), поэтому раньше они висели безликими «user #N».
+        Метки-сиблинги (имена ролей, имена тегов) все на английском — держим и
+        «System prompt» английским, чтобы одна строка не выпадала на русский.
+        """
         text = self._content_plain(msg.get("content"))
         first = next((ln.strip() for ln in text.split("\n") if ln.strip()), "")
+        # Снимаем провайдерский префикс [RUNTIME EVENT], чтобы под ним увидеть
+        # настоящий заголовок блока ([Unity Runtime Capabilities] и т.п.).
+        first = re.sub(r"^\[\s*RUNTIME EVENT\s*\]\s*", "", first)
         m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if m:
             name = m.group(2) if m.re is _RE_TAG_RAW else m.group(1)
             s_icon, _c, s_label = self._marker_meta(name)
             return f"{s_icon} {s_label}"
+
+        icon = _ROLE_ICONS.get(role, "•")
         # крупный блок без явного заголовка — основной системный промпт
-        if len(text) > 400:
-            return "📖 " + _("Системный промпт", "System prompt")
-        return f"{icon} system #{ordinal}"
+        if role == "system" and len(text) > 400:
+            return "📖 System prompt"
+        return f"{icon} {role} #{ordinal}"
 
     def _banner_html(self, name: str, closing: bool) -> str:
         icon, color, label = self._marker_meta(name)
