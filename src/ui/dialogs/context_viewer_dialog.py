@@ -152,11 +152,14 @@ class ContextViewerDialog(QDialog):
         self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
 
-        # Оценка токенов по сообщениям/секциям (локальный токенайзер, только для
-        # сравнения масштаба блоков — не биллинг). Заполняется на этапе дампа
-        # (chat_handler._compute_token_usage) и лежит в data["token_usage"].
-        # Точный итог запроса берём из фактического usage ответа, а тут — оценка.
+        # Оценка токенов по сообщениям/секциям (только для сравнения масштаба
+        # блоков — не биллинг). Обычно приходит из дампа (data["token_usage"]),
+        # но у finetune-сэмпла её нет — тогда считаем прямо здесь из messages,
+        # чтобы проценты/оценки были из любого источника. Точный итог запроса
+        # берём из фактического usage ответа, а тут — оценка.
         self._token_usage: Dict[str, Any] = data.get("token_usage") or {}
+        if not self._token_usage.get("available"):
+            self._token_usage = self._compute_local_token_usage(self._messages)
         self._est_by_index: Dict[int, Dict[str, int]] = {}
         for entry in self._token_usage.get("per_message", []) or []:
             if isinstance(entry, dict) and isinstance(entry.get("index"), int):
@@ -845,6 +848,17 @@ class ContextViewerDialog(QDialog):
         )
 
     # ── Token estimates (локальная оценка, не биллинг) ────────────────────────
+    @staticmethod
+    def _compute_local_token_usage(messages: List[Dict]) -> Dict[str, Any]:
+        """Посчитать оценку токенов прямо в просмотрщике, когда её нет в данных
+        (напр. открыт finetune-сэмпл). Использует тот же _compute_token_usage,
+        что и дамп, поэтому проценты/секции считаются одинаково."""
+        try:
+            from handlers.chat_handler import _compute_token_usage
+            return _compute_token_usage(messages) or {}
+        except Exception:
+            return {}
+
     def _est_suffix(self, idx: int) -> str:
         """Хвост к ярлыку узла: « · ~1.2k» (+«🖼» если есть картинки)."""
         # В дереве — доля сообщения от всего input-контекста (для беглого скана,
