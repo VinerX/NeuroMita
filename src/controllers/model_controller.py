@@ -34,7 +34,7 @@ from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
-from managers.model_pricing_manager import ModelPricingManager
+from managers.model_pricing_manager import ModelPricingManager, known_model_context_length
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
@@ -892,9 +892,12 @@ class ModelController(GenerationService, ModelStateService):
         preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
 
         pricing_info = None
+        model_name = ""
         if cid:
             try:
-                pricing_info = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+                resolved_preset = self.preset_resolver.resolve(preset_id)
+                model_name = str(getattr(resolved_preset, "api_model", "") or "")
+                pricing_info = self.model_pricing_manager.resolve_for_preset(resolved_preset)
             except Exception:
                 pricing_info = None
 
@@ -928,9 +931,18 @@ class ModelController(GenerationService, ModelStateService):
             max_completion_tokens = pricing_info.max_completion_tokens
         if max_context_tokens is None:
             try:
-                max_context_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+                configured = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
             except Exception:
-                max_context_tokens = 32000
+                configured = 32000
+            # Провайдер не сообщил окно (напр. Google AI Studio Gemini). Если
+            # пользователь не менял дефолт (32000), а модель известна — берём её
+            # реальное окно, иначе Gemini/Claude показывались бы как 32k. Явно
+            # выставленное пользователем значение уважаем.
+            if configured == 32000:
+                known = known_model_context_length(model_name)
+                if known:
+                    configured = known
+            max_context_tokens = configured
 
         return {
             "estimated_context_tokens": int(context_tokens or 0),

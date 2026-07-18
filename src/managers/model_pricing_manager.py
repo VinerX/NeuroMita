@@ -14,6 +14,55 @@ from handlers.llm_providers.http_transport import LLMHttpTransport
 from presets.provider_host_metadata import infer_provider_currency
 
 
+# Приблизительные окна контекста известных семейств моделей — по подстроке имени
+# (регистронезависимо, первый матч выигрывает, порядок: специфичное → общее).
+# Нужны как fallback только для метрики/бара «сколько занято окна», когда
+# провайдер не отдаёт context_length (напр. Google AI Studio Gemini — иначе бар
+# показывал бы дефолтные 32k вместо реального 1M). Это не влияет на обрезку
+# истории (у неё свой лимит) — только на отображаемую верхнюю границу.
+_KNOWN_MODEL_CONTEXT: tuple[tuple[str, int], ...] = (
+    ("gemini-1.5-pro", 2_000_000),
+    ("gemini-2.5-pro", 1_000_000),
+    ("gemini-2.5", 1_000_000),
+    ("gemini-2.0", 1_000_000),
+    ("gemini-1.5", 1_000_000),
+    ("gemini-exp", 1_000_000),
+    ("gemini", 1_000_000),           # общий дефолт: у актуальных Gemini окно ≥1M
+    ("gpt-4.1", 1_000_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4", 8_192),
+    ("gpt-3.5", 16_385),
+    ("o1", 200_000),
+    ("o3", 200_000),
+    ("o4", 200_000),
+    ("claude", 200_000),
+    ("deepseek", 128_000),
+    ("qwen", 128_000),
+    ("llama-3.1", 128_000),
+    ("llama-4", 1_000_000),
+    ("mistral", 32_000),
+    ("mixtral", 32_000),
+    ("gemma", 8_192),
+    ("grok", 131_072),
+)
+
+
+def known_model_context_length(model: str) -> Optional[int]:
+    """Известное окно контекста по имени модели, либо None.
+
+    Только приблизительная оценка для UI-метрики, когда провайдер не сообщает
+    точный context_length. Матчинг по подстроке имени модели.
+    """
+    name = str(model or "").strip().lower()
+    if not name:
+        return None
+    for needle, length in _KNOWN_MODEL_CONTEXT:
+        if needle in name:
+            return length
+    return None
+
+
 def _to_float(value: Any) -> Optional[float]:
     try:
         if value in (None, ""):
