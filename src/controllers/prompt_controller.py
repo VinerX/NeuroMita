@@ -611,16 +611,28 @@ class PromptController(PromptBuilderService):
             else False
         )
 
-        unity_context_messages = [
-            self._build_unity_runtime_rules_message(game_state),
-            self._build_unity_runtime_capabilities_message(game_state),
-            self._build_unity_intent_rules_message(
-                game_state,
-                support_intents=support_intents,
-            ),
-            self._build_unity_world_state_message(game_state),
-            self._build_unity_runtime_events_message(game_state),
-        ]
+        # Unity-контекст (world state / capabilities / rules / events) впрыскиваем
+        # только когда игра реально подключена. Снимок game_state персистентен и
+        # липко хранит последние значения даже после отключения мода
+        # (GameState.update_from_event_data), поэтому без этого гейта десктоп-чат
+        # без игры показывал бы устаревшее состояние мира — в противоречии с
+        # [System State], который честно сообщает, что связи нет. Источник правды
+        # о связи — GameLinkService через runtime_capabilities().connected
+        # (True/False/None). Подавляем только при явном False (мы знаем, что связи
+        # нет); None (неизвестно, напр. в изолированных тестах) не трогаем.
+        if runtime_capabilities().connected is False:
+            unity_context_messages: List[Optional[Dict[str, Any]]] = []
+        else:
+            unity_context_messages = [
+                self._build_unity_runtime_rules_message(game_state),
+                self._build_unity_runtime_capabilities_message(game_state),
+                self._build_unity_intent_rules_message(
+                    game_state,
+                    support_intents=support_intents,
+                ),
+                self._build_unity_world_state_message(game_state),
+                self._build_unity_runtime_events_message(game_state),
+            ]
         for message in reversed([m for m in unity_context_messages if m]):
             volatile_system_messages.insert(0, message)
         messages.extend(stable_system_messages)
