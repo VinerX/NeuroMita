@@ -865,6 +865,50 @@ class ModelController(GenerationService, ModelStateService):
         logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         return preset_id
 
+    def _warm_base_prompt(self, cid: str, event_type: str) -> list[dict] | None:
+        """Собрать базовый промпт БЕЗ запроса — чтобы счётчик токенов под чатом
+        показывал контекст ещё до отправки первого сообщения (#1).
+
+        Используем настоящий PromptBuilderService (единый источник сборки), без
+        user_input/rag — это статическая часть окна (система + память + история).
+        RAG и текст сообщения добавятся сверху при реальном запросе. Всё
+        защищено: любая ошибка → None, счётчик просто останется на 0, как раньше.
+        """
+        try:
+            char = self._get_character_ref(cid)
+            if char is None:
+                return None
+            char_name = str(getattr(char, "name", "") or "")
+            policy = resolve_policy(model_event_type=str(event_type))
+            preset_id = self._resolve_chat_preset_id(cid, char_name)
+            capabilities: Dict[str, Any] = {}
+            try:
+                capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
+            except Exception:
+                capabilities = {}
+            cfg = getattr(self.model, "cfg", None)
+            memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
+            prompt_request = PromptBuildRequest(
+                character=char,
+                event_type=event_type,
+                policy=policy,
+                user_input="",
+                memory_limit=memory_limit,
+                is_game_master=(cid == "GameMaster"),
+                separate_prompts=bool(self.settings.get("SEPARATE_PROMPTS", True)),
+                capabilities=capabilities,
+                game_state=self.game_state.to_prompt_dict(),
+            )
+            with character_lock(cid):
+                built = use(PromptBuilderService).build(prompt_request)
+            # НЕ кладём в _base_prompt_cache: тот кэш — авторитетный слепок
+            # реального запроса. Оценку считаем свежей на каждый вызов (пока не
+            # было запроса), чтобы она отражала текущие настройки, а не залипала.
+            return redact_image_payloads(list(getattr(built, "messages", []) or []))
+        except Exception as e:
+            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {e}")
+            return None
+
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
         if not cid:
@@ -872,6 +916,10 @@ class ModelController(GenerationService, ModelStateService):
 
         event_type = "chat"
         base = self._base_prompt_cache.get((cid, event_type))
+        if not base:
+            # Кэш ещё не прогрет (не было запросов в этой сессии) — собираем
+            # базовый промпт на лету, чтобы счётчик не висел на нуле до отправки.
+            base = self._warm_base_prompt(cid, event_type)
         if not base:
             return cid, [], 0
 
