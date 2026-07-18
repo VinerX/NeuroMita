@@ -464,9 +464,13 @@ class AppWindowBase(QMainWindow):
             self._chat_history_load_pending = False
             QTimer.singleShot(0, self.load_chat_history)
 
-        if self._token_refresh_pending:
-            self._token_refresh_pending = False
-            QTimer.singleShot(0, self.update_token_count)
+        # Первичный показ счётчика токенов, как только чат готов. Раньше апдейт
+        # шёл только если refresh был «отложен» (label ещё не создан) — но при
+        # обычном старте это условие ложно, и счётчик висел на плейсхолдере
+        # «0/0» до первого запроса/смены настроек. Теперь обновляем всегда:
+        # _build_token_stats соберёт базовый контекст на лету (см. warm-путь).
+        self._token_refresh_pending = False
+        QTimer.singleShot(0, self.update_token_count)
         return True
 
     def load_chat_history(self):
