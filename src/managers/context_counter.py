@@ -84,8 +84,13 @@ class ContextCounter:
                     continue
                 if item.get("type") == "text" and item.get("text"):
                     cnt += len(self._tokenizer.encode(str(item["text"])))
-                elif item.get("type") == "image_url" and item.get("image_url", {}).get("url"):
-                    cnt += 1000
+                elif item.get("type") in ("image_url", "image"):
+                    # Изображения не токенизируются текстовым токенайзером, и у
+                    # каждого провайдера считаются по-своему (tiles/detail).
+                    # Раньше приписывали фиктивные +1000 — это врало о масштабе.
+                    # Теперь в текстовую оценку не включаем; их наличие считается
+                    # отдельно (см. _compute_token_usage) и показывается пометкой.
+                    continue
                 else:
                     try:
                         cnt += len(self._tokenizer.encode(json.dumps(item, ensure_ascii=False)))

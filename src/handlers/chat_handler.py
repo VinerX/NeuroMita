@@ -66,6 +66,18 @@ def _message_text(msg: Dict[str, Any]) -> str:
     return ""
 
 
+def _count_message_images(msg: Dict[str, Any]) -> int:
+    """Число картинок в сообщении. В токен-оценку они не входят (у каждого
+    провайдера свой расчёт), но их наличие показываем отдельной пометкой."""
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1 for c in content
+        if isinstance(c, dict) and c.get("type") in ("image_url", "image")
+    )
+
+
 def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
     role = str(msg.get("role") or "")
     if role == "user":
@@ -109,6 +121,7 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
     per_message = []
     by_section: Dict[str, int] = {}
     total = 0
+    images_total = 0
     for i, m in enumerate(messages):
         if not isinstance(m, dict):
             continue
@@ -116,8 +129,13 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
             n = int(counter.count_tokens([m]))
         except Exception:
             n = 0
+        images = _count_message_images(m)
+        images_total += images
         section = _classify_message_section(m, i == last_user_idx)
-        per_message.append({"index": i, "role": m.get("role"), "section": section, "estimated_tokens": n})
+        entry = {"index": i, "role": m.get("role"), "section": section, "estimated_tokens": n}
+        if images:
+            entry["images"] = images
+        per_message.append(entry)
         by_section[section] = by_section.get(section, 0) + n
         total += n
 
@@ -125,9 +143,10 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
         "available": True,
         "estimated": True,
         "encoding": counter.encoding_model,
-        "note": f"estimated via {counter.encoding_model} tokenizer; actual provider tokenization may differ",
+        "note": f"estimated via {counter.encoding_model} tokenizer; actual provider tokenization may differ; images not counted",
         "estimated_total": total,
         "estimated_by_section": by_section,
+        "images_total": images_total,
         "per_message": per_message,
     }
 
