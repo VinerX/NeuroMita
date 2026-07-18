@@ -240,6 +240,8 @@ class ContextViewerDialog(QDialog):
 
         self._viewer = QTextBrowser()
         self._viewer.setOpenLinks(False)
+        # Клик по цветному имени в обзоре («N. Заголовок») переводит к сообщению.
+        self._viewer.anchorClicked.connect(self._on_anchor_clicked)
         right_layout.addWidget(self._viewer)
 
         splitter.addWidget(right_panel)
@@ -431,14 +433,16 @@ class ContextViewerDialog(QDialog):
         msgs_item.setExpanded(True)
         self._items.append((msgs_item, "overview", None))
 
+        self._message_items: Dict[int, QTreeWidgetItem] = {}
         role_counters: Dict[str, int] = {}
-        for msg in self._messages:
+        for idx, msg in enumerate(self._messages):
             role = msg.get("role") or "unknown"
             role_counters[role] = role_counters.get(role, 0) + 1
             label = self._classify_message_label(msg, role, role_counters[role])
             child = QTreeWidgetItem(msgs_item, [label])
             child.setToolTip(0, f"{role} #{role_counters[role]}")
             self._items.append((child, "message", msg))
+            self._message_items[idx] = child
 
         self._render_response_tab()
 
@@ -455,6 +459,20 @@ class ContextViewerDialog(QDialog):
                 if search_text:
                     QTimer.singleShot(50, lambda: self._on_search_changed(search_text))
                 return
+
+    def _on_anchor_clicked(self, url):
+        """Переход к сообщению по ссылке ``msg:<index>`` из обзора."""
+        ref = url.toString() if hasattr(url, "toString") else str(url)
+        if not ref.startswith("msg:"):
+            return
+        try:
+            idx = int(ref.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+        item = getattr(self, "_message_items", {}).get(idx)
+        if item is not None:
+            self._tree.setCurrentItem(item)
+            self._tree.scrollToItem(item)
 
     def _render(self, kind: str, payload: Any):
         if kind == "params":
@@ -481,7 +499,8 @@ class ContextViewerDialog(QDialog):
                 preview = self._get_preview(content, 160)
                 tag = self._classify_message_label(msg, role, role_counters[role])
                 lines.append(
-                    f"<p><b style='color:{color}'>{i + 1}. {self._esc(tag)}</b>"
+                    f"<p><a href='msg:{i}' style='color:{color};font-weight:bold;"
+                    f"text-decoration:none'>{i + 1}. {self._esc(tag)}</a>"
                     f"&nbsp;<span style='color:{_MUTED}'>{self._esc(preview)}</span></p>"
                 )
             self._viewer.setHtml(self._wrap("".join(lines)))
