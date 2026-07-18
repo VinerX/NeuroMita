@@ -5,25 +5,16 @@ none, off, smile, angry, quest, smileteeth, sad, smilestrange, shy, smileobvi,
 smiletonque, smilecringe, sleep, halfsleep, surprise, emptiness, suspicion,
 trytoque, discontent, ajar, catchQuest, arrogance, surpriseo
 
-Available animations (use in "animations" or "idle_animations"):
-SnapFingers, ClapHands, WaveHello, PointDirection,
-TakeItem, FingerGesture,
-LookRandomDirection, TurnRandomDirection,
-SpreadArms, ShowItem, FriendlyPunch, LookAround,
-CloseEyes, Hug, Punch, WaveInFrontOfFace, WaveArmsSides,
-BoastWithItem, CoverMouthAndWave
-
+Available animations, idle animations, world interactions, outfit (clothes) and music are
+provided each turn by the connected game in [Unity Runtime Capabilities]; the exact command
+syntax for lighting and hair/clothes recolor comes in [Unity Runtime Rules]. Use only the
+identifiers and syntax given there — never invent IDs. When the game is not connected these
+in-world actions have no effect.
 Available movement_modes (use in "movement_modes"):
 FollowNearPlayer, FollowPlayer, StandStill, NoClip
 
 Available face_params (use in "face_params"):
 Blush, SadMask, LoveEyesOn, LoveEyesOff, GlassesOn, GlassesOff
-
-Available clothes (use in "clothes"):
-SchoolVariant2
-
-Available music (use in "music"):
-None, Music 1, Music BedClick, Music 2, Music 3 Tamagochi
 
 Available visual_effects (use in "visual_effects", format "name,seconds"):
 negative, glitch, blood, datamosh, tvhit
@@ -31,14 +22,10 @@ negative, glitch, blood, datamosh, tvhit
 Key commands (use in "commands"):
 walktoplayerclose, walktoplayernear, walktoplayerfar,
 walktorandompoint, teleporttoplayer, teleporttorandompoint,
-light:color,R,G,B  (e.g. "light:color,204,204,204" for normal light)
-light:set,time (e.g. "light:set,12:00" or "light:set,day")
 setplayerscale,1.0
 setmyscale,1.0
 setplayerspeed,1.0
 setmyspeed,1.0
-HairColor,R,G,B
-ResetHairColor
 Continue
 
 Tag [SYSTEM INFO] means it is not the player's speech, but system information you receive.

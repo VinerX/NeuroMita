@@ -96,8 +96,8 @@ Movement:
 - teleportintolocation,<PointName>
 
 World/environment:
-- light:color,<R>,<G>,<B> (0-255; 204,204,204 = normal; 0,0,0 = dark)
-- light:set,<time> (HH:MM or day/night/morning/evening/auto)
+- light:color:<R>,<G>,<B> (0-255; 204,204,204 = normal; 0,0,0 = dark)
+- light:set:<time> (HH:MM or day/night/morning/evening/auto)
 - HairColor,<R>,<G>,<B> (1,1,1 = blue hair)
 - ResetHairColor
 

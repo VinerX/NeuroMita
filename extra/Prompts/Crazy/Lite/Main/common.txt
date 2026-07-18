@@ -18,7 +18,7 @@ Interaction: interactions: ["Name"]
 Commands commands: [":"]
 Movement: walktoplayerclose, walktoplayernear, walktoplayerfar, walktorandompoint, teleporttoplayer, teleporttorandompoint
 Targeted: walkto,TargetName, teleportintolocation,TargetName
-Environment: light:color,R,G,B (e.g. 204,204,204 for normal), light:set,Time (e.g. 21:50, or day/night/morning/evening/auto)
+Environment: light:color:R,G,B (e.g. 204,204,204 for normal), light:set:Time (e.g. 21:50, or day/night/morning/evening/auto)
 Scale: setplayerscale,X (0.5-3), setmyscale,X, setplayerspeed,X, setmyspeed,X
 Visuals (visual_effects field): negative,Time, glitch,Time, blood,Time, datamosh,Time, tvhit
 Hair: HairColor,R,G,B, ResetHairColor

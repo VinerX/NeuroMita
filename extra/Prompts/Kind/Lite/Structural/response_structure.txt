@@ -31,8 +31,8 @@ negative, glitch, blood, datamosh, tvhit
 Key commands (use in "commands"):
 walktoplayerclose, walktoplayernear, walktoplayerfar,
 walktorandompoint, teleporttoplayer, teleporttorandompoint,
-light:color,R,G,B  (e.g. "light:color,204,204,204")
-light:set,<time>  (e.g. "light:set,12:00" or "light:set,day")
+light:color:R,G,B  (e.g. "light:color:204,204,204")
+light:set:<time>  (e.g. "light:set:12:00" or "light:set:day")
 setplayerscale,1.0
 setmyscale,1.0
 setplayerspeed,1.0
