@@ -38,6 +38,46 @@ class UnityRuntimeSectionTests(unittest.TestCase):
         self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=False), "history")
         self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=True), "user input")
 
+    def test_system_message_after_history_is_context_not_prompt(self):
+        # Безмаркерное system-сообщение до истории — промпт, после — рантайм-контекст.
+        silence = {"role": "system", "content": "The player has been silent for 90 seconds. React naturally."}
+        self.assertEqual(_classify_message_section(silence, is_last_user=False, seen_dialogue=False), "character prompts")
+        self.assertEqual(_classify_message_section(silence, is_last_user=False, seen_dialogue=True), "system input")
+
+
+class IdleTurnHasNoInputTests(unittest.TestCase):
+    """В idle-ходе («игрок молчит») текущего ввода нет — история не рвётся."""
+
+    def test_idle_turn_last_user_stays_history(self):
+        messages = [
+            {"role": "system", "content": "You are Crazy Mita." * 40},
+            {"role": "system", "content": "[HISTORY SUMMARY]\nearlier"},
+            {"role": "user", "content": "hello there"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "system", "content": "<active_memory>\nlikes cats</active_memory>"},
+            {"role": "system", "content": "The player has been silent for 90 seconds. React naturally."},
+        ]
+        usage = _compute_token_usage(messages)
+        sections = [m["section"] for m in usage["per_message"]]
+        # Нет секции "user input" (idle), последний user остался историей,
+        # а «молчание» ушло в контекст.
+        self.assertNotIn("user input", sections)
+        self.assertEqual(sections[2], "history")     # user
+        self.assertEqual(sections[-1], "system input")  # silence → активный контекст
+
+    def test_normal_turn_last_user_is_input(self):
+        messages = [
+            {"role": "system", "content": "You are Crazy Mita." * 40},
+            {"role": "user", "content": "hello there"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "system", "content": "<active_memory>\nlikes cats</active_memory>"},
+            {"role": "user", "content": "what is your name?"},
+        ]
+        usage = _compute_token_usage(messages)
+        sections = [m["section"] for m in usage["per_message"]]
+        self.assertEqual(sections[-1], "user input")
+        self.assertEqual(sections[1], "history")  # earlier user answered → history
+
 
 def _heuristic_counter() -> ContextCounter:
     """Счётчик, принудительно без tiktoken (эмулируем рантайм игры)."""

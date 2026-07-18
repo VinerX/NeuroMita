@@ -78,7 +78,8 @@ def _count_message_images(msg: Dict[str, Any]) -> int:
     )
 
 
-def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
+def _classify_message_section(msg: Dict[str, Any], is_last_user: bool,
+                              seen_dialogue: bool = False) -> str:
     text = _message_text(msg).lstrip()
     head = text[:80]
     # Игровой рантайм-контекст Unity узнаём по ТЕКСТУ ещё до роли. Часть таких
@@ -100,7 +101,12 @@ def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
     for marker, section in _SECTION_MARKERS:
         if text.startswith(marker) or marker in head:
             return section
-    return "character prompts"
+    # role=system без маркера — часть промпта ТОЛЬКО в ведущем блоке ДО истории
+    # (весь промпт персонажа строится там). После начала истории такие system-
+    # сообщения — это рантайм-инъекции (idle/«игрок молчит», Unity Rules/Intent,
+    # прочие system-события текущего хода): активный контекст, а не промпт. Иначе
+    # они плодили лишний блок «Промпт» после истории (фидбэк).
+    return "system input" if seen_dialogue else "character prompts"
 
 
 def _compute_token_usage(messages: Any) -> Dict[str, Any]:
@@ -120,15 +126,32 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
     except Exception as e:
         return {"available": False, "note": f"ContextCounter unavailable: {e}"}
 
+    # Текущий ввод игрока — последнее НАСТОЯЩЕЕ user-сообщение (не [RUNTIME EVENT],
+    # который провайдер тоже делает role="user"), и только если после него нет
+    # ответа ассистента. В idle-ходе («игрок молчит N секунд») текущего ввода
+    # нет вовсе: последний user — из истории, и помечать его «Вводом» нельзя,
+    # иначе он разрывает блок «История».
+    def _is_runtime_event(msg: Dict[str, Any]) -> bool:
+        return _message_text(msg).lstrip().startswith("[RUNTIME EVENT]")
+
     last_user_idx = -1
     for i, m in enumerate(messages):
-        if isinstance(m, dict) and str(m.get("role")) == "user":
+        if isinstance(m, dict) and str(m.get("role")) == "user" and not _is_runtime_event(m):
             last_user_idx = i
+    current_input_idx = last_user_idx
+    if last_user_idx >= 0:
+        for m in messages[last_user_idx + 1:]:
+            if isinstance(m, dict) and str(m.get("role")) == "assistant":
+                current_input_idx = -1  # на этот user уже есть ответ → это история
+                break
 
     per_message = []
     by_section: Dict[str, int] = {}
     total = 0
     images_total = 0
+    # Прошли ли мы ведущий блок промпта (началась история/диалог). После этого
+    # безмаркерные system-сообщения считаем рантайм-контекстом, не промптом.
+    seen_dialogue = False
     for i, m in enumerate(messages):
         if not isinstance(m, dict):
             continue
@@ -138,7 +161,9 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
             n = 0
         images = _count_message_images(m)
         images_total += images
-        section = _classify_message_section(m, i == last_user_idx)
+        section = _classify_message_section(m, i == current_input_idx, seen_dialogue)
+        if section in ("history", "user input"):
+            seen_dialogue = True
         entry = {"index": i, "role": m.get("role"), "section": section, "estimated_tokens": n}
         if images:
             entry["images"] = images
