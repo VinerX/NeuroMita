@@ -14,6 +14,11 @@ class ChatController(BaseController):
         self.event_bus.subscribe(Events.GUI.FINISH_STREAM_UI, self._on_finish_stream_ui, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT, self._on_update_token_count, weak=False)
         self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_update_token_count_ui, weak=False)
+        # Пересчитываем счётчик под чатом, когда персонаж стал активным: на
+        # старте первый пересчёт (из _on_chat_ui_ready) случается ДО готовности
+        # персонажа/модели, поэтому окно контекста залипало на дефолтных 32к, а
+        # оценка — на 0. Смена персонажа тоже меняет и контекст, и окно модели.
+        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_update_token_count, weak=False)
         self.event_bus.subscribe(Events.GUI.INSERT_TEXT_TO_INPUT, self._on_insert_text_to_input, weak=False)
         self.event_bus.subscribe(Events.GUI.SEND_TEXT_MESSAGE, self._on_send_text_message, weak=False)
         self.event_bus.subscribe(Events.GUI.CHECK_USER_ENTRY_EXISTS, self._on_check_user_entry_exists, weak=False)

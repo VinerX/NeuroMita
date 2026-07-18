@@ -266,6 +266,9 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             return
         self._update(current_model_id=int(preset_id))
         self.refresh_budget()
+        # Смена модели меняет окно контекста и цену → пересчитать счётчик под
+        # чатом (иначе он держит окно/оценку прошлой модели, напр. 32к).
+        get_event_bus().emit(Events.GUI.UPDATE_TOKEN_COUNT)
 
     def _select_prompt(self, prompt_set: str) -> None:
         try:
