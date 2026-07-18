@@ -20,15 +20,17 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_terminal_error_stays_visible_until_close_button_is_clicked():
+def test_terminal_error_survives_background_events():
+    """Ошибка держится сквозь фоновые события (сжатие/hide) и не гасится сама —
+    её должен снять только новый запрос или крестик."""
     app = _app()
     chat = ChatWidget()
     status = MitaStatusWidget(chat)
 
     status.show_error("Network error: write operation timed out")
-    status.hide_animated()
-    status.show_thinking("Crazy Mita")
-    status.show_success()
+    status.hide_animated()  # авто-гашение не трогает ошибку
+    status.show_thinking({"state": "compression", "text": "Сжатие истории..."})  # фон
+    status.show_success()  # фоновый успех сжатия тоже не трёт ошибку
     app.processEvents()
 
     assert status.current_state == "error"
@@ -40,3 +42,26 @@ def test_terminal_error_stays_visible_until_close_button_is_clicked():
 
     assert status.current_state == "idle"
     assert chat._typing_bar.isHidden()
+
+
+def test_new_request_clears_terminal_error():
+    """Новый запрос пользователя (show_thinking с именем персонажа) снимает
+    залипшую терминальную ошибку — иначе она висит поверх удачного ответа."""
+    app = _app()
+    chat = ChatWidget()
+    status = MitaStatusWidget(chat)
+
+    status.show_error("Provider rejected request (regional restriction)")
+    app.processEvents()
+    assert status.current_state == "error"
+
+    # Игрок починил сеть и отправил новое сообщение → пошёл новый «думает».
+    status.show_thinking("Crazy Mita")
+    app.processEvents()
+    assert status.current_state == "thinking"
+    assert chat._status_close_button.isHidden()  # крестик ошибки убран
+
+    # Ответ пришёл — статус гаснет штатно.
+    status.show_success()
+    app.processEvents()
+    assert status.current_state == "success"

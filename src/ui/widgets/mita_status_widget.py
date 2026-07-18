@@ -52,10 +52,12 @@ class MitaStatusWidget(QWidget):
         return qta.icon(fallback, color=color).pixmap(24, 24)
 
     def show_thinking(self, payload="Мита"):
-        if self.current_state == "error":
-            return
         chat = self._get_chat()
         if isinstance(payload, dict):
+            # Фоновые статусы (сжатие/инструмент) НЕ должны затирать висящую
+            # терминальную ошибку — её снимает только новый запрос или крестик.
+            if self.current_state == "error":
+                return
             text = str(payload.get("text") or "").strip()
             state = str(payload.get("state") or "status").strip() or "status"
             if not text:
@@ -76,6 +78,10 @@ class MitaStatusWidget(QWidget):
                 chat.show_status(text, icon)
             return
 
+        # payload — имя персонажа: это старт НОВОГО запроса пользователя. Даже
+        # если висит терминальная ошибка прошлой попытки, новый запрос её
+        # снимает (show_typing прячет крестик и текст ошибки) — иначе ошибка
+        # «залипает» поверх уже удачного ответа (фидбэк).
         character_name = str(payload or "Мита")
         if self.current_state == "thinking" and self._character_name == character_name:
             return
