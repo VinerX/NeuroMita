@@ -889,13 +889,17 @@ class ContextViewerDialog(QDialog):
 
     @staticmethod
     def _fmt_int(value: int) -> str:
-        """Token counts: compact to thousands (e.g. 47.3k) once large, exact below."""
+        """Token counts: миллионы как 1.5M, тысячи как 47.3k, точное значение ниже."""
         try:
             n = int(value)
         except Exception:
             return str(value)
+        if abs(n) >= 1_000_000:
+            s = f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}M"
         if abs(n) >= 10000:
-            return f"{n / 1000:.1f}k"
+            s = f"{n / 1000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}k"
         return f"{n:,}".replace(",", " ")
 
     @staticmethod
