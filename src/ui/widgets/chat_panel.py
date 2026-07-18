@@ -421,10 +421,12 @@ class ChatPanel(QWidget):
         token_row = QHBoxLayout()
         token_row.setContentsMargins(6, 0, 8, 0)
         token_row.addStretch()
+        # Заглушка до первого пересчёта — без выдуманной стоимости в рублях
+        # (реальное значение подставит update_token_count).
         self.token_count_label = QLabel(
             _(
-                "Токены: 0/0 | Стоимость: 0.00 ₽",
-                "Tokens: 0/0 | Cost: 0.00 ₽",
+                "Контекст: подсчёт…",
+                "Context: estimating…",
             )
         )
         self.token_count_label.setObjectName("TokenCountLabel")

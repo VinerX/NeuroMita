@@ -54,8 +54,12 @@ class ModelRuntimeConfig:
     gemini_thinking_budget: int | None = None  # -1=dynamic, 0=off, >0=token limit
 
     # costs/limits
-    token_cost_input: float = 0.0432
-    token_cost_output: float = 0.1728
+    # 0 = «цена неизвестна» (напр. бесплатный Google AI Studio). Раньше дефолт
+    # был ненулевым, и приложение выдумывало стоимость в рублях даже на
+    # бесплатном лимите. Цену за 1000 токенов задаёт сам пользователь в
+    # настройках — тогда и только тогда показываем ручную оценку.
+    token_cost_input: float = 0.0
+    token_cost_output: float = 0.0
     max_model_tokens: int = 128000
 
     # context/history
@@ -159,8 +163,8 @@ class ModelConfigLoader:
             reasoning_effort=(str(s.get("MODEL_REASONING_EFFORT")).strip().lower() or None) if s.get("MODEL_REASONING_EFFORT") else None,
             gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 
-            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),
-            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.1728), 0.1728),
+            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0), 0.0),
+            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.0), 0.0),
             max_model_tokens=_to_int(s.get("MAX_MODEL_TOKENS", 128000), 128000),
 
             memory_limit=_to_int(s.get("MODEL_MESSAGE_LIMIT", 40), 40),

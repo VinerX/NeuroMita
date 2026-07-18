@@ -959,13 +959,18 @@ class ModelController(GenerationService, ModelStateService):
                 estimated_currency = pricing_info.currency
                 estimated_source = pricing_info.source
 
+        # Ручная оценка в рублях — только если пользователь ЯВНО задал цену за
+        # 1000 токенов (> 0). Иначе (бесплатный тариф/цена неизвестна) не
+        # выдумываем стоимость, а показываем n/a — не врём про рубли.
         if estimated_cost is None and cfg:
             try:
-                estimated_cost = (float(context_tokens) / 1000.0) * float(cfg.token_cost_input)
+                manual_price = float(cfg.token_cost_input)
+            except Exception:
+                manual_price = 0.0
+            if manual_price > 0:
+                estimated_cost = (float(context_tokens) / 1000.0) * manual_price
                 estimated_currency = "RUB"
                 estimated_source = "manual_settings"
-            except Exception:
-                estimated_cost = None
 
         last = dict(self._last_token_stats or {})
         last.setdefault("actual_cost", None)
