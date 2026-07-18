@@ -436,6 +436,46 @@ class PromptController(PromptBuilderService):
 
         return {"role": "system", "content": "\n".join(lines)}
 
+    # Timestamp formats seen on history messages: stored history renders
+    # dd.mm.YYYY, the fresh user message uses ISO-like YYYY-mm-dd.
+    _HISTORY_TIME_FORMATS = ("%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
+
+    @classmethod
+    def _format_last_interaction_line(cls, history: List[Dict[str, Any]]) -> str:
+        """Cheap "time since last talk" signal for [Current State].
+
+        Returns e.g. ``Last conversation: 3 days ago`` when the previous turn is
+        at least an hour old, otherwise ``""`` (recent chatter needs no signal).
+        Never raises: unknown/garbled times are skipped.
+        """
+        now = datetime.datetime.now()
+        for msg in reversed(history or []):
+            if not isinstance(msg, dict):
+                continue
+            raw = msg.get("time") or msg.get("timestamp")
+            if not raw:
+                continue
+            then = None
+            for fmt in cls._HISTORY_TIME_FORMATS:
+                try:
+                    then = datetime.datetime.strptime(str(raw), fmt)
+                    break
+                except Exception:
+                    continue
+            if then is None:
+                continue
+            secs = (now - then).total_seconds()
+            if secs < 3600:
+                return ""
+            days = int(secs // 86400)
+            hours = int(secs // 3600)
+            if days >= 1:
+                human = f"{days} day{'s' if days != 1 else ''} ago"
+            else:
+                human = f"{hours} hour{'s' if hours != 1 else ''} ago"
+            return f"Last conversation: {human}"
+        return ""
+
     @staticmethod
     def _is_volatile_system_block(block: Any) -> bool:
         if not isinstance(block, str):
@@ -731,14 +771,18 @@ class PromptController(PromptBuilderService):
         messages.extend(unity_dynamic_messages)
 
         current_time = datetime.datetime.now()
+        current_state_lines = [
+            "[Current State]",
+            f"Date: {current_time.strftime('%Y-%m-%d')}",
+            f"Time: {current_time.strftime('%H:%M:%S')}",
+            f"Day of week: {current_time.strftime('%A')}",
+        ]
+        last_interaction_line = self._format_last_interaction_line(history_limited)
+        if last_interaction_line:
+            current_state_lines.append(last_interaction_line)
         messages.append({
             "role": "system",
-            "content": (
-                f"[Current State]\n"
-                f"Date: {current_time.strftime('%Y-%m-%d')}\n"
-                f"Time: {current_time.strftime('%H:%M:%S')}\n"
-                f"Day of week: {current_time.strftime('%A')}"
-            )
+            "content": "\n".join(current_state_lines),
         })
 
         messages.append(self._build_system_state_message())
