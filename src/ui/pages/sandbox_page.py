@@ -774,14 +774,16 @@ class SandboxPage(QWidget):
 
     def _on_game_mute_toggle(self, active: bool):
         """Переключатель строки «Связь с игрой»: ON = принимаем запросы игры,
-        OFF = заглушить (IGNORE_GAME_REQUESTS). Уровень глушения (idle/все,
-        GAME_BLOCK_LEVEL) не трогаем — он меняется в настройках мода (шестерёнка)."""
+        OFF = заглушить полностью (IGNORE_GAME_REQUESTS + уровень All events, то
+        есть глушим ВСЕ внутриигровые события, а не только idle-таймер). Точную
+        настройку уровня всё ещё можно поменять шестерёнкой в настройках мода."""
         ignore = not bool(active)
+        if ignore:
+            self._view_model.dispatch(SandboxSettingChanged("GAME_BLOCK_LEVEL", "All events"))
         self._view_model.dispatch(SandboxSettingChanged("IGNORE_GAME_REQUESTS", ignore))
         if self._game_status_row is not None:
-            self._game_status_row.set_mute_state(
-                ignore, self._setting("GAME_BLOCK_LEVEL", "Idle events")
-            )
+            level = "All events" if ignore else self._setting("GAME_BLOCK_LEVEL", "Idle events")
+            self._game_status_row.set_mute_state(ignore, level)
 
     @staticmethod
     def _game_link_connected() -> bool:
