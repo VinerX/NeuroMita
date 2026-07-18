@@ -346,6 +346,8 @@ class PromptController(PromptBuilderService):
 
         try:
             blocks, dsl_system_infos = character.dsl_interpreter.process_main_template(chosen_template)
+            get_ctx_infos = getattr(character.dsl_interpreter, "get_context_infos", None)
+            context_infos = list(get_ctx_infos()) if callable(get_ctx_infos) else []
         except Exception as e:
             logger.error(
                 f"[PromptController] Ошибка DSL при обработке шаблона '{chosen_template}' "
@@ -377,6 +379,12 @@ class PromptController(PromptBuilderService):
                 f"{getattr(character, 'char_id', '')}: {e}"
             )
             memory_message_content = ""
+
+        # ADD_CONTEXT_INFO blocks (e.g. the computed behavior band) belong in the
+        # volatile zone next to the request, ahead of active memory/reminders.
+        for info in context_infos:
+            if isinstance(info, str) and info.strip():
+                volatile_system_messages.append({"role": "system", "content": info})
 
         if memory_message_content and memory_message_content.strip():
             volatile_system_messages.append({"role": "system", "content": memory_message_content})
@@ -700,9 +708,16 @@ class PromptController(PromptBuilderService):
         if rag_context:
             messages.append({"role": "system", "content": rag_context})
 
-        behavior_state_message = self._build_behavior_state_message(character)
-        if behavior_state_message:
-            messages.append(behavior_state_message)
+        # A character may render its own behavior block (computed band via
+        # ADD_CONTEXT_INFO) and declare behavior_state=custom in its template to
+        # suppress the default numeric [Behavior State]. No feature → old behavior.
+        behavior_state_mode = ""
+        if callable(get_prompt_feature):
+            behavior_state_mode = str(get_prompt_feature("behavior_state", "") or "").lower()
+        if behavior_state_mode != "custom":
+            behavior_state_message = self._build_behavior_state_message(character)
+            if behavior_state_message:
+                messages.append(behavior_state_message)
 
         for info in extra_system_infos:
             if isinstance(info, dict):

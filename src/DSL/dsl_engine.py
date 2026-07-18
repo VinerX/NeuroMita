@@ -27,8 +27,11 @@ BACKUP_COUNT = 3
 
 INSERT_PATTERN    = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 MANDATORY_INSERTS: set[str] = {"SYS_INFO"}
+# Prompt features declared at the top of a main template as `name=value` lines.
+# Boolean features (support_intents) resolve to True/False; valued features
+# (behavior_state=custom) keep their bareword value lower-cased.
 PROMPT_FEATURE_PATTERN = re.compile(
-    r"^\s*(support_intents)\s*=\s*(true|false)\s*(?://.*)?$",
+    r"^\s*(support_intents|behavior_state)\s*=\s*([A-Za-z0-9_]+)\s*(?://.*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -178,9 +181,18 @@ class DslInterpreter:
         self._prompt_features: dict[str, Any] = {}
         self._local_vars: dict[str, Any] = {}
         self._declared_local_vars: set[str] = set()
+        # Third prompt channel: blocks that must land in the volatile (active
+        # context) zone next to the request, not in the cacheable static prompt.
+        # Filled by ADD_CONTEXT_INFO; read by PromptController after the template
+        # is processed. See _build_system_messages.
+        self._context_infos: List[str] = []
 
     def get_prompt_feature(self, name: str, default: Any = None) -> Any:
         return self._prompt_features.get(str(name or "").strip().lower(), default)
+
+    def get_context_infos(self) -> List[str]:
+        """Volatile context blocks collected via ADD_CONTEXT_INFO this build."""
+        return list(self._context_infos)
 
     @contextmanager
     def _use_base(self, base_dir_resolved_id: str):
@@ -505,48 +517,23 @@ class DslInterpreter:
 
                         continue
 
-                    if command == "ADD_SYSTEM_INFO":
+                    if command in ("ADD_SYSTEM_INFO", "ADD_CONTEXT_INFO"):
                         if not args:
-                            raise DslError("ADD_SYSTEM_INFO requires an argument (expression or LOAD command).", resolved_script_id, num, raw)
+                            raise DslError(f"{command} requires an argument (expression or LOAD command).", resolved_script_id, num, raw)
 
-                        content_to_add = ""
-                        raw_arg = args.strip()
-
-                        if raw_arg.upper().startswith(("LOAD_REL ", "LOADREL ")):
-                            rel_path_to_load = raw_arg.split(None, 1)[1].strip().strip('"').strip("'")
-                            try:
-                                content_to_add, _ = self.process_file(rel_path_to_load, sys_msgs=sys_msgs)
-                            except DslError as de:
-                                raise DslError(f"Error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
-                            except Exception as e:
-                                raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {e}", resolved_script_id, num, raw, e) from e
-                        elif raw_arg.upper().startswith("LOAD "):
-                            after_load = raw_arg[5:].strip()
-                            m = re.match(r"([A-Z0-9_]+)\s+FROM\s+(.+)", after_load, re.IGNORECASE)
-                            if m:
-                                tag_name = m.group(1).upper()
-                                path_str = m.group(2).strip().strip('"').strip("'")
-                                try:
-                                    loaded_path_id = self.resolver.resolve_path(path_str)
-                                    raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
-                                    content_to_add = self.process_template_content(raw_tag, f"ADD_SYSTEM_INFO LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}", sys_msgs=sys_msgs)
-                                except DslError as de:
-                                    raise DslError(f"Error resolving/loading for ADD_SYSTEM_INFO LOAD TAG '{path_str}': {de.message}", resolved_script_id, num, raw, de) from de
-                                except Exception as e:
-                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD TAG '{path_str}': {e}", resolved_script_id, num, raw, e) from e
-                            else:
-                                rel_file_to_load = after_load.strip().strip('"').strip("'")
-                                try:
-                                    content_to_add, _ = self.process_file(rel_file_to_load, sys_msgs=sys_msgs)
-                                except DslError as de:
-                                    raise DslError(f"Error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
-                                except Exception as e:
-                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {e}", resolved_script_id, num, raw, e) from e
-                        else:
-                            content_to_add = str(self._eval_expr(raw_arg, resolved_script_id, num, raw, sys_msgs=sys_msgs))
+                        content_to_add = self._resolve_add_info_arg(
+                            command, args.strip(), resolved_script_id, num, raw,
+                            rel_script_path, sys_msgs,
+                        )
 
                         if content_to_add and content_to_add.strip():
-                            sys_msgs.append(content_to_add)
+                            # ADD_SYSTEM_INFO → static prompt (dsl_system_infos);
+                            # ADD_CONTEXT_INFO → volatile active context, placed
+                            # next to the request by PromptController.
+                            if command == "ADD_CONTEXT_INFO":
+                                self._context_infos.append(content_to_add)
+                            else:
+                                sys_msgs.append(content_to_add)
                         continue
 
                     if command == "LOG":
@@ -685,6 +672,57 @@ class DslInterpreter:
                 f"Finished DSL script: {rel_script_path}. Returned value: {returned_value_for_log if returned_value_for_log is not None else False}"
             )
 
+    def _resolve_add_info_arg(
+        self,
+        command: str,
+        raw_arg: str,
+        resolved_script_id: str,
+        num: int,
+        raw: str,
+        rel_script_path: str,
+        sys_msgs: Optional[List[str]],
+    ) -> str:
+        """Resolve the argument of ADD_SYSTEM_INFO / ADD_CONTEXT_INFO to text.
+
+        Supports the same forms as before: ``LOAD_REL <file>``, ``LOAD <TAG>
+        FROM <file>``, ``LOAD <file>`` and a plain expression. ``command`` is
+        only used to make error messages point at the right directive.
+        """
+        if raw_arg.upper().startswith(("LOAD_REL ", "LOADREL ")):
+            rel_path_to_load = raw_arg.split(None, 1)[1].strip().strip('"').strip("'")
+            try:
+                content_to_add, _ = self.process_file(rel_path_to_load, sys_msgs=sys_msgs)
+                return content_to_add
+            except DslError as de:
+                raise DslError(f"Error in {command} LOAD_REL '{rel_path_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+            except Exception as e:
+                raise DslError(f"Unexpected error in {command} LOAD_REL '{rel_path_to_load}': {e}", resolved_script_id, num, raw, e) from e
+
+        if raw_arg.upper().startswith("LOAD "):
+            after_load = raw_arg[5:].strip()
+            m = re.match(r"([A-Z0-9_]+)\s+FROM\s+(.+)", after_load, re.IGNORECASE)
+            if m:
+                tag_name = m.group(1).upper()
+                path_str = m.group(2).strip().strip('"').strip("'")
+                try:
+                    loaded_path_id = self.resolver.resolve_path(path_str)
+                    raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
+                    return self.process_template_content(raw_tag, f"{command} LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}", sys_msgs=sys_msgs)
+                except DslError as de:
+                    raise DslError(f"Error resolving/loading for {command} LOAD TAG '{path_str}': {de.message}", resolved_script_id, num, raw, de) from de
+                except Exception as e:
+                    raise DslError(f"Unexpected error in {command} LOAD TAG '{path_str}': {e}", resolved_script_id, num, raw, e) from e
+            rel_file_to_load = after_load.strip().strip('"').strip("'")
+            try:
+                content_to_add, _ = self.process_file(rel_file_to_load, sys_msgs=sys_msgs)
+                return content_to_add
+            except DslError as de:
+                raise DslError(f"Error in {command} LOAD '{rel_file_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+            except Exception as e:
+                raise DslError(f"Unexpected error in {command} LOAD '{rel_file_to_load}': {e}", resolved_script_id, num, raw, e) from e
+
+        return str(self._eval_expr(raw_arg, resolved_script_id, num, raw, sys_msgs=sys_msgs))
+
     def process_template_content(self, text: str, ctx: str = "template", sys_msgs: Optional[List[str]] = None) -> str:
         if sys_msgs is None:
             sys_msgs = []
@@ -795,6 +833,7 @@ class DslInterpreter:
         sys_msgs: List[str] = []
         resolved_main_template_id: str = ""
         self._prompt_features.clear()
+        self._context_infos.clear()
 
         try:
             char_ctx_filter.set_character_id(getattr(self.character, "char_id", "NO_CHAR_CTX"))
@@ -819,7 +858,11 @@ class DslInterpreter:
                 ) from pre
 
             for feature_name, raw_value in PROMPT_FEATURE_PATTERN.findall(raw_template_content):
-                self._prompt_features[feature_name.lower()] = raw_value.lower() == "true"
+                low = raw_value.lower()
+                if low in ("true", "false"):
+                    self._prompt_features[feature_name.lower()] = (low == "true")
+                else:
+                    self._prompt_features[feature_name.lower()] = low
 
             file_paths_in_template = self.placeholder_pattern.findall(raw_template_content)
 

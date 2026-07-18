@@ -39,6 +39,22 @@ class _StubResolver:
         return self.text
 
 
+class _MultiFileResolver:
+    """Resolver backed by an in-memory {path: content} map for template tests."""
+
+    def __init__(self, files: dict[str, str]) -> None:
+        self.files = files
+
+    def resolve_path(self, path: str) -> str:
+        return path
+
+    def load_text(self, path: str, _context: str) -> str:
+        return self.files[path]
+
+    def get_dirname(self, _path: str) -> str:
+        return ""
+
+
 class SafeEvalTests(unittest.TestCase):
     def _make_post_interpreter(self) -> PostDslInterpreter:
         interp = PostDslInterpreter.__new__(PostDslInterpreter)
@@ -97,6 +113,35 @@ class SafeEvalTests(unittest.TestCase):
         interpreter.resolver = _StubResolver("support_intents=False\n")
         interpreter.process_main_template("main_template.txt")
         self.assertIs(interpreter.get_prompt_feature("support_intents"), False)
+
+    def test_add_context_info_uses_separate_volatile_channel(self) -> None:
+        files = {
+            "main_template.txt": "behavior_state=custom\n[<band.script>]\n",
+            "band.script": (
+                'ADD_CONTEXT_INFO "Attitude: 62/100 — warm"\n'
+                'ADD_SYSTEM_INFO "static change rule"\n'
+            ),
+        }
+        interpreter = DslInterpreter(_StubCharacter(), resolver=_MultiFileResolver(files))
+
+        blocks, messages = interpreter.process_main_template("main_template.txt")
+
+        # ADD_SYSTEM_INFO stays in the static channel, ADD_CONTEXT_INFO does not.
+        self.assertEqual(messages, ["static change rule"])
+        self.assertEqual(interpreter.get_context_infos(), ["Attitude: 62/100 — warm"])
+        self.assertEqual(blocks, [])
+        self.assertEqual(interpreter.get_prompt_feature("behavior_state"), "custom")
+
+    def test_context_infos_reset_between_builds(self) -> None:
+        files = {
+            "main_template.txt": "[<band.script>]\n",
+            "band.script": 'ADD_CONTEXT_INFO "line"\n',
+        }
+        interpreter = DslInterpreter(_StubCharacter(), resolver=_MultiFileResolver(files))
+        interpreter.process_main_template("main_template.txt")
+        interpreter.process_main_template("main_template.txt")
+        # Must not accumulate across builds.
+        self.assertEqual(interpreter.get_context_infos(), ["line"])
 
     def test_legacy_dsl_uses_safe_evaluator_and_preserves_fallbacks(self) -> None:
         interp = DslInterpreter(_StubCharacter(), resolver=None)
