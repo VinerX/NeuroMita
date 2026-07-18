@@ -164,6 +164,10 @@ class ContextViewerDialog(QDialog):
                     "tokens": int(entry.get("estimated_tokens") or 0),
                     "images": int(entry.get("images") or 0),
                 }
+        try:
+            self._est_total = int(self._token_usage.get("estimated_total") or 0)
+        except Exception:
+            self._est_total = 0
         self._msg_index_by_id: Dict[int, int] = {}
         # Ответ модели в structured-режиме приходит одной JSON-строкой; по
         # умолчанию разворачиваем её по строкам для читаемости.
@@ -843,31 +847,45 @@ class ContextViewerDialog(QDialog):
     # ── Token estimates (локальная оценка, не биллинг) ────────────────────────
     def _est_suffix(self, idx: int) -> str:
         """Хвост к ярлыку узла: « · ~1.2k» (+«🖼» если есть картинки)."""
+        # В дереве — доля сообщения от всего input-контекста (для беглого скана,
+        # что раздувает окно). Абсолютные токены/символы/строки — на самом
+        # сообщении (см. _est_line).
         info = self._est_by_index.get(idx)
         if not info:
             return ""
-        parts = f" · ~{self._fmt_int(info['tokens'])}"
+        out = ""
+        if self._est_total:
+            pct = info["tokens"] / self._est_total * 100.0
+            out = f" · {pct:.0f}%"
         if info.get("images"):
-            parts += " 🖼"
-        return parts
+            out += " 🖼"
+        return out
 
     def _est_line(self, idx: int) -> str:
-        """HTML-строка оценки для детального просмотра сообщения."""
-        info = self._est_by_index.get(idx)
-        if not info:
+        """HTML-строка статистики для детального просмотра сообщения:
+        ориентировочные токены (+доля), символы, строки, картинки."""
+        if not (0 <= idx < len(self._messages)):
             return ""
-        img = ""
-        if info.get("images"):
-            n = info["images"]
-            img = "&nbsp;" + _(
-                f"+ {n} изобр. (не учтены в оценке)",
-                f"+ {n} image(s) (not counted)",
+        text = self._content_plain(self._messages[idx].get("content"))
+        chars = len(text)
+        lines = (text.count("\n") + 1) if text else 0
+        info = self._est_by_index.get(idx) or {}
+
+        bits: list[str] = []
+        tok = info.get("tokens")
+        if tok is not None:
+            pct = f" ({tok / self._est_total * 100:.0f}%)" if self._est_total else ""
+            bits.append(
+                _("~{n} токенов", "~{n} tokens").format(n=self._fmt_int(tok)) + pct
             )
-        return (
-            f"<span style='color:{_MUTED};font-size:11px'>"
-            f"{_('Оценка', 'Estimated')}: ~{self._esc(self._fmt_int(info['tokens']))} "
-            f"{_('токенов', 'tokens')}{img}</span>"
-        )
+        bits.append(_("{n} симв.", "{n} chars").format(n=self._fmt_int(chars)))
+        bits.append(_("{n} стр.", "{n} lines").format(n=lines))
+        if info.get("images"):
+            bits.append(
+                _("+{n} изобр. (не в оценке)", "+{n} img (not counted)").format(n=info["images"])
+            )
+        body = " · ".join(self._esc(b) for b in bits)
+        return f"<span style='color:{_MUTED};font-size:11px'>{body}</span>"
 
     @staticmethod
     def _fmt_int(value: int) -> str:
@@ -993,7 +1011,8 @@ class ContextViewerDialog(QDialog):
         # крупный блок без явного заголовка — основной системный промпт
         if role == "system" and len(text) > 400:
             return "📖 System prompt"
-        return f"{icon} {role} #{ordinal}"
+        # С заглавной, чтобы «System #2» не выпадал рядом с «System prompt».
+        return f"{icon} {str(role).capitalize()} #{ordinal}"
 
     def _banner_html(self, name: str, closing: bool) -> str:
         icon, color, label = self._marker_meta(name)
