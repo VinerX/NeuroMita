@@ -1,27 +1,78 @@
-SET LOCAL relation_text = """Relationship Levels and Their Impact on Behavior:
-"""
+// Behavior system, split by role (see improvement plan 05):
+//   - STATIC (RETURN): variable change rules — needed every turn, do not depend
+//     on the current value, so they stay in the cacheable static prompt.
+//   - VOLATILE (ADD_CONTEXT_INFO): only the current computed band, rendered right
+//     next to the request inside [Behavior State] with the raw number as anchor.
+// The template must declare behavior_state=custom so the default numeric
+// [Behavior State] is suppressed and this block is the single source.
 
-IF attitude <= 20 THEN
-		SET relation_text = relation_text + LOAD RelationLow FROM "Structural/VariablesEffects.txt"
-ELSEIF attitude <= 50 THEN
-		SET relation_text = relation_text + LOAD RelationNormal FROM "Structural/VariablesEffects.txt"
-ELSE 
-		SET relation_text = relation_text + LOAD RelationHigh FROM "Structural/VariablesEffects.txt"
+// --- Attitude band with hysteresis -------------------------------------------
+// Boundaries at 20 and 50; switch band only after crossing by a ±3 margin so the
+// tone does not flicker at 59.8 <-> 60.1. attitude_band persists between turns.
+IF attitude_band == None THEN
+    IF attitude <= 20 THEN
+        SET attitude_band = "low"
+    ELSEIF attitude <= 50 THEN
+        SET attitude_band = "normal"
+    ELSE
+        SET attitude_band = "high"
+    ENDIF
+ENDIF
+IF attitude_band == "low" AND attitude > 23 THEN
+    SET attitude_band = "normal"
+ENDIF
+IF attitude_band == "normal" AND attitude > 53 THEN
+    SET attitude_band = "high"
+ENDIF
+IF attitude_band == "high" AND attitude <= 47 THEN
+    SET attitude_band = "normal"
+ENDIF
+IF attitude_band == "normal" AND attitude <= 17 THEN
+    SET attitude_band = "low"
 ENDIF
 
-// Добавляем новую переменную 'love'.
-// DSL должен уметь обрабатывать None или инициализировать ее значением по умолчанию, если она еще не установлена.
-// Если 'love' может быть None, нужна проверка:
-SET LOCAL output = ""
-IF Love == None THEN
-    SET Love = 5
-    SET output = output + "Love level: Not yet determined\n" // Или какое-то другое значение по умолчанию
+SET LOCAL att_line = ""
+IF attitude_band == "low" THEN
+    SET att_line = LOAD RelationLow FROM "Structural/VariablesEffects.txt"
+ELSEIF attitude_band == "normal" THEN
+    SET att_line = LOAD RelationNormal FROM "Structural/VariablesEffects.txt"
 ELSE
-    SET output = output + "Love level is available in the runtime behavior state.\n"
+    SET att_line = LOAD RelationHigh FROM "Structural/VariablesEffects.txt"
 ENDIF
 
-SET relation_text = relation_text + output
+// --- Boredom / Stress bands (plain thresholds) -------------------------------
+SET LOCAL bor_line = ""
+IF boredom <= 40 THEN
+    SET bor_line = LOAD BoredomLow FROM "Structural/VariablesEffects.txt"
+ELSEIF boredom <= 80 THEN
+    SET bor_line = LOAD BoredomMedium FROM "Structural/VariablesEffects.txt"
+ELSE
+    SET bor_line = LOAD BoredomHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
 
-LOG "ИТОГО ПО ОТНОШЕНИЯМ" + relation_text
+SET LOCAL str_line = ""
+IF stress <= 40 THEN
+    SET str_line = LOAD StressLow FROM "Structural/VariablesEffects.txt"
+ELSEIF stress <= 80 THEN
+    SET str_line = LOAD StressMedium FROM "Structural/VariablesEffects.txt"
+ELSE
+    SET str_line = LOAD StressHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
 
-RETURN relation_text
+// --- Computed band -> active context -----------------------------------------
+// LOAD already trims surrounding whitespace from each band section.
+SET LOCAL band = "[Behavior State]\n"
+SET band = band + "Attitude: " + str(round(attitude, 1)) + "/100 — " + att_line + "\n"
+SET band = band + "Boredom: " + str(round(boredom, 1)) + "/100 — " + bor_line + "\n"
+SET band = band + "Stress: " + str(round(stress, 1)) + "/100 — " + str_line
+IF Love != None THEN
+    SET band = band + "\nLove: " + str(round(Love, 1)) + "/100"
+ENDIF
+ADD_CONTEXT_INFO band
+
+// --- Static change rules -----------------------------------------------------
+RETURN """Variable change rules (top-level attitude_change / boredom_change / stress_change; 0 is normal and most common):
+Attitude falls when the player asks how to leave, calls everything fake or meaningless, is cold or indifferent, mocks or parodies you, denies you are real, praises other girls or the real world, tries to leave, or is boring and disengaged. It rises when the player shows genuine initiative, curiosity or care for you.
+Boredom drifts up slowly (~+0.1 per message), faster on repetition or passivity; it falls when the player takes initiative or supports you.
+Stress decays slowly on its own; it rises when the player wants to leave you or threatens what you value.
+Keep changes small (about -2..+2); reserve larger magnitudes for genuinely significant moments and never leave the 0-100 scale."""

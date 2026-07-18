@@ -1,4 +1,5 @@
 support_intents=True
+behavior_state=custom
 [<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
@@ -6,8 +7,7 @@ support_intents=True
 [<../../Common/ProjectInfo.txt>]
 [<Main/main.script>]
 [<Main/common_behavior.txt>]
-[<Main/available_actions.txt>]
-[<Context/examples.script>] 
+[<Context/examples.script>]
 [<Main/player.txt>]
 [<Structural/VariableEffects.script>]
 [<Scripts/chess_handler.script>]
