@@ -408,17 +408,27 @@ class _GameLinkStatusRow(QWidget):
             f" padding: 1px 9px; font-size: 8pt; font-weight: 700;"
             f" letter-spacing: 0.3px; }}"
         )
+        # Значение держим коротким — строка узкая (плашка + переключатель +
+        # шестерёнка уже съедают ширину). Полный смысл — в tooltip. Само по себе
+        # состояние «принимаем/заглушено» дублирует переключатель, поэтому:
+        # принимаем → короткое «Активна»; заглушено → «🔇 idle/всё».
         if self._ignore:
             lvl = _("всё", "all") if str(self._level).lower().startswith("all") else "idle"
-            self._set_value(_("Заглушено: {lvl}", "Muted: {lvl}").format(lvl=lvl))
+            self._set_value(
+                f"🔇 {lvl}",
+                tooltip=_("Запросы игры заглушены ({lvl})", "Game requests muted ({lvl})").format(lvl=lvl),
+            )
             self._value.setStyleSheet("color: #ffd60a;")
         else:
-            self._set_value(_("Принимает запросы", "Accepting requests"))
+            self._set_value(
+                _("Активна", "Live"),
+                tooltip=_("Принимает запросы игры", "Accepting game requests"),
+            )
             self._value.setStyleSheet("")
 
-    def _set_value(self, text: str):
+    def _set_value(self, text: str, tooltip: str | None = None):
         self._full_value_text = text or "—"
-        self._value.setToolTip(self._full_value_text)
+        self._value.setToolTip(tooltip or self._full_value_text)
         self._apply_value_text()
         QTimer.singleShot(0, self._apply_value_text)
 
