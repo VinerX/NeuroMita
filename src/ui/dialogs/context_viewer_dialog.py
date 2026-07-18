@@ -151,6 +151,20 @@ class ContextViewerDialog(QDialog):
         self._messages: List[Dict] = data.get("messages") or []
         self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
+
+        # Оценка токенов по сообщениям/секциям (локальный токенайзер, только для
+        # сравнения масштаба блоков — не биллинг). Заполняется на этапе дампа
+        # (chat_handler._compute_token_usage) и лежит в data["token_usage"].
+        # Точный итог запроса берём из фактического usage ответа, а тут — оценка.
+        self._token_usage: Dict[str, Any] = data.get("token_usage") or {}
+        self._est_by_index: Dict[int, Dict[str, int]] = {}
+        for entry in self._token_usage.get("per_message", []) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("index"), int):
+                self._est_by_index[int(entry["index"])] = {
+                    "tokens": int(entry.get("estimated_tokens") or 0),
+                    "images": int(entry.get("images") or 0),
+                }
+        self._msg_index_by_id: Dict[int, int] = {}
         # Ответ модели в structured-режиме приходит одной JSON-строкой; по
         # умолчанию разворачиваем её по строкам для читаемости.
         self._format_response = True
@@ -439,10 +453,11 @@ class ContextViewerDialog(QDialog):
             role = msg.get("role") or "unknown"
             role_counters[role] = role_counters.get(role, 0) + 1
             label = self._classify_message_label(msg, role, role_counters[role])
-            child = QTreeWidgetItem(msgs_item, [label])
+            child = QTreeWidgetItem(msgs_item, [label + self._est_suffix(idx)])
             child.setToolTip(0, f"{role} #{role_counters[role]}")
             self._items.append((child, "message", msg))
             self._message_items[idx] = child
+            self._msg_index_by_id[id(msg)] = idx
 
         self._render_response_tab()
 
@@ -489,7 +504,9 @@ class ContextViewerDialog(QDialog):
             self._viewer.setHtml(self._wrap(html))
 
         elif kind == "overview":
-            lines = [f"<p><b style='color:{_TEXT}'>{_('Всего сообщений', 'Total messages')}:</b> {len(self._messages)}</p><hr style='border-color:{_BORDER}'>"]
+            lines = [f"<p><b style='color:{_TEXT}'>{_('Всего сообщений', 'Total messages')}:</b> {len(self._messages)}</p>"]
+            lines.append(self._render_token_summary())
+            lines.append(f"<hr style='border-color:{_BORDER}'>")
             role_counters: Dict[str, int] = {}
             for i, msg in enumerate(self._messages):
                 role = msg.get("role") or "?"
@@ -498,9 +515,14 @@ class ContextViewerDialog(QDialog):
                 content = msg.get("content") or ""
                 preview = self._get_preview(content, 160)
                 tag = self._classify_message_label(msg, role, role_counters[role])
+                est = self._est_by_index.get(i)
+                est_html = (
+                    f"&nbsp;<span style='color:{_SH_NUMBER}'>~{self._fmt_int(est['tokens'])}</span>"
+                    if est else ""
+                )
                 lines.append(
                     f"<p><a href='msg:{i}' style='color:{color};font-weight:bold;"
-                    f"text-decoration:none'>{i + 1}. {self._esc(tag)}</a>"
+                    f"text-decoration:none'>{i + 1}. {self._esc(tag)}</a>{est_html}"
                     f"&nbsp;<span style='color:{_MUTED}'>{self._esc(preview)}</span></p>"
                 )
             self._viewer.setHtml(self._wrap("".join(lines)))
@@ -516,10 +538,11 @@ class ContextViewerDialog(QDialog):
             else:
                 rendered_content = self._render_prompt_body(str(content))
 
+            est_line = self._est_line(self._msg_index_by_id.get(id(msg), -1))
             html = (
                 f"<p><b style='color:{color};font-size:13px'>"
                 f"{_ROLE_ICONS.get(role, '')} {self._esc(role.upper())}"
-                f"</b></p>"
+                f"</b>{('&nbsp;&nbsp;' + est_line) if est_line else ''}</p>"
                 f"{rendered_content}"
             )
 
@@ -532,6 +555,105 @@ class ContextViewerDialog(QDialog):
                     f"<div style='color:{_MUTED};font-family:Consolas,monospace'>{extras_body}</div>"
                 )
             self._viewer.setHtml(self._wrap(html))
+
+    def _render_token_summary(self) -> str:
+        """Блок оценки токенов над списком сообщений.
+
+        Итог запроса — фактический из usage провайдера (если ответ уже пришёл);
+        разбивка по секциям — локальная оценка (tiktoken), только для сравнения
+        масштаба блоков. Именно так и подписываем: «Оценка» vs «Факт».
+        """
+        tu = self._token_usage
+        est_total = None
+        by_section: Dict[str, int] = {}
+        if tu.get("available"):
+            try:
+                est_total = int(tu.get("estimated_total") or 0)
+            except Exception:
+                est_total = None
+            raw_sections = tu.get("estimated_by_section") or {}
+            if isinstance(raw_sections, dict):
+                for k, v in raw_sections.items():
+                    try:
+                        by_section[str(k)] = int(v)
+                    except Exception:
+                        continue
+
+        usage = self._data.get("usage") or {}
+        actual_input = None
+        try:
+            if usage.get("prompt_tokens") not in (None, ""):
+                actual_input = int(usage.get("prompt_tokens"))
+        except Exception:
+            actual_input = None
+
+        if est_total is None and actual_input is None:
+            note = str(tu.get("note") or "")
+            if note:
+                return f"<p style='color:{_MUTED};font-size:11px'><i>{self._esc(note)}</i></p>"
+            return ""
+
+        head_rows = []
+        if actual_input is not None:
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Факт. input (провайдер)', 'Actual input (provider)')}</b></td>"
+                f"<td style='color:{_TEXT};font-weight:bold'>{self._esc(self._fmt_int(actual_input))}</td></tr>"
+            )
+        if est_total is not None:
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Оценка input (локально)', 'Estimated input (local)')}</b></td>"
+                f"<td style='color:{_SH_NUMBER}'>~{self._esc(self._fmt_int(est_total))}</td></tr>"
+            )
+        if actual_input is not None and est_total:
+            diff = actual_input - est_total
+            sign = "+" if diff >= 0 else "−"
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Оформление / расхождение', 'Template / difference')}</b></td>"
+                f"<td style='color:{_MUTED}'>{sign}{self._esc(self._fmt_int(abs(diff)))}</td></tr>"
+            )
+        images_total = 0
+        try:
+            images_total = int(tu.get("images_total") or 0)
+        except Exception:
+            images_total = 0
+        if images_total:
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Изображения', 'Images')}</b></td>"
+                f"<td style='color:{_MUTED}'>{images_total} "
+                f"<i>{_('(не в оценке)', '(not in estimate)')}</i></td></tr>"
+            )
+
+        parts = [f"<table style='border-spacing:3px;margin-top:4px'>{''.join(head_rows)}</table>"]
+
+        # Разбивка по секциям (оценка) — отсортировано по убыванию, с полоской.
+        if by_section:
+            top = max(by_section.values()) or 1
+            rows = []
+            for name, val in sorted(by_section.items(), key=lambda kv: kv[1], reverse=True):
+                pct = max(2, int(round(val / top * 100)))
+                bar = (
+                    f"<div style='background:{_SH_NUMBER};height:8px;"
+                    f"width:{pct}%;border-radius:2px'></div>"
+                )
+                rows.append(
+                    f"<tr>"
+                    f"<td style='color:{_TEXT};padding-right:10px;white-space:nowrap'>{self._esc(name)}</td>"
+                    f"<td style='color:{_SH_NUMBER};padding-right:10px;text-align:right;white-space:nowrap'>"
+                    f"~{self._esc(self._fmt_int(val))}</td>"
+                    f"<td style='width:200px'>{bar}</td>"
+                    f"</tr>"
+                )
+            parts.append(
+                f"<p style='color:{_MUTED};font-size:11px;margin:6px 0 2px 0'>"
+                f"{_('Оценка по секциям (для сравнения масштаба):', 'Estimated by section (scale comparison):')}</p>"
+                f"<table style='border-spacing:3px;width:100%'>{''.join(rows)}</table>"
+            )
+
+        return "".join(parts)
 
     def _render_response_tab(self):
         response_text = str(self._data.get("response") or "")
@@ -716,6 +838,35 @@ class ContextViewerDialog(QDialog):
             f"<html><body style='background:{_HTML_BG};color:{_TEXT};"
             f"font-family:\"Segoe UI\",Arial,sans-serif;margin:0;padding:0'>"
             f"{body}</body></html>"
+        )
+
+    # ── Token estimates (локальная оценка, не биллинг) ────────────────────────
+    def _est_suffix(self, idx: int) -> str:
+        """Хвост к ярлыку узла: « · ~1.2k» (+«🖼» если есть картинки)."""
+        info = self._est_by_index.get(idx)
+        if not info:
+            return ""
+        parts = f" · ~{self._fmt_int(info['tokens'])}"
+        if info.get("images"):
+            parts += " 🖼"
+        return parts
+
+    def _est_line(self, idx: int) -> str:
+        """HTML-строка оценки для детального просмотра сообщения."""
+        info = self._est_by_index.get(idx)
+        if not info:
+            return ""
+        img = ""
+        if info.get("images"):
+            n = info["images"]
+            img = "&nbsp;" + _(
+                f"+ {n} изобр. (не учтены в оценке)",
+                f"+ {n} image(s) (not counted)",
+            )
+        return (
+            f"<span style='color:{_MUTED};font-size:11px'>"
+            f"{_('Оценка', 'Estimated')}: ~{self._esc(self._fmt_int(info['tokens']))} "
+            f"{_('токенов', 'tokens')}{img}</span>"
         )
 
     @staticmethod
