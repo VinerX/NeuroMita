@@ -79,6 +79,17 @@ def _count_message_images(msg: Dict[str, Any]) -> int:
 
 
 def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
+    text = _message_text(msg).lstrip()
+    head = text[:80]
+    # Игровой рантайм-контекст Unity узнаём по ТЕКСТУ ещё до роли. Часть таких
+    # блоков (World State / Capabilities / Runtime Events) уходит с role="event",
+    # и провайдер превращает их в role="user" с префиксом "[RUNTIME EVENT] ".
+    # Без этой проверки они классифицировались как обычные user-сообщения и
+    # уезжали в «историю», хотя это контекст ТЕКУЩЕГО хода, а не диалог —
+    # из-за чего в дереве Unity разбивался на промпт и историю (фидбэк).
+    if head.startswith("[RUNTIME EVENT]"):
+        return "MiSide World State" if "MiSide World State" in head else "Unity runtime"
+
     role = str(msg.get("role") or "")
     if role == "user":
         return "user input" if is_last_user else "history"
@@ -86,8 +97,6 @@ def _classify_message_section(msg: Dict[str, Any], is_last_user: bool) -> str:
         return "history"
     if role == "event":
         return "system input"
-    text = _message_text(msg).lstrip()
-    head = text[:60]
     for marker, section in _SECTION_MARKERS:
         if text.startswith(marker) or marker in head:
             return section

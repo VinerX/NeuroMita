@@ -150,6 +150,7 @@ _SECTION_TO_GROUP = {
     "user input": "input",
     "system input": "context",
     "MiSide World State": "context",
+    "Unity runtime": "context",
     "System State": "context",
     "reminders": "context",
     "core memories": "context",
@@ -488,40 +489,45 @@ class ContextViewerDialog(QDialog):
         msgs_item.setExpanded(True)
         self._items.append((msgs_item, "overview", None))
 
-        # Токены по крупным группам — для процентов в заголовках групп.
-        group_tokens: Dict[str, int] = {}
-        for i in range(len(self._messages)):
-            g = self._group_key(i)
-            group_tokens[g] = group_tokens.get(g, 0) + (self._est_by_index.get(i) or {}).get("tokens", 0)
+        # Группируем СМЕЖНЫМИ прогонами в порядке отправки провайдеру: новый
+        # заголовок группы создаём, как только крупная группа меняется. Так
+        # порядок дерева сверху вниз в точности совпадает с порядком сообщений в
+        # запросе (важно для отладки), а не «стягивает» разрозненные сообщения
+        # под один заголовок. В штатном промпте (промпт→история→контекст→ввод)
+        # это ровно 4 заголовка; если группа реально встречается дважды —
+        # честно покажем два прогона.
+        runs: list[tuple[str, list[int]]] = []
+        for idx in range(len(self._messages)):
+            gkey = self._group_key(idx)
+            if runs and runs[-1][0] == gkey:
+                runs[-1][1].append(idx)
+            else:
+                runs.append((gkey, [idx]))
 
         self._message_items: Dict[int, QTreeWidgetItem] = {}
-        self._group_items: Dict[str, QTreeWidgetItem] = {}
         self._msg_labels: Dict[int, str] = {}
         role_counters: Dict[str, int] = {}
-        for idx, msg in enumerate(self._messages):
-            role = msg.get("role") or "unknown"
-            role_counters[role] = role_counters.get(role, 0) + 1
-            label = self._classify_message_label(msg, role, role_counters[role])
-            self._msg_labels[idx] = label
+        for gkey, idxs in runs:
+            icon, color, (ru, en) = _COARSE_GROUPS[gkey]
+            run_tokens = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
+            glabel = f"{icon} {_(ru, en)}"
+            if self._est_total and run_tokens:
+                glabel += f" · ~{self._fmt_int(run_tokens)} · {self._fmt_pct(run_tokens, self._est_total)}"
+            parent = QTreeWidgetItem(msgs_item, [glabel])
+            parent.setExpanded(True)
+            self._items.append((parent, "group", gkey))
 
-            gkey = self._group_key(idx)
-            parent = self._group_items.get(gkey)
-            if parent is None:
-                icon, color, (ru, en) = _COARSE_GROUPS[gkey]
-                gt = group_tokens.get(gkey, 0)
-                glabel = f"{icon} {_(ru, en)}"
-                if self._est_total and gt:
-                    glabel += f" · ~{self._fmt_int(gt)} · {self._fmt_pct(gt, self._est_total)}"
-                parent = QTreeWidgetItem(msgs_item, [glabel])
-                parent.setExpanded(True)
-                self._group_items[gkey] = parent
-                self._items.append((parent, "group", gkey))
-
-            child = QTreeWidgetItem(parent, [label + self._est_suffix(idx)])
-            child.setToolTip(0, f"{role} #{role_counters[role]}")
-            self._items.append((child, "message", msg))
-            self._message_items[idx] = child
-            self._msg_index_by_id[id(msg)] = idx
+            for idx in idxs:
+                msg = self._messages[idx]
+                role = msg.get("role") or "unknown"
+                role_counters[role] = role_counters.get(role, 0) + 1
+                label = self._classify_message_label(msg, role, role_counters[role])
+                self._msg_labels[idx] = label
+                child = QTreeWidgetItem(parent, [label + self._est_suffix(idx)])
+                child.setToolTip(0, f"{role} #{role_counters[role]}")
+                self._items.append((child, "message", msg))
+                self._message_items[idx] = child
+                self._msg_index_by_id[id(msg)] = idx
 
         self._render_response_tab()
 

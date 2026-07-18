@@ -16,7 +16,27 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from managers.context_counter import ContextCounter
-from handlers.chat_handler import _compute_token_usage
+from handlers.chat_handler import _compute_token_usage, _classify_message_section
+
+
+class UnityRuntimeSectionTests(unittest.TestCase):
+    """Unity-рантайм ([RUNTIME EVENT] ...) — активный контекст, не история."""
+
+    def test_converted_unity_event_is_not_history(self):
+        # Провайдер превращает role=event в role=user с префиксом [RUNTIME EVENT];
+        # без учёта текста такое сообщение уезжало в «историю».
+        caps = {"role": "user", "content": "[RUNTIME EVENT] [Unity Runtime Capabilities]\nlight,music"}
+        events = {"role": "user", "content": "[RUNTIME EVENT] [Unity Runtime Events]\n- door opened"}
+        self.assertEqual(_classify_message_section(caps, is_last_user=False), "Unity runtime")
+        self.assertEqual(_classify_message_section(events, is_last_user=False), "Unity runtime")
+
+    def test_converted_world_state_keeps_its_section(self):
+        ws = {"role": "user", "content": "[RUNTIME EVENT] [MiSide World State]\nkitchen"}
+        self.assertEqual(_classify_message_section(ws, is_last_user=False), "MiSide World State")
+
+    def test_real_dialogue_still_history_and_input(self):
+        self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=False), "history")
+        self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=True), "user input")
 
 
 def _heuristic_counter() -> ContextCounter:
