@@ -337,7 +337,14 @@ class _GameLinkStatusRow(QWidget):
         self._value_slot.setMinimumWidth(64)
         value_layout = QHBoxLayout(self._value_slot)
         value_layout.setContentsMargins(0, 0, 0, 0)
-        value_layout.setSpacing(0)
+        value_layout.setSpacing(4)
+        # Иконка состояния значения — qtawesome, а не эмодзи (единый стиль с
+        # остальным UI, чёткая отрисовка и управляемый цвет).
+        self._value_icon = QLabel()
+        self._value_icon.setFixedSize(14, 14)
+        self._value_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._value_icon.setStyleSheet("background: transparent; border: none;")
+        value_layout.addWidget(self._value_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
         self._value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -411,24 +418,41 @@ class _GameLinkStatusRow(QWidget):
         # Значение держим коротким — строка узкая (плашка + переключатель +
         # шестерёнка уже съедают ширину). Полный смысл — в tooltip. Само по себе
         # состояние «принимаем/заглушено» дублирует переключатель, поэтому:
-        # принимаем → короткое «Активна»; заглушено → «🔇 idle/всё».
+        # принимаем → короткое «Активна»; заглушено → «idle/всё». Иконку слева
+        # рисуем через qtawesome (см. _value_icon), не эмодзи.
         if self._ignore:
             lvl = _("всё", "all") if str(self._level).lower().startswith("all") else "idle"
             self._set_value(
-                f"🔇 {lvl}",
+                lvl,
                 tooltip=_("Запросы игры заглушены ({lvl})", "Game requests muted ({lvl})").format(lvl=lvl),
+                icon="fa6s.volume-xmark",
+                icon_color="#ffd60a",
             )
             self._value.setStyleSheet("color: #ffd60a;")
         else:
             self._set_value(
                 _("Активна", "Live"),
                 tooltip=_("Принимает запросы игры", "Accepting game requests"),
+                icon="fa6s.tower-broadcast",
+                icon_color="#79e78c",
             )
             self._value.setStyleSheet("")
 
-    def _set_value(self, text: str, tooltip: str | None = None):
+    def _set_value(self, text: str, tooltip: str | None = None,
+                   icon: str | None = None, icon_color: str = "#cfcfe0"):
         self._full_value_text = text or "—"
         self._value.setToolTip(tooltip or self._full_value_text)
+        if icon:
+            try:
+                self._value_icon.setPixmap(qta.icon(icon, color=icon_color).pixmap(14, 14))
+                self._value_icon.setToolTip(tooltip or "")
+                self._value_icon.setVisible(True)
+            except Exception:
+                self._value_icon.clear()
+                self._value_icon.setVisible(False)
+        else:
+            self._value_icon.clear()
+            self._value_icon.setVisible(False)
         self._apply_value_text()
         QTimer.singleShot(0, self._apply_value_text)
 
