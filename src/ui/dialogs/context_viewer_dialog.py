@@ -133,6 +133,29 @@ _RE_HDR_RAW = re.compile(r"^\[([A-Za-z][A-Za-z0-9 _/\-]{1,48})\]$")
 _RE_TAG_ESC = re.compile(r"^&lt;(/?)([A-Za-z_][\w]*)&gt;$")
 _RE_HDR_ESC = re.compile(r"^\[([A-Za-z][A-Za-z0-9 _/\-]{1,48})\]$")
 
+# ── Крупные группы дерева сообщений ───────────────────────────────────────────
+# Секции из _compute_token_usage (chat_handler._classify_message_section)
+# сворачиваем в 4 крупные группы, чтобы в дереве было видно, ЧТО раздувает
+# контекст: сам промпт персонажа, история диалога, «живой» контекст
+# (память/состояние/мир игры) и текущий ввод игрока. Ключ → (иконка, цвет, (ru,en)).
+_COARSE_GROUPS = {
+    "prompt":  ("📖", "#F0A868", ("Промпт", "Prompt")),
+    "history": ("🕰", "#60A5FA", ("История", "History")),
+    "context": ("🧠", "#34D399", ("Активный контекст", "Active context")),
+    "input":   ("💬", "#F4D35E", ("Ввод игрока", "Player input")),
+}
+_SECTION_TO_GROUP = {
+    "character prompts": "prompt",
+    "history": "history",
+    "user input": "input",
+    "system input": "context",
+    "MiSide World State": "context",
+    "System State": "context",
+    "reminders": "context",
+    "core memories": "context",
+    "memories": "context",
+}
+
 
 class ContextViewerDialog(QDialog):
     """Большой диалог для просмотра контекста запроса к нейросети.
@@ -166,6 +189,7 @@ class ContextViewerDialog(QDialog):
                 self._est_by_index[int(entry["index"])] = {
                     "tokens": int(entry.get("estimated_tokens") or 0),
                     "images": int(entry.get("images") or 0),
+                    "section": str(entry.get("section") or ""),
                 }
         try:
             self._est_total = int(self._token_usage.get("estimated_total") or 0)
@@ -447,26 +471,64 @@ class ContextViewerDialog(QDialog):
         params_item.setExpanded(False)
         self._items.append((params_item, "params", self._data.get("extra") or {}))
 
-        msgs_item = QTreeWidgetItem(
-            self._tree,
-            [_("Сообщения", "Messages") + f" ({len(self._messages)})"]
+        # Итог по всем сообщениям (#7): всего оценочных токенов и символов —
+        # чтобы масштаб всего контекста был виден сразу в шапке ветки.
+        total_chars = sum(len(self._content_plain(m.get("content"))) for m in self._messages)
+        msgs_label = _("Сообщения", "Messages") + f" ({len(self._messages)})"
+        if self._est_total:
+            msgs_label += (
+                f" · ~{self._fmt_int(self._est_total)} · "
+                + _("{n} симв.", "{n} chars").format(n=self._fmt_int(total_chars))
+            )
+        msgs_item = QTreeWidgetItem(self._tree, [msgs_label])
+        msgs_item.setToolTip(
+            0,
+            _("Итог по всем сообщениям (оценка)", "Total across all messages (estimate)"),
         )
         msgs_item.setExpanded(True)
         self._items.append((msgs_item, "overview", None))
 
+        # Токены по крупным группам — для процентов в заголовках групп.
+        group_tokens: Dict[str, int] = {}
+        for i in range(len(self._messages)):
+            g = self._group_key(i)
+            group_tokens[g] = group_tokens.get(g, 0) + (self._est_by_index.get(i) or {}).get("tokens", 0)
+
         self._message_items: Dict[int, QTreeWidgetItem] = {}
+        self._group_items: Dict[str, QTreeWidgetItem] = {}
+        self._msg_labels: Dict[int, str] = {}
         role_counters: Dict[str, int] = {}
         for idx, msg in enumerate(self._messages):
             role = msg.get("role") or "unknown"
             role_counters[role] = role_counters.get(role, 0) + 1
             label = self._classify_message_label(msg, role, role_counters[role])
-            child = QTreeWidgetItem(msgs_item, [label + self._est_suffix(idx)])
+            self._msg_labels[idx] = label
+
+            gkey = self._group_key(idx)
+            parent = self._group_items.get(gkey)
+            if parent is None:
+                icon, color, (ru, en) = _COARSE_GROUPS[gkey]
+                gt = group_tokens.get(gkey, 0)
+                glabel = f"{icon} {_(ru, en)}"
+                if self._est_total and gt:
+                    glabel += f" · ~{self._fmt_int(gt)} · {self._fmt_pct(gt, self._est_total)}"
+                parent = QTreeWidgetItem(msgs_item, [glabel])
+                parent.setExpanded(True)
+                self._group_items[gkey] = parent
+                self._items.append((parent, "group", gkey))
+
+            child = QTreeWidgetItem(parent, [label + self._est_suffix(idx)])
             child.setToolTip(0, f"{role} #{role_counters[role]}")
             self._items.append((child, "message", msg))
             self._message_items[idx] = child
             self._msg_index_by_id[id(msg)] = idx
 
         self._render_response_tab()
+
+    def _group_key(self, idx: int) -> str:
+        """Крупная группа сообщения по его секции из оценки токенов."""
+        section = (self._est_by_index.get(idx) or {}).get("section") or ""
+        return _SECTION_TO_GROUP.get(section, "context")
 
     # ─────────────────────────────────── Rendering ───────────────────────────────
 
@@ -534,6 +596,9 @@ class ContextViewerDialog(QDialog):
                 )
             self._viewer.setHtml(self._wrap("".join(lines)))
 
+        elif kind == "group":
+            self._viewer.setHtml(self._wrap(self._render_group_html(str(payload or ""))))
+
         elif kind == "message":
             msg: dict = payload or {}
             role = msg.get("role") or "unknown"
@@ -562,6 +627,44 @@ class ContextViewerDialog(QDialog):
                     f"<div style='color:{_MUTED};font-family:Consolas,monospace'>{extras_body}</div>"
                 )
             self._viewer.setHtml(self._wrap(html))
+
+    def _render_group_html(self, gkey: str) -> str:
+        """Обзор одной крупной группы: её сообщения с превью и оценкой токенов."""
+        icon, color, names = _COARSE_GROUPS.get(
+            gkey, ("🏷", _MUTED, ("Секция", "Section"))
+        )
+        idxs = [i for i in range(len(self._messages)) if self._group_key(i) == gkey]
+        gt = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
+        pct = self._fmt_pct(gt, self._est_total) if self._est_total else ""
+        head = (
+            f"<p><b style='color:{color};font-size:14px'>{icon} {_(names[0], names[1])}</b>"
+            f"&nbsp;<span style='color:{_MUTED}'>· {len(idxs)} "
+            f"{_('сообщ.', 'msgs')}"
+        )
+        if gt:
+            head += f" · ~{self._fmt_int(gt)}"
+        if pct:
+            head += f" · {pct} {_('контекста', 'of context')}"
+        head += "</span></p>"
+
+        lines = [head, f"<hr style='border-color:{_BORDER}'>"]
+        for i in idxs:
+            msg = self._messages[i]
+            role = msg.get("role") or "?"
+            col = _ROLE_COLORS.get(role, _TEXT)
+            tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1)
+            preview = self._get_preview(msg.get("content") or "", 140)
+            est = self._est_by_index.get(i)
+            est_html = (
+                f"&nbsp;<span style='color:{_SH_NUMBER}'>~{self._fmt_int(est['tokens'])}</span>"
+                if est else ""
+            )
+            lines.append(
+                f"<p><a href='msg:{i}' style='color:{col};font-weight:bold;"
+                f"text-decoration:none'>{i + 1}. {self._esc(tag)}</a>{est_html}"
+                f"&nbsp;<span style='color:{_MUTED}'>{self._esc(preview)}</span></p>"
+            )
+        return "".join(lines)
 
     def _render_token_summary(self) -> str:
         """Блок оценки токенов над списком сообщений.
@@ -636,28 +739,39 @@ class ContextViewerDialog(QDialog):
 
         parts = [f"<table style='border-spacing:3px;margin-top:4px'>{''.join(head_rows)}</table>"]
 
-        # Разбивка по секциям (оценка) — отсортировано по убыванию, с полоской.
+        # Разбивка по секциям (оценка) — отсортировано по убыванию.
+        # Полоску рисуем юникод-блоками (█░): QTextBrowser не рендерит <div
+        # width:%> как полосу, поэтому старые «полоски» выглядели криво (#1).
         if by_section:
             top = max(by_section.values()) or 1
+            sec_total = sum(by_section.values())
+            _CELLS = 18
             rows = []
             for name, val in sorted(by_section.items(), key=lambda kv: kv[1], reverse=True):
-                pct = max(2, int(round(val / top * 100)))
+                if val <= 0:
+                    filled = 0
+                else:
+                    filled = max(1, min(_CELLS, int(round(val / top * _CELLS))))
                 bar = (
-                    f"<div style='background:{_SH_NUMBER};height:8px;"
-                    f"width:{pct}%;border-radius:2px'></div>"
+                    f"<span style='color:{_SH_NUMBER};font-family:Consolas,monospace'>"
+                    f"{'█' * filled}</span>"
+                    f"<span style='color:{_BORDER};font-family:Consolas,monospace'>"
+                    f"{'░' * (_CELLS - filled)}</span>"
                 )
+                pct = self._fmt_pct(val, sec_total)
                 rows.append(
                     f"<tr>"
                     f"<td style='color:{_TEXT};padding-right:10px;white-space:nowrap'>{self._esc(name)}</td>"
-                    f"<td style='color:{_SH_NUMBER};padding-right:10px;text-align:right;white-space:nowrap'>"
+                    f"<td style='color:{_SH_NUMBER};padding-right:8px;text-align:right;white-space:nowrap'>"
                     f"~{self._esc(self._fmt_int(val))}</td>"
-                    f"<td style='width:200px'>{bar}</td>"
+                    f"<td style='color:{_MUTED};padding-right:10px;text-align:right;white-space:nowrap'>{pct}</td>"
+                    f"<td style='white-space:nowrap'>{bar}</td>"
                     f"</tr>"
                 )
             parts.append(
                 f"<p style='color:{_MUTED};font-size:11px;margin:6px 0 2px 0'>"
-                f"{_('Оценка по секциям (для сравнения масштаба):', 'Estimated by section (scale comparison):')}</p>"
-                f"<table style='border-spacing:3px;width:100%'>{''.join(rows)}</table>"
+                f"{_('Оценка по секциям (доля контекста):', 'Estimated by section (share of context):')}</p>"
+                f"<table style='border-spacing:3px'>{''.join(rows)}</table>"
             )
 
         return "".join(parts)
@@ -868,9 +982,9 @@ class ContextViewerDialog(QDialog):
         if not info:
             return ""
         out = ""
-        if self._est_total:
-            pct = info["tokens"] / self._est_total * 100.0
-            out = f" · {pct:.0f}%"
+        pct = self._fmt_pct(info["tokens"], self._est_total)
+        if pct:
+            out = f" · {pct}"
         if info.get("images"):
             out += " 🖼"
         return out
@@ -888,7 +1002,8 @@ class ContextViewerDialog(QDialog):
         bits: list[str] = []
         tok = info.get("tokens")
         if tok is not None:
-            pct = f" ({tok / self._est_total * 100:.0f}%)" if self._est_total else ""
+            pct_str = self._fmt_pct(tok, self._est_total)
+            pct = f" ({pct_str})" if pct_str else ""
             bits.append(
                 _("~{n} токенов", "~{n} tokens").format(n=self._fmt_int(tok)) + pct
             )
@@ -915,6 +1030,28 @@ class ContextViewerDialog(QDialog):
             s = f"{n / 1000:.1f}".rstrip("0").rstrip(".")
             return f"{s}k"
         return f"{n:,}".replace(",", " ")
+
+    @staticmethod
+    def _fmt_pct(part: int, total: int) -> str:
+        """Доля в процентах с дробями для мелких значений: 0.52% / 3.4% / 47%.
+        Нужны доли процента, иначе блоки в ~0.5% округлялись до 0% или 1%."""
+        try:
+            total = int(total or 0)
+            part = int(part or 0)
+        except Exception:
+            return ""
+        if total <= 0:
+            return ""
+        pct = part / total * 100.0
+        if pct <= 0:
+            return "0%"
+        if pct < 0.01:
+            return "<0.01%"
+        if pct < 1:
+            return f"{pct:.2f}%"
+        if pct < 10:
+            return f"{pct:.1f}%"
+        return f"{pct:.0f}%"
 
     @staticmethod
     def _fmt_cost(value: float, currency: str = "USD") -> str:
