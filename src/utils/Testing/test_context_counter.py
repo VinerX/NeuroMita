@@ -38,11 +38,26 @@ class UnityRuntimeSectionTests(unittest.TestCase):
         self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=False), "history")
         self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=True), "user input")
 
-    def test_system_message_after_history_is_context_not_prompt(self):
-        # Безмаркерное system-сообщение до истории — промпт, после — рантайм-контекст.
+    def test_unmarked_system_before_history_is_prompt_after_is_history(self):
+        # Безмаркерное system-сообщение до истории — промпт персонажа; после
+        # начала истории (idle «игрок молчит») — история хода, НЕ активный
+        # контекст (его мы явно не задавали).
         silence = {"role": "system", "content": "The player has been silent for 90 seconds. React naturally."}
         self.assertEqual(_classify_message_section(silence, is_last_user=False, seen_dialogue=False), "character prompts")
-        self.assertEqual(_classify_message_section(silence, is_last_user=False, seen_dialogue=True), "system input")
+        self.assertEqual(_classify_message_section(silence, is_last_user=False, seen_dialogue=True), "history")
+
+    def test_designated_context_blocks_stay_context(self):
+        # Явно оформленные нами блоки остаются активным контекстом даже после истории.
+        for content, expected in [
+            ("<active_memory>\nlikes cats</active_memory>", "memories"),
+            ("[System State]\noffline", "System State"),
+            ("[Current State]\nDate", "System State"),
+            ("[MiSide World State]\nkitchen", "MiSide World State"),
+        ]:
+            self.assertEqual(
+                _classify_message_section({"role": "system", "content": content}, is_last_user=False, seen_dialogue=True),
+                expected,
+            )
 
 
 class IdleTurnHasNoInputTests(unittest.TestCase):
@@ -60,10 +75,10 @@ class IdleTurnHasNoInputTests(unittest.TestCase):
         usage = _compute_token_usage(messages)
         sections = [m["section"] for m in usage["per_message"]]
         # Нет секции "user input" (idle), последний user остался историей,
-        # а «молчание» ушло в контекст.
+        # а «молчание» — тоже история хода (не активный контекст).
         self.assertNotIn("user input", sections)
-        self.assertEqual(sections[2], "history")     # user
-        self.assertEqual(sections[-1], "system input")  # silence → активный контекст
+        self.assertEqual(sections[2], "history")   # user
+        self.assertEqual(sections[-1], "history")  # silence → история хода
 
     def test_normal_turn_last_user_is_input(self):
         messages = [

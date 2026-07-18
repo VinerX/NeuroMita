@@ -80,33 +80,49 @@ def _count_message_images(msg: Dict[str, Any]) -> int:
 
 def _classify_message_section(msg: Dict[str, Any], is_last_user: bool,
                               seen_dialogue: bool = False) -> str:
+    """Секция сообщения для группировки в просмотрщике контекста.
+
+    Модель областей:
+      • «Активный контекст» — ТОЛЬКО блоки, которые мы сами намеренно
+        инжектим как контекст хода (память, состояние, [Current/System State],
+        MiSide World State, контракты/возможности Unity, RAG). У них есть наши
+        маркеры-заголовки.
+      • «История» — поток разговора: саммари, реплики диалога И прочие
+        system/рантайм-события хода (idle/«игрок молчит», напоминания и т.п.),
+        которые мы не задавали как контекст-блок. Системное ≠ активный
+        контекст, пока мы явно его так не оформили (фидбэк).
+      • «Промпт» — промпт персонажа: ведущий блок system-сообщений ДО истории.
+      • «Ввод игрока» — текущий ввод (последнее реальное user-сообщение).
+    """
     text = _message_text(msg).lstrip()
     head = text[:80]
-    # Игровой рантайм-контекст Unity узнаём по ТЕКСТУ ещё до роли. Часть таких
-    # блоков (World State / Capabilities / Runtime Events) уходит с role="event",
-    # и провайдер превращает их в role="user" с префиксом "[RUNTIME EVENT] ".
-    # Без этой проверки они классифицировались как обычные user-сообщения и
-    # уезжали в «историю», хотя это контекст ТЕКУЩЕГО хода, а не диалог —
-    # из-за чего в дереве Unity разбивался на промпт и историю (фидбэк).
-    if head.startswith("[RUNTIME EVENT]"):
-        return "MiSide World State" if "MiSide World State" in head else "Unity runtime"
+    is_runtime_event = head.startswith("[RUNTIME EVENT]")
+    # Заголовок без провайдерского префикса — чтобы видеть наш реальный маркер.
+    core = head[len("[RUNTIME EVENT]"):].lstrip() if is_runtime_event else head
 
+    # 1) Явно оформленные нами блоки контекста — по маркерам.
+    for marker, section in _SECTION_MARKERS:
+        if core.startswith(marker) or marker in core:
+            return section
+    # Контракты/возможности Unity — тоже наш активный контекст (роль system или
+    # конвертированный [RUNTIME EVENT]).
+    if "Unity Runtime" in core or "Unity Intent" in core:
+        return "Unity runtime"
+
+    # 2) Реальный диалог.
     role = str(msg.get("role") or "")
-    if role == "user":
+    if role == "user" and not is_runtime_event:
         return "user input" if is_last_user else "history"
     if role == "assistant":
         return "history"
-    if role == "event":
-        return "system input"
-    for marker, section in _SECTION_MARKERS:
-        if text.startswith(marker) or marker in head:
-            return section
-    # role=system без маркера — часть промпта ТОЛЬКО в ведущем блоке ДО истории
-    # (весь промпт персонажа строится там). После начала истории такие system-
-    # сообщения — это рантайм-инъекции (idle/«игрок молчит», Unity Rules/Intent,
-    # прочие system-события текущего хода): активный контекст, а не промпт. Иначе
-    # они плодили лишний блок «Промпт» после истории (фидбэк).
-    return "system input" if seen_dialogue else "character prompts"
+
+    # 3) Всё прочее — ведущий безмаркерный system это промпт персонажа; после
+    # начала истории любые system/рантайм-события хода (idle/«игрок молчит»,
+    # напоминания, конвертированные не-Unity [RUNTIME EVENT]) — это история,
+    # а не активный контекст (мы их как контекст не задавали).
+    if role == "system" and not seen_dialogue and not is_runtime_event:
+        return "character prompts"
+    return "history"
 
 
 def _compute_token_usage(messages: Any) -> Dict[str, Any]:

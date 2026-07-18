@@ -489,42 +489,49 @@ class ContextViewerDialog(QDialog):
         msgs_item.setExpanded(True)
         self._items.append((msgs_item, "overview", None))
 
-        # Группируем СМЕЖНЫМИ прогонами в порядке отправки провайдеру: новый
-        # заголовок группы создаём, как только крупная группа меняется. Так
-        # порядок дерева сверху вниз в точности совпадает с порядком сообщений в
-        # запросе (важно для отладки), а не «стягивает» разрозненные сообщения
-        # под один заголовок. В штатном промпте (промпт→история→контекст→ввод)
-        # это ровно 4 заголовка; если группа реально встречается дважды —
-        # честно покажем два прогона.
-        runs: list[tuple[str, list[int]]] = []
+        # Одна группа — один заголовок (4 области: Промпт / История / Активный
+        # контекст / Ввод). Сообщения одной крупной группы собираем под её
+        # заголовок, даже если в запросе они идут не подряд (напр. idle-событие
+        # «игрок молчит» физически стоит последним, но это история хода — тянем
+        # его в «Историю», а не плодим отдельный блок). Заголовки идут в порядке
+        # первого появления группы, номер у каждого сообщения показывает его
+        # фактическую позицию в запросе.
+        group_order: list[str] = []
+        group_idxs: Dict[str, list[int]] = {}
         for idx in range(len(self._messages)):
             gkey = self._group_key(idx)
-            if runs and runs[-1][0] == gkey:
-                runs[-1][1].append(idx)
-            else:
-                runs.append((gkey, [idx]))
+            if gkey not in group_idxs:
+                group_idxs[gkey] = []
+                group_order.append(gkey)
+            group_idxs[gkey].append(idx)
+
+        # Ярлыки и «role #N» считаем в порядке ИНДЕКСОВ (не групп), чтобы
+        # нумерация совпадала с обзором справа.
+        self._msg_labels: Dict[int, str] = {}
+        self._msg_role_ord: Dict[int, str] = {}
+        role_counters: Dict[str, int] = {}
+        for idx, msg in enumerate(self._messages):
+            role = msg.get("role") or "unknown"
+            role_counters[role] = role_counters.get(role, 0) + 1
+            self._msg_labels[idx] = self._classify_message_label(msg, role, role_counters[role])
+            self._msg_role_ord[idx] = f"{role} #{role_counters[role]}"
 
         self._message_items: Dict[int, QTreeWidgetItem] = {}
-        self._msg_labels: Dict[int, str] = {}
-        role_counters: Dict[str, int] = {}
-        for gkey, idxs in runs:
+        for gkey in group_order:
+            idxs = group_idxs[gkey]
             icon, color, (ru, en) = _COARSE_GROUPS[gkey]
-            run_tokens = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
+            group_tokens = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
             glabel = f"{icon} {_(ru, en)}"
-            if self._est_total and run_tokens:
-                glabel += f" · ~{self._fmt_int(run_tokens)} · {self._fmt_pct(run_tokens, self._est_total)}"
+            if self._est_total and group_tokens:
+                glabel += f" · ~{self._fmt_int(group_tokens)} · {self._fmt_pct(group_tokens, self._est_total)}"
             parent = QTreeWidgetItem(msgs_item, [glabel])
             parent.setExpanded(True)
             self._items.append((parent, "group", gkey))
 
             for idx in idxs:
                 msg = self._messages[idx]
-                role = msg.get("role") or "unknown"
-                role_counters[role] = role_counters.get(role, 0) + 1
-                label = self._classify_message_label(msg, role, role_counters[role])
-                self._msg_labels[idx] = label
-                child = QTreeWidgetItem(parent, [label + self._est_suffix(idx)])
-                child.setToolTip(0, f"{role} #{role_counters[role]}")
+                child = QTreeWidgetItem(parent, [self._msg_labels[idx] + self._est_suffix(idx)])
+                child.setToolTip(0, self._msg_role_ord[idx])
                 self._items.append((child, "message", msg))
                 self._message_items[idx] = child
                 self._msg_index_by_id[id(msg)] = idx
@@ -582,14 +589,12 @@ class ContextViewerDialog(QDialog):
             lines = [f"<p><b style='color:{_TEXT}'>{_('Всего сообщений', 'Total messages')}:</b> {len(self._messages)}</p>"]
             lines.append(self._render_token_summary())
             lines.append(f"<hr style='border-color:{_BORDER}'>")
-            role_counters: Dict[str, int] = {}
             for i, msg in enumerate(self._messages):
                 role = msg.get("role") or "?"
-                role_counters[role] = role_counters.get(role, 0) + 1
                 color = _ROLE_COLORS.get(role, _TEXT)
                 content = msg.get("content") or ""
                 preview = self._get_preview(content, 160)
-                tag = self._classify_message_label(msg, role, role_counters[role])
+                tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1)
                 est = self._est_by_index.get(i)
                 est_html = (
                     f"&nbsp;<span style='color:{_SH_NUMBER}'>~{self._fmt_int(est['tokens'])}</span>"
