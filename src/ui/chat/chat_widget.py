@@ -7,7 +7,7 @@ inside a scroll area, giving proper widget-level control over layout.
 
 from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QScrollBar, QPushButton,
-    QGraphicsOpacityEffect, QLabel, QFrame,
+    QGraphicsOpacityEffect, QLabel, QFrame, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QPropertyAnimation, QPoint, QTimer, QRectF, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QColor, QBrush, QBitmap, QRegion, QLinearGradient, QPen
@@ -101,8 +101,18 @@ class ChatWidget(QFrame):
             "color: rgba(180,180,195,0.75); font-size: 9pt; "
             "background: transparent; border: none;"
         )
-        typing_layout.addWidget(self._typing_label)
-        typing_layout.addStretch()
+        # Длинные ошибки (напр. «провайдер отклонил по региональному
+        # ограничению…») не влезали в одну строку и обрезались. Разрешаем
+        # перенос и растягиваем метку на всю ширину, крестик уходит вправо.
+        self._typing_label.setWordWrap(True)
+        _tl_policy = self._typing_label.sizePolicy()
+        _tl_policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        _tl_policy.setHeightForWidth(True)
+        self._typing_label.setSizePolicy(_tl_policy)
+        typing_layout.addWidget(self._typing_label, 1)
+        typing_layout.setAlignment(
+            self._typing_avatar, Qt.AlignmentFlag.AlignTop
+        )
 
         self._status_close_button = QPushButton("×")
         self._status_close_button.setObjectName("ChatStatusCloseButton")
@@ -117,7 +127,9 @@ class ChatWidget(QFrame):
         )
         self._status_close_button.clicked.connect(self._dismiss_status)
         self._status_close_button.hide()
-        typing_layout.addWidget(self._status_close_button)
+        # Крестик держим у верхней строки, чтобы у многострочной ошибки он не
+        # оказывался по вертикальному центру блока.
+        typing_layout.addWidget(self._status_close_button, 0, Qt.AlignmentFlag.AlignTop)
 
         # Add typing bar as last item in scroll container (after stretch + messages)
         self._layout.addWidget(self._typing_bar)
@@ -260,6 +272,8 @@ class ChatWidget(QFrame):
             self._typing_avatar.show()
         else:
             self._typing_avatar.hide()
+        # «Думает» — всегда одна строка: фиксированная высота, без переносов.
+        self._typing_bar.setMinimumHeight(0)
         self._typing_bar.setMaximumHeight(32)
         self._typing_bar.show()
         if self._auto_scroll:
@@ -280,8 +294,13 @@ class ChatWidget(QFrame):
         else:
             self._typing_avatar.hide()
         self._status_close_button.setVisible(bool(dismissible))
-        self._typing_bar.setMaximumHeight(32)
+        # Статус (в т.ч. длинная ошибка) может занять несколько строк — снимаем
+        # жёсткий потолок в 32px и даём блоку вырасти по содержимому (перенос
+        # включён у метки). Потолок держим щедрым, чтобы не обрезать текст.
+        self._typing_bar.setMinimumHeight(32)
+        self._typing_bar.setMaximumHeight(260)
         self._typing_bar.show()
+        self._typing_bar.updateGeometry()
         if self._auto_scroll:
             QTimer.singleShot(10, self.scroll_to_bottom)
 
