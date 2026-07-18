@@ -110,8 +110,6 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
         counter = ContextCounter()
     except Exception as e:
         return {"available": False, "note": f"ContextCounter unavailable: {e}"}
-    if not counter.available:
-        return {"available": False, "note": "tiktoken unavailable — token counts omitted"}
 
     last_user_idx = -1
     for i, m in enumerate(messages):
@@ -139,11 +137,20 @@ def _compute_token_usage(messages: Any) -> Dict[str, Any]:
         by_section[section] = by_section.get(section, 0) + n
         total += n
 
+    method = counter.method
+    if counter.is_exact:
+        note = (f"estimated via {counter.encoding_model} tokenizer; "
+                "actual provider tokenization may differ; images not counted")
+    else:
+        note = ("rough heuristic estimate (no tokenizer available); "
+                "actual provider tokenization will differ; images not counted")
     return {
         "available": True,
         "estimated": True,
+        "exact": counter.is_exact,
+        "method": method,
         "encoding": counter.encoding_model,
-        "note": f"estimated via {counter.encoding_model} tokenizer; actual provider tokenization may differ; images not counted",
+        "note": note,
         "estimated_total": total,
         "estimated_by_section": by_section,
         "images_total": images_total,
