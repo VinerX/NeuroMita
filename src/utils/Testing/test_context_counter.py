@@ -30,6 +30,21 @@ class UnityRuntimeSectionTests(unittest.TestCase):
         self.assertEqual(_classify_message_section(caps, is_last_user=False), "Unity runtime")
         self.assertEqual(_classify_message_section(events, is_last_user=False), "Unity runtime")
 
+    def test_static_unity_contract_before_history_is_prompt(self):
+        # Rules/Intent теперь в статике промпта (до истории) → часть промпта;
+        # если после истории — рантайм-контекст.
+        rules = {"role": "system", "content": "[Unity Runtime Rules]\nchannels"}
+        intent = {"role": "system", "content": "[Unity Intent Contract]\nintents"}
+        self.assertEqual(_classify_message_section(rules, is_last_user=False, seen_dialogue=False), "Unity contract")
+        self.assertEqual(_classify_message_section(intent, is_last_user=False, seen_dialogue=False), "Unity contract")
+        self.assertEqual(_classify_message_section(rules, is_last_user=False, seen_dialogue=True), "Unity runtime")
+
+    def test_dynamic_unity_capabilities_events_are_context(self):
+        caps = {"role": "user", "content": "[RUNTIME EVENT] [Unity Runtime Capabilities]\nWave"}
+        events = {"role": "user", "content": "[RUNTIME EVENT] [Unity Runtime Events]\n- door opened"}
+        self.assertEqual(_classify_message_section(caps, is_last_user=False, seen_dialogue=True), "Unity runtime")
+        self.assertEqual(_classify_message_section(events, is_last_user=False, seen_dialogue=True), "Unity runtime")
+
     def test_converted_world_state_keeps_its_section(self):
         ws = {"role": "user", "content": "[RUNTIME EVENT] [MiSide World State]\nkitchen"}
         self.assertEqual(_classify_message_section(ws, is_last_user=False), "MiSide World State")

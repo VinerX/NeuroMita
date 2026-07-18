@@ -47,6 +47,68 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(contents.index("[active memory]"), contents.index("[relevant memories]"))
         self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
 
+    def test_unity_static_before_history_dynamic_before_state(self):
+        """Статический Unity (Rules/Intent) — в статике промпта до истории;
+        динамический (Capabilities/World State/Events) — после, вплотную перед
+        [Current State]/[System State] и сообщением игрока."""
+        class _Character:
+            char_id = "Test"
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: (
+            [{"role": "system", "content": "[stable prompt]"}],
+            [{"role": "system", "content": "[active memory]"}],
+            [],
+        )
+        controller._build_system_state_message = lambda: {
+            "role": "system",
+            "content": "[system state]",
+        }
+
+        result = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            system_input="[event]",
+            rag_context="[relevant memories]",
+            game_state={
+                "runtime_rules": "Use interactions for nearby objects.",
+                "runtime_capabilities": "Available animations: Wave, Sit.",
+                "world_state": "Player is in the kitchen.",
+                "runtime_events": ["Player stood up."],
+            },
+        ))
+        contents = [m.get("content", "") for m in result.messages]
+
+        def idx(sub: str) -> int:
+            return next(i for i, c in enumerate(contents) if sub in c)
+
+        i_stable = contents.index("[stable prompt]")
+        i_rules = idx("[Unity Runtime Rules]")
+        i_mem = contents.index("[active memory]")
+        i_caps = idx("[Unity Runtime Capabilities]")
+        i_world = idx("[MiSide World State]")
+        i_events = idx("[Unity Runtime Events]")
+        i_cur = idx("[Current State]")
+        i_sys = contents.index("[system state]")
+        i_event = contents.index("[event]")
+
+        # Статический контракт — после основных промптов, до динамики/состояния.
+        self.assertLess(i_stable, i_rules)
+        self.assertLess(i_rules, i_mem)
+        # Динамический Unity — после памяти, вплотную перед состоянием/вводом.
+        self.assertLess(i_mem, i_caps)
+        for i_dyn in (i_caps, i_world, i_events):
+            self.assertLess(i_dyn, i_cur)
+        self.assertLess(i_cur, i_sys)
+        self.assertLess(i_sys, i_event)
+        # Capabilities напоминает про ранее переданные Rules/Contract.
+        self.assertIn("Unity Runtime Rules", contents[i_caps])
+        self.assertIn("Unity Intent Contract", contents[i_caps])
+
     def test_unity_world_state_wrapped_as_data(self):
         message = PromptController._build_unity_world_state_message(
             {"world_state": "The player is holding the key."}

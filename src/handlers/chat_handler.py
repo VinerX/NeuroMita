@@ -104,9 +104,13 @@ def _classify_message_section(msg: Dict[str, Any], is_last_user: bool,
     for marker, section in _SECTION_MARKERS:
         if core.startswith(marker) or marker in core:
             return section
-    # Контракты/возможности Unity — тоже наш активный контекст (роль system или
-    # конвертированный [RUNTIME EVENT]).
-    if "Unity Runtime" in core or "Unity Intent" in core:
+    # Статический контракт Unity (Rules/Intent) теперь физически стоит в
+    # статической части промпта (до истории) — это часть промпта; если вдруг
+    # окажется после истории — считаем рантайм-контекстом. Динамический Unity
+    # (Capabilities/Events) — всегда активный контекст текущего хода.
+    if "Unity Runtime Rules" in core or "Unity Intent Contract" in core:
+        return "Unity contract" if not seen_dialogue else "Unity runtime"
+    if "Unity Runtime Capabilities" in core or "Unity Runtime Events" in core:
         return "Unity runtime"
 
     # 2) Реальный диалог.
