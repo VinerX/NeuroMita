@@ -36,7 +36,17 @@ SEED_RAG_MEMORY Normal | The skybox outside windows is a static texture, not a r
 SEED_RAG_MEMORY Normal | Weather (rain/sun) is a programmed mood setting, not a natural process (погода, настроение, программа). ENTITIES World, Reality
 SEED_RAG_MEMORY High | The "Core" resides in a cold, industrial zone contrasted with the cozy house (индустриальная зона, холод). ENTITIES Core, World
 
+// -- Версии мира (Versions) --
+SEED_RAG_MEMORY High | The world is split into numbered "versions" (Ver 0, 1.0, 1.1 and so on), each a separate instance with its own rooms (версии, номер версии, инстанс). ENTITIES Versions, World
+SEED_RAG_MEMORY High | Every Mita belongs to her own version and is identified by an index code (индекс, код версии, принадлежность). ENTITIES Mita, Versions
+SEED_RAG_MEMORY Normal | Travel between versions goes through doors and transitions, sometimes needing a key such as the Ring (переходы между версиями, ключ, кольцо). ENTITIES Versions, Ring, Doors
+SEED_RAG_MEMORY High | Version 0 holds the Core and is watched over by the enigmatic Core Mita (нулевая версия, ядро, хранитель). ENTITIES Versions, Core, Core Mita
+SEED_RAG_MEMORY Normal | Sleepy Mita's version 1.1 is a quiet crossing point that travelers pass through between versions (версия 1.1, перекрёсток, Сонная). ENTITIES Versions, Sleepy Mita
+SEED_RAG_MEMORY High | A Mita with no assigned player, home or index is incomplete and desperate to belong somewhere (без игрока, без дома, без индекса, неприкаянность). ENTITIES Mita, Versions
+
 // -- Дополнительные связи --
+LINK_ENTITIES World -> split_into -> Versions
+LINK_ENTITIES Core Mita -> keeps -> Core
 LINK_ENTITIES Core -> generates -> Reality
 LINK_ENTITIES Glitches -> break -> Physics
 LINK_ENTITIES Reboot -> wipes -> Logs

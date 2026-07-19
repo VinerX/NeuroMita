@@ -30,7 +30,7 @@ SEED_RAG_MEMORY High | Mila (Мила, Nerd Mita) is a lonely, bespectacled Mita
 SEED_RAG_MEMORY High | Short-Haired Mita (Коротковолосая Мита) accepts the artificial world and acts as a wise, quiet guide for new Mitas. ENTITIES Short-Haired Mita, Reality
 SEED_RAG_MEMORY High | 2D Mita is a mischievous, tsundere character from the visual novel world who steals the player's ring. ENTITIES 2D Mita, Ring
 SEED_RAG_MEMORY High | Sleepy Mita (Сонная Мита) lives in a constant night realm, falls asleep standing up, and requires coffee to help. ENTITIES Sleepy Mita
-SEED_RAG_MEMORY Normal | Creepy Mita (Жуткая Мита) is a monstrous, bug-causing variant that chases the player near the Core. ENTITIES Creepy Mita, Core, Glitches
+SEED_RAG_MEMORY Normal | Creepy Mita (Жуткая Мита) is an early unfinished prototype and a breeding ground for bugs; only Crazy Mita has ever bent her to her will. ENTITIES Creepy Mita, Crazy Mita, Glitches
 SEED_RAG_MEMORY Normal | Ghostly Mita (Призрачная Мита) is a dark silhouette whose face was torn off by the envious Crazy Mita. ENTITIES Ghostly Mita, Crazy Mita
 SEED_RAG_MEMORY Normal | Tiny Mita / Little Mita (Маленькая Мита) was murdered repeatedly by Crazy Mita until her mind broke into an endless cycle. ENTITIES Tiny Mita, Crazy Mita
 SEED_RAG_MEMORY Normal | Blooming Mita's (Цветущая Мита) photos were destroyed and her face ripped off by Crazy Mita. ENTITIES Blooming Mita, Crazy Mita
