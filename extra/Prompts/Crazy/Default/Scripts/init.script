@@ -1,4 +1,7 @@
 RUN ../../../Common/world_knowledge.script
+IF SEED_CHARACTER_MEMORIES != False THEN
+	RUN ./character_seed.script
+ENDIF
 
 LOG "Initialization of variables"
 

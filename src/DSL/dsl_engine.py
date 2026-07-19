@@ -619,6 +619,18 @@ class DslInterpreter:
                                 )
                         continue
 
+                    if command == "SEED_ISLAND":
+                        fmt = "SEED_ISLAND requires format: SEED_ISLAND type | content"
+                        if not args or "|" not in args:
+                            raise DslError(fmt, resolved_script_id, num, raw)
+                        parts = args.split("|", 1)
+                        island_type = parts[0].strip()
+                        content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
+                        mem_sys = getattr(self.character, "memory_system", None)
+                        if content and mem_sys and hasattr(mem_sys, "seed_island"):
+                            mem_sys.seed_island(island_type, str(content))
+                        continue
+
                     if command == "LINK_ENTITIES":
                         parts = [p.strip() for p in args.split("->")]
                         if len(parts) != 3:

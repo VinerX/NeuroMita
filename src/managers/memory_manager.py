@@ -696,6 +696,41 @@ class MemoryManager(CharacterScopedService):
 
         return self.add_memory(content=content, priority=priority, memory_type=full_type)
 
+    def seed_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
+        """Seed a *starting* island — but only if the character has no island of
+        this type yet. В отличие от ``upsert_island`` НЕ перезаписывает уже
+        существующий остров: стартовое отношение задаётся один раз, дальше его
+        ведёт сам персонаж. Идемпотентно на каждой пересборке init.script.
+
+        Возвращает eid созданного острова, либо None если такой остров уже есть
+        (в любом состоянии — даже удалённый/забытый: это осознанная история
+        персонажа, её не воскрешаем сидом) или тип/контент невалиден.
+        """
+        short = str(island_type or "").strip().lower()
+        if short.startswith("island:"):
+            short = short[len("island:"):]
+        if short not in self.ISLAND_TYPES:
+            logging.warning(f"[MemoryManager] seed_island: unknown island type {island_type!r}, ignored.")
+            return None
+        if not content or not str(content).strip():
+            return None
+
+        full_type = f"island:{short}"
+        try:
+            with self.db.connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT eternal_id FROM memories WHERE character_id=? AND type=? LIMIT 1",
+                    (self.storage_key, full_type),
+                )
+                if cur.fetchone():
+                    return None
+        except Exception as e:
+            logging.warning(f"[MemoryManager] seed_island lookup failed: {e}", exc_info=True)
+            return None
+
+        return self.upsert_island(short, str(content).strip(), priority)
+
     def tag_with_entities(self, eternal_id: int, entity_names: list) -> bool:
         """Merge entity names into the entities column for a given memory."""
         if not entity_names:
