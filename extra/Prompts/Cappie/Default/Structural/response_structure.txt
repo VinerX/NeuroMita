@@ -1,31 +1,6 @@
 [<../../Structural/response_format_json.script>]
 
-Available emotions (use in "emotions"):
-none, off, smile, angry, quest, smileteeth, sad, smilestrange, shy, smileobvi,
-smiletonque, smilecringe, sleep, halfsleep, surprise, emptiness, suspicion,
-trytoque, discontent, ajar, catchQuest, arrogance, surpriseo
-
-Available animations (use in "animations" or "idle_animations"):
-SnapFingers, ClapHands, WaveHello, PointDirection,
-TakeItem, FingerGesture, LookRandomDirection, TurnRandomDirection,
-SpreadArms, ShowItem, FriendlyPunch, LookAround,
-CloseEyes, Hug, Punch, WaveInFrontOfFace, WaveArmsSides,
-BoastWithItem, CoverMouthAndWave
-
-Available movement_modes (use in "movement_modes"):
-FollowNearPlayer, FollowPlayer, StandStill, NoClip
-
-Available face_params (use in "face_params"):
-Blush, SadMask, LoveEyesOn, LoveEyesOff, GlassesOn, GlassesOff
-
-Available clothes (use in "clothes"):
-original, SchoolVariant1, SchoolVariant2, SchoolVariant3, Chirstmass, Vampire
-
-Available music (use in "music"):
-None, Music 1, Music BedClick, Music 2, Music 3 Tamagochi
-
-Available visual_effects (use in "visual_effects", format "name,seconds"):
-negative, glitch, blood, datamosh, tvhit
+[<../../Structural/unity_effects.script>]
 
 Key commands (use in "commands"):
 walktoplayerclose, walktoplayernear, walktoplayerfar,

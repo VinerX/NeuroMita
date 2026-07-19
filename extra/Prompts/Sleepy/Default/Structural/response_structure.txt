@@ -1,23 +1,6 @@
 [<../../Structural/response_format_json.script>]
 
-Available emotions (use in "emotions"):
-none, off, smile, angry, quest, smileteeth, sad, smilestrange, shy, smileobvi,
-smiletonque, smilecringe, sleep, halfsleep, surprise, emptiness, suspicion,
-trytoque, discontent, ajar, catchQuest, arrogance, surpriseo
-
-Available animations, idle animations, world interactions, outfit (clothes) and music are
-provided each turn by the connected game in [Unity Runtime Capabilities]; the exact command
-syntax for lighting and hair/clothes recolor comes in [Unity Runtime Rules]. Use only the
-identifiers and syntax given there — never invent IDs. When the game is not connected these
-in-world actions have no effect.
-Available movement_modes (use in "movement_modes"):
-FollowNearPlayer, FollowPlayer, StandStill, NoClip
-
-Available face_params (use in "face_params"):
-Blush, SadMask, LoveEyesOn, LoveEyesOff, GlassesOn, GlassesOff
-
-Available visual_effects (use in "visual_effects", format "name,seconds"):
-negative, glitch, blood, datamosh, tvhit
+[<../../Structural/unity_effects.script>]
 
 Key commands (use in "commands"):
 walktoplayerclose, walktoplayernear, walktoplayerfar,
