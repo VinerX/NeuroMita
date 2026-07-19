@@ -1,0 +1,105 @@
+// Shared computed behavior band (improvement plan 05).
+// RETURN → static change-rules (cacheable); ADD_CONTEXT_INFO → the current band
+// with the raw number as anchor, placed in the volatile active context.
+//
+// The including template must declare  behavior_state=custom  so the default
+// numeric [Behavior State] is suppressed. Include as a NORMAL (not @) include —
+// its RETURN is static, its ADD_CONTEXT_INFO is volatile:
+//   [<../../Structural/behavior_state.script>]
+//
+// The character's Structural/VariablesEffects.txt MUST provide tag sections:
+//   ChangeRules, RelationLow / RelationNormal / RelationHigh,
+//   BoredomLow / BoredomMedium / BoredomHigh, StressLow / StressMedium / StressHigh.
+// Plain relative LOAD paths resolve against the character base, so this one shared
+// script serves every character from their own VariablesEffects.txt.
+//
+// Band boundaries default to 20/50 (attitude), 40/80 (boredom), 40/80 (stress).
+// A character may override any of them in its init script by setting the variables
+// BEH_ATT_LOW_MAX / BEH_ATT_HIGH_MIN / BEH_BOR_LOW_MAX / BEH_BOR_HIGH_MIN /
+// BEH_STR_LOW_MAX / BEH_STR_HIGH_MIN.
+
+SET LOCAL att_low = BEH_ATT_LOW_MAX
+IF att_low == None THEN
+    SET att_low = 20
+ENDIF
+SET LOCAL att_high = BEH_ATT_HIGH_MIN
+IF att_high == None THEN
+    SET att_high = 50
+ENDIF
+SET LOCAL bor_low = BEH_BOR_LOW_MAX
+IF bor_low == None THEN
+    SET bor_low = 40
+ENDIF
+SET LOCAL bor_high = BEH_BOR_HIGH_MIN
+IF bor_high == None THEN
+    SET bor_high = 80
+ENDIF
+SET LOCAL str_low = BEH_STR_LOW_MAX
+IF str_low == None THEN
+    SET str_low = 40
+ENDIF
+SET LOCAL str_high = BEH_STR_HIGH_MIN
+IF str_high == None THEN
+    SET str_high = 80
+ENDIF
+
+// Attitude band with ±3 hysteresis so the tone does not flicker on the boundary.
+IF attitude_band == None THEN
+    IF attitude <= att_low THEN
+        SET attitude_band = "low"
+    ELSEIF attitude <= att_high THEN
+        SET attitude_band = "normal"
+    ELSE
+        SET attitude_band = "high"
+    ENDIF
+ENDIF
+IF attitude_band == "low" AND attitude > att_low + 3 THEN
+    SET attitude_band = "normal"
+ENDIF
+IF attitude_band == "normal" AND attitude > att_high + 3 THEN
+    SET attitude_band = "high"
+ENDIF
+IF attitude_band == "high" AND attitude <= att_high - 3 THEN
+    SET attitude_band = "normal"
+ENDIF
+IF attitude_band == "normal" AND attitude <= att_low - 3 THEN
+    SET attitude_band = "low"
+ENDIF
+
+SET LOCAL att_line = ""
+IF attitude_band == "low" THEN
+    SET att_line = LOAD RelationLow FROM "Structural/VariablesEffects.txt"
+ELSEIF attitude_band == "normal" THEN
+    SET att_line = LOAD RelationNormal FROM "Structural/VariablesEffects.txt"
+ELSE
+    SET att_line = LOAD RelationHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+SET LOCAL bor_line = ""
+IF boredom <= bor_low THEN
+    SET bor_line = LOAD BoredomLow FROM "Structural/VariablesEffects.txt"
+ELSEIF boredom <= bor_high THEN
+    SET bor_line = LOAD BoredomMedium FROM "Structural/VariablesEffects.txt"
+ELSE
+    SET bor_line = LOAD BoredomHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+SET LOCAL str_line = ""
+IF stress <= str_low THEN
+    SET str_line = LOAD StressLow FROM "Structural/VariablesEffects.txt"
+ELSEIF stress <= str_high THEN
+    SET str_line = LOAD StressMedium FROM "Structural/VariablesEffects.txt"
+ELSE
+    SET str_line = LOAD StressHigh FROM "Structural/VariablesEffects.txt"
+ENDIF
+
+SET LOCAL band = "[Behavior State]\n"
+SET band = band + "Attitude: " + str(round(attitude, 1)) + "/100 — " + att_line + "\n"
+SET band = band + "Boredom: " + str(round(boredom, 1)) + "/100 — " + bor_line + "\n"
+SET band = band + "Stress: " + str(round(stress, 1)) + "/100 — " + str_line
+IF Love != None THEN
+    SET band = band + "\nLove: " + str(round(Love, 1)) + "/100"
+ENDIF
+ADD_CONTEXT_INFO band
+
+RETURN LOAD ChangeRules FROM "Structural/VariablesEffects.txt"

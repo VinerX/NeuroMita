@@ -11,6 +11,6 @@ behavior_state=custom
 [<Main/common_behavior.txt>]
 [<Context/examples.script>]
 [<Main/player.txt>]
-[<Structural/VariableEffects.script>]
+[<../../Structural/behavior_state.script>]
 [<Scripts/chess_handler.script>]
 [<Scripts/seabattle_handler.script>]
