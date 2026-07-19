@@ -113,7 +113,6 @@ class ContextBudgetTests(unittest.TestCase):
         crazy = PROMPTS / "Crazy" / "Default"
         blocks = [
             crazy / "Main" / "common_behavior.txt",
-            crazy / "Main" / "available_actions.txt",
             crazy / "Main" / "player.txt",
             PROMPTS / "Common" / "ProjectInfo.txt",
             PROMPTS / "Common" / "Security.txt",
@@ -127,14 +126,29 @@ class ContextBudgetTests(unittest.TestCase):
         # block duplicated into the assembly would.
         self.assertLess(toks, 6000, f"static Crazy blocks unexpectedly large: {toks} tokens")
 
-    def test_split_did_not_duplicate_personality_into_actions(self):
-        crazy = PROMPTS / "Crazy" / "Default" / "Main"
-        behavior = (crazy / "common_behavior.txt").read_text(encoding="utf-8")
-        actions = (crazy / "available_actions.txt").read_text(encoding="utf-8")
-        # The distinctive personality opener must live in exactly one file.
+    def test_personality_opener_lives_in_exactly_one_block(self):
+        """Личность не должна расползаться по нескольким статическим блокам.
+
+        Каталог действий (`available_actions.txt`) удалён: источником действий
+        стал рантайм, а unity-only поля переехали в общий
+        `Structural/unity_effects.script`. Проверяем оставшиеся статические
+        блоки Crazy — маркер личности обязан быть ровно в одном.
+        """
+        crazy = PROMPTS / "Crazy" / "Default"
         marker = "ты ведешь светскую беседу"
-        self.assertIn(marker, behavior.lower())
-        self.assertNotIn(marker, actions.lower())
+        blocks = [
+            crazy / "Main" / "common_behavior.txt",
+            crazy / "Main" / "player.txt",
+            crazy / "Structural" / "response_structure.txt",
+        ]
+        owners = [
+            p.name for p in blocks
+            if p.exists() and marker in p.read_text(encoding="utf-8").lower()
+        ]
+        self.assertEqual(
+            owners, ["common_behavior.txt"],
+            f"маркер личности должен быть ровно в common_behavior.txt, найден в: {owners}",
+        )
 
 
 if __name__ == "__main__":

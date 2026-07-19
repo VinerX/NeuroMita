@@ -287,6 +287,16 @@ class PromptController(PromptBuilderService):
         character.set_variable("SYSTEM_DATETIME", now_str)
         character.update_app_vars(use(AppVarsService).snapshot())
 
+        # Состояние связи с игрой — тот же снимок, что гейтит Unity-блоки и
+        # исключает unity-only поля из схемы. Промпт-шаблоны читают его через
+        # DSL, чтобы не печатать каталоги эффектов, которых в этом ходу нет.
+        caps = runtime_capabilities()
+        character.set_variable("GAME_CONNECTED", caps.connected)
+        character.set_variable(
+            "UNITY_EFFECTS_AVAILABLE",
+            None if caps.connected is None else not caps.structured_segment_exclude_fields,
+        )
+
         if getattr(character, "char_id", "") == "GameMaster":
             character.set_variable("GM_INSTRUCTION", self._get_setting("GM_SMALL_PROMPT", "") or "")
 

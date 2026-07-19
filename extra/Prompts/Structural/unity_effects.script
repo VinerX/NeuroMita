@@ -1,0 +1,20 @@
+// Каталог unity-only полей структурированного ответа (emotions, face_params,
+// visual_effects, movement_modes, величины scale/speed).
+//
+// Рантайм эти списки НЕ присылает — в отличие от анимаций/интеракций/одежды/музыки
+// они обязаны жить в статике промпта. Но применить их может только подключённая
+// игра: без неё те же поля вырезаются из схемы ответа
+// (UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS в services/runtime_capabilities.py), и
+// [System State] честно сообщает, что эффекты недоступны. Печатать каталог в
+// таком ходу — только жечь токены и провоцировать модель заявлять несуществующий
+// эффект.
+//
+// GAME_CONNECTED / UNITY_EFFECTS_AVAILABLE выставляет prompt_controller из того же
+// снимка runtime_capabilities(), что гейтит Unity-блоки — источник правды один.
+// None (связь неизвестна, напр. изолированные тесты) трактуем как «показать».
+
+IF UNITY_EFFECTS_AVAILABLE == False THEN
+	RETURN ""
+ENDIF
+
+RETURN LOAD "./unity_effects_catalog.txt"
