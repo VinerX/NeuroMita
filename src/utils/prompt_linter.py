@@ -38,6 +38,22 @@ _SUPPORT_INTENTS_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Legacy syntaxes that drift from the runtime contract (see improvement plans 01/02).
+# The Unity runtime parses light as ``light:color:R,G,B`` / ``light:set:...`` (colon),
+# and movement points as ``walkto,PointName`` (no space). The old comma-light form and
+# the ``walkto, ...`` / ``PositionMita`` point naming no longer match the runtime.
+_LEGACY_SYNTAX_RES = (
+    (re.compile(r"light:color,"), "old light syntax 'light:color,' — canon is 'light:color:R,G,B'"),
+    (re.compile(r"light:set,"), "old light syntax 'light:set,' — canon is 'light:set:...'"),
+    (re.compile(r"walkto,\s"), "old movement syntax 'walkto, ' with a space — canon is 'walkto,PointName'"),
+    (re.compile(r"PositionMita\b"), "legacy point naming 'PositionMita ...' — point names now come from runtime"),
+)
+
+# Rough size guard. ~4 chars/token heuristic; a single main prompt file above this
+# many estimated tokens is a candidate for normalization (plan 02).
+_OVERSIZED_TOKEN_THRESHOLD = 8000
+_CHARS_PER_TOKEN = 4
+
 
 @dataclass(frozen=True)
 class LintWarning:
@@ -156,6 +172,25 @@ def lint_prompts(root: Path) -> List[LintWarning]:
                 warnings.append(LintWarning(
                     rel, f"line {_line_of(text.lower(), 'intents')}", "intents-mention",
                     "'intents' is mentioned but this prompt set does not declare support_intents=True",
+                ))
+
+        # legacy syntaxes that no longer match the Unity runtime contract
+        for rx, msg in _LEGACY_SYNTAX_RES:
+            m = rx.search(text)
+            if m:
+                warnings.append(LintWarning(
+                    rel, f"line {text.count(chr(10), 0, m.start()) + 1}",
+                    "legacy-syntax", msg,
+                ))
+
+        # oversized main prompt file (estimated tokens)
+        if path.name in ("main.txt", "mainCrazy.txt") or path.parent.name == "Main":
+            est_tokens = len(text) // _CHARS_PER_TOKEN
+            if est_tokens > _OVERSIZED_TOKEN_THRESHOLD:
+                warnings.append(LintWarning(
+                    rel, "whole file", "oversized-prompt",
+                    f"~{est_tokens} estimated tokens (> {_OVERSIZED_TOKEN_THRESHOLD}); "
+                    "consider normalizing to the character skeleton",
                 ))
 
         # conflicting numeric length rules within one file
