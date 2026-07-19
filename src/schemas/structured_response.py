@@ -119,6 +119,29 @@ def _remove_schema_properties(schema: dict, field_names: set[str]) -> None:
         schema["required"] = [name for name in required if name not in field_names]
 
 
+def _require_segments(schema: dict) -> None:
+    """Mark ``segments`` required in the schema we send to the provider.
+
+    Внутри Pydantic поле остаётся необязательным: парсер намеренно терпим и
+    вытягивает ответ даже из кривого JSON (см. structured_response_parser).
+    Но провайдеру схему нужно отдавать строгую — иначе constrained decoding
+    разрешает ответ вообще без реплики: модель отдаёт только глобальные поля
+    (attitude_change, memory_*, secret_exposed), сегментов нет, и весь ход
+    уходит в фолбэк-текст. Наблюдалось на gemini-flash-lite при раскрытии
+    секрета: JSON с secret_exposed=true и без segments.
+    """
+    if not isinstance(schema.get("properties"), dict):
+        return
+    if "segments" not in schema["properties"]:
+        return
+    required = schema.get("required")
+    if not isinstance(required, list):
+        required = []
+    if "segments" not in required:
+        required.append("segments")
+    schema["required"] = required
+
+
 def _remove_segment_schema_properties(schema: dict, field_names: set[str]) -> None:
     """Remove selected fields from the nested ``segments.items`` schema."""
     if not field_names:
@@ -398,6 +421,7 @@ class StructuredResponse(BaseModel):
             _remove_schema_properties(schema, exclude_fields)
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
+        _require_segments(schema)
         return {
             "type": "json_schema",
             "json_schema": {
@@ -468,6 +492,7 @@ class StructuredResponse(BaseModel):
             _remove_schema_properties(schema, exclude_fields)
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
+        _require_segments(schema)
         return schema
 
 
