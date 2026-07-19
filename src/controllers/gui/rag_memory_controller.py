@@ -917,6 +917,22 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
          'key': 'HC_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current')},
 
+        {'label': _('Факты в память при сжатии', 'Extract memory facts on compression'),
+         'key': 'MEMORY_SUMMARY_CANDIDATES_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'При каждом сжатии куска истории отдельным запросом просить модель выделить 0-3 факта-'
+             'кандидата в долгую память и добавлять их (через дедуп). Страховка на случай, если модель '
+             'не положила важное в память сама. ВНИМАНИЕ: это доп. LLM-вызов на каждое сжатие.',
+             'On each history-chunk compression, make a separate request asking the model to extract 0-3 '
+             'candidate facts for long-term memory and add them (via dedup). A safety net in case the model '
+             'did not store something important itself. NOTE: this is an extra LLM call per compression.')},
+        {'label': _('Макс. фактов за раз', 'Max facts per compression'),
+         'key': 'MEMORY_SUMMARY_CANDIDATES_MAX', 'type': 'entry', 'default': 3,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'MEMORY_SUMMARY_CANDIDATES_ENABLED',
+         'tooltip': _('Сколько фактов-кандидатов максимум извлекать за одно сжатие (1–5).',
+                      'Maximum number of candidate facts to extract per compression (1–5).')},
+
         {'type': 'end'},
     ]
 

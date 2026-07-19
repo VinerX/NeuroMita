@@ -415,8 +415,130 @@ class HistoryController(HistoryService):
         if new_count != summary_count:
             self._emit_compressed(char_id)
 
+        # Страховочный второй путь в долгую память (08 P1): просим ту же модель
+        # выделить из сжимаемого куска 0-3 факта-кандидата и прогоняем через add_memory
+        # (там уже дедуп). Опционально, по умолчанию выключено (доп. LLM-вызов).
+        try:
+            self._extract_memory_candidates(character, messages_to_compress)
+        except Exception as e:
+            logger.warning(
+                f"[HistoryController][{char_id}] Memory candidate extraction failed: {e}",
+                exc_info=True,
+            )
+
         if reason == "Periodic compression":
             self._messages_since_last_periodic_compression[char_id] = 0
+
+    _CANDIDATE_PROMPT = (
+        "From the dialogue chunk below, extract 0 to {max_n} durable long-term memory "
+        "facts worth remembering for {char_name} (promises, preferences, important events, "
+        "relationship changes, revealed secrets). Skip small talk and anything trivial. "
+        "Write each fact in the language of the dialogue, short and concrete.\n"
+        "Answer ONLY with a JSON array, each item {{\"priority\": \"low|normal|high\", "
+        "\"content\": \"...\"}}. Empty array [] if nothing is worth it.\n\n"
+        "Dialogue chunk:\n{chunk}\n\nJSON:"
+    )
+
+    def _extract_memory_candidates(self, character, messages_to_compress) -> None:
+        if getattr(self, "_closed", False):
+            return
+        try:
+            if not bool(self._get_setting("MEMORY_SUMMARY_CANDIDATES_ENABLED", False)):
+                return
+        except Exception:
+            return
+
+        mem = getattr(character, "memory_system", None)
+        if mem is None or not hasattr(mem, "add_memory"):
+            return
+        if not messages_to_compress:
+            return
+
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            max_n = int(self._get_setting("MEMORY_SUMMARY_CANDIDATES_MAX", 3))
+        except Exception:
+            max_n = 3
+        max_n = max(1, min(5, max_n))
+
+        chunk = "\n".join(
+            f"[{'Player' if m.get('role') == 'user' else 'Character'}]: {m.get('content')}"
+            for m in messages_to_compress if isinstance(m, dict) and m.get("content")
+        )
+        if not chunk.strip():
+            return
+
+        prompt = self._CANDIDATE_PROMPT.format(
+            max_n=max_n,
+            char_name=getattr(character, "name", "Character"),
+            chunk=self._truncate_text_for_prompt(chunk, 6000),
+        )
+
+        try:
+            request_timeout = max(1.0, float(self._get_setting("HISTORY_COMPRESSION_REQUEST_TIMEOUT_SEC", 60.0)))
+            result = use(GenerationService).generate_utility(
+                UtilityGenerationRequest(
+                    prompt=prompt,
+                    character_id=char_id,
+                    kind="memory_candidates",
+                    preset_id=None,
+                    max_attempts=1,
+                    retry_delay=0.0,
+                    request_timeout=request_timeout,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"[HistoryController][{char_id}] candidate request failed: {e}")
+            return
+
+        if not result or not getattr(result, "ok", False) or not (result.text or "").strip():
+            return
+
+        candidates = self._parse_memory_candidates(result.text, max_n)
+        added = 0
+        for prio, content in candidates:
+            try:
+                if mem.add_memory(content=content, priority=prio) is not None:
+                    added += 1
+            except Exception:
+                continue
+        if added:
+            logger.info(f"[HistoryController][{char_id}] Added {added} memory candidate(s) from compression.")
+
+    @staticmethod
+    def _parse_memory_candidates(text: str, max_n: int) -> List[tuple]:
+        """Толерантно парсим JSON-массив кандидатов из ответа модели."""
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        # выдёргиваем первый JSON-массив (модель может обернуть в ```json ... ```)
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        blob = raw[start:end + 1]
+        try:
+            data = json.loads(blob)
+        except Exception:
+            return []
+        if not isinstance(data, list):
+            return []
+
+        valid_prio = {"low", "normal", "high", "critical"}
+        out: List[tuple] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            prio = str(item.get("priority") or "normal").strip().lower()
+            if prio not in valid_prio:
+                prio = "normal"
+            out.append((prio, content))
+            if len(out) >= max_n:
+                break
+        return out
 
     def _emit_compressed(self, char_id: str) -> None:
         try:
