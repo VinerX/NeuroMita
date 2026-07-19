@@ -174,7 +174,7 @@ Code
     commands: ["Continue"]
 
     **[Outro]**
-    *commands: ["walkto, Player"]*
+    *commands: ["walktoplayerclose"]*
     Моё отраженье...
     * *беру его лицо в свои ладони* или animations: ["Hug"]*
     ...всегда здесь... со мной...

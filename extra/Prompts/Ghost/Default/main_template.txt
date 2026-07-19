@@ -1,4 +1,6 @@
 support_intents=True
+behavior_state=custom
+[<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
 [<../../Common/Security.txt>]
@@ -8,5 +10,5 @@ support_intents=True
 [<Main/player.txt>]
 [<Context/examplesLong.txt>]
 [<Scripts/history_loader.script>]
-[<Structural/VariablesEffects.txt>]
+[<../../Structural/behavior_state.script>]
 [<Scripts/event_handler.script>]
