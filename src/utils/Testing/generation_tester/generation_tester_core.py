@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from core.events import Events, get_event_bus, shutdown_event_bus
 from core.request_policy import RequestPolicy
-from core.services import use
+from core.services import services, use
 from services.contracts import CharacterRegistry, ChatGenerationRequest, GenerationService, ModelStateService
 from core.request_policy import resolve_policy
 from main_logger import logger
@@ -208,11 +208,51 @@ class GenerationTestRuntime:
         self.embedding_presets_controller = EmbeddingPresetsController()
         self.history_controller = HistoryController()
         self.prompt_controller = PromptController()
+
+        # The composition root (MainController) normally registers these
+        # infrastructure services on top of the controllers. The headless tester
+        # instantiates only a subset of controllers, so wire the services the
+        # generation pipeline depends on (GameLink/AppVars/RuntimeCapabilities/
+        # presets/model state) before the character and model controllers run.
+        self._register_infra_services()
+
         self.character_controller = CharacterController(self.settings)
         self.model_controller = ModelController(self.settings)
+        services().register(ModelStateService, self.model_controller, replace=True)
 
         if character_id:
             self.set_current_character(character_id)
+
+    def _register_infra_services(self) -> None:
+        from core.services import services as _services
+        from services.contracts import (
+            AppVarsService,
+            ApiPresetService,
+            EmbeddingPresetService,
+            GameLinkService,
+            ProtocolBuilderService,
+            RuntimeCapabilitiesService,
+        )
+        from services.settings_service import DefaultAppVarsService
+        from services.game_link_service import DisconnectedGameLinkService
+        from services.runtime_capabilities import DefaultRuntimeCapabilitiesService
+
+        settings_service = self.settings_controller.settings_service
+        game_link = DisconnectedGameLinkService()
+        _services().register(GameLinkService, game_link, replace=True)
+        _services().register(
+            RuntimeCapabilitiesService,
+            DefaultRuntimeCapabilitiesService(settings_service, game_link),
+            replace=True,
+        )
+        _services().register(
+            AppVarsService, DefaultAppVarsService(settings_service, game_link), replace=True
+        )
+        _services().register(ProtocolBuilderService, self.protocols_controller, replace=True)
+        _services().register(ApiPresetService, self.api_presets_controller, replace=True)
+        _services().register(
+            EmbeddingPresetService, self.embedding_presets_controller, replace=True
+        )
 
     def close(self) -> None:
         shutdown_event_bus()
