@@ -1073,10 +1073,22 @@ class HistoryController(HistoryService):
         """
         max_segments = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS", 6))
         batch = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH", 3))
+        # Токен-бюджет слоёв: форсируем роллап и по суммарному размеру, а не только
+        # по числу слоёв (0 = выключено). Считаем в символах рендера [HISTORY SUMMARY].
+        max_chars = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_MAX_CHARS", 8000))
         if max_segments <= 0 or batch <= 1:
             return segments
-        if len(segments) <= max_segments:
+        total_chars = sum(len(str(s.get("text") or "")) for s in segments)
+        over_count = len(segments) > max_segments
+        over_chars = max_chars > 0 and total_chars > max_chars and len(segments) > 1
+        if not over_count and not over_chars:
             return segments
+        if over_chars and not over_count:
+            char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+            logger.info(
+                f"[HistoryController][{char_id}] Роллап по бюджету слоёв: "
+                f"{total_chars} симв. > {max_chars}."
+            )
 
         batch = min(batch, len(segments) - 1)  # хотя бы один свежий слой должен остаться
         if batch <= 1:

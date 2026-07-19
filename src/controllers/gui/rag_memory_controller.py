@@ -924,6 +924,15 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
                       'Хотя бы один свежий слой всегда остаётся нетронутым.',
                       'Layered mode only. How many oldest layers to merge into one on rollup. '
                       'At least one fresh layer always remains untouched.')},
+        {'label': _('Слои: бюджет размера (символов)', 'Layers: size budget (chars)'),
+         'key': 'HISTORY_COMPRESSION_LAYERED_MAX_CHARS', 'type': 'entry',
+         'default': 8000, 'validation': self.validate_positive_integer,
+         'tooltip': _('Только для режима layered. Если суммарный размер всех слоёв в [HISTORY SUMMARY] '
+                      'превышает это число символов, форсируется роллап старых слоёв — даже если их '
+                      'меньше лимита по количеству. 0 = не ограничивать по размеру.',
+                      'Layered mode only. If the total size of all layers in [HISTORY SUMMARY] exceeds '
+                      'this many characters, an old-layer rollup is forced even when the layer count is '
+                      'under its limit. 0 = no size cap.')},
         {'label': _('Провайдер для сжатия', 'Provider for compression'),
          'key': 'HC_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current')},
