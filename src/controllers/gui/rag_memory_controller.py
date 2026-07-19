@@ -1275,6 +1275,15 @@ def _build_keyword_config(self) -> list:
          'tooltip': _('Включает лемматизацию при поиске на русском.',
                       'Enables lemmatization while using search in russian'),
          'depends_on': 'RAG_KEYWORD_SEARCH'},
+        {'label': _('Ru-стеммер (fallback без pymorphy2)', 'Ru stemmer (fallback without pymorphy2)'),
+         'key': 'RAG_RU_STEMMER_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Лёгкий стеммер русского на чистом Python. Включается автоматически, когда pymorphy2 '
+             'недоступен (боевой libs/python без torch): keyword-поиск и FTS начинают находить '
+             'словоформы («играли» → «играть»). Если pymorphy2 есть — используется он.',
+             'Lightweight pure-Python Russian stemmer. Kicks in automatically when pymorphy2 is '
+             'unavailable (game libs/python without torch): keyword search and FTS start matching '
+             'word forms. When pymorphy2 is present, it is used instead.')},
         {'label': _('Вес ключевых слов K5', 'Keyword weight K5'),
          'key': 'RAG_WEIGHT_KEYWORDS', 'type': 'entry', 'default': 0.6,
          'validation': self.validate_float_positive_or_zero,

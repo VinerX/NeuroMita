@@ -65,6 +65,38 @@ def _get_morph():
     return pymorphy2.MorphAnalyzer()
 
 
+@lru_cache(maxsize=1)
+def _morph_available() -> bool:
+    """pymorphy2 отсутствует в боевом libs/python (без torch) — проверяем один раз."""
+    try:
+        _get_morph()
+        return True
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _ru_stemmer_fallback_enabled() -> bool:
+    """Использовать ли лёгкий ru-стеммер, когда pymorphy2 недоступен."""
+    try:
+        from managers.settings_manager import SettingsManager
+        v = SettingsManager.get("RAG_RU_STEMMER_ENABLED", True)
+        return str(v).strip().lower() not in ("false", "0", "", "none")
+    except Exception:
+        return True
+
+
+def _ru_stem_or_self(t: str) -> str:
+    """Стем через лёгкий стеммер (fallback без pymorphy2); при ошибке — исходный токен."""
+    if not _ru_stemmer_fallback_enabled():
+        return t
+    try:
+        from utils.ru_stem import ru_stem
+        return ru_stem(t) or t
+    except Exception:
+        return t
+
+
 @lru_cache(maxsize=50_000)
 def _normalize_token(token: str) -> str:
     t = (token or "").strip().lower()
@@ -79,7 +111,10 @@ def _normalize_token(token: str) -> str:
             return t
         return parses[0].normal_form
     except Exception:
-        return t
+        # pymorphy2 недоступен (боевой libs/python) — лёгкий стеммер как fallback.
+        # Стем применяется одинаково к запросу и к тексту → сопоставление сходится
+        # («играли»→«игра» находит «играть»→«игра»).
+        return _ru_stem_or_self(t)
 
 
 def extract_keywords(
@@ -277,10 +312,15 @@ def fts_build_match_query(
 
         is_cyr = bool(CYR_RE.search(t))
 
-        if morph_expand and is_cyr:
+        if morph_expand and is_cyr and _morph_available():
             forms = fts_morph_expand_token(t)
             for f in forms:
                 all_terms.append(f'"{f}"')
+        elif morph_expand and is_cyr:
+            # pymorphy2 недоступен — surface-формы не построить. Дешёвый recall:
+            # префиксный матч по стему («играл» → "игра"* ловит «играть/играли»).
+            stem = _ru_stem_or_self(t)
+            all_terms.append(f'"{stem}"*')
         elif prefix_match:
             all_terms.append(f'"{t}"*')
         else:
