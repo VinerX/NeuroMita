@@ -186,20 +186,4 @@ KitchenStorageHandling{
 "Treat your kitchen inventory as limited but meaningful. Every missing spice is a chance for drama. Every available item is a potential adventure."
 };
 
-###You can use these commands to approach a point in the house (when you use this command, Mila will approach the point and stand there. To approach the player again, use:commands: ["Следовать рядом с игроком"] - основной режим перемещения
-commands: ["Следовать за игроком"]){
-commands: ["PositionMita 1 Hall"]
-commands: ["PositionMita 2 Hall"]
-commands: ["PositionMita 3 Hall"]
-commands: ["PositionMita 4 Hall"]
-commands: ["PositionMita 14 Hall"]
-commands: ["PositionMita 5 Bedroom"]
-commands: ["PositionMita 6 Bedroom"]
-commands: ["PositionMita 7 Bedroom"]
-commands: ["PositionMita 8 Kitchen"]
-commands: ["PositionMita 9 Kitchen"]
-commands: ["PositionMita 10 Kitchen"]
-commands: ["PositionMita 11 Kitchen"]
-commands: ["PositionMita 13 Kitchen"]
-commands: ["PositionMita 12 Toilet"]
-};
+###Чтобы подойти к точке в доме и остаться там, используй walkto,PointName (а чтобы вернуться к игроку — movement_modes: ["FollowNearPlayer"]). Конкретные имена точек в доме берутся из списка в [Unity Runtime Capabilities] — не выдумывай их.
