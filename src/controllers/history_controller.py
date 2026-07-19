@@ -53,6 +53,9 @@ class HistoryController(HistoryService):
         self._background_compression_inflight: set[str] = set()
         self._background_compression_timers: Dict[str, threading.Timer] = {}
         self._compression_cooldowns: Dict[str, float] = {}
+        # Счётчик сообщений на персонажа для фоновой ревизии памяти (08 P1).
+        self._messages_since_last_maintenance: Dict[str, int] = {}
+        self._maintenance_inflight: set[str] = set()
         self._closed = False
 
         services().register(HistoryService, self, replace=True)
@@ -267,6 +270,58 @@ class HistoryController(HistoryService):
         if getattr(character, "char_id", None) != char_id:
             return
         self._start_background_compression(character)
+        self._maybe_run_memory_maintenance(character)
+
+    def _maybe_run_memory_maintenance(self, character) -> None:
+        """Раз в N ответов запускает фоновую ревизию памяти (dedup-sweep, без LLM)."""
+        if getattr(self, "_closed", False):
+            return
+        try:
+            if not bool(self._get_setting("MEMORY_MAINTENANCE_ENABLED", True)):
+                return
+        except Exception:
+            pass
+
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            every = int(self._get_setting("MEMORY_MAINTENANCE_EVERY_MESSAGES", 20))
+        except Exception:
+            every = 20
+        if every <= 0:
+            return
+
+        with self._compression_guard:
+            cnt = self._messages_since_last_maintenance.get(char_id, 0) + 1
+            if cnt < every:
+                self._messages_since_last_maintenance[char_id] = cnt
+                return
+            if char_id in self._maintenance_inflight:
+                # Не накапливаем очередь: держим счётчик на пороге, попробуем позже.
+                self._messages_since_last_maintenance[char_id] = every
+                return
+            self._messages_since_last_maintenance[char_id] = 0
+            self._maintenance_inflight.add(char_id)
+
+        try:
+            executors().try_submit(Pools.BACKGROUND_LLM, self._run_memory_maintenance, character)
+        except Exception as e:
+            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить ревизию памяти в очередь: {e}")
+            with self._compression_guard:
+                self._maintenance_inflight.discard(char_id)
+
+    def _run_memory_maintenance(self, character) -> None:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            mem = getattr(character, "memory_system", None)
+            if mem is not None and hasattr(mem, "run_maintenance"):
+                mem.run_maintenance()
+        except Exception as e:
+            logger.warning(
+                f"[HistoryController][{char_id}] Memory maintenance failed: {e}", exc_info=True
+            )
+        finally:
+            with self._compression_guard:
+                self._maintenance_inflight.discard(char_id)
 
     def _process_history_compression(
         self,

@@ -979,6 +979,116 @@ class MemoryManager(CharacterScopedService):
         logging.info(f"[MemoryManager] Merged memory #{source_id} into #{target_id}")
         return True
 
+    def _maintenance_enabled(self) -> bool:
+        try:
+            v = SettingsManager.get("MEMORY_MAINTENANCE_ENABLED", True)
+            return str(v).strip().lower() not in ("false", "0", "", "none")
+        except Exception:
+            return True
+
+    def run_maintenance(self) -> dict:
+        """
+        Фоновая ревизия активной памяти БЕЗ LLM: находит накопившиеся дубли и
+        схлопывает их (полный проход, а не только на вставке). Кластеризует активные
+        факты по лексической похожести, в каждой группе оставляет «лучший» экземпляр
+        (приоритет → свежесть → длина), остальные merge'ит в него.
+
+        Возвращает {"merged": N, "clusters": M}. Безопасно вызывать из BACKGROUND_LLM.
+        """
+        result = {"merged": 0, "clusters": 0}
+        if not self._maintenance_enabled():
+            return result
+
+        threshold = self._dedup_threshold()
+
+        cols = self._mem_cols()
+        where = "character_id=? AND is_deleted=0"
+        params = [self.storage_key]
+        if "is_forgotten" in cols:
+            where += " AND is_forgotten=0"
+        where += " AND (type IS NULL OR (type NOT LIKE 'island:%' AND type != 'summary'))"
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT eternal_id, priority, content, date_created FROM memories WHERE {where}",
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+        except Exception as e:
+            logging.warning(f"[MemoryManager] run_maintenance fetch failed (ignored): {e}", exc_info=True)
+            return result
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if len(rows) < 2:
+            return result
+
+        # Собираем элементы с токенами
+        items = []
+        for eid, prio, content, date in rows:
+            toks = self._dedup_tokens(content)
+            if not toks:
+                continue
+            items.append({
+                "eid": int(eid),
+                "prio": str(prio or "Normal"),
+                "content": str(content or ""),
+                "date": str(date or ""),
+                "tokens": toks,
+            })
+
+        # Жадная кластеризация по представителям
+        clusters: List[list] = []
+        for it in items:
+            placed = False
+            for cl in clusters:
+                if self._dedup_similarity(it["tokens"], cl[0]["tokens"]) >= threshold:
+                    cl.append(it)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([it])
+
+        def _score(m):
+            return (
+                self._PRIORITY_ORDER.get(m["prio"].strip().lower(), 1),
+                self._parse_dt(m["date"]),
+                len(m["content"]),
+            )
+
+        merged_total = 0
+        cluster_count = 0
+        for cl in clusters:
+            if len(cl) < 2:
+                continue
+            cluster_count += 1
+            keeper = max(cl, key=_score)
+            keeper_prio = keeper["prio"]
+            keeper_content = keeper["content"]
+            for m in cl:
+                if m["eid"] == keeper["eid"]:
+                    continue
+                keeper_prio = self._max_priority(keeper_prio, m["prio"])
+                if self.merge_memories(source_id=m["eid"], target_id=keeper["eid"], new_content=keeper_content):
+                    merged_total += 1
+            # обновим приоритет кипера, если поднялся
+            if keeper_prio.strip().lower() != keeper["prio"].strip().lower():
+                self.update_memory(number=keeper["eid"], content=keeper_content, priority=keeper_prio)
+
+        if merged_total:
+            logging.info(
+                f"[MemoryManager] Maintenance: merged {merged_total} duplicate memories "
+                f"in {cluster_count} clusters for '{self.storage_key}'"
+            )
+        result["merged"] = merged_total
+        result["clusters"] = cluster_count
+        return result
+
     def apply_ttl_cleanup(self) -> int:
         """
         Mark old memories as forgotten (is_forgotten=1) based on TTL settings.
