@@ -794,6 +794,12 @@ class HistoryController(HistoryService):
             ])
             previous_summary_limit = int(self._get_setting("HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS", 6000))
             previous_summary_trimmed = self._truncate_text_for_prompt(previous_summary, previous_summary_limit)
+            if previous_summary and len(str(previous_summary)) > previous_summary_limit:
+                logger.warning(
+                    "[HistoryController] previous_summary обрезана для сжатия: "
+                    f"{len(str(previous_summary))} -> {previous_summary_limit} симв. "
+                    "(увеличьте HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS или включите layered)."
+                )
 
             full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
             full_prompt = full_prompt.replace("{your character}", getattr(character, "name", "Character"))

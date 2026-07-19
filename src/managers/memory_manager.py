@@ -336,10 +336,14 @@ class MemoryManager(CharacterScopedService):
             if need <= 0:
                 return
 
-            # Собираем всех кандидатов (Critical нельзя; islands защищены)
+            # Собираем всех кандидатов (Critical нельзя; islands защищены).
+            # access_count (если есть) — сигнал «полезности»: сколько раз RAG
+            # поднимал эту память. Он populated в rag_manager при ретриве.
+            use_retrieval = self._forget_use_retrieval() and ("access_count" in cols)
+            access_sel = ", access_count" if use_retrieval else ""
             cur.execute(
-                """
-                SELECT id, eternal_id, priority, date_created, content
+                f"""
+                SELECT id, eternal_id, priority, date_created, content{access_sel}
                 FROM memories
                 WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
                   AND (type IS NULL OR type NOT LIKE 'island:%')
@@ -348,11 +352,13 @@ class MemoryManager(CharacterScopedService):
             )
             rows = cur.fetchall() or []
 
-            candidates: List[Tuple[int, int, str, str, str]] = []
-            for rid, eid, prio, dt, content in rows:
+            candidates: List[Tuple[int, int, str, str, str, int]] = []
+            for row in rows:
+                rid, eid, prio, dt, content = row[0], row[1], row[2], row[3], row[4]
                 if str(prio or "").strip().lower() == "critical":
                     continue
-                candidates.append((int(rid), int(eid or 0), str(prio or "Normal"), str(dt or ""), str(content or "")))
+                acc = int(row[5] or 0) if use_retrieval and len(row) > 5 else 0
+                candidates.append((int(rid), int(eid or 0), str(prio or "Normal"), str(dt or ""), str(content or ""), acc))
 
             if not candidates:
                 logging.warning(
@@ -361,9 +367,15 @@ class MemoryManager(CharacterScopedService):
                 )
                 return
 
-            # Сортировка как при выбывании: Low->Normal->High, затем самый старый
+            # Сортировка жертвы: сначала приоритет (Low->Normal->High). Затем, если
+            # включён учёт полезности — грубый бакет «поднимался ли RAG'ом» (0=ни разу
+            # забываем раньше, 1=был полезен — бережём), и только потом возраст. Так
+            # часто всплывающая память переживает старую, но ни разу не пригодившуюся,
+            # а свежесозданная (access=0) конкурирует с прочими access=0 по возрасту.
+            def _retr_bucket(acc: int) -> int:
+                return 1 if (use_retrieval and acc > 0) else 0
             candidates.sort(
-                key=lambda x: (self._priority_rank_for_forget(x[2]), self._parse_dt(x[3]), x[0])
+                key=lambda x: (self._priority_rank_for_forget(x[2]), _retr_bucket(x[5]), self._parse_dt(x[3]), x[0])
             )
 
             victims = candidates[:need]
@@ -375,16 +387,17 @@ class MemoryManager(CharacterScopedService):
 
             # Обновим total_characters: убираем только тех, кого забыли сейчас (они были активными)
             removed_chars = 0
-            for _, _, _, _, content in victims:
+            for _, _, _, _, content, _acc in victims:
                 removed_chars += len(content or "")
             try:
                 self.total_characters = max(0, int(self.total_characters) - int(removed_chars))
             except Exception:
                 self._calculate_total_characters()
 
-            for _, victim_eid, victim_prio, victim_dt, _ in victims:
+            for _, victim_eid, victim_prio, victim_dt, _, victim_acc in victims:
                 logging.info(
-                    f"[MemoryManager] Forgot memory eternal_id={victim_eid} (priority={victim_prio}, date={victim_dt})"
+                    f"[MemoryManager] Forgot memory eternal_id={victim_eid} "
+                    f"(priority={victim_prio}, date={victim_dt}, access={victim_acc})"
                 )
 
             # Если не хватило кандидатов (например, почти всё Critical) — предупредим
@@ -425,6 +438,14 @@ class MemoryManager(CharacterScopedService):
     def _dedup_enabled(self) -> bool:
         try:
             v = SettingsManager.get("MEMORY_DEDUP_ENABLED", True)
+            return str(v).strip().lower() not in ("false", "0", "", "none")
+        except Exception:
+            return True
+
+    def _forget_use_retrieval(self) -> bool:
+        """Учитывать ли «полезность» (access_count от RAG) при выборе жертвы забывания."""
+        try:
+            v = SettingsManager.get("MEMORY_FORGET_USE_RETRIEVAL", True)
             return str(v).strip().lower() not in ("false", "0", "", "none")
         except Exception:
             return True

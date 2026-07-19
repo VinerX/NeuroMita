@@ -729,6 +729,17 @@ def _build_memory_limits_config(self) -> list:
              'Через сколько ответов Миты запускать фоновую ревизию памяти. По умолчанию 20.',
              'How many Mita replies between background memory maintenance runs. Default 20.')},
 
+        {'label': _('Беречь полезные при забывании', 'Retrieval-aware forgetting'),
+         'key': 'MEMORY_FORGET_USE_RETRIEVAL', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Когда активная память переполнена, при выборе жертвы учитывать полезность: '
+             'воспоминания, которые RAG уже поднимал в контекст (access_count > 0), забываются '
+             'позже старых, но ни разу не пригодившихся. Приоритет (Low/Normal/High/Critical) '
+             'по-прежнему главнее возраста и полезности.',
+             'When active memory is full, factor usefulness into which memory to forget: entries the '
+             'RAG has already surfaced (access_count > 0) are forgotten after older never-retrieved '
+             'ones. Priority (Low/Normal/High/Critical) still dominates over age and usefulness.')},
+
         {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
         {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
          'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
