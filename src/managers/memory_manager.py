@@ -9,6 +9,12 @@ from managers.database_manager import DatabaseManager
 from managers.settings_manager import SettingsManager
 from managers.character_scoped_service import CharacterScopedService
 
+try:
+    from utils.ru_stem import ru_stem as _ru_light_stem
+except Exception:  # стеммер опционален — без него дедуп работает по сырым токенам
+    def _ru_light_stem(word: str) -> str:  # type: ignore
+        return str(word or "").lower()
+
 
 class MemoryManager(CharacterScopedService):
     """
@@ -185,6 +191,87 @@ class MemoryManager(CharacterScopedService):
             return 999
         return 1  # Normal/unknown
 
+    _PRIORITY_ORDER = {"low": 0, "normal": 1, "high": 2, "critical": 3}
+
+    def _max_priority(self, a: str, b: str) -> str:
+        """Возвращает более высокий из двух приоритетов (для merge при дедупе)."""
+        ra = self._PRIORITY_ORDER.get(str(a or "normal").strip().lower(), 1)
+        rb = self._PRIORITY_ORDER.get(str(b or "normal").strip().lower(), 1)
+        return a if ra >= rb else b
+
+    # ------------------------------------------------------------------
+    # Dedup on insert (lexical similarity, no ML dependency)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _dedup_tokens(text: str) -> frozenset:
+        """
+        Нормализуем текст в набор токенов для дешёвого сравнения похожести.
+        Чистый Python, работает и в боевом libs/python без torch.
+        """
+        import re as _re
+        raw = str(text or "").lower()
+        # оставляем буквы/цифры (в т.ч. кириллицу), остальное — разделители
+        parts = _re.split(r"[^0-9a-zа-яё]+", raw)
+        toks = set()
+        for p in parts:
+            p = p.strip()
+            if len(p) < 3:
+                continue
+            # лёгкая ru-нормализация окончаний, если стеммер доступен
+            toks.add(_ru_light_stem(p))
+        return frozenset(toks)
+
+    @staticmethod
+    def _dedup_similarity(a: frozenset, b: frozenset) -> float:
+        """Jaccard-похожесть двух наборов токенов (0..1)."""
+        if not a or not b:
+            return 0.0
+        inter = len(a & b)
+        if inter == 0:
+            return 0.0
+        return inter / float(len(a | b))
+
+    def _find_duplicate_memory(self, content: str, threshold: float):
+        """
+        Ищем среди активных воспоминаний ближайший дубль по лексической похожести.
+        Возвращает (eternal_id, priority, similarity) для лучшего совпадения >= threshold,
+        иначе None. Острова и summary исключаем — у них своя гигиена.
+        """
+        cand_tokens = self._dedup_tokens(content)
+        if not cand_tokens:
+            return None
+
+        cols = self._mem_cols()
+        where = "character_id=? AND is_deleted=0"
+        params = [self.storage_key]
+        if "is_forgotten" in cols:
+            where += " AND is_forgotten=0"
+        where += " AND (type IS NULL OR (type NOT LIKE 'island:%' AND type != 'summary'))"
+
+        conn = self.db.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT eternal_id, priority, content FROM memories WHERE {where}",
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+        except Exception:
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        best = None
+        for eid, prio, existing in rows:
+            sim = self._dedup_similarity(cand_tokens, self._dedup_tokens(existing))
+            if sim >= threshold and (best is None or sim > best[2]):
+                best = (int(eid), str(prio or "Normal"), sim)
+        return best
+
     # ------------------------------------------------------------------
     # Counters
     # ------------------------------------------------------------------
@@ -335,8 +422,44 @@ class MemoryManager(CharacterScopedService):
     def save_memories(self):
         pass
 
+    def _dedup_enabled(self) -> bool:
+        try:
+            v = SettingsManager.get("MEMORY_DEDUP_ENABLED", True)
+            return str(v).strip().lower() not in ("false", "0", "", "none")
+        except Exception:
+            return True
+
+    def _dedup_threshold(self) -> float:
+        try:
+            t = float(SettingsManager.get("MEMORY_DEDUP_THRESHOLD", 0.8))
+            return min(1.0, max(0.5, t))
+        except Exception:
+            return 0.8
+
     def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False, entities=None):
         """Add a new memory. Returns the eternal_id of the created memory, or None."""
+        # Дедуп на вставке: близкий по смыслу дубль обновляем на месте, а не плодим.
+        # Только для обычных фактов (острова/summary/сиды — своя гигиена).
+        if (
+            content and not skip_if_exists
+            and memory_type == "fact"
+            and self._dedup_enabled()
+        ):
+            try:
+                dup = self._find_duplicate_memory(str(content), self._dedup_threshold())
+            except Exception:
+                dup = None
+            if dup:
+                dup_eid, dup_prio, sim = dup
+                merged_prio = self._max_priority(dup_prio, priority)
+                # Обновляем существующую формулировкой посвежее, поднимаем приоритет.
+                self.update_memory(number=dup_eid, content=str(content), priority=merged_prio)
+                logging.info(
+                    f"[MemoryManager] Dedup: merged new memory into #{dup_eid} "
+                    f"(similarity={sim:.2f}, priority={merged_prio})"
+                )
+                return dup_eid
+
         if skip_if_exists and content:
             with self.db.connection() as conn:
                 cur = conn.cursor()

@@ -695,6 +695,40 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
                       'How many RAG chunks to inject into the system prompt.')},
 
+        {'label': _('Гигиена памяти', 'Memory hygiene'), 'type': 'subsection'},
+        {'label': _('Дедуп при добавлении', 'Deduplicate on insert'),
+         'key': 'MEMORY_DEDUP_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'При добавлении нового воспоминания сравнивать его с существующими по лексической '
+             'похожести. Близкий дубль обновляется на месте (обновляется формулировка, поднимается '
+             'приоритет) вместо создания копии. Без LLM, работает и без эмбеддингов.',
+             'When adding a new memory, compare it with existing ones by lexical similarity. A near '
+             'duplicate is updated in place (fresher wording, higher priority) instead of piling up a '
+             'copy. No LLM, works without embeddings.')},
+        {'label': _('Порог дедупа (0.5–1.0)', 'Dedup threshold (0.5–1.0)'),
+         'key': 'MEMORY_DEDUP_THRESHOLD', 'type': 'entry', 'default': 0.8,
+         'validation': self.validate_float_0_to_1,
+         'depends_on': 'MEMORY_DEDUP_ENABLED',
+         'tooltip': _(
+             'Насколько похожими должны быть тексты (Jaccard по токенам), чтобы считать их дублями. '
+             'Выше — строже (только почти идентичные), ниже — агрессивнее склеивает. По умолчанию 0.8.',
+             'How similar two texts must be (token Jaccard) to be treated as duplicates. Higher = '
+             'stricter (near-identical only), lower = merges more aggressively. Default 0.8.')},
+        {'label': _('Фоновая ревизия памяти', 'Background memory maintenance'),
+         'key': 'MEMORY_MAINTENANCE_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Периодически в фоне прочёсывать активную память: склеивать дубли и понижать приоритет '
+             'банальностей. Без LLM. Запускается раз в N сообщений (см. ниже).',
+             'Periodically sweep active memory in the background: merge duplicates and demote trivial '
+             'entries. No LLM. Runs every N messages (see below).')},
+        {'label': _('Интервал ревизии (сообщений)', 'Maintenance interval (messages)'),
+         'key': 'MEMORY_MAINTENANCE_EVERY_MESSAGES', 'type': 'entry', 'default': 20,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'MEMORY_MAINTENANCE_ENABLED',
+         'tooltip': _(
+             'Через сколько ответов Миты запускать фоновую ревизию памяти. По умолчанию 20.',
+             'How many Mita replies between background memory maintenance runs. Default 20.')},
+
         {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
         {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
          'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
