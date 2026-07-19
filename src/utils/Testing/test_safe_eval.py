@@ -132,6 +132,21 @@ class SafeEvalTests(unittest.TestCase):
         self.assertEqual(blocks, [])
         self.assertEqual(interpreter.get_prompt_feature("behavior_state"), "custom")
 
+    def test_template_at_marker_routes_include_to_context(self) -> None:
+        files = {
+            "main_template.txt": "[<Main/identity.txt>]\n[<@ Structural/band.txt>]\n",
+            "Main/identity.txt": "You are a character.",
+            "Structural/band.txt": "[Behavior State]\nAttitude: 62/100 — warm",
+        }
+        interpreter = DslInterpreter(_StubCharacter(), resolver=_MultiFileResolver(files))
+        blocks, _ = interpreter.process_main_template("main_template.txt")
+        # Plain include stays static; @-marked include goes to the volatile channel.
+        self.assertEqual(blocks, ["You are a character."])
+        self.assertEqual(
+            interpreter.get_context_infos(),
+            ["[Behavior State]\nAttitude: 62/100 — warm"],
+        )
+
     def test_context_infos_reset_between_builds(self) -> None:
         files = {
             "main_template.txt": "[<band.script>]\n",

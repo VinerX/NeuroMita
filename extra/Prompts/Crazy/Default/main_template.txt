@@ -1,5 +1,7 @@
 support_intents=True
 behavior_state=custom
+// Подключения: [<path>] — в статический (кэшируемый) промпт;
+// [<@ path>] — в активный (volatile) контекст рядом с запросом.
 [<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]

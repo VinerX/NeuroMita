@@ -172,6 +172,9 @@ def _split_into_logical_lines(script_text: str) -> list[str]:
 
 class DslInterpreter:
     placeholder_pattern = re.compile(r"\[<([^>]+\.(?:script|txt|system))>\]")
+    # Top-level main-template include with an optional placement marker.
+    # `[<@ path>]` → volatile active context; `[<path>]` → static prompt.
+    _TEMPLATE_INCLUDE_RE = re.compile(r"\[<\s*(@)?\s*([^>@]+\.(?:script|txt|system))\s*>\]")
     _TXT_VAR_RE = re.compile(r"\[\{([A-Za-z_][A-Za-z0-9_]*)\}\]")
 
     def __init__(self, character: "Character", resolver):
@@ -864,13 +867,19 @@ class DslInterpreter:
                 else:
                     self._prompt_features[feature_name.lower()] = low
 
-            file_paths_in_template = self.placeholder_pattern.findall(raw_template_content)
-
-            for rel_file_path in file_paths_in_template:
+            # Top-level includes may carry a placement marker: `[<@ path>]` routes
+            # the whole file into the volatile active context (next to the request),
+            # while a plain `[<path>]` goes into the static, cacheable prompt.
+            for m in self._TEMPLATE_INCLUDE_RE.finditer(raw_template_content):
+                is_context = m.group(1) == "@"
+                rel_file_path = m.group(2).strip()
                 try:
                     content, _ = self.process_file(rel_file_path, sys_msgs=sys_msgs)
                     if content and content.strip():
-                        blocks.append(content)
+                        if is_context:
+                            self._context_infos.append(content)
+                        else:
+                            blocks.append(content)
                 except DslError as de:
                     dsl_execution_logger.error(f"DslError while processing included file '{rel_file_path}' in main template: {de.message}", exc_info=False)
                     blocks.append(f"[DSL ERROR IN {os.path.basename(de.script_path or rel_file_path)}]")
