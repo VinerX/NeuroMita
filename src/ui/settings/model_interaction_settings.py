@@ -254,10 +254,8 @@ def setup_model_interaction_controls(
             'type': 'text',
             'label': _(
                 'Реакции — это когда триггером генерации служит событие, а не прямой запрос пользователя.\n'
-                'L1 — очень короткий ответ с выбором анимации (для слабых но шустрых моделей, сокращённый контекст).\n'
                 'L2 — полноценный ответ мощной моделью.',
                 'Reactions are triggered by events, not direct user input.\n'
-                'L1 — very short response with animation choice (lightweight fast models, trimmed context).\n'
                 'L2 — full response by a powerful model.'
             ),
         },
@@ -271,25 +269,9 @@ def setup_model_interaction_controls(
                 'Disabling completely blocks model calls for react.'
             )
         },
-        {
-            'label': _('Использовать реакции L1 (тихие)', 'Enable react L1 (silent)'),
-            'key': 'REACT_L1_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
-            'depends_on': 'REACT_ENABLED',
-            'tooltip': _(
-                'Тихие реакции: мимика/поза/действия без ответа текстом.',
-                'Silent reactions: face/pose/actions without text answer.'
-            )
-        },
-        {
-            'label': _('Провайдер для реакций L1', 'Provider for react L1'),
-            'key': 'REACT_PROVIDER_L1', 'type': 'combobox',
-            'options': provider_options, 'default': _('Текущий', 'Current'),
-            'depends_on': 'REACT_L1_ENABLED',
-            'tooltip': _(
-                'Какой API-пресет использовать для тихих react-сообщений (L1).',
-                'Which API preset to use for silent react messages (L1).'
-            )
-        },
+        # Реакции L1 (тихие) временно убраны из интерфейса и выключены по
+        # умолчанию (см. REACT_L1_ENABLED в create_task.py). Ключи в коде
+        # сохранены — фичу можно вернуть, добавив контролы обратно.
         {
             'label': _('Использовать реакции L2 (с ответом)', 'Enable react L2 (with answer)'),
             'key': 'REACT_L2_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
@@ -321,7 +303,7 @@ def setup_model_interaction_controls(
     build_rag_section(self, parent, provider_options)
     register_provider_options(
         self,
-        ("REACT_PROVIDER_L1", "REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
+        ("REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
     )
 
     # Token pricing/context limits now come from the selected provider/preset,
