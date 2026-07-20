@@ -316,7 +316,13 @@ class PromptController(PromptBuilderService):
         # Expose capabilities as character variables so DSL templates can use them
         # via [{VAR}] substitution (e.g. in response_format_json.script includes).
         caps = capabilities or {}
-        character.set_variable("TOOLS_DESCRIPTION", caps.get("tools_prompt", "") or "")
+        # Каталог tools уходит ОТДЕЛЬНЫМ system-сообщением [Available Tools]
+        # (см. ниже), а не внутрь блока схемы: так он считается своей секцией
+        # в токен-статистике и не инвалидирует кэш всего блока формата при
+        # включении/выключении инструментов. Переменная остаётся пустой, чтобы
+        # старые шаблоны с [{TOOLS_DESCRIPTION}] не дублировали каталог.
+        tools_prompt = str(caps.get("tools_prompt", "") or "")
+        character.set_variable("TOOLS_DESCRIPTION", "")
         character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", False))
         character.set_variable("CUSTOM_PARAMS_SCHEMA",
                                _build_custom_params_schema(getattr(character, "custom_params", [])))
@@ -375,6 +381,11 @@ class PromptController(PromptBuilderService):
                 volatile_blocks.append(block)
             else:
                 stable_blocks.append(block)
+
+        # Каталог tools — свой статический блок сразу после шаблона: он зависит
+        # только от настроек (не от хода), поэтому живёт в кэшируемой зоне.
+        if tools_prompt.strip():
+            stable_blocks.append("[Available Tools]\n" + tools_prompt.strip())
 
         stable_system_messages.extend(build_system_prompts(stable_blocks, separate=separate_prompts))
         volatile_system_messages.extend(build_system_prompts(volatile_blocks, separate=separate_prompts))

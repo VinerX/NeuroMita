@@ -238,6 +238,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 payload["response_format"] = model_cls.openai_response_format(
                     exclude_fields=excl or None,
                     exclude_segment_fields=segment_excl or None,
+                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
                 )
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 

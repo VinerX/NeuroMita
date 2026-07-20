@@ -146,6 +146,7 @@ _COARSE_GROUPS = {
 }
 _SECTION_TO_GROUP = {
     "character prompts": "prompt",
+    "tools": "prompt",               # каталог [Available Tools] — статика промпта
     "Unity contract": "prompt",      # статический контракт Unity в статике промпта
     "history": "history",
     "user input": "input",

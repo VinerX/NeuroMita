@@ -1406,6 +1406,17 @@ class ModelController(GenerationService, ModelStateService):
         # capability is finalized after PromptController processes the template.
         effective_capabilities["schema_intents"] = False
 
+        # Пока секрет персонажа не раскрыт, secret_exposed в схеме провайдера
+        # обязателен: опциональное поле constrained decoding молча пропускает,
+        # и модель писала реплику-раскрытие без флага — текст и состояние
+        # расходились. Required + nullable заставляет решать каждый ход.
+        from characters import SecretExposedCharacter
+        if isinstance(char, SecretExposedCharacter):
+            with character_lock(char_id):
+                _secret_open = bool(char.get_variable("secretExposed", False))
+            if not _secret_open:
+                effective_capabilities["structured_required_fields"] = ("secret_exposed",)
+
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
         original_image_data = image_data  # kept for history storage

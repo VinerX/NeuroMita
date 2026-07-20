@@ -250,12 +250,10 @@ tool_call: Use this TOP-LEVEL field when you need to call an external tool (inte
 - NEVER put tool names in the "commands" array. commands is ONLY for character game actions.
 - "segments" is REQUIRED: write a very short phrase (2-5 words): "One moment.", "Let me check.", "Just a sec." — nothing else.
 - ALL required args MUST be filled with actual values from the conversation. Never leave args empty {}.
-- Use ONLY tools listed in the available tools section below.
+- Use ONLY tools listed in the [Available Tools] message.
 - You will receive the tool result in the next message and can then answer fully.
 - You can chain tools: e.g. first call web_search to get URLs, then call web_reader on the best result URL.
 - Omit "tool_call" entirely if no tool is needed.
-
-[{TOOLS_DESCRIPTION}]
 
 When a physical event reaches you (for example in [Unity Runtime Events]), react to it first with your body or gaze — an emotion, a look, a small animation — and only then with words. Do not narrate the event; respond to it.
 

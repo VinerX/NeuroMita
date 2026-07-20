@@ -584,6 +584,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "reminder_add": list(response.reminder_add or []),
         "reminder_delete": list(response.reminder_delete or []),
         "tool_call": tool_call_dict,
+        "secret_exposed": response.secret_exposed,
         "custom_fields": custom_fields_out,
         "entities": list(response.entities) if response.entities else [],
         "relations": list(response.relations) if response.relations else [],

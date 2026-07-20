@@ -119,6 +119,28 @@ def _remove_schema_properties(schema: dict, field_names: set[str]) -> None:
         schema["required"] = [name for name in required if name not in field_names]
 
 
+def _require_fields(schema: dict, field_names) -> None:
+    """Mark existing top-level fields required in the provider schema.
+
+    Для полей-решений (например ``secret_exposed`` у персонажей с нераскрытым
+    секретом) опциональность в constrained decoding означает «модель молча
+    пропускает поле»: gemini-flash-lite писал реплику-раскрытие, не выставляя
+    флаг. Required + nullable заставляет модель принять решение каждый ход.
+    Pydantic-модель при этом остаётся терпимой — правило только для схемы,
+    уходящей провайдеру.
+    """
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return
+    required = schema.get("required")
+    if not isinstance(required, list):
+        required = []
+    for name in field_names or ():
+        if name in props and name not in required:
+            required.append(name)
+    schema["required"] = required
+
+
 def _require_segments(schema: dict) -> None:
     """Mark ``segments`` required in the schema we send to the provider.
 
@@ -390,6 +412,7 @@ class StructuredResponse(BaseModel):
         exclude_fields: set = None,
         custom_params: list = None,
         exclude_segment_fields: set = None,
+        require_fields: set = None,
     ) -> dict:
         """
         Return the ``response_format`` payload for the OpenAI API.
@@ -422,6 +445,8 @@ class StructuredResponse(BaseModel):
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
         _require_segments(schema)
+        if require_fields:
+            _require_fields(schema, require_fields)
         return {
             "type": "json_schema",
             "json_schema": {
@@ -442,6 +467,7 @@ class StructuredResponse(BaseModel):
         exclude_fields: set = None,
         custom_params: list = None,
         exclude_segment_fields: set = None,
+        require_fields: set = None,
     ) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
@@ -493,6 +519,8 @@ class StructuredResponse(BaseModel):
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
         _require_segments(schema)
+        if require_fields:
+            _require_fields(schema, require_fields)
         return schema
 
 

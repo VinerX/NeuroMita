@@ -222,6 +222,7 @@ class GeminiProvider(BaseProvider):
                 schema = model_cls.gemini_schema_dict(
                     exclude_fields=excl or None,
                     exclude_segment_fields=segment_excl or None,
+                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
                 )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
