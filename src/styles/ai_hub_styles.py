@@ -688,14 +688,25 @@ QProgressBar#AIHubInstallBarProgress::chunk {
     border-radius: 4px;
 }
 /* Чип «+N в очереди» и кнопка возврата к логам — в нижней плашке. */
-QLabel#AIHubInstallBarQueue {
+QPushButton#AIHubInstallBarQueue {
     color: {muted};
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid {panel_border};
     border-radius: 9px;
-    padding: 2px 8px;
+    padding: 3px 9px;
     font-size: 11px;
     font-weight: 700;
+}
+QPushButton#AIHubInstallBarQueue:hover {
+    color: {text};
+    background: rgba({accent_rgb}, 0.14);
+    border: 1px solid {accent_border};
+}
+/* Popup очереди, разворачивается вверх от чипа. */
+QFrame#AIHubQueuePopup {
+    background: {panel_bg};
+    border: 1px solid {accent_border};
+    border-radius: 10px;
 }
 QPushButton#AIHubInstallBarLogsBtn {
     color: {text};

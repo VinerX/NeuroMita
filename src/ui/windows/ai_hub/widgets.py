@@ -448,16 +448,19 @@ class ModelCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
+        # global_busy — очередь занята чужой задачей, но эта карточка свободна:
+        # действия остаются доступными, операция просто встанет в очередь.
+        actionable = state in ("idle", "global_busy")
         if menu is not None:
-            menu.setEnabled(state == "idle")
+            menu.setEnabled(actionable)
             menu.setCursor(
                 Qt.CursorShape.PointingHandCursor
-                if state == "idle"
+                if actionable
                 else Qt.CursorShape.ForbiddenCursor
             )
             menu.setToolTip(
                 ""
-                if state == "idle"
+                if actionable
                 else _t(
                     "Дождитесь завершения текущей операции.",
                     "Wait for the current operation to finish.",
@@ -484,14 +487,15 @@ class ModelCard(QFrame):
                 )
             )
         elif state == "global_busy":
-            btn.setEnabled(False)
-            btn.setText(self._install_btn_text or _t("Установить", "Install"))
-            btn.setToolTip(
-                _t(
-                    "Дождитесь завершения текущей установки.",
-                    "Wait for the current installation to finish.",
+            btn.setEnabled(self._compatible)
+            btn.setText(_t("В очередь", "Add to queue"))
+            if self._compatible:
+                btn.setToolTip(
+                    _t(
+                        "Сейчас идёт другая установка — компонент встанет в очередь.",
+                        "Another installation is running — this will be queued.",
+                    )
                 )
-            )
         else:
             btn.setEnabled(self._compatible)
             btn.setText(self._install_btn_text or _t("Установить", "Install"))
