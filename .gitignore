@@ -6,6 +6,7 @@ build.env
 .req_hash
 /Lib
 /Histories
+/src/Histories
 /lc0_engine_files
 /Prompts
 /PromptsCatalogue

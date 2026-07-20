@@ -977,11 +977,11 @@ class ContextViewerDialog(QDialog):
     @staticmethod
     def _compute_local_token_usage(messages: List[Dict]) -> Dict[str, Any]:
         """Посчитать оценку токенов прямо в просмотрщике, когда её нет в данных
-        (напр. открыт finetune-сэмпл). Использует тот же _compute_token_usage,
+        (напр. открыт finetune-сэмпл). Использует тот же compute_token_usage,
         что и дамп, поэтому проценты/секции считаются одинаково."""
         try:
-            from handlers.chat_handler import _compute_token_usage
-            return _compute_token_usage(messages) or {}
+            from utils.context_token_stats import compute_token_usage
+            return compute_token_usage(messages) or {}
         except Exception:
             return {}
 

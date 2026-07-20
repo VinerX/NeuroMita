@@ -64,9 +64,7 @@ SEED_RAG_MEMORY Normal | Other character prompts were written by additional cont
 // ДО RUN world_knowledge). Точечно:  SEED_WORLD_LORE / SEED_ROOMS_LORE / SEED_MITAS_LORE
 // / SEED_ENTITY_LINKS = False.
 //
-// ВАЖНО про этот DSL (проверено): (1) вложенные IF не работают; (2) SET внутри скрипта
-// НЕ виден последующим IF в том же скрипте. Поэтому здесь без SET и без вложенности:
-// каждая загрузка — один плоский IF с условием «мастер И под-флаг не выключены явно»
+// Каждая загрузка — один плоский IF «мастер И под-флаг не выключены явно»
 // (незаданный флаг != False => грузим). Пути с ./ резолвятся от папки этого файла.
 IF SEED_INITIAL_MEMORIES != False and SEED_WORLD_LORE != False THEN
 	RUN ./InitialMemories/game_reality_knowledge_v0.03.script

@@ -819,15 +819,12 @@ class SandboxPage(QWidget):
             level = "All events" if ignore else self._setting("GAME_BLOCK_LEVEL", "Idle events")
             self._game_status_row.set_mute_state(ignore, level)
 
-    @staticmethod
-    def _game_link_connected() -> bool:
+    def _game_link_connected(self) -> bool:
         """Живое состояние TCP-связи с модом (для начального заполнения строки;
-        далее её двигает update_status_colors через game_status_checkbox)."""
+        далее её двигает update_status_colors через game_status_checkbox).
+        Сервисы спрашивает view model — view пассивна."""
         try:
-            from core.services import services
-            from services.contracts import GameLinkService
-            svc = services().get_optional(GameLinkService)
-            return bool(svc.is_connected()) if svc is not None else False
+            return bool(self._view_model.game_link_connected())
         except Exception:
             return False
 

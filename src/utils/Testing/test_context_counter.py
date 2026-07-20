@@ -16,7 +16,10 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from managers.context_counter import ContextCounter
-from handlers.chat_handler import _compute_token_usage, _classify_message_section
+from utils.context_token_stats import (
+    classify_message_section as _classify_message_section,
+    compute_token_usage as _compute_token_usage,
+)
 
 
 class UnityRuntimeSectionTests(unittest.TestCase):

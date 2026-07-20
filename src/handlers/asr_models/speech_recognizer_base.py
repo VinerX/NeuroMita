@@ -93,7 +93,13 @@ class SpeechRecognizerInterface(ABC):
             self.apply_settings(settings)
         except Exception:
             pass
-        backend = coerce_backend(self.required_backend(run_ctx))
+        # Каталожный backend — статичное свойство компонента из карточки модели.
+        # required_backend остаётся для install/status: он может зависеть от машины.
+        declared_backend = cfg.get("backend")
+        if declared_backend:
+            backend = coerce_backend(declared_backend)
+        else:
+            backend = coerce_backend(self.required_backend(run_ctx))
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,

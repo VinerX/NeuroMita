@@ -183,8 +183,15 @@ class IVoiceModel(abc.ABC):
 
     def metadata(self) -> ComponentMetadata:
         config = self._find_model_config(self.model_id)
-        runtime_ctx = build_runtime_ctx({})
-        backend = coerce_backend(self.__class__.required_backend_for_model(self.model_id, runtime_ctx))
+        # Каталожный backend — статичное свойство компонента из карточки модели.
+        # required_backend_for_model остаётся для install/status: он может зависеть
+        # от машины (например, F5 предпочитает CUDA, но работает на CPU).
+        declared_backend = config.get("backend")
+        if declared_backend:
+            backend = coerce_backend(declared_backend)
+        else:
+            runtime_ctx = build_runtime_ctx({})
+            backend = coerce_backend(self.__class__.required_backend_for_model(self.model_id, runtime_ctx))
 
         size_value = config.get("size_gb")
         size = ""

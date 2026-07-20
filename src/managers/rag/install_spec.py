@@ -665,9 +665,9 @@ class RagModelInstallableComponent:
         self.id = component_id_for(self.kind, self.slug)
 
     def metadata(self) -> ComponentMetadata:
-        run_ctx = build_runtime_ctx({})
-        status = model_install_status(self.kind, self.hf_id, ctx=run_ctx)
-        backend = coerce_backend(status.get("required_backend"))
+        # Каталожный backend — статичное свойство компонента (HF-модели работают
+        # и на CPU). Машинно-зависимый required_backend остаётся в status().
+        backend = BackendKind.CPU
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,
@@ -718,9 +718,8 @@ class RagInstallableComponent:
         self.id = make_component_id(self.category, self.item_id)
 
     def metadata(self) -> ComponentMetadata:
-        run_ctx = build_runtime_ctx({})
-        status = get_install_status(self.item_id, ctx=run_ctx)
-        backend = coerce_backend(status.get("required_backend"))
+        # Каталожный backend — статичное свойство компонента (см. комментарий выше).
+        backend = BackendKind.CPU
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,

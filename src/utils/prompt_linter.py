@@ -76,11 +76,18 @@ def _prompt_set_root(path: Path, root: Path) -> Path:
     return path.parent
 
 
-def _resolve_include(raw: str, including_file: Path, set_root: Path) -> Path | None:
-    """Resolve an include/RUN/LOAD target with best-effort fallbacks."""
+def _resolve_include(raw: str, including_file: Path, set_root: Path, root: Path) -> Path | None:
+    """Resolve an include/RUN/LOAD target with best-effort fallbacks.
+
+    Рантайм резолвит относительные пути общих шаблонов (Common/*) от базы
+    ПЕРСОНАЖА-потребителя (<Char>/<Variant>/), а не от папки самого файла.
+    Третий кандидат моделирует это псевдо-базой той же глубины под root —
+    иначе `../../Common/x` из Common/ даёт ложный missing-include.
+    """
     candidates = [
         including_file.parent / raw,
         set_root / raw,
+        root / "_char" / "_variant" / raw,
     ]
     for cand in candidates:
         norm = Path(os.path.normpath(str(cand)))
@@ -144,7 +151,7 @@ def lint_prompts(root: Path) -> List[LintWarning]:
                     rel, f"line {_line_of(text, raw)}", "none-txt-include",
                     "the removed Common/None.txt is included again",
                 ))
-            resolved = _resolve_include(raw, path, set_root)
+            resolved = _resolve_include(raw, path, set_root, root)
             if resolved is None:
                 warnings.append(LintWarning(
                     rel, f"line {_line_of(text, raw)}", "missing-include",

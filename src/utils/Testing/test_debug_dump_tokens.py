@@ -8,9 +8,9 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from handlers.chat_handler import (
-    _classify_message_section,
-    _compute_token_usage,
+from utils.context_token_stats import (
+    classify_message_section as _classify_message_section,
+    compute_token_usage as _compute_token_usage,
 )
 
 
