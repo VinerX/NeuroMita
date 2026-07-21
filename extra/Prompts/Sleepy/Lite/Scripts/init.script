@@ -1,0 +1,10 @@
+// Behavior band boundary overrides for the shared Structural/behavior_state.script.
+// Boredom/Stress low band ends at 30 (default is 40).
+SET BEH_BOR_LOW_MAX = 30
+SET BEH_STR_LOW_MAX = 30
+
+// Shared world knowledge + personal starting memory/island (plan 09).
+RUN ../../../Common/world_knowledge.script
+IF SEED_CHARACTER_MEMORIES != False THEN
+	RUN ./character_seed.script
+ENDIF
