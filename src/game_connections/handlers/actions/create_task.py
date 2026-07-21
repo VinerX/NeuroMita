@@ -337,10 +337,14 @@ class CreateTaskAction:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
 
+            idle_prompt = data.get("message")
+            if not isinstance(idle_prompt, str) or not idle_prompt.strip():
+                idle_prompt = "The player has been silent for 180 seconds. React naturally to this silence."
+
             task = use(TaskService).create_task("idle", {
                 "character": character_id,
                 "character_stats": character_stats,
-                "message": data.get("message", "Player idle for 90 seconds"),
+                "message": idle_prompt,
                 "system_input": "",
                 "client_id": ctx.client_id,
                 "event_type": event_type,
@@ -354,8 +358,6 @@ class CreateTaskAction:
                 server.client_tasks[ctx.client_id].add(task.uid)
                 server.last_idle_tasks[character_id] = task.uid
                 await server.send_task_update(ctx.client_id, task)
-
-                idle_prompt = "The player has been silent for 90 seconds. React naturally to this silence."
                 event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": "",
                     "system_input": idle_prompt,
