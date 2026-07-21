@@ -14,6 +14,7 @@ from core.services import use
 from services.contracts import AppVarsService, SettingsService
 
 from managers.game_manager import GameManager
+from managers.memory_manager import is_island
 from schemas.structured_response import StructuredResponse
 
 from main_logger import logger
@@ -657,7 +658,7 @@ class Character:
             parts = [p.strip() for p in mem_text.split("|", 2)]
             # Island upsert: "island:<type>|content" updates the single running
             # summary of that type instead of adding a duplicate memory.
-            if parts and parts[0].lower().startswith("island:"):
+            if parts and is_island(parts[0]):
                 island_content = parts[1] if len(parts) >= 2 else ""
                 try:
                     eid = self.memory_system.upsert_island(parts[0], island_content)

@@ -16,6 +16,25 @@ except Exception:  # стеммер опционален — без него д�
         return str(word or "").lower()
 
 
+_ISLAND_PREFIX = "island:"
+_ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts")
+
+
+def is_island(memory_type: Optional[str]) -> bool:
+    return str(memory_type or "").strip().lower().startswith(_ISLAND_PREFIX)
+
+
+def island_subtype(memory_type: Optional[str]) -> Optional[str]:
+    raw = str(memory_type or "").strip().lower()
+    if raw.startswith(_ISLAND_PREFIX):
+        raw = raw[len(_ISLAND_PREFIX):]
+    return raw if raw in _ISLAND_TYPES else None
+
+
+def make_island_type(subtype: str) -> str:
+    return f"{_ISLAND_PREFIX}{subtype}"
+
+
 class MemoryManager(CharacterScopedService):
     """
     Концепция:
@@ -122,10 +141,7 @@ class MemoryManager(CharacterScopedService):
                 pass
 
     def _ensure_memories_schema(self) -> None:
-        """
-        Пытаемся добавить недостающие колонки.
-        Не падаем вообще никогда.
-        """
+        """Ensure memory columns and the one-active-island invariant."""
         try:
             cols = self._mem_cols()
             needed = []
@@ -136,10 +152,7 @@ class MemoryManager(CharacterScopedService):
             if "last_accessed" not in cols:
                 needed.append(("last_accessed", "TEXT"))
 
-            if not needed:
-                return
-
-            if hasattr(self.db, "ensure_columns"):
+            if needed and hasattr(self.db, "ensure_columns"):
                 try:
                     self.db.ensure_columns("memories", needed)
                 except Exception:
@@ -148,8 +161,75 @@ class MemoryManager(CharacterScopedService):
             cols2 = self._mem_cols()
             if "is_forgotten" not in cols2:
                 logging.warning("[MemoryManager] Column memories.is_forgotten is missing; forget mechanism will be disabled.")
-        except Exception:
-            pass
+                return
+
+            self._ensure_island_uniqueness()
+        except Exception as e:
+            logging.warning(f"[MemoryManager] Schema check failed (ignored): {e}", exc_info=True)
+
+    def _ensure_island_uniqueness(self) -> None:
+        """Collapse legacy duplicates and enforce one active island per type.
+
+        The newest non-deleted row wins by date_created, then eternal_id/id.
+        Older duplicates are soft-deleted. A partial unique index protects the
+        invariant from every write path, not only ``upsert_island``.
+        """
+        cols = self._mem_cols()
+        required = {"id", "character_id", "eternal_id", "type", "date_created", "is_deleted", "is_forgotten"}
+        if not required.issubset(cols):
+            return
+
+        island_types = tuple(make_island_type(t) for t in _ISLAND_TYPES)
+        placeholders = ",".join("?" for _ in island_types)
+        index_types = ", ".join(f"'{t}'" for t in island_types)
+
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT id, character_id, eternal_id, type, date_created, is_forgotten
+                FROM memories
+                WHERE is_deleted=0 AND type IN ({placeholders})
+                """,
+                island_types,
+            )
+            groups = {}
+            for row in (cur.fetchall() or []):
+                groups.setdefault((str(row[1]), str(row[3])), []).append(row)
+
+            removed = 0
+            for rows in groups.values():
+                if not rows:
+                    continue
+                keep = max(
+                    rows,
+                    key=lambda r: (self._parse_dt(r[4]), int(r[2] or 0), int(r[0] or 0)),
+                )
+                keep_id = int(keep[0])
+                duplicate_ids = [int(r[0]) for r in rows if int(r[0]) != keep_id]
+                if duplicate_ids:
+                    cur.executemany(
+                        "UPDATE memories SET is_deleted=1 WHERE id=?",
+                        [(rid,) for rid in duplicate_ids],
+                    )
+                    removed += len(duplicate_ids)
+                cur.execute(
+                    "UPDATE memories SET is_deleted=0, is_forgotten=0 WHERE id=?",
+                    (keep_id,),
+                )
+
+            cur.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_active_island
+                ON memories(character_id, type)
+                WHERE is_deleted=0 AND is_forgotten=0
+                  AND type IN ({index_types})
+                """
+            )
+            conn.commit()
+
+        if removed:
+            logging.info(f"[MemoryManager] Removed {removed} duplicate island memories.")
 
     # ------------------------------------------------------------------
     # Config / ranking
@@ -247,7 +327,7 @@ class MemoryManager(CharacterScopedService):
         params = [self.storage_key]
         if "is_forgotten" in cols:
             where += " AND is_forgotten=0"
-        where += " AND (type IS NULL OR (type NOT LIKE 'island:%' AND type != 'summary'))"
+        where += f" AND (type IS NULL OR (type NOT LIKE '{_ISLAND_PREFIX}%' AND type != 'summary'))"
 
         conn = self.db.get_connection()
         try:
@@ -286,6 +366,7 @@ class MemoryManager(CharacterScopedService):
             params = [self.storage_key]
             if "is_forgotten" in cols:
                 where += " AND is_forgotten=0"
+            where += f" AND (type IS NULL OR type NOT LIKE '{_ISLAND_PREFIX}%')"
             cur.execute(f"SELECT SUM(LENGTH(content)) FROM memories WHERE {where}", tuple(params))
             result = cur.fetchone()[0]
             self._total_characters[self.character_id] = int(result) if result else 0
@@ -312,7 +393,6 @@ class MemoryManager(CharacterScopedService):
         - сортировка жертвы: Low -> Normal -> High, затем самый старый
         """
         # гарантируем колонку (и не падаем, если не получилось)
-        self._ensure_memories_schema()
         cols = self._mem_cols()
         if "is_forgotten" not in cols:
             return  # без колонки корректно забывать нельзя
@@ -325,7 +405,9 @@ class MemoryManager(CharacterScopedService):
 
             # сколько активных сейчас
             cur.execute(
-                "SELECT COUNT(*) FROM memories WHERE character_id=? AND is_deleted=0 AND is_forgotten=0",
+                f"SELECT COUNT(*) FROM memories "
+                f"WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
+                f"AND (type IS NULL OR type NOT LIKE '{_ISLAND_PREFIX}%')",
                 (self.storage_key,),
             )
             active_count = int(cur.fetchone()[0] or 0)
@@ -346,7 +428,7 @@ class MemoryManager(CharacterScopedService):
                 SELECT id, eternal_id, priority, date_created, content{access_sel}
                 FROM memories
                 WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
-                  AND (type IS NULL OR type NOT LIKE 'island:%')
+                  AND (type IS NULL OR type NOT LIKE '{_ISLAND_PREFIX}%')
                 """,
                 (self.storage_key,),
             )
@@ -459,6 +541,10 @@ class MemoryManager(CharacterScopedService):
 
     def add_memory(self, content, date=None, priority="Normal", memory_type="fact", skip_if_exists=False, entities=None):
         """Add a new memory. Returns the eternal_id of the created memory, or None."""
+        memory_type = str(memory_type or "fact").strip() or "fact"
+        if is_island(memory_type):
+            return self.upsert_island(memory_type, content, priority)
+
         # Дедуп на вставке: близкий по смыслу дубль обновляем на месте, а не плодим.
         # Только для обычных фактов (острова/summary/сиды — своя гигиена).
         if (
@@ -644,99 +730,104 @@ class MemoryManager(CharacterScopedService):
         self._schedule_embed(new_id, content)
         return new_id
 
-    # Fixed, small set of running-summary "island" memories. Each type has at
-    # most one active memory per character; new information updates it in place
-    # instead of piling up competing duplicates.
-    ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts")
+    # Fixed, small set of running-summary "island" memories.
+    ISLAND_TYPES = _ISLAND_TYPES
 
     def upsert_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
-        """Insert-or-update the single running summary memory for an island type.
+        """Atomically insert or update the sole active island of this type.
 
-        Returns the eternal_id of the island memory, or None if the type is
-        unknown or the content is empty. Enforces one active ``island:<type>``
-        per character; existing islands are rewritten (and reindexed via
-        ``update_memory``) rather than duplicated.
+        Islands do not consume normal-memory capacity, are not counted in the
+        normal character budget, and are deliberately not embedded for RAG.
+        On failure this method returns None instead of falling back to a second
+        insert that could create a duplicate.
         """
-        short = str(island_type or "").strip().lower()
-        if short.startswith("island:"):
-            short = short[len("island:"):]
-        if short not in self.ISLAND_TYPES:
+        short = island_subtype(island_type)
+        if short is None:
             logging.warning(f"[MemoryManager] upsert_island: unknown island type {island_type!r}, ignored.")
             return None
         if not content or not str(content).strip():
             return None
 
-        full_type = f"island:{short}"
-        content = str(content).strip()
-
+        self._ensure_memories_schema()
         cols = self._mem_cols()
         has_forgotten = "is_forgotten" in cols
+        full_type = make_island_type(short)
+        content = str(content).strip()
+        now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        existing_eid: Optional[int] = None
-        was_forgotten = False
         try:
             with self.db.connection() as conn:
                 cur = conn.cursor()
-                # Look up regardless of is_forgotten: a forgotten island must be
-                # reactivated and updated, never orphaned.
-                select_cols = "eternal_id" + (", is_forgotten" if has_forgotten else "")
+                select_cols = "id, eternal_id, date_created" + (", is_forgotten" if has_forgotten else "")
                 cur.execute(
                     f"SELECT {select_cols} FROM memories "
-                    "WHERE character_id=? AND type=? AND is_deleted=0 "
-                    "ORDER BY eternal_id LIMIT 1",
+                    "WHERE character_id=? AND type=? AND is_deleted=0",
                     (self.storage_key, full_type),
                 )
-                row = cur.fetchone()
-                if row:
-                    existing_eid = int(row[0])
-                    was_forgotten = bool(row[1]) if has_forgotten and len(row) > 1 else False
-                    if was_forgotten:
-                        cur.execute(
-                            "UPDATE memories SET is_forgotten=0 "
-                            "WHERE character_id=? AND eternal_id=?",
-                            (self.storage_key, existing_eid),
+                rows = cur.fetchall() or []
+
+                if rows:
+                    keep = max(
+                        rows,
+                        key=lambda r: (self._parse_dt(r[2]), int(r[1] or 0), int(r[0] or 0)),
+                    )
+                    row_id = int(keep[0])
+                    eternal_id = int(keep[1])
+                    duplicate_ids = [int(r[0]) for r in rows if int(r[0]) != row_id]
+                    if duplicate_ids:
+                        cur.executemany(
+                            "UPDATE memories SET is_deleted=1 WHERE id=?",
+                            [(rid,) for rid in duplicate_ids],
                         )
-                        conn.commit()
+
+                    assignments = "content=?, priority=?, date_created=?, is_deleted=0"
+                    values = [content, priority, now]
+                    if has_forgotten:
+                        assignments += ", is_forgotten=0"
+                    cur.execute(
+                        f"UPDATE memories SET {assignments} WHERE id=?",
+                        tuple(values + [row_id]),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT MAX(eternal_id) FROM memories WHERE character_id=?",
+                        (self.storage_key,),
+                    )
+                    res = cur.fetchone()[0]
+                    eternal_id = (int(res) + 1) if res is not None else 1
+                    insert_cols = [
+                        "character_id", "eternal_id", "content", "priority",
+                        "type", "date_created", "is_deleted",
+                    ]
+                    insert_vals = [
+                        self.storage_key, eternal_id, content, priority,
+                        full_type, now, 0,
+                    ]
+                    if has_forgotten:
+                        insert_cols.append("is_forgotten")
+                        insert_vals.append(0)
+                    placeholders = ",".join("?" for _ in insert_cols)
+                    cur.execute(
+                        f"INSERT INTO memories ({', '.join(insert_cols)}) VALUES ({placeholders})",
+                        tuple(insert_vals),
+                    )
+                conn.commit()
+
+            return eternal_id
         except Exception as e:
-            logging.warning(f"[MemoryManager] upsert_island lookup failed: {e}", exc_info=True)
-
-        if existing_eid is not None:
-            if was_forgotten:
-                # Content length changed while it was excluded from the active
-                # total — recompute so accounting stays correct.
-                self._calculate_total_characters()
-            updated = self.update_memory(number=existing_eid, content=content, priority=priority)
-            if updated:
-                return existing_eid
-            # Reactivation/update unexpectedly failed — fall through to create a
-            # fresh active island rather than silently reporting a false success.
-            logging.warning(
-                f"[MemoryManager] upsert_island: update of #{existing_eid} ({full_type}) failed, "
-                f"creating a new active island instead."
-            )
-
-        return self.add_memory(content=content, priority=priority, memory_type=full_type)
+            logging.warning(f"[MemoryManager] upsert_island failed: {e}", exc_info=True)
+            return None
 
     def seed_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
-        """Seed a *starting* island — but only if the character has no island of
-        this type yet. В отличие от ``upsert_island`` НЕ перезаписывает уже
-        существующий остров: стартовое отношение задаётся один раз, дальше его
-        ведёт сам персонаж. Идемпотентно на каждой пересборке init.script.
-
-        Возвращает eid созданного острова, либо None если такой остров уже есть
-        (в любом состоянии — даже удалённый/забытый: это осознанная история
-        персонажа, её не воскрешаем сидом) или тип/контент невалиден.
-        """
-        short = str(island_type or "").strip().lower()
-        if short.startswith("island:"):
-            short = short[len("island:"):]
-        if short not in self.ISLAND_TYPES:
+        """Create a starting island only when no row of this type ever existed."""
+        short = island_subtype(island_type)
+        if short is None:
             logging.warning(f"[MemoryManager] seed_island: unknown island type {island_type!r}, ignored.")
             return None
         if not content or not str(content).strip():
             return None
 
-        full_type = f"island:{short}"
+        full_type = make_island_type(short)
         try:
             with self.db.connection() as conn:
                 cur = conn.cursor()
@@ -813,12 +904,13 @@ class MemoryManager(CharacterScopedService):
         conn = self.db.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT content FROM memories WHERE {where}", tuple(params))
+            cursor.execute(f"SELECT content, type FROM memories WHERE {where}", tuple(params))
             row = cursor.fetchone()
             if not row:
                 return False
 
             old_len = len(row[0] or "")
+            memory_type = row[1]
 
             if priority:
                 cursor.execute(
@@ -839,8 +931,9 @@ class MemoryManager(CharacterScopedService):
 
             conn.commit()
 
-            # обновим символы (только активные)
-            self.total_characters = self.total_characters - old_len + len(str(content or ""))
+            # Островки ведут отдельный бюджет и не входят в normal-memory chars.
+            if not is_island(memory_type):
+                self.total_characters = self.total_characters - old_len + len(str(content or ""))
 
         finally:
             try:
@@ -848,7 +941,7 @@ class MemoryManager(CharacterScopedService):
             except Exception:
                 pass
 
-        if self.rag:
+        if (not is_island(memory_type)) and self.rag:
             try:
                 rag = self.rag
                 eid = int(number)
@@ -897,7 +990,7 @@ class MemoryManager(CharacterScopedService):
         try:
             cursor = conn.cursor()
 
-            select_cols = ["content"]
+            select_cols = ["content", "type"]
             if "is_forgotten" in cols:
                 select_cols.append("is_forgotten")
 
@@ -910,10 +1003,11 @@ class MemoryManager(CharacterScopedService):
                 logging.warning(f"Memory {number} not found for deletion.")
                 return False
 
+            content, memory_type = row[0], row[1]
             if "is_forgotten" in cols:
-                content, is_forgotten = row[0], int(row[1] or 0)
+                is_forgotten = int(row[2] or 0)
             else:
-                content, is_forgotten = row[0], 0
+                is_forgotten = 0
 
             cursor.execute(
                 "UPDATE memories SET is_deleted=1 WHERE character_id=? AND eternal_id=?",
@@ -921,12 +1015,12 @@ class MemoryManager(CharacterScopedService):
             )
             conn.commit()
 
-            # уменьшаем счётчик только если удалили активную
-            if ("is_forgotten" in cols) and (is_forgotten == 0):
-                self.total_characters = max(0, self.total_characters - len(content or ""))
-            elif "is_forgotten" not in cols:
-                # старая схема — считаем что активная
-                self.total_characters = max(0, self.total_characters - len(content or ""))
+            # уменьшаем normal-memory счётчик только для активного не-островка
+            if not is_island(memory_type):
+                if ("is_forgotten" in cols) and (is_forgotten == 0):
+                    self.total_characters = max(0, self.total_characters - len(content or ""))
+                elif "is_forgotten" not in cols:
+                    self.total_characters = max(0, self.total_characters - len(content or ""))
 
             logging.info(f"Memory {number} deleted (soft delete).")
             return True
@@ -951,6 +1045,7 @@ class MemoryManager(CharacterScopedService):
 
         cols = self._mem_cols()
         final_content = None
+        target_type = None
 
         try:
             with self.db.connection() as conn:
@@ -968,7 +1063,7 @@ class MemoryManager(CharacterScopedService):
 
                 # Fetch target
                 cur.execute(
-                    "SELECT content, entities FROM memories WHERE character_id=? AND eternal_id=? AND is_deleted=0",
+                    "SELECT content, entities, type FROM memories WHERE character_id=? AND eternal_id=? AND is_deleted=0",
                     (self.storage_key, target_id),
                 )
                 tgt = cur.fetchone()
@@ -988,6 +1083,7 @@ class MemoryManager(CharacterScopedService):
                 merged_ents_json = json.dumps(sorted(src_ents | tgt_ents), ensure_ascii=False)
 
                 final_content = new_content if new_content is not None else tgt[0]
+                target_type = tgt[2]
                 now = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
                 if "entities" in cols:
@@ -1016,7 +1112,7 @@ class MemoryManager(CharacterScopedService):
         self._calculate_total_characters()
 
         # Re-embed target in background
-        if self.rag and final_content is not None:
+        if (not is_island(target_type)) and self.rag and final_content is not None:
             try:
                 rag = self.rag
                 eid = int(target_id)
@@ -1062,7 +1158,7 @@ class MemoryManager(CharacterScopedService):
         params = [self.storage_key]
         if "is_forgotten" in cols:
             where += " AND is_forgotten=0"
-        where += " AND (type IS NULL OR (type NOT LIKE 'island:%' AND type != 'summary'))"
+        where += f" AND (type IS NULL OR (type NOT LIKE '{_ISLAND_PREFIX}%' AND type != 'summary'))"
 
         conn = self.db.get_connection()
         try:
@@ -1221,7 +1317,7 @@ class MemoryManager(CharacterScopedService):
                         rows = conn.execute(
                             f"SELECT eternal_id, {_age_expr} as age{extra} "
                             f"FROM memories WHERE character_id=? AND is_deleted=0 AND is_forgotten=0 "
-                            f"AND (type IS NULL OR type NOT LIKE 'island:%') "
+                            f"AND (type IS NULL OR type NOT LIKE '{_ISLAND_PREFIX}%') "
                             f"AND LOWER(priority)=? AND {_age_expr} > ?",
                             (self.storage_key, prio, pre_days),
                         ).fetchall()
@@ -1259,7 +1355,7 @@ class MemoryManager(CharacterScopedService):
                             f"""
                             UPDATE memories SET is_forgotten=1
                             WHERE character_id=? AND is_deleted=0 AND is_forgotten=0
-                              AND (type IS NULL OR type NOT LIKE 'island:%')
+                              AND (type IS NULL OR type NOT LIKE '{_ISLAND_PREFIX}%')
                               AND LOWER(priority)=?
                               AND {_age_expr} > ?
                             """,
@@ -1325,22 +1421,15 @@ class MemoryManager(CharacterScopedService):
     # Default templates (used when no custom file is found in prompt set)
     _DEFAULT_ITEM_TEMPLATE = "{risk_tag}N:{id} [{priority_cap}] {date_short}: {content}"
     _DEFAULT_SUMMARY_TEMPLATE = "{risk_tag}N:{id} [Summary] {date_short}: {content}"
+    _DEFAULT_ISLAND_ITEM_TEMPLATE = "[{island_type_cap}] N:{id} {date_short}: {content}"
+    _DEFAULT_ISLAND_WRAPPER_TEMPLATE = "<memory_islands>\n{items}\n</memory_islands>"
     _DEFAULT_WRAPPER_TEMPLATE = "<active_memory>\n{items}\n</active_memory>"
 
     def get_memories_formatted(self):
-        """
-        Показываем ВСЕ активные воспоминания (is_deleted=0 AND is_forgotten=0).
+        """Render islands separately and normal memories within their capacity.
 
-        Порядок:
-        - ВВЕРХУ: самые важные (Critical/High) и более свежие
-        - ВНИЗУ: те, кто пойдут на забывание первыми (Low/старые)
-
-        [RISK] помечаем ХВОСТ списка (самые вероятные кандидаты на забывание).
-
-        Templates can be customized per prompt set by placing files in Structural/:
-        - memory_template.txt — item format (vars: {risk_tag}, {id}, {date}, {priority}, {content}, {type})
-        - memory_summary_template.txt — summary item format (same vars)
-        - memory_wrapper.txt — outer wrapper (vars: {items}, {stats}, {tips}, {examples})
+        A final in-memory deduplication protects the prompt even if a legacy or
+        externally modified database temporarily contains duplicate islands.
         """
         from utils.template_loader import load_optional_template
 
@@ -1350,19 +1439,22 @@ class MemoryManager(CharacterScopedService):
         summary_tpl = load_optional_template(
             self.prompt_set_path, "Structural/memory_summary_template.txt", self._DEFAULT_SUMMARY_TEMPLATE
         )
+        island_item_tpl = load_optional_template(
+            self.prompt_set_path, "Structural/memory_island_template.txt", self._DEFAULT_ISLAND_ITEM_TEMPLATE
+        )
+        island_wrapper_tpl = load_optional_template(
+            self.prompt_set_path, "Structural/memory_island_wrapper.txt", self._DEFAULT_ISLAND_WRAPPER_TEMPLATE
+        )
         wrapper_tpl = load_optional_template(
             self.prompt_set_path, "Structural/memory_wrapper.txt", self._DEFAULT_WRAPPER_TEMPLATE
         )
 
-        # Enforce capacity before displaying — handles cases where the setting
-        # was changed or memories accumulated without add_memory being called.
         try:
             self._forget_over_limit_memories()
         except Exception:
             pass
 
         cols = self._mem_cols()
-
         where = "character_id=? AND is_deleted=0"
         params = [self.storage_key]
         if "is_forgotten" in cols:
@@ -1389,53 +1481,85 @@ class MemoryManager(CharacterScopedService):
             except Exception:
                 return -1e18
 
-        rows_sorted = sorted(
-            rows,
+        fact_rows = [r for r in rows if not is_island(r[4])]
+
+        # Safety dedup: newest row wins for each island type.
+        island_by_type = {}
+        for row in rows:
+            if not is_island(row[4]):
+                continue
+            key = str(row[4] or "").strip().lower()
+            previous = island_by_type.get(key)
+            if previous is None or (_dt_score(row[1]), int(row[0] or 0)) > (
+                _dt_score(previous[1]), int(previous[0] or 0)
+            ):
+                island_by_type[key] = row
+
+        island_order = {make_island_type(t): i for i, t in enumerate(_ISLAND_TYPES)}
+        island_rows = sorted(
+            island_by_type.values(),
+            key=lambda r: (island_order.get(str(r[4] or "").lower(), len(island_order)), str(r[4] or "")),
+        )
+        facts_sorted = sorted(
+            fact_rows,
             key=lambda r: (
                 -self._priority_rank_for_forget(r[2]),
                 -_dt_score(r[1]),
                 int(r[0] or 0),
-            )
+            ),
         )
 
         cap = self._get_memory_capacity()
-        risk_n = min(len(rows_sorted), max(5, int(round(cap * 0.2))))
-        if len(rows_sorted) <= risk_n:
-            risk_n = len(rows_sorted)
+        risk_n = min(len(facts_sorted), max(5, int(round(cap * 0.2))))
+        if len(facts_sorted) <= risk_n:
+            risk_n = len(facts_sorted)
+        risk_start_idx = max(0, len(facts_sorted) - risk_n)
 
-        risk_start_idx = max(0, len(rows_sorted) - risk_n)
-
-        formatted_memories = []
-        for i, (mid, date, prio, content, mtype) in enumerate(rows_sorted):
+        formatted_facts = []
+        for i, (mid, date, prio, content, mtype) in enumerate(facts_sorted):
             risk_tag = "[RISK] " if i >= risk_start_idx else ""
             tpl = summary_tpl if mtype == "summary" else item_tpl
             priority_cap = (prio or "normal").capitalize()
-            # Shorten date: "15.04.2026 19:52:19" → "15.04 19:52"
             date_short = (((date or "")[:5] + " " + (date or "")[11:16]).strip()) if date else "?"
             try:
-                formatted_memories.append(tpl.format(
+                formatted_facts.append(tpl.format(
                     risk_tag=risk_tag, id=mid, date=date, date_short=date_short,
                     priority=prio, priority_cap=priority_cap,
                     content=content, type=mtype,
                 ))
             except (KeyError, IndexError):
-                formatted_memories.append(f"{risk_tag}N:{mid} [{priority_cap}] {date_short}: {content}")
+                formatted_facts.append(f"{risk_tag}N:{mid} [{priority_cap}] {date_short}: {content}")
 
-        cap = self._get_memory_capacity()
-        memory_stats = f"\nMemory status: {len(rows_sorted)}/{cap} facts, {self.total_characters} characters"
+        formatted_islands = []
+        for mid, date, prio, content, mtype in island_rows:
+            sub = island_subtype(mtype) or str(mtype or "").removeprefix(_ISLAND_PREFIX)
+            island_type_cap = sub.replace("_", " ").title()
+            date_short = (((date or "")[:5] + " " + (date or "")[11:16]).strip()) if date else "?"
+            try:
+                formatted_islands.append(island_item_tpl.format(
+                    id=mid, date=date, date_short=date_short,
+                    priority=prio, content=content, type=mtype,
+                    island_type=sub, island_type_cap=island_type_cap,
+                ))
+            except (KeyError, IndexError):
+                formatted_islands.append(f"[{island_type_cap}] N:{mid} {date_short}: {content}")
+
+        memory_stats = (
+            f"\nMemory status: {len(fact_rows)}/{cap} facts"
+            + (f" + {len(island_rows)} islands" if island_rows else "")
+            + f", {self.total_characters} characters"
+        )
 
         management_tips = []
         if risk_n > 0:
             management_tips.append(
                 f"Risk zone: last {risk_n} memories are most likely to be forgotten next (based on priority+age)."
             )
-
         if self.total_characters > 10000:
             management_tips.append("CRITICAL: Memory limit exceeded!")
         elif self.total_characters > 5000:
             management_tips.append("WARNING: Memory size is large.")
-
-        if len(rows_sorted) > 75:
+        if len(fact_rows) > 75:
             management_tips.append("Too many memories!")
 
         examples = [
@@ -1444,20 +1568,26 @@ class MemoryManager(CharacterScopedService):
             'memory_update: ["4|new text"]       — replace N:4 content',
             'memory_delete: ["2"]                — delete N:2; range: "3-7"; multi: "2,5"',
             'memory_merge: ["3,7,12:merged text"] — merge into first ID; rest deleted; content optional',
+            'memory_add: ["island:relationship|summary"] — replace one running island',
             "Use English to save tokens.",
         ]
 
-        items_text = "\n".join(formatted_memories)
-        stats_text = memory_stats
+        blocks = []
+        if formatted_islands:
+            islands_text = "\n".join(formatted_islands)
+            try:
+                blocks.append(island_wrapper_tpl.format(items=islands_text))
+            except (KeyError, IndexError):
+                blocks.append(f"<memory_islands>\n{islands_text}\n</memory_islands>")
+
+        facts_text = "\n".join(formatted_facts)
         tips_text = "\n".join(management_tips)
         examples_text = "\n".join(examples)
-
         try:
-            full_message = wrapper_tpl.format(
-                items=items_text, stats=stats_text, tips=tips_text, examples=examples_text,
-            )
+            blocks.append(wrapper_tpl.format(
+                items=facts_text, stats=memory_stats, tips=tips_text, examples=examples_text,
+            ))
         except (KeyError, IndexError):
-            full_message = f"<active_memory>\n{items_text}\n</active_memory>"
+            blocks.append(f"<active_memory>\n{facts_text}\n</active_memory>")
 
-        full_message += f"\n{stats_text}\n{tips_text}\n{examples_text}"
-        return full_message
+        return "\n".join(blocks) + f"\n{memory_stats}\n{tips_text}\n{examples_text}"
