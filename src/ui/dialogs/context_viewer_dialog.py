@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import zlib
 from typing import Any, Dict, List
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -45,6 +46,19 @@ _HTML_BG = "#1E1E2E"
 _TEXT    = "#EAEAEA"
 _MUTED   = "#9CA3AF"
 _BORDER  = "#3A3A4A"
+
+# ── Actor (говорящий, в отличие от провайдерской role) ────────────────────────
+_ACTOR_OWNER   = "#A78BFA"
+_ACTOR_PLAYER  = "#F4D35E"
+# Цвет по crc32(имени), не hash() — тот меняется между запусками Python.
+_ACTOR_PALETTE = [
+    "#22D3EE", "#F472B6", "#FB923C", "#4ADE80",
+    "#818CF8", "#E879F9", "#2DD4BF", "#FCA5A5",
+]
+# Разбор in-band префиксов из HistoryController._apply_llm_prefix:
+# [Собеседник: X], [Собеседник: X -> Y], [To: Y]
+_RE_ACTOR_PREFIX = re.compile(r"^\s*\[(?:Собеседник|Interlocutor):\s*(.+?)\s*\]", re.IGNORECASE)
+_RE_TO_PREFIX = re.compile(r"^\s*\[To:\s*(.+?)\s*\]", re.IGNORECASE)
 _DIALOG_STYLE = """
 QDialog { background-color: #1A1A24; color: #EAEAEA; }
 QTreeWidget {
@@ -177,6 +191,15 @@ class ContextViewerDialog(QDialog):
         self._messages: List[Dict] = data.get("messages") or []
         self._initial_tab = str(initial_tab or "request").lower()
         self._highlight_enabled = True
+
+        # Отладочная мета по говорящему, параллельная messages (не уходит провайдеру).
+        # См. _resolve_actor: без неё говорящий восстанавливается из in-band префикса.
+        self._message_meta: Dict[int, Dict[str, Any]] = {}
+        raw_meta = data.get("message_meta")
+        if isinstance(raw_meta, list):
+            for i, entry in enumerate(raw_meta):
+                if isinstance(entry, dict):
+                    self._message_meta[i] = entry
 
         # Оценка токенов по сообщениям/секциям (только для сравнения масштаба
         # блоков — не биллинг). Обычно приходит из дампа (data["token_usage"]),
@@ -511,12 +534,18 @@ class ContextViewerDialog(QDialog):
         # нумерация совпадала с обзором справа.
         self._msg_labels: Dict[int, str] = {}
         self._msg_role_ord: Dict[int, str] = {}
+        self._msg_actor: Dict[int, tuple[str, str | None]] = {}
+        self._msg_actor_color: Dict[int, str] = {}
         role_counters: Dict[str, int] = {}
         for idx, msg in enumerate(self._messages):
             role = msg.get("role") or "unknown"
             role_counters[role] = role_counters.get(role, 0) + 1
-            self._msg_labels[idx] = self._classify_message_label(msg, role, role_counters[role])
+            label, color = self._classify_message(msg, role, role_counters[role], idx)
+            self._msg_labels[idx] = label
             self._msg_role_ord[idx] = f"{role} #{role_counters[role]}"
+            speaker, target = self._resolve_actor(msg, idx)
+            self._msg_actor[idx] = (speaker, target)
+            self._msg_actor_color[idx] = color
 
         self._message_items: Dict[int, QTreeWidgetItem] = {}
         for gkey in group_order:
@@ -533,7 +562,10 @@ class ContextViewerDialog(QDialog):
             for idx in idxs:
                 msg = self._messages[idx]
                 child = QTreeWidgetItem(parent, [self._msg_labels[idx] + self._est_suffix(idx)])
-                child.setToolTip(0, self._msg_role_ord[idx])
+                child.setForeground(0, QColor(self._msg_actor_color[idx]))
+                speaker, target = self._msg_actor[idx]
+                who = f"{speaker} → {target}" if target else speaker
+                child.setToolTip(0, f"{who}  ·  provider role: {self._msg_role_ord[idx]}")
                 self._items.append((child, "message", msg))
                 self._message_items[idx] = child
                 self._msg_index_by_id[id(msg)] = idx
@@ -593,10 +625,10 @@ class ContextViewerDialog(QDialog):
             lines.append(f"<hr style='border-color:{_BORDER}'>")
             for i, msg in enumerate(self._messages):
                 role = msg.get("role") or "?"
-                color = _ROLE_COLORS.get(role, _TEXT)
+                color = self._msg_actor_color.get(i) or _ROLE_COLORS.get(role, _TEXT)
                 content = msg.get("content") or ""
                 preview = self._get_preview(content, 160)
-                tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1)
+                tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1, i)
                 est = self._est_by_index.get(i)
                 est_html = (
                     f"&nbsp;<span style='color:{_SH_NUMBER}'>~{self._fmt_int(est['tokens'])}</span>"
@@ -615,19 +647,26 @@ class ContextViewerDialog(QDialog):
         elif kind == "message":
             msg: dict = payload or {}
             role = msg.get("role") or "unknown"
-            color = _ROLE_COLORS.get(role, _TEXT)
             content = msg.get("content") or ""
+
+            idx = self._msg_index_by_id.get(id(msg), -1)
+            if idx in self._msg_labels:
+                title = self._msg_labels[idx]
+                color = self._msg_actor_color.get(idx, _TEXT)
+            else:
+                title, color = self._classify_message(msg, role, 1, idx)
 
             if isinstance(content, list):
                 rendered_content = self._render_content_blocks(content)
             else:
                 rendered_content = self._render_prompt_body(str(content))
 
-            est_line = self._est_line(self._msg_index_by_id.get(id(msg), -1))
+            est_line = self._est_line(idx)
             html = (
-                f"<p><b style='color:{color};font-size:13px'>"
-                f"{_ROLE_ICONS.get(role, '')} {self._esc(role.upper())}"
-                f"</b>{('&nbsp;&nbsp;' + est_line) if est_line else ''}</p>"
+                f"<p><b style='color:{color};font-size:13px'>{self._esc(title)}</b>"
+                f"&nbsp;&nbsp;<span style='color:{_MUTED};font-size:11px'>"
+                f"provider role: {self._esc(role)}</span>"
+                f"{('<br>' + est_line) if est_line else ''}</p>"
                 f"{rendered_content}"
             )
 
@@ -664,8 +703,8 @@ class ContextViewerDialog(QDialog):
         for i in idxs:
             msg = self._messages[i]
             role = msg.get("role") or "?"
-            col = _ROLE_COLORS.get(role, _TEXT)
-            tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1)
+            col = self._msg_actor_color.get(i) or _ROLE_COLORS.get(role, _TEXT)
+            tag = self._msg_labels.get(i) or self._classify_message_label(msg, role, 1, i)
             preview = self._get_preview(msg.get("content") or "", 140)
             est = self._est_by_index.get(i)
             est_html = (
@@ -1121,6 +1160,61 @@ class ContextViewerDialog(QDialog):
             )
         return str(content or "")
 
+    # ── Actor / говорящий ─────────────────────────────────────────────────────
+    def _resolve_actor(self, msg: dict, idx: int) -> tuple[str, str | None]:
+        """(speaker, target): message_meta → msg speaker/sender → in-band префикс → роль."""
+        meta = self._message_meta.get(idx) or {}
+        role = str(msg.get("role") or "").lower()
+
+        speaker = str(meta.get("speaker") or msg.get("speaker") or msg.get("sender") or "").strip()
+        target = str(meta.get("target") or msg.get("target") or "").strip()
+
+        if not speaker or not target:
+            content = self._content_plain(msg.get("content"))
+            m = _RE_ACTOR_PREFIX.match(content)
+            if m:
+                inner = m.group(1) or ""
+                if "->" in inner:
+                    sp, _sep, tg = inner.partition("->")
+                    speaker = speaker or sp.strip()
+                    target = target or tg.strip()
+                else:
+                    speaker = speaker or inner.strip()
+            else:
+                m2 = _RE_TO_PREFIX.match(content)
+                if m2 and not target:
+                    target = m2.group(1).strip()
+
+        if not speaker:
+            if role == "assistant":
+                speaker = str(self._data.get("character_name") or "").strip() or "Assistant"
+            elif role == "user":
+                speaker = "Player"
+            elif role == "system":
+                speaker = "System"
+            elif role == "tool":
+                speaker = "Tool"
+            else:
+                speaker = role.capitalize() or "Unknown"
+
+        return speaker, (target or None)
+
+    def _actor_color(self, actor: str, role: str = "") -> str:
+        """Owner/Player/System/Tool — фиксированные цвета, прочие Миты — из палитры."""
+        role = (role or "").lower()
+        if role == "system" or actor == "System":
+            return _ROLE_COLORS["system"]
+        if role == "tool" or actor == "Tool":
+            return _ROLE_COLORS["tool"]
+        if actor == "Player":
+            return _ACTOR_PLAYER
+        owner = str(self._data.get("character_name") or "").strip()
+        if actor and owner and actor == owner:
+            return _ACTOR_OWNER
+        if not actor:
+            return _TEXT
+        return _ACTOR_PALETTE[zlib.crc32(actor.encode("utf-8")) % len(_ACTOR_PALETTE)]
+
     def _marker_meta(self, name: str) -> tuple[str, str, str]:
         """По имени тега/заголовка → (иконка, цвет, человекочитаемый ярлык)."""
         key = name.lower().replace("_", " ")
@@ -1155,14 +1249,17 @@ class ContextViewerDialog(QDialog):
         label = label.title() if label.isupper() else (label[:1].upper() + label[1:])
         return icon, color, label
 
-    def _classify_message_label(self, msg: dict, role: str, ordinal: int) -> str:
-        """Ярлык узла дерева: осмысленный по заголовку блока для любой роли.
+    def _classify_message_label(self, msg: dict, role: str, ordinal: int, idx: int | None = None) -> str:
+        return self._classify_message(msg, role, ordinal, idx)[0]
+
+    def _classify_message(self, msg: dict, role: str, ordinal: int, idx: int | None = None) -> tuple[str, str]:
+        """(ярлык, цвет) узла дерева.
 
         Заголовок распознаём и у не-system ролей: Unity/MiSide-блоки уходят с
-        ``role="event"`` (провайдер превращает их в ``user`` с префиксом
-        ``[RUNTIME EVENT]``), поэтому раньше они висели безликими «user #N».
-        Метки-сиблинги (имена ролей, имена тегов) все на английском — держим и
-        «System prompt» английским, чтобы одна строка не выпадала на русский.
+        ``role="event"``, поэтому раньше они висели безликими «user #N» — такие
+        красим цветом секции. Диалоговые реплики красим по говорящему (Мита/
+        Player), а не по протокольной роли, иначе реплика другой Миты выглядела
+        как «User #N».
         """
         text = self._content_plain(msg.get("content"))
         first = next((ln.strip() for ln in text.split("\n") if ln.strip()), "")
@@ -1172,15 +1269,22 @@ class ContextViewerDialog(QDialog):
         m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if m:
             name = m.group(2) if m.re is _RE_TAG_RAW else m.group(1)
-            s_icon, _c, s_label = self._marker_meta(name)
-            return f"{s_icon} {s_label}"
+            s_icon, s_color, s_label = self._marker_meta(name)
+            return f"{s_icon} {s_label}", s_color
 
         icon = _ROLE_ICONS.get(role, "•")
+        # Диалоговые сообщения — по говорящему (у system оставляем прежнее).
+        if idx is not None and role in ("user", "assistant", "event"):
+            speaker, target = self._resolve_actor(msg, idx)
+            if speaker and speaker not in ("System", "Tool"):
+                arrow = f" → {target}" if target else ""
+                return f"{icon} {speaker}{arrow}", self._actor_color(speaker, role)
+
         # крупный блок без явного заголовка — основной системный промпт
         if role == "system" and len(text) > 400:
-            return "📖 System prompt"
+            return "📖 System prompt", _ROLE_COLORS.get("system", _TEXT)
         # С заглавной, чтобы «System #2» не выпадал рядом с «System prompt».
-        return f"{icon} {str(role).capitalize()} #{ordinal}"
+        return f"{icon} {str(role).capitalize()} #{ordinal}", _ROLE_COLORS.get(role, _TEXT)
 
     def _banner_html(self, name: str, closing: bool) -> str:
         icon, color, label = self._marker_meta(name)
