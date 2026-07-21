@@ -1,7 +1,7 @@
 {
     "attitude": 60.0,
-    "boredom": 40.0,
-    "stress": 5.0,
+    "boredom": 20.0,
+    "stress": 10.0,
     "secretExposed": false,
     "current_fsm_state": "Sleeping",
     "available_action_level": 1,
