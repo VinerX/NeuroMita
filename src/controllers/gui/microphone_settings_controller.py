@@ -29,13 +29,46 @@ class MicrophoneSettingsController(BaseController):
         self._bound_sig: tuple[int, int, int, int, int, int] | None = None
         super().__init__(main_controller, view)
 
+    # Настройки-переключатели микрофона, которые могут меняться извне (например,
+    # тумблерами на странице песочницы) → атрибут чекбокса в UI.
+    _EXTERNAL_TOGGLES: dict[str, str] = {
+        "MIC_ACTIVE": "mic_active_checkbox",
+        "MIC_INSTANT_SENT": "mic_instant_checkbox",
+        "MIC_INSTANT_MERGE_CHAT_INPUT": "mic_instant_merge_input_checkbox",
+        "MIC_MUTE_WHILE_SPEAKING": "mic_mute_while_speaking_checkbox",
+    }
+
     def subscribe_to_events(self):
         eb = self.event_bus
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
         eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_catalog_changed, weak=False)
 
+        # Живая синхронизация: если MIC_* поменяли не на этой странице (песочница,
+        # другой контрол), подтягиваем чекбоксы, а не показываем устаревшее значение.
+        self._subscribe_settings(
+            self._reflect_external_setting,
+            keys=tuple(self._EXTERNAL_TOGGLES),
+        )
+
         self._ui(self._bind_if_ready)
+
+    def _reflect_external_setting(self, change) -> None:
+        v = self.view
+        if not v:
+            return
+        attr = self._EXTERNAL_TOGGLES.get(str(getattr(change, "key", "") or ""))
+        if not attr or not hasattr(v, attr):
+            return
+        checkbox = getattr(v, attr)
+        value = bool(getattr(change, "value", False))
+        if checkbox is None or checkbox.isChecked() == value:
+            return
+        checkbox.blockSignals(True)
+        try:
+            checkbox.setChecked(value)
+        finally:
+            checkbox.blockSignals(False)
 
     def _widgets_signature(self) -> tuple[int, ...] | None:
         v = self.view

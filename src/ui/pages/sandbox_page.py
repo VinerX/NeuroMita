@@ -1680,6 +1680,21 @@ class SandboxPage(QWidget):
         )
         status_layout.addWidget(self._mic_status_row)
 
+        # Мгновенная отправка распознанного текста (MIC_INSTANT_SENT) — тот же
+        # тумблер, что и в настройках микрофона; здесь под строкой микрофона,
+        # чтобы включать «речь сразу уходит в чат» не уходя со страницы.
+        mic_instant_row, self._mic_instant_cb = self._make_toggle_row(
+            _("Мгновенная отправка", "Instant send"),
+            lambda v: self._on_capture_toggle("MIC_INSTANT_SENT", v),
+            bool(self._setting("MIC_INSTANT_SENT", False)),
+            tooltip=_("Мгновенная отправка распознанного текста",
+                      "Send recognized text immediately"),
+            with_dot=True,
+            on_settings=lambda: self._jump_to_settings("microphone"),
+            settings_tooltip=_("Открыть настройки микрофона", "Open microphone settings"),
+        )
+        status_layout.addWidget(mic_instant_row)
+
         self._rag_status_row = self._make_status_row(
             "RAG",
             "rag_status_checkbox",
@@ -1862,6 +1877,7 @@ class SandboxPage(QWidget):
             ("_capture_screen_cb", "ENABLE_SCREEN_ANALYSIS", False),
             ("_capture_auto_attach_cb", "AUTO_ATTACH_IMAGES", False),
             ("_capture_camera_cb", "ENABLE_CAMERA_CAPTURE", False),
+            ("_mic_instant_cb", "MIC_INSTANT_SENT", False),
             ("_show_thinking_cb", "SHOW_THINK_IN_GUI", False),
             ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
             ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
