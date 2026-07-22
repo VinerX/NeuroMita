@@ -252,6 +252,7 @@ jobs:
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: NeuroMita v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
           body_path: CHANGELOG_BODY.md
           files: PythonBuild-v${{ steps.ver.outputs.version }}.zip
           make_latest: true

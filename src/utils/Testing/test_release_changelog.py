@@ -78,6 +78,19 @@ def test_build_changelog_ignores_future_release_tag_and_old_release_history(rele
     assert data.commits == (f"- Исправлен расчёт changelog при наличии будущего тестового тега ({expected_sha})",)
 
 
+def test_build_changelog_uses_previous_version_even_when_tag_is_on_another_branch(release_history_repo: Path):
+    default_branch = _git(release_history_repo, "branch", "--show-current")
+    _git(release_history_repo, "branch", "released-from-default", "v2026.06.20")
+    _git(release_history_repo, "checkout", "released-from-default")
+    _commit(release_history_repo, "release.txt", "Release created from another branch", "release\n")
+    _git(release_history_repo, "tag", "v2026.07.14")
+    _git(release_history_repo, "checkout", default_branch)
+
+    data = build_changelog_data("v2026.07.22", repo=release_history_repo)
+
+    assert data.previous_tag == "v2026.07.14"
+
+
 def test_build_changelog_renders_real_release_style_header_and_fallback_text(release_history_repo: Path):
     _commit(release_history_repo, "noise.txt", "github actions: tweak release workflow filters", "noise\n")
     _git(release_history_repo, "tag", "v2026.07.05")
