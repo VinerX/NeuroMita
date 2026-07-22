@@ -10,6 +10,6 @@ behavior_state=custom
 [<Context/Cappy_history.txt>]
 [<Context/Mita_history.txt>]
 [<Context/examplesLong.txt>]
-[<Context/World.txt>]
+[<Context/world.txt>]
 [<Main/player.txt>]
 [<../../Structural/behavior_state.script>]

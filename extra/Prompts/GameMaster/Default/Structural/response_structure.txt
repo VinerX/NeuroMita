@@ -14,7 +14,7 @@ Schema:
 
 Field descriptions:
 - "commands": ["Speaker,CharacterName"] — selects the next speaker.
-  Replaces the old <c>Speaker,CharacterName</c> syntax.
+  Use this instead of any legacy speaker-tag syntax.
 - "text": narrator text in asterisk style (*...*), or an instruction line for the selected character.
   Omit if nothing to narrate.
 

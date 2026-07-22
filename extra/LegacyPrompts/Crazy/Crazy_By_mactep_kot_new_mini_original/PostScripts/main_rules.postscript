@@ -1,0 +1,18 @@
+// ===== СБОР ЗВЁЗДОЧЕК =====
+RULE Remove Asterisks
+    MATCH REGEX "(\*{1,3})" 
+    ACTIONS
+        REMOVE_MATCH
+        LOG "Удалены звёздочки"
+    END_ACTIONS
+END_RULE
+
+DEBUG_DISPLAY
+    "Attitude": attitude
+    "Boredom": boredom
+    "Stress": stress
+    "Love": Love
+    "Secret": secretExposed
+    "Quest": secret_trial
+    "Message time": SYSTEM_DATETIME
+END_DEBUG_DISPLAY

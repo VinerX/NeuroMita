@@ -9,5 +9,5 @@ behavior_state=custom
 [<Main/main.txt>]
 [<Main/player.txt>]
 [<Context/examplesLong.txt>]
-[<Context/Mita_history.txt>]
+[<Context/mita_history.txt>]
 [<../../Structural/behavior_state.script>]
