@@ -577,6 +577,24 @@ class PromptController(PromptBuilderService):
         }
 
     @classmethod
+    def _build_unity_static_catalog_message(cls, game_state: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Return stable Unity identifiers suitable for the cached prompt prefix."""
+        catalog = game_state.get("runtime_static_catalog", "")
+        if not catalog or not str(catalog).strip():
+            return None
+        safe_catalog = cls._neutralize_world_state_tags(str(catalog))
+        return {
+            "role": "system",
+            "content": (
+                "[Unity Static Catalog]\n"
+                "These are stable executable identifiers configured by the connected game runtime. "
+                "Availability that depends on position or current activity is supplied later for this turn.\n\n"
+                f"{safe_catalog}\n"
+                "[/Unity Static Catalog]"
+            ),
+        }
+
+    @classmethod
     def _build_unity_runtime_capabilities_message(cls, game_state: Dict[str, Any]) -> Optional[Dict[str, str]]:
         capabilities = game_state.get("runtime_capabilities", "")
         if not capabilities or not str(capabilities).strip():
@@ -717,7 +735,9 @@ class PromptController(PromptBuilderService):
                     game_state,
                     support_intents=support_intents,
                 ),
+                self._build_unity_static_catalog_message(game_state),
             ) if m]
+
             unity_dynamic_messages = [m for m in (
                 self._build_unity_runtime_capabilities_message(game_state),
                 self._build_unity_world_state_message(game_state),

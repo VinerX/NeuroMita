@@ -76,7 +76,8 @@ class PromptSystemStateTests(unittest.TestCase):
             rag_context="[relevant memories]",
             game_state={
                 "runtime_rules": "Use interactions for nearby objects.",
-                "runtime_capabilities": "Available animations: Wave, Sit.",
+                "runtime_static_catalog": "Available animations: Wave, Sit.",
+                "runtime_capabilities": "Nearby interactions: Chair.",
                 "world_state": "Player is in the kitchen.",
                 "runtime_events": ["Player stood up."],
             },
@@ -88,6 +89,7 @@ class PromptSystemStateTests(unittest.TestCase):
 
         i_stable = contents.index("[stable prompt]")
         i_rules = idx("[Unity Runtime Rules]")
+        i_catalog = idx("[Unity Static Catalog]")
         i_mem = contents.index("[active memory]")
         i_caps = idx("[Unity Runtime Capabilities]")
         i_world = idx("[MiSide World State]")
@@ -98,7 +100,8 @@ class PromptSystemStateTests(unittest.TestCase):
 
         # Статический контракт — после основных промптов, до динамики/состояния.
         self.assertLess(i_stable, i_rules)
-        self.assertLess(i_rules, i_mem)
+        self.assertLess(i_rules, i_catalog)
+        self.assertLess(i_catalog, i_mem)
         # Динамический Unity — после памяти, вплотную перед состоянием/вводом.
         self.assertLess(i_mem, i_caps)
         for i_dyn in (i_caps, i_world, i_events):
@@ -150,6 +153,14 @@ class PromptSystemStateTests(unittest.TestCase):
         )
         self.assertTrue(message["content"].startswith("[Unity Runtime Rules]"))
         self.assertNotIn("MiSide World State", message["content"])
+
+    def test_unity_static_catalog_is_a_system_message(self):
+        message = PromptController._build_unity_static_catalog_message({
+            "runtime_static_catalog": "Available animations: Wave, Sit.",
+        })
+        self.assertEqual(message["role"], "system")
+        self.assertIn("[Unity Static Catalog]", message["content"])
+        self.assertIn("Available animations: Wave, Sit.", message["content"])
 
     def test_runtime_capabilities_are_separate_from_rules_and_state(self):
         message = PromptController._build_unity_runtime_capabilities_message({

@@ -256,6 +256,7 @@ class CreateTaskAction:
             "nearObjects": context.get("hierarchy", ""),
             "world_state": context.get("world_state", ""),
             "runtime_rules": context.get("runtime_rules", ""),
+            "runtime_static_catalog": context.get("runtime_static_catalog", ""),
             "runtime_capabilities": context.get("runtime_capabilities", ""),
             "intent_rules": context.get("intent_rules", ""),
             "runtime_events": context.get("runtime_events", []),

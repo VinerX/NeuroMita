@@ -26,6 +26,7 @@ class GameState:
     nearObjects: str = ""
     world_state: str = ""
     runtime_rules: str = ""
+    runtime_static_catalog: str = ""
     runtime_capabilities: str = ""
     intent_rules: str = ""
 
@@ -36,6 +37,7 @@ class GameState:
         self.nearObjects = str(data.get("nearObjects", self.nearObjects) or "")
         self.world_state = str(data.get("world_state", self.world_state) or "")
         self.runtime_rules = str(data.get("runtime_rules", self.runtime_rules) or "")
+        self.runtime_static_catalog = str(data.get("runtime_static_catalog", self.runtime_static_catalog) or "")
         self.runtime_capabilities = str(data.get("runtime_capabilities", self.runtime_capabilities) or "")
         self.intent_rules = str(data.get("intent_rules", self.intent_rules) or "")
 
@@ -47,6 +49,7 @@ class GameState:
             "nearObjects": str(self.nearObjects),
             "world_state": str(self.world_state),
             "runtime_rules": str(self.runtime_rules),
+            "runtime_static_catalog": str(self.runtime_static_catalog),
             "runtime_capabilities": str(self.runtime_capabilities),
             "intent_rules": str(self.intent_rules),
         }
