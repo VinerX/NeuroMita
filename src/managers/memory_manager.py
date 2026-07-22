@@ -1425,8 +1425,16 @@ class MemoryManager(CharacterScopedService):
     _DEFAULT_ISLAND_WRAPPER_TEMPLATE = "<memory_islands>\n{items}\n</memory_islands>"
     _DEFAULT_WRAPPER_TEMPLATE = "<active_memory>\n{items}\n</active_memory>"
 
-    def get_memories_formatted(self):
-        """Render islands separately and normal memories within their capacity.
+    def get_memories_formatted(self) -> str:
+        """Единой строкой (для тестов/логов): блоки памяти, склеенные через '\\n'."""
+        return "\n".join(self.get_memory_message_blocks())
+
+    def get_memory_message_blocks(self) -> list[str]:
+        """Отдельные блоки памяти — острова и активная память идут РАЗНЫМИ
+        system-сообщениями, чтобы в просмотрщике контекста быть двумя разделами
+        активного контекста, а не одним. Каждый блок начинается со своего тега
+        (<memory_islands> / <active_memory>) — по нему classify_message_section
+        относит его к «памяти» (активный контекст), а не к истории.
 
         A final in-memory deduplication protects the prompt even if a legacy or
         externally modified database temporarily contains duplicate islands.
@@ -1572,22 +1580,28 @@ class MemoryManager(CharacterScopedService):
             "Use English to save tokens.",
         ]
 
-        blocks = []
+        island_block = None
         if formatted_islands:
             islands_text = "\n".join(formatted_islands)
             try:
-                blocks.append(island_wrapper_tpl.format(items=islands_text))
+                island_block = island_wrapper_tpl.format(items=islands_text)
             except (KeyError, IndexError):
-                blocks.append(f"<memory_islands>\n{islands_text}\n</memory_islands>")
+                island_block = f"<memory_islands>\n{islands_text}\n</memory_islands>"
 
         facts_text = "\n".join(formatted_facts)
         tips_text = "\n".join(management_tips)
         examples_text = "\n".join(examples)
         try:
-            blocks.append(wrapper_tpl.format(
+            active_block = wrapper_tpl.format(
                 items=facts_text, stats=memory_stats, tips=tips_text, examples=examples_text,
-            ))
+            )
         except (KeyError, IndexError):
-            blocks.append(f"<active_memory>\n{facts_text}\n</active_memory>")
+            active_block = f"<active_memory>\n{facts_text}\n</active_memory>"
+        # Статус/подсказки — трейлер к активной памяти (не к островам).
+        active_block += f"\n{memory_stats}\n{tips_text}\n{examples_text}"
 
-        return "\n".join(blocks) + f"\n{memory_stats}\n{tips_text}\n{examples_text}"
+        blocks = []
+        if island_block:
+            blocks.append(island_block)
+        blocks.append(active_block)
+        return blocks

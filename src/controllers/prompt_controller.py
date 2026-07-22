@@ -390,16 +390,16 @@ class PromptController(PromptBuilderService):
         stable_system_messages.extend(build_system_prompts(stable_blocks, separate=separate_prompts))
         volatile_system_messages.extend(build_system_prompts(volatile_blocks, separate=separate_prompts))
 
-        memory_message_content = ""
+        memory_blocks: list[str] = []
         try:
             if hasattr(character, "memory_system") and character.memory_system:
-                memory_message_content = character.memory_system.get_memories_formatted()
+                memory_blocks = character.memory_system.get_memory_message_blocks()
         except Exception as e:
             logger.warning(
                 f"[PromptController] Ошибка получения памяти для персонажа "
                 f"{getattr(character, 'char_id', '')}: {e}"
             )
-            memory_message_content = ""
+            memory_blocks = []
 
         # ADD_CONTEXT_INFO blocks (e.g. the computed behavior band) belong in the
         # volatile zone next to the request, ahead of active memory/reminders.
@@ -407,8 +407,11 @@ class PromptController(PromptBuilderService):
             if isinstance(info, str) and info.strip():
                 volatile_system_messages.append({"role": "system", "content": info})
 
-        if memory_message_content and memory_message_content.strip():
-            volatile_system_messages.append({"role": "system", "content": memory_message_content})
+        # Острова и активная память — отдельными сообщениями: каждый становится
+        # своим разделом активного контекста (а не одним слитным блоком).
+        for block in memory_blocks:
+            if isinstance(block, str) and block.strip():
+                volatile_system_messages.append({"role": "system", "content": block})
 
         try:
             if hasattr(character, "reminder_system") and character.reminder_system:

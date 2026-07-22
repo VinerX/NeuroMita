@@ -15,6 +15,7 @@ _SECTION_MARKERS = (
     ("[Pending Reminders]", "reminders"),
     ("[HISTORY SUMMARY]", "history"),
     ("[Core Memory", "core memories"),
+    ("<memory_islands>", "memories"),
     ("<active_memory>", "memories"),
     ("<relevant_memories>", "memories"),
     ("# score=RAG", "memories"),
@@ -56,12 +57,14 @@ def classify_message_section(msg: Dict[str, Any], is_last_user: bool,
         инжектим как контекст хода (память, состояние, [Current/System State],
         MiSide World State, контракты/возможности Unity, RAG). У них есть наши
         маркеры-заголовки.
-      • «История» — поток разговора: саммари, реплики диалога И прочие
-        system/рантайм-события хода (idle/«игрок молчит», напоминания и т.п.),
-        которые мы не задавали как контекст-блок. Системное ≠ активный
-        контекст, пока мы явно его так не оформили (фидбэк).
+      • «История» — поток разговора: саммари, реплики диалога и прочие
+        уже отработанные (отвеченные) реплики/события прошлых ходов, которые
+        мы не задавали как контекст-блок.
       • «Промпт» — промпт персонажа: ведущий блок system-сообщений ДО истории.
-      • «Ввод игрока» — текущий ввод (последнее реальное user-сообщение).
+      • «Ввод игрока» — текущий триггер хода (последнее сообщение игрока):
+        реальная реплика игрока ЛИБО idle-событие «игрок молчит», которое
+        физически стоит последним и по смыслу заменяет ввод игрока в этом ходе.
+        Показываем его внизу, «как если бы игрок написал» (фидбэк).
     """
     text = message_text(msg).lstrip()
     head = text[:80]
@@ -82,17 +85,21 @@ def classify_message_section(msg: Dict[str, Any], is_last_user: bool,
     if "Unity Runtime Capabilities" in core or "Unity Runtime Events" in core:
         return "Unity runtime"
 
-    # 2) Реальный диалог.
+    # 2) Текущий триггер хода и реальный диалог. Последнее «пользовательское»
+    # сообщение (is_last_user) — реальная реплика игрока ИЛИ idle-событие «игрок
+    # молчит» — это ввод текущего хода: показываем внизу, «как игрок написал».
     role = str(msg.get("role") or "")
+    if is_last_user:
+        return "user input"
     if role == "user" and not is_runtime_event:
-        return "user input" if is_last_user else "history"
+        return "history"
     if role == "assistant":
         return "history"
 
     # 3) Всё прочее — ведущий безмаркерный system это промпт персонажа; после
-    # начала истории любые system/рантайм-события хода (idle/«игрок молчит»,
-    # напоминания, конвертированные не-Unity [RUNTIME EVENT]) — это история,
-    # а не активный контекст (мы их как контекст не задавали).
+    # начала истории безмаркерные system/рантайм-события ПРОШЛЫХ ходов
+    # (уже отвеченные, не текущий триггер из п.2) — это история, а не активный
+    # контекст (мы их как контекст не задавали).
     if role == "system" and not seen_dialogue and not is_runtime_event:
         return "character prompts"
     return "history"
@@ -115,23 +122,25 @@ def compute_token_usage(messages: Any) -> Dict[str, Any]:
     except Exception as e:
         return {"available": False, "note": f"ContextCounter unavailable: {e}"}
 
-    # Текущий ввод игрока — последнее НАСТОЯЩЕЕ user-сообщение (не [RUNTIME EVENT],
-    # который провайдер тоже делает role="user"), и только если после него нет
-    # ответа ассистента. В idle-ходе («игрок молчит N секунд») текущего ввода
-    # нет вовсе: последний user — из истории, и помечать его «Вводом» нельзя,
-    # иначе он разрывает блок «История».
-    def _is_runtime_event(msg: Dict[str, Any]) -> bool:
-        return message_text(msg).lstrip().startswith("[RUNTIME EVENT]")
+    # Текущий триггер хода — последнее сообщение игрока: реальная реплика ЛИБО
+    # idle-событие «игрок молчит», которое физически стоит последним и по смыслу
+    # заменяет ввод игрока в этом ходе. Провайдер делает событие role="user" с
+    # префиксом [RUNTIME EVENT] (при кастомном обработчике — оставляет
+    # role="event"). Помечаем его «Вводом игрока», чтобы было видно, что реально
+    # шло последним. Условие «нет ответа ассистента после» отсекает уже
+    # отработанные ходы (они остаются историей и не рвут её блок).
+    def _is_player_turn(msg: Dict[str, Any]) -> bool:
+        return str(msg.get("role")) in ("user", "event")
 
     last_user_idx = -1
     for i, m in enumerate(messages):
-        if isinstance(m, dict) and str(m.get("role")) == "user" and not _is_runtime_event(m):
+        if isinstance(m, dict) and _is_player_turn(m):
             last_user_idx = i
     current_input_idx = last_user_idx
     if last_user_idx >= 0:
         for m in messages[last_user_idx + 1:]:
             if isinstance(m, dict) and str(m.get("role")) == "assistant":
-                current_input_idx = -1  # на этот user уже есть ответ → это история
+                current_input_idx = -1  # на этот ход уже есть ответ → это история
                 break
 
     per_message = []

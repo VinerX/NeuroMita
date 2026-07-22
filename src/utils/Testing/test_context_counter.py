@@ -68,6 +68,9 @@ class UnityRuntimeSectionTests(unittest.TestCase):
         # Явно оформленные нами блоки остаются активным контекстом даже после истории.
         for content, expected in [
             ("<active_memory>\nlikes cats</active_memory>", "memories"),
+            # Острова памяти идут своим сообщением и ведут блок своим тегом —
+            # без этого маркера они «выезжали» в историю (start-of-line match).
+            ("<memory_islands>\n[Relationship] N:1 friends</memory_islands>", "memories"),
             ("[System State]\noffline", "System State"),
             ("[Current State]\nDate", "System State"),
             ("[MiSide World State]\nkitchen", "MiSide World State"),
@@ -78,25 +81,40 @@ class UnityRuntimeSectionTests(unittest.TestCase):
             )
 
 
-class IdleTurnHasNoInputTests(unittest.TestCase):
-    """В idle-ходе («игрок молчит») текущего ввода нет — история не рвётся."""
+class IdleTurnInputTests(unittest.TestCase):
+    """В idle-ходе триггер — idle-событие «игрок молчит»: оно последнее и по
+    смыслу заменяет ввод игрока, поэтому идёт в «Ввод игрока» (внизу), а прошлые
+    реплики остаются историей (её блок не рвётся)."""
 
-    def test_idle_turn_last_user_stays_history(self):
+    def test_idle_event_is_current_input_at_bottom(self):
+        # Реальная форма: провайдер конвертирует idle-событие в role="user" с
+        # префиксом [RUNTIME EVENT] (см. message_preprocessor).
         messages = [
             {"role": "system", "content": "You are Crazy Mita." * 40},
             {"role": "system", "content": "[HISTORY SUMMARY]\nearlier"},
             {"role": "user", "content": "hello there"},
             {"role": "assistant", "content": "hi"},
             {"role": "system", "content": "<active_memory>\nlikes cats</active_memory>"},
-            {"role": "system", "content": "The player has been silent for 90 seconds. React naturally."},
+            {"role": "user", "content": "[RUNTIME EVENT] The player has been silent for 90 seconds. React naturally to this silence."},
         ]
         usage = _compute_token_usage(messages)
         sections = [m["section"] for m in usage["per_message"]]
-        # Нет секции "user input" (idle), последний user остался историей,
-        # а «молчание» — тоже история хода (не активный контекст).
-        self.assertNotIn("user input", sections)
-        self.assertEqual(sections[2], "history")   # user
-        self.assertEqual(sections[-1], "history")  # silence → история хода
+        self.assertEqual(sections[2], "history")      # прошлая реплика игрока
+        self.assertEqual(sections[4], "memories")     # активный контекст не тронут
+        self.assertEqual(sections[-1], "user input")  # idle-событие = текущий ввод, внизу
+
+    def test_idle_event_as_raw_event_role_also_input(self):
+        # Провайдер с кастомным обработчиком оставляет role="event" (без префикса).
+        messages = [
+            {"role": "system", "content": "You are Crazy Mita." * 40},
+            {"role": "user", "content": "hello there"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "event", "content": "The player has been silent for 90 seconds."},
+        ]
+        usage = _compute_token_usage(messages)
+        sections = [m["section"] for m in usage["per_message"]]
+        self.assertEqual(sections[1], "history")      # отвеченная реплика игрока
+        self.assertEqual(sections[-1], "user input")  # idle-событие внизу
 
     def test_normal_turn_last_user_is_input(self):
         messages = [
