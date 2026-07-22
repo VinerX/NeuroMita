@@ -68,7 +68,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
      - Mistral AI https://admin.mistral.ai/organization/api-keys - надо прожать галочку "Через Request".
      - gpt4free https://g4f.dev/members.html - Лимиты: 300к токенов и 100 запросов в час, 1млн токенов в день (Возможны утечки данных, нестабилен)
      - Openrouter https://openrouter.ai/settings/keys. У аккаунтов опенроутера есть лимиты (В среднем - 50 запросов в день).
-     - Google AI Studio https://aistudio.google.com/apikey - новые модели Gemma 4 имеют неограниченное кол-во токенов/минуту, и 1.5 тыс. запросов в день.
+     - Google AI Studio https://aistudio.google.com/apikey - Появились две новые модели, одна на 500 запросов в день, другая на 20.
      - io.net https://ai.io.net/ai/api-keys - лимит: 200к токенов в день на аккаунт.  
 	 
    - Платные API:  
