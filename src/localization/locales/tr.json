@@ -1573,5 +1573,7 @@
   "⚠️ Модели Fish Speech+ / + RVC требуют всех компонентов!": "⚠️ Fish Speech+/+RVC tum bilesenler gerekli!",
   "⚠️ Ошибка загрузки Triton": "⚠️ Triton Yukleme Hatasi",
   "✓ Успех": "✓ Basari",
-  "✗ Ошибка": "✗ Hata"
+  "✗ Ошибка": "✗ Hata",
+  "Предупреждение о совместимости": "Uyumluluk uyarısı",
+  "Всё равно установить": "Yine de yükle"
 }

@@ -27,6 +27,7 @@ from updater import (
     _python_journal_path,
     _python_stage_marker,
     _python_staging_path,
+    note_locked_restart_attempt,
     resume_pending_python_update,
 )
 from utils.archive_utils import extract_archive
@@ -379,6 +380,46 @@ def test_locked_python_update_waits_for_explicit_detached_handoff(
 
     assert recovered.ok and recovered.changed
     assert (base / "Launcher.exe").read_bytes() == b"new"
+
+
+def test_locked_restart_attempts_stop_the_detached_relaunch_loop(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    atomic_write_json(
+        _python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "waiting_for_restart",
+            "version": "v2",
+            "archive_name": "x.zip",
+            "archive_url": "https://example/x.zip",
+            "error": "Could not apply locked python.exe",
+        },
+    )
+
+    # Первые попытки просят ещё один detached-перезапуск, но не роняют операцию.
+    attempt1, exhausted1 = note_locked_restart_attempt(base, limit=3)
+    attempt2, exhausted2 = note_locked_restart_attempt(base, limit=3)
+    assert (attempt1, exhausted1) == (1, False)
+    assert (attempt2, exhausted2) == (2, False)
+    assert read_json(_python_journal_path(base))["phase"] == "waiting_for_restart"
+
+    # На лимите операция переводится в терминальный failed без «locked»-текста,
+    # чтобы resume больше не сигналил waiting_for_restart и цикл остановился.
+    attempt3, exhausted3 = note_locked_restart_attempt(base, limit=3)
+    assert (attempt3, exhausted3) == (3, True)
+    journal = read_json(_python_journal_path(base))
+    assert journal["phase"] == "failed"
+    assert "Could not apply" not in journal["error"]
+    assert journal["restart_attempts"] == 3
+
+    # После исчерпания лимита resume считает операцию завершённой (без петли).
+    result = resume_pending_python_update(base_dir=str(base))
+    assert result.status == "no_pending_operation"
 
 
 def test_archive_member_cannot_escape_staging_directory(tmp_path: Path) -> None:

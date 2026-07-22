@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.backends import get_backend_service
+from core.backends import BackendKind, get_backend_service
 from core.events import Events, get_event_bus
 from core.install_types import InstallAction, InstallPlan
 from core.installables import ComponentCategory, ComponentMetadata, make_component_id
@@ -157,8 +157,9 @@ class BeatThisInstallableComponent:
         self.id = make_component_id(self.category, self.item_id)
 
     def metadata(self) -> ComponentMetadata:
-        beat_ctx = build_runtime_ctx(build_beat_ctx({}))
-        backend = get_backend_service().preferred_torch_kind(beat_ctx)
+        # Каталожный backend — статичное свойство компонента (работает и на CPU).
+        # Машинно-зависимый preferred_torch_kind остаётся в status()/install-плане.
+        backend = BackendKind.CPU
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,

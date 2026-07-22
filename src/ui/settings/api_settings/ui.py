@@ -285,6 +285,61 @@ def build_api_settings_ui(self, parent_layout):
     self.gen_overrides_section.add_widget(et_row)
     self.gen_override_widgets["enable_thinking"] = (et_enable_chk, et_val_chk)
 
+    # reasoning_effort override (выбор из списка)
+    re_row = SettingsBodyWidget()
+    re_lay = QHBoxLayout(re_row)
+    re_lay.setContentsMargins(0, 1, 0, 1)
+    re_lay.setSpacing(6)
+    re_enable_chk = QCheckBox()
+    re_enable_chk.setFixedWidth(18)
+    tr_set(re_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
+    re_lbl = tr_set(QLabel(), "Глубина размышлений", "Reasoning effort")
+    re_lbl.setMinimumWidth(130)
+    re_lbl.setMaximumWidth(130)
+    re_val_combo = QComboBox()
+    re_val_combo.addItems(["low", "medium", "high"])
+    re_val_combo.setCurrentText("medium")
+    re_val_combo.setEnabled(False)
+    re_val_combo.setMaximumWidth(80)
+    tr_set(re_val_combo,
+           "Работает только при включённом режиме мышления и у провайдеров, понимающих reasoning_effort (LM Studio, llama.cpp).",
+           "Requires thinking mode, and only applies to providers that understand reasoning_effort (LM Studio, llama.cpp).",
+           "setToolTip")
+    re_enable_chk.toggled.connect(re_val_combo.setEnabled)
+    re_lay.addWidget(re_enable_chk)
+    re_lay.addWidget(re_lbl)
+    re_lay.addWidget(re_val_combo)
+    re_lay.addStretch()
+    self.gen_overrides_section.add_widget(re_row)
+    self.gen_override_widgets["reasoning_effort"] = (re_enable_chk, re_val_combo)
+
+    # schema_reasoning override (boolean value)
+    sr_row = SettingsBodyWidget()
+    sr_lay = QHBoxLayout(sr_row)
+    sr_lay.setContentsMargins(0, 1, 0, 1)
+    sr_lay.setSpacing(6)
+    sr_enable_chk = QCheckBox()
+    sr_enable_chk.setFixedWidth(18)
+    tr_set(sr_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
+    sr_lbl = tr_set(QLabel(), "Reasoning в схеме", "Schema reasoning")
+    sr_lbl.setMinimumWidth(130)
+    sr_lbl.setMaximumWidth(130)
+    sr_val_chk = tr_set(QCheckBox(), "Вкл", "On")
+    sr_val_chk.setEnabled(False)
+    tr_set(sr_val_chk,
+           "Поле reasoning в JSON-схеме: модель думает вслух перед заполнением полей. "
+           "Локальным моделям помогает, большим хостовым только тратит токены.",
+           "A reasoning field in the JSON schema: the model thinks aloud before filling the rest. "
+           "Helps local models; on large hosted models it only burns tokens.",
+           "setToolTip")
+    sr_enable_chk.toggled.connect(sr_val_chk.setEnabled)
+    sr_lay.addWidget(sr_enable_chk)
+    sr_lay.addWidget(sr_lbl)
+    sr_lay.addWidget(sr_val_chk)
+    sr_lay.addStretch()
+    self.gen_overrides_section.add_widget(sr_row)
+    self.gen_override_widgets["schema_reasoning"] = (sr_enable_chk, sr_val_chk)
+
     self.openrouter_routing_section = CollapsibleSection(
         _("OpenRouter routing", "OpenRouter routing"), self, icon_name="fa5s.sliders-h"
     )

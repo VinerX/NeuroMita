@@ -148,8 +148,11 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
             def require_component(self, component_id, *, refresh=False):
                 raise KeyError(component_id)
 
-            def install_preview(self, component_id, *, ctx=None):
+            def install_preview(self, component_id):
                 return {}
+
+            def build_operation_plan(self, component_id, operation, *, clean=False, execution_ctx=None):
+                raise KeyError(component_id)
 
             def invalidate(self, component_id=None) -> None:
                 return None

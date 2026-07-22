@@ -316,9 +316,9 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill {{
-        background: transparent;
+        background-color: rgba(255, 255, 255, 0.05);
         color: {p.muted};
-        border: none;
+        border: 1px solid {p.border_strong};
         border-radius: 12px;
         padding: 0;
         font-family: "Segoe UI", "Arial", sans-serif;
@@ -327,13 +327,16 @@ def get_launcher_shell_stylesheet() -> str:
         letter-spacing: 0px;
     }}
     QPushButton#LauncherShellLangPill:hover {{
-        background: transparent;
+        background-color: rgba(255, 255, 255, 0.09);
         color: {p.text};
     }}
     QPushButton#LauncherShellLangPill[active="true"] {{
         background-color: {p.accent};
         color: white;
-        border: none;
+        border: 1px solid {p.accent};
+    }}
+    QPushButton#LauncherShellLangPill[active="true"]:hover {{
+        background-color: {p.accent_hover};
     }}
     QPushButton#LauncherShellLangGlobe {{
         background: transparent;

@@ -101,6 +101,16 @@ def test_layout_uses_versioned_core_and_environment_roots(tmp_path: Path) -> Non
     assert "cu128" in spec.layer_id
 
 
+def test_missing_registry_uses_defaults_without_warning(tmp_path: Path) -> None:
+    manager = RuntimeEnvironmentManager(tmp_path / "Lib")
+
+    with patch("core.runtime_environments.logger.warning") as warning:
+        registry = manager._load_registry()
+
+    assert registry == manager._default_registry()
+    warning.assert_not_called()
+
+
 def test_environment_ids_preserve_plus_as_a_distinct_component_key(tmp_path: Path) -> None:
     manager = RuntimeEnvironmentManager(tmp_path / "Lib")
     ids = [

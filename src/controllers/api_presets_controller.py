@@ -15,9 +15,10 @@ from main_logger import logger
 from utils import _
 import threading
 from core.task_supervisor import task_supervisor
-import requests
+import httpx
 
 from presets.provider_host_metadata import infer_provider_currency
+from handlers.llm_providers.http_transport import LLMHttpTransport
 
 
 @dataclass
@@ -97,8 +98,10 @@ class ApiPresetsController(ApiPresetService):
         "tokens_per_second": 0.5,
     }
 
-    def __init__(self):
+    def __init__(self, http_transport: LLMHttpTransport | None = None):
         self.event_bus = get_event_bus()
+        self._http_transport = http_transport or LLMHttpTransport()
+        self._owns_http_transport = http_transport is None
 
         self.templates_path = settings_path("api_templates.json", create_parent=True)
         self.presets_path = settings_path("api_presets.json", create_parent=True)
@@ -117,6 +120,11 @@ class ApiPresetsController(ApiPresetService):
         self._subscribe_to_events()
 
         self._migrate_old_api_keys()
+
+    def close(self) -> None:
+        task_supervisor().cancel_owner(self, timeout=2.0)
+        if self._owns_http_transport:
+            self._http_transport.close()
 
     def _normalize_fallbacks(self, raw: Any) -> List[Dict[str, Any]]:
         """
@@ -1331,9 +1339,12 @@ class ApiPresetsController(ApiPresetService):
         timeout = 30 if "openrouter.ai" in final_url.lower() else 15
 
         try:
-            resp = requests.get(final_url, headers=headers, timeout=timeout)
-            status = resp.status_code
-            text = resp.text
+            resp = self._http_transport.get(final_url, headers=headers, timeout=timeout)
+            try:
+                status = resp.status_code
+                text = resp.text
+            finally:
+                resp.close()
 
             success = False
             message = ""
@@ -1380,13 +1391,13 @@ class ApiPresetsController(ApiPresetService):
                 "models": models,
                 "model_infos": model_infos,
             })
-        except requests.Timeout:
+        except httpx.TimeoutException:
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
                 "success": False,
                 "message": f"Connection timeout ({timeout}s)",
             })
-        except requests.ConnectionError:
+        except httpx.TransportError:
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
                 "success": False,

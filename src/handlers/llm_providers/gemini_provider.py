@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-
-import requests
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from main_logger import logger
-from handlers.llm_providers.errors import build_provider_error, coerce_provider_error
+from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
 
@@ -13,11 +12,12 @@ from .base import (
     BaseProvider,
     LLMRequest,
     LLMResponse,
+    StreamCallback,
+    StreamChannel,
     check_request_cancelled,
     normalize_usage_payload,
-    register_cancellable_resource,
-    resolve_requests_timeout,
 )
+from .streaming import StreamAccumulator, iter_json_values, iter_sse_data, track_response_body
 
 
 class GeminiProvider(BaseProvider):
@@ -33,6 +33,17 @@ class GeminiProvider(BaseProvider):
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         return self.generate_request_gemini(req)
+
+    @staticmethod
+    def _request_url(req: LLMRequest, *, stream: bool) -> str:
+        url = str(req.api_url or "")
+        if not stream:
+            return url
+        parsed = urlsplit(url)
+        path = parsed.path.replace(":generateContent", ":streamGenerateContent")
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.setdefault("alt", "sse")
+        return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), parsed.fragment))
 
     def _supports_system_instruction(self, model: str) -> bool:
         m = (model or "").lower()
@@ -206,9 +217,12 @@ class GeminiProvider(BaseProvider):
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                if not caps.get("schema_intents", False):
+                    segment_excl.add("intents")
                 schema = model_cls.gemini_schema_dict(
                     exclude_fields=excl or None,
                     exclude_segment_fields=segment_excl or None,
+                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
                 )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
@@ -232,24 +246,27 @@ class GeminiProvider(BaseProvider):
         import time as _time
 
         _t0 = _time.time()
+        request_url = self._request_url(req, stream=need_stream)
         try:
-            check_request_cancelled(req)
-            response = requests.post(
-                req.api_url,
+            response = self.http_transport.post_json(
+                req,
+                request_url,
                 headers=headers,
-                json=data,
+                payload=data,
                 stream=need_stream,
-                timeout=resolve_requests_timeout(req),
             )
-            register_cancellable_resource(req, response)
-            check_request_cancelled(req)
         except Exception as e:
-            provider_error = coerce_provider_error(self.name, e, url=req.api_url)
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            provider_error = coerce_provider_error(self.name, e, url=request_url)
+            logger.debug(
+                "[GeminiProvider] Transport failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         logger.info(f"[GeminiProvider] Response received in {_time.time()-_t0:.1f}s, status={response.status_code}")
 
         if response.status_code != 200:
+            if need_stream:
+                response.read()
             try:
                 payload = response.json()
             except Exception:
@@ -258,15 +275,16 @@ class GeminiProvider(BaseProvider):
                 self.name,
                 status_code=response.status_code,
                 payload=payload,
-                url=req.api_url,
+                response_headers=response.headers,
+                url=request_url,
             )
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}")
+            logger.debug("[GeminiProvider] HTTP failure delegated to request runner: %s", provider_error.to_console_summary())
             logger.debug(f"[GeminiProvider] raw error payload: {payload}")
             response.close()
             raise provider_error
 
         if need_stream:
-            return self._handle_gemini_stream(response, req, req.stream_cb)
+            return self._handle_gemini_stream(response, req)
 
         try:
             response_data = response.json()
@@ -288,9 +306,6 @@ class GeminiProvider(BaseProvider):
                         text_parts_list.append(t)
 
             response_text = "".join(text_parts_list) or "..."
-            if think_texts:
-                think_block = "<think>" + "\n".join(think_texts) + "</think>"
-                response_text = think_block + "\n" + response_text
 
             result = LLMResponse(
                 text=response_text,
@@ -298,18 +313,21 @@ class GeminiProvider(BaseProvider):
                 model=(response_data.get("modelVersion") if isinstance(response_data, dict) else None) or req.model,
                 provider_name=self.name,
                 raw=response_data if isinstance(response_data, dict) else {},
+                reasoning="\n".join(think_texts) or None,
             )
             response.close()
             return result
         except Exception as e:
-            logger.error(f"Ошибка парсинга Gemini response: {e}", exc_info=True)
             provider_error = build_provider_error(
                 self.name,
                 provider_message=f"Gemini response parse error: {e}",
                 payload=getattr(response, "text", None),
                 url=req.api_url,
             )
-            logger.error(f"[GeminiProvider] {provider_error.to_console_summary()}", exc_info=True)
+            logger.debug(
+                "[GeminiProvider] Parse failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             try:
                 response.close()
             except Exception:
@@ -320,61 +338,81 @@ class GeminiProvider(BaseProvider):
         self,
         response,
         req: LLMRequest,
-        stream_callback: callable = None,
     ) -> LLMResponse:
-        full_response_parts = []
-        json_buffer = ""
-        decoder = json.JSONDecoder()
-        usage = None
+        accumulator = StreamAccumulator(req, provider=self.name, model=req.model)
         response_model = None
+        finish_reason = None
 
         try:
-            for chunk in response.iter_content(chunk_size=None, decode_unicode=True):
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if "text/event-stream" in content_type:
+                def iter_sse_values():
+                    for data in iter_sse_data(track_response_body(req, response.iter_lines())):
+                        if data.strip() == "[DONE]":
+                            continue
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError as e:
+                            raise build_stream_error(
+                                self.name,
+                                payload=data[:500],
+                                provider_message=f"Invalid JSON in Gemini stream: {e}",
+                                code="stream.invalid_json",
+                                url=str(getattr(response, "url", req.api_url) or req.api_url),
+                            ) from e
+
+                values = iter_sse_values()
+            else:
+                values = iter_json_values(track_response_body(req, response.iter_text()))
+
+            for result in values:
                 check_request_cancelled(req)
-                json_buffer += chunk
-                while json_buffer.strip():
-                    try:
-                        result, index = decoder.raw_decode(json_buffer)
-                        if response_model is None and isinstance(result, dict):
-                            response_model = result.get("modelVersion")
-                        usage = usage or self._extract_usage(result)
+                if not isinstance(result, dict):
+                    raise build_stream_error(
+                        self.name,
+                        payload=result,
+                        provider_message="Gemini stream chunk is not a JSON object.",
+                        code="stream.invalid_payload",
+                        url=str(getattr(response, "url", req.api_url) or req.api_url),
+                    )
+                if result.get("error"):
+                    raise build_stream_error(
+                        self.name,
+                        payload=result,
+                        url=str(getattr(response, "url", req.api_url) or req.api_url),
+                    )
+                response_model = response_model or result.get("modelVersion")
+                usage = self._extract_usage(result)
+                if usage is not None:
+                    accumulator.set_usage(usage)
+                candidate = (result.get("candidates") or [{}])[0] or {}
+                finish_reason = candidate.get("finishReason") or finish_reason
+                parts = (candidate.get("content") or {}).get("parts") or []
+                for part in parts if isinstance(parts, list) else []:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("thought"):
+                        accumulator.add_reasoning(part.get("text"))
+                    else:
+                        accumulator.add_text(part.get("text"))
 
-                        parts = (
-                            result.get("candidates", [{}])[0]
-                            .get("content", {})
-                            .get("parts", [])
-                        )
-                        for part in (parts if isinstance(parts, list) else []):
-                            if not isinstance(part, dict):
-                                continue
-                            text = part.get("text", "")
-                            if not text:
-                                continue
-                            is_thought = bool(part.get("thought"))
-                            if stream_callback:
-                                if is_thought:
-                                    stream_callback(f"<think>{text}</think>")
-                                else:
-                                    stream_callback(text)
-                            if not is_thought:
-                                full_response_parts.append(text)
-
-                        json_buffer = json_buffer[index:].lstrip()
-                    except json.JSONDecodeError:
-                        break
-
-            # Стрим успешно дочитан до конца — отдаём накопленный текст.
-            return LLMResponse(
-                text="".join(full_response_parts),
-                usage=usage,
-                model=response_model,
-                provider_name=self.name,
-            )
+            return accumulator.complete(finish_reason=finish_reason, model=response_model)
         except Exception as e:
             # Обрыв/ошибка посреди стрима — не маскируем под успех, кидаем ошибку,
             # чтобы runner ушёл в retry/фоллбэк, а не вернул обрезанный ответ.
-            provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
-            logger.error(f"[GeminiProvider] stream error: {provider_error.to_console_summary()}", exc_info=True)
+            if isinstance(e, json.JSONDecodeError):
+                provider_error = build_stream_error(
+                    self.name,
+                    provider_message=f"Invalid JSON in Gemini stream: {e}",
+                    code="stream.invalid_json",
+                    url=str(getattr(response, "url", req.api_url) or req.api_url),
+                )
+            else:
+                provider_error = coerce_provider_error(self.name, e, url=getattr(response, "url", None))
+            logger.debug(
+                "[GeminiProvider] Stream failure delegated to request runner: %s",
+                provider_error.to_console_summary(),
+            )
             raise provider_error from e
         finally:
             try:

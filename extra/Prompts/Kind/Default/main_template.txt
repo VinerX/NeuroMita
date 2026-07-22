@@ -1,10 +1,13 @@
+support_intents=True
+behavior_state=custom
+[<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
-[<../../Common/None.txt>]
 [<../../Common/Security.txt>]
+[<../../Common/ProjectInfo.txt>]
 [<Main/common.txt>]
 [<Main/main.txt>]
 [<Main/player.txt>]
 [<Context/examplesLong.txt>]
-[<Context/Mita_history.txt>]
-[<Structural/VariablesEffects.txt>]
+[<Context/mita_history.txt>]
+[<../../Structural/behavior_state.script>]

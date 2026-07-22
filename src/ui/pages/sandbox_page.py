@@ -292,6 +292,180 @@ class _SandboxStatusRow(QWidget):
         self._value.setText(elided)
 
 
+class _GameLinkStatusRow(QWidget):
+    """Строка статуса связи с игрой (мод MiSide) в панели «Статус».
+
+    В отличие от _SandboxStatusRow (там переключатель включает подсистему), тут
+    плашка отражает ЖИВОЕ состояние TCP-связи с модом — её двигает
+    update_status_colors() через общий индикатор ``game_status_checkbox``
+    (setChecked). Переключатель же управляет глушением входящих запросов игры
+    (IGNORE_GAME_REQUESTS): ON = принимаем запросы, OFF = заглушено. Уровень
+    глушения (только idle / все события, GAME_BLOCK_LEVEL) живёт в настройках
+    мода — к нему ведёт шестерёнка.
+    """
+
+    _CHIP_STYLE = {
+        "connected":    ("rgba(121,231,140,0.16)", "#79e78c"),
+        "disconnected": ("rgba(255,255,255,0.06)", "rgba(255,255,255,0.45)"),
+    }
+
+    def __init__(self, name_text: str, on_toggle_active, on_settings,
+                 settings_tooltip: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SandboxInfoRow")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        self._connected = False
+        self._ignore = False
+        self._level = "Idle events"
+
+        name = QLabel(name_text)
+        register_if_tr(name, name_text)
+        name.setObjectName("SandboxInfoLabel")
+        name.setMinimumWidth(88)
+        h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._chip = QLabel("")
+        self._chip.setObjectName("SandboxStatusChip")
+        self._chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._value_slot = QWidget()
+        self._value_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._value_slot.setMinimumWidth(64)
+        value_layout = QHBoxLayout(self._value_slot)
+        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setSpacing(4)
+        # Иконка состояния значения — qtawesome, а не эмодзи (единый стиль с
+        # остальным UI, чёткая отрисовка и управляемый цвет).
+        self._value_icon = QLabel()
+        self._value_icon.setFixedSize(14, 14)
+        self._value_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._value_icon.setStyleSheet("background: transparent; border: none;")
+        value_layout.addWidget(self._value_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._value = QLabel("—")
+        self._value.setObjectName("SandboxInfoValue")
+        self._value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._value.setMinimumWidth(0)
+        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        h.addWidget(self._value_slot, 1, Qt.AlignmentFlag.AlignVCenter)
+        self._full_value_text = "—"
+
+        from ui.widgets.toggle_switch import ToggleSwitch
+        self._switch = ToggleSwitch()
+        self._switch.setChecked(True)  # по умолчанию принимаем запросы игры
+        tr_set(self._switch, "Принимать запросы игры / заглушить",
+               "Accept game requests / mute", "setToolTip")
+        self._switch.toggled.connect(lambda checked: on_toggle_active(bool(checked)))
+        h.addWidget(self._switch, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        gear = QPushButton()
+        gear.setObjectName("SandboxInfoEditBtn")
+        gear.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
+        gear.setFixedSize(26, 26)
+        gear.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear.setToolTip(settings_tooltip)
+        gear.clicked.connect(on_settings)
+        h.addWidget(gear, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._apply()
+
+    # ----- state inputs -----
+    def setChecked(self, checked: bool):
+        # update_status_colors() → game_connected: живое состояние TCP-связи.
+        self._connected = bool(checked)
+        self._apply()
+
+    def setText(self, _text: str):
+        # Общий индикатор шлёт для игры только setChecked; текст игнорируем.
+        pass
+
+    def set_mute_state(self, ignore: bool, level: str):
+        """Отразить IGNORE_GAME_REQUESTS/GAME_BLOCK_LEVEL на переключателе и
+        значении, не перевызывая toggled."""
+        self._ignore = bool(ignore)
+        self._level = str(level or "Idle events")
+        self._switch.blockSignals(True)
+        try:
+            self._switch.setChecked(not self._ignore)
+        finally:
+            self._switch.blockSignals(False)
+        self._apply()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_value_text()
+
+    # ----- rendering -----
+    def _apply(self):
+        state = "connected" if self._connected else "disconnected"
+        bg, fg = self._CHIP_STYLE[state]
+        self._chip.setText(_("Активно", "Active") if self._connected else _("Нет связи", "Offline"))
+        self._chip.setToolTip(
+            _("Мод игры подключён", "Game mod connected") if self._connected
+            else _("Мод игры не подключён", "Game mod not connected")
+        )
+        self._chip.setStyleSheet(
+            f"QLabel#SandboxStatusChip {{"
+            f" background-color: {bg}; color: {fg};"
+            f" border: 1px solid {bg}; border-radius: 8px;"
+            f" padding: 1px 9px; font-size: 8pt; font-weight: 700;"
+            f" letter-spacing: 0.3px; }}"
+        )
+        # Значение держим коротким — строка узкая (плашка + переключатель +
+        # шестерёнка уже съедают ширину). Полный смысл — в tooltip. Само по себе
+        # состояние «принимаем/заглушено» дублирует переключатель, поэтому:
+        # принимаем → короткое «Активна»; заглушено → «idle/всё». Иконку слева
+        # рисуем через qtawesome (см. _value_icon), не эмодзи.
+        if self._ignore:
+            lvl = _("всё", "all") if str(self._level).lower().startswith("all") else "idle"
+            self._set_value(
+                lvl,
+                tooltip=_("Запросы игры заглушены ({lvl})", "Game requests muted ({lvl})").format(lvl=lvl),
+                icon="fa6s.volume-xmark",
+                icon_color="#ffd60a",
+            )
+            self._value.setStyleSheet("color: #ffd60a;")
+        else:
+            self._set_value(
+                _("Активна", "Live"),
+                tooltip=_("Принимает запросы игры", "Accepting game requests"),
+                icon="fa6s.tower-broadcast",
+                icon_color="#79e78c",
+            )
+            self._value.setStyleSheet("")
+
+    def _set_value(self, text: str, tooltip: str | None = None,
+                   icon: str | None = None, icon_color: str = "#cfcfe0"):
+        self._full_value_text = text or "—"
+        self._value.setToolTip(tooltip or self._full_value_text)
+        if icon:
+            try:
+                self._value_icon.setPixmap(qta.icon(icon, color=icon_color).pixmap(14, 14))
+                self._value_icon.setToolTip(tooltip or "")
+                self._value_icon.setVisible(True)
+            except Exception:
+                self._value_icon.clear()
+                self._value_icon.setVisible(False)
+        else:
+            self._value_icon.clear()
+            self._value_icon.setVisible(False)
+        self._apply_value_text()
+        QTimer.singleShot(0, self._apply_value_text)
+
+    def _apply_value_text(self):
+        value = self._full_value_text or "—"
+        slot_w = self._value_slot.width() or self._value.width()
+        available = max(24, slot_w - 2)
+        elided = self._value.fontMetrics().elidedText(
+            value, Qt.TextElideMode.ElideRight, available,
+        )
+        self._value.setText(elided)
+
+
 class SandboxPage(QWidget):
     def __init__(
         self,
@@ -331,6 +505,7 @@ class SandboxPage(QWidget):
         self._inspector_rail = None
         self._rail_tab_buttons = {}
         self._character_avatar_label = None
+        self._game_status_row = None
         self._voice_status_row = None
         self._mic_status_row = None
         self._rag_status_row = None
@@ -631,6 +806,28 @@ class SandboxPage(QWidget):
         if row is not None:
             row.set_enabled_state(bool(checked))
 
+    def _on_game_mute_toggle(self, active: bool):
+        """Переключатель строки «Связь с игрой»: ON = принимаем запросы игры,
+        OFF = заглушить полностью (IGNORE_GAME_REQUESTS + уровень All events, то
+        есть глушим ВСЕ внутриигровые события, а не только idle-таймер). Точную
+        настройку уровня всё ещё можно поменять шестерёнкой в настройках мода."""
+        ignore = not bool(active)
+        if ignore:
+            self._view_model.dispatch(SandboxSettingChanged("GAME_BLOCK_LEVEL", "All events"))
+        self._view_model.dispatch(SandboxSettingChanged("IGNORE_GAME_REQUESTS", ignore))
+        if self._game_status_row is not None:
+            level = "All events" if ignore else self._setting("GAME_BLOCK_LEVEL", "Idle events")
+            self._game_status_row.set_mute_state(ignore, level)
+
+    def _game_link_connected(self) -> bool:
+        """Живое состояние TCP-связи с модом (для начального заполнения строки;
+        далее её двигает update_status_colors через game_status_checkbox).
+        Сервисы спрашивает view model — view пассивна."""
+        try:
+            return bool(self._view_model.game_link_connected())
+        except Exception:
+            return False
+
     def _make_toggle_row(self, label_text: str, on_toggle, initial_on: bool,
                          tooltip: str | None = None, with_dot: bool = False,
                          on_settings=None, settings_tooltip: str = ""):
@@ -696,6 +893,13 @@ class SandboxPage(QWidget):
         """Fill the 'what exactly' value on each status row. The dots (active
         state) are driven separately by update_status_colors()."""
         get = self._setting
+
+        if self._game_status_row is not None:
+            self._game_status_row.setChecked(self._game_link_connected())
+            self._game_status_row.set_mute_state(
+                bool(get("IGNORE_GAME_REQUESTS", False)),
+                str(get("GAME_BLOCK_LEVEL", "Idle events") or "Idle events"),
+            )
 
         if self._voice_status_row is not None:
             use_voice = bool(get("USE_VOICEOVER", False))
@@ -1440,6 +1644,24 @@ class SandboxPage(QWidget):
         status_strip, status_layout = self._make_strip(
             _("Статус", "Status"), "fa6s.wave-square", header_action=status_refresh_btn)
 
+        # Связь с игрой — сверху: плашка = живое состояние TCP-связи с модом
+        # (двигает update_status_colors через game_status_checkbox),
+        # переключатель = глушение запросов игры (IGNORE_GAME_REQUESTS),
+        # шестерёнка ведёт в настройки мода (уровень idle / все события).
+        self._game_status_row = _GameLinkStatusRow(
+            _("Связь с игрой", "Game link"),
+            self._on_game_mute_toggle,
+            lambda: self._jump_to_settings("game"),
+            _("Открыть настройки мода (глушение idle / все события)",
+              "Open mod settings (mute idle / all events)"),
+        )
+        try:
+            self._page_actions.register_status_indicator(
+                "game_status_checkbox", self._game_status_row)
+        except Exception:
+            pass
+        status_layout.addWidget(self._game_status_row)
+
         self._voice_status_row = self._make_status_row(
             _("Голос", "Voice"),
             "silero_status_checkbox",
@@ -1644,6 +1866,7 @@ class SandboxPage(QWidget):
             ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
             ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
             ("_show_sys_cb", "SHOW_SYSTEM_MESSAGES", False),
+            ("_show_tokens_cb", "SHOW_TOKEN_INFO", False),
         )
         for attr, key, default in pairs:
             w = getattr(self, attr, None)
@@ -1781,6 +2004,16 @@ class SandboxPage(QWidget):
         sys_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v))
         display_layout.addWidget(sys_cb)
         self._show_sys_cb = sys_cb
+
+        tokens_cb = tr_set(QCheckBox(), "Показывать статистику токенов/стоимости", "Show token/cost stats")
+        tokens_cb.setObjectName("SandboxCaptureToggle")
+        tokens_cb.setChecked(bool(self._setting("SHOW_TOKEN_INFO", False)))
+        tr_set(tokens_cb,
+               "Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. По умолчанию выключена.",
+               "Bottom-of-chat line with tokens, context fill, cache and cost. Off by default.", "setToolTip")
+        tokens_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_TOKEN_INFO", v))
+        display_layout.addWidget(tokens_cb)
+        self._show_tokens_cb = tokens_cb
         layout.addWidget(display_strip)
 
         # ── Контекст сессии ─────────────────────────────────────────────────

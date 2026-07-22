@@ -695,6 +695,51 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
                       'How many RAG chunks to inject into the system prompt.')},
 
+        {'label': _('Гигиена памяти', 'Memory hygiene'), 'type': 'subsection'},
+        {'label': _('Дедуп при добавлении', 'Deduplicate on insert'),
+         'key': 'MEMORY_DEDUP_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'При добавлении нового воспоминания сравнивать его с существующими по лексической '
+             'похожести. Близкий дубль обновляется на месте (обновляется формулировка, поднимается '
+             'приоритет) вместо создания копии. Без LLM, работает и без эмбеддингов.',
+             'When adding a new memory, compare it with existing ones by lexical similarity. A near '
+             'duplicate is updated in place (fresher wording, higher priority) instead of piling up a '
+             'copy. No LLM, works without embeddings.')},
+        {'label': _('Порог дедупа (0.5–1.0)', 'Dedup threshold (0.5–1.0)'),
+         'key': 'MEMORY_DEDUP_THRESHOLD', 'type': 'entry', 'default': 0.8,
+         'validation': self.validate_float_0_to_1,
+         'depends_on': 'MEMORY_DEDUP_ENABLED',
+         'tooltip': _(
+             'Насколько похожими должны быть тексты (Jaccard по токенам), чтобы считать их дублями. '
+             'Выше — строже (только почти идентичные), ниже — агрессивнее склеивает. По умолчанию 0.8.',
+             'How similar two texts must be (token Jaccard) to be treated as duplicates. Higher = '
+             'stricter (near-identical only), lower = merges more aggressively. Default 0.8.')},
+        {'label': _('Фоновая ревизия памяти', 'Background memory maintenance'),
+         'key': 'MEMORY_MAINTENANCE_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Периодически в фоне прочёсывать активную память: склеивать дубли и понижать приоритет '
+             'банальностей. Без LLM. Запускается раз в N сообщений (см. ниже).',
+             'Periodically sweep active memory in the background: merge duplicates and demote trivial '
+             'entries. No LLM. Runs every N messages (see below).')},
+        {'label': _('Интервал ревизии (сообщений)', 'Maintenance interval (messages)'),
+         'key': 'MEMORY_MAINTENANCE_EVERY_MESSAGES', 'type': 'entry', 'default': 20,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'MEMORY_MAINTENANCE_ENABLED',
+         'tooltip': _(
+             'Через сколько ответов Миты запускать фоновую ревизию памяти. По умолчанию 20.',
+             'How many Mita replies between background memory maintenance runs. Default 20.')},
+
+        {'label': _('Беречь полезные при забывании', 'Retrieval-aware forgetting'),
+         'key': 'MEMORY_FORGET_USE_RETRIEVAL', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Когда активная память переполнена, при выборе жертвы учитывать полезность: '
+             'воспоминания, которые RAG уже поднимал в контекст (access_count > 0), забываются '
+             'позже старых, но ни разу не пригодившихся. Приоритет (Low/Normal/High/Critical) '
+             'по-прежнему главнее возраста и полезности.',
+             'When active memory is full, factor usefulness into which memory to forget: entries the '
+             'RAG has already surfaced (access_count > 0) are forgotten after older never-retrieved '
+             'ones. Priority (Low/Normal/High/Critical) still dominates over age and usefulness.')},
+
         {'label': _('TTL-забывание памяти', 'Memory TTL (auto-forget)'), 'type': 'subsection'},
         {'label': _('Включить TTL-забывание', 'Enable memory TTL'),
          'key': 'MEMORY_TTL_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
@@ -879,9 +924,34 @@ def _build_history_compression_config(self, hc_provider_names) -> list:
                       'Хотя бы один свежий слой всегда остаётся нетронутым.',
                       'Layered mode only. How many oldest layers to merge into one on rollup. '
                       'At least one fresh layer always remains untouched.')},
+        {'label': _('Слои: бюджет размера (символов)', 'Layers: size budget (chars)'),
+         'key': 'HISTORY_COMPRESSION_LAYERED_MAX_CHARS', 'type': 'entry',
+         'default': 8000, 'validation': self.validate_positive_integer,
+         'tooltip': _('Только для режима layered. Если суммарный размер всех слоёв в [HISTORY SUMMARY] '
+                      'превышает это число символов, форсируется роллап старых слоёв — даже если их '
+                      'меньше лимита по количеству. 0 = не ограничивать по размеру.',
+                      'Layered mode only. If the total size of all layers in [HISTORY SUMMARY] exceeds '
+                      'this many characters, an old-layer rollup is forced even when the layer count is '
+                      'under its limit. 0 = no size cap.')},
         {'label': _('Провайдер для сжатия', 'Provider for compression'),
          'key': 'HC_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current')},
+
+        {'label': _('Факты в память при сжатии', 'Extract memory facts on compression'),
+         'key': 'MEMORY_SUMMARY_CANDIDATES_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'При каждом сжатии куска истории отдельным запросом просить модель выделить 0-3 факта-'
+             'кандидата в долгую память и добавлять их (через дедуп). Страховка на случай, если модель '
+             'не положила важное в память сама. ВНИМАНИЕ: это доп. LLM-вызов на каждое сжатие.',
+             'On each history-chunk compression, make a separate request asking the model to extract 0-3 '
+             'candidate facts for long-term memory and add them (via dedup). A safety net in case the model '
+             'did not store something important itself. NOTE: this is an extra LLM call per compression.')},
+        {'label': _('Макс. фактов за раз', 'Max facts per compression'),
+         'key': 'MEMORY_SUMMARY_CANDIDATES_MAX', 'type': 'entry', 'default': 3,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'MEMORY_SUMMARY_CANDIDATES_ENABLED',
+         'tooltip': _('Сколько фактов-кандидатов максимум извлекать за одно сжатие (1–5).',
+                      'Maximum number of candidate facts to extract per compression (1–5).')},
 
         {'type': 'end'},
     ]
@@ -1241,6 +1311,15 @@ def _build_keyword_config(self) -> list:
          'tooltip': _('Включает лемматизацию при поиске на русском.',
                       'Enables lemmatization while using search in russian'),
          'depends_on': 'RAG_KEYWORD_SEARCH'},
+        {'label': _('Ru-стеммер (fallback без pymorphy2)', 'Ru stemmer (fallback without pymorphy2)'),
+         'key': 'RAG_RU_STEMMER_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Лёгкий стеммер русского на чистом Python. Включается автоматически, когда pymorphy2 '
+             'недоступен (боевой libs/python без torch): keyword-поиск и FTS начинают находить '
+             'словоформы («играли» → «играть»). Если pymorphy2 есть — используется он.',
+             'Lightweight pure-Python Russian stemmer. Kicks in automatically when pymorphy2 is '
+             'unavailable (game libs/python without torch): keyword search and FTS start matching '
+             'word forms. When pymorphy2 is present, it is used instead.')},
         {'label': _('Вес ключевых слов K5', 'Keyword weight K5'),
          'key': 'RAG_WEIGHT_KEYWORDS', 'type': 'entry', 'default': 0.6,
          'validation': self.validate_float_positive_or_zero,

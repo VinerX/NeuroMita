@@ -62,6 +62,10 @@ class ASRSettingsService(ABC):
     @abstractmethod
     def revision(self) -> int: ...
 
+    def revision_for(self, engine_id: str) -> int:
+        """Revision of settings that affect one ASR component."""
+        return self.revision
+
     @abstractmethod
     def snapshot(self) -> Dict[str, Any]: ...
 
@@ -94,6 +98,10 @@ class InstallableCatalogService(ABC):
     def close(self) -> None:
         """Release asynchronous probes and reject late lifecycle results."""
 
+    def hardware_snapshot(self, *, refresh: bool = False) -> Dict[str, Any]:
+        """Hardware snapshot used by every catalog decision."""
+        return {}
+
     @abstractmethod
     def list_rows(
         self,
@@ -102,7 +110,6 @@ class InstallableCatalogService(ABC):
         refresh: bool = False,
         category: str | None = None,
         status_category: str | None = None,
-        ctx: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]: ...
 
     def get_row(
@@ -111,7 +118,6 @@ class InstallableCatalogService(ABC):
         *,
         include_status: bool = True,
         refresh: bool = False,
-        ctx: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         normalized = str(component_id or "").strip()
         category = normalized.split(":", 1)[0]
@@ -120,7 +126,6 @@ class InstallableCatalogService(ABC):
             refresh=refresh,
             category=category,
             status_category=category,
-            ctx=ctx,
         ):
             metadata = row.get("metadata") if isinstance(row, dict) else None
             if isinstance(metadata, dict) and metadata.get("id") == normalized:
@@ -132,14 +137,12 @@ class InstallableCatalogService(ABC):
         component_id: str,
         *,
         refresh: bool = False,
-        ctx: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         return dict(
             self.get_row(
                 component_id,
                 include_status=True,
                 refresh=refresh,
-                ctx=ctx,
             ).get("status")
             or {}
         )
@@ -149,16 +152,14 @@ class InstallableCatalogService(ABC):
         component_id: str,
         *,
         refresh: bool = False,
-        ctx: Dict[str, Any] | None = None,
     ) -> bool:
-        return bool(self.get_status(component_id, refresh=refresh, ctx=ctx).get("ready"))
+        return bool(self.get_status(component_id, refresh=refresh).get("ready"))
 
     def ready_item_ids(
         self,
         category: str,
         *,
         refresh: bool = False,
-        ctx: Dict[str, Any] | None = None,
     ) -> tuple[str, ...]:
         result: list[str] = []
         for row in self.list_rows(
@@ -166,7 +167,6 @@ class InstallableCatalogService(ABC):
             refresh=refresh,
             category=category,
             status_category=category,
-            ctx=ctx,
         ):
             metadata = row.get("metadata") if isinstance(row, dict) else None
             status = row.get("status") if isinstance(row, dict) else None
@@ -182,7 +182,6 @@ class InstallableCatalogService(ABC):
         refresh: bool = False,
         category: str | None = None,
         status_category: str | None = None,
-        ctx: Dict[str, Any] | None = None,
     ) -> None:
         try:
             callback(
@@ -191,7 +190,6 @@ class InstallableCatalogService(ABC):
                     refresh=refresh,
                     category=category,
                     status_category=status_category,
-                    ctx=ctx,
                 ),
                 None,
             )
@@ -204,10 +202,9 @@ class InstallableCatalogService(ABC):
         callback: Callable[[Dict[str, Any], BaseException | None], None],
         *,
         refresh: bool = False,
-        ctx: Dict[str, Any] | None = None,
     ) -> None:
         try:
-            callback(self.get_status(component_id, refresh=refresh, ctx=ctx), None)
+            callback(self.get_status(component_id, refresh=refresh), None)
         except BaseException as exc:
             callback({}, exc)
 
@@ -218,9 +215,18 @@ class InstallableCatalogService(ABC):
     def install_preview(
         self,
         component_id: str,
-        *,
-        ctx: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def build_operation_plan(
+        self,
+        component_id: str,
+        operation: str,
+        *,
+        clean: bool = False,
+        execution_ctx: Dict[str, Any] | None = None,
+    ) -> Any:
+        """Build a plan from canonical state plus trusted executor context."""
 
     @abstractmethod
     def invalidate(self, component_id: str | None = None) -> None: ...
@@ -436,6 +442,7 @@ class PromptBuildResult:
     messages: List[Dict[str, Any]]
     history_messages: List[Dict[str, Any]]
     user_message: Optional[Dict[str, Any]]
+    support_intents: bool = False
 
 
 class PromptBuilderService(ABC):
@@ -457,6 +464,7 @@ class ChatGenerationRequest:
     image_data: List[Any] = field(default_factory=list)
     image_source: str = ""
     stream_callback: Optional[Any] = None
+    stream_event_callback: Optional[Any] = None
     event_type: str = "chat"
     sender: str = "Player"
     participants: List[str] = field(default_factory=list)
@@ -465,6 +473,7 @@ class ChatGenerationRequest:
     task_uid: Optional[str] = None
     policy: Optional[RequestPolicy] = None
     disable_history_compression: bool = False
+    game_state: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -477,6 +486,9 @@ class ChatGenerationResult:
     think: Optional[str] = None
     structured: Optional[Dict[str, Any]] = None
     message_id: str = ""
+    sample_id: str = ""
+    error: str = ""
+    error_details: Optional[Dict[str, Any]] = None
 
 
 @dataclass

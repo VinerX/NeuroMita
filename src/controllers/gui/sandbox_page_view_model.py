@@ -126,6 +126,19 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             self._controller.refresh_voice_panels()
             self.refresh_status()
 
+    def game_link_connected(self) -> bool:
+        """Живое состояние TCP-связи с модом — для начального заполнения строки
+        «Связь с игрой» (дальше её двигает update_status_colors). Живёт здесь,
+        а не во view: view пассивна и не ходит в сервисы."""
+        try:
+            from core.services import services
+            from services.contracts import GameLinkService
+
+            svc = services().get_optional(GameLinkService)
+            return bool(svc.is_connected()) if svc is not None else False
+        except Exception:
+            return False
+
     def refresh_all(self) -> None:
         self.refresh_selectors()
         self.refresh_status()
@@ -266,6 +279,9 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             return
         self._update(current_model_id=int(preset_id))
         self.refresh_budget()
+        # Смена модели меняет окно контекста и цену → пересчитать счётчик под
+        # чатом (иначе он держит окно/оценку прошлой модели, напр. 32к).
+        get_event_bus().emit(Events.GUI.UPDATE_TOKEN_COUNT)
 
     def _select_prompt(self, prompt_set: str) -> None:
         try:

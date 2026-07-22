@@ -1,11 +1,13 @@
 // response_format_json.script
 // Common structured-output format instruction included by per-character response_structure.txt files.
 //
-// DSL variables used (set by prompt_controller.py before template runs):
+// Runtime variables set by prompt_controller.py before template runs:
 //   SCHEMA_REASONING_ENABLED (bool) — include reasoning field in schema
 //   GRAPH_EXTRACTION_ENABLED (bool) — include entities/relations fields
 //   TOOLS_DESCRIPTION         (str)  — injected via [{TOOLS_DESCRIPTION}] in returned text
 //   CUSTOM_PARAMS_SCHEMA      (str)  — injected via [{CUSTOM_PARAMS_SCHEMA}] in returned text
+// Prompt metadata declared by the selected top-level template:
+//   support_intents           (bool) — expose Unity structured intents
 //
 // Per-character response_structure.txt should include this script via:
 //   [<../../Structural/response_format_json.script>]
@@ -21,7 +23,7 @@ IMPORTANT: Never use double quotes "" inside string values — use «» or '' in
 
 IF SCHEMA_REASONING_ENABLED == True THEN
     SET LOCAL p_toc = """The JSON has three parts (in this order):
-1. reasoning — think before you write (never shown to player)
+1. reasoning — think before you write (never shown to player). Run through this quick checklist in one or two short sentences: where am I and who is near → what changed in the world or the player's message → what do I feel now → what do I do with my body (emotion/animation/action) → what do I say.
 2. segments — your actual reply with positional commands
 3. Global fields — attitude/memory/etc., applied once per response
 """
@@ -49,6 +51,21 @@ ELSE
     SET LOCAL p_schema_game_fields = ""
 ENDIF
 
+IF support_intents == True THEN
+    SET LOCAL p_intents_schema_field = """
+      "intents": [{"type": "intent.type", "payload": {}}],"""
+    SET LOCAL p_intents_rules = """
+- "intents": Optional structured Unity actions. Use this field ONLY for intent types listed in [Unity Intent Contract].
+- Never invent intent types or payload keys. Prefer dedicated fields such as emotions, animations, interactions, clothes, music, face_params and allow_sleep when they already represent the action.
+"""
+    SET LOCAL p_intents_example = """
+      "intents": [{"type": "inventory.collect", "payload": {"object": "Apple"}}],"""
+ELSE
+    SET LOCAL p_intents_schema_field = ""
+    SET LOCAL p_intents_rules = ""
+    SET LOCAL p_intents_example = ""
+ENDIF
+
 SET LOCAL p_schema_fields = """  "segments": [
     {
       "text": "Your text here (REQUIRED)",
@@ -61,15 +78,16 @@ SET LOCAL p_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
+""" + p_intents_schema_field + """
       "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
     }
   ],
-  "attitude_change": <number -5..5>,
-  "boredom_change": <number -5..5>,
-  "stress_change": <number -5..5>,
+  "attitude_change": <number, usually -2..2; 0 is normal>,
+  "boredom_change": <number, usually -2..2; 0 is normal>,
+  "stress_change": <number, usually -2..2; 0 is normal>,
   "memory_add": ["priority|content", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
@@ -91,15 +109,16 @@ SET LOCAL p_graph_schema_fields = """  "segments": [
       "clothes": ["outfit_id"],
       "music": ["music_name"],
       "interactions": ["interaction_target"],
+""" + p_intents_schema_field + """
       "face_params": ["param"],""" + p_schema_game_fields + """
       "target": "character_name",
       "hint": "hint text",
       "allow_sleep": true/false
     }
   ],
-  "attitude_change": <number -5..5>,
-  "boredom_change": <number -5..5>,
-  "stress_change": <number -5..5>,
+  "attitude_change": <number, usually -2..2; 0 is normal>,
+  "boredom_change": <number, usually -2..2; 0 is normal>,
+  "stress_change": <number, usually -2..2; 0 is normal>,
   "memory_add": ["priority|content" or "priority|content|entity1,entity2", ...],
   "memory_update": ["number|priority|content", ...],
   "memory_delete": ["number" or "start-end", ...],
@@ -117,11 +136,14 @@ Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
 - "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+""" + p_intents_rules + """
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
-- attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
+- Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
+- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts. Use islands for the big picture; use ordinary memories for specific facts.
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
@@ -131,9 +153,12 @@ Rules:
 - reminder_delete format: reminder ID number as string, e.g. "3"
 - [Pending Reminders] block in system context shows scheduled reminders. Fire them when due time arrives.
 - custom_fields: Fill ALL declared custom fields every message. Never leave custom_fields empty if it appears in the schema.
-- Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands (emotions, animations, etc.) trigger when that segment's text is displayed.
-- Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
+- Length applies to the TOTAL spoken text across ALL segments, never to a single segment. JSON, commands, emotions, animations and other technical fields do NOT count toward it.
+- Ordinary reply: usually 1-3 segments, about [{REPLY_TARGET_MIN_WORDS}]-[{REPLY_TARGET_MAX_WORDS}] words total.
+- Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
+- A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
+- Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
 - You can use the command "Continue" in commands to say more immediately.
 - Do NOT repeat commands from previous messages."""
 
@@ -143,11 +168,14 @@ Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
 - "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+""" + p_intents_rules + """
 
 Rules:
 - "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
-- attitude_change, boredom_change, stress_change: ALWAYS include. Use decimals in range -5.00 to 5.00. Values above 4 only in emotional moments. Avoid zero unless completely neutral.
+- attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
+- Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
+- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts. Use islands for the big picture; use ordinary memories for specific facts.
 - memory_add format: "priority|content" or "priority|content|entity1,entity2"  priority = low | normal | high | critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
@@ -159,9 +187,12 @@ Rules:
 - custom_fields: Fill ALL declared custom fields every message. Never leave custom_fields empty if it appears in the schema.
 - entities: Notable named entities mentioned this turn. Format: "name:type". Types: person|place|thing|concept. Omit if nothing notable.
 - relations: Relation triples this turn. Format: "subject|predicate|object". Omit if no clear relations.
-- Split your response into segments when different parts need different emotions, animations, or commands.
 - Each segment's commands trigger when that segment's text is displayed.
-- Text limit per response: 25-60 words total across all segments. Maximum 700 characters.
+- Length applies to the TOTAL spoken text across ALL segments, never to a single segment. JSON, commands, emotions, animations and other technical fields do NOT count toward it.
+- Ordinary reply: usually 1-3 segments, about [{REPLY_TARGET_MIN_WORDS}]-[{REPLY_TARGET_MAX_WORDS}] words total.
+- Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
+- A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
+- Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
 - You can use the command "Continue" to say more immediately.
 - Do NOT repeat commands from previous messages."""
 
@@ -173,6 +204,7 @@ Example response:
     {
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
+""" + p_intents_example + """
       "commands": ["Walk to player"]
     },
     {
@@ -195,6 +227,7 @@ Example response:
     {
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
+""" + p_intents_example + """
       "commands": ["Walk to player"]
     },
     {
@@ -217,12 +250,12 @@ tool_call: Use this TOP-LEVEL field when you need to call an external tool (inte
 - NEVER put tool names in the "commands" array. commands is ONLY for character game actions.
 - "segments" is REQUIRED: write a very short phrase (2-5 words): "One moment.", "Let me check.", "Just a sec." — nothing else.
 - ALL required args MUST be filled with actual values from the conversation. Never leave args empty {}.
-- Use ONLY tools listed in the available tools section below.
+- Use ONLY tools listed in the [Available Tools] message.
 - You will receive the tool result in the next message and can then answer fully.
 - You can chain tools: e.g. first call web_search to get URLs, then call web_reader on the best result URL.
 - Omit "tool_call" entirely if no tool is needed.
 
-[{TOOLS_DESCRIPTION}]
+When a physical event reaches you (for example in [Unity Runtime Events]), react to it first with your body or gaze — an emotion, a look, a small animation — and only then with words. Do not narrate the event; respond to it.
 
 Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""

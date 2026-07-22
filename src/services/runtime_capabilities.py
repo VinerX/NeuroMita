@@ -12,12 +12,38 @@ from services.contracts import (
 )
 
 
-# These fields describe effects that can only be executed by the connected
-# game runtime. Keep the policy here so prompt text and structured schemas use
-# the same source of truth.
-REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset(
-    {"animations", "idle_animations", "emotions"}
+# Single source of truth for what each structured-segment field needs in order
+# to take effect. Both the [System State] prompt text and the provider schema
+# exclusion are derived from this one table, so they can never drift apart.
+#
+#   unity_only — only the connected game runtime can execute it (animations,
+#                emotions, movement, outfits, in-world games). Excluded from the
+#                schema and announced as unavailable when the game is not linked.
+#   program    — the NeuroMita program itself can act on it even with no game
+#                (commands routing and music). Never excluded.
+#   shared     — pure content, always valid (text, target, hint).
+UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS = frozenset(
+    {
+        "emotions",
+        "animations",
+        "idle_animations",
+        "movement_modes",
+        "visual_effects",
+        "clothes",
+        "interactions",
+        "face_params",
+        "allow_sleep",
+        "start_game",
+        "end_game",
+        "intents",
+    }
 )
+PROGRAM_STRUCTURED_SEGMENT_FIELDS = frozenset({"commands", "music"})
+SHARED_STRUCTURED_SEGMENT_FIELDS = frozenset({"text", "target", "hint"})
+
+# Back-compat alias: the fields dropped from the schema in remote-only mode are
+# exactly the unity-only ones.
+REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS = UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS
 
 
 def resolve_runtime_capabilities(
@@ -96,6 +122,9 @@ def runtime_capabilities(*, settings: Any | None = None) -> RuntimeCapabilities:
 __all__ = [
     "DefaultRuntimeCapabilitiesService",
     "REMOTE_ONLY_STRUCTURED_SEGMENT_FIELDS",
+    "UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS",
+    "PROGRAM_STRUCTURED_SEGMENT_FIELDS",
+    "SHARED_STRUCTURED_SEGMENT_FIELDS",
     "resolve_runtime_capabilities",
     "runtime_capabilities",
 ]

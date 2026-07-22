@@ -1,0 +1,15 @@
+// Behavior band boundary overrides for the shared Structural/behavior_state.script.
+// Kind's own tiers: attitude distrust 0-29 / neutral 30-59 / warm 60+ (90+ = partnership,
+// described inside RelationHigh); boredom low 0-29; stress calm 0-50, agitated 80+.
+SET BEH_ATT_LOW_MAX = 29
+SET BEH_ATT_HIGH_MIN = 59
+SET BEH_BOR_LOW_MAX = 29
+SET BEH_BOR_HIGH_MIN = 59
+SET BEH_STR_LOW_MAX = 50
+SET BEH_STR_HIGH_MIN = 80
+
+// Общая эрудиция о мире + персональные стартовые память/остров (план 09).
+RUN ../../../Common/world_knowledge.script
+IF SEED_CHARACTER_MEMORIES != False THEN
+	RUN ./character_seed.script
+ENDIF

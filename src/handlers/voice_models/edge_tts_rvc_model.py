@@ -10,16 +10,14 @@ import tempfile
 import threading
 import time
 import traceback
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from .base_model import IVoiceModel
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
-
-if TYPE_CHECKING:
-    from handlers.local_voice_handler import LocalVoice
+from handlers.voice_models.context import VoiceRuntimeContext
 
 from handlers.voice_models.install_plan_helpers import (
     patch_tts_with_rvc_audio,
@@ -303,7 +301,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     EDGE_MODEL_ID = ""
     SILERO_MODEL_ID = ""
 
-    def __init__(self, parent: "LocalVoice", model_id: str):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str):
         super().__init__(parent, model_id)
         self.tts_rvc_module = None
         self.current_tts_rvc = None

@@ -32,6 +32,8 @@ class MitaStatusWidget(QWidget):
         self._dots_timer = None
         self._character_name = ""
         self._watchdog_timer = None
+        if self._chat is not None and hasattr(self._chat, "status_dismissed"):
+            self._chat.status_dismissed.connect(self._on_status_dismissed)
         self.hide()  # this widget itself is never shown
 
     def _get_chat(self):
@@ -52,6 +54,10 @@ class MitaStatusWidget(QWidget):
     def show_thinking(self, payload="Мита"):
         chat = self._get_chat()
         if isinstance(payload, dict):
+            # Фоновые статусы (сжатие/инструмент) НЕ должны затирать висящую
+            # терминальную ошибку — её снимает только новый запрос или крестик.
+            if self.current_state == "error":
+                return
             text = str(payload.get("text") or "").strip()
             state = str(payload.get("state") or "status").strip() or "status"
             if not text:
@@ -72,6 +78,10 @@ class MitaStatusWidget(QWidget):
                 chat.show_status(text, icon)
             return
 
+        # payload — имя персонажа: это старт НОВОГО запроса пользователя. Даже
+        # если висит терминальная ошибка прошлой попытки, новый запрос её
+        # снимает (show_typing прячет крестик и текст ошибки) — иначе ошибка
+        # «залипает» поверх уже удачного ответа (фидбэк).
         character_name = str(payload or "Мита")
         if self.current_state == "thinking" and self._character_name == character_name:
             return
@@ -91,6 +101,8 @@ class MitaStatusWidget(QWidget):
             self._start_dots()
 
     def show_voicing(self, payload=None):
+        if self.current_state == "error":
+            return
         self.current_state = "voicing"
         self._stop_dots()
         self._arm_watchdog()
@@ -133,9 +145,11 @@ class MitaStatusWidget(QWidget):
         chat = self._get_chat()
         if chat:
             icon = qta.icon("fa6s.triangle-exclamation", color="#b74b7d").pixmap(24, 24)
-            chat.show_status(str(error_message), icon)
+            chat.show_status(str(error_message), icon, dismissible=True)
 
     def show_success(self, message=None):
+        if self.current_state == "error":
+            return
         if message is None:
             message = _("Готово", "Done")
         self.current_state = "success"
@@ -152,7 +166,7 @@ class MitaStatusWidget(QWidget):
         pass
 
     def hide_animated(self):
-        if self.current_state == "idle":
+        if self.current_state in ("idle", "error"):
             return
         self.current_state = "idle"
         self._stop_dots()
@@ -160,6 +174,11 @@ class MitaStatusWidget(QWidget):
         chat = self._get_chat()
         if chat:
             chat.hide_typing()
+
+    def _on_status_dismissed(self):
+        self.current_state = "idle"
+        self._stop_dots()
+        self._disarm_watchdog()
 
     def _arm_watchdog(self):
         self._disarm_watchdog()

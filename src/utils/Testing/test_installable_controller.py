@@ -89,6 +89,14 @@ class _InstallCatalog(_CatalogStub):
             raise KeyError(component_id)
         return self.component
 
+    def build_operation_plan(self, component_id, operation, *, clean=False, execution_ctx=None):
+        component = self.require_component(component_id)
+        if operation == "install":
+            return component.build_install_plan(dict(execution_ctx or {}))
+        if operation == "uninstall":
+            return component.build_uninstall_plan(dict(execution_ctx or {}))
+        return component.build_initialize_plan(dict(execution_ctx or {}))
+
 
 class _QueueService(InstallQueueService):
     def __init__(self):

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
-import requests
+import httpx
 
 from utils import _, mask_sensitive
 
@@ -350,6 +350,7 @@ class LLMProviderError(RuntimeError):
     retryable: bool = False
     retry_after_seconds: Optional[float] = None
     code: Optional[str] = None
+    phase: Optional[str] = None
     url: Optional[str] = None
 
     def __post_init__(self):
@@ -379,12 +380,29 @@ class LLMProviderError(RuntimeError):
             parts.append(f"user_message={friendly}")
         if detail:
             parts.append(f"provider_message={detail}")
+        if self.phase:
+            parts.append(f"phase={self.phase}")
         parts.append(f"retryable={'yes' if self.retryable else 'no'}")
         if self.retry_after_seconds is not None:
             parts.append(f"retry_after={self.retry_after_seconds:.3f}s")
         if self.url:
             parts.append(f"url={mask_sensitive(self.url)}")
         return " | ".join(parts)
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serializable provider failure shared by UI and external clients."""
+        return {
+            "kind": "provider_error",
+            "provider": self.provider,
+            "message": self.to_user_message(),
+            "reason": mask_sensitive(_compact_text(self.provider_message)),
+            "status_code": self.status_code,
+            "code": self.code,
+            "phase": self.phase,
+            "retryable": bool(self.retryable),
+            "retry_after_seconds": self.retry_after_seconds,
+            "url": mask_sensitive(self.url) if self.url else None,
+        }
 
 
 def build_provider_error(
@@ -395,6 +413,7 @@ def build_provider_error(
     provider_message: Optional[str] = None,
     response_headers: Any = None,
     code: Optional[str] = None,
+    phase: Optional[str] = None,
     url: Optional[str] = None,
 ) -> LLMProviderError:
     message = _compact_text(provider_message) or _extract_provider_message(payload)
@@ -418,6 +437,7 @@ def build_provider_error(
         retryable=retryable,
         retry_after_seconds=retry_after_seconds,
         code=code,
+        phase=phase,
         url=url,
     )
 
@@ -435,25 +455,64 @@ def build_configuration_error(
     )
 
 
+def build_stream_error(
+    provider: str,
+    *,
+    payload: Any = None,
+    provider_message: Optional[str] = None,
+    code: str = "stream.provider_error",
+    url: Optional[str] = None,
+) -> LLMProviderError:
+    status_code = None
+    source = payload.get("error", payload) if isinstance(payload, dict) else payload
+    if isinstance(source, dict):
+        for key in ("status_code", "status", "http_status", "code"):
+            try:
+                candidate = int(source.get(key))
+            except (TypeError, ValueError):
+                continue
+            if 100 <= candidate <= 599:
+                status_code = candidate
+                break
+    error = build_provider_error(
+        provider,
+        status_code=status_code,
+        payload=payload,
+        provider_message=provider_message,
+        code=code,
+        phase="stream",
+        url=url,
+    )
+    error.retryable = False
+    return error
+
+
 def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] = None) -> LLMProviderError:
     if isinstance(exc, LLMProviderError):
         return exc
 
-    if isinstance(exc, requests.Timeout):
+    transport_error = _find_httpx_transport_error(exc)
+    if isinstance(transport_error, httpx.TimeoutException):
+        phase = _httpx_error_phase(transport_error)
         return LLMProviderError(
             provider=provider,
-            friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
-            provider_message=_compact_text(str(exc)) or "Request timed out",
-            retryable=True,
+            friendly_message=_timeout_friendly_message(phase),
+            provider_message=_compact_text(str(transport_error)) or f"{phase or 'network'} timeout",
+            retryable=phase in {"connect", "pool"},
+            code=f"timeout.{phase or 'network'}",
+            phase=phase,
             url=url,
         )
 
-    if isinstance(exc, requests.ConnectionError):
+    if isinstance(transport_error, httpx.TransportError):
+        phase = _httpx_error_phase(transport_error)
         return LLMProviderError(
             provider=provider,
             friendly_message=_("Ошибка сети - Проверьте интернет и endpoint.", "Network error - Check the internet connection and endpoint."),
-            provider_message=_compact_text(str(exc)) or "Connection failed",
-            retryable=True,
+            provider_message=_compact_text(str(transport_error)) or "Connection failed",
+            retryable=phase in {"connect", "pool"},
+            code=f"network.{phase or 'transport'}",
+            phase=phase,
             url=url,
         )
 
@@ -481,4 +540,51 @@ def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] =
         response_headers=getattr(response, "headers", None),
         code=str(code) if code is not None else None,
         url=url,
+    )
+
+
+def _find_httpx_transport_error(exc: BaseException) -> Optional[httpx.TransportError]:
+    current: Optional[BaseException] = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, httpx.TransportError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _httpx_error_phase(exc: httpx.TransportError) -> Optional[str]:
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.ProxyError)):
+        return "connect"
+    if isinstance(exc, (httpx.WriteTimeout, httpx.WriteError)):
+        return "write"
+    if isinstance(exc, (httpx.ReadTimeout, httpx.ReadError)):
+        return "read"
+    if isinstance(exc, httpx.PoolTimeout):
+        return "pool"
+    if isinstance(exc, httpx.ProtocolError):
+        return "protocol"
+    return None
+
+
+def _timeout_friendly_message(phase: Optional[str]) -> str:
+    if phase == "write":
+        return _(
+            "Ошибка сети - Не удалось отправить запрос вовремя. Возможно, слишком медленная отдача.",
+            "Network error - The request could not be uploaded in time. The upload connection may be too slow.",
+        )
+    if phase == "connect":
+        return _(
+            "Ошибка сети - Не удалось подключиться к API вовремя.",
+            "Network error - Could not connect to the API in time.",
+        )
+    if phase == "pool":
+        return _(
+            "Сетевые соединения заняты другими запросами.",
+            "Network connections are busy with other requests.",
+        )
+    return _(
+        "Ошибка сети - Сервер не ответил вовремя.",
+        "Network error - The server did not respond in time.",
     )

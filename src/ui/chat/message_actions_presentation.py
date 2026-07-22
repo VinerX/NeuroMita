@@ -31,6 +31,16 @@ class RegenerateChatFrom(UiIntent):
 
 
 @dataclass(frozen=True, slots=True)
+class RetryLastChat(UiIntent):
+    """Повторно отправить последнее сообщение пользователя, не дошедшее до ответа.
+
+    При провале генерации ход не пишется в историю, поэтому это именно
+    повторная отправка того же запроса, а не регенерация из истории.
+    """
+    character_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class RateChatSample(UiIntent):
     sample_id: str
     rating: int

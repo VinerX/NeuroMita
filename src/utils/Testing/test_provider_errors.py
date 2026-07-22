@@ -137,6 +137,22 @@ class ProviderErrorMappingTests(unittest.TestCase):
         self.assertIn("регион", err.friendly_message.lower())
         self.assertIn("User location is not supported for the API use.", err.provider_message)
 
+    def test_provider_error_payload_is_safe_and_serializable(self):
+        err = build_provider_error(
+            "gemini",
+            status_code=503,
+            payload={"error": {"message": "Service temporarily unavailable"}},
+            url="https://example.test/generate?key=secret-key",
+        )
+
+        payload = err.to_payload()
+
+        self.assertEqual(payload["kind"], "provider_error")
+        self.assertEqual(payload["provider"], "gemini")
+        self.assertEqual(payload["reason"], "Service temporarily unavailable")
+        self.assertTrue(payload["retryable"])
+        self.assertNotIn("secret-key", payload["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

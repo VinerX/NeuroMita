@@ -1,124 +1,62 @@
 # src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
-import threading
+from enum import Enum
 from typing import List, Dict, Callable, Optional, Any, Mapping
 from abc import ABC, abstractmethod
+
+from main_logger import logger
 
 from .errors import LLMProviderError
 
 
-class RequestCancelledError(TimeoutError):
-    pass
+class StreamChannel(str, Enum):
+    """Канал стрим-чанка.
+
+    Провайдер обязан различать текст ответа и размышления модели: разные
+    модели отдают мысли по-разному (reasoning_content, thought-части Gemini,
+    <think>-теги внутри content), но выше по стеку это один контракт.
+    """
+
+    CONTENT = "content"
+    REASONING = "reasoning"
 
 
-class RequestCancellation:
-    def __init__(self) -> None:
-        self._event = threading.Event()
-        self._lock = threading.Lock()
-        self._callbacks: list[Callable[[], None]] = []
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
-
-    def add_cancel_callback(self, callback: Callable[[], None]) -> None:
-        call_now = False
-        with self._lock:
-            if self._event.is_set():
-                call_now = True
-            else:
-                self._callbacks.append(callback)
-        if call_now:
-            try:
-                callback()
-            except Exception:
-                pass
-
-    def cancel(self) -> None:
-        with self._lock:
-            if self._event.is_set():
-                return
-            self._event.set()
-            callbacks = tuple(self._callbacks)
-            self._callbacks.clear()
-        for callback in callbacks:
-            try:
-                callback()
-            except Exception:
-                pass
-
-    def raise_if_cancelled(self) -> None:
-        if self._event.is_set():
-            raise RequestCancelledError("LLM request was cancelled")
+# Второй аргумент всегда передаётся явно — молчаливого дефолта нет, иначе
+# мысли снова утекут в текст ответа.
+StreamCallback = Callable[[str, StreamChannel], None]
 
 
-def get_request_cancellation(req: "LLMRequest") -> Optional[RequestCancellation]:
-    extra = req.extra or {}
-    token = extra.get("_request_cancellation")
-    return token if isinstance(token, RequestCancellation) else None
+def resolve_content_and_reasoning(
+    content: str, reasoning: str, *, provider_name: str = ""
+) -> tuple[str, str]:
+    """Развести текст ответа и размышления.
 
-
-def check_request_cancelled(req: "LLMRequest") -> None:
-    token = get_request_cancellation(req)
-    if token is not None:
-        token.raise_if_cancelled()
-
-
-def register_cancellable_resource(req: "LLMRequest", resource: Any) -> Any:
-    token = get_request_cancellation(req)
-    close = getattr(resource, "close", None)
-    if token is not None and callable(close):
-        token.add_cancel_callback(close)
-    return resource
-
-
-def resolve_requests_timeout(
-    req: "LLMRequest",
-    *,
-    default_total: float = 240.0,
-) -> tuple[float, float]:
-    extra = req.extra or {}
-
-    try:
-        total = max(
-            1.0,
-            float(extra.get("http_timeout_seconds") or default_total),
+    Норма: content — ответ, reasoning — мысли, и они не смешиваются.
+    Аварийный случай (часть сборок Qwen3): модель кладёт весь ответ в
+    reasoning-канал, оставляя content пустым — тогда мысли и есть ответ,
+    иначе пользователь получит пустоту.
+    """
+    if content:
+        return content, reasoning
+    if reasoning:
+        logger.warning(
+            f"[{provider_name or '?'}] Empty content with non-empty reasoning — "
+            f"using reasoning as the answer (model ignores the content channel)."
         )
-    except (TypeError, ValueError):
-        total = max(1.0, float(default_total))
-
-    try:
-        connect = max(
-            1.0,
-            float(extra.get("http_connect_timeout_seconds") or min(15.0, total)),
-        )
-    except (TypeError, ValueError):
-        connect = min(15.0, total)
-
-    try:
-        read = max(
-            1.0,
-            float(extra.get("http_read_timeout_seconds") or total),
-        )
-    except (TypeError, ValueError):
-        read = total
-
-    return connect, read
+        return reasoning, ""
+    return "", ""
 
 
-def resolve_total_timeout(
-    req: "LLMRequest",
-    *,
-    default_total: float = 240.0,
-) -> float:
-    extra = req.extra or {}
-    try:
-        return max(
-            1.0,
-            float(extra.get("http_timeout_seconds") or default_total),
-        )
-    except (TypeError, ValueError):
-        return max(1.0, float(default_total))
+from .request_lifecycle import (
+    RequestCancellation,
+    RequestCancelledError,
+    check_request_cancelled,
+    get_request_cancellation,
+    record_response_body_started,
+    record_response_headers_received,
+    register_cancellable_resource,
+    resolve_total_timeout,
+)
 
 
 @dataclass
@@ -139,7 +77,8 @@ class LLMRequest:
     capabilities: Dict[str, Any] = field(default_factory=dict)
 
     stream: bool = False
-    stream_cb: Optional[Callable[[str], None]] = None
+    stream_cb: Optional[StreamCallback] = None
+    stream_event_cb: Optional[Callable[[Any], None]] = None
 
     tools_on: bool = False
     tools_mode: str = "native"
@@ -210,7 +149,12 @@ class LLMResponse:
     provider_name: Optional[str] = None
     finish_reason: Optional[str] = None
     error_message: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+
+    # Размышления, которые провайдер отдал отдельным каналом. В text их быть
+    # не должно: text — только то, что видит игрок.
+    reasoning: Optional[str] = None
 
 
 def _to_int(value: Any) -> int:
@@ -282,7 +226,18 @@ class BaseProvider(ABC):
     supports_tools_native: bool = False
     supports_streaming: bool = True
     supports_streaming_with_tools: bool = False
+    supports_stream_usage: bool = False
     uses_custom_messages_handler: bool = False
+
+    def __init__(self, *, http_transport: Any = None) -> None:
+        if http_transport is None:
+            from .http_transport import LLMHttpTransport
+
+            http_transport = LLMHttpTransport()
+            self._owns_http_transport = True
+        else:
+            self._owns_http_transport = False
+        self.http_transport = http_transport
 
     @abstractmethod
     def is_applicable(self, req: LLMRequest) -> bool:
@@ -292,6 +247,24 @@ class BaseProvider(ABC):
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
 
+    def _resolve_content_and_reasoning(self, content: str, reasoning: str) -> tuple[str, str]:
+        return resolve_content_and_reasoning(
+            content, reasoning, provider_name=getattr(self, "name", "")
+        )
+
+    def should_request_stream_usage(self, req: LLMRequest) -> bool:
+        capabilities = req.capabilities or {}
+        capability = capabilities.get("supports_stream_usage")
+        if capability is None:
+            capability = capabilities.get("stream_usage")
+        if capability is not None:
+            return bool(capability)
+        return bool(self.supports_stream_usage)
+
+    def close(self) -> None:
+        if self._owns_http_transport:
+            self.http_transport.close()
+
 
 __all__ = [
     "LLMRequest",
@@ -300,8 +273,12 @@ __all__ = [
     "BaseProvider",
     "RequestCancellation",
     "RequestCancelledError",
+    "StreamCallback",
+    "StreamChannel",
     "check_request_cancelled",
     "get_request_cancellation",
+    "record_response_body_started",
+    "record_response_headers_received",
     "register_cancellable_resource",
     "resolve_total_timeout",
     "normalize_usage_payload",

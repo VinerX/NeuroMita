@@ -141,6 +141,7 @@ class AppWindowBase(QMainWindow):
         self._pending_history_payload = None
         self._token_refresh_pending = False
         self._history_load_inflight = False
+        self._pending_chat_error = None
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         from ui.app_icon import application_icon
@@ -308,9 +309,11 @@ class AppWindowBase(QMainWindow):
                 self,
                 _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
                 _(
-                    "Сбор данных для дообучения был отключён для этого сообщения.\n"
+                    "Не удалось найти сохранённый запрос именно для этого сообщения "
+                    "(сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\n"
                     "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
-                    "Finetune collection was disabled for this message.\n"
+                    "Couldn't find the saved request for this specific message "
+                    "(fine-tune collection may be off, or the record was trimmed by the history limit).\n"
                     "Showing the last saved request — it may not match this message.",
                 ),
                 level="info",
@@ -415,6 +418,10 @@ class AppWindowBase(QMainWindow):
         self.scroll_to_bottom_anim = panel.scroll_to_bottom_anim
         self.mita_status = panel.mita_status
         self._on_chat_ui_ready()
+        if self._pending_chat_error:
+            pending_error = self._pending_chat_error
+            self._pending_chat_error = None
+            self._show_error_slot(pending_error)
 
     def bind_sandbox_page(self, page) -> None:
         """Bind the composed Sandbox surface for legacy controller adapters."""
@@ -457,9 +464,13 @@ class AppWindowBase(QMainWindow):
             self._chat_history_load_pending = False
             QTimer.singleShot(0, self.load_chat_history)
 
-        if self._token_refresh_pending:
-            self._token_refresh_pending = False
-            QTimer.singleShot(0, self.update_token_count)
+        # Первичный показ счётчика токенов, как только чат готов. Раньше апдейт
+        # шёл только если refresh был «отложен» (label ещё не создан) — но при
+        # обычном старте это условие ложно, и счётчик висел на плейсхолдере
+        # «0/0» до первого запроса/смены настроек. Теперь обновляем всегда:
+        # _build_token_stats соберёт базовый контекст на лету (см. warm-путь).
+        self._token_refresh_pending = False
+        QTimer.singleShot(0, self.update_token_count)
         return True
 
     def load_chat_history(self):
@@ -636,16 +647,100 @@ class AppWindowBase(QMainWindow):
 
     @staticmethod
     def _fmt_tokens(n) -> str:
-        """Компактные счётчики токенов: тысячи как «21.3к» / «21.3k» от 10 000.
-        Хвостовой .0 убираем (20041 → «20к», а не «20.0к»)."""
+        """Компактные счётчики токенов: миллионы как «1.5м»/«1.5M» от 1 000 000,
+        тысячи как «21.3к»/«21.3k» от 10 000. Хвостовой .0 убираем (20041 → «20к»,
+        1 000 000 → «1м», а не «1000к»)."""
         try:
             n = int(n)
         except (TypeError, ValueError):
             return str(n)
+        if n >= 1_000_000:
+            s = f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}{_('м', 'M')}"
         if n >= 10000:
             s = f"{n / 1000:.1f}".rstrip("0").rstrip(".")
             return f"{s}{_('к', 'k')}"
         return str(n)
+
+    def _render_token_stats_html(self, stats: dict, max_fallback: int) -> tuple[str, str]:
+        """Строка статистики под чатом → (rich-HTML, tooltip).
+
+        Две смысловые зоны: слева ОЦЕНКА до отправки (заполнение окна контекста
+        с цветной полоской), справа ФАКТ по последнему ответу провайдера
+        (запрос ▸ ответ, Σ). Деньги показываем ТОЛЬКО когда цена известна —
+        на бесплатном тарифе колонок стоимости просто нет (не пишем n/a)."""
+        fmt = self._fmt_tokens
+        MUTED = "#8a8a9a"
+        TEXT = "#cfcfe0"
+        SEP = "#55556a"
+
+        ctx = int(stats.get("estimated_context_tokens") or 0)
+        win = int(stats.get("max_context_tokens") or max_fallback or 32000)
+        pct = (ctx / win * 100.0) if win else 0.0
+
+        # Цвет заполнения окна: зелёный <50%, жёлтый 50–85%, красный >85%.
+        if pct >= 85:
+            fill = "#ff6b61"
+        elif pct >= 50:
+            fill = "#ffd60a"
+        else:
+            fill = "#79e78c"
+        cells = 5
+        filled = 0 if pct <= 0 else max(1, min(cells, int(round(pct / 100.0 * cells))))
+        bar = (
+            f"<span style='color:{fill};font-family:Consolas,monospace'>"
+            f"{'▰' * filled}{'▱' * (cells - filled)}</span>"
+        )
+        pct_str = f"{pct:.1f}%" if 0 < pct < 10 else f"{pct:.0f}%"
+        ctx_color = fill if pct >= 85 else TEXT  # у предела — подсвечиваем числа
+
+        ctx_label = _("Контекст", "Context")
+        ctx_html = (
+            f"<span style='color:{MUTED}'>≈&nbsp;{ctx_label}</span>&nbsp;{bar}&nbsp;"
+            f"<span style='color:{ctx_color}'>{fmt(ctx)}&nbsp;/&nbsp;{fmt(win)}&nbsp;·&nbsp;{pct_str}</span>"
+        )
+        est_cost = stats.get("estimated_input_cost")
+        if est_cost is not None:
+            cur = str(stats.get("estimated_input_cost_currency") or "").strip()
+            ctx_html += f"<span style='color:{MUTED}'>&nbsp;·&nbsp;~{float(est_cost):.4f}&nbsp;{cur}</span>"
+
+        parts = [ctx_html]
+
+        actual_prompt = stats.get("actual_prompt_tokens")
+        actual_completion = stats.get("actual_completion_tokens")
+        actual_cost = stats.get("actual_cost")
+        if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+            ap = int(actual_prompt or 0)
+            ac = int(actual_completion or 0)
+            at = int(stats.get("actual_total_tokens") or (ap + ac))
+            req_label = _("Прошлый запрос", "Last request")
+            req_html = (
+                f"<span style='color:{MUTED}'>{req_label}:</span>&nbsp;"
+                f"<span style='color:{TEXT}'>{fmt(ap)}&nbsp;▸&nbsp;{fmt(ac)}</span>&nbsp;"
+                f"<span style='color:{MUTED}'>(Σ&nbsp;{fmt(at)})</span>"
+            )
+            if actual_cost is not None:
+                acur = str(stats.get("actual_cost_currency") or "").strip()
+                req_html += f"<span style='color:{TEXT}'>&nbsp;·&nbsp;{float(actual_cost):.4f}&nbsp;{acur}</span>"
+            parts.append(req_html)
+
+        sep = f"<span style='color:{SEP}'>&nbsp;&nbsp;│&nbsp;&nbsp;</span>"
+        html = sep.join(parts)
+
+        tip = _(
+            "Слева — оценка ДО отправки: сколько занято окна контекста (≈ — локальная "
+            "прикидка, полоска и % от лимита модели).\n"
+            "Справа — ФАКТ по последнему ответу провайдера: токены запроса ▸ ответа "
+            "(Σ — всего).\n"
+            "Стоимость показывается только если цена модели известна (на бесплатном "
+            "тарифе её нет).",
+            "Left — estimate BEFORE sending: how much of the context window is used "
+            "(≈ local guess; bar and % of the model limit).\n"
+            "Right — ACTUAL provider usage for the last reply: request ▸ reply tokens "
+            "(Σ total).\n"
+            "Cost is shown only when the model price is known (free tier has none).",
+        )
+        return html, tip
 
     def update_token_count(self, event=None):
         # Token UI belongs to the lazy Sandbox page. Backend events may arrive
@@ -676,32 +771,12 @@ class AppWindowBase(QMainWindow):
                     return
 
                 stats = payload.get("stats") or {}
-                fmt = self._fmt_tokens
-                current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
-                max_model_tokens = int(stats.get("max_context_tokens") or payload.get("max_model_tokens") or 32000)
-                est_cost = stats.get("estimated_input_cost")
-                est_currency = str(stats.get("estimated_input_cost_currency") or "")
-                est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.4f} {est_currency}".strip()
-                ctx_pct = int(round(current_context_tokens / max_model_tokens * 100)) if max_model_tokens else 0
-                ctx_str = f"~{ctx_pct}% ({fmt(current_context_tokens)}/{fmt(max_model_tokens)})"
-
-                actual_prompt = stats.get("actual_prompt_tokens")
-                actual_completion = stats.get("actual_completion_tokens")
-                actual_cost = stats.get("actual_cost")
-                actual_currency = str(stats.get("actual_cost_currency") or "")
-                if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
-                    actual_prompt = int(actual_prompt or 0)
-                    actual_completion = int(actual_completion or 0)
-                    actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
-                    actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.4f} {actual_currency}".strip()
-                    text = _("Context: {} | Input: {} | Request: {}/{} (total {}) | Actual: {}",
-                             "Context: {} | Input: {} | Request: {}/{} (total {}) | Actual: {}").format(
-                        ctx_str, est_cost_text, fmt(actual_prompt), fmt(actual_completion), fmt(actual_total), actual_cost_text
-                    )
-                else:
-                    text = _("Context: {} | Input: {}", "Context: {} | Input: {}").format(ctx_str, est_cost_text)
-
-                current_label.setText(text)
+                html, tip = self._render_token_stats_html(
+                    stats, int(payload.get("max_model_tokens") or 32000)
+                )
+                current_label.setTextFormat(Qt.TextFormat.RichText)
+                current_label.setText(html)
+                current_label.setToolTip(tip)
                 current_label.setVisible(True)
                 self.update_debug_info()
 
@@ -910,14 +985,27 @@ class AppWindowBase(QMainWindow):
                 logger.error(f"Error toggling think block {block_id}: {e}")
 
     def _show_thinking_slot(self, character_name):
+        # Старт новой генерации (имя персонажа — строка, а не dict сжатия/инструмента):
+        # снимаем пометку «не дошло» с прошлого упавшего пузыря.
+        if isinstance(character_name, str) and self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.clear_message_errors(self._chat_render_context)
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
             self.mita_status.show_thinking(character_name)
 
     def _show_error_slot(self, error_message: str):
+        self._pending_chat_error = str(error_message or "")
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус ошибки: %s', error_message)
             self.mita_status.show_error(error_message)
+            self._pending_chat_error = None
+        # Помечаем сам пузырь пользователя: «сообщение не дошло» + отправить снова.
+        if self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.mark_last_user_error(
+                self._chat_render_context, str(error_message or "")
+            )
 
     def _hide_status_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
@@ -1270,16 +1358,31 @@ class AppWindowBase(QMainWindow):
         # Think/system messages must not steal it from the following assistant message.
         structured_data = None
         message_id = None
+        sample_id = None
         if role == "assistant":
             structured_data = getattr(self, '_pending_structured_data', None)
             self._pending_structured_data = None
             message_id = getattr(self, '_pending_message_id', None) or None
             self._pending_message_id = None
+            sample_id = getattr(self, '_pending_sample_id', None) or None
+            self._pending_sample_id = None
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        message_renderer.insert_message(self._chat_render_context, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data, message_id=message_id)
+        return message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            insert_at_start,
+            message_time,
+            structured_data=structured_data,
+            message_id=message_id,
+            sample_id=sample_id,
+        )
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
+        if not self._chat_render_context.is_bound:
+            return False
         return message_renderer.insert_message(
             self._chat_render_context,
             role,
@@ -1289,6 +1392,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _on_prepare_stream_signal(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         return message_renderer.prepare_stream_slot(
@@ -1299,6 +1404,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _append_stream_chunk_slot(self, data):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
         return message_renderer.append_stream_chunk_slot(
@@ -1309,6 +1416,8 @@ class AppWindowBase(QMainWindow):
         )
 
     def _finish_stream_slot(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
@@ -1319,7 +1428,13 @@ class AppWindowBase(QMainWindow):
                 structured,
                 stream_id=stream_id,
             )
-        message_renderer.finish_stream_slot(self._chat_render_context, stream_id=stream_id)
+        message_renderer.finish_stream_slot(
+            self._chat_render_context,
+            stream_id=stream_id,
+            message_id=str(payload.get("message_id") or ""),
+            character_id=str(payload.get("character_id") or ""),
+            sample_id=str(payload.get("sample_id") or ""),
+        )
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====
     def _on_asr_install_progress(self, data: dict):
@@ -1400,4 +1515,3 @@ class AppWindowBase(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
-

@@ -15,8 +15,6 @@ class RequestPolicy:
     allow_streaming: bool = True
     echo_to_ui: bool = True
 
-    use_pending_sysinfo: bool = True
-
     system_input_role: str = "system"  # "system" | "event"
     react_level: Optional[int] = None  # 1 | 2 | None
 
@@ -28,7 +26,6 @@ class RequestPolicy:
             "allow_voiceover": bool(self.allow_voiceover),
             "allow_streaming": bool(self.allow_streaming),
             "echo_to_ui": bool(self.echo_to_ui),
-            "use_pending_sysinfo": bool(self.use_pending_sysinfo),
             "system_input_role": str(self.system_input_role or "system"),
             "react_level": self.react_level,
         }
@@ -51,7 +48,6 @@ class RequestPolicy:
             allow_voiceover=bool(d.get("allow_voiceover", True)),
             allow_streaming=bool(d.get("allow_streaming", True)),
             echo_to_ui=bool(d.get("echo_to_ui", True)),
-            use_pending_sysinfo=bool(d.get("use_pending_sysinfo", True)),
             system_input_role=str(d.get("system_input_role") or "system"),
             react_level=rl,
         )
@@ -92,7 +88,6 @@ def resolve_policy(*, model_event_type: str, react_level: Any = None) -> Request
                 allow_voiceover=True,
                 allow_streaming=True,
                 echo_to_ui=True,
-                use_pending_sysinfo=True,
                 system_input_role="event",
             )
 
@@ -104,7 +99,6 @@ def resolve_policy(*, model_event_type: str, react_level: Any = None) -> Request
             allow_voiceover=False,
             allow_streaming=False,
             echo_to_ui=False,
-            use_pending_sysinfo=False,
             system_input_role="system",
         )
 
@@ -115,7 +109,6 @@ def resolve_policy(*, model_event_type: str, react_level: Any = None) -> Request
         allow_voiceover=True,
         allow_streaming=True,
         echo_to_ui=True,
-        use_pending_sysinfo=True,
         system_input_role="system",
         react_level=None,
     )

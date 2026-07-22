@@ -63,7 +63,7 @@ class SandboxPageController:
         self.select_character(character_id, reload_data=False)
         from controllers.gui.character_settings_logic import open_db_viewer
 
-        open_db_viewer(host)
+        open_db_viewer(host, character_id=str(character_id or "").strip() or None)
 
     def settings_snapshot(self, keys: Iterable[str] | None = None) -> dict[str, Any]:
         return dict(self._settings().snapshot(keys) or {})

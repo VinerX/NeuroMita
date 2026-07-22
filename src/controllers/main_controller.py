@@ -604,6 +604,12 @@ class MainController:
             if callable(close_gui):
                 shutdown_step("GUI controllers", close_gui)
 
+        api_presets_controller = getattr(self, "api_presets_controller", None)
+        if api_presets_controller is not None:
+            close_api_presets = getattr(api_presets_controller, "close", None)
+            if callable(close_api_presets):
+                shutdown_step("API preset HTTP transport", close_api_presets)
+
         model_controller = getattr(self, "model_controller", None)
         if model_controller is not None:
             shutdown_model = getattr(model_controller, "shutdown", None)

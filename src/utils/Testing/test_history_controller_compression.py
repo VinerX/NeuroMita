@@ -81,6 +81,8 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         controller._background_compression_inflight = set()
         controller._background_compression_timers = {}
         controller._compression_cooldowns = {}
+        controller._messages_since_last_maintenance = {}
+        controller._maintenance_inflight = set()
         cfg = dict(settings or {})
         controller._get_setting = lambda key, default=None: cfg.get(key, default)
         controller._sanitize_history_for_llm = lambda _character, messages: messages

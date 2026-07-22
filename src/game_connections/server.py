@@ -54,7 +54,6 @@ class ChatServerNew:
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
-        self.pending_sysinfo: Dict[str, list[str]] = {}
 
         self.ignore_game_requests: bool = False
         self.game_block_level: str = 'Idle events'

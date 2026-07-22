@@ -71,7 +71,7 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
 
         def failing_insert(cursor, *, msg, is_active, dedupe=True):
             call_counter["count"] += 1
-            if call_counter["count"] == 2:
+            if call_counter["count"] == 1:
                 raise RuntimeError("boom")
             return original_insert(cursor, msg=msg, is_active=is_active, dedupe=dedupe)
 
@@ -111,6 +111,136 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         loaded = self.hm.load_history()
         self.assertEqual([m["content"] for m in loaded["messages"]], ["after-1", "after-2"])
         self.assertEqual(loaded["variables"]["state"], "after")
+
+    def test_save_history_preserves_existing_row_identity(self) -> None:
+        self.hm.save_history(
+            {
+                "messages": [{"role": "user", "content": "before", "time": "01.01.2026 10:00:00"}],
+                "variables": {},
+            }
+        )
+        before = self.hm.load_history()["messages"][0]
+
+        self.hm.save_history(
+            {
+                "messages": [{**before, "content": "after"}],
+                "variables": {},
+            }
+        )
+        after = self.hm.load_history()["messages"][0]
+
+        self.assertEqual(after["_history_row_id"], before["_history_row_id"])
+        self.assertEqual(after["content"], "after")
+
+    def test_updating_message_content_invalidates_stale_embeddings(self) -> None:
+        self.hm.save_history(
+            {
+                "messages": [
+                    {"role": "user", "content": "before", "time": "01.01.2026 10:00:00"}
+                ],
+                "variables": {},
+            }
+        )
+        message = self.hm.load_history()["messages"][0]
+        row_id = message["_history_row_id"]
+        self._sqlite.execute(
+            "UPDATE history SET embedding = ? WHERE id = ?",
+            (b"legacy", row_id),
+        )
+        self._sqlite.execute(
+            """
+            INSERT INTO embeddings
+                (source_table, source_id, character_id, model_name, dimensions, embedding)
+            VALUES ('history', ?, ?, 'test-model', 1, ?)
+            """,
+            (row_id, self.hm.storage_key, b"vector"),
+        )
+        self._sqlite.execute(
+            """
+            INSERT INTO sentence_embeddings
+                (source_table, source_id, character_id, model_name, sentence_idx, embedding)
+            VALUES ('history', ?, ?, 'test-model', 0, ?)
+            """,
+            (row_id, self.hm.storage_key, b"sentence"),
+        )
+        self._sqlite.commit()
+
+        executor = _FakeExecutor()
+        with patch.object(HistoryManager, "_get_embed_executor", return_value=executor):
+            self.hm.save_history(
+                {
+                    "messages": [{**message, "content": "after"}],
+                    "variables": {},
+                }
+            )
+
+        cursor = self._sqlite.cursor()
+        cursor.execute("SELECT embedding FROM history WHERE id = ?", (row_id,))
+        self.assertIsNone(cursor.fetchone()[0])
+        for table in ("embeddings", "sentence_embeddings"):
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE source_table='history' AND source_id = ?",
+                (row_id,),
+            )
+            self.assertEqual(cursor.fetchone()[0], 0)
+        self.assertEqual(len(executor.jobs), 1)
+
+    def test_prepending_new_message_does_not_steal_existing_row_identity(self) -> None:
+        self.hm.save_history(
+            {
+                "messages": [
+                    {"role": "user", "content": "first", "time": "01.01.2026 10:00:00"},
+                    {"role": "assistant", "content": "second", "time": "01.01.2026 10:00:01"},
+                ],
+                "variables": {},
+            }
+        )
+        existing = self.hm.load_history()["messages"]
+        first_id = existing[0]["_history_row_id"]
+        second_id = existing[1]["_history_row_id"]
+
+        self.hm.save_history(
+            {
+                "messages": [
+                    {"role": "system", "content": "prepended", "time": "01.01.2026 09:59:59"},
+                    existing[0],
+                    existing[1],
+                ],
+                "variables": {},
+            }
+        )
+        loaded = self.hm.load_history()["messages"]
+
+        by_content = {message["content"]: message["_history_row_id"] for message in loaded}
+        self.assertEqual(by_content["first"], first_id)
+        self.assertEqual(by_content["second"], second_id)
+        self.assertNotIn(by_content["prepended"], {first_id, second_id})
+
+    def test_snapshot_reconcile_soft_deletes_stale_rows_without_reembedding_unchanged_rows(self) -> None:
+        self.hm.save_history(
+            {
+                "messages": [
+                    {"role": "user", "content": "keep", "time": "01.01.2026 10:00:00"},
+                    {"role": "assistant", "content": "remove", "time": "01.01.2026 10:00:01"},
+                ],
+                "variables": {},
+            }
+        )
+        before = self.hm.load_history()["messages"]
+        stale_row_id = before[1]["_history_row_id"]
+        executor = _FakeExecutor()
+
+        with patch.object(HistoryManager, "_get_embed_executor", return_value=executor):
+            self.hm.save_history({"messages": [before[0]], "variables": {}})
+
+        self.assertEqual(executor.jobs, [])
+        self.assertEqual([m["content"] for m in self.hm.load_history()["messages"]], ["keep"])
+        cursor = self._sqlite.cursor()
+        cursor.execute(
+            "SELECT is_active, is_deleted FROM history WHERE id = ?",
+            (stale_row_id,),
+        )
+        self.assertEqual(cursor.fetchone(), (0, 1))
 
     def test_embeddings_are_scheduled_only_after_successful_commit(self) -> None:
         self.hm.rag = _FakeRag()

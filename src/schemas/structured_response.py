@@ -24,6 +24,19 @@ from typing import Any, Dict, List, Optional, Union, Type
 
 from pydantic import BaseModel, Field, model_validator, create_model
 
+try:
+    from main_logger import logger
+except Exception:  # pragma: no cover - schema must import even without logging
+    import logging
+
+    logger = logging.getLogger("structured_response")
+
+
+# Python-side version of the structured-response protocol. The model never
+# supplies this value; it is stamped into the outgoing result dict so downstream
+# consumers (Unity, debug dumps) can tell which response contract produced it.
+RESPONSE_PROTOCOL_VERSION = 2
+
 def _to_gemini_schema(schema: dict) -> dict:
     """
     Convert a Pydantic-generated JSON Schema to a Gemini-compatible responseSchema.
@@ -106,6 +119,51 @@ def _remove_schema_properties(schema: dict, field_names: set[str]) -> None:
         schema["required"] = [name for name in required if name not in field_names]
 
 
+def _require_fields(schema: dict, field_names) -> None:
+    """Mark existing top-level fields required in the provider schema.
+
+    Для полей-решений (например ``secret_exposed`` у персонажей с нераскрытым
+    секретом) опциональность в constrained decoding означает «модель молча
+    пропускает поле»: gemini-flash-lite писал реплику-раскрытие, не выставляя
+    флаг. Required + nullable заставляет модель принять решение каждый ход.
+    Pydantic-модель при этом остаётся терпимой — правило только для схемы,
+    уходящей провайдеру.
+    """
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return
+    required = schema.get("required")
+    if not isinstance(required, list):
+        required = []
+    for name in field_names or ():
+        if name in props and name not in required:
+            required.append(name)
+    schema["required"] = required
+
+
+def _require_segments(schema: dict) -> None:
+    """Mark ``segments`` required in the schema we send to the provider.
+
+    Внутри Pydantic поле остаётся необязательным: парсер намеренно терпим и
+    вытягивает ответ даже из кривого JSON (см. structured_response_parser).
+    Но провайдеру схему нужно отдавать строгую — иначе constrained decoding
+    разрешает ответ вообще без реплики: модель отдаёт только глобальные поля
+    (attitude_change, memory_*, secret_exposed), сегментов нет, и весь ход
+    уходит в фолбэк-текст. Наблюдалось на gemini-flash-lite при раскрытии
+    секрета: JSON с secret_exposed=true и без segments.
+    """
+    if not isinstance(schema.get("properties"), dict):
+        return
+    if "segments" not in schema["properties"]:
+        return
+    required = schema.get("required")
+    if not isinstance(required, list):
+        required = []
+    if "segments" not in required:
+        required.append("segments")
+    schema["required"] = required
+
+
 def _remove_segment_schema_properties(schema: dict, field_names: set[str]) -> None:
     """Remove selected fields from the nested ``segments.items`` schema."""
     if not field_names:
@@ -163,6 +221,19 @@ class ToolCall(BaseModel):
         return self
 
 
+class SegmentIntent(BaseModel):
+    """A structured intent Unity can consume (inventory, interactions, ...).
+
+    The field is exposed to the model only when the selected DSL main template
+    declares ``support_intents=True`` and a connected Unity runtime can execute
+    it. The parser still accepts and forwards valid intent objects for protocol
+    compatibility.
+    """
+
+    type: str = Field(..., description="Intent type identifier, e.g. 'inventory.collect'")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Intent payload object")
+
+
 class ResponseSegment(BaseModel):
     """A single segment of the response tied to a chunk of displayed text."""
 
@@ -179,11 +250,57 @@ class ResponseSegment(BaseModel):
     interactions: List[str] = Field(default_factory=list, description="Interaction commands")
     face_params: List[str] = Field(default_factory=list, description="Face parameter adjustments")
 
+    # Structured intents forwarded to Unity. Exposed by DSL opt-in and sanitized
+    # here so malformed entries are dropped instead of failing the whole reply.
+    intents: List[SegmentIntent] = Field(default_factory=list, description="Structured intents (type + payload) forwarded to the game runtime")
+
     start_game: Optional[str] = Field(default=None, description="Game ID to start")
     end_game: Optional[str] = Field(default=None, description="Game ID to end")
     target: Optional[str] = Field(default=None, description="Target character name for this segment")
     hint: Optional[str] = Field(default=None, description="Hint text to display")
     allow_sleep: Optional[bool] = Field(default=None, description="Whether to allow sleep")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_intents(cls, data: Any) -> Any:
+        """Drop malformed intents before per-item validation.
+
+        Rules: ``type`` must be a non-empty string; ``payload`` defaults to an
+        empty dict when missing/invalid. There is no fixed intent-type registry
+        here — any well-formed ``type`` passes through unchanged for the game
+        runtime to interpret. Only malformed entries are discarded (with a
+        warning) instead of failing the whole response.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("intents")
+        if raw is None:
+            return data
+        if not isinstance(raw, list):
+            raw = [raw]
+
+        cleaned: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                logger.warning("[StructuredResponse] Dropping non-object intent: %r", item)
+                continue
+            itype = item.get("type")
+            if not isinstance(itype, str) or not itype.strip():
+                logger.warning("[StructuredResponse] Dropping intent with invalid type: %r", item)
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                if payload is not None:
+                    logger.warning(
+                        "[StructuredResponse] Intent '%s' payload is not an object, defaulting to {}",
+                        itype,
+                    )
+                payload = {}
+            cleaned.append({"type": itype.strip(), "payload": payload})
+
+        data = dict(data)
+        data["intents"] = cleaned
+        return data
 
 
 class StructuredResponse(BaseModel):
@@ -268,6 +385,22 @@ class StructuredResponse(BaseModel):
         )
     )
 
+    @model_validator(mode="after")
+    def _sanitize_stat_changes(self) -> "StructuredResponse":
+        """Soft-guard stat deltas: non-finite (NaN/inf) values collapse to 0.
+
+        Per-turn magnitude limits and total-range clamping are applied later,
+        at the point where the change is committed to character state, so the
+        configured scale stays the single source of truth.
+        """
+        import math
+
+        for field in ("attitude_change", "boredom_change", "stress_change"):
+            value = getattr(self, field, 0.0)
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                setattr(self, field, 0.0)
+        return self
+
     def full_text(self) -> str:
         """Concatenate all segment texts (for TTS and history)."""
         parts = [seg.text for seg in self.segments if seg.text is not None]
@@ -279,6 +412,7 @@ class StructuredResponse(BaseModel):
         exclude_fields: set = None,
         custom_params: list = None,
         exclude_segment_fields: set = None,
+        require_fields: set = None,
     ) -> dict:
         """
         Return the ``response_format`` payload for the OpenAI API.
@@ -310,6 +444,9 @@ class StructuredResponse(BaseModel):
             _remove_schema_properties(schema, exclude_fields)
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
+        _require_segments(schema)
+        if require_fields:
+            _require_fields(schema, require_fields)
         return {
             "type": "json_schema",
             "json_schema": {
@@ -330,6 +467,7 @@ class StructuredResponse(BaseModel):
         exclude_fields: set = None,
         custom_params: list = None,
         exclude_segment_fields: set = None,
+        require_fields: set = None,
     ) -> dict:
         """
         Return a Gemini-compatible responseSchema dict.
@@ -380,6 +518,9 @@ class StructuredResponse(BaseModel):
             _remove_schema_properties(schema, exclude_fields)
         if exclude_segment_fields:
             _remove_segment_schema_properties(schema, exclude_segment_fields)
+        _require_segments(schema)
+        if require_fields:
+            _require_fields(schema, require_fields)
         return schema
 
 

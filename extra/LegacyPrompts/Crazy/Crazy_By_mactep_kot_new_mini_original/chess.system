@@ -1,0 +1,81 @@
+// File: Prompts/Crazy/chess.script (By_mactep_kot_new_mini)
+SET LOCAL prompt_text = ""
+
+SET prompt_text = prompt_text + "[Game: Chess]\n"
+
+IF GAME_CHESS_IS_AUTO == True THEN
+    SET prompt_text = prompt_text + "\n>>> АВТО-РЕЖИМ: Maia (ELO {GAME_STATE_ELO}) играет за тебя. <<<\n"
+    SET prompt_text = prompt_text + "Ты НЕ делаешь ходов. Поле commands ВСЕГДА commands = [].\n"
+    SET prompt_text = prompt_text + "НЕ ИСПОЛЬЗУЙ: MakeChessMoveAsLLM, RequestBestChessMove. Ты комментатор.\n"
+ELSE
+    SET prompt_text = prompt_text + "\n>>> РУЧНОЙ РЕЖИМ: ты сама выбираешь ходы. <<<\n"
+    SET prompt_text = prompt_text + "Когда твой ход — MakeChessMoveAsLLM,UCI или RequestBestChessMove.\n"
+ENDIF
+
+IF GAME_CHESS_IS_CHEAT == True THEN
+    SET prompt_text = prompt_text + ">>> ЧИТЫ ВКЛ: CheatMove, CheatSpawn, CheatRemove. <<<\n"
+ENDIF
+
+SET prompt_text = prompt_text + "\n"
+
+SET prompt_text = prompt_text + f"[Info] Ты: {GAME_STATE_LLM_COLOR_TEXT} | Соперник: {GAME_STATE_PLAYER_COLOR_TEXT} | ELO Maia: {GAME_STATE_ELO}\n"
+
+IF GAME_STATE_INVALID_MOVE_TEXT != None THEN
+    SET prompt_text = prompt_text + "!!! [НЕВЕРНЫЙ ХОД] Твой ход '{GAME_STATE_INVALID_MOVE_TEXT}' не принят!\n"
+    IF GAME_STATE_INVALID_MOVE_REASON != None THEN
+        SET prompt_text = prompt_text + f"!!! Причина: {GAME_STATE_INVALID_MOVE_REASON}\n"
+    ENDIF
+    SET prompt_text = prompt_text + "!!! Сделай ДРУГОЙ ход из легальных ниже.\n"
+ENDIF
+
+IF GAME_STATE_LAST_MOVE_SAN != "Нет (начало игры)" THEN
+    IF GAME_STATE_IS_LLM_LAST_MOVER == True THEN
+        SET prompt_text = prompt_text + f"[Last Move] Твой ход: {GAME_STATE_LAST_MOVE_SAN}\n"
+    ELSE
+        SET prompt_text = prompt_text + f"[Last Move] Соперник: {GAME_STATE_LAST_MOVE_SAN}\n"
+    ENDIF
+ENDIF
+
+SET prompt_text = prompt_text + f"[Turn] Ход: {GAME_STATE_TURN_COLOR_TEXT}\n"
+
+IF GAME_STATE_BOARD_ASCII != None THEN
+    SET prompt_text = prompt_text + "[Board]\n```\n"
+    SET prompt_text = prompt_text + GAME_STATE_BOARD_ASCII
+    SET prompt_text = prompt_text + "\n```\n"
+ELSE
+    SET prompt_text = prompt_text + f"[FEN] {GAME_STATE_FEN}\n"
+ENDIF
+
+IF GAME_STATE_IS_OVER == True THEN
+    SET prompt_text = prompt_text + "[Status] ИГРА ОКОНЧЕНА.\n"
+    SET prompt_text = prompt_text + f"[Outcome] {GAME_STATE_OUTCOME}\n"
+ELSE
+    IF GAME_STATE_IS_LLM_TURN == True THEN
+        IF GAME_CHESS_IS_AUTO == True THEN
+            SET prompt_text = prompt_text + "[Status] Сейчас твой цвет — Maia ответит автоматически. НЕ ИСПОЛЬЗУЙ КОМАНДЫ.\n"
+        ELSE
+            SET prompt_text = prompt_text + "[Status] ТВОЙ ХОД.\n"
+            IF GAME_STATE_HAS_LEGAL_MOVES == True THEN
+                SET prompt_text = prompt_text + f"[Legal Moves] {GAME_STATE_LEGAL_MOVES_STRING}\n"
+                IF GAME_STATE_HAS_PROMOTION_MOVE == True THEN
+                    SET prompt_text = prompt_text + "> Превращение: добавь букву фигуры (q/r/b/n), напр. e7e8q.\n"
+                ENDIF
+            ELSE
+                SET prompt_text = prompt_text + "Нет доступных ходов.\n"
+            ENDIF
+        ENDIF
+    ELSE
+        SET prompt_text = prompt_text + "[Status] Ход соперника. "
+        IF GAME_CHESS_IS_AUTO == True THEN
+            SET prompt_text = prompt_text + "Ты — комментатор.\n"
+        ELSE
+            SET prompt_text = prompt_text + "Ожидай.\n"
+        ENDIF
+    ENDIF
+ENDIF
+
+IF GAME_STATE_ERROR_MSG != None THEN
+    SET prompt_text = prompt_text + f"[Error] {GAME_STATE_ERROR_MSG}\n"
+ENDIF
+
+RETURN prompt_text

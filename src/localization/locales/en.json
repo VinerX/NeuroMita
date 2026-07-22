@@ -505,6 +505,11 @@
   "Генерация векторов...": "Generating embeddings...",
   "Генерация речи хорошего качества. Требует больше ресурсов, чем быстрые модели.": "Speech generation with good quality. Requires more resources than fast models.",
   "Генерация…": "Generating…",
+  "Глубина размышлений": "Reasoning effort",
+  "Reasoning в схеме": "Schema reasoning",
+  "Поле reasoning в JSON-схеме: модель думает вслух перед заполнением полей. Локальным моделям помогает, большим хостовым только тратит токены.": "A reasoning field in the JSON schema: the model thinks aloud before filling the rest. Helps local models; on large hosted models it only burns tokens.",
+  "Работает только при включённом режиме мышления и у провайдеров, понимающих reasoning_effort (LM Studio, llama.cpp).": "Requires thinking mode, and only applies to providers that understand reasoning_effort (LM Studio, llama.cpp).",
+  "Глубина размышлений для локальных моделей через LM Studio / llama.cpp (Gemma 4, Qwen3): чем выше, тем длиннее мысли и больше потраченных токенов.\nРаботает только при включённом \"Режиме размышлений\" и только у провайдеров, которые понимают reasoning_effort — на остальных параметр не отправляется.": "Reasoning depth for local models via LM Studio / llama.cpp (Gemma 4, Qwen3): the higher, the longer the thoughts and the more tokens spent.\nRequires \"Enable thinking mode\", and only applies to providers that understand reasoning_effort — it is not sent to the others.",
   "Главная": "Home",
   "Главная статья": "Home article",
   "Глобально разрешает запуск встроенных игр (шахматы, морской бой).": "Globally allows launching built-in games (Chess, Sea Battle).",
@@ -1600,7 +1605,7 @@
   "Сбалансировано": "Balanced",
   "Сбор данных": "Data collection",
   "Сбор данных для дообучения": "Fine-tune data collection",
-  "Сбор данных для дообучения был отключён для этого сообщения.\nПоказан последний сохранённый запрос — он может не совпадать с этим сообщением.": "Finetune collection was disabled for this message.\nShowing the last saved request — it may not match this message.",
+  "Не удалось найти сохранённый запрос именно для этого сообщения (сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\nПоказан последний сохранённый запрос — он может не совпадать с этим сообщением.": "Couldn't find the saved request for this specific message (fine-tune collection may be off, or the record was trimmed by the history limit).\nShowing the last saved request — it may not match this message.",
   "Сбор и экспорт данных для дообучения модели. Параметры отладки переехали в Песочницу → Отладка.": "Collect and export data for fine-tuning. Debug parameters moved to Sandbox → Debug.",
   "Сборщик не инициализирован": "Collector not initialized",
   "Сбросить": "Reset",
@@ -2004,5 +2009,7 @@
   "✕ Отменить": "✕ Cancel",
   "✗ Ошибка": "✗ Error",
   "⟳ Обновить": "⟳ Update",
-  "📦 Пакеты: ": "📦 Packages: "
+  "📦 Пакеты: ": "📦 Packages: ",
+  "Предупреждение о совместимости": "Compatibility warning",
+  "Всё равно установить": "Install anyway"
 }

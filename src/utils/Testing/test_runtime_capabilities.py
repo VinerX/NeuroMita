@@ -51,8 +51,24 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
         self.assertTrue(snapshot.remote_only)
         self.assertEqual(
             snapshot.structured_segment_exclude_fields,
-            ("animations", "emotions", "idle_animations"),
+            (
+                "allow_sleep",
+                "animations",
+                "clothes",
+                "emotions",
+                "end_game",
+                "face_params",
+                "idle_animations",
+                "intents",
+                "interactions",
+                "movement_modes",
+                "start_game",
+                "visual_effects",
+            ),
         )
+        # commands and music are program-level; intents require a connected Unity runtime.
+        for kept in ("commands", "music", "text"):
+            self.assertNotIn(kept, snapshot.structured_segment_exclude_fields)
 
     def test_debug_setting_is_applied_by_the_shared_service(self):
         settings = _Settings(enabled=False)

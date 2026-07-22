@@ -24,6 +24,7 @@ class FileASRSettingsService(ASRSettingsService):
         self._path = str(path or settings_path("asr_settings.json", create_parent=True))
         self._lock = threading.RLock()
         self._revision = 0
+        self._engine_revisions: dict[str, int] = {}
         self._subscribers: list[Callable[[ASRSettingsChange], None]] = []
         self._data: dict[str, Any] = {
             "engine": "google",
@@ -38,6 +39,11 @@ class FileASRSettingsService(ASRSettingsService):
     def revision(self) -> int:
         with self._lock:
             return self._revision
+
+    def revision_for(self, engine_id: str) -> int:
+        normalized = str(engine_id or "").strip()
+        with self._lock:
+            return self._engine_revisions.get(normalized, 0)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -156,6 +162,7 @@ class FileASRSettingsService(ASRSettingsService):
         os.replace(tmp_path, self._path)
         self._data = updated
         self._revision += 1
+        self._engine_revisions[engine_id] = self._engine_revisions.get(engine_id, 0) + 1
         return ASRSettingsChange(self._revision, engine_id, kind)
 
     def _notify(self, change: ASRSettingsChange) -> None:

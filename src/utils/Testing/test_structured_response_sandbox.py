@@ -14,11 +14,26 @@ from controllers.model_controller import ModelController
 from schemas.structured_response import StructuredResponse
 from services.game_link_service import DisconnectedGameLinkService
 from services.contracts import GameLinkService
+from services.runtime_capabilities import UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS
 from core.services import services
 
 
 class StructuredResponseSandboxTests(unittest.TestCase):
-    _EXCLUDED = {"animations", "idle_animations", "emotions"}
+    _EXCLUDED = set(UNITY_ONLY_STRUCTURED_SEGMENT_FIELDS)
+
+    def setUp(self) -> None:
+        # Реестр сервисов глобальный: заглушка «игра отключена» иначе утекает в
+        # соседние тест-модули и роняет их (PromptController подавляет Unity-блоки
+        # при connected=False). Запоминаем и возвращаем прежнего владельца.
+        self._previous_game_link = services().get_optional(GameLinkService)
+
+    def tearDown(self) -> None:
+        if self._previous_game_link is None:
+            services().unregister(GameLinkService)
+        else:
+            services().register(
+                GameLinkService, self._previous_game_link, replace=True
+            )
 
     def test_debug_setting_can_disable_remote_exclusions(self):
         controller = object.__new__(ModelController)

@@ -6,7 +6,11 @@ import re
 from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
-from schemas.structured_response import StructuredResponse, ResponseSegment
+from schemas.structured_response import (
+    RESPONSE_PROTOCOL_VERSION,
+    StructuredResponse,
+    ResponseSegment,
+)
 
 
 class StructuredResponseParseError(Exception):
@@ -533,6 +537,11 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
             seg_dict["interactions"] = seg.interactions
         if seg.face_params:
             seg_dict["face_params"] = seg.face_params
+        if seg.intents:
+            seg_dict["intents"] = [
+                {"type": intent.type, "payload": dict(intent.payload or {})}
+                for intent in seg.intents
+            ]
         if seg.start_game is not None:
             seg_dict["start_game"] = seg.start_game
         if seg.end_game is not None:
@@ -562,6 +571,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         custom_fields_out = None
 
     return {
+        "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
         "segments": segments_out,
         "response": response.full_text(),
         "attitude_change": response.attitude_change,
@@ -574,6 +584,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "reminder_add": list(response.reminder_add or []),
         "reminder_delete": list(response.reminder_delete or []),
         "tool_call": tool_call_dict,
+        "secret_exposed": response.secret_exposed,
         "custom_fields": custom_fields_out,
         "entities": list(response.entities) if response.entities else [],
         "relations": list(response.relations) if response.relations else [],

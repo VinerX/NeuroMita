@@ -7,7 +7,7 @@ import hashlib
 import json
 from datetime import datetime
 import subprocess
-from typing import TYPE_CHECKING, Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
 from main_logger import logger
@@ -16,18 +16,21 @@ from core.services import services
 from services.contracts import GuiInteractionService
 from utils import getTranslationVariant as _, get_character_voice_paths
 
-from core.backends import BackendKind, get_backend_service
+from core.backends import BackendKind
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
-
-if TYPE_CHECKING:
-    from handlers.local_voice_handler import LocalVoice
+from handlers.voice_models.context import VoiceRuntimeContext
 
 from handlers.voice_models.install_plan_helpers import (
     patch_tts_with_rvc_audio,
     pip_uninstall_action,
     rvc_python_compat_error,
     warning_action,
+)
+from installables.compatibility_specs import (
+    FISH_CUDA_COMPATIBILITY,
+    FISH_SPEECH_BACKEND,
+    FISH_TRITON_COMPATIBILITY,
 )
 
 
@@ -61,7 +64,7 @@ class FishSpeechInstallSpec:
 
     @classmethod
     def required_backend(cls, model_id: str, ctx: dict) -> BackendKind:
-        return get_backend_service().preferred_torch_kind(ctx)
+        return BackendKind(FISH_SPEECH_BACKEND)
 
     @classmethod
     def _libs_path_abs(cls, pip_installer) -> str:
@@ -457,22 +460,6 @@ except Exception:
                 already_installed_status=_("Уже установлено", "Already installed")
             )
 
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-        gpu = str((ctx or {}).get("gpu_vendor") or "")
-
-        if gpu != "NVIDIA" and not allow_unsupported:
-            return InstallPlan(
-                actions=[
-                    InstallAction(
-                        type="call",
-                        description=_("Требуется NVIDIA GPU", "NVIDIA GPU required"),
-                        progress=5,
-                        fn=lambda **_k: False
-                    )
-                ],
-                already_installed=False,
-            )
-
         actions: list[InstallAction] = []
 
         pkgs = [
@@ -580,7 +567,7 @@ except Exception:
 
 
 class FishSpeechModel(IVoiceModel):
-    def __init__(self, parent: 'LocalVoice', model_id: str, rvc_handler: Optional[IVoiceModel] = None):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str, rvc_handler: Optional[IVoiceModel] = None):
         super().__init__(parent, model_id)
         self.fish_speech_module = None
         self.current_fish_speech = None
@@ -593,6 +580,7 @@ class FishSpeechModel(IVoiceModel):
             "min_vram": 3, "rec_vram": 6,
             "gpu_vendor": ["NVIDIA"],
             "size_gb": 5,
+            "compatibility": FISH_CUDA_COMPATIBILITY,
             "languages": ["Russian", "English", "Chinese", "German", "Japanese", "French", "Korean", "Arabic", "Dutch", "Italian", "Polish", "Portuguese"],
             "intents": [_("Качество", "Quality"), _("Сбалансировано", "Balanced")],
             "description": _(
@@ -601,7 +589,8 @@ class FishSpeechModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "device", "label": _("Устройство", "Device"), "type": "combobox",
-                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "options": {"values": ["cuda"], "default": "cuda"},
+                 "locked": True,
                  "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
                  "options": {"values": ["False", "True"], "default": "False"},
@@ -632,16 +621,17 @@ class FishSpeechModel(IVoiceModel):
             "min_vram": 3, "rec_vram": 6,
             "gpu_vendor": ["NVIDIA"],
             "size_gb": 10,
-            "rtx30plus": True,
+            "compatibility": FISH_TRITON_COMPATIBILITY,
             "languages": ["Russian", "English", "Chinese", "German", "Japanese", "French", "Korean", "Arabic", "Dutch", "Italian", "Polish", "Portuguese"],
-            "intents": [_("Качество", "Quality"), _("RTX 30+/40+", "RTX 30+/40+")],
+            "intents": [_("Качество", "Quality"), "Triton"],
             "description": _(
                 "Версия Fish Speech, скомпилированная под GPU. Требует больше места и современную NVIDIA.",
                 "Fish Speech version compiled for GPU. Needs more disk space and a modern NVIDIA GPU."
             ),
             "settings": [
                 {"key": "device", "label": _("Устройство", "Device"), "type": "combobox",
-                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "options": {"values": ["cuda"], "default": "cuda"},
+                 "locked": True,
                  "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
                  "options": {"values": ["True", "False"], "default": "False"},
@@ -673,7 +663,7 @@ class FishSpeechModel(IVoiceModel):
             "min_vram": 5, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA"],
             "size_gb": 15,
-            "rtx30plus": True,
+            "compatibility": FISH_TRITON_COMPATIBILITY,
             "languages": ["Russian", "English", "Chinese", "German", "Japanese", "French", "Korean", "Arabic", "Dutch", "Italian", "Polish", "Portuguese"],
             "intents": [_("Качество", "Quality"), _("Конверсия голоса", "Voice conversion")],
             "description": _(
@@ -682,7 +672,8 @@ class FishSpeechModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "fsprvc_fsp_device", "label": _("[FSP] Устройство", "[FSP] Device"), "type": "combobox",
-                 "options": {"values": ["cuda", "cpu", "mps"], "default": "cuda"},
+                 "options": {"values": ["cuda"], "default": "cuda"},
+                 "locked": True,
                  "help": _("Устройство для части Fish Speech+.", "Device for Fish Speech+ part.")},
                 {"key": "fsprvc_fsp_half", "label": _("[FSP] Half-precision", "[FSP] Half-precision"), "type": "combobox",
                  "options": {"values": ["True", "False"], "default": "False"},

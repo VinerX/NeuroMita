@@ -71,6 +71,40 @@ def _configure_torch_compile_cache(runtime_root: str) -> None:
 
 def _activate_site_directories(paths: list[str]) -> list[str]:
     """Activate `.pth` entries while preserving managed-layer precedence."""
+    declared_by_root: dict[str, list[str]] = {}
+    predeclared: list[str] = []
+    for root in paths:
+        declared: list[str] = []
+        try:
+            pth_files = sorted(Path(root).glob("*.pth"))
+        except OSError:
+            pth_files = []
+        for pth_file in pth_files:
+            try:
+                lines = pth_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+            except OSError:
+                continue
+            for raw_line in lines:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith(("import ", "import\t")):
+                    continue
+                candidate = os.path.abspath(os.path.join(root, line))
+                if os.path.isdir(candidate) and candidate not in declared:
+                    declared.append(candidate)
+        declared_by_root[root] = declared
+        predeclared.extend(declared)
+
+    preseeded = list(dict.fromkeys([*paths, *predeclared]))
+    preseeded_normalized = {
+        os.path.normcase(os.path.abspath(path)) for path in preseeded
+    }
+    sys.path[:] = [
+        path
+        for path in sys.path
+        if os.path.normcase(os.path.abspath(path)) not in preseeded_normalized
+    ]
+    sys.path[:0] = preseeded
+
     activated_by_root: list[tuple[str, list[str]]] = []
 
     for root in paths:
@@ -87,7 +121,7 @@ def _activate_site_directories(paths: list[str]) -> list[str]:
                 continue
             additions.append(os.path.abspath(path))
             before.add(normalized)
-        activated_by_root.append((root, additions))
+        activated_by_root.append((root, [*declared_by_root.get(root, ()), *additions]))
 
     managed_paths: list[str] = []
     managed_normalized: set[str] = set()

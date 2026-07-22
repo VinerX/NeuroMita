@@ -26,13 +26,15 @@ class EditorMixin:
 
     def _read_generation_overrides(self) -> dict:
         """Read current generation overrides state from the UI widgets."""
-        from PyQt6.QtWidgets import QCheckBox
+        from PyQt6.QtWidgets import QCheckBox, QComboBox
         widgets = getattr(self.view, 'gen_override_widgets', {})
         overrides = {}
         for key, (chk, val_widget) in widgets.items():
             enabled = chk.isChecked()
             if isinstance(val_widget, QCheckBox):
                 value = val_widget.isChecked()
+            elif isinstance(val_widget, QComboBox):
+                value = val_widget.currentText()
             else:
                 value = val_widget.text() if hasattr(val_widget, 'text') else ""
             overrides[key] = {"enabled": enabled, "value": value}
@@ -40,17 +42,21 @@ class EditorMixin:
 
     def _write_generation_overrides(self, overrides: dict) -> None:
         """Populate generation overrides UI widgets from a dict."""
-        from PyQt6.QtWidgets import QCheckBox
+        from PyQt6.QtWidgets import QCheckBox, QComboBox
         widgets = getattr(self.view, 'gen_override_widgets', {})
         for key, (chk, val_widget) in widgets.items():
             spec = (overrides or {}).get(key) or {}
             enabled = bool(spec.get("enabled", False))
             chk.setChecked(enabled)
+            val_widget.setEnabled(enabled)
             if isinstance(val_widget, QCheckBox):
-                val_widget.setEnabled(enabled)
                 val_widget.setChecked(bool(spec.get("value", False)))
+            elif isinstance(val_widget, QComboBox):
+                raw = str(spec.get("value") or "").strip()
+                # Чужое/пустое значение не должно молча сбрасывать список на первый пункт.
+                if raw and val_widget.findText(raw) >= 0:
+                    val_widget.setCurrentText(raw)
             else:
-                val_widget.setEnabled(enabled)
                 raw = spec.get("value")
                 val_widget.setText(str(raw) if raw is not None else "")
 

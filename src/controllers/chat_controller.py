@@ -8,6 +8,7 @@ import datetime
 from typing import Any
 
 from main_logger import logger
+from handlers.llm_providers.base import StreamChannel
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
@@ -19,6 +20,9 @@ from services.contracts import (
     ChatGenerationResult,
     GenerationService,
 )
+from services.llm_stream import LLMStreamEvent, LLMStreamEventType
+from services.stream_presentation import TextDeltaCoalescer
+from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
 
 
 class StructuredJsonStreamFilter:
@@ -27,27 +31,48 @@ class StructuredJsonStreamFilter:
 
     When the model returns a JSON object (structured output), the raw stream
     contains JSON syntax rather than readable text.  This filter extracts the
-    values of every ``"text"`` key found in the stream (i.e. segment texts)
-    and emits them in order, discarding all JSON scaffolding.
+    values of the ``"text"`` keys (segment texts, → канал "content") and of the
+    top-level ``"reasoning"`` key (→ канал "reasoning"), emitting them in order
+    and discarding all JSON scaffolding.
+
+    Разведение по каналам важно для локальных моделей: при json_schema-грамматике
+    (LM Studio + Gemma 4) нативный reasoning_content подавляется, и мысли модель
+    кладёт прямо в поле ``reasoning`` JSON-ответа. Без этого фильтра они бы либо
+    утекли в текст, либо не показались в окне размышлений вовсе.
 
     Activated lazily: call feed() with the first chunk; if it starts with ``{``
     the filter enters JSON mode automatically.
     """
 
-    KEY = '"text"'
+    # (канал, ключ) — ищем ближайший из ключей при сканировании.
+    _KEYS = (("reasoning", '"reasoning"'), ("content", '"text"'))
 
     def __init__(self):
         self._buf = ""
         self._state = "SCANNING"   # SCANNING | EXPECT_COLON | EXPECT_QUOTE | IN_VALUE
         self._escape_next = False
         self._json_mode = False    # set True once we see the leading {
+        self._pending_channel = "content"
+        self._current_channel = "content"
 
     def is_json_mode(self) -> bool:
         return self._json_mode
 
-    def feed(self, chunk: str) -> str:
-        """Return text to display; returns raw chunk unchanged if not in JSON mode."""
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        """Вернуть список (channel, text): channel — "content" или "reasoning".
+
+        Если поток не JSON — весь чанк отдаётся как ("content", chunk) без изменений.
+        """
         self._buf += str(chunk)
+        out: list[tuple[str, str]] = []
+
+        def emit(channel: str, text: str) -> None:
+            if not text:
+                return
+            if out and out[-1][0] == channel:
+                out[-1] = (channel, out[-1][1] + text)
+            else:
+                out.append((channel, text))
 
         # Detect JSON mode on the very first non-empty feed.
         # Some models wrap JSON in a markdown code fence (```json\n{...}\n```).
@@ -55,36 +80,45 @@ class StructuredJsonStreamFilter:
         if not self._json_mode:
             stripped = self._buf.lstrip()
             if not stripped:
-                return ""
+                return out
             # Skip optional ```json / ``` fence header
             if stripped.startswith("```"):
                 newline = stripped.find("\n")
                 if newline == -1:
                     # Haven't received the newline yet — wait for more data
-                    return ""
+                    return out
                 stripped = stripped[newline + 1:].lstrip()
                 if not stripped:
-                    return ""
+                    return out
             if stripped[0] == "{":
                 # Advance _buf to the actual '{' so the parser starts correctly
                 self._buf = stripped
                 self._json_mode = True
             else:
                 # Not JSON — pass through unchanged
-                out = self._buf
+                emit("content", self._buf)
                 self._buf = ""
                 return out
 
-        out = ""
+        max_key = max(len(key) for _, key in self._KEYS)
         while self._buf:
             if self._state == "SCANNING":
-                pos = self._buf.find(self.KEY)
-                if pos == -1:
-                    keep = len(self.KEY) - 1
+                best_pos = -1
+                best_channel = "content"
+                best_key = ""
+                for channel, key in self._KEYS:
+                    pos = self._buf.find(key)
+                    if pos != -1 and (best_pos == -1 or pos < best_pos):
+                        best_pos = pos
+                        best_channel = channel
+                        best_key = key
+                if best_pos == -1:
+                    keep = max_key - 1
                     if len(self._buf) > keep:
                         self._buf = self._buf[-keep:]
                     break
-                self._buf = self._buf[pos + len(self.KEY):]
+                self._buf = self._buf[best_pos + len(best_key):]
+                self._pending_channel = best_channel
                 self._state = "EXPECT_COLON"
 
             elif self._state == "EXPECT_COLON":
@@ -105,6 +139,7 @@ class StructuredJsonStreamFilter:
                     self._buf = self._buf[1:]
                     self._state = "IN_VALUE"
                     self._escape_next = False
+                    self._current_channel = self._pending_channel
                 else:
                     self._state = "SCANNING"
 
@@ -114,17 +149,17 @@ class StructuredJsonStreamFilter:
                 if self._escape_next:
                     self._escape_next = False
                     if c == "n":
-                        out += "\n"
+                        emit(self._current_channel, "\n")
                     elif c == "t":
-                        out += "\t"
+                        emit(self._current_channel, "\t")
                     elif c in ('"', "\\", "/"):
-                        out += c
+                        emit(self._current_channel, c)
                     elif c == "u":
                         if len(self._buf) >= 4:
                             try:
-                                out += chr(int(self._buf[:4], 16))
+                                emit(self._current_channel, chr(int(self._buf[:4], 16)))
                             except ValueError:
-                                out += "\\u" + self._buf[:4]
+                                emit(self._current_channel, "\\u" + self._buf[:4])
                             self._buf = self._buf[4:]
                         else:
                             # Not enough chars yet — restore state and wait for next chunk
@@ -135,91 +170,25 @@ class StructuredJsonStreamFilter:
                     self._escape_next = True
                 elif c == '"':
                     self._state = "SCANNING"
-                    if out and not out.endswith(" "):
-                        out += " "
+                    # Пробел-разделитель между текстами сегментов (не для reasoning —
+                    # оно одно). last content-кусок мог оканчиваться не пробелом.
+                    if self._current_channel == "content":
+                        emit("content", " ")
                 else:
-                    out += c
+                    emit(self._current_channel, c)
         return out
 
-    def flush_visible(self) -> str:
+    def flush_visible(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
         if self._state == "IN_VALUE":
             tail = self._buf
             self._buf = ""
             self._state = "SCANNING"
-            return tail
-        self._buf = ""
-        return ""
-
-
-class ThinkTagStreamFilter:
-    """
-    Streaming-time filter that prevents <think>...</think> from being echoed
-    into the normal assistant stream output. Accumulates think text separately.
-
-    Note: simple exact-tag matching (<think>, </think>) to keep it predictable.
-    """
-    START = "<think>"
-    END = "</think>"
-
-    def __init__(self, on_think_chunk=None):
-        self._buf = ""
-        self._in_think = False
-        self._think_parts: list[str] = []
-        self._keep_tail = max(len(self.START), len(self.END)) - 1
-        self.on_think_chunk = on_think_chunk
-
-    def feed(self, chunk: str) -> str:
-        if not chunk:
-            return ""
-        self._buf += str(chunk)
-        out = ""
-
-        while True:
-            if self._in_think:
-                idx = self._buf.find(self.END)
-                if idx == -1:
-                    if len(self._buf) > self._keep_tail:
-                        new_think = self._buf[:-self._keep_tail]
-                        self._think_parts.append(new_think)
-                        if self.on_think_chunk:
-                            self.on_think_chunk(new_think)
-                        self._buf = self._buf[-self._keep_tail:]
-                    break
-                new_think = self._buf[:idx]
-                self._think_parts.append(new_think)
-                if self.on_think_chunk:
-                    self.on_think_chunk(new_think)
-                self._buf = self._buf[idx + len(self.END):]
-                self._in_think = False
-            else:
-                idx = self._buf.find(self.START)
-                if idx == -1:
-                    if len(self._buf) > self._keep_tail:
-                        out += self._buf[:-self._keep_tail]
-                        self._buf = self._buf[-self._keep_tail:]
-                    break
-                out += self._buf[:idx]
-                self._buf = self._buf[idx + len(self.START):]
-                self._in_think = True
-
-        return out
-
-    def flush_visible(self) -> str:
-        """Вызывается в конце потока для сбора оставшегося видимого текста."""
-        if self._in_think:
-            if self._buf:
-                self._think_parts.append(self._buf)
-            self._in_think = False
+            if tail:
+                out.append((self._current_channel, tail))
+        else:
             self._buf = ""
-            return ""
-        # Сбрасываем буфер видимых символов, удержанных для поиска границ тегов
-        tail = self._buf
-        self._buf = ""
-        return tail
-
-    def think_text(self) -> str:
-        """Возвращает весь собранный текст размышлений."""
-        return "".join(self._think_parts).strip()
+        return out
 
 
 class ChatController:
@@ -234,6 +203,9 @@ class ChatController:
 
         self.staged_images = []
         self._owned_staged_images = set()
+        # Последний UI-запрос пользователя — для «отправить снова», когда
+        # генерация упала и ход не попал в историю (write_turn не вызывался).
+        self._last_ui_request: dict | None = None
         self._subscribe_to_events()
 
     @property
@@ -261,6 +233,7 @@ class ChatController:
         self.event_bus.subscribe(Events.Chat.DELETE_MESSAGES_FROM, self._on_delete_messages_from, weak=False)
         self.event_bus.subscribe(Events.Chat.REGENERATE, self._on_regenerate, weak=False)
         self.event_bus.subscribe(Events.Chat.REGENERATE_FROM, self._on_regenerate_from, weak=False)
+        self.event_bus.subscribe(Events.Chat.RETRY_LAST, self._on_retry_last, weak=False)
         self.event_bus.subscribe(Events.Chat.INSERT_SYSTEM_MESSAGE, self._on_insert_system_message, weak=False)
         self.event_bus.subscribe(Events.Chat.SAVE_SNAPSHOT, self._on_save_snapshot, weak=False)
         self.event_bus.subscribe(Events.Chat.LOAD_SNAPSHOT, self._on_load_snapshot, weak=False)
@@ -319,6 +292,7 @@ class ChatController:
         origin_message_id: str | None = None,
         policy: dict | None = None,
         images_shown: bool = False,
+        game_state: dict | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -331,6 +305,8 @@ class ChatController:
         stream_started = False
         stream_finished = False
         stream_current_role = None
+        presentation_lock = threading.RLock()
+        stream_coalescer = None
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
@@ -346,64 +322,94 @@ class ChatController:
 
             show_think_in_gui = bool(self.settings.get("SHOW_THINK_IN_GUI", False))
             effective_character_name = self._resolve_character_name(character_id)
-            
+
+            def append_stream_chunk(text: str) -> None:
+                if not text:
+                    return
+                with presentation_lock:
+                    role = stream_current_role or "assistant"
+                    self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
+                        "stream_id": stream_id,
+                        "chunk": text,
+                        "role": role,
+                    }, delivery=EventDelivery.ORDERED)
+
+            stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
+
             def on_think_chunk(think_chunk: str):
                 nonlocal stream_current_role, stream_started
+                if not think_chunk:
+                    return
+                if stream_coalescer is None:
+                    return
                 if stream_current_role != "think":
-                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                        "stream_id": stream_id,
-                        "character_id": character_id or "",
-                        "character_name": effective_character_name,
-                        "speaker_name": effective_character_name,
-                        "role": "think",
-                    }, delivery=EventDelivery.ORDERED)
-                    stream_current_role = "think"
-                    stream_started = True
+                    stream_coalescer.flush()
+                with presentation_lock:
+                    if stream_current_role != "think":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "think",
+                        }, delivery=EventDelivery.ORDERED)
+                        stream_current_role = "think"
+                        stream_started = True
+                stream_coalescer.push(think_chunk)
 
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
-                    "stream_id": stream_id,
-                    "chunk": think_chunk,
-                    "role": "think",
-                }, delivery=EventDelivery.ORDERED)
-
-            stream_think_filter = ThinkTagStreamFilter(on_think_chunk=on_think_chunk if show_think_in_gui else None) if is_streaming else None
-            stream_json_filter  = StructuredJsonStreamFilter() if is_streaming else None
+            stream_json_filter = StructuredJsonStreamFilter() if is_streaming else None
 
             def _emit_visible_assistant(text: str):
                 nonlocal stream_current_role, stream_started
                 if not text:
                     return
+                if stream_coalescer is None:
+                    return
                 if stream_current_role != "assistant":
-                    self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
-                        "stream_id": stream_id,
-                        "character_id": character_id or "",
-                        "character_name": effective_character_name,
-                        "speaker_name": effective_character_name,
-                        "role": "assistant",
-                    }, delivery=EventDelivery.ORDERED)
-                    stream_current_role = "assistant"
-                    stream_started = True
-                self.event_bus.emit(Events.GUI.APPEND_STREAM_CHUNK_UI, {
-                    "stream_id": stream_id,
-                    "chunk": text,
-                    "role": "assistant",
-                }, delivery=EventDelivery.ORDERED)
+                    stream_coalescer.flush()
+                with presentation_lock:
+                    if stream_current_role != "assistant":
+                        self.event_bus.emit(Events.GUI.PREPARE_STREAM_UI, {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "character_name": effective_character_name,
+                            "speaker_name": effective_character_name,
+                            "role": "assistant",
+                        }, delivery=EventDelivery.ORDERED)
+                        stream_current_role = "assistant"
+                        stream_started = True
+                stream_coalescer.push(text)
 
-            def stream_callback_handler(chunk: str):
+            def flush_stream_output() -> None:
+                if stream_coalescer is not None:
+                    stream_coalescer.flush()
+
+            def _route_filtered(pieces) -> None:
+                # Фильтр разводит JSON-поток на каналы: reasoning → окно размышлений
+                # (если включено), content → основной пузырь ответа.
+                for channel, piece in pieces:
+                    if channel == "reasoning":
+                        if show_think_in_gui:
+                            on_think_chunk(piece)
+                    else:
+                        _emit_visible_assistant(piece)
+
+            def stream_event_handler(event: LLMStreamEvent):
                 if not eff_policy.echo_to_ui:
                     return
-                chunk_str = str(chunk or "")
-                if not chunk_str:
+                if event.type is LLMStreamEventType.REASONING_DELTA:
+                    if show_think_in_gui:
+                        on_think_chunk(event.text)
                     return
-
-                # 1. Filter out <think> blocks (emits them separately)
-                visible = stream_think_filter.feed(chunk_str) if stream_think_filter else chunk_str
-
-                # 2. Filter JSON structured output → emit only segment text
-                if visible and stream_json_filter is not None:
-                    visible = stream_json_filter.feed(visible)
-
-                _emit_visible_assistant(visible)
+                if event.type is not LLMStreamEventType.TEXT_DELTA:
+                    return
+                visible = event.text
+                if not visible:
+                    return
+                if stream_json_filter is not None:
+                    _route_filtered(stream_json_filter.feed(visible))
+                else:
+                    _emit_visible_assistant(visible)
 
             if image_data:
                 prepared: list[bytes] = []
@@ -460,7 +466,7 @@ class ChatController:
                     system_input=system_input,
                     image_data=list(image_data or []),
                     image_source=image_source,
-                    stream_callback=stream_callback_handler if is_streaming else None,
+                    stream_event_callback=stream_event_handler if is_streaming else None,
                     event_type=effective_event_type,
                     sender=sender,
                     participants=list(participants or []),
@@ -468,6 +474,7 @@ class ChatController:
                     origin_message_id=origin_message_id,
                     task_uid=task_uid,
                     policy=eff_policy,
+                    game_state=dict(game_state or {}),
                 )
             )
 
@@ -488,15 +495,20 @@ class ChatController:
             think_text = result.think
             structured_data = result.structured
             assistant_message_id = result.message_id
+            sample_id = getattr(result, "sample_id", "") or ""
 
             if not response_text:
+                generation_error = str(getattr(result, "error", "") or "Empty response")
+                error_details = getattr(result, "error_details", None)
                 if task_uid:
+                    task_result = {"error_details": error_details} if error_details else None
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.FAILED_ON_GENERATION,
-                        "error": "Empty response"
+                        "result": task_result,
+                        "error": generation_error,
                     })
-                if eff_policy.echo_to_ui:
+                if eff_policy.echo_to_ui and not getattr(result, "error", ""):
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
 
@@ -504,19 +516,15 @@ class ChatController:
 
             if is_streaming and eff_policy.echo_to_ui:
                 # Мы НЕ вызываем PREPARE_STREAM_UI здесь, так как он будет вызван
-                # динамически в stream_callback_handler при получении первого чанка
+                # динамически в stream_event_handler при получении первой дельты
                 # (либо для think, либо для assistant).
                 pass
 
             # Flush any held-back tail from stream filters
             if is_streaming and eff_policy.echo_to_ui:
-                tail = stream_think_filter.flush_visible() if stream_think_filter else ""
-                if tail and stream_json_filter is not None:
-                    tail = stream_json_filter.feed(tail)
                 if stream_json_filter is not None:
-                    tail = (tail or "") + stream_json_filter.flush_visible()
-                if tail:
-                    _emit_visible_assistant(tail)
+                    _route_filtered(stream_json_filter.flush_visible())
+                flush_stream_output()
 
             if response_text and self.settings.get("USE_VOICEOVER") and eff_policy.allow_voiceover:
                 if isinstance(voice_profile, dict):
@@ -567,8 +575,17 @@ class ChatController:
             if is_streaming and eff_policy.echo_to_ui:
                 if not stream_started and response_text:
                     _emit_visible_assistant(response_text)
+                flush_stream_output()
 
-                finish_payload = {"stream_id": stream_id}
+                # message_id рождается только при записи в историю — то есть уже
+                # после того, как пузырь показан. Без него у стримингового
+                # сообщения не к чему привязать контекстное меню.
+                finish_payload = {
+                    "stream_id": stream_id,
+                    "message_id": assistant_message_id or "",
+                    "character_id": effective_character_id or "",
+                    "sample_id": sample_id or "",
+                }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, delivery=EventDelivery.ORDERED)
@@ -602,6 +619,7 @@ class ChatController:
                     "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
+                    "sample_id": sample_id or "",
                 }, delivery=EventDelivery.ORDERED)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
@@ -621,6 +639,8 @@ class ChatController:
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
             return None
         finally:
+            if stream_coalescer is not None:
+                stream_coalescer.close(flush=True)
             if stream_started and not stream_finished:
                 try:
                     self.event_bus.emit(
@@ -653,6 +673,12 @@ class ChatController:
         data = event.data or {}
         image_data = data.get("image_data", [])
 
+        # Запоминаем ручную отправку пользователя (без task_uid — это не игровой/
+        # телеграм-ход), чтобы кнопка «отправить снова» на упавшем пузыре могла
+        # повторить ровно тот же запрос. Копия — чтобы вызывающий не менял её потом.
+        if not data.get("task_uid") and str(data.get("event_type") or "chat") == "chat":
+            self._last_ui_request = dict(data)
+
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
 
@@ -670,12 +696,18 @@ class ChatController:
             origin_message_id=data.get("origin_message_id"),
             policy=data.get("policy"),
             images_shown=bool(data.get("images_shown", False)),
+            game_state=data.get("game_state"),
         )
 
     @staticmethod
     def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
         """Build the result dict for task_update, optionally including structured segments."""
-        result = {"response": response_text, "target": target, "targets": targets or []}
+        result = {
+            "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
+            "response": response_text,
+            "target": target,
+            "targets": targets or [],
+        }
         if structured_data:
             result["segments"] = structured_data.get("segments", [])
             result["attitude_change"] = structured_data.get("attitude_change", 0)
@@ -707,6 +739,7 @@ class ChatController:
             sender=self._normalize_sender(data),
             participants=self._normalize_participants(data.get("participants")),
             policy=data.get("policy"),
+            game_state=data.get("game_state"),
         )
 
     def _on_clear_chat(self, event: Event):
@@ -803,6 +836,19 @@ class ChatController:
         else:
             character.history_manager.delete_messages_from(message_id)
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+
+    def _on_retry_last(self, event: Event):
+        """Повторно отправить последний упавший запрос пользователя.
+
+        Пузырь пользователя уже нарисован (эхо делает app_shell при исходной
+        отправке), а в историю ход не попал — поэтому просто пере-отправляем
+        сохранённый запрос. Дубля пузыря не будет: путь SEND_MESSAGE сам эхо не
+        рисует, а image-пузыри защищены флагом images_shown из исходной отправки.
+        """
+        if not self._last_ui_request:
+            logger.warning("[ChatController] RETRY_LAST: нет сохранённого запроса для повтора")
+            return
+        self.event_bus.emit(Events.Chat.SEND_MESSAGE, dict(self._last_ui_request))
 
     def _on_regenerate(self, event: Event):
         data = event.data or {}

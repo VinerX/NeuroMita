@@ -6,6 +6,7 @@ build.env
 .req_hash
 /Lib
 /Histories
+/src/Histories
 /lc0_engine_files
 /Prompts
 /PromptsCatalogue
@@ -42,3 +43,6 @@ _voice_bundles/
 # Одноразовый тулинг перевода локалей (batch/check/fix-скрипты). В locales/
 # легитимны только .json-каталоги; постоянный тулинг живёт в scripts/.
 src/localization/locales/*.py
+# Артефакты прогонов generation_tester (песочницы и раны) — локальные, не в git.
+.generation_tester_sandboxes/
+.generation_tester_runs/

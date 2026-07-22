@@ -46,7 +46,7 @@ def _convert_event_content_to_user(content: Any, prefix: str) -> Any:
 
 def preprocess_messages_for_provider(req: LLMRequest, provider: BaseProvider) -> None:
     """
-    По умолчанию: role=event -> role=user с префиксом [SYSTEM]
+    По умолчанию: role=event -> role=user с нейтральным префиксом [RUNTIME EVENT].
     Если provider.uses_custom_messages_handler=True -> ничего не делаем.
     """
     if not req or not isinstance(req.messages, list):
@@ -58,7 +58,7 @@ def preprocess_messages_for_provider(req: LLMRequest, provider: BaseProvider) ->
     if getattr(provider, "uses_custom_messages_handler", False):
         return
 
-    prefix = "[SYSTEM]"
+    prefix = "[RUNTIME EVENT]"
 
     new_messages: List[Dict[str, Any]] = []
     for msg in req.messages:

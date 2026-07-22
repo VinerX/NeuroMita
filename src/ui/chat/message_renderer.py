@@ -13,6 +13,7 @@ from ui.chat.message_actions_presentation import (
     RateChatSample,
     RegenerateChat,
     RegenerateChatFrom,
+    RetryLastChat,
     ViewChatSampleContext,
 )
 from ui.chat.structured_panel import StructuredOutputPanel
@@ -67,6 +68,11 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
     # Расчет точного отступа, чтобы рамка панели совпала с рамкой пузырька
     indent = AVATAR_SIZE + 16  # 36 + 8 (spacing) + 8 (tail)
 
+    # Ссылки для последующего «разжалования» аватара (см. _demote_think_avatar):
+    # у стриминговых размышлений аватар живёт только пока не появился пузырь ответа.
+    wrapper._nm_layout = lay
+    wrapper._nm_avatar = None
+
     if role == "assistant":
         if avatar_pixmap is not None:
             lay.setContentsMargins(0, 2, 0, 4)
@@ -76,6 +82,7 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
             avatar.setPixmap(avatar_pixmap)
             lay.setSpacing(8)
             lay.addWidget(avatar, 0, Qt.AlignmentFlag.AlignBottom)
+            wrapper._nm_avatar = avatar
         else:
             lay.setContentsMargins(indent, 2, 0, 4)
             lay.setSpacing(0)
@@ -91,6 +98,27 @@ def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None
         lay.addWidget(panel)
 
     return wrapper
+
+
+def _demote_think_avatar(wrapper) -> None:
+    """Убрать аватар у стриминговых размышлений, когда пошёл ответ.
+
+    Пока модель размышляет, пузыря ответа ещё нет, поэтому аватар висит на блоке
+    размышлений — так он появляется сразу, а не с задержкой. Как только начинается
+    основной ответ (со своим аватаром), аватар размышлений снимаем и выравниваем
+    левый край рамки по телу пузыря — как в перезагруженной истории.
+    """
+    if wrapper is None:
+        return
+    avatar = getattr(wrapper, "_nm_avatar", None)
+    lay = getattr(wrapper, "_nm_layout", None)
+    if avatar is None or lay is None:
+        return
+    lay.removeWidget(avatar)
+    avatar.deleteLater()
+    wrapper._nm_avatar = None
+    lay.setSpacing(0)
+    lay.setContentsMargins(AVATAR_SIZE + 16, 2, 0, 4)
 
 STRUCTURED_MODE_OFF   = "Выкл"
 STRUCTURED_MODE_BRIEF = "Кратко"
@@ -165,6 +193,8 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
         actions.dispatch(EditChatMessage(str(mid), str(character_id)))
     def on_regenerate(mid):
         actions.dispatch(RegenerateChat(str(character_id)))
+    def on_retry(mid):
+        actions.dispatch(RetryLastChat(str(character_id)))
     def on_regenerate_from(mid):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         dlg = QDialog()
@@ -210,13 +240,44 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
     widget.regenerate_from_requested.connect(on_regenerate_from)
+    widget.retry_requested.connect(on_retry)
     widget.view_context_requested.connect(on_view_context)
     widget.view_response_context_requested.connect(on_view_response_context)
 
+def mark_last_user_error(gui, tooltip: str = "") -> bool:
+    """Пометить последний пузырь пользователя как «сообщение не дошло».
+
+    Вызывается при провале генерации: сам пузырь остаётся, но получает иконку
+    с возможностью отправить снова. Возвращает True, если пузырь нашёлся.
+    """
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return False
+    for widget in reversed(getattr(chat_window, "_messages", [])):
+        if isinstance(widget, MessageWidget) and getattr(widget, "_role", None) == "user":
+            widget.set_error(tooltip)
+            return True
+    return False
+
+
+def clear_message_errors(gui) -> None:
+    """Снять пометку «не дошло» со всех пузырей (новый ход/повтор/успех)."""
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return
+    for widget in getattr(chat_window, "_messages", []):
+        if isinstance(widget, MessageWidget) and getattr(widget, "_errored", False):
+            widget.clear_error()
+
+
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None):
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return False
+
     font_size = _get_font_size(gui)
     max_bw = int(gui._get_setting("CHAT_MAX_BUBBLE_WIDTH", 600))
-    chat_parent = gui.chat_window.get_layout_parent()
+    chat_parent = chat_window.get_layout_parent()
 
     if role == "structured":
         if not gui._get_setting("SHOW_STRUCTURED_IN_GUI", True):
@@ -256,12 +317,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         gui._think_block_counter += 1
         blocks[gui._think_block_counter - 1] = block
 
-        wrapped = _wrap_panel_aligned(
-            block,
-            "assistant",
-            parent=chat_parent,
-            avatar_pixmap=_get_avatar_pixmap(speaker_name, "assistant"),
-        )
+        # Без аватара: он принадлежит основному пузырю ответа. Отступ по
+        # indent-пути выравнивает левый край рамки размышлений с телом пузыря.
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
         gui.chat_window.add_message_widget(wrapped, at_start=insert_at_start)
         return
 
@@ -474,6 +532,7 @@ def _stream_state(gui, stream_id: str, *, create: bool = False) -> dict | None:
             "speaker_name": "",
             "message": None,
             "think_block": None,
+            "think_wrapper": None,
         }
         states[key] = state
     return state
@@ -514,7 +573,11 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         _get_think_blocks(gui)[gui._think_block_counter - 1] = block
         state["think_block"] = block
 
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent)
+        # Аватар на время стриминга — чтобы он появился сразу с блоком размышлений;
+        # при переходе к ответу он снимается (_demote_think_avatar).
+        avatar_pixmap = _get_avatar_pixmap(name, "assistant") if name else None
+        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, avatar_pixmap=avatar_pixmap)
+        state["think_wrapper"] = wrapped
         gui.chat_window.add_message_widget(wrapped)
         return
 
@@ -525,7 +588,9 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         name = _("Вы", "You")
 
     show_ts = bool(gui._get_setting("SHOW_CHAT_TIMESTAMPS", True))
-    sample_id = _pop_sample_id_if_collecting(gui) if role == "assistant" else None
+    # sample_id здесь взять неоткуда: сэмпл сохраняется только после полного
+    # ответа модели, а пузырь создаётся на первом же чанке. Привязываем его
+    # в finish_stream_slot, когда он реально существует.
     message = MessageWidget(
         role=role,
         speaker_name=name,
@@ -534,7 +599,7 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         font_size=font_size,
         show_timestamp=show_ts,
         max_bubble_width=max_bw,
-        sample_id=sample_id,
+        sample_id=None,
         show_rating_controls=(
             role == "assistant" and _should_show_rating_controls(gui)
         ),
@@ -581,7 +646,9 @@ def _finalize_streaming_think_block(gui, stream_id="default", *, state=None):
     block = state.get("think_block")
     if block:
         block.finalize()
+    _demote_think_avatar(state.get("think_wrapper"))
     state["think_block"] = None
+    state["think_wrapper"] = None
 
 
 def attach_structured_to_stream(gui, structured_data: dict, stream_id="default"):
@@ -659,6 +726,8 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
             )
             if is_last:
                 widget.set_structured_ref(panel)
+                # Пузырь заменили — дальше меню и id вешаются на этот, последний.
+                state["message"] = widget
             gui.chat_window.add_message_widget(widget)
     elif len(target_groups) == 1:
         target, _ = target_groups[0]
@@ -677,7 +746,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     gui.chat_window.scroll_to_bottom()
 
 
-def finish_stream_slot(gui, stream_id="default"):
+def finish_stream_slot(gui, stream_id="default", message_id="", character_id="", sample_id=""):
     key = str(stream_id or "default")
     states = _stream_states(gui)
     state = states.get(key)
@@ -685,4 +754,19 @@ def finish_stream_slot(gui, stream_id="default"):
         return
     if state.get("role") == "think" or state.get("think_block") is not None:
         _finalize_streaming_think_block(gui, key, state=state)
+
+    # Стриминговый пузырь родился до того, как ответ получил message_id и
+    # finetune-сэмпл: только здесь оба уже существуют. Без этой привязки всё
+    # контекстное меню (регенерация, просмотр контекста) молча ничего не делает.
+    message = state.get("message")
+    if message is not None:
+        # Надёжный id приходит в payload (из ChatGenerationResult); pop из
+        # коллектора — только запасной путь, если id не дотянули явно.
+        sample_id = str(sample_id or "") or _pop_sample_id_if_collecting(gui)
+        if sample_id:
+            message.set_sample_id(sample_id)
+        if message_id:
+            message.set_message_id(message_id)
+            _connect_widget_signals(gui, message, message_id, character_id or "")
+
     states.pop(key, None)

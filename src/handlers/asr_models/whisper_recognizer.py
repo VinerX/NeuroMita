@@ -89,6 +89,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
                 "CPU is supported as well. Requires downloading the model into local cache."
             ),
             "languages": ["Multilingual"],
+            "backend": "cpu",
             "gpu_vendor": ["NVIDIA", "CPU"],
             "tags": [
                 _("Офлайн", "Offline"),

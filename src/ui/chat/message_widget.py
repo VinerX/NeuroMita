@@ -9,7 +9,7 @@ import base64
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
-    QLabel, QWidget, QSizePolicy, QMenu, QApplication,
+    QLabel, QWidget, QSizePolicy, QMenu, QApplication, QPushButton,
 )
 from PyQt6.QtCore import Qt, QSize, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import (
@@ -366,6 +366,7 @@ class MessageWidget(QWidget):
     edit_requested = pyqtSignal(str)
     regenerate_requested = pyqtSignal(str)
     regenerate_from_requested = pyqtSignal(str)
+    retry_requested = pyqtSignal(str)  # emits message_id: «отправить снова» упавшего сообщения
     copy_requested = pyqtSignal(str)
     view_context_requested = pyqtSignal(str)  # emits sample_id
     view_response_context_requested = pyqtSignal(str)  # emits sample_id
@@ -456,6 +457,24 @@ class MessageWidget(QWidget):
         self._voicing_label.setVisible(False)
         name_row.addWidget(self._voicing_label)
 
+        # Индикатор «сообщение не дошло» (скрыт по умолчанию). Кликом отправить
+        # снова, тултип поясняет по наведению. Показывается через set_error().
+        self._errored = False
+        self._error_btn = QPushButton(self._card)
+        self._error_btn.setFixedSize(max(14, self._font_sm + 4), max(14, self._font_sm + 4))
+        self._error_btn.setFlat(True)
+        self._error_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._error_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
+        try:
+            _eic = max(11, self._font_sm + 1)
+            self._error_btn.setIcon(qta.icon("fa6s.circle-exclamation", color="#ff6b6b"))
+            self._error_btn.setIconSize(QSize(_eic, _eic))
+        except Exception:
+            self._error_btn.setText("⚠")
+        self._error_btn.setVisible(False)
+        self._error_btn.clicked.connect(lambda: self.retry_requested.emit(self._message_id or ""))
+        name_row.addWidget(self._error_btn)
+
         name_row.addStretch()
 
         if role == "assistant" and sample_id and self._show_rating_controls:
@@ -492,6 +511,28 @@ class MessageWidget(QWidget):
         if lbl is not None:
             lbl.setVisible(bool(on))
 
+    def set_error(self, reason: str = ""):
+        """Пометить пузырь как «сообщение не дошло»: показать иконку-кнопку.
+
+        Клик по иконке (или пункт меню) шлёт retry_requested — «отправить снова».
+        `reason` (причина от провайдера) добавляется в тултип отдельной строкой.
+        """
+        self._errored = True
+        btn = getattr(self, "_error_btn", None)
+        if btn is not None:
+            head = _("Сообщение не дошло.", "Message was not delivered.")
+            hint = _("Нажмите, чтобы отправить снова.", "Click to send again.")
+            reason = str(reason or "").strip()
+            tooltip = f"{head}\n{reason}\n{hint}" if reason else f"{head} {hint}"
+            btn.setToolTip(tooltip)
+            btn.setVisible(True)
+
+    def clear_error(self):
+        self._errored = False
+        btn = getattr(self, "_error_btn", None)
+        if btn is not None:
+            btn.setVisible(False)
+
     def set_text(self, text: str): self._body.set_text(text)
     def append_text(self, text: str): self._body.append_text(text)
     def get_text(self) -> str: return self._body.get_text()
@@ -501,6 +542,18 @@ class MessageWidget(QWidget):
         if self._avatar_label: self._avatar_label.setPixmap(_get_avatar_pixmap(name, self._role))
     def set_time(self, ts: str): self._body.set_time(ts)
     def set_structured_ref(self, panel): self._structured_panel = panel
+
+    def set_message_id(self, message_id: str):
+        """Проставить id уже показанному пузырю.
+
+        При стриминге виджет рождается раньше, чем ответ записан в историю и
+        получил id, — без этого у него мёртвое контекстное меню.
+        """
+        self._message_id = message_id or None
+
+    def set_sample_id(self, sample_id: str):
+        """То же для finetune-сэмпла: он создаётся только после ответа модели."""
+        self._sample_id = sample_id or None
 
     def _add_rating_buttons(self, name_row, sample_id: str, font_size: int):
         try:
@@ -567,6 +620,12 @@ class MessageWidget(QWidget):
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
             QMenu::item:selected { background-color: rgba(183, 75, 125,0.20); }
         """)
+
+        if getattr(self, "_errored", False):
+            retry_action = QAction(_("Отправить снова", "Send again"), self)
+            retry_action.triggered.connect(lambda: self.retry_requested.emit(self._message_id or ""))
+            menu.addAction(retry_action)
+            menu.addSeparator()
 
         if self._role == "user":
             edit_action = QAction(_("Редактировать", "Edit"), self)
@@ -795,10 +854,12 @@ class ThinkBlockWidget(QFrame):
         self._header.setStyleSheet(f"color: #9CA3AF; font-weight: bold; font-size: {self._font_sm}pt; background: transparent; border: none;")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = lambda e: self.toggle()
-        if is_streaming: self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(speaker_name) + ".")
+        # Автор у размышлений не выводится — аватар и имя принадлежат основному
+        # пузырю ответа, а не мыслям (см. фидбэк по UI).
+        if is_streaming: self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + ".")
         else:
             arrow = "▶" if self._collapsed else "▼"
-            self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(speaker_name))
+            self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
         layout.addWidget(self._header)
 
         self._content_label = QLabel(self)
@@ -818,7 +879,7 @@ class ThinkBlockWidget(QFrame):
         self._collapsed = not self._collapsed
         self._content_label.setVisible(not self._collapsed)
         arrow = "▶" if self._collapsed else "▼"
-        self._header.setText(f"{arrow} 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
+        self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
 
     def append_content(self, text: str):
         self._content_text += text
@@ -827,7 +888,7 @@ class ThinkBlockWidget(QFrame):
     def finalize(self):
         self._is_streaming = False
         self._stop_animation()
-        self._header.setText("▼ 💭 " + _("{} думала...", "{} was thinking...").format(self._speaker_name))
+        self._header.setText("▼ 💭 " + _("Размышления", "Reasoning"))
 
     def _start_animation(self):
         from PyQt6.QtCore import QTimer
@@ -844,4 +905,4 @@ class ThinkBlockWidget(QFrame):
         phases = [".  ", ".. ", "..."]
         self._anim_phase = (self._anim_phase + 1) % 3
         dots = phases[self._anim_phase]
-        self._header.setText("▼ 💭 " + _("{} думает", "{} is thinking").format(self._speaker_name) + dots)
+        self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + dots)

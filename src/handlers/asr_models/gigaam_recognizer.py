@@ -39,6 +39,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
                 "Offline speech recognition based on GigaAM (PyTorch). Runs in current process."
             ),
             "languages": ["Russian"],
+            "backend": "cpu",
             "gpu_vendor": ["NVIDIA", "CPU"],
             "tags": [
                 _("Local", "Local"),

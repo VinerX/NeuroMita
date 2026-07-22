@@ -445,6 +445,7 @@ RAG_DEFAULTS: dict[str, object] = {
     "RAG_FTS_MIN_LEN": 3,
     "RAG_FTS_MORPH_EXPAND": True,
     "RAG_FTS_PREFIX_MATCH": False,
+    "RAG_RU_STEMMER_ENABLED": True,
     "RAG_MEMORY_MODE": "all",
     "RAG_COMBINE_MODE": "two_stage",
     "RAG_VECTOR_TOP_K": 0,

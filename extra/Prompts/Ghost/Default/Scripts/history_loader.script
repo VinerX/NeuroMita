@@ -1,8 +1,6 @@
-LOG "HistoryLoader: Script started. secretExposed=" + secretExposed
+
+LOG "HistoryLoader: secretExposed=" + str(secretExposed)
 IF secretExposed == True THEN
-    LOG "HistoryLoader: Secret is exposed. Loading mita_history.txt."
-    RETURN LOAD "Context/mita_history.txt"
-ELSE
-    LOG "HistoryLoader: Secret is not exposed. No history loaded."
-    RETURN "" 
+    RETURN LOAD "Context/Mita_history.txt"
 ENDIF
+RETURN ""

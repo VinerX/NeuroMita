@@ -428,6 +428,64 @@ class GraphStore:
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
+    def get_untyped_entities(self, limit: int = 2000) -> List[Dict]:
+        """Сущности на дефолтном типе 'thing' — кандидаты на переклассификацию.
+
+        Ранние прогоны extraction часто не проставляли тип (модель ленилась),
+        поэтому масса реальных людей/мест/понятий осела в 'thing'. Отдаём их
+        по убыванию упоминаний, чтобы важное классифицировалось в первую очередь.
+        """
+        with self.db.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, name, mention_count
+                FROM graph_entities
+                WHERE character_id = ?
+                  AND (entity_type IS NULL OR TRIM(LOWER(entity_type)) IN ('', 'thing'))
+                ORDER BY mention_count DESC
+                LIMIT ?
+                """,
+                (self.character_id, limit),
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def set_entity_type(self, entity_id: int, entity_type: str) -> bool:
+        """Задать тип сущности по id (id — глобальный PK, character-фильтр не нужен).
+
+        Возвращает True, если строка обновлена. Невалидный тип отклоняется.
+        """
+        etype = str(entity_type or "").strip().lower()
+        if etype not in ("person", "place", "thing", "concept"):
+            return False
+        with self.db.connection() as conn:
+            cur = conn.execute(
+                "UPDATE graph_entities SET entity_type = ? WHERE id = ?",
+                (etype, int(entity_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def get_entity_relation_context(self, entity_id: int, limit: int = 5) -> List[str]:
+        """Короткие подсказки-связи для сущности («s pred o») — контекст для LLM
+        при определении типа. Помогает отличить place от thing и т.п."""
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT e1.name, r.predicate, e2.name
+                FROM graph_relations r
+                JOIN graph_entities e1 ON r.subject_id = e1.id
+                JOIN graph_entities e2 ON r.object_id  = e2.id
+                WHERE r.character_id = ?
+                  AND (r.subject_id = ? OR r.object_id = ?)
+                ORDER BY r.confidence DESC
+                LIMIT ?
+                """,
+                (self.character_id, int(entity_id), int(entity_id), limit),
+            ).fetchall()
+        return [f"{s} {p} {o}" for s, p, o in rows]
+
     def get_all_relations(self, limit: int = 10000) -> List[Dict]:
         """Export all relations as dicts with resolved entity names."""
         with self.db.connection() as conn:

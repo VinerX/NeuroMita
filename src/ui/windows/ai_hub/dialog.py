@@ -43,8 +43,6 @@ from ui.windows.ai_hub.presentation import (
     SubmitComponentAction,
 )
 from main_logger import logger
-from core.services import services
-from services.contracts import HardwareInventoryService
 from styles.ai_hub_styles import get_stylesheet as get_ai_hub_stylesheet
 from ui.windows.voice_action_windows import VoiceInstallationWindow
 from utils import getTranslationVariant as _
@@ -109,6 +107,7 @@ class AIHubDialog(QDialog):
         self._settings_view_model = settings_view_model
         self._settings_binding = settings_binding
         self._rows: list[dict[str, Any]] = []
+        self._hardware: dict[str, Any] = {}
         self._selected_category = "tts"
         self._pending_category: str | None = None
         self._pending_component_id: str | None = None
@@ -118,6 +117,8 @@ class AIHubDialog(QDialog):
         self._category_buttons: dict[str, CategoryButton] = {}
         self._active_install_window: VoiceInstallationWindow | None = None
         self._queue_state: dict[str, Any] = {"running": None, "pending": []}
+        self._queue_popup: QFrame | None = None
+        self._queue_popup_layout: QVBoxLayout | None = None
         self._refresh_inflight = False
         self._checking_component_ids: set[str] = set()
         self._rendered_language = ""
@@ -209,10 +210,14 @@ class AIHubDialog(QDialog):
         self._install_bar_detail.setObjectName("AIHubInstallBarDetail")
         lay.addWidget(self._install_bar_detail, 0)
 
-        # Чип очереди: «+N в очереди» (полный список — в всплывающей подсказке).
-        self._install_bar_queue = QLabel("")
+        # Чип очереди справа от прогресс-бара: «+N в очереди». Кликом
+        # разворачивается popup со всей очередью и кнопками отмены — чтобы
+        # не искать панель «АКТИВНОСТЬ» в сайдбаре.
+        self._install_bar_queue = QPushButton("")
         self._install_bar_queue.setObjectName("AIHubInstallBarQueue")
+        self._install_bar_queue.setCursor(Qt.CursorShape.PointingHandCursor)
         self._install_bar_queue.setVisible(False)
+        self._install_bar_queue.clicked.connect(self._toggle_queue_popup)
         lay.addWidget(self._install_bar_queue, 0)
 
         # Кнопка возврата к окну логов установки — переехала с левого края в
@@ -237,6 +242,7 @@ class AIHubDialog(QDialog):
             return
         bar.setVisible(bool(visible))
         if not visible:
+            self._close_queue_popup()
             return
         if title:
             self._install_bar_title.setText(self._shorten(title, 42))
@@ -737,6 +743,7 @@ class AIHubDialog(QDialog):
         previous_revision = getattr(self, "_rendered_revision", -1)
         self._rendered_revision = state.revision
         self._rows = [dict(mutable_payload(item) or {}) for item in state.rows]
+        self._hardware = dict(mutable_payload(state.hardware) or {})
         self._loaded_once = bool(state.loaded_once)
         self._refresh_inflight = bool(state.refreshing)
         self._last_check_ts = state.last_check_ts
@@ -925,16 +932,6 @@ class AIHubDialog(QDialog):
         rows.sort(key=_compat_rank)
         return rows
 
-    @staticmethod
-    def _hardware_snapshot() -> dict[str, Any]:
-        hardware = services().get_optional(HardwareInventoryService)
-        if hardware is None:
-            return {"vendor": "CPU", "primary": None}
-        try:
-            return dict(hardware.snapshot() or {})
-        except Exception:
-            return {"vendor": "CPU", "primary": None}
-
     # ----------------------------------------------------------- list rendering
     def _clear_scroll(self) -> None:
         # Remove every child widget but keep the trailing stretch.
@@ -1121,7 +1118,7 @@ class AIHubDialog(QDialog):
         installed = sum(1 for r in counted_rows if status_from_row(r).get("ready"))
         components_word = _("компонентов", "components")
         self.stat_installed.setValue(str(installed), components_word)
-        hardware = self._hardware_snapshot()
+        hardware = self._hardware
         gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
         primary = hardware.get("primary") if isinstance(hardware.get("primary"), dict) else {}
         gpu_label = str(primary.get("name") or gpu_vendor)
@@ -1152,7 +1149,7 @@ class AIHubDialog(QDialog):
             self.stat_check.setValue("-", "")
 
     def _update_banner(self) -> None:
-        hardware = self._hardware_snapshot()
+        hardware = self._hardware
         gpu_vendor = str(hardware.get("vendor") or "CPU").upper()
 
         row_cpu = self._row_by_id("backend:cpu")
@@ -1487,7 +1484,8 @@ class AIHubDialog(QDialog):
         return text if len(text) <= limit else text[: limit - 1] + "…"
 
     def _update_install_bar_queue_chip(self) -> None:
-        """Чип «+N в очереди» в нижней плашке (полный список ждёт в подсказке)."""
+        """Чип «+N в очереди» справа от прогресс-бара. Клик разворачивает
+        popup со всей очередью и кнопками отмены."""
         chip = getattr(self, "_install_bar_queue", None)
         if chip is None:
             return
@@ -1497,43 +1495,77 @@ class AIHubDialog(QDialog):
             chip.setVisible(False)
             chip.setText("")
             chip.setToolTip("")
+            self._close_queue_popup()
             return
-        chip.setText(_("+{n} в очереди", "+{n} queued").format(n=n))
-        chip.setToolTip(self._queue_tooltip_html())
+        chip.setText(_("+{n} в очереди ▾", "+{n} queued ▾").format(n=n))
+        chip.setToolTip(_("Показать очередь установки", "Show the install queue"))
         chip.setVisible(True)
+        if self._queue_popup is not None and self._queue_popup.isVisible():
+            self._fill_queue_popup()
 
-    def _queue_tooltip_html(self) -> str:
-        """Read-only сводка очереди для всплывающей подсказки: что ставится
-        сейчас + список ожидающих. Без кнопок отмены — только просмотр
-        (редактирование остаётся в панели «АКТИВНОСТЬ» слева)."""
-        running = self._queue_state.get("running") or {}
+    # ------------------------------------------------------- queue popup
+    def _toggle_queue_popup(self) -> None:
+        if self._queue_popup is not None and self._queue_popup.isVisible():
+            self._close_queue_popup()
+            return
+        self._open_queue_popup()
+
+    def _close_queue_popup(self) -> None:
+        popup = getattr(self, "_queue_popup", None)
+        if popup is not None:
+            popup.hide()
+
+    def _open_queue_popup(self) -> None:
+        chip = getattr(self, "_install_bar_queue", None)
+        if chip is None:
+            return
+        if self._queue_popup is None:
+            popup = QFrame(self, Qt.WindowType.Popup)
+            popup.setObjectName("AIHubQueuePopup")
+            lay = QVBoxLayout(popup)
+            lay.setContentsMargins(10, 10, 10, 10)
+            lay.setSpacing(4)
+            self._queue_popup = popup
+            self._queue_popup_layout = lay
+
+        self._fill_queue_popup()
+        self._queue_popup.show()
+
+    def _fill_queue_popup(self) -> None:
+        lay = getattr(self, "_queue_popup_layout", None)
+        if lay is None:
+            return
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        running = self._queue_state.get("running")
         pending = self._queue_state.get("pending") or []
 
-        def _job_title(job: dict[str, Any]) -> str:
-            return str((job or {}).get("title") or (job or {}).get("task_id") or "").strip()
+        header = QLabel(_("ОЧЕРЕДЬ УСТАНОВКИ", "INSTALL QUEUE"))
+        header.setObjectName("AIHubSidebarHeader")
+        lay.addWidget(header)
 
-        parts: list[str] = []
-        run_title = _job_title(running)
-        if run_title:
-            parts.append(
-                "<b>{label}</b><br>{title}".format(
-                    label=html.escape(_("Устанавливается сейчас:", "Installing now:")),
-                    title=html.escape(run_title),
-                )
-            )
-        rows = "".join(
-            "&nbsp;•&nbsp;{t}<br>".format(t=html.escape(_job_title(job)))
-            for job in pending
-            if _job_title(job)
-        )
-        if rows:
-            parts.append(
-                "<b>{label}</b><br>{rows}".format(
-                    label=html.escape(_("В очереди:", "Queued:")),
-                    rows=rows,
-                )
-            )
-        return "<div style='line-height:140%;'>" + "<br>".join(parts) + "</div>"
+        if running:
+            lay.addWidget(self._make_queue_row(running, is_running=True, limit=42))
+        for job in pending:
+            lay.addWidget(self._make_queue_row(job, is_running=False, limit=42))
+
+        self._reposition_queue_popup()
+
+    def _reposition_queue_popup(self) -> None:
+        """Popup якорится правым нижним углом к чипу и растёт вверх — нижняя
+        плашка прижата к низу окна, вниз места нет."""
+        popup = getattr(self, "_queue_popup", None)
+        chip = getattr(self, "_install_bar_queue", None)
+        if popup is None or chip is None:
+            return
+        popup.adjustSize()
+        anchor = chip.mapToGlobal(chip.rect().topRight())
+        popup.move(anchor.x() - popup.width(), anchor.y() - popup.height() - 6)
 
     def _rebuild_queue_panel(self) -> None:
         self._clear_queue_panel()
@@ -1558,7 +1590,7 @@ class AIHubDialog(QDialog):
         self._queue_panel.setVisible(True)
         self._update_activity_panel_visibility()
 
-    def _make_queue_row(self, job: dict[str, Any], *, is_running: bool) -> QWidget:
+    def _make_queue_row(self, job: dict[str, Any], *, is_running: bool, limit: int = 26) -> QWidget:
         row = QFrame()
         row.setObjectName("AIHubQueueRow")
         rl = QHBoxLayout(row)
@@ -1567,7 +1599,7 @@ class AIHubDialog(QDialog):
 
         title = str(job.get("title") or job.get("task_id") or "")
         prefix = "● " if is_running else "• "
-        label = QLabel(prefix + self._shorten(title))
+        label = QLabel(prefix + self._shorten(title, limit))
         label.setObjectName("AIHubQueueRunning" if is_running else "AIHubQueuePending")
         label.setToolTip(title + (_(" — выполняется", " — running") if is_running else _(" — в очереди", " — queued")))
         rl.addWidget(label, 1)

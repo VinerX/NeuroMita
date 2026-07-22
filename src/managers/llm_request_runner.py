@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-import time
+import threading
 from typing import Any, Callable, Optional
 
 from main_logger import logger
@@ -18,8 +18,15 @@ from handlers.llm_providers.errors import (
 from utils import _, save_combined_messages
 
 from managers.api_preset_resolver import ApiPresetResolver, PresetSettings
-from handlers.llm_providers.base import LLMResponse
+from handlers.llm_providers.base import LLMResponse, StreamCallback
 from handlers.llm_providers.base import RequestCancellation
+from handlers.llm_providers.streaming import (
+    StreamDeadlineExceeded,
+    StreamDeadlinePolicy,
+    StreamEventChannel,
+    StreamSupervisor,
+)
+from managers.provider_manager import ProviderManager
 
 
 class LLMRequestRunner:
@@ -42,15 +49,34 @@ class LLMRequestRunner:
         self.settings = settings
         self.preset_resolver = preset_resolver
         self.event_bus = event_bus
-        self.last_error: Optional[LLMProviderError] = None
-        self._timed_out_call = False
+        self._run_state = threading.local()
+        self._shutdown_event = threading.Event()
+        self.last_error = None
+        self._abort_chain = False
+        self.provider_manager = ProviderManager()
+
+    @property
+    def last_error(self) -> Optional[LLMProviderError]:
+        return getattr(self._run_state, "last_error", None)
+
+    @last_error.setter
+    def last_error(self, value: Optional[LLMProviderError]) -> None:
+        self._run_state.last_error = value
+
+    @property
+    def _abort_chain(self) -> bool:
+        return bool(getattr(self._run_state, "abort_chain", False))
+
+    @_abort_chain.setter
+    def _abort_chain(self, value: bool) -> None:
+        self._run_state.abort_chain = bool(value)
 
     def run(
         self,
         *,
         messages: list,
         preset_id: Optional[int],
-        stream_callback: Optional[Callable[[str], None]],
+        stream_callback: Optional[StreamCallback],
         build_request: Callable[[PresetSettings, str], Any],
         max_attempts: int,
         retry_delay: float,
@@ -60,7 +86,7 @@ class LLMRequestRunner:
         if messages is None:
             messages = []
         self.last_error = None
-        self._timed_out_call = False
+        self._abort_chain = False
 
         try:
             preset_chain = self.preset_resolver.resolve_chain(preset_id)
@@ -72,15 +98,9 @@ class LLMRequestRunner:
             logger.error("[LLMRequestRunner] Empty preset chain (no main, no fallbacks).")
             return LLMResponse(text=None, error_message="Empty preset chain (no main, no fallbacks).")
 
-        try:
-            from managers.provider_manager import ProviderManager
-            pm = ProviderManager()
-        except Exception as e:
-            logger.error(f"[LLMRequestRunner] Failed to init ProviderManager: {e}", exc_info=True)
-            return LLMResponse(text=None, error_message=f"Failed to initialize ProviderManager: {e}")
-
         total_presets = len(preset_chain)
         last_response: Optional[LLMResponse] = None
+        stream_channel_holder: list[Optional[StreamEventChannel]] = [None]
         for chain_idx, base_preset in enumerate(preset_chain, start=1):
             preset_label = base_preset.preset_name or f"preset#{chain_idx}"
             if chain_idx > 1:
@@ -93,30 +113,42 @@ class LLMRequestRunner:
                 base_preset=base_preset,
                 messages=messages,
                 build_request=build_request,
-                pm=pm,
+                pm=self.provider_manager,
                 max_attempts=int(max_attempts),
                 retry_delay=float(retry_delay),
                 request_timeout=float(request_timeout),
                 suppress_failure_events=bool(suppress_failure_events),
                 chain_pos=chain_idx,
                 chain_total=total_presets,
+                stream_channel_holder=stream_channel_holder,
             )
             last_response = response
             if response and response.text:
                 self.last_error = None
+                if stream_channel_holder[0] is not None:
+                    stream_channel_holder[0].complete(response)
                 if chain_idx > 1:
                     logger.info(f"[LLMRequestRunner] Fallback preset '{preset_label}' succeeded.")
                 return response
-            if self._timed_out_call:
+            if self._abort_chain:
                 break
 
         # Вся цепочка пресетов исчерпана — терминальный отказ генерации.
-        logger.error("All generation attempts failed across preset chain.")
+        terminal_summary = (
+            self.last_error.to_console_summary()
+            if self.last_error is not None
+            else "unknown generation failure"
+        )
+        logger.error("All generation attempts failed across preset chain: %s", terminal_summary)
         if self.last_error and not suppress_failure_events:
+            provider_error = self.last_error.to_payload()
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": self.last_error.to_user_message(),
                 "details": self.last_error.to_console_summary(),
+                "provider_error": provider_error,
             })
+        if stream_channel_holder[0] is not None and self.last_error is not None:
+            stream_channel_holder[0].fail(self.last_error)
         if last_response is not None:
             return last_response
         return LLMResponse(text=None, error_message="All generation attempts failed.")
@@ -134,6 +166,7 @@ class LLMRequestRunner:
         suppress_failure_events: bool,
         chain_pos: int,
         chain_total: int,
+        stream_channel_holder: list[Optional[StreamEventChannel]],
     ) -> LLMResponse:
         preset_tag = f"[{chain_pos}/{chain_total} {base_preset.preset_name}]"
 
@@ -173,19 +206,18 @@ class LLMRequestRunner:
                 if attempt < max_attempts:
                     if not suppress_failure_events:
                         self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                    time.sleep(retry_delay)
+                    if self._shutdown_event.wait(max(0.0, float(retry_delay))):
+                        self._abort_chain = True
+                        break
                 continue
 
             req.extra = dict(getattr(req, "extra", None) or {})
             req.extra.setdefault("http_timeout_seconds", float(request_timeout))
-            req.extra.setdefault(
-                "http_connect_timeout_seconds",
-                min(15.0, max(1.0, float(request_timeout))),
-            )
-            req.extra.setdefault(
-                "http_read_timeout_seconds",
-                max(1.0, float(request_timeout) - 5.0),
-            )
+            if req.stream:
+                req.extra.setdefault("http_read_timeout_seconds", 300.0)
+                if stream_channel_holder[0] is None:
+                    stream_channel_holder[0] = StreamEventChannel(req)
+                req.extra["_stream_event_channel"] = stream_channel_holder[0]
             cancellation = RequestCancellation()
             req.extra["_request_cancellation"] = cancellation
 
@@ -205,6 +237,7 @@ class LLMRequestRunner:
                     args=(req,),
                     timeout=request_timeout,
                     cancellation=cancellation,
+                    stream_policy=(StreamDeadlinePolicy.for_request(req) if req.stream else None),
                 )
                 if response and response.text:
                     self.last_error = None
@@ -220,10 +253,14 @@ class LLMRequestRunner:
                         provider_message=last_error_message,
                         url=getattr(req, "api_url", None),
                     )
-                    logger.error(
-                        f"Generation attempt {attempt} returned no text. "
-                        f"provider={last_provider_name}, model={last_model_name}{finish_reason}, "
-                        f"error={last_error_message}"
+                    logger.debug(
+                        "Generation attempt %s returned no text; delegated to retry policy: "
+                        "provider=%s, model=%s%s, error=%s",
+                        attempt,
+                        last_provider_name,
+                        last_model_name,
+                        finish_reason,
+                        last_error_message,
                     )
                 else:
                     last_error_message = "Provider returned no response object."
@@ -232,16 +269,34 @@ class LLMRequestRunner:
                         provider_message=last_error_message,
                         url=getattr(req, "api_url", None),
                     )
-                    logger.error(f"Generation attempt {attempt} returned no response object.")
+                    logger.debug(
+                        "Generation attempt %s returned no response object; delegated to retry policy.",
+                        attempt,
+                    )
             except concurrent.futures.TimeoutError:
-                self._timed_out_call = True
-                last_error_message = f"Attempt {attempt} timed out after {request_timeout}s."
-                logger.error(f"{preset_tag} {last_error_message}")
+                last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
+                retryable_before_response = bool(
+                    (req.stream and not cancellation.response_body_started)
+                    or (
+                        not req.stream
+                        and not cancellation.response_headers_received
+                    )
+                )
+                self._abort_chain = not retryable_before_response
+                logger.debug("%s %s", preset_tag, last_error_message)
                 self.last_error = LLMProviderError(
                     provider=getattr(req, "provider_name", "unknown"),
                     friendly_message=_("Ошибка сети - Сервер не ответил вовремя.", "Network error - The server did not respond in time."),
                     provider_message=last_error_message,
-                    retryable=False,
+                    retryable=retryable_before_response,
+                    code=(
+                        "stream.timeout_before_body"
+                        if req.stream and retryable_before_response
+                        else "request.timeout_before_response"
+                        if retryable_before_response
+                        else "timeout.attempt"
+                    ),
+                    phase="stream" if req.stream else "request",
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
@@ -251,15 +306,16 @@ class LLMRequestRunner:
                     e,
                     url=getattr(req, "api_url", None),
                 )
-                if isinstance(self.last_error, LLMProviderError):
-                    logger.error(
-                        f"{preset_tag} Error during generation attempt {attempt}: {self.last_error.to_console_summary()}"
-                    )
-                else:
-                    logger.error(
-                        f"{preset_tag} Error during generation attempt {attempt}: {self.last_error.to_console_summary()}",
-                        exc_info=True,
-                    )
+
+            if req.stream and cancellation.response_body_started and self.last_error is not None:
+                self._abort_chain = True
+                self.last_error.retryable = False
+                self.last_error.code = self.last_error.code or (
+                    "stream.interrupted_after_output"
+                    if cancellation.has_meaningful_stream_event
+                    else "stream.interrupted_after_body_started"
+                )
+                self.last_error.phase = self.last_error.phase or "stream"
 
             should_retry = bool(
                 attempt < max_attempts and (
@@ -267,20 +323,32 @@ class LLMRequestRunner:
                 )
             )
             if should_retry:
+                logger.warning(
+                    "%s Generation attempt %s/%s failed; retrying: %s",
+                    preset_tag,
+                    attempt,
+                    max_attempts,
+                    self.last_error.to_console_summary() if self.last_error else last_error_message,
+                )
                 if not suppress_failure_events:
-                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT)
-                time.sleep(retry_delay)
+                    error_payload = self.last_error.to_payload() if self.last_error else None
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, {
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "provider_error": error_payload,
+                    })
+                retry_wait = self._resolve_retry_delay(retry_delay, self.last_error)
+                if self._shutdown_event.wait(retry_wait):
+                    self._abort_chain = True
+                    break
             elif attempt < max_attempts and self.last_error is not None:
-                logger.info(
+                logger.debug(
                     f"{preset_tag} Stopping retries after non-retryable failure: "
                     f"{self.last_error.to_console_summary()}"
                 )
                 break
 
-        if last_error_message:
-            logger.error(f"{preset_tag} All generation attempts failed. Last error: {last_error_message}")
-        else:
-            logger.error(f"{preset_tag} All generation attempts failed.")
+        logger.debug("%s Preset attempts exhausted: %s", preset_tag, last_error_message or "unknown failure")
         return LLMResponse(
             text=None,
             model=last_model_name,
@@ -290,6 +358,7 @@ class LLMRequestRunner:
                 if self.last_error
                 else last_error_message or "All generation attempts failed."
             ),
+            error_details=(self.last_error.to_payload() if self.last_error else None),
         )
 
     def _call_with_timeout(
@@ -299,6 +368,7 @@ class LLMRequestRunner:
         kwargs=None,
         timeout: float = 30.0,
         cancellation: RequestCancellation | None = None,
+        stream_policy: StreamDeadlinePolicy | None = None,
     ):
         """Вызвать func с ограничением по времени.
 
@@ -316,24 +386,73 @@ class LLMRequestRunner:
             raise RuntimeError(
                 "LLM HTTP pool is saturated by unfinished provider requests"
             ) from exc
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            if cancellation is not None:
-                cancellation.cancel()
-            future.cancel()
+        if stream_policy is None:
             try:
-                future.result(timeout=min(1.0, max(0.1, float(timeout) * 0.05)))
+                return future.result(timeout=timeout)
             except concurrent.futures.TimeoutError:
-                abandoned = pool.abandon(future)
-                logger.warning(
-                    "LLM provider did not stop within the cancellation grace period; "
-                    "the detached daemon worker will be ignored"
-                    + (" and its pool slot was replaced" if abandoned else "")
+                self._abort_future(
+                    future,
+                    pool,
+                    cancellation,
+                    reason=f"Provider attempt exceeded {timeout:.1f}s.",
+                    grace_timeout=timeout,
                 )
-            except Exception:
-                pass
-            raise
+
+        supervisor = StreamSupervisor(cancellation, stream_policy)
+        while True:
+            try:
+                supervisor.raise_if_expired()
+            except StreamDeadlineExceeded as exc:
+                self._abort_future(
+                    future,
+                    pool,
+                    cancellation,
+                    reason=str(exc),
+                    grace_timeout=supervisor.poll_interval,
+                )
+            try:
+                return future.result(timeout=supervisor.poll_interval)
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    return future.result()
+
+    @staticmethod
+    def _abort_future(future, pool, cancellation, *, reason: str, grace_timeout: float):
+        if cancellation is not None:
+            cancellation.cancel(reason)
+        future.cancel()
+        try:
+            future.result(timeout=min(1.0, max(0.1, float(grace_timeout) * 0.05)))
+        except concurrent.futures.TimeoutError:
+            if not future.done():
+                abandoned = pool.abandon(future)
+                if abandoned:
+                    logger.warning(
+                        "LLM provider did not stop within the cancellation grace period; "
+                        "the detached daemon worker will be ignored and its pool slot was replaced "
+                        "| retired_workers=%s/%s",
+                        pool.retired_workers,
+                        pool.max_retired_workers,
+                    )
+                else:
+                    retired_workers = pool.retired_workers
+                    retired_limit = pool.max_retired_workers
+                    replacement_reason = (
+                        "retired-worker limit reached"
+                        if retired_limit is not None and retired_workers >= retired_limit
+                        else "replacement worker could not be started"
+                    )
+                    logger.error(
+                        "LLM provider did not stop and its worker could not be replaced (%s); "
+                        "the occupied pool slot will not be replaced until the provider returns "
+                        "| retired_workers=%s/%s",
+                        replacement_reason,
+                        retired_workers,
+                        retired_limit,
+                    )
+        except Exception:
+            pass
+        raise concurrent.futures.TimeoutError(reason)
 
     def _debug_dumps_enabled(self) -> bool:
         env_value = str(os.environ.get("NEUROMITA_DEBUG_DUMPS", "")).strip().lower()
@@ -343,6 +462,22 @@ class LLMRequestRunner:
             return bool(self.settings.get("DEBUG_SAVE_LLM_DUMPS", False))
         except Exception:
             return False
+
+    def _resolve_retry_delay(
+        self,
+        retry_delay: float,
+        error: Optional[LLMProviderError],
+    ) -> float:
+        try:
+            maximum = max(0.0, float(self.settings.get("LLM_MAX_RETRY_DELAY_SECONDS", 120.0)))
+        except Exception:
+            maximum = 120.0
+        provider_delay = float(getattr(error, "retry_after_seconds", 0.0) or 0.0)
+        return min(maximum, max(0.0, float(retry_delay), provider_delay))
+
+    def close(self) -> None:
+        self._shutdown_event.set()
+        self.provider_manager.close()
 
     def _validate_request(self, req) -> Optional[LLMProviderError]:
         provider = getattr(req, "provider_name", "unknown") or "unknown"

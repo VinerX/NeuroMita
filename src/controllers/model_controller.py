@@ -11,7 +11,7 @@ from typing import Optional, Any
 
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
-from core.character_locks import character_lock
+from core.character_locks import character_generation_lock, character_lock
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services, use
@@ -34,7 +34,7 @@ from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
-from managers.model_pricing_manager import ModelPricingManager
+from managers.model_pricing_manager import ModelPricingManager, known_model_context_length
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
@@ -212,6 +212,8 @@ class ModelController(GenerationService, ModelStateService):
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
+        self.model_pricing_manager.close()
+        self.model.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
@@ -349,7 +351,10 @@ class ModelController(GenerationService, ModelStateService):
                 "req_id": request.req_id,
                 "origin_message_id": request.origin_message_id,
                 "task_uid": request.task_uid,
-                "streaming": request.stream_callback is not None,
+                "streaming": (
+                    request.stream_callback is not None
+                    or request.stream_event_callback is not None
+                ),
             }
 
             prompt_snapshot = {
@@ -860,6 +865,50 @@ class ModelController(GenerationService, ModelStateService):
         logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         return preset_id
 
+    def _warm_base_prompt(self, cid: str, event_type: str) -> list[dict] | None:
+        """Собрать базовый промпт БЕЗ запроса — чтобы счётчик токенов под чатом
+        показывал контекст ещё до отправки первого сообщения (#1).
+
+        Используем настоящий PromptBuilderService (единый источник сборки), без
+        user_input/rag — это статическая часть окна (система + память + история).
+        RAG и текст сообщения добавятся сверху при реальном запросе. Всё
+        защищено: любая ошибка → None, счётчик просто останется на 0, как раньше.
+        """
+        try:
+            char = self._get_character_ref(cid)
+            if char is None:
+                return None
+            char_name = str(getattr(char, "name", "") or "")
+            policy = resolve_policy(model_event_type=str(event_type))
+            preset_id = self._resolve_chat_preset_id(cid, char_name)
+            capabilities: Dict[str, Any] = {}
+            try:
+                capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
+            except Exception:
+                capabilities = {}
+            cfg = getattr(self.model, "cfg", None)
+            memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
+            prompt_request = PromptBuildRequest(
+                character=char,
+                event_type=event_type,
+                policy=policy,
+                user_input="",
+                memory_limit=memory_limit,
+                is_game_master=(cid == "GameMaster"),
+                separate_prompts=bool(self.settings.get("SEPARATE_PROMPTS", True)),
+                capabilities=capabilities,
+                game_state=self.game_state.to_prompt_dict(),
+            )
+            with character_lock(cid):
+                built = use(PromptBuilderService).build(prompt_request)
+            # НЕ кладём в _base_prompt_cache: тот кэш — авторитетный слепок
+            # реального запроса. Оценку считаем свежей на каждый вызов (пока не
+            # было запроса), чтобы она отражала текущие настройки, а не залипала.
+            return redact_image_payloads(list(getattr(built, "messages", []) or []))
+        except Exception as e:
+            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {e}")
+            return None
+
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
         if not cid:
@@ -867,6 +916,10 @@ class ModelController(GenerationService, ModelStateService):
 
         event_type = "chat"
         base = self._base_prompt_cache.get((cid, event_type))
+        if not base:
+            # Кэш ещё не прогрет (не было запросов в этой сессии) — собираем
+            # базовый промпт на лету, чтобы счётчик не висел на нуле до отправки.
+            base = self._warm_base_prompt(cid, event_type)
         if not base:
             return cid, [], 0
 
@@ -887,9 +940,12 @@ class ModelController(GenerationService, ModelStateService):
         preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
 
         pricing_info = None
+        model_name = ""
         if cid:
             try:
-                pricing_info = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+                resolved_preset = self.preset_resolver.resolve(preset_id)
+                model_name = str(getattr(resolved_preset, "api_model", "") or "")
+                pricing_info = self.model_pricing_manager.resolve_for_preset(resolved_preset)
             except Exception:
                 pricing_info = None
 
@@ -903,13 +959,18 @@ class ModelController(GenerationService, ModelStateService):
                 estimated_currency = pricing_info.currency
                 estimated_source = pricing_info.source
 
+        # Ручная оценка в рублях — только если пользователь ЯВНО задал цену за
+        # 1000 токенов (> 0). Иначе (бесплатный тариф/цена неизвестна) не
+        # выдумываем стоимость, а показываем n/a — не врём про рубли.
         if estimated_cost is None and cfg:
             try:
-                estimated_cost = (float(context_tokens) / 1000.0) * float(cfg.token_cost_input)
+                manual_price = float(cfg.token_cost_input)
+            except Exception:
+                manual_price = 0.0
+            if manual_price > 0:
+                estimated_cost = (float(context_tokens) / 1000.0) * manual_price
                 estimated_currency = "RUB"
                 estimated_source = "manual_settings"
-            except Exception:
-                estimated_cost = None
 
         last = dict(self._last_token_stats or {})
         last.setdefault("actual_cost", None)
@@ -923,9 +984,18 @@ class ModelController(GenerationService, ModelStateService):
             max_completion_tokens = pricing_info.max_completion_tokens
         if max_context_tokens is None:
             try:
-                max_context_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+                configured = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
             except Exception:
-                max_context_tokens = 32000
+                configured = 32000
+            # Провайдер не сообщил окно (напр. Google AI Studio Gemini). Если
+            # пользователь не менял дефолт (32000), а модель известна — берём её
+            # реальное окно, иначе Gemini/Claude показывались бы как 32k. Явно
+            # выставленное пользователем значение уважаем.
+            if configured == 32000:
+                known = known_model_context_length(model_name)
+                if known:
+                    configured = known
+            max_context_tokens = configured
 
         return {
             "estimated_context_tokens": int(context_tokens or 0),
@@ -1062,6 +1132,33 @@ class ModelController(GenerationService, ModelStateService):
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _resolve_preset_bool(self, preset, override_key: str, setting_key: str, *, default: bool) -> bool:
+        """Булев флаг пресета поверх глобальной настройки.
+
+        Тот же трёхпозиционный контракт, что у enable_thinking: переопределение
+        существует только когда у него взведён enabled, иначе берётся глобальное
+        значение.
+        """
+        overrides = getattr(preset, "generation_overrides", None) or {}
+        spec = overrides.get(override_key) or {}
+        if spec.get("enabled"):
+            return bool(spec.get("value", default))
+        return bool(self.settings.get(setting_key, default))
+
+    def _split_response_thinking(self, llm_response) -> tuple[str, str]:
+        """Собрать размышления из обоих источников сразу.
+
+        Мысли приходят двумя разными путями: текстовыми <think>-тегами внутри
+        ответа (DeepSeek-R1 и прочие) и отдельным каналом провайдера
+        (reasoning_content у LM Studio, thought-части Gemini). Второй в text не
+        попадает вовсе, поэтому его надо забрать из самого ответа.
+        """
+        visible, think_text = self._extract_think_blocks(str(llm_response.text))
+        native = (getattr(llm_response, "reasoning", None) or "").strip()
+        if native:
+            think_text = f"{native}\n\n{think_text}" if think_text else native
+        return visible, think_text
+
     def _extract_image_description(self, text: str) -> tuple[str, str | None]:
         """
         Extracts <image_description>...</image_description> block from text.
@@ -1178,19 +1275,19 @@ class ModelController(GenerationService, ModelStateService):
             })
             return None
 
-        # Пул GENERATION многопоточный: два запроса к одной Мите (реплика игрока и
-        # idle-событие из игры) иначе украли бы друг у друга consume_pending_targets()
-        # и перемешали инкременты attitude/boredom. Разные персонажи идут параллельно.
-        with character_lock(getattr(char, "char_id", "") or ""):
-            return self._generate_chat_locked(request, char)
+        # Полные генерации одной Миты идут последовательно, но этот gate не блокирует
+        # короткие state-lock секции фонового summary/переменных во время сетевого I/O.
+        with character_generation_lock(getattr(char, "char_id", "") or ""):
+            return self._generate_chat_serialized(request, char)
 
-    def _generate_chat_locked(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+    def _generate_chat_serialized(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
         user_input = request.user_input or ""
         visible_user_input = user_input
         system_input = request.system_input or ""
         image_data = list(request.image_data or [])
         image_source = str(request.image_source or "").strip().lower()
         stream_callback = request.stream_callback
+        stream_event_callback = request.stream_event_callback
         event_type = request.event_type or "chat"
 
         sender = str(request.sender or "Player")
@@ -1210,7 +1307,22 @@ class ModelController(GenerationService, ModelStateService):
             prompt_set_path = getattr(char, "base_data_path", None)
             rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
-        game_state = self.game_state.to_prompt_dict()
+        # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
+        # they fire on precise player input, independent of RAG availability or
+        # embedding similarity of a two-digit message.
+        try:
+            from managers.core_memory_triggers import core_memory_context
+            _core_ctx = core_memory_context(user_input, character_id=char_id)
+            if _core_ctx:
+                rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+        except Exception as _core_err:
+            logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+
+        game_state = (
+            copy.deepcopy(request.game_state)
+            if request.game_state
+            else self.game_state.to_prompt_dict()
+        )
 
         with self._temporary_system_infos_lock:
             extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
@@ -1245,6 +1357,7 @@ class ModelController(GenerationService, ModelStateService):
         preset_id = self._resolve_preset_id(event_type, policy, char_id, char_name)
 
         effective_capabilities = {}
+        effective_preset = None
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
             effective_capabilities = dict(getattr(effective_preset, "capabilities", {}) or {})
@@ -1279,10 +1392,30 @@ class ModelController(GenerationService, ModelStateService):
                 logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
                 _tools_on = False
 
-        _custom_params = getattr(char, "custom_params", [])
+        with character_lock(char_id):
+            _custom_params = copy.deepcopy(getattr(char, "custom_params", []) or [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
-        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
+        # Схемный CoT — свойство конкретной модели, а не всей программы: локальной
+        # он нужен, чтобы думать вслух, большой хостовой только жжёт токены.
+        effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
+            effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
+        )
+
+        # The selected DSL template is the only owner of intent support. The
+        # capability is finalized after PromptController processes the template.
+        effective_capabilities["schema_intents"] = False
+
+        # Пока секрет персонажа не раскрыт, secret_exposed в схеме провайдера
+        # обязателен: опциональное поле constrained decoding молча пропускает,
+        # и модель писала реплику-раскрытие без флага — текст и состояние
+        # расходились. Required + nullable заставляет решать каждый ход.
+        from characters import SecretExposedCharacter
+        if isinstance(char, SecretExposedCharacter):
+            with character_lock(char_id):
+                _secret_open = bool(char.get_variable("secretExposed", False))
+            if not _secret_open:
+                effective_capabilities["structured_required_fields"] = ("secret_exposed",)
 
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
@@ -1396,13 +1529,29 @@ class ModelController(GenerationService, ModelStateService):
         )
 
         try:
-            prompt_data = use(PromptBuilderService).build(prompt_request)
+            with character_lock(char_id):
+                prompt_data = use(PromptBuilderService).build(prompt_request)
         except Exception as e:
             logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
             })
             return None
+
+        excluded_segment_fields = {
+            str(name).strip()
+            for name in effective_capabilities.get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        intents_available = bool(prompt_data.support_intents) and "intents" not in excluded_segment_fields
+        effective_capabilities["schema_intents"] = intents_available
+        if intents_available:
+            excluded_segment_fields.discard("intents")
+        else:
+            excluded_segment_fields.add("intents")
+        effective_capabilities["structured_segment_exclude_fields"] = tuple(
+            sorted(excluded_segment_fields)
+        )
 
         combined_messages = prompt_data.messages
 
@@ -1439,7 +1588,9 @@ class ModelController(GenerationService, ModelStateService):
             llm_response = self.model.generate(
                 combined_messages,
                 stream_callback=use_stream_cb,
+                stream_event_callback=(stream_event_callback if policy.allow_streaming else None),
                 preset_id=preset_id,
+                request_id=str(task_uid or req_id or origin_message_id or ""),
                 capabilities_override=effective_capabilities,
                 structured_model=structured_model_cls,
             )
@@ -1454,13 +1605,23 @@ class ModelController(GenerationService, ModelStateService):
                         error_message = self.model.get_last_error_message() or error_message
                     except Exception:
                         pass
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": error_message
-                })
-                return None
+                error_details = getattr(llm_response, "error_details", None) if llm_response else None
+                provider_error = getattr(self.model, "last_error", None)
+                if error_details is None and provider_error is not None and hasattr(provider_error, "to_payload"):
+                    error_details = provider_error.to_payload()
+                if provider_error is None:
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                        "error": error_message,
+                    })
+                return ChatGenerationResult(
+                    text="",
+                    character_id=char_id,
+                    error=error_message,
+                    error_details=error_details,
+                )
 
             raw_text = llm_response.text
-            visible_raw, think_text = self._extract_think_blocks(str(raw_text))
+            visible_raw, think_text = self._split_response_thinking(llm_response)
 
             if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
                 _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
@@ -1514,14 +1675,26 @@ class ModelController(GenerationService, ModelStateService):
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
                 visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
-            processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
-
-            targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    targets = char.consume_pending_targets()
-                except Exception:
-                    targets = []
+            with character_lock(char_id):
+                processed = char.process_response_nlp_commands(
+                    visible_raw,
+                    self.settings.get("SAVE_MISSED_MEMORY", False),
+                )
+                targets: list[str] = []
+                if hasattr(char, "consume_pending_targets"):
+                    try:
+                        targets = char.consume_pending_targets()
+                    except Exception:
+                        targets = []
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             target = targets[-1] if targets else "Player"
 
             final_text = processed
@@ -1575,12 +1748,8 @@ class ModelController(GenerationService, ModelStateService):
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-            if hasattr(char, "flush_variables"):
-                char.flush_variables()
-
             self._consume_temporary_system_infos(char_id, extra_system_infos)
 
-            created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
@@ -1590,13 +1759,6 @@ class ModelController(GenerationService, ModelStateService):
                 "inline_graph_json": inline_graph_json,
             })
 
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
-
             return ChatGenerationResult(
                 text=final_text,
                 character_id=char_id,
@@ -1605,6 +1767,7 @@ class ModelController(GenerationService, ModelStateService):
                 targets=targets,
                 think=think_text or None,
                 message_id=assistant_message_id,
+                sample_id=sample_id or "",
             )
 
         except Exception as e:
@@ -1781,23 +1944,25 @@ class ModelController(GenerationService, ModelStateService):
                 f"Falling back to legacy processing."
             )
             # Fallback to legacy tag-based processing
-            processed = char.process_response_nlp_commands(
-                visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
-            fallback_targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    fallback_targets = char.consume_pending_targets()
-                except Exception:
-                    fallback_targets = []
+            with character_lock(char_id):
+                processed = char.process_response_nlp_commands(
+                    visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
+                )
+                fallback_targets: list[str] = []
+                if hasattr(char, "consume_pending_targets"):
+                    try:
+                        fallback_targets = char.consume_pending_targets()
+                    except Exception:
+                        fallback_targets = []
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             fallback_target = fallback_targets[-1] if fallback_targets else "Player"
-
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
 
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
             self._store_last_usage(
@@ -1817,15 +1982,34 @@ class ModelController(GenerationService, ModelStateService):
                 target=fallback_target,
                 targets=fallback_targets,
                 think=think_text or None,
+                sample_id=sample_id or "",
             )
 
         self._sanitize_structured_segment_fields(structured, capabilities)
 
-        # Apply structured response processing (behavior changes, memory, game tags)
-        char.process_structured_response(
-            structured,
-            save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
-        )
+        # Apply and snapshot character state in a short critical section. Tool
+        # execution and any follow-up provider request happen after this lock.
+        with character_lock(char_id):
+            char.process_structured_response(
+                structured,
+                save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
+            )
+            targets: list[str] = []
+            if hasattr(char, "consume_pending_targets"):
+                try:
+                    targets = char.consume_pending_targets()
+                except Exception:
+                    targets = []
+            if hasattr(char, "flush_variables"):
+                char.flush_variables()
+            created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+            voice_profile = None
+            if hasattr(char, "to_voice_profile"):
+                try:
+                    voice_profile = char.to_voice_profile()
+                except Exception:
+                    voice_profile = None
+        target = targets[-1] if targets else "Player"
 
         # --- Tool call path ---
         _active_tools = enabled_tools or []
@@ -1871,6 +2055,8 @@ class ModelController(GenerationService, ModelStateService):
                 structured_model_cls=structured_model_cls,
                 sample_id=sample_id,
                 image_descriptions=image_descriptions,
+                targets=targets,
+                voice_profile=voice_profile,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1889,14 +2075,6 @@ class ModelController(GenerationService, ModelStateService):
         # Attach raw LLM JSON for the debug panel (not saved to history)
         result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
-
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
-        target = targets[-1] if targets else "Player"
 
         if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
             final_text = re.sub(
@@ -1959,9 +2137,6 @@ class ModelController(GenerationService, ModelStateService):
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-        if hasattr(char, "flush_variables"):
-            char.flush_variables()
-
         # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
         if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
@@ -1977,7 +2152,6 @@ class ModelController(GenerationService, ModelStateService):
                 logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
 
         # Notify graph extraction (and any future subscribers).
-        created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
         self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
             "character_id": char_id,
             "character_ref": char,
@@ -1989,13 +2163,6 @@ class ModelController(GenerationService, ModelStateService):
             "from_structured_output": True,
         })
 
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
-
         return ChatGenerationResult(
             text=final_text,
             character_id=char_id,
@@ -2005,6 +2172,7 @@ class ModelController(GenerationService, ModelStateService):
             think=think_text or None,
             structured=result_dict,
             message_id=assistant_message_id,
+            sample_id=sample_id or "",
         )
 
     # ---------------------------------------------------------------------
@@ -2041,6 +2209,8 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
+        targets: list[str] | None = None,
+        voice_profile=None,
     ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
@@ -2060,20 +2230,8 @@ class ModelController(GenerationService, ModelStateService):
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
+        targets = list(targets or [])
         target = targets[-1] if targets else "Player"
-
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
 
         # Write first turn to history
         usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
@@ -2214,7 +2372,7 @@ class ModelController(GenerationService, ModelStateService):
                 message_id=first_assistant_message_id,
             )
 
-        visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
+        visible_raw_2, think_text_2 = self._split_response_thinking(llm_response_2)
         merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text

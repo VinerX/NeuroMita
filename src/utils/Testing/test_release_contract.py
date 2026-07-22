@@ -40,6 +40,7 @@ def test_validate_local_release_accepts_full_python_archive():
                 "requirements.txt",
                 "run.py",
                 "run.bat",
+                "Launcher.exe",
                 "init.py",
                 "init_triton.bat",
                 "libs/python/python.exe",

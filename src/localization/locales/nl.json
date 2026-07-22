@@ -1573,5 +1573,7 @@
   "⚠️ Модели Fish Speech+ / + RVC требуют всех компонентов!": "⚠️ Fish Speech+/+RVC: alle componenten vereist!",
   "⚠️ Ошибка загрузки Triton": "⚠️ Triton-laadfout",
   "✓ Успех": "✓ Succes",
-  "✗ Ошибка": "✗ Fout"
+  "✗ Ошибка": "✗ Fout",
+  "Предупреждение о совместимости": "Compatibiliteitswaarschuwing",
+  "Всё равно установить": "Toch installeren"
 }

@@ -24,14 +24,22 @@ class GameState:
     roomPlayer: int = -1
     roomMita: int = -1
     nearObjects: str = ""
-    actualInfo: str = ""
+    world_state: str = ""
+    runtime_rules: str = ""
+    runtime_static_catalog: str = ""
+    runtime_capabilities: str = ""
+    intent_rules: str = ""
 
     def update_from_event_data(self, data: Dict[str, Any]) -> None:
         self.distance = float(data.get("distance", self.distance) or 0.0)
         self.roomPlayer = int(data.get("roomPlayer", self.roomPlayer) if data.get("roomPlayer", None) is not None else self.roomPlayer)
         self.roomMita = int(data.get("roomMita", self.roomMita) if data.get("roomMita", None) is not None else self.roomMita)
         self.nearObjects = str(data.get("nearObjects", self.nearObjects) or "")
-        self.actualInfo = str(data.get("actualInfo", self.actualInfo) or "")
+        self.world_state = str(data.get("world_state", self.world_state) or "")
+        self.runtime_rules = str(data.get("runtime_rules", self.runtime_rules) or "")
+        self.runtime_static_catalog = str(data.get("runtime_static_catalog", self.runtime_static_catalog) or "")
+        self.runtime_capabilities = str(data.get("runtime_capabilities", self.runtime_capabilities) or "")
+        self.intent_rules = str(data.get("intent_rules", self.intent_rules) or "")
 
     def to_prompt_dict(self) -> Dict[str, Any]:
         return {
@@ -39,5 +47,9 @@ class GameState:
             "roomPlayer": int(self.roomPlayer),
             "roomMita": int(self.roomMita),
             "nearObjects": str(self.nearObjects),
-            "actualInfo": str(self.actualInfo),
+            "world_state": str(self.world_state),
+            "runtime_rules": str(self.runtime_rules),
+            "runtime_static_catalog": str(self.runtime_static_catalog),
+            "runtime_capabilities": str(self.runtime_capabilities),
+            "intent_rules": str(self.intent_rules),
         }

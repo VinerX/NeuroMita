@@ -50,11 +50,16 @@ class ModelRuntimeConfig:
     thinking_budget: float = 0.0
     log_probability: float = 0.0
     enable_thinking: bool | None = None  # None = не передавать параметр
+    reasoning_effort: str | None = None  # low/medium/high, только для reasoning_effort-транспорта
     gemini_thinking_budget: int | None = None  # -1=dynamic, 0=off, >0=token limit
 
     # costs/limits
-    token_cost_input: float = 0.0432
-    token_cost_output: float = 0.1728
+    # 0 = «цена неизвестна» (напр. бесплатный Google AI Studio). Раньше дефолт
+    # был ненулевым, и приложение выдумывало стоимость в рублях даже на
+    # бесплатном лимите. Цену за 1000 токенов задаёт сам пользователь в
+    # настройках — тогда и только тогда показываем ручную оценку.
+    token_cost_input: float = 0.0
+    token_cost_output: float = 0.0
     max_model_tokens: int = 128000
 
     # context/history
@@ -98,6 +103,8 @@ class ModelRuntimeConfig:
                 self.thinking_budget = _to_float(value, self.thinking_budget)
             elif key == "ENABLE_THINKING":
                 self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
+            elif key == "MODEL_REASONING_EFFORT":
+                self.reasoning_effort = str(value).strip().lower() or None if value else None
             elif key == "GEMINI_THINKING_BUDGET":
                 self.gemini_thinking_budget = _to_int(value, 8192) if value != "" and value is not None else None
 
@@ -153,10 +160,11 @@ class ModelConfigLoader:
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
             enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
+            reasoning_effort=(str(s.get("MODEL_REASONING_EFFORT")).strip().lower() or None) if s.get("MODEL_REASONING_EFFORT") else None,
             gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 
-            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),
-            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.1728), 0.1728),
+            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0), 0.0),
+            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.0), 0.0),
             max_model_tokens=_to_int(s.get("MAX_MODEL_TOKENS", 128000), 128000),
 
             memory_limit=_to_int(s.get("MODEL_MESSAGE_LIMIT", 40), 40),
@@ -214,6 +222,15 @@ class ModelConfigLoader:
             forced.add("enable_thinking")
             applied.append(f"enable_thinking={cfg.enable_thinking}")
 
+        # reasoning_effort: строка low/medium/high, пустая = не переопределять
+        re_spec = overrides.get("reasoning_effort") or {}
+        if re_spec.get("enabled"):
+            val = str(re_spec.get("value") or "").strip().lower()
+            if val:
+                cfg.reasoning_effort = val
+                forced.add("reasoning_effort")
+                applied.append(f"reasoning_effort={val}")
+
         if applied:
             preset_name = getattr(preset_settings, "preset_name", "?")
             logger.info(f"[ModelConfigLoader] Preset '{preset_name}' overrides applied: {', '.join(applied)}")
@@ -221,7 +238,8 @@ class ModelConfigLoader:
                 f"[ModelConfigLoader] Effective config — temperature={cfg.temperature}, "
                 f"max_response_tokens={cfg.max_response_tokens}, top_p={cfg.top_p}, "
                 f"top_k={cfg.top_k}, presence_penalty={cfg.presence_penalty}, "
-                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}"
+                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}, "
+                f"reasoning_effort={cfg.reasoning_effort}"
             )
 
         cfg.preset_forced_params = frozenset(forced)

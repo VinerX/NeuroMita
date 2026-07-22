@@ -165,7 +165,7 @@ API_TEMPLATES_DATA = [
         "url": "http://127.0.0.1:1234/v1/chat/completions",
         "default_model": "",
         "known_models": [],
-        "protocol_id": "openai_compatible_default",
+        "protocol_id": "lmstudio_default",
         "test_url": "http://127.0.0.1:1234/v1/models",
         "documentation_url": "https://lmstudio.ai/docs/app/api/endpoints/openai",
         "models_url": "https://lmstudio.ai/docs/app/api/endpoints/openai",

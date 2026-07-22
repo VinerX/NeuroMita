@@ -124,6 +124,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             )
             return {
                 "rows": list(rows or []),
+                "hardware": dict(self._catalog.hardware_snapshot() or {}),
                 "checked_at": dt.datetime.now(),
                 "included_status": bool(include_status),
             }
@@ -174,14 +175,9 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         if self._is_task_active(task_id):
             self.update_state(task_status=_("Уже в очереди", "Already queued"))
             return
-        if self._queue_is_busy():
-            self.update_state(
-                task_status=_(
-                    "Дождитесь завершения текущей установки",
-                    "Wait for the current installation to finish",
-                )
-            )
-            return
+        # Занятость очереди больше не блокирует запрос: другой компонент
+        # встаёт в FIFO-очередь бэкенда (дедуп по task_id — выше, дубль
+        # быстрых кликов по тому же компоненту ловит `_inflight`).
 
         operation_name = f"ai-hub-action:{component_id}:{action}"
         if operation_name in self._inflight:
@@ -303,6 +299,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         included_status = bool(payload.get("included_status"))
         self.update_state(
             rows=tuple(immutable_payload(item) for item in rows),
+            hardware=immutable_payload(payload.get("hardware") or {}),
             loaded_once=True,
             refreshing=False,
             last_check_ts=payload.get("checked_at"),
@@ -462,10 +459,6 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             str((item or {}).get("task_id") or "") == task_id
             for item in queue.get("pending") or []
         )
-
-    def _queue_is_busy(self) -> bool:
-        queue = mutable_payload(self.state.queue_state) or {}
-        return bool(queue.get("running") or queue.get("pending"))
 
     def _admission_failed(self, task_id: str, install_window: Any, message: str) -> None:
         self.update_state(task_status=str(message), error=str(message))

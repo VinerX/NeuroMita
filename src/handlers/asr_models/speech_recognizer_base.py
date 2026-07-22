@@ -13,6 +13,7 @@ from core.installables import (
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
@@ -92,7 +93,13 @@ class SpeechRecognizerInterface(ABC):
             self.apply_settings(settings)
         except Exception:
             pass
-        backend = coerce_backend(self.required_backend(run_ctx))
+        # Каталожный backend — статичное свойство компонента из карточки модели.
+        # required_backend остаётся для install/status: он может зависеть от машины.
+        declared_backend = cfg.get("backend")
+        if declared_backend:
+            backend = coerce_backend(declared_backend)
+        else:
+            backend = coerce_backend(self.required_backend(run_ctx))
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,
@@ -103,6 +110,7 @@ class SpeechRecognizerInterface(ABC):
             legacy_kind=self.legacy_kind,
             tags=tuple(str(item) for item in (cfg.get("tags") or []) if str(item).strip()),
             languages=tuple(str(item) for item in (cfg.get("languages") or []) if str(item).strip()),
+            compatibility=coerce_compatibility_spec(cfg.get("compatibility")),
         )
 
     def status(self, ctx: dict | None = None) -> ComponentStatus:

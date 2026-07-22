@@ -53,6 +53,9 @@ class HistoryController(HistoryService):
         self._background_compression_inflight: set[str] = set()
         self._background_compression_timers: Dict[str, threading.Timer] = {}
         self._compression_cooldowns: Dict[str, float] = {}
+        # Счётчик сообщений на персонажа для фоновой ревизии памяти (08 P1).
+        self._messages_since_last_maintenance: Dict[str, int] = {}
+        self._maintenance_inflight: set[str] = set()
         self._closed = False
 
         services().register(HistoryService, self, replace=True)
@@ -267,6 +270,58 @@ class HistoryController(HistoryService):
         if getattr(character, "char_id", None) != char_id:
             return
         self._start_background_compression(character)
+        self._maybe_run_memory_maintenance(character)
+
+    def _maybe_run_memory_maintenance(self, character) -> None:
+        """Раз в N ответов запускает фоновую ревизию памяти (dedup-sweep, без LLM)."""
+        if getattr(self, "_closed", False):
+            return
+        try:
+            if not bool(self._get_setting("MEMORY_MAINTENANCE_ENABLED", True)):
+                return
+        except Exception:
+            pass
+
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            every = int(self._get_setting("MEMORY_MAINTENANCE_EVERY_MESSAGES", 20))
+        except Exception:
+            every = 20
+        if every <= 0:
+            return
+
+        with self._compression_guard:
+            cnt = self._messages_since_last_maintenance.get(char_id, 0) + 1
+            if cnt < every:
+                self._messages_since_last_maintenance[char_id] = cnt
+                return
+            if char_id in self._maintenance_inflight:
+                # Не накапливаем очередь: держим счётчик на пороге, попробуем позже.
+                self._messages_since_last_maintenance[char_id] = every
+                return
+            self._messages_since_last_maintenance[char_id] = 0
+            self._maintenance_inflight.add(char_id)
+
+        try:
+            executors().try_submit(Pools.BACKGROUND_LLM, self._run_memory_maintenance, character)
+        except Exception as e:
+            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить ревизию памяти в очередь: {e}")
+            with self._compression_guard:
+                self._maintenance_inflight.discard(char_id)
+
+    def _run_memory_maintenance(self, character) -> None:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            mem = getattr(character, "memory_system", None)
+            if mem is not None and hasattr(mem, "run_maintenance"):
+                mem.run_maintenance()
+        except Exception as e:
+            logger.warning(
+                f"[HistoryController][{char_id}] Memory maintenance failed: {e}", exc_info=True
+            )
+        finally:
+            with self._compression_guard:
+                self._maintenance_inflight.discard(char_id)
 
     def _process_history_compression(
         self,
@@ -360,8 +415,130 @@ class HistoryController(HistoryService):
         if new_count != summary_count:
             self._emit_compressed(char_id)
 
+        # Страховочный второй путь в долгую память (08 P1): просим ту же модель
+        # выделить из сжимаемого куска 0-3 факта-кандидата и прогоняем через add_memory
+        # (там уже дедуп). Опционально, по умолчанию выключено (доп. LLM-вызов).
+        try:
+            self._extract_memory_candidates(character, messages_to_compress)
+        except Exception as e:
+            logger.warning(
+                f"[HistoryController][{char_id}] Memory candidate extraction failed: {e}",
+                exc_info=True,
+            )
+
         if reason == "Periodic compression":
             self._messages_since_last_periodic_compression[char_id] = 0
+
+    _CANDIDATE_PROMPT = (
+        "From the dialogue chunk below, extract 0 to {max_n} durable long-term memory "
+        "facts worth remembering for {char_name} (promises, preferences, important events, "
+        "relationship changes, revealed secrets). Skip small talk and anything trivial. "
+        "Write each fact in the language of the dialogue, short and concrete.\n"
+        "Answer ONLY with a JSON array, each item {{\"priority\": \"low|normal|high\", "
+        "\"content\": \"...\"}}. Empty array [] if nothing is worth it.\n\n"
+        "Dialogue chunk:\n{chunk}\n\nJSON:"
+    )
+
+    def _extract_memory_candidates(self, character, messages_to_compress) -> None:
+        if getattr(self, "_closed", False):
+            return
+        try:
+            if not bool(self._get_setting("MEMORY_SUMMARY_CANDIDATES_ENABLED", False)):
+                return
+        except Exception:
+            return
+
+        mem = getattr(character, "memory_system", None)
+        if mem is None or not hasattr(mem, "add_memory"):
+            return
+        if not messages_to_compress:
+            return
+
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        try:
+            max_n = int(self._get_setting("MEMORY_SUMMARY_CANDIDATES_MAX", 3))
+        except Exception:
+            max_n = 3
+        max_n = max(1, min(5, max_n))
+
+        chunk = "\n".join(
+            f"[{'Player' if m.get('role') == 'user' else 'Character'}]: {m.get('content')}"
+            for m in messages_to_compress if isinstance(m, dict) and m.get("content")
+        )
+        if not chunk.strip():
+            return
+
+        prompt = self._CANDIDATE_PROMPT.format(
+            max_n=max_n,
+            char_name=getattr(character, "name", "Character"),
+            chunk=self._truncate_text_for_prompt(chunk, 6000),
+        )
+
+        try:
+            request_timeout = max(1.0, float(self._get_setting("HISTORY_COMPRESSION_REQUEST_TIMEOUT_SEC", 60.0)))
+            result = use(GenerationService).generate_utility(
+                UtilityGenerationRequest(
+                    prompt=prompt,
+                    character_id=char_id,
+                    kind="memory_candidates",
+                    preset_id=None,
+                    max_attempts=1,
+                    retry_delay=0.0,
+                    request_timeout=request_timeout,
+                )
+            )
+        except Exception as e:
+            logger.warning(f"[HistoryController][{char_id}] candidate request failed: {e}")
+            return
+
+        if not result or not getattr(result, "ok", False) or not (result.text or "").strip():
+            return
+
+        candidates = self._parse_memory_candidates(result.text, max_n)
+        added = 0
+        for prio, content in candidates:
+            try:
+                if mem.add_memory(content=content, priority=prio) is not None:
+                    added += 1
+            except Exception:
+                continue
+        if added:
+            logger.info(f"[HistoryController][{char_id}] Added {added} memory candidate(s) from compression.")
+
+    @staticmethod
+    def _parse_memory_candidates(text: str, max_n: int) -> List[tuple]:
+        """Толерантно парсим JSON-массив кандидатов из ответа модели."""
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        # выдёргиваем первый JSON-массив (модель может обернуть в ```json ... ```)
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        blob = raw[start:end + 1]
+        try:
+            data = json.loads(blob)
+        except Exception:
+            return []
+        if not isinstance(data, list):
+            return []
+
+        valid_prio = {"low", "normal", "high", "critical"}
+        out: List[tuple] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            prio = str(item.get("priority") or "normal").strip().lower()
+            if prio not in valid_prio:
+                prio = "normal"
+            out.append((prio, content))
+            if len(out) >= max_n:
+                break
+        return out
 
     def _emit_compressed(self, char_id: str) -> None:
         try:
@@ -617,6 +794,12 @@ class HistoryController(HistoryService):
             ])
             previous_summary_limit = int(self._get_setting("HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS", 6000))
             previous_summary_trimmed = self._truncate_text_for_prompt(previous_summary, previous_summary_limit)
+            if previous_summary and len(str(previous_summary)) > previous_summary_limit:
+                logger.warning(
+                    "[HistoryController] previous_summary обрезана для сжатия: "
+                    f"{len(str(previous_summary))} -> {previous_summary_limit} симв. "
+                    "(увеличьте HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS или включите layered)."
+                )
 
             full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
             full_prompt = full_prompt.replace("{your character}", getattr(character, "name", "Character"))
@@ -890,10 +1073,22 @@ class HistoryController(HistoryService):
         """
         max_segments = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_MAX_SEGMENTS", 6))
         batch = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_ROLLUP_BATCH", 3))
+        # Токен-бюджет слоёв: форсируем роллап и по суммарному размеру, а не только
+        # по числу слоёв (0 = выключено). Считаем в символах рендера [HISTORY SUMMARY].
+        max_chars = int(self._get_setting("HISTORY_COMPRESSION_LAYERED_MAX_CHARS", 8000))
         if max_segments <= 0 or batch <= 1:
             return segments
-        if len(segments) <= max_segments:
+        total_chars = sum(len(str(s.get("text") or "")) for s in segments)
+        over_count = len(segments) > max_segments
+        over_chars = max_chars > 0 and total_chars > max_chars and len(segments) > 1
+        if not over_count and not over_chars:
             return segments
+        if over_chars and not over_count:
+            char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+            logger.info(
+                f"[HistoryController][{char_id}] Роллап по бюджету слоёв: "
+                f"{total_chars} симв. > {max_chars}."
+            )
 
         batch = min(batch, len(segments) - 1)  # хотя бы один свежий слой должен остаться
         if batch <= 1:

@@ -757,6 +757,50 @@ def _cleanup_python_reserve(base_path: Path, archive: Path) -> None:
     _archive_meta_path(archive).unlink(missing_ok=True)
 
 
+# Максимум detached-перезапусков подряд для одной залоченной установки. Обычная
+# перезапись залоченного Launcher.exe снимается за один detached-хэндофф; если же
+# занят сам работающий python.exe, его нельзя переписать из своего же процесса —
+# сколько ни перезапускай, файл останется locked. Без ограничителя bootstrap
+# спавнил бы detached-процесс бесконечно.
+_MAX_LOCKED_RESTART_ATTEMPTS = 3
+
+
+def note_locked_restart_attempt(
+    base_dir: Optional[str] = None,
+    *,
+    limit: int = _MAX_LOCKED_RESTART_ATTEMPTS,
+) -> tuple[int, bool]:
+    """Засчитать попытку detached-перезапуска для залоченной установки.
+
+    Возвращает ``(номер_попытки, исчерпано)``. При исчерпании лимита переводит
+    операцию в терминальный ``failed`` с не-«locked» текстом ошибки — тогда
+    ``resume_pending_python_update`` перестаёт сигналить ``waiting_for_restart``,
+    и цикл detached-перезапусков останавливается (вместо вечного спавна).
+    """
+    base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
+    state = read_json(_python_journal_path(base_path))
+    attempts = int(state.get("restart_attempts") or 0) + 1
+    limit = max(1, int(limit))
+    exhausted = attempts >= limit
+    if exhausted:
+        _set_python_operation_phase(
+            base_path,
+            "failed",
+            restart_attempts=attempts,
+            error=(
+                "Update aborted: launcher files stayed locked after "
+                f"{attempts} restart attempts; a manual reinstall is required."
+            ),
+        )
+    else:
+        _set_python_operation_phase(
+            base_path,
+            str(state.get("phase") or "waiting_for_restart"),
+            restart_attempts=attempts,
+        )
+    return attempts, exhausted
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_python_update_info(

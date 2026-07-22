@@ -329,17 +329,30 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                 logger.info("Recovered an interrupted Python installation; restarting.")
                 raise SystemExit(42)
             if python_recovery.status == "waiting_for_restart":
-                logger.info(
-                    "A running launcher file is still locked; handing recovery to a "
-                    "detached launcher process."
-                )
-                from utils.app_restart import spawn_detached_run
+                from updater import note_locked_restart_attempt
 
-                if spawn_detached_run():
-                    raise SystemExit(0)
-                raise SystemExit(1)
+                attempts, exhausted = note_locked_restart_attempt(base_dir)
+                if exhausted:
+                    logger.error(
+                        "Could not apply the update: launcher files stayed locked "
+                        f"after {attempts} restart attempts. This is usually the "
+                        "running python.exe itself, which cannot be overwritten from "
+                        "its own process, so a manual reinstall is required. "
+                        "Continuing on the current version."
+                    )
+                else:
+                    logger.info(
+                        "A running launcher file is still locked; handing recovery to "
+                        f"a detached launcher process (attempt {attempts})."
+                    )
+                    from utils.app_restart import spawn_detached_run
+
+                    if spawn_detached_run():
+                        raise SystemExit(0)
+                    raise SystemExit(1)
             if not python_recovery.ok and python_recovery.status not in {
-                "waiting_for_credentials"
+                "waiting_for_credentials",
+                "waiting_for_restart",
             }:
                 logger.warning(
                     f"Python installation recovery failed: {python_recovery.error}"

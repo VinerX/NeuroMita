@@ -7,6 +7,7 @@ from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse
 from handlers.llm_providers.message_preprocessor import preprocess_messages_for_provider
 from handlers.llm_providers.message_transforms import apply_transforms
+from handlers.llm_providers.http_transport import LLMHttpTransport
 
 
 _PROVIDER_TYPES = (
@@ -21,6 +22,7 @@ class ProviderManager:
     def __init__(self):
         self._providers: List[BaseProvider] = []
         self._unavailable: dict[str, str] = {}
+        self.http_transport = LLMHttpTransport(enable_http2=True)
         self._register_providers()
 
     def _register_providers(self):
@@ -30,7 +32,7 @@ class ProviderManager:
         for module_name, class_name in _PROVIDER_TYPES:
             try:
                 provider_type = getattr(import_module(module_name), class_name)
-                providers.append(provider_type())
+                providers.append(provider_type(http_transport=self.http_transport))
             except Exception as exc:
                 unavailable[class_name] = f"{type(exc).__name__}: {exc}"
                 logger.warning(f"LLM provider {class_name} unavailable: {exc}")
@@ -99,3 +101,13 @@ class ProviderManager:
 
         logger.debug(f"Protocol trace: {trace}")
         return provider.generate(req)
+
+    def close(self) -> None:
+        providers = tuple(self._providers)
+        self._providers.clear()
+        for provider in providers:
+            try:
+                provider.close()
+            except Exception:
+                logger.debug("Failed to close LLM provider %s", provider.name, exc_info=True)
+        self.http_transport.close()

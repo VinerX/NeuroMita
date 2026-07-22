@@ -165,7 +165,7 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
                 self._bus.emit(Events.Character.SET_CURRENT, {"character_id": cid})
             from controllers.gui.character_settings_logic import open_db_viewer
 
-            open_db_viewer(self._host)
+            open_db_viewer(self._host, character_id=cid or None)
         except Exception as exc:
             self.emit_effect(ChatShowError("History", str(exc)))
 

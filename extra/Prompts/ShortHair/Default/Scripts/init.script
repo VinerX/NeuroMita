@@ -1,0 +1,15 @@
+// Behavior band boundary overrides for the shared Structural/behavior_state.script.
+// ShortHair: attitude cold 0-20 / interested 21-49 / open 50+ (partnership 85+,
+// attached 95+ described inside RelationHigh); boredom low 0-30; stress calm 0-30.
+SET BEH_ATT_LOW_MAX = 20
+SET BEH_ATT_HIGH_MIN = 49
+SET BEH_BOR_LOW_MAX = 30
+SET BEH_BOR_HIGH_MIN = 84
+SET BEH_STR_LOW_MAX = 30
+SET BEH_STR_HIGH_MIN = 80
+
+// Общая эрудиция о мире + персональные стартовые память/остров (план 09).
+RUN ../../../Common/world_knowledge.script
+IF SEED_CHARACTER_MEMORIES != False THEN
+	RUN ./character_seed.script
+ENDIF

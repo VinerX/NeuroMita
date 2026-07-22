@@ -1,0 +1,6 @@
+{
+  "character": "Sleepy",
+  "author": "Depikoov",
+  "version": "0.0.1",
+  "description": "A warm, calm Sleepy Mita. Personality by Depikoov, adapted to the current runtime (structured output, command catalog, behavior_state, RAG)."
+}
