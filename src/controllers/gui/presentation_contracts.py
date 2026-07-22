@@ -29,6 +29,7 @@ class UiTopic(StrEnum):
     CHAT_DELETE_MESSAGES_FROM = "chat_delete_messages_from"
     CHAT_REGENERATE = "chat_regenerate"
     CHAT_REGENERATE_FROM = "chat_regenerate_from"
+    CHAT_RETRY_LAST = "chat_retry_last"
     CHAT_STAGE_IMAGE = "stage_image"
 
     EMBEDDING_PRESET_TEST = "embed_test_preset"

@@ -13,6 +13,7 @@ from ui.chat.message_actions_presentation import (
     RateChatSample,
     RegenerateChat,
     RegenerateChatFrom,
+    RetryLastChat,
     ViewChatSampleContext,
 )
 from ui.chat.structured_panel import StructuredOutputPanel
@@ -192,6 +193,8 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
         actions.dispatch(EditChatMessage(str(mid), str(character_id)))
     def on_regenerate(mid):
         actions.dispatch(RegenerateChat(str(character_id)))
+    def on_retry(mid):
+        actions.dispatch(RetryLastChat(str(character_id)))
     def on_regenerate_from(mid):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         dlg = QDialog()
@@ -237,8 +240,35 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     widget.edit_requested.connect(on_edit)
     widget.regenerate_requested.connect(on_regenerate)
     widget.regenerate_from_requested.connect(on_regenerate_from)
+    widget.retry_requested.connect(on_retry)
     widget.view_context_requested.connect(on_view_context)
     widget.view_response_context_requested.connect(on_view_response_context)
+
+def mark_last_user_error(gui, tooltip: str = "") -> bool:
+    """Пометить последний пузырь пользователя как «сообщение не дошло».
+
+    Вызывается при провале генерации: сам пузырь остаётся, но получает иконку
+    с возможностью отправить снова. Возвращает True, если пузырь нашёлся.
+    """
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return False
+    for widget in reversed(getattr(chat_window, "_messages", [])):
+        if isinstance(widget, MessageWidget) and getattr(widget, "_role", None) == "user":
+            widget.set_error(tooltip)
+            return True
+    return False
+
+
+def clear_message_errors(gui) -> None:
+    """Снять пометку «не дошло» со всех пузырей (новый ход/повтор/успех)."""
+    chat_window = getattr(gui, "chat_window", None)
+    if chat_window is None:
+        return
+    for widget in getattr(chat_window, "_messages", []):
+        if isinstance(widget, MessageWidget) and getattr(widget, "_errored", False):
+            widget.clear_error()
+
 
 def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None):
     chat_window = getattr(gui, "chat_window", None)

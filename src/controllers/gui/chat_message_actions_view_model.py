@@ -12,6 +12,7 @@ from ui.chat.message_actions_presentation import (
     RateChatSample,
     RegenerateChat,
     RegenerateChatFrom,
+    RetryLastChat,
     ShowChatSampleContext,
     ShowChatSampleContextError,
     ViewChatSampleContext,
@@ -77,6 +78,12 @@ class ChatMessageActionsViewModel(IntentViewModel[_ChatMessageActionsState]):
                     "message_id": intent.message_id,
                     "character_id": intent.character_id,
                 },
+            )
+            return
+        if isinstance(intent, RetryLastChat):
+            self._events.publish(
+                UiTopic.CHAT_RETRY_LAST,
+                {"character_id": intent.character_id},
             )
             return
         if isinstance(intent, RateChatSample):

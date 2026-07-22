@@ -203,6 +203,9 @@ class ChatController:
 
         self.staged_images = []
         self._owned_staged_images = set()
+        # Последний UI-запрос пользователя — для «отправить снова», когда
+        # генерация упала и ход не попал в историю (write_turn не вызывался).
+        self._last_ui_request: dict | None = None
         self._subscribe_to_events()
 
     @property
@@ -230,6 +233,7 @@ class ChatController:
         self.event_bus.subscribe(Events.Chat.DELETE_MESSAGES_FROM, self._on_delete_messages_from, weak=False)
         self.event_bus.subscribe(Events.Chat.REGENERATE, self._on_regenerate, weak=False)
         self.event_bus.subscribe(Events.Chat.REGENERATE_FROM, self._on_regenerate_from, weak=False)
+        self.event_bus.subscribe(Events.Chat.RETRY_LAST, self._on_retry_last, weak=False)
         self.event_bus.subscribe(Events.Chat.INSERT_SYSTEM_MESSAGE, self._on_insert_system_message, weak=False)
         self.event_bus.subscribe(Events.Chat.SAVE_SNAPSHOT, self._on_save_snapshot, weak=False)
         self.event_bus.subscribe(Events.Chat.LOAD_SNAPSHOT, self._on_load_snapshot, weak=False)
@@ -669,6 +673,12 @@ class ChatController:
         data = event.data or {}
         image_data = data.get("image_data", [])
 
+        # Запоминаем ручную отправку пользователя (без task_uid — это не игровой/
+        # телеграм-ход), чтобы кнопка «отправить снова» на упавшем пузыре могла
+        # повторить ровно тот же запрос. Копия — чтобы вызывающий не менял её потом.
+        if not data.get("task_uid") and str(data.get("event_type") or "chat") == "chat":
+            self._last_ui_request = dict(data)
+
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
 
@@ -826,6 +836,19 @@ class ChatController:
         else:
             character.history_manager.delete_messages_from(message_id)
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
+
+    def _on_retry_last(self, event: Event):
+        """Повторно отправить последний упавший запрос пользователя.
+
+        Пузырь пользователя уже нарисован (эхо делает app_shell при исходной
+        отправке), а в историю ход не попал — поэтому просто пере-отправляем
+        сохранённый запрос. Дубля пузыря не будет: путь SEND_MESSAGE сам эхо не
+        рисует, а image-пузыри защищены флагом images_shown из исходной отправки.
+        """
+        if not self._last_ui_request:
+            logger.warning("[ChatController] RETRY_LAST: нет сохранённого запроса для повтора")
+            return
+        self.event_bus.emit(Events.Chat.SEND_MESSAGE, dict(self._last_ui_request))
 
     def _on_regenerate(self, event: Event):
         data = event.data or {}

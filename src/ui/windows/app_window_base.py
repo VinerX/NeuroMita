@@ -985,6 +985,11 @@ class AppWindowBase(QMainWindow):
                 logger.error(f"Error toggling think block {block_id}: {e}")
 
     def _show_thinking_slot(self, character_name):
+        # Старт новой генерации (имя персонажа — строка, а не dict сжатия/инструмента):
+        # снимаем пометку «не дошло» с прошлого упавшего пузыря.
+        if isinstance(character_name, str) and self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.clear_message_errors(self._chat_render_context)
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
             self.mita_status.show_thinking(character_name)
@@ -995,6 +1000,12 @@ class AppWindowBase(QMainWindow):
             logger.info('Показываем статус ошибки: %s', error_message)
             self.mita_status.show_error(error_message)
             self._pending_chat_error = None
+        # Помечаем сам пузырь пользователя: «сообщение не дошло» + отправить снова.
+        if self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.mark_last_user_error(
+                self._chat_render_context, str(error_message or "")
+            )
 
     def _hide_status_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
