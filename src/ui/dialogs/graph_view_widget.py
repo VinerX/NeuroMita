@@ -34,6 +34,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -41,6 +44,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtSql import QSqlDatabase, QSqlQuery
 
 from main_logger import logger
+from utils import getTranslationVariant as _
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -586,6 +590,15 @@ class _GraphCanvas(QWidget):
             self._panning = False
         super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event):
+        # ПКМ по узлу → меню смены типа сущности (ручная правка). Обрабатывает
+        # родительская страница, у которой есть доступ к БД.
+        pos = event.pos()
+        node = self._node_at(QPointF(pos.x(), pos.y()))
+        parent = self.parent()
+        if node is not None and hasattr(parent, "_on_node_context_menu"):
+            parent._on_node_context_menu(node, event.globalPos())
+
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         old_zoom = self._zoom
@@ -641,6 +654,14 @@ class GraphViewPage(QWidget):
         self.btn_show_all.setVisible(False)
         self.btn_show_all.clicked.connect(self._show_all)
         toolbar.addWidget(self.btn_show_all)
+
+        self.btn_detect_types = QPushButton(_("Определить типы (LLM)", "Detect types (LLM)"), self)
+        self.btn_detect_types.setToolTip(_(
+            "Переклассифицировать сущности типа «thing» в person/place/concept через LLM",
+            "Reclassify default 'thing' entities into person/place/concept via LLM",
+        ))
+        self.btn_detect_types.clicked.connect(self._start_type_backfill)
+        toolbar.addWidget(self.btn_detect_types)
 
         btn_refresh = QPushButton("Refresh", self)
         btn_refresh.clicked.connect(self._reload)
@@ -828,8 +849,214 @@ class GraphViewPage(QWidget):
 
         return nodes, edges
 
+    # ----- manual entity-type editing (ПКМ по узлу) -----
+
+    def _on_node_context_menu(self, node: GNode, global_pos):
+        menu = QMenu(self)
+        header = menu.addAction(f"{node.name} · {node.entity_type or 'thing'}")
+        header.setEnabled(False)
+        menu.addSeparator()
+        current = (node.entity_type or "thing").lower()
+        for t in ("person", "place", "thing", "concept"):
+            act = menu.addAction(_("Тип: ", "Type: ") + t)
+            act.setCheckable(True)
+            act.setChecked(current == t)
+            act.triggered.connect(
+                lambda _checked=False, tt=t, nid=node.id: self._set_node_type(nid, tt)
+            )
+        menu.exec(global_pos)
+
+    def _set_node_type(self, entity_id: int, entity_type: str) -> None:
+        if entity_type not in ("person", "place", "thing", "concept"):
+            return
+        if not self.db or not self.db.isOpen():
+            return
+        q = QSqlQuery(self.db)
+        q.prepare("UPDATE graph_entities SET entity_type = ? WHERE id = ?")
+        q.addBindValue(entity_type)
+        q.addBindValue(int(entity_id))
+        if q.exec():
+            # Правим узел на месте — без пересчёта раскладки/перезагрузки.
+            n = self.canvas.nodes.get(int(entity_id))
+            if n is not None:
+                n.entity_type = entity_type
+                self.canvas.update()
+        else:
+            logger.warning(f"[GraphView] set entity type failed: {q.lastError().text()}")
+
+    # ----- LLM type backfill (кнопка «Определить типы») -----
+
+    def _char_ids_with_untyped(self) -> List[str]:
+        """character_id, у которых есть сущности на дефолтном 'thing'."""
+        if self.character_id:
+            return [self.character_id]
+        ids: List[str] = []
+        if not self.db or not self.db.isOpen():
+            return ids
+        q = QSqlQuery(self.db)
+        ok = q.exec(
+            "SELECT DISTINCT character_id FROM graph_entities "
+            "WHERE entity_type IS NULL OR TRIM(LOWER(entity_type)) IN ('', 'thing')"
+        )
+        if ok:
+            while q.next():
+                cid = str(q.value(0) or "").strip()
+                if cid:
+                    ids.append(cid)
+        return ids
+
+    @staticmethod
+    def _resolve_graph_preset() -> Optional[int]:
+        """Тот же провайдер, что и у graph extraction (настройка GRAPH_PROVIDER)."""
+        try:
+            from core.services import use
+            from services.contracts import SettingsService, ApiPresetService
+
+            label = str(use(SettingsService).get("GRAPH_PROVIDER", "Current"))
+            if not label or label in ("Current", "Текущий"):
+                return None
+            try:
+                return int(label)
+            except ValueError:
+                pass
+            meta = use(ApiPresetService).list_meta()
+            if meta:
+                for bucket in ("custom", "builtin"):
+                    for pm in (meta.get(bucket) or []):
+                        if getattr(pm, "name", None) == label:
+                            pid = getattr(pm, "id", None)
+                            if isinstance(pid, int):
+                                return pid
+        except Exception as e:
+            logger.warning(f"[GraphView] resolve graph preset failed: {e}")
+        return None
+
+    def _start_type_backfill(self) -> None:
+        char_ids = self._char_ids_with_untyped()
+        if not char_ids:
+            QMessageBox.information(
+                self,
+                _("Нечего определять", "Nothing to classify"),
+                _("Сущностей типа «thing» не найдено.", "No 'thing' entities found."),
+            )
+            return
+
+        from controllers.gui.task_worker import TaskWorker
+
+        progress = QProgressDialog(
+            _("Определение типов сущностей…", "Detecting entity types…"),
+            _("Отмена", "Cancel"), 0, 0, self,
+        )
+        progress.setWindowTitle(_("Определить типы (LLM)", "Detect types (LLM)"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        worker = TaskWorker(self._run_type_backfill, args=(char_ids,), use_progress=True)
+        self._type_backfill_worker = worker
+        self.btn_detect_types.setEnabled(False)
+
+        def on_progress(curr: int, total: int):
+            if total > 0:
+                progress.setMaximum(total)
+                progress.setValue(curr)
+
+        def cleanup_worker():
+            self.btn_detect_types.setEnabled(True)
+            self._type_backfill_worker = None
+
+        def on_finished(res):
+            progress.close()
+            cleanup_worker()
+            res = res or {}
+            QMessageBox.information(
+                self,
+                _("Готово", "Done"),
+                _("Обновлено типов: {u} из {t}.", "Updated types: {u} of {t}.").format(
+                    u=res.get("updated", 0), t=res.get("total", 0)
+                ),
+            )
+            self._reload()
+
+        def on_error(msg: str):
+            progress.close()
+            cleanup_worker()
+            QMessageBox.warning(self, _("Ошибка", "Error"), str(msg))
+
+        def on_cancelled():
+            progress.close()
+            cleanup_worker()
+            self._reload()
+
+        worker.progress_signal.connect(on_progress)
+        worker.finished_signal.connect(on_finished)
+        worker.error_signal.connect(on_error)
+        worker.cancelled_signal.connect(on_cancelled)
+        progress.canceled.connect(worker.requestInterruption)
+
+        progress.show()
+        worker.start()
+
+    def _run_type_backfill(self, char_ids: List[str], progress_callback=None) -> dict:
+        """Фоновый проход: LLM-классификация 'thing'-сущностей по всем char_ids."""
+        from managers.database_manager import DatabaseManager
+        from managers.rag.graph.graph_store import GraphStore
+        from managers.rag.graph.entity_typing import reclassify_untyped_entities
+        from core.services import use
+        from services.contracts import GenerationService, UtilityGenerationRequest
+
+        db = DatabaseManager()
+        gen = use(GenerationService)
+        preset_id = self._resolve_graph_preset()
+
+        # Сначала считаем общий объём — для честного прогресса по всем персонажам.
+        stores: List[tuple] = []
+        grand_total = 0
+        for cid in char_ids:
+            gs = GraphStore(db, cid)
+            n = len(gs.get_untyped_entities(limit=2000))
+            stores.append((cid, gs, n))
+            grand_total += n
+
+        summary = {"total": grand_total, "updated": 0, "unchanged": 0, "batches": 0}
+        base = 0
+        for cid, gs, n in stores:
+            if n == 0:
+                continue
+
+            def generate(prompt: str, _cid=cid) -> str:
+                res = gen.generate_utility(UtilityGenerationRequest(
+                    prompt=prompt,
+                    character_id=_cid,
+                    kind="graph_typing",
+                    preset_id=preset_id,
+                    request_timeout=60.0,
+                ))
+                return res.text if (res and res.ok) else ""
+
+            def prog(done: int, total: int, _base=base) -> bool:
+                if progress_callback:
+                    # progress_callback воркера бросит CancelledError при отмене.
+                    progress_callback(_base + done, grand_total)
+                return True
+
+            r = reclassify_untyped_entities(gs, generate, batch_size=40, progress_cb=prog)
+            summary["updated"] += r.get("updated", 0)
+            summary["unchanged"] += r.get("unchanged", 0)
+            summary["batches"] += r.get("batches", 0)
+            base += n
+
+        return summary
+
     def cleanup(self):
         self.canvas._layout_timer.stop()
+        worker = getattr(self, "_type_backfill_worker", None)
+        if worker is not None:
+            try:
+                worker.requestInterruption()
+            except Exception:
+                pass
 
 
 def _sql_esc(s: str) -> str:

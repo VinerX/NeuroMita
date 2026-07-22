@@ -1471,6 +1471,13 @@ class DbViewerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(_("Просмотрщик базы данных (World.db)", "Advanced Database Viewer (World.db)"))
         self.resize(1200, 740)
+        # Разрешаем разворачивать окно на весь экран (кнопка в рамке окна +
+        # собственная кнопка «На весь экран» в нижней панели).
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+        )
         self.character_id = character_id
 
         self._connection_name = f"db_viewer_connection_{id(self)}"
@@ -1533,12 +1540,25 @@ class DbViewerDialog(QDialog):
         self.btn_refresh.clicked.connect(self.refresh_all)
         btn_row.addWidget(self.btn_refresh)
 
+        self.btn_fullscreen = QPushButton("⛶ " + _("На весь экран", "Fullscreen"), self)
+        self.btn_fullscreen.setToolTip(_("Развернуть окно на весь экран", "Maximize the window"))
+        self.btn_fullscreen.clicked.connect(self._toggle_maximized)
+        btn_row.addWidget(self.btn_fullscreen)
+
         self.btn_close = QPushButton(_("Закрыть", "Close"), self)
         self.btn_close.clicked.connect(self.close)
         btn_row.addWidget(self.btn_close)
 
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+            self.btn_fullscreen.setText("⛶ " + _("На весь экран", "Fullscreen"))
+        else:
+            self.showMaximized()
+            self.btn_fullscreen.setText("❐ " + _("Свернуть", "Restore"))
 
     def _table_exists(self, table_name: str) -> bool:
         """Check if a table exists in the database."""

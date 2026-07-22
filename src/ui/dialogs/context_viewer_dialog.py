@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -230,6 +231,13 @@ class ContextViewerDialog(QDialog):
         self.setMinimumSize(900, 600)
         self.resize(1150, 720)
         self.setModal(True)
+        # Разрешаем разворачивать окно на весь экран (кнопка максимизации в
+        # рамке окна + собственная кнопка «На весь экран» в панели снизу).
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+        )
         self.setStyleSheet(_DIALOG_STYLE)
 
         self._items: list[tuple[QTreeWidgetItem, str, Any]] = []
@@ -261,6 +269,13 @@ class ContextViewerDialog(QDialog):
 
         # Кнопки внизу
         btn_row = QHBoxLayout()
+
+        self._fullscreen_btn = QPushButton("⛶ " + _("На весь экран", "Fullscreen"))
+        self._fullscreen_btn.setObjectName("SecondaryBtn")
+        self._fullscreen_btn.setToolTip(_("Развернуть окно на весь экран", "Maximize the window"))
+        self._fullscreen_btn.clicked.connect(self._toggle_maximized)
+        btn_row.addWidget(self._fullscreen_btn)
+
         btn_row.addStretch()
 
         copy_json_btn = QPushButton(_("Копировать JSON", "Copy JSON"))
@@ -301,6 +316,9 @@ class ContextViewerDialog(QDialog):
         self._tree.setMinimumWidth(200)
         self._tree.setMaximumWidth(320)
         self._tree.currentItemChanged.connect(self._on_item_changed)
+        # ПКМ по узлу дерева → меню копирования (содержимое / JSON / группа).
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         splitter.addWidget(self._tree)
 
         right_panel = QWidget()
@@ -877,9 +895,11 @@ class ContextViewerDialog(QDialog):
             )
 
         if response_text:
+            stat_line = self._response_stat_line(response_text, usage)
             sections.append(
                 f"<hr style='border-color:{_BORDER}'>"
-                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Model response', 'Model response')}</b></p>"
+                f"<p><b style='color:{_ROLE_COLORS['assistant']}'>{_('Model response', 'Model response')}</b>"
+                f"{('<br>' + stat_line) if stat_line else ''}</p>"
                 f"<div style='color:{_TEXT};font-family:Consolas,monospace'>{self._colorize(self._maybe_format_json(response_text))}</div>"
             )
         else:
@@ -1065,6 +1085,44 @@ class ContextViewerDialog(QDialog):
             bits.append(
                 _("+{n} изобр. (не в оценке)", "+{n} img (not counted)").format(n=info["images"])
             )
+        body = " · ".join(self._esc(b) for b in bits)
+        return f"<span style='color:{_MUTED};font-size:11px'>{body}</span>"
+
+    def _response_stat_line(self, text: str, usage: dict) -> str:
+        """Строка статистики ответа модели — по аналогии с `_est_line` инпута:
+        токены генерации (факт из usage, иначе оценка), reasoning, символы, строки."""
+        text = str(text or "")
+        chars = len(text)
+        lines = (text.count("\n") + 1) if text else 0
+
+        def _uint(key: str):
+            try:
+                v = (usage or {}).get(key)
+                return int(v) if v not in (None, "") else None
+            except Exception:
+                return None
+
+        bits: list[str] = []
+        completion = _uint("completion_tokens")
+        if completion is not None:
+            bits.append(_("{n} токенов", "{n} tokens").format(n=self._fmt_int(completion)))
+        else:
+            # Нет фактического usage (напр. finetune-сэмпл) — локальная оценка
+            # тем же счётчиком, что и для инпута (ContextCounter/tiktoken).
+            try:
+                from managers.context_counter import ContextCounter
+                est = int(ContextCounter().count_tokens(
+                    [{"role": "assistant", "content": text}]
+                ) or 0)
+                if est:
+                    bits.append(_("~{n} токенов", "~{n} tokens").format(n=self._fmt_int(est)))
+            except Exception:
+                pass
+        reasoning = _uint("reasoning_tokens")
+        if reasoning:
+            bits.append(_("+{n} reasoning", "+{n} reasoning").format(n=self._fmt_int(reasoning)))
+        bits.append(_("{n} симв.", "{n} chars").format(n=self._fmt_int(chars)))
+        bits.append(_("{n} стр.", "{n} lines").format(n=lines))
         body = " · ".join(self._esc(b) for b in bits)
         return f"<span style='color:{_MUTED};font-size:11px'>{body}</span>"
 
@@ -1340,6 +1398,58 @@ class ContextViewerDialog(QDialog):
             text = str(content or "")
         text = text.replace("\n", " ")
         return (text[:max_len] + "…") if len(text) > max_len else text
+
+    # ── Fullscreen / maximize ─────────────────────────────────────────────────
+    def _toggle_maximized(self):
+        if self.isMaximized():
+            self.showNormal()
+            self._fullscreen_btn.setText("⛶ " + _("На весь экран", "Fullscreen"))
+        else:
+            self.showMaximized()
+            self._fullscreen_btn.setText("❐ " + _("Свернуть", "Restore"))
+
+    # ── Копирование из дерева (ПКМ) ───────────────────────────────────────────
+    def _on_tree_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+        entry = next((e for e in self._items if e[0] is item), None)
+        if entry is None:
+            return
+        _item, kind, payload = entry
+        menu = QMenu(self)
+        if kind == "message":
+            msg = payload or {}
+            act_content = menu.addAction(_("Копировать содержимое", "Copy content"))
+            act_content.triggered.connect(
+                lambda: self._copy_text(self._content_plain(msg.get("content")))
+            )
+            act_json = menu.addAction(_("Копировать как JSON", "Copy as JSON"))
+            act_json.triggered.connect(
+                lambda: self._copy_text(json.dumps(msg, ensure_ascii=False, indent=2))
+            )
+        elif kind == "group":
+            act = menu.addAction(_("Копировать сообщения группы", "Copy group messages"))
+            act.triggered.connect(lambda: self._copy_group(str(payload or "")))
+        elif kind == "overview":
+            act = menu.addAction(_("Копировать все сообщения", "Copy all messages"))
+            act.triggered.connect(self._copy_messages)
+        elif kind == "params":
+            act = menu.addAction(_("Копировать параметры", "Copy parameters"))
+            act.triggered.connect(
+                lambda: self._copy_text(json.dumps(payload or {}, ensure_ascii=False, indent=2))
+            )
+        if not menu.isEmpty():
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _copy_text(text: str):
+        QApplication.clipboard().setText(str(text or ""))
+
+    def _copy_group(self, gkey: str):
+        idxs = [i for i in range(len(self._messages)) if self._group_key(i) == gkey]
+        msgs = [self._messages[i] for i in idxs]
+        self._copy_text(json.dumps(msgs, ensure_ascii=False, indent=2))
 
     def _copy_json(self):
         QApplication.clipboard().setText(
