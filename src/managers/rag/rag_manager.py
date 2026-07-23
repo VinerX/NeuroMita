@@ -12,11 +12,8 @@ import time as _time
 from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
-from handlers.embedding_presets import resolve_full_config
 from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
 from core.events import get_event_bus
-from core.services import use
-from services.contracts import EmbeddingService
 from main_logger import logger
 from core.cancellation import TaskCancelledError
 
@@ -92,6 +89,9 @@ class RAGManager:
         self.history_repo = HistoryRepository(self.db, character_id, self._schema)
         self.memory_repo = MemoryRepository(self.db, character_id, self._schema)
 
+        from managers.rag.embedding import RagEmbedder
+        self._embedder = RagEmbedder()
+
         self._embed_failed_warned: bool = False  # warn once when embed model unavailable
 
     def get_forgotten_count(self) -> int:
@@ -129,14 +129,14 @@ class RAGManager:
     def _mem_cols(self):
         return self._schema.mem_cols
 
+    # Эмбеддинг-слой вынесен в RagEmbedder (managers/rag/embedding.py);
+    # ниже — тонкие делегаторы ради обратной совместимости внутренних вызовов.
     def _current_model_name(self) -> str:
         """Returns the DB key used to tag embedding rows (provider:model or bare hf_name)."""
-        cfg = resolve_full_config()
-        return str(cfg.get("db_model_key") or cfg.get("hf_name") or cfg.get("model") or "")
+        return self._embedder.current_model_name()
 
     def _current_dimensions(self) -> int:
-        cfg = resolve_full_config()
-        return int(cfg.get("dimensions") or 0)
+        return self._embedder.current_dimensions()
 
     def _embed_via_provider(
         self,
@@ -145,15 +145,7 @@ class RAGManager:
         prefix: str = "",
     ) -> List[Optional[np.ndarray]]:
         """Embed texts through the configured embedding provider."""
-        from handlers.embedding_providers.registry import get_provider_for, build_request
-
-        cfg = resolve_full_config()
-        if prefix:
-            cfg = dict(cfg)
-            cfg["query_prefix"] = prefix
-        provider = get_provider_for(cfg)
-        req = build_request(cfg, texts=texts, is_query=is_query)
-        return provider.embed(req)
+        return self._embedder.embed_via_provider(texts, is_query=is_query, prefix=prefix)
 
     def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
@@ -445,42 +437,10 @@ class RAGManager:
 
     def _array_to_blob(self, array: np.ndarray) -> bytes:
         """Конвертирует numpy array в байты для сохранения"""
-        return array.astype(np.float32).tobytes()
+        return self._embedder.array_to_blob(array)
 
     def _get_embedding(self, text: str, prefix: str = "", use_event_bus: bool = True) -> Optional[np.ndarray]:
-        """
-        1) Пытаемся получить эмбеддинг через EventBus (EmbeddingController).
-        2) Если не вышло — fallback на Singleton EmbeddingModelHandler().
-        """
-        if not text or not SettingsManager.get("RAG_ENABLED", False):
-            return None
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
-            return None
-
-        # Очистка от тегов
-        text = rag_clean_text(text)
-        cfg = resolve_full_config()
-        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_local_service = bool(use_event_bus and provider_name == "local")
-        logger.debug(
-            f"[RAG][embed_one] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')}"
-        )
-
-        if can_use_local_service:
-            try:
-                vec = use(EmbeddingService).embed_one(text, prefix)
-                if vec is not None:
-                    return vec
-            except Exception as e:
-                # Не валим RAG из-за сервиса — просто откатываемся на прямой вызов провайдера
-                logger.warning(f"RAGManager: EmbeddingService не сработал, fallback на провайдер. Причина: {e}")
-
-        try:
-            results = self._embed_via_provider([text], is_query=bool(prefix), prefix=prefix)
-            return results[0] if results else None
-        except Exception as e:
-            logger.error(f"RAGManager: ошибка провайдера эмбеддинга: {e}", exc_info=True)
-            return None
+        return self._embedder.get_embedding(text, prefix=prefix, use_event_bus=use_event_bus)
 
     def _get_embeddings(
         self,
@@ -491,98 +451,14 @@ class RAGManager:
         allow_when_rag_disabled: bool = False,
         priority: str = "hot",
     ) -> List[Optional[np.ndarray]]:
-        """
-        Массовое получение эмбеддингов:
-        1) EventBus batch (rag.get_embeddings) — меньше overhead и lock'ов.
-        2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
-        """
-        if not texts:
-            return []
-        if (not allow_when_rag_disabled) and (not SettingsManager.get("RAG_ENABLED", False)):
-            return []
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
-            return [None] * len(texts)
-
-        cleaned: List[str] = []
-        for t in texts:
-            if not t:
-                cleaned.append("")
-            else:
-                cleaned.append(rag_clean_text(str(t)))
-
-        cfg = resolve_full_config()
-        cfg_extra = dict(cfg.get("extra") or {})
-        bs = int(batch_size or cfg_extra.get("batch_size") or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
-        if bs <= 0:
-            bs = len(cleaned)
-
-        out: List[Optional[np.ndarray]] = []
-        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_local_service = bool(use_event_bus and provider_name == "local")
-        req_delay_sec = float(cfg_extra.get("request_delay_sec") or self._get_float_setting("RAG_EMBED_REQUEST_DELAY_SEC", 0.0))
-        if req_delay_sec < 0.0:
-            req_delay_sec = 0.0
-        logger.debug(
-            f"[RAG][embed_batch] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')} | "
-            f"texts={len(cleaned)} | batch_size={bs} | delay={req_delay_sec:.3f}s | local_service={can_use_local_service}"
+        return self._embedder.get_embeddings(
+            texts,
+            prefix=prefix,
+            use_event_bus=use_event_bus,
+            batch_size=batch_size,
+            allow_when_rag_disabled=allow_when_rag_disabled,
+            priority=priority,
         )
-
-        if can_use_local_service:
-            try:
-                embedder = use(EmbeddingService)
-                _service_ok = False
-                for i in range(0, len(cleaned), bs):
-                    chunk = cleaned[i:i + bs]
-                    vecs = embedder.embed_many(chunk, prefix=prefix, batch_size=bs, priority=priority)
-                    if not isinstance(vecs, list):
-                        vecs = []
-                    # выравниваем длину под входной chunk
-                    if len(vecs) != len(chunk):
-                        vecs = (vecs + [None] * len(chunk))[:len(chunk)]
-                    # Local-путь иногда возвращает только None/[] (например handler не инициализировался).
-                    # В этом случае считаем батч неуспешным и падаем в provider fallback.
-                    if not vecs or all(v is None for v in vecs):
-                        logger.warning(
-                            "[RAG][embed_batch] EmbeddingService returned empty/None-only batch; switching to provider fallback"
-                        )
-                        out.clear()
-                        _service_ok = False
-                        break
-                    out.extend(vecs)
-                    _service_ok = True
-                    if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
-                        try:
-                            _time.sleep(req_delay_sec)
-                        except Exception:
-                            pass
-                if _service_ok:
-                    return out
-            except Exception as e:
-                logger.warning(
-                    f"RAGManager: EmbeddingService batch не сработал, fallback на провайдер. Причина: {e}"
-                )
-                out.clear()
-
-        # Fallback: через провайдер-систему
-        try:
-            merged: List[Optional[np.ndarray]] = []
-            for i in range(0, len(cleaned), bs):
-                chunk = cleaned[i:i + bs]
-                vecs = self._embed_via_provider(chunk, is_query=False, prefix=prefix)
-                if not isinstance(vecs, list):
-                    vecs = []
-                if len(vecs) != len(chunk):
-                    vecs = (vecs + [None] * len(chunk))[:len(chunk)]
-                merged.extend(vecs)
-                if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
-                    try:
-                        _time.sleep(req_delay_sec)
-                    except Exception:
-                        pass
-            return merged
-        except Exception as e:
-            logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
-            return [None] * len(cleaned)
 
     # ------------------------------------------------------------------ #
     #  Sentence-level indexing helpers                                    #
