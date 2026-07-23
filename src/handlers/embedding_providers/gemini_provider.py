@@ -8,7 +8,7 @@ import numpy as np
 from .base import BaseEmbeddingProvider, EmbeddingRequest
 from main_logger import logger
 
-_RETRY_STATUS = {429, 500, 502, 503}
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -67,7 +67,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         timeout_sec = float((req.extra or {}).get("timeout_sec") or 60.0)
         backoff_sec = float((req.extra or {}).get("retry_backoff_sec") or 0.5)
         max_retries_cfg = int((req.extra or {}).get("max_retries") or 3)
-        max_attempts = min(max(1, max_retries_cfg + 1), max(1, len(all_keys)))
+        max_attempts = max(1, max_retries_cfg + 1)
         requests_list = [
             {"model": f"models/{model}", "content": {"parts": [{"text": t}]}, "taskType": task_type}
             for t in texts
@@ -75,7 +75,8 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         payload = {"requests": requests_list}
 
         last_exc: Optional[Exception] = None
-        for attempt, key in enumerate(all_keys[:max_attempts]):
+        for attempt in range(max_attempts):
+            key = all_keys[attempt % len(all_keys)]
             url = f"{base_url}/models/{model}:batchEmbedContents?key={key}"
             headers = {"Content-Type": "application/json"}
             try:
@@ -85,7 +86,12 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
                     logger.warning(
                         f"[EmbedAPI][gemini] HTTP {resp.status_code} key #{attempt+1}, retrying"
                     )
-                    time.sleep(backoff_sec)
+                    retry_after = resp.headers.get("Retry-After") if "resp" in locals() else None
+                    try:
+                        delay = float(retry_after) if retry_after else backoff_sec * (2 ** attempt)
+                    except (TypeError, ValueError):
+                        delay = backoff_sec * (2 ** attempt)
+                    time.sleep(delay)
                     continue
 
                 resp.raise_for_status()
@@ -108,7 +114,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
                 last_exc = e
                 logger.warning(f"[EmbedAPI][gemini] attempt {attempt+1} failed: {e}")
                 if attempt < max_attempts - 1:
-                    time.sleep(backoff_sec)
+                    time.sleep(backoff_sec * (2 ** attempt))
                     continue
 
         logger.error(f"[EmbedAPI][gemini] all attempts failed. Last: {last_exc}", exc_info=True)

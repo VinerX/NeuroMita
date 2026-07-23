@@ -318,12 +318,12 @@ class EmbeddingModelHandler:
 
         results: List[Optional[np.ndarray]] = [None] * len(texts)
 
-        try:
-            with torch.no_grad():
-                for start in range(0, len(valid_inputs), batch_size):
-                    chunk_inputs = valid_inputs[start:start + batch_size]
-                    chunk_indices = valid_idx[start:start + batch_size]
+        with torch.no_grad():
+            for start in range(0, len(valid_inputs), batch_size):
+                chunk_inputs = valid_inputs[start:start + batch_size]
+                chunk_indices = valid_idx[start:start + batch_size]
 
+                try:
                     tokens = self.tokenizer(
                         chunk_inputs,
                         padding=True,
@@ -342,12 +342,16 @@ class EmbeddingModelHandler:
 
                     for j, orig_i in enumerate(chunk_indices):
                         results[orig_i] = arr[j]
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка batch-вычисления эмбеддингов для элементов "
+                        f"{start}:{start + len(chunk_inputs)}: {e}",
+                        exc_info=True,
+                    )
+                    # Уже успешно обработанные batch сохраняются; ошибочный остаётся None.
+                    continue
 
-            return results
-        except Exception as e:
-            logger.error(f"Ошибка при batch-вычислении эмбеддингов: {e}", exc_info=True)
-            # В случае ошибки вернём список правильной длины
-            return [None] * len(texts)
+        return results
 
 
 if __name__ == '__main__':

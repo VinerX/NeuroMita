@@ -255,6 +255,12 @@ class RAGManager:
             params: list[Any] = [self.character_id]
             if "is_deleted" in self._history_cols:
                 where += " AND is_deleted=0"
+            if rf == "user_only":
+                where += " AND role='user'"
+            elif rf == "assistant_only":
+                where += " AND role='assistant'"
+            else:
+                where += " AND role IN ('user', 'assistant')"
 
             cur.execute(
                 f"""
@@ -269,12 +275,7 @@ class RAGManager:
             rows = cur.fetchall() or []
 
             max_chars = int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", DEFAULT_RECENT_TAIL_MAX_CHARS) or DEFAULT_RECENT_TAIL_MAX_CHARS)
-            for role, content in rows:
-                r = str(role or "").strip().lower()
-                if rf == "user_only" and r != "user":
-                    continue
-                if rf == "assistant_only" and r != "assistant":
-                    continue
+            for _role, content in rows:
                 c = rag_clean_text(self._clip_text(content, max_chars))
                 if c:
                     out.append(c)
@@ -419,11 +420,28 @@ class RAGManager:
         return out or uq
 
     def _blob_to_array(self, blob) -> Optional[np.ndarray]:
-        """Конвертирует BLOB из SQLite обратно в numpy array"""
+        """Конвертирует BLOB из SQLite обратно в проверенный numpy array."""
         if not blob:
             return None
-        # float32 занимает 4 байта.
-        return np.frombuffer(blob, dtype=np.float32)
+        try:
+            if len(blob) % np.dtype(np.float32).itemsize != 0:
+                logger.warning("RAGManager: повреждённый embedding BLOB (размер не кратен float32)")
+                return None
+            vector = np.frombuffer(blob, dtype=np.float32).copy()
+            expected_dim = self._current_dimensions()
+            if expected_dim > 0 and vector.size != expected_dim:
+                logger.warning(
+                    f"RAGManager: пропущен embedding неверной размерности: "
+                    f"получено {vector.size}, ожидалось {expected_dim}"
+                )
+                return None
+            if vector.size == 0 or not np.all(np.isfinite(vector)):
+                logger.warning("RAGManager: пропущен пустой или нечисловой embedding")
+                return None
+            return vector
+        except Exception as e:
+            logger.warning(f"RAGManager: не удалось декодировать embedding BLOB: {e}")
+            return None
 
     def _array_to_blob(self, array: np.ndarray) -> bytes:
         """Конвертирует numpy array в байты для сохранения"""
@@ -600,9 +618,20 @@ class RAGManager:
         if not sentences:
             return 0
 
-        vecs = self._get_embeddings(sentences, batch_size=batch_size, priority="bulk")
+        vecs = list(self._get_embeddings(sentences, batch_size=batch_size, priority="bulk") or [])
+        if len(vecs) != len(sentences):
+            logger.error(
+                f"RAGManager: sentence embedding count mismatch: "
+                f"texts={len(sentences)}, vectors={len(vecs)}"
+            )
+            if len(vecs) < len(sentences):
+                vecs.extend([None] * (len(sentences) - len(vecs)))
+            else:
+                vecs = vecs[:len(sentences)]
+
         stored = 0
-        for idx, (sent, vec) in enumerate(zip(sentences, vecs)):
+        for idx, sent in enumerate(sentences):
+            vec = vecs[idx]
             if vec is None:
                 continue
             blob = self._array_to_blob(vec)

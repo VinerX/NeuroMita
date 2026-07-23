@@ -8,7 +8,7 @@ import numpy as np
 from .base import BaseEmbeddingProvider, EmbeddingRequest
 from main_logger import logger
 
-_RETRY_STATUS = {401, 429, 500, 502, 503}
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 def _l2_normalize(vec: np.ndarray) -> np.ndarray:
@@ -59,8 +59,9 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
             f"[EmbedAPI][openai_compat] model={req.model} | url={url} | texts={len(texts)}"
         )
         last_exc: Optional[Exception] = None
-        max_attempts = min(max(1, max_retries_cfg + 1), max(1, len(all_keys)))
-        for attempt, key in enumerate(all_keys[:max_attempts]):
+        max_attempts = max(1, max_retries_cfg + 1)
+        for attempt in range(max_attempts):
+            key = all_keys[attempt % len(all_keys)]
             headers = {
                 "Content-Type": "application/json",
                 **req.headers,
@@ -75,7 +76,12 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
                     logger.warning(
                         f"[EmbedAPI][openai_compat] HTTP {resp.status_code} key #{attempt+1}, retrying"
                     )
-                    time.sleep(backoff_sec)
+                    retry_after = resp.headers.get("Retry-After") if "resp" in locals() else None
+                    try:
+                        delay = float(retry_after) if retry_after else backoff_sec * (2 ** attempt)
+                    except (TypeError, ValueError):
+                        delay = backoff_sec * (2 ** attempt)
+                    time.sleep(delay)
                     continue
 
                 resp.raise_for_status()
@@ -99,7 +105,7 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
                     f"[EmbedAPI][openai_compat] attempt {attempt+1} failed: {e}"
                 )
                 if attempt < max_attempts - 1:
-                    time.sleep(backoff_sec)
+                    time.sleep(backoff_sec * (2 ** attempt))
                     continue
 
         logger.error(f"[EmbedAPI][openai_compat] all attempts failed. Last error: {last_exc}", exc_info=True)
