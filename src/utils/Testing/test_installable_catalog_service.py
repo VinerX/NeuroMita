@@ -193,7 +193,8 @@ class InstallableCatalogServiceTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["gpu_vendor"], "AMD")
 
-    def test_invalidation_rejects_late_probe_result(self):
+    def test_invalidation_answers_with_transient_status_and_reprobes(self):
+        """Инвалидация посреди проверки не должна оставлять компонент без статуса."""
         service = DefaultInstallableCatalogService(status_timeout_sec=2.0)
         self.addCleanup(service.close)
         started = threading.Event()
@@ -236,7 +237,10 @@ class InstallableCatalogServiceTests(unittest.TestCase):
             release.set()
             thread.join(2.0)
             self.assertFalse(thread.is_alive())
-            self.assertIn("error", observed)
+            self.assertNotIn("error", observed)
+            stale_answer = observed["status"]
+            self.assertEqual(stale_answer["code"], "unknown")
+            self.assertEqual(stale_answer["probe_state"], "stale")
             fresh = service.get_status("asr:google")
 
         self.assertEqual(fresh["code"], "fresh")
@@ -396,6 +400,72 @@ class InstallableCatalogServiceTests(unittest.TestCase):
             service.close()
 
         self.assertEqual(published, [])
+
+    def test_invalidation_during_refresh_keeps_every_row_with_a_status(self):
+        """Регресс: любое сохранение настроек сбрасывало кэш посреди проверок, и
+        каталог возвращал строки вообще без статуса — карточка навсегда рисовалась
+        как «неизвестно» с активной кнопкой «Установить»."""
+        from installables.catalog_manifest import catalog_entries
+
+        entries = list(catalog_entries())[:6]
+        self.assertGreater(len(entries), 1)
+        service = DefaultInstallableCatalogService(status_timeout_sec=5.0)
+        probing = threading.Event()
+        release = threading.Event()
+        published: list[str] = []
+        delivered = threading.Event()
+
+        def inspect(entry, _ctx):
+            probing.set()
+            release.wait(3.0)
+            return {
+                "id": entry.id,
+                "code": "ready",
+                "installed": True,
+                "ready": True,
+                "backend": entry.declared_backend,
+                "backend_ok": True,
+                "details": {},
+            }
+
+        def emit(name, data=None, *_a, **_kw):
+            published.append(str((data or {}).get("component_id")))
+            if len(published) >= len(entries):
+                delivered.set()
+
+        try:
+            with patch.object(service, "_prepare_runtime_registry"), \
+                 patch.object(service, "_component_context", return_value={}), \
+                 patch("core.events.get_event_bus", return_value=SimpleNamespace(emit=emit)), \
+                 patch.object(service, "_inspect_component", side_effect=inspect):
+                result: dict = {}
+
+                def refresh():
+                    result["statuses"] = service._refresh_statuses(entries, refresh=True)
+
+                thread = threading.Thread(target=refresh)
+                thread.start()
+                self.assertTrue(probing.wait(2.0))
+                service.invalidate()
+                release.set()
+                thread.join(10.0)
+                self.assertFalse(thread.is_alive())
+
+                statuses = result["statuses"]
+                self.assertEqual(
+                    sorted(statuses), sorted(entry.id for entry in entries)
+                )
+                for component_id, status in statuses.items():
+                    self.assertIsInstance(status, dict, component_id)
+                    self.assertTrue(status.get("code"), component_id)
+
+                # Настоящие статусы обязаны догнать UI событием.
+                self.assertTrue(delivered.wait(5.0))
+        finally:
+            release.set()
+            service.close()
+
+        self.assertEqual(sorted(set(published)), sorted(entry.id for entry in entries))
 
     def test_fish_speech_compatibility_is_driven_by_cuda_and_compute_capability(self):
         def service_for(vendor, capability=None):

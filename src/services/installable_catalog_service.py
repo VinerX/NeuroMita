@@ -44,10 +44,11 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         self._lock = threading.RLock()
         self._status_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._inflight: dict[tuple[str, str], Future[Any]] = {}
-        # Ключи, по которым вызывающий уже получил временный ответ (проверка не
-        # уложилась в бюджет). Реальный статус придёт позже — его надо разослать,
-        # иначе UI навсегда останется с «неизвестно».
-        self._deferred_notifications: set[tuple[str, str]] = set()
+        # Кто доставит результат проверки вызывающему: "awaited" — синхронный вызов
+        # ещё ждёт его в бюджете, "consumed" — уже забрал сам, "orphaned" — получил
+        # временный ответ, настоящий надо разослать событием, иначе UI навсегда
+        # останется с «неизвестно».
+        self._probe_claims: dict[tuple[str, str], str] = {}
         self._component_revisions: dict[str, int] = {}
         self._closed = False
         self._runtime_registry_prepared = False
@@ -94,7 +95,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             futures = tuple(self._inflight.values())
             self._inflight.clear()
             self._status_cache.clear()
-            self._deferred_notifications.clear()
+            self._probe_claims.clear()
         for future in futures:
             future.cancel()
         self._async_executor.shutdown(cancel_futures=True)
@@ -494,16 +495,16 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 for key in tuple(self._inflight):
                     if key[0] == normalized:
                         abandoned.append(self._inflight.pop(key))
-                for key in tuple(self._deferred_notifications):
+                for key in tuple(self._probe_claims):
                     if key[0] == normalized:
-                        self._deferred_notifications.discard(key)
+                        self._probe_claims.pop(key, None)
             else:
                 for entry in catalog_entries():
                     self._component_revisions[entry.id] = self._component_revisions.get(entry.id, 0) + 1
                 self._status_cache.clear()
                 abandoned.extend(self._inflight.values())
                 self._inflight.clear()
-                self._deferred_notifications.clear()
+                self._probe_claims.clear()
         for future in abandoned:
             future.cancel()
             self._probe_executor.abandon(future)
@@ -602,61 +603,129 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
 
         futures: dict[tuple[str, str], Future[Any]] = {}
         generations: dict[tuple[str, str], int] = {}
-        with self._lock:
-            for component_id, key in keys.items():
+        for component_id, key in keys.items():
+            with self._lock:
                 if key in self._status_cache:
                     continue
-                revision = self._component_revisions.get(component_id, 0)
-                generations[key] = revision
-                future = self._inflight.get(key)
-                if future is None:
-                    future = self._probe_executor.submit(
-                        self._inspect_component,
-                        by_id[component_id],
-                        contexts[component_id],
-                    )
-                    self._inflight[key] = future
-                    future.add_done_callback(
-                        lambda completed, probe_key=key, generation=revision, entry=by_id[component_id]:
-                        self._finalize_probe(probe_key, generation, entry, completed)
-                    )
-                futures[key] = future
+            future, generation = self._ensure_probe(
+                by_id[component_id],
+                contexts[component_id],
+                key,
+                claim="awaited",
+            )
+            if future is None:
+                continue
+            futures[key] = future
+            generations[key] = generation
 
         transient_results: dict[tuple[str, str], dict[str, Any]] = {}
         if futures:
-            done, pending = wait(
-                tuple(set(futures.values())),
-                timeout=self._status_timeout_sec,
-            )
+            wait(tuple(set(futures.values())), timeout=self._status_timeout_sec)
             for key, future in futures.items():
-                component_id = key[0]
-                if future in pending:
+                entry = by_id[key[0]]
+                # Решение «кто доставит результат» принимается одним атомарным
+                # шагом: проверка может завершиться ровно между проверкой
+                # готовности и отказом от ожидания, и тогда её итог некому было бы
+                # отдать в UI.
+                if not self._settle_claim(key, future):
                     self._probe_executor.abandon(future)
-                    with self._lock:
-                        self._deferred_notifications.add(key)
                     transient_results[key] = self._transient_probe_status(
-                        by_id[component_id],
+                        entry,
                         state="timeout",
                         message=f"Status probe timed out after {self._status_timeout_sec:.1f}s",
                     )
                     continue
-                status = self._status_from_future(by_id[component_id], future)
-                with self._lock:
-                    revision_is_current = (
-                        not self._closed
-                        and self._component_revisions.get(component_id, 0) == generations[key]
-                    )
-                if revision_is_current:
+                status = self._status_from_future(entry, future)
+                if self._generation_is_current(key[0], generations[key]):
                     transient_results[key] = status
-
-        with self._lock:
-            return {
-                component_id: copy.deepcopy(
-                    self._status_cache.get(key) or transient_results[key]
+                    continue
+                # Компонент инвалидировали прямо во время проверки (например, любое
+                # изменение настроек сбрасывает кэш каталога). Результат относится к
+                # прошлому поколению, но выбрасывать его молча нельзя: строка без
+                # статуса рисуется в UI как «неизвестно» и больше никогда не
+                # пересчитывается. Перезапускаем проверку и отдаём временный статус.
+                transient_results[key] = self._transient_probe_status(
+                    entry,
+                    state="stale",
+                    message="Status probe restarted after cache invalidation",
                 )
-                for component_id, key in keys.items()
-                if key in self._status_cache or key in transient_results
-            }
+                self._ensure_probe(entry, contexts[key[0]], key, claim="orphaned")
+
+        result: dict[str, dict[str, Any]] = {}
+        for component_id, key in keys.items():
+            with self._lock:
+                cached = self._status_cache.get(key)
+            status = cached if cached is not None else transient_results.get(key)
+            if status is None:
+                # Ни кэша, ни результата: проверку ведёт другой вызов либо её кэш
+                # сбросили после отправки. Каталог обязан вернуть статус на каждый
+                # запрошенный компонент, иначе UI подставит «неизвестно» навсегда.
+                entry = by_id[component_id]
+                status = self._transient_probe_status(
+                    entry,
+                    state="pending",
+                    message="Status probe is still running",
+                )
+                self._ensure_probe(entry, contexts[component_id], key, claim="orphaned")
+            result[component_id] = copy.deepcopy(status)
+        return result
+
+    def _ensure_probe(
+        self,
+        entry: Any,
+        component_ctx: dict[str, Any],
+        key: tuple[str, str],
+        *,
+        claim: str,
+    ) -> tuple[Future[Any] | None, int]:
+        """Вернуть текущую проверку компонента или запустить новую.
+
+        `claim` фиксируется под тем же локом, что и запуск: быстрая проверка
+        успевает завершиться раньше, чем вызывающий дойдёт до ожидания.
+        """
+        with self._lock:
+            if self._closed:
+                return None, 0
+            self._set_claim(key, claim)
+            generation = self._component_revisions.get(key[0], 0)
+            future = self._inflight.get(key)
+            if future is not None:
+                return future, generation
+            future = self._probe_executor.submit(
+                self._inspect_component,
+                entry,
+                component_ctx,
+            )
+            self._inflight[key] = future
+        future.add_done_callback(
+            lambda completed, probe_key=key, probe_generation=generation, probe_entry=entry:
+            self._finalize_probe(probe_key, probe_generation, probe_entry, completed)
+        )
+        return future, generation
+
+    def _generation_is_current(self, component_id: str, generation: int) -> bool:
+        with self._lock:
+            return (
+                not self._closed
+                and self._component_revisions.get(component_id, 0) == generation
+            )
+
+    def _set_claim(self, key: tuple[str, str], claim: str) -> None:
+        # «Осиротевший» ключ не понижаем: параллельный вызов уже получил по нему
+        # временный ответ и ждёт события с настоящим статусом.
+        if claim == "awaited" and self._probe_claims.get(key) == "orphaned":
+            return
+        self._probe_claims[key] = claim
+
+    def _settle_claim(self, key: tuple[str, str], future: Future[Any]) -> bool:
+        """Забрать результат себе (True) либо оставить его на рассылку событием."""
+        with self._lock:
+            if not future.done():
+                self._probe_claims[key] = "orphaned"
+                return False
+            if self._probe_claims.get(key) == "awaited":
+                self._probe_claims[key] = "consumed"
+            return True
 
     def _status_from_future(self, entry: Any, future: Future[Any]) -> dict[str, Any]:
         try:
@@ -688,13 +757,13 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             if self._inflight.get(key) is not future:
                 return
             self._inflight.pop(key, None)
-            deferred = key in self._deferred_notifications
-            self._deferred_notifications.discard(key)
+            claim = self._probe_claims.pop(key, None)
             if self._closed or self._component_revisions.get(component_id, 0) != generation:
                 return
             if str(status.get("code") or "").strip().lower() != "failed":
                 self._status_cache[key] = copy.deepcopy(status)
-        if deferred:
+        # "awaited"/"consumed" — статус уже уехал вызывающему синхронным ответом.
+        if claim == "orphaned":
             self._publish_status(entry, status)
 
     def _publish_status(self, entry: Any, status: dict[str, Any]) -> None:
