@@ -809,6 +809,9 @@ class _InstallableController:
     def list_rows(self, **kwargs):
         return self._catalog.list_rows(**kwargs)
 
+    def invalidate(self, component_id: str | None = None) -> None:
+        self._catalog.invalidate(component_id)
+
     def install_preview(self, component_id: str):
         return self._catalog.install_preview(str(component_id))
 

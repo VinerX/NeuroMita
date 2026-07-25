@@ -44,6 +44,10 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         self._lock = threading.RLock()
         self._status_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._inflight: dict[tuple[str, str], Future[Any]] = {}
+        # Ключи, по которым вызывающий уже получил временный ответ (проверка не
+        # уложилась в бюджет). Реальный статус придёт позже — его надо разослать,
+        # иначе UI навсегда останется с «неизвестно».
+        self._deferred_notifications: set[tuple[str, str]] = set()
         self._component_revisions: dict[str, int] = {}
         self._closed = False
         self._runtime_registry_prepared = False
@@ -90,6 +94,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             futures = tuple(self._inflight.values())
             self._inflight.clear()
             self._status_cache.clear()
+            self._deferred_notifications.clear()
         for future in futures:
             future.cancel()
         self._async_executor.shutdown(cancel_futures=True)
@@ -489,12 +494,16 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 for key in tuple(self._inflight):
                     if key[0] == normalized:
                         abandoned.append(self._inflight.pop(key))
+                for key in tuple(self._deferred_notifications):
+                    if key[0] == normalized:
+                        self._deferred_notifications.discard(key)
             else:
                 for entry in catalog_entries():
                     self._component_revisions[entry.id] = self._component_revisions.get(entry.id, 0) + 1
                 self._status_cache.clear()
                 abandoned.extend(self._inflight.values())
                 self._inflight.clear()
+                self._deferred_notifications.clear()
         for future in abandoned:
             future.cancel()
             self._probe_executor.abandon(future)
@@ -623,6 +632,8 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                 component_id = key[0]
                 if future in pending:
                     self._probe_executor.abandon(future)
+                    with self._lock:
+                        self._deferred_notifications.add(key)
                     transient_results[key] = self._transient_probe_status(
                         by_id[component_id],
                         state="timeout",
@@ -677,10 +688,32 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             if self._inflight.get(key) is not future:
                 return
             self._inflight.pop(key, None)
+            deferred = key in self._deferred_notifications
+            self._deferred_notifications.discard(key)
             if self._closed or self._component_revisions.get(component_id, 0) != generation:
                 return
             if str(status.get("code") or "").strip().lower() != "failed":
                 self._status_cache[key] = copy.deepcopy(status)
+        if deferred:
+            self._publish_status(entry, status)
+
+    def _publish_status(self, entry: Any, status: dict[str, Any]) -> None:
+        """Разослать статус, досчитанный после временного ответа каталога."""
+        try:
+            from core.events import Events, get_event_bus
+
+            get_event_bus().emit(
+                Events.Install.COMPONENT_STATUS,
+                {
+                    "component_id": entry.id,
+                    "status": copy.deepcopy(status),
+                    "compatibility": self._compatibility(entry, status),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Installable status notification failed for '{entry.id}': {exc}"
+            )
 
     def _component_context(
         self,

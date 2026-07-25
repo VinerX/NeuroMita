@@ -764,6 +764,10 @@ class Events:
         TASK_FINISHED = "install_task_finished"
         TASK_FAILED = "install_task_failed"
         CATALOG_CHANGED = "install_catalog_changed"
+        # Статус компонента, досчитанный уже после того, как синхронный запрос
+        # каталога отдал временный ответ ("проверка не уложилась в бюджет").
+        # {"component_id": str, "status": {...}, "compatibility": {...}}
+        COMPONENT_STATUS = "install_component_status"
         RUN_BLOCKING = "run_install_blocking"
 
         # Очередь установок (выполняются строго по одной за раз).

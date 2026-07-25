@@ -33,6 +33,11 @@ from main_logger import logger
 # Зависший worker не должен бесконечно держать кнопки установки заблокированными.
 STATUS_REFRESH_TIMEOUT_MS = 20_000
 
+# Карточки, чья проверка не уложилась в бюджет каталога, ждут отложенный статус
+# (Events.Install.COMPONENT_STATUS). Если проверка зависла совсем — снимаем
+# «Проверка…», чтобы карточка не осталась заблокированной навсегда.
+TRANSIENT_STATUS_TIMEOUT_MS = 120_000
+
 
 class AIHubViewModel(IntentViewModel[AIHubState]):
     _VALID_ACTIONS = frozenset({"install", "uninstall", "initialize"})
@@ -48,11 +53,13 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         self._catalog = presentation.installables
         self._install_ui_generation = 0
         self._refresh_timeout_generation = 0
+        self._checking_generation = 0
         for topic, callback in (
             (UiTopic.INSTALL_TASK_STARTED, self._on_install_started),
             (UiTopic.INSTALL_TASK_PROGRESS, self._on_install_progress),
             (UiTopic.INSTALL_TASK_FINISHED, self._on_install_finished),
             (UiTopic.INSTALL_CATALOG_CHANGED, self._on_catalog_changed),
+            (UiTopic.INSTALL_COMPONENT_STATUS, self._on_component_status),
             (UiTopic.INSTALL_TASK_FAILED, self._on_install_failed),
             (UiTopic.INSTALL_QUEUE_CHANGED, self._on_queue_changed),
         ):
@@ -297,18 +304,96 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         if not rows and previous_rows:
             rows = previous_rows
         included_status = bool(payload.get("included_status"))
+        # Компоненты, чью проверку каталог не успел досчитать, остаются в
+        # состоянии «Проверка…»: их настоящий статус придёт отдельным событием.
+        # Показывать «Не установлено» по недосчитанной проверке нельзя — именно
+        # из-за этого свежеустановленный компонент выглядел неустановленным.
+        pending_check = frozenset(
+            component_id
+            for component_id, status in (
+                (self._row_component_id(row), row.get("status")) for row in rows
+            )
+            if component_id and self._is_transient_status(status)
+        )
         self.update_state(
             rows=tuple(immutable_payload(item) for item in rows),
             hardware=immutable_payload(payload.get("hardware") or {}),
             loaded_once=True,
             refreshing=False,
             last_check_ts=payload.get("checked_at"),
-            checking_component_ids=frozenset(),
+            checking_component_ids=pending_check,
             error=None,
             revision=self.state.revision + 1,
         )
+        if pending_check:
+            self._checking_generation += 1
+            generation = self._checking_generation
+            QTimer.singleShot(
+                TRANSIENT_STATUS_TIMEOUT_MS,
+                lambda: self._on_pending_check_timeout(generation),
+            )
         if rows and not included_status:
             self.refresh(force=False, include_status=True)
+
+    @staticmethod
+    def _row_component_id(row: dict[str, Any]) -> str:
+        return str(meta_from_row(row).get("id") or "").strip()
+
+    @staticmethod
+    def _is_transient_status(status: Any) -> bool:
+        """Статус-заглушка: проверка компонента ещё идёт в фоне."""
+        if not isinstance(status, dict):
+            return False
+        if str(status.get("probe_state") or "").strip():
+            return True
+        details = status.get("details")
+        return bool(isinstance(details, dict) and details.get("transient"))
+
+    def _on_pending_check_timeout(self, generation: int) -> None:
+        if generation != self._checking_generation:
+            return
+        if not self.state.checking_component_ids:
+            return
+        logger.warning(
+            "AI Hub component checks did not finish: %s",
+            ", ".join(sorted(self.state.checking_component_ids)),
+        )
+        self.update_state(
+            checking_component_ids=frozenset(),
+            revision=self.state.revision + 1,
+        )
+
+    def _on_component_status(self, event) -> None:
+        """Досчитанный статус компонента: обновить одну карточку без переопроса."""
+        data = self._event_data(event)
+        component_id = str(data.get("component_id") or "").strip()
+        status = data.get("status")
+        if not component_id or not isinstance(status, dict):
+            return
+        compatibility = data.get("compatibility")
+
+        def apply() -> None:
+            rows: list[dict[str, Any]] = []
+            patched = False
+            for item in self.state.rows:
+                row = dict(mutable_payload(item) or {})
+                if self._row_component_id(row) == component_id:
+                    row["status"] = dict(status)
+                    if isinstance(compatibility, dict):
+                        row["compatibility"] = dict(compatibility)
+                    patched = True
+                rows.append(row)
+            checking = set(self.state.checking_component_ids)
+            checking.discard(component_id)
+            if not patched and checking == set(self.state.checking_component_ids):
+                return
+            self.update_state(
+                rows=tuple(immutable_payload(item) for item in rows),
+                checking_component_ids=frozenset(checking),
+                revision=self.state.revision + 1,
+            )
+
+        self._post_ui(apply)
 
     def _apply_refresh_error(self, error: Exception) -> None:
         self.update_state(refreshing=False, error=str(error))
@@ -396,7 +481,12 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
                 install_progress=100,
                 install_detail=done,
             )
-            self.refresh(force=True)
+            # Пересчитывать надо установленный компонент, а не весь каталог:
+            # у остальных карточек изменение окружения и так меняет ключ кэша,
+            # а слепой force-refresh ставил 45 проверок в очередь из 4 потоков и
+            # съедал бюджет как раз у того компонента, который только что ставили.
+            self._invalidate_component(component_id)
+            self.refresh(force=False, include_status=True)
             QTimer.singleShot(
                 900,
                 lambda generation=generation: self._hide_install_bar(generation),
@@ -413,6 +503,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         self._install_ui_generation += 1
         data = self._event_data(event)
         message = str(data.get("error") or _("Ошибка установки", "Install failed"))
+        component_id = self._event_component_id(event)
 
         def apply() -> None:
             self.update_state(
@@ -421,9 +512,23 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
                 install_logs_visible=False,
                 error=message,
             )
-            self.refresh(force=True)
+            self._invalidate_component(component_id)
+            self.refresh(force=False, include_status=True)
 
         self._post_ui(apply)
+
+    def _invalidate_component(self, component_id: str) -> None:
+        """Сбросить кэш статуса одного компонента перед его перепроверкой."""
+        if not component_id:
+            return
+        try:
+            self._catalog.invalidate(component_id)
+        except Exception as exc:
+            logger.warning(
+                "AI Hub failed to invalidate component status '%s': %s",
+                component_id,
+                exc,
+            )
 
     def _on_queue_changed(self, event) -> None:
         data = self._event_data(event)

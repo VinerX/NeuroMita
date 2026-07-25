@@ -52,6 +52,7 @@ class UiTopic(StrEnum):
     INSTALL_TASK_FAILED = "install_task_failed"
     INSTALL_TASK_FINISHED = "install_task_finished"
     INSTALL_CATALOG_CHANGED = "install_catalog_changed"
+    INSTALL_COMPONENT_STATUS = "install_component_status"
     INSTALL_TASK_PROGRESS = "install_task_progress"
     INSTALL_TASK_STARTED = "install_task_started"
 

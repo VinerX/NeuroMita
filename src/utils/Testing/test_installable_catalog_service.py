@@ -279,6 +279,124 @@ class InstallableCatalogServiceTests(unittest.TestCase):
             release.set()
             service.close()
 
+    def test_late_probe_result_is_published_after_transient_answer(self):
+        """Досчитанный статус обязан догнать UI, иначе карточка врёт до ручного обновления."""
+        from core.events import Events
+        from controllers.gui.presentation_contracts import UiTopic
+
+        self.assertEqual(
+            str(UiTopic.INSTALL_COMPONENT_STATUS),
+            Events.Install.COMPONENT_STATUS,
+        )
+
+        service = DefaultInstallableCatalogService(status_timeout_sec=0.05)
+        release = threading.Event()
+        published: list[tuple[str, dict]] = []
+        delivered = threading.Event()
+
+        def inspect(_entry, _ctx):
+            release.wait(2.0)
+            return {
+                "id": "asr:google",
+                "code": "ready",
+                "installed": True,
+                "ready": True,
+                "backend": "cpu",
+                "backend_ok": True,
+                "details": {},
+            }
+
+        def emit(name, data=None, *args, **kwargs):
+            published.append((str(name), dict(data or {})))
+            delivered.set()
+
+        try:
+            with patch.object(service, "_prepare_runtime_registry"), \
+                 patch.object(service, "_component_context", return_value={}), \
+                 patch("core.events.get_event_bus", return_value=SimpleNamespace(emit=emit)), \
+                 patch.object(service, "_inspect_component", side_effect=inspect):
+                transient = service.get_status("asr:google")
+                self.assertEqual(transient["code"], "unknown")
+                self.assertFalse(published)
+                release.set()
+                self.assertTrue(delivered.wait(2.0))
+        finally:
+            release.set()
+            service.close()
+
+        self.assertEqual(len(published), 1)
+        name, payload = published[0]
+        self.assertEqual(name, Events.Install.COMPONENT_STATUS)
+        self.assertEqual(payload["component_id"], "asr:google")
+        self.assertTrue(payload["status"]["ready"])
+        self.assertIn("compatibility", payload)
+
+    def test_in_budget_probe_does_not_publish_status(self):
+        service = DefaultInstallableCatalogService(status_timeout_sec=5.0)
+        self.addCleanup(service.close)
+        published: list[str] = []
+        status = {
+            "id": "asr:google",
+            "code": "ready",
+            "installed": True,
+            "ready": True,
+            "backend": "cpu",
+            "backend_ok": True,
+            "details": {},
+        }
+
+        with patch.object(service, "_prepare_runtime_registry"), \
+             patch.object(service, "_component_context", return_value={}), \
+             patch("core.events.get_event_bus", return_value=SimpleNamespace(
+                 emit=lambda name, data=None, *a, **kw: published.append(str(name))
+             )), \
+             patch.object(service, "_inspect_component", return_value=status):
+            self.assertTrue(service.get_status("asr:google")["ready"])
+
+        deadline = time.monotonic() + 1.0
+        while service._inflight and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(published, [])
+
+    def test_invalidated_component_does_not_publish_stale_status(self):
+        service = DefaultInstallableCatalogService(status_timeout_sec=0.05)
+        release = threading.Event()
+        published: list[str] = []
+        finished = threading.Event()
+
+        def inspect(_entry, _ctx):
+            try:
+                release.wait(2.0)
+                return {
+                    "id": "asr:google",
+                    "code": "ready",
+                    "installed": True,
+                    "ready": True,
+                    "backend": "cpu",
+                    "backend_ok": True,
+                    "details": {},
+                }
+            finally:
+                finished.set()
+
+        try:
+            with patch.object(service, "_prepare_runtime_registry"), \
+                 patch.object(service, "_component_context", return_value={}), \
+                 patch("core.events.get_event_bus", return_value=SimpleNamespace(
+                     emit=lambda name, data=None, *a, **kw: published.append(str(name))
+                 )), \
+                 patch.object(service, "_inspect_component", side_effect=inspect):
+                self.assertEqual(service.get_status("asr:google")["code"], "unknown")
+                service.invalidate("asr:google")
+                release.set()
+                self.assertTrue(finished.wait(2.0))
+                time.sleep(0.1)
+        finally:
+            release.set()
+            service.close()
+
+        self.assertEqual(published, [])
+
     def test_fish_speech_compatibility_is_driven_by_cuda_and_compute_capability(self):
         def service_for(vendor, capability=None):
             devices = []
