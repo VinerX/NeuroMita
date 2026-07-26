@@ -739,6 +739,12 @@ class TaskService(ABC):
         """Обновить статус задачи и уведомить (TASK_STATUS_CHANGED)."""
 
 
+class AIRuntimeUnavailable(RuntimeError):
+    """Движок не может обслужить вызов прямо сейчас: рантайм пересобирается или
+    выведен на обслуживание. Состояние временное — вызывающему не нужен
+    traceback, нужен компактный отчёт и (если можно) повтор."""
+
+
 class AIEngineService(ABC):
     """Доступ к оркестратору AI-engine (подпроцессы tts/asr/rag/beats).
     rag_client берёт движок отсюда, чтобы hot-path эмбеддинг не звал

@@ -16,7 +16,12 @@ from handlers.embedding_presets import (
     resolve_model_settings,
 )
 from main_logger import logger
-from services.contracts import AIEngineService, EmbeddingService, SettingsService
+from services.contracts import (
+    AIEngineService,
+    AIRuntimeUnavailable,
+    EmbeddingService,
+    SettingsService,
+)
 
 
 class EmbeddingController(EmbeddingService):
@@ -245,6 +250,10 @@ class EmbeddingController(EmbeddingService):
                 priority="hot",
             )
             return results[0] if results else None
+        except AIRuntimeUnavailable as e:
+            # Временная недоступность рантайма — не дефект, трейсбек только шумит.
+            logger.warning(f"EmbeddingController: embed_one отложен, {e}")
+            return None
         except Exception as e:
             logger.error(f"EmbeddingController: ошибка embed_one via AI engine: {e}", exc_info=True)
             return None
@@ -274,6 +283,9 @@ class EmbeddingController(EmbeddingService):
                 timeout_sec=(None if priority == "bulk" else self._HOT_TIMEOUT_SEC),
                 priority=priority,
             )
+        except AIRuntimeUnavailable as e:
+            logger.warning(f"EmbeddingController: embed_many отложен, {e}")
+            return []
         except Exception as e:
             logger.error(f"EmbeddingController: ошибка embed_many via AI engine: {e}", exc_info=True)
             return []

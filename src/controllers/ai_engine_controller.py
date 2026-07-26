@@ -6,15 +6,17 @@ import threading
 import time
 import uuid
 from queue import Full
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future, InvalidStateError
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
 from services.contracts import (
     AIEngineAdministrationService,
     AIEngineService,
+    AIRuntimeUnavailable,
     SettingsService,
 )
+from core.daemon_executor import DaemonExecutor
 from core.services import services
 from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
@@ -64,6 +66,92 @@ def _bootstrap_timeout(requested: float | None = None) -> float:
         float(requested or 0.0),
         _env_float("NEUROMITA_AI_BOOTSTRAP_TIMEOUT", 300.0, minimum=10.0),
     )
+
+
+def _switch_wait_timeout() -> float:
+    return _env_float("NEUROMITA_AI_SWITCH_WAIT_TIMEOUT", 60.0, minimum=0.0)
+
+
+class _RuntimeSwitchGate:
+    """Окно, в котором рантайм недоступен для вызовов.
+
+    Два разных по природе окна:
+      * пересборка состава пакетов (`waitable=True`) — ограничено остановкой
+        воркера и bootstrap'ом, его можно и нужно переждать: иначе пакет вызовов
+        (например эмбеддинги памяти) теряется целиком;
+      * обслуживание (`waitable=False`) — удаление AI-окружений, срок неизвестен,
+        ждать нельзя, вызов обязан упасть сразу.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._active = False
+        self._waitable = False
+        self._owner: int | None = None
+        self._aborted = False
+
+    def begin(self, *, waitable: bool) -> None:
+        with self._cond:
+            self._active = True
+            self._waitable = bool(waitable)
+            self._owner = threading.get_ident()
+
+    def end(self) -> None:
+        with self._cond:
+            self._active = False
+            self._waitable = False
+            self._owner = None
+            self._cond.notify_all()
+
+    def is_active(self) -> bool:
+        with self._cond:
+            return self._active
+
+    def reason(self) -> str:
+        with self._cond:
+            if not self._active:
+                return ""
+            return (
+                "AI runtime is switching package composition"
+                if self._waitable
+                else "AI runtime is suspended for maintenance"
+            )
+
+    def abort_waiters(self) -> None:
+        """Движок гасится: пережидать окно больше нет смысла."""
+        with self._cond:
+            self._aborted = True
+            self._cond.notify_all()
+
+    def can_wait_from_caller(self) -> bool:
+        """Есть ли смысл пережидать окно для текущего вызывающего потока.
+
+        Поток, который сам ведёт пересборку, ждать себя не может — иначе он
+        встанет насмерть на собственном окне.
+        """
+        with self._cond:
+            if not self._active:
+                return True
+            if self._aborted or not self._waitable:
+                return False
+            return self._owner != threading.get_ident()
+
+    def wait_idle(self, timeout: float) -> bool:
+        """Дождаться закрытия окна. False — ждать нельзя или не уложились."""
+        deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
+        with self._cond:
+            while self._active:
+                if (
+                    self._aborted
+                    or not self._waitable
+                    or self._owner == threading.get_ident()
+                ):
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._cond.wait(remaining)
+            return True
 
 
 class _Worker:
@@ -754,7 +842,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         self._ctx = mp.get_context("spawn")
         self._lock = threading.RLock()
         self._runtime_switch_lock = threading.RLock()
-        self._runtime_switching = threading.Event()
+        self._runtime_switching = _RuntimeSwitchGate()
+        # Вызовы, пришедшие в окно пересборки: ждут его закрытия в отдельном
+        # потоке, чтобы `call` оставался неблокирующим.
+        self._switch_dispatcher: DaemonExecutor | None = None
+        self._deferred_calls: set[Future] = set()
         self._recovery_lock = threading.RLock()
         self._shutting_down = threading.Event()
         self._restart_attempts: dict[str, int] = {}
@@ -1061,10 +1153,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     getattr(previous, "service_names", ()) or _DEFAULT_SERVICES
                 )
                 previous_validations = self._validation_sequence()
-                switch_event = getattr(self, "_runtime_switching", None)
-                if switch_event is None:
-                    switch_event = threading.Event()
-                    self._runtime_switching = switch_event
+                switch_gate = self._runtime_switching
 
                 def restore_previous_worker() -> bool:
                     if previous is None:
@@ -1106,7 +1195,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         }
                     return True
 
-                switch_event.set()
+                switch_gate.begin(waitable=True)
                 candidate: _Worker | None = None
                 try:
                     if previous is not None:
@@ -1162,7 +1251,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     cleanup_superseded_runtime_artifacts()
                     return True
                 finally:
-                    switch_event.clear()
+                    switch_gate.end()
 
             candidates: dict[str, _Worker] = {}
             with self._lock:
@@ -1426,13 +1515,20 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             f.set_exception(ValueError("Missing service/method"))
             return f
 
-        switch_event = getattr(self, "_runtime_switching", None)
-        if switch_event is not None and switch_event.is_set():
-            f = Future()
-            f.set_exception(
-                RuntimeError("AI runtime is switching package composition")
-            )
-            return f
+        gate = self._runtime_switching
+        if gate.is_active():
+            # Пересборку состава пакетов пережидаем: окно короткое (стоп воркера
+            # + bootstrap), а мгновенный отказ терял целые пакеты эмбеддингов и
+            # заливал лог трейсбеками. Обслуживание пережидать нельзя — падаем.
+            if not gate.can_wait_from_caller():
+                f = Future()
+                f.set_exception(
+                    AIRuntimeUnavailable(
+                        gate.reason() or "AI runtime is unavailable"
+                    )
+                )
+                return f
+            return self._call_after_switch(s, m, payload or {}, timeout=timeout)
 
         w = self._worker_for_service(s)
         if not w:
@@ -1441,6 +1537,149 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             return f
 
         return w.call(m, payload or {}, service=s, timeout=timeout)
+
+    def _call_after_switch(
+        self,
+        service: str,
+        method: str,
+        payload: dict,
+        *,
+        timeout: float | None,
+    ) -> Future:
+        """Вызов пришёл в окно пересборки рантайма.
+
+        Ждать окно прямо в `call` нельзя: контракт метода — сразу вернуть Future,
+        а GUI-поток (озвучка, статусы Triton) заморозился бы на всё окно. Поэтому
+        ожидание уносим в отдельный поток, а бюджет ожидания остаётся у
+        вызывающего: сколько ждать, он решает своим `future.result(timeout=...)`.
+        """
+        budget = _switch_wait_timeout()
+        if timeout is not None:
+            budget = min(budget, max(0.0, float(timeout)))
+        deadline = time.monotonic() + budget
+        outer: Future = Future()
+
+        dispatcher = None if budget <= 0.0 else self._ensure_switch_dispatcher()
+        if dispatcher is None:
+            outer.set_exception(
+                AIRuntimeUnavailable(
+                    self._runtime_switching.reason() or "AI runtime is unavailable"
+                )
+            )
+            return outer
+
+        with self._lock:
+            self._deferred_calls.add(outer)
+        outer.add_done_callback(self._forget_deferred_call)
+        dispatcher.submit(
+            self._dispatch_after_switch,
+            outer,
+            service,
+            method,
+            payload,
+            timeout,
+            deadline,
+        )
+        return outer
+
+    def _ensure_switch_dispatcher(self) -> DaemonExecutor | None:
+        with self._lock:
+            if self._shutting_down.is_set():
+                return None
+            if self._switch_dispatcher is None:
+                # Один поток: все отложенные вызовы ждут одно и то же окно, а
+                # отправка воркеру не блокирует — после закрытия окна очередь
+                # разлетается мгновенно, в порядке поступления.
+                self._switch_dispatcher = DaemonExecutor(
+                    1, thread_name_prefix="ai-switch-dispatch"
+                )
+            return self._switch_dispatcher
+
+    def _forget_deferred_call(self, future: Future) -> None:
+        with self._lock:
+            self._deferred_calls.discard(future)
+
+    def _dispatch_after_switch(
+        self,
+        outer: Future,
+        service: str,
+        method: str,
+        payload: dict,
+        timeout: float | None,
+        deadline: float,
+    ) -> None:
+        gate = self._runtime_switching
+        try:
+            if not outer.set_running_or_notify_cancel():
+                return
+        except RuntimeError:
+            return  # уже завершён (например, движок гасится)
+
+        if self._shutting_down.is_set() or not gate.wait_idle(
+            deadline - time.monotonic()
+        ):
+            self._settle_deferred(
+                outer,
+                error=AIRuntimeUnavailable(
+                    gate.reason() or "AI runtime is unavailable"
+                ),
+            )
+            return
+
+        w = self._worker_for_service(service)
+        if not w:
+            self._settle_deferred(
+                outer, error=RuntimeError(f"Unknown service: {service}")
+            )
+            return
+
+        inner = w.call(method, payload, service=service, timeout=timeout)
+        inner.add_done_callback(
+            lambda done, target=outer: self._copy_result(done, target)
+        )
+
+    def _copy_result(self, source: Future, target: Future) -> None:
+        try:
+            error = source.exception()
+        except CancelledError:
+            error = AIRuntimeUnavailable("AI runtime call was cancelled")
+        if error is not None:
+            self._settle_deferred(target, error=error)
+            return
+        self._settle_deferred(target, result=source.result())
+
+    @staticmethod
+    def _settle_deferred(
+        target: Future,
+        *,
+        result: Any = None,
+        error: BaseException | None = None,
+    ) -> None:
+        try:
+            if error is not None:
+                target.set_exception(error)
+            else:
+                target.set_result(result)
+        except InvalidStateError:
+            pass
+
+    def _abort_deferred_calls(self) -> None:
+        """Гашение движка: отложенные вызовы обязаны получить ответ.
+
+        Иначе вызывающий (в т.ч. GUI) остаётся висеть на `future.result()`.
+        """
+        self._runtime_switching.abort_waiters()
+        with self._lock:
+            pending = tuple(self._deferred_calls)
+            self._deferred_calls.clear()
+            dispatcher = self._switch_dispatcher
+            self._switch_dispatcher = None
+        for future in pending:
+            self._settle_deferred(
+                future, error=AIRuntimeUnavailable("AI engine is shutting down")
+            )
+        if dispatcher is not None:
+            dispatcher.shutdown()
 
     def wait_ready(self, service: str, timeout: float = 3.0) -> bool:
         s = str(service or "").strip().lower()
@@ -1715,6 +1954,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
 
     def prepare_shutdown(self) -> None:
         self._shutting_down.set()
+        self._abort_deferred_calls()
         with self._lock:
             workers = list(self._workers.values())
         for worker in workers:
@@ -1732,7 +1972,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         return {
             "mode": self.mode,
             "override": os.environ.get("NEUROMITA_AI_ENGINE_MODE"),
-            "suspended": self._runtime_switching.is_set() and not workers,
+            "suspended": self._runtime_switching.is_active() and not workers,
             "workers": workers,
         }
 
@@ -1753,7 +1993,8 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         if self._shutting_down.is_set():
             return False
         with self._runtime_switch_lock:
-            self._runtime_switching.set()
+            # Обслуживание не имеет срока: вызовы должны падать сразу, а не ждать.
+            self._runtime_switching.begin(waitable=False)
             self._stop_runtime_workers(timeout=timeout)
             return True
 
@@ -1761,11 +2002,15 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         if self._shutting_down.is_set():
             return False
         with self._runtime_switch_lock:
-            with self._lock:
-                already_running = bool(self._workers)
-            if not already_running:
-                self._init_workers()
-            self._runtime_switching.clear()
+            try:
+                with self._lock:
+                    already_running = bool(self._workers)
+                if not already_running:
+                    self._init_workers()
+            finally:
+                # Окно закрываем всегда: незакрытое навсегда убивает движок —
+                # каждый вызов падал бы с «runtime is suspended».
+                self._runtime_switching.end()
             return True
 
     def switch_topology(self, mode: str, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -1784,7 +2029,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
 
         previous = self.mode
         with self._runtime_switch_lock:
-            self._runtime_switching.set()
+            self._runtime_switching.begin(waitable=True)
             try:
                 self._stop_runtime_workers(timeout=timeout)
                 self.mode = requested
@@ -1796,7 +2041,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 self._init_workers()
                 return {"ok": False, "error": str(exc), **self.topology_snapshot()}
             finally:
-                self._runtime_switching.clear()
+                self._runtime_switching.end()
 
         settings = services().get_optional(SettingsService)
         if settings is not None:
@@ -1805,4 +2050,5 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
 
     def shutdown(self, timeout: float = 5.0) -> None:
         self._shutting_down.set()
+        self._abort_deferred_calls()
         self._stop_runtime_workers(timeout=timeout)
