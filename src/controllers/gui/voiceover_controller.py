@@ -334,30 +334,6 @@ class VoiceoverGuiController(BaseController):
             self._save_setting("NM_CURRENT_VOICEOVER", model_id)
             self._set_combobox_by_model_id(model_id)
             self._select_or_init_model_async(model_id)
-            return
-
-            if not self._check_installed(model_id):
-                self._sync_local_model_status()
-                self._emit_voice_icon_state()
-                QMessageBox.information(self.view, _("Информация", "Info"), _("Модель не установлена.", "Model is not installed."))
-                return
-
-            if self._check_initialized(model_id):
-                if not self._select_model(model_id):
-                    QMessageBox.critical(self.view, _("Ошибка", "Error"), _("Не удалось активировать модель", "Failed to activate model"))
-                self._set_combobox_by_model_id(model_id)
-                self._sync_local_model_status()
-                self._emit_voice_icon_state()
-                return
-
-            if not self._show_loading_dialog(model_id):
-                # Нет папки models и т.п. — инициализацию НЕ запускаем
-                # (раньше эмитили INIT_VOICE_MODEL несмотря на ошибку).
-                self._emit_voice_icon_state()
-                return
-            self._emit_voice_icon_state()
-
-            self._initialize_local_model(model_id)
 
         self._ui(apply)
 
@@ -423,7 +399,7 @@ class VoiceoverGuiController(BaseController):
                     QMessageBox.critical(self.view, _("Error", "Error"), _("Failed to activate model", "Failed to activate model"))
                 return
 
-            if not self._show_loading_dialog(current_id):
+            if not self._begin_model_loading(current_id):
                 self._sync_local_model_status_from_snapshot(state)
                 self._emit_voice_icon_state_from_snapshot(state)
                 return
@@ -672,7 +648,8 @@ class VoiceoverGuiController(BaseController):
             self._select_model_async(model_id, show_error=False)
             return
 
-        if not self._show_loading_dialog(model_id):
+        # Автозагрузка: окно прогресса не открываем — статус виден в чипе.
+        if not self._begin_model_loading(model_id, silent=True):
             self._emit_voice_icon_state_from_snapshot(state)
             return
 
@@ -1095,7 +1072,7 @@ class VoiceoverGuiController(BaseController):
             self._select_model(model_id)
             return
 
-        if not self._show_loading_dialog(model_id):
+        if not self._begin_model_loading(model_id, silent=True):
             self._emit_voice_icon_state()
             return
         self._emit_voice_icon_state()
@@ -1103,20 +1080,40 @@ class VoiceoverGuiController(BaseController):
         self._initialize_local_model(model_id)
 
     # ---------- local loading dialog ----------
-    def _show_loading_dialog(self, model_id: str) -> bool:
-        """Возвращает True, если можно продолжать инициализацию, и False, если
+    def _begin_model_loading(self, model_id: str, *, silent: bool = False) -> bool:
+        """Гейты перед инициализацией + отметка «модель грузится».
+
+        Возвращает True, если можно продолжать инициализацию, и False, если
         она должна быть отменена (например, нет папки models) — тогда вызывающий
-        НЕ эмитит INIT_VOICE_MODEL."""
+        НЕ эмитит INIT_VOICE_MODEL.
+
+        silent=True — автозагрузка на старте: пользователь ничего не запрашивал
+        вручную, поэтому ни модалок, ни окна прогресса не показываем; состояние
+        видно в чипе/индикаторе озвучки."""
         if not self.view:
             return False
 
         # Гейт по GPU: не запускаем молча CUDA-модель на не-NVIDIA железе —
         # раньше это давало каскад triton «Failed to find CUDA» и путало юзеров
         # без видеокарты NVIDIA (фидбэк Артёма, Intel Iris Xe).
-        if not self._confirm_gpu_compatibility(model_id):
+        if silent:
+            if not bool(self._model_compatibility(model_id).get("supported")):
+                logger.warning(
+                    f"Автозагрузка модели '{model_id}' пропущена: backend несовместим с "
+                    f"устройством. Инициализация доступна вручную (там будет подтверждение)."
+                )
+                return False
+        elif not self._confirm_gpu_compatibility(model_id):
             return False
 
         if not os.path.exists("models"):
+            if silent:
+                logger.warning(
+                    f"Автозагрузка модели '{model_id}' пропущена: нет папки models "
+                    f"(голоса Мит не скачаны через AI Hub)."
+                )
+                return False
+
             box = QMessageBox(self.view)
             box.setIcon(QMessageBox.Icon.Critical)
             box.setWindowTitle(_("Ошибка", "Error"))
@@ -1141,13 +1138,19 @@ class VoiceoverGuiController(BaseController):
             return False
 
         self._loading_model_id = model_id
+
+        if silent:
+            return True
+
         model_name = self._model_id_to_name.get(model_id, model_id)
 
         self._loading_dialog, _progress, self._loading_status_label = create_model_loading_dialog(
             self.view,
             model_name,
-            lambda: self._user_cancel_loading()
+            lambda: self._user_cancel_loading(),
+            lambda: self._user_hide_loading(),
         )
+        self._loading_dialog.rejected.connect(lambda: self._user_hide_loading())
         self._loading_dialog.show()
         self._set_loading_status(_("Инициализация модели...", "Initializing model..."))
         return True
@@ -1157,6 +1160,20 @@ class VoiceoverGuiController(BaseController):
         self._loading_model_id = None
         self._restore_last_model_after_cancel()
         self._sync_everything(allow_autoload=False)
+
+    def _user_hide_loading(self):
+        """«Скрыть» (и закрытие окна крестиком): инициализация продолжается,
+        прогресс уезжает в чип статуса модели."""
+        if self._loading_dialog is None:
+            return
+        self._close_loading_dialog()
+
+        chip = getattr(self.view, "local_model_status_chip", None)
+        btn = getattr(self.view, "local_model_action_btn", None)
+        if chip is not None or btn is not None:
+            self._apply_model_status(
+                chip, btn, "loading", _("Инициализация...", "Initializing..."), None, ""
+            )
 
     def _restore_last_model_after_cancel(self):
         if not self._last_selected_model_id:

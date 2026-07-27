@@ -1,9 +1,10 @@
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -111,6 +112,7 @@ class BackgroundTaskDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._allow_close = False
+        self._grow_pending = False
 
         self.setObjectName("BackgroundTaskDialog")
         self.setStyleSheet(_BACKGROUND_TASK_STYLE)
@@ -119,13 +121,24 @@ class BackgroundTaskDialog(QDialog):
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
         )
-        self.setMinimumWidth(440)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
+        # Статус приходит уже после show() и бывает длинным (перенос на 2-3
+        # строки). Без этого окно оставалось прежней высоты, карточка
+        # ужималась, и нижний ряд кнопок обрезался краем окна.
+        root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         card = QFrame()
         card.setObjectName("BackgroundTaskCard")
+        # Ширину задаём карточке, а не окну: SetMinimumSize у root-лейаута
+        # перетирает minimumSize самого диалога.
+        card.setMinimumWidth(480)
+        # Без этого высота переносимых строк внутри карточки не доходит до
+        # окна: QWidget по умолчанию не пробрасывает heightForWidth наружу.
+        card_policy = card.sizePolicy()
+        card_policy.setHeightForWidth(True)
+        card.setSizePolicy(card_policy)
         root.addWidget(card)
 
         layout = QVBoxLayout(card)
@@ -146,6 +159,12 @@ class BackgroundTaskDialog(QDialog):
         self._status_label = QLabel(_("Подготовка...", "Preparing..."))
         self._status_label.setObjectName("BackgroundTaskStatus")
         self._status_label.setWordWrap(True)
+        self._status_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        # Место под две строки резервируем сразу, чтобы окно не «прыгало» на
+        # каждой смене статуса.
+        self._reserve_lines(self._status_label, 2)
         layout.addWidget(self._status_label)
 
         self._bar = QProgressBar()
@@ -160,6 +179,7 @@ class BackgroundTaskDialog(QDialog):
         self._detail_label = QLabel("")
         self._detail_label.setObjectName("BackgroundTaskDetail")
         self._detail_label.setWordWrap(True)
+        self._reserve_lines(self._detail_label, 1)
         layout.addWidget(self._detail_label)
 
         hint_text = hint or _(
@@ -187,22 +207,58 @@ class BackgroundTaskDialog(QDialog):
 
         layout.addLayout(buttons)
 
+        self.adjustSize()
+
+    @staticmethod
+    def _reserve_lines(label: QLabel, lines: int) -> None:
+        label.setMinimumHeight(label.fontMetrics().lineSpacing() * int(lines))
+
+    def _schedule_grow_to_fit(self) -> None:
+        # Пересчёт откладываем на следующий тик: Qt обновляет sizeHint только
+        # после обработки LayoutRequest, поэтому сразу после setText размер
+        # ещё старый.
+        if self._grow_pending:
+            return
+        self._grow_pending = True
+        QTimer.singleShot(0, self._grow_to_fit)
+
+    def _grow_to_fit(self) -> None:
+        """Подрасти под новый текст, если он не помещается (окно только
+        растёт — иначе оно бы дёргалось на каждом тике прогресса)."""
+        self._grow_pending = False
+        layout = self.layout()
+        if layout is None:
+            return
+        layout.activate()
+        needed = self.sizeHint().height()
+        if layout.hasHeightForWidth():
+            needed = max(needed, layout.heightForWidth(self.width()))
+        if needed > self.height():
+            self.resize(self.width(), needed)
+
     # --- API прогресса (близко к QProgressDialog) --------------------------
 
     def set_status(self, text: str) -> None:
         self._status_label.setText(str(text or ""))
+        self._schedule_grow_to_fit()
 
     def set_detail(self, text: str) -> None:
         self._detail_label.setText(str(text or ""))
+        self._schedule_grow_to_fit()
 
     def set_range(self, minimum: int, maximum: int) -> None:
-        self._bar.setRange(int(minimum), int(maximum))
+        top = int(maximum)
+        self._bar.setRange(int(minimum), top)
+        # В determinate-режиме показываем проценты прямо в полосе: пустая
+        # полоса без единой цифры выглядела как «ничего не происходит».
+        self._bar.setTextVisible(top > 0)
 
     def set_value(self, value: int) -> None:
         self._bar.setValue(int(value))
 
     def show_busy(self) -> None:
         self._bar.setRange(0, 0)
+        self._bar.setTextVisible(False)
 
     # --- управление жизненным циклом --------------------------------------
 
