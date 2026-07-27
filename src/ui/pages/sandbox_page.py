@@ -508,6 +508,7 @@ class SandboxPage(QWidget):
         self._game_status_row = None
         self._voice_status_row = None
         self._mic_status_row = None
+        self._mic_instant_row = None
         self._rag_status_row = None
         # Capture rows carry a two-state dot (off/active) mirroring its switch —
         # keyed by the switch widget so _sync_toggles_from_settings can recolour.
@@ -801,6 +802,7 @@ class SandboxPage(QWidget):
         row = {
             "USE_VOICEOVER": self._voice_status_row,
             "MIC_ACTIVE": self._mic_status_row,
+            "MIC_INSTANT_SENT": self._mic_instant_row,
             "RAG_ENABLED": self._rag_status_row,
         }.get(enable_key)
         if row is not None:
@@ -918,6 +920,17 @@ class SandboxPage(QWidget):
             self._mic_status_row.set_enabled_state(bool(get("MIC_ACTIVE", False)))
             engine = str(get("RECOGNIZER_TYPE", "") or "").strip()
             self._mic_status_row.set_value(engine or _("Не выбран", "None"))
+
+        if self._mic_instant_row is not None:
+            # Плашка активна только когда микрофон реально включён — иначе
+            # «мгновенная отправка» включена, но отправлять нечего.
+            mic_on = bool(get("MIC_ACTIVE", False))
+            self._mic_instant_row.set_enabled_state(bool(get("MIC_INSTANT_SENT", False)))
+            self._mic_instant_row.setChecked(mic_on)
+            self._mic_instant_row.set_value(
+                _("Речь сразу в чат", "Speech to chat") if mic_on
+                else _("Нужен микрофон", "Needs mic")
+            )
 
         if self._rag_status_row is not None:
             self._rag_status_row.set_enabled_state(bool(get("RAG_ENABLED", False)))
@@ -1683,17 +1696,18 @@ class SandboxPage(QWidget):
         # Мгновенная отправка распознанного текста (MIC_INSTANT_SENT) — тот же
         # тумблер, что и в настройках микрофона; здесь под строкой микрофона,
         # чтобы включать «речь сразу уходит в чат» не уходя со страницы.
-        mic_instant_row, self._mic_instant_cb = self._make_toggle_row(
+        # Формат строки — общий для панели «Статус» (плашка + значение +
+        # переключатель + шестерёнка); живое состояние зависит от микрофона:
+        # включено при выключенном микрофоне = «Не готово» (см.
+        # _refresh_status_values).
+        self._mic_instant_row = _SandboxStatusRow(
             _("Мгновенная отправка", "Instant send"),
-            lambda v: self._on_capture_toggle("MIC_INSTANT_SENT", v),
-            bool(self._setting("MIC_INSTANT_SENT", False)),
-            tooltip=_("Мгновенная отправка распознанного текста",
-                      "Send recognized text immediately"),
-            with_dot=True,
-            on_settings=lambda: self._jump_to_settings("microphone"),
-            settings_tooltip=_("Открыть настройки микрофона", "Open microphone settings"),
+            lambda: self._jump_to_settings("microphone"),
+            _("Открыть настройки микрофона", "Open microphone settings"),
+            on_toggle=lambda checked: self._on_status_toggle("MIC_INSTANT_SENT", checked),
+            initial_on=bool(self._setting("MIC_INSTANT_SENT", False)),
         )
-        status_layout.addWidget(mic_instant_row)
+        status_layout.addWidget(self._mic_instant_row)
 
         self._rag_status_row = self._make_status_row(
             "RAG",
@@ -1877,7 +1891,6 @@ class SandboxPage(QWidget):
             ("_capture_screen_cb", "ENABLE_SCREEN_ANALYSIS", False),
             ("_capture_auto_attach_cb", "AUTO_ATTACH_IMAGES", False),
             ("_capture_camera_cb", "ENABLE_CAMERA_CAPTURE", False),
-            ("_mic_instant_cb", "MIC_INSTANT_SENT", False),
             ("_show_thinking_cb", "SHOW_THINK_IN_GUI", False),
             ("_hide_tags_cb", "HIDE_CHAT_TAGS", True),
             ("_show_ts_cb", "SHOW_CHAT_TIMESTAMPS", True),
