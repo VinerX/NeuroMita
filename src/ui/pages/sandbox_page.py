@@ -3,7 +3,7 @@ import os
 import qtawesome as qta
 
 from PyQt6.QtCore import QSize, QTimer, Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,6 +48,32 @@ _MODEL_CONFIGURE_SENTINEL = "__configure_models__"
 _TTS_CONFIGURE_SENTINEL = "__configure_tts__"
 _ASR_CONFIGURE_SENTINEL = "__configure_asr__"
 _PROMPT_CONFIGURE_SENTINEL = "__configure_prompts__"
+
+
+class _NestedBranch(QWidget):
+    """«Уголок» подчинённой строки: линия от родительской строки сверху вниз и
+    вправо к лейблу. Рисуем сами, а не иконкой — так связка тянется на всю
+    высоту строки и подчинение читается сразу."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(18)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(255, 210, 236, 130))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        x = 5.0
+        mid = self.height() / 2.0
+        # Вертикаль от верхнего края строки до её середины + короткий отвод вправо.
+        painter.drawLine(int(x), 0, int(x), int(mid))
+        painter.drawLine(int(x), int(mid), self.width() - 3, int(mid))
 
 
 class _NoWheelComboBox(TRQComboBox):
@@ -124,7 +150,7 @@ class _SandboxStatusRow(QWidget):
 
     def __init__(self, name_text: str, on_settings, settings_tooltip: str,
                  on_toggle=None, initial_on: bool = False, nested: bool = False,
-                 parent=None):
+                 name_tooltip: str | None = None, parent=None):
         super().__init__(parent)
         self.setObjectName("SandboxInfoRow")
         h = QHBoxLayout(self)
@@ -134,28 +160,25 @@ class _SandboxStatusRow(QWidget):
         self._enabled = bool(initial_on)
         self._active = False
         self._indicator = None  # None | "loading" | "red" | "green"
+        self._nested = bool(nested)
 
         # nested — подстрока (подчинённая настройка родительской строки выше):
         # сдвиг вправо, «уголок»-ветка и приглушённый лейбл, чтобы читалось как
         # часть родителя, а не как самостоятельная подсистема.
         if nested:
-            branch = QLabel()
-            branch.setFixedSize(14, 14)
-            branch.setStyleSheet("background: transparent; border: none;")
-            try:
-                branch.setPixmap(
-                    qta.icon("fa6s.arrow-turn-down", color="rgba(255,255,255,0.35)").pixmap(12, 12))
-            except Exception:
-                branch.setText("↳")
-            h.addSpacing(10)
-            h.addWidget(branch, 0, Qt.AlignmentFlag.AlignVCenter)
+            h.setContentsMargins(6, 0, 0, 0)
+            h.setSpacing(6)
+            h.addWidget(_NestedBranch(), 0)
 
         name = QLabel(name_text)
         register_if_tr(name, name_text)
         name.setObjectName("SandboxInfoLabel")
-        name.setMinimumWidth(64 if nested else 88)
+        name.setMinimumWidth(88)
+        if name_tooltip:
+            name.setToolTip(name_tooltip)
         if nested:
-            name.setStyleSheet("color: rgba(255,255,255,0.62);")
+            name.setStyleSheet("color: rgba(255,210,236,0.78);")
+            name.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         h.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._chip = QLabel("")
@@ -166,8 +189,9 @@ class _SandboxStatusRow(QWidget):
         self._value_slot = QWidget()
         self._value_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         # Небольшой резерв спасает от схлопывания до одной буквы, но не
-        # раздувает строку так агрессивно, как старый минимум 112px.
-        self._value_slot.setMinimumWidth(64)
+        # раздувает строку так агрессивно, как старый минимум 112px. У подстроки
+        # значения нет — там слот не должен отбирать ширину у лейбла.
+        self._value_slot.setMinimumWidth(0 if nested else 64)
         value_layout = QHBoxLayout(self._value_slot)
         value_layout.setContentsMargins(0, 0, 0, 0)
         value_layout.setSpacing(0)
@@ -294,7 +318,9 @@ class _SandboxStatusRow(QWidget):
         )
         # Когда выключено — прячем «что именно» (плашка уже сказала «Выкл»);
         # так у микрофона/голоса не мозолят глаза лишние поля в отключённом виде.
-        self._value.setVisible(state != "off")
+        # У подстроки значения нет вовсе: отступ + плашка съедают ширину, и
+        # длинный лейбл иначе обрезается.
+        self._value.setVisible(state != "off" and not self._nested)
 
     def _apply_value_text(self):
         value = self._full_value_text or "—"
@@ -951,7 +977,6 @@ class SandboxPage(QWidget):
             self._mic_instant_row.setVisible(mic_on)
             self._mic_instant_row.set_enabled_state(bool(get("MIC_INSTANT_SENT", False)))
             self._mic_instant_row.setChecked(mic_on)
-            self._mic_instant_row.set_value(_("Речь сразу в чат", "Speech to chat"))
 
         if self._rag_status_row is not None:
             self._rag_status_row.set_enabled_state(bool(get("RAG_ENABLED", False)))
@@ -1720,13 +1745,17 @@ class SandboxPage(QWidget):
         # Формат строки — общий для панели «Статус» (плашка + значение +
         # переключатель + шестерёнка), но подчинённый микрофону: строка видна
         # только при включённом MIC_ACTIVE (см. _refresh_status_values).
+        # Заголовок короткий («Отправка сразу»), иначе подстрока с отступом и
+        # плашкой не влезает в ширину инспектора; полный смысл — в tooltip.
         self._mic_instant_row = _SandboxStatusRow(
-            _("Мгновенная отправка", "Instant send"),
+            _("Отправка сразу", "Instant send"),
             lambda: self._jump_to_settings("microphone"),
             _("Открыть настройки микрофона", "Open microphone settings"),
             on_toggle=lambda checked: self._on_status_toggle("MIC_INSTANT_SENT", checked),
             initial_on=bool(self._setting("MIC_INSTANT_SENT", False)),
             nested=True,
+            name_tooltip=_("Распознанный текст сразу уходит в чат, без правки",
+                           "Recognized text goes straight to chat, no editing"),
         )
         self._mic_instant_row.setVisible(bool(self._setting("MIC_ACTIVE", False)))
         status_layout.addWidget(self._mic_instant_row)
