@@ -338,9 +338,11 @@ class CreateTaskAction:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
 
+            # Порог простоя задаёт мод; здесь конкретное число не называем,
+            # чтобы фолбэк не разошёлся с реальным таймером Unity.
             idle_prompt = data.get("message")
             if not isinstance(idle_prompt, str) or not idle_prompt.strip():
-                idle_prompt = "The player has been silent for 180 seconds. React naturally to this silence."
+                idle_prompt = "The player has been silent for a while. React naturally to this silence."
 
             task = use(TaskService).create_task("idle", {
                 "character": character_id,
