@@ -135,6 +135,12 @@ class SpeechController(SpeechService):
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     def _on_asr_initialized_backend(self, _event: Event):
+        # Событие означает «живое распознавание подтверждено движком», поэтому
+        # тут же поднимаем и mic_recognition_active: подписчики (индикатор ASR)
+        # читают mic_active() синхронно внутри этого emit, а вызывающий код
+        # присваивает флаг только ПОСЛЕ возврата из speech_recognition_start —
+        # иначе статус залипал на «ASR не готов».
+        self.mic_recognition_active = True
         self.asr_is_ready = True
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 

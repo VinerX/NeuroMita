@@ -78,6 +78,23 @@ def _on_ai_engine_event(event: Event):
             get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text})
         return
 
+    # Движок может поднять живое распознавание сам: при смене состава окружений
+    # shared-воркер перезапускается и повторяет ранее выполненные активации
+    # (start_live в том числе). GUI об этом иначе не узнаёт и остаётся с красной
+    # плашкой при работающем микрофоне. Лок тут не берём: событие приходит в
+    # result-loop потоке движка, а _start_lock может удерживать поток, который
+    # ждёт ответа движка на stop_live.
+    if ev == "status" and payload.get("running") is True:
+        if SpeechRecognition._is_running:
+            return
+        SpeechRecognition._is_running = True
+        SpeechRecognition._running_event.set()
+        SpeechRecognition._stopped_event.clear()
+        SpeechRecognition.active = True
+        logger.info("ASR engine reported live recognition is running; restoring GUI state.")
+        get_event_bus().emit(Events.Speech.ASR_MODEL_INITIALIZED)
+        return
+
     # Аварийная смерть цикла распознавания в engine-процессе. Раньше эти
     # события игнорировались, и GUI бесконечно считал ASR работающим.
     if ev == "error" or (ev == "status" and payload.get("running") is False):
