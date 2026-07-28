@@ -21,6 +21,45 @@ class GuiThreadAffinityTests(unittest.TestCase):
 
         install_qt_dispatcher(cls.application)
 
+    def _register_stub_settings(self) -> None:
+        """Контроллеры страниц подписываются на SettingsService прямо в
+        конструкторе, поэтому без зарегистрированного сервиса тест падает ещё
+        до проверки потоков."""
+        from core.services import services
+        from services.contracts import SettingsService
+
+        class _Subscription:
+            def close(self) -> None:
+                return None
+
+        class _Settings(SettingsService):
+            def __init__(self) -> None:
+                self.values: dict[str, object] = {}
+
+            def get(self, key, default=None):
+                return self.values.get(str(key), default)
+
+            def set(self, key, value) -> None:
+                self.values[str(key)] = value
+
+            def save_settings(self) -> None:
+                return None
+
+            def update(self, key, value) -> None:
+                self.values[str(key)] = value
+
+            def snapshot(self, keys=None):
+                if keys is None:
+                    return dict(self.values)
+                return {str(k): self.values.get(str(k)) for k in keys}
+
+            def subscribe(self, callback, *, keys=None, replay=False):
+                return _Subscription()
+
+        registry = services()
+        registry.register(SettingsService, _Settings(), replace=True)
+        self.addCleanup(registry.unregister, SettingsService)
+
     def _drain_until(self, predicate, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -269,6 +308,7 @@ class GuiThreadAffinityTests(unittest.TestCase):
         previous = qInstallMessageHandler(qt_handler)
         view = View()
         controller = None
+        self._register_stub_settings()
         try:
             controller = MicrophoneSettingsController(MainController(), view)
             self.assertTrue(
