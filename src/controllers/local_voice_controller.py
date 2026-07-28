@@ -422,7 +422,11 @@ class LocalVoiceController(LocalVoiceService):
         initialize = not bool(self._initialized_cache.get(model_id, False))
         await self._ensure_model_environment(model_id, initialize=initialize)
         if initialize:
+            # Модель инициализировалась попутно, первым запросом озвучки. Без
+            # уведомления UI плашка голоса навсегда оставалась «Требуется
+            # инициализация» при уже работающем синтезе.
             self._initialized_cache[model_id] = True
+            self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
         result_path = await self._engine_call_async(
             "synthesize",
             {
