@@ -9,6 +9,8 @@
   "(не выбран)": "(niet geselecteerd)",
   "(нет transforms)": "(geen transforms)",
   "+{n} в очереди": " — in wachtrij",
+  "+{n} в очереди ▾": "+{n} in wachtrij ▾",
+  "Показать очередь установки": "Installatiewachtrij tonen",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Backend packages:</b><br>{packages}",
   "<Изображение экрана>": "<Schermafbeelding>",
   "<Изображения>": "<Afbeeldingen>",

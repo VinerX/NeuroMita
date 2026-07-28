@@ -12,6 +12,8 @@
   "+ Добавить ключ": "+ Schlüssel hinzufügen",
   "+ Добавить резерв": "+ Add Reserve",
   "+{n} в очереди": "+{n} in der Warteschlange",
+  "+{n} в очереди ▾": "+{n} in der Warteschlange ▾",
+  "Показать очередь установки": "Installationswarteschlange anzeigen",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Backend-Pakete:</b><br>{packages}",
   "<Изображение экрана>": "<Bildschirmbild>",
   "<Изображения>": "<Bilder>",

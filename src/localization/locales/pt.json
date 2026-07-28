@@ -9,6 +9,8 @@
   "(не выбран)": "(não selecionado)",
   "(нет transforms)": "(sem transforms)",
   "+{n} в очереди": "+{n} na fila",
+  "+{n} в очереди ▾": "+{n} na fila ▾",
+  "Показать очередь установки": "Mostrar a fila de instalação",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Backend packages:</b><br>{packages}",
   "<Изображение экрана>": "<Captura de tela>",
   "<Изображения>": "<Imagens>",

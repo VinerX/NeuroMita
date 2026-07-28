@@ -12,6 +12,8 @@
   "+ Добавить ключ": "+ Ajouter une clé",
   "+ Добавить резерв": "+ Ajouter une sauvegarde",
   "+{n} в очереди": "+{n} en file d’attente",
+  "+{n} в очереди ▾": "+{n} en file d’attente ▾",
+  "Показать очередь установки": "Afficher la file d’installation",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Packages back-end :</b><br>{packages}",
   "<Изображение экрана>": "<Image d'écran>",
   "<Изображения>": "<Images>",

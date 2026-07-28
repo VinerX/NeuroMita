@@ -9,6 +9,8 @@
   "(не выбран)": "(neselectat)",
   "(нет transforms)": "(fără transforms)",
   "+{n} в очереди": "+{n} în coadă",
+  "+{n} в очереди ▾": "+{n} în coadă ▾",
+  "Показать очередь установки": "Afișează coada de instalare",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Backend packages:</b><br>{packages}",
   "<Изображение экрана>": "<Imagine ecran>",
   "<Изображения>": "<Imagini>",

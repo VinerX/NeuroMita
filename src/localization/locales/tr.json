@@ -9,6 +9,8 @@
   "(не выбран)": "(seçilmedi)",
   "(нет transforms)": "(transforms yok)",
   "+{n} в очереди": "+{n} kuyrukta",
+  "+{n} в очереди ▾": "+{n} kuyrukta ▾",
+  "Показать очередь установки": "Kurulum kuyruğunu göster",
   "<br><br><b>Пакеты backend:</b><br>{packages}": "<br><br><b>Backend packages:</b><br>{packages}",
   "<Изображение экрана>": "<Ekran Görüntüsü>",
   "<Изображения>": "<Görüntüler>",
