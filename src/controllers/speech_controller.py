@@ -626,6 +626,12 @@ class SpeechController(SpeechService):
 
     def _on_stop_speech_recognition(self, _event: Event):
         SpeechRecognition.speech_recognition_stop()
+        # Остановка ждёт движок несколько секунд, и за это время он мог сам
+        # поднять живой цикл заново (перезапуск воркера переигрывает start_live).
+        # Гасить флаги вслепую нельзя: статус залипнет на «не готов» при
+        # работающем распознавании.
+        if SpeechRecognition._is_running:
+            return
         self.mic_recognition_active = False
         self.asr_is_ready = False
 

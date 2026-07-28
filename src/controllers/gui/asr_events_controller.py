@@ -336,7 +336,7 @@ class AsrEventsController(BaseController):
 
     # ---------------- indicator logic ----------------
     def _emit_indicator(self, state: str | None, tooltip: str | None):
-        st = state if state in (None, "red", "green", "loading") else None
+        st = state if state in (None, "red", "green", "loading", "warn") else None
         tt = str(tooltip) if tooltip else None
 
         if st == self._last_state and tt == self._last_tooltip:
@@ -496,4 +496,9 @@ class AsrEventsController(BaseController):
         if ready:
             self._emit_indicator("green", _("ASR готов", "ASR ready"))
         else:
-            self._emit_indicator("red", _("ASR не готов", "ASR not ready"))
+            # Не готов ≠ сломан: красное остаётся за настоящей ошибкой (её ловит
+            # ветка _asr_error выше), а «включено, но живой цикл ещё не поднят» —
+            # это жёлтое «Не готово», как у озвучки.
+            self._emit_indicator(
+                "warn", _("ASR ещё не запущен", "ASR is not running yet")
+            )
