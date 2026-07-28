@@ -174,9 +174,13 @@ class SpeechRecognition:
     VOSK_SAMPLE_RATE = 16000
     CHUNK_SIZE = 512
     VAD_THRESHOLD = 0.5
-    VAD_SILENCE_TIMEOUT_SEC = 0.15
-    VAD_PRE_BUFFER_DURATION_SEC = 0.3
+    # Пауза между словами — 150–400 мс, конец реплики — от 500 мс. Прежние 0.15 с
+    # рвали фразу на куски, а с «мгновенной отправкой» каждый кусок уходил
+    # отдельным сообщением.
+    VAD_SILENCE_TIMEOUT_SEC = 0.6
+    VAD_PRE_BUFFER_DURATION_SEC = 0.4
     MAX_SPEECH_DURATION_SEC = 30.0
+    MIN_SPEECH_DURATION_SEC = 0.35
 
     FAILED_AUDIO_DIR = "FailedAudios"
 
@@ -326,6 +330,10 @@ class SpeechRecognition:
                 SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(settings["max_speech_duration"])
             if "MAX_SPEECH_DURATION_SEC" in settings:
                 SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(settings["MAX_SPEECH_DURATION_SEC"])
+            if "min_speech_duration" in settings:
+                SpeechRecognition.MIN_SPEECH_DURATION_SEC = float(settings["min_speech_duration"])
+            if "MIN_SPEECH_DURATION_SEC" in settings:
+                SpeechRecognition.MIN_SPEECH_DURATION_SEC = float(settings["MIN_SPEECH_DURATION_SEC"])
         except Exception:
             pass
 
@@ -387,6 +395,7 @@ class SpeechRecognition:
                                 silence_timeout=SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
                                 pre_buffer_duration=SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
                                 max_speech_duration=SpeechRecognition.MAX_SPEECH_DURATION_SEC,
+                                min_speech_duration=SpeechRecognition.MIN_SPEECH_DURATION_SEC,
                             ),
                             is_active=lambda: SpeechRecognition.active,
                             speech_probability=speech_probability,
@@ -477,6 +486,7 @@ class SpeechRecognition:
                     "silence_timeout": SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
                     "pre_buffer_duration": SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
                     "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
+                    "min_speech_duration": SpeechRecognition.MIN_SPEECH_DURATION_SEC,
                 }
                 settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
                 start_payload = {

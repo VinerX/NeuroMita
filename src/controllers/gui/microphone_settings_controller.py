@@ -20,9 +20,10 @@ class MicrophoneSettingsController(BaseController):
         "VOSK_SAMPLE_RATE": 16000,
         "CHUNK_SIZE": 512,
         "VAD_THRESHOLD": 0.5,
-        "VAD_SILENCE_TIMEOUT_SEC": 0.15,
-        "VAD_PRE_BUFFER_DURATION_SEC": 0.3,
+        "VAD_SILENCE_TIMEOUT_SEC": 0.6,
+        "VAD_PRE_BUFFER_DURATION_SEC": 0.4,
         "MAX_SPEECH_DURATION_SEC": 30.0,
+        "MIN_SPEECH_DURATION_SEC": 0.35,
     }
 
     def __init__(self, main_controller, view):
@@ -166,11 +167,13 @@ class MicrophoneSettingsController(BaseController):
             if hasattr(v, "vad_threshold_spinbox"):
                 v.vad_threshold_spinbox.setValue(float(settings.get("VAD_THRESHOLD", 0.5)))
             if hasattr(v, "vad_silence_timeout_spinbox"):
-                v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.15)))
+                v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.6)))
             if hasattr(v, "vad_pre_buffer_spinbox"):
-                v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.3)))
+                v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.4)))
             if hasattr(v, "vad_max_speech_duration_spinbox"):
                 v.vad_max_speech_duration_spinbox.setValue(float(settings.get("MAX_SPEECH_DURATION_SEC", 30.0)))
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                v.vad_min_speech_duration_spinbox.setValue(float(settings.get("MIN_SPEECH_DURATION_SEC", 0.35)))
         except Exception as e:
             logger.debug(f"VAD params load error: {e}")
 
@@ -191,6 +194,8 @@ class MicrophoneSettingsController(BaseController):
                 self._save_setting("VAD_PRE_BUFFER_DURATION_SEC", v.vad_pre_buffer_spinbox.value())
             if hasattr(v, "vad_max_speech_duration_spinbox"):
                 self._save_setting("MAX_SPEECH_DURATION_SEC", v.vad_max_speech_duration_spinbox.value())
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                self._save_setting("MIN_SPEECH_DURATION_SEC", v.vad_min_speech_duration_spinbox.value())
             logger.info("VAD параметры применены")
         except Exception as e:
             logger.error(f"VAD params apply error: {e}")
@@ -215,6 +220,8 @@ class MicrophoneSettingsController(BaseController):
                 v.vad_pre_buffer_spinbox.setValue(float(d["VAD_PRE_BUFFER_DURATION_SEC"]))
             if hasattr(v, "vad_max_speech_duration_spinbox"):
                 v.vad_max_speech_duration_spinbox.setValue(float(d["MAX_SPEECH_DURATION_SEC"]))
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                v.vad_min_speech_duration_spinbox.setValue(float(d["MIN_SPEECH_DURATION_SEC"]))
             self._on_apply_vad_params()
             logger.info("VAD параметры сброшены к значениям по умолчанию")
         except Exception as e:

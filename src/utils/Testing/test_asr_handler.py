@@ -255,6 +255,76 @@ class SpeechRecognitionStartTests(unittest.TestCase):
 
         self.assertEqual(["open", "read", "ready", "close"], sequence)
 
+    def _capture_segments(self, script, **config_kwargs):
+        """Прогоняет синтетический поток через захват и возвращает сегменты.
+
+        Значение каждого чанка = вероятность речи, так что скрипт читается как
+        «речь/тишина» по чанкам (при 512/16000 — 32 мс на чанк)."""
+        sounddevice = types.ModuleType("sounddevice")
+        state = {"index": 0}
+
+        class InputStream:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, chunk_size):
+                i = state["index"]
+                value = script[i] if i < len(script) else 0.0
+                state["index"] = i + 1
+                return np.full((chunk_size, 1), float(value), dtype=np.float32), False
+
+        sounddevice.InputStream = InputStream
+        segments = []
+
+        async def on_segment(audio, rate):
+            segments.append(len(audio) / rate)
+
+        async def run_capture():
+            await AudioCaptureService(_SilentLogger()).run(
+                microphone_index=0,
+                config=AudioCaptureConfig(sample_rate=16000, chunk_size=512, **config_kwargs),
+                is_active=lambda: state["index"] < len(script),
+                speech_probability=lambda audio, _rate: float(audio[0]),
+                on_segment=on_segment,
+            )
+
+        with patch.dict(sys.modules, {"sounddevice": sounddevice}):
+            asyncio.run(run_capture())
+
+        return segments
+
+    def test_default_silence_timeout_keeps_phrase_with_inner_pause_whole(self):
+        # 5 чанков паузы = 160 мс: пауза между словами, а не конец реплики.
+        script = [0.0] * 5 + [0.9] * 10 + [0.0] * 5 + [0.9] * 10 + [0.0] * 25
+
+        self.assertEqual(1, len(self._capture_segments(script)))
+        self.assertEqual(
+            2,
+            len(self._capture_segments(script, silence_timeout=0.15, min_speech_duration=0.0)),
+        )
+
+    def test_too_short_segment_is_not_sent_to_recognizer(self):
+        # 2 чанка речи = 64 мс: щелчок, на котором Whisper галлюцинирует.
+        script = [0.0] * 5 + [0.9] * 2 + [0.0] * 25
+
+        self.assertEqual([], self._capture_segments(script))
+        self.assertEqual(1, len(self._capture_segments(script, min_speech_duration=0.0)))
+
+    def test_pre_buffer_does_not_leak_previous_utterance(self):
+        script = [0.0] * 15 + [0.9] * 15 + [0.0] * 20 + [0.9] * 15 + [0.0] * 25
+
+        segments = self._capture_segments(script)
+
+        self.assertEqual(2, len(segments))
+        # Второй сегмент не должен тащить хвост уже отданного первого.
+        self.assertLess(segments[1], segments[0])
+
     def test_wdm_ks_blocking_error_is_reported_as_driver_capability_problem(self):
         error = RuntimeError(
             "Error opening InputStream: Unanticipated host error "

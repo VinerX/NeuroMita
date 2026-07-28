@@ -172,17 +172,31 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.vad_threshold_spinbox, "Порог VAD (0.0–1.0)", "VAD threshold (0.0–1.0)", "setToolTip")
     root_lay.addWidget(make_row(_("VAD threshold", "VAD threshold"), self.vad_threshold_spinbox, label_w))
 
-    self.vad_silence_timeout_spinbox = _dspinbox(0.05, 10.0, 0.15, 0.05)
-    tr_set(self.vad_silence_timeout_spinbox, "Таймаут тишины (сек)", "Silence timeout (sec)", "setToolTip")
+    self.vad_silence_timeout_spinbox = _dspinbox(0.05, 10.0, 0.6, 0.05)
+    tr_set(self.vad_silence_timeout_spinbox,
+           "Сколько тишины ждать после речи, прежде чем отправить фразу на распознавание (сек). "
+           "Меньше 0.4 рвёт фразу на куски",
+           "How much silence to wait after speech before sending the phrase for recognition (sec). "
+           "Below 0.4 the phrase gets chopped into pieces",
+           "setToolTip")
     root_lay.addWidget(make_row(_("Тишина (сек)", "Silence (sec)"), self.vad_silence_timeout_spinbox, label_w))
 
-    self.vad_pre_buffer_spinbox = _dspinbox(0.0, 5.0, 0.3, 0.05)
+    self.vad_pre_buffer_spinbox = _dspinbox(0.0, 5.0, 0.4, 0.05)
     tr_set(self.vad_pre_buffer_spinbox, "Предбуфер (сек)", "Pre-buffer (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Pre-buffer (сек)", "Pre-buffer (sec)"), self.vad_pre_buffer_spinbox, label_w))
 
     self.vad_max_speech_duration_spinbox = _dspinbox(1.0, 120.0, 30.0, 1.0, decimals=1)
     tr_set(self.vad_max_speech_duration_spinbox, "Макс. длительность речи (сек)", "Max speech duration (sec)", "setToolTip")
     root_lay.addWidget(make_row(_("Макс. речь (сек)", "Max speech (sec)"), self.vad_max_speech_duration_spinbox, label_w))
+
+    self.vad_min_speech_duration_spinbox = _dspinbox(0.0, 3.0, 0.35, 0.05)
+    tr_set(self.vad_min_speech_duration_spinbox,
+           "Более короткие звуки не отправляются на распознавание: щелчки и кашель модель "
+           "склонна «дорисовывать» несуществующим текстом. 0 — отключить фильтр",
+           "Shorter sounds are not sent for recognition: on clicks and coughs the model tends "
+           "to make up text that was never said. 0 disables the filter",
+           "setToolTip")
+    root_lay.addWidget(make_row(_("Мин. речь (сек)", "Min speech (sec)"), self.vad_min_speech_duration_spinbox, label_w))
 
     # Кнопки «Применить» и «Сбросить» в одном ряду.
     buttons_row = SettingsBodyWidget()

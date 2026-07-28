@@ -27,7 +27,8 @@ class SpeechController(SpeechService):
         "MIC_ACTIVE", "RECOGNIZER_TYPE", "SILENCE_THRESHOLD",
         "VAD_THRESHOLD", "SILENCE_DURATION", "VAD_SILENCE_TIMEOUT_SEC",
         "VOSK_SAMPLE_RATE", "CHUNK_SIZE", "VAD_PRE_BUFFER_DURATION_SEC",
-        "MAX_SPEECH_DURATION_SEC", "NM_MICROPHONE_ID", "NM_MICROPHONE_NAME",
+        "MAX_SPEECH_DURATION_SEC", "MIN_SPEECH_DURATION_SEC",
+        "NM_MICROPHONE_ID", "NM_MICROPHONE_NAME",
     })
 
     # Хвост после конца реплики: гасим затухание звука и задержку VAD,
@@ -174,6 +175,7 @@ class SpeechController(SpeechService):
             SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC = float(self.settings.get("VAD_SILENCE_TIMEOUT_SEC", SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC))
             SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC = float(self.settings.get("VAD_PRE_BUFFER_DURATION_SEC", SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC))
             SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(self.settings.get("MAX_SPEECH_DURATION_SEC", SpeechRecognition.MAX_SPEECH_DURATION_SEC))
+            SpeechRecognition.MIN_SPEECH_DURATION_SEC = float(self.settings.get("MIN_SPEECH_DURATION_SEC", SpeechRecognition.MIN_SPEECH_DURATION_SEC))
         except Exception:
             pass
 
@@ -263,6 +265,12 @@ class SpeechController(SpeechService):
         elif key == "MAX_SPEECH_DURATION_SEC":
             try:
                 SpeechRecognition.MAX_SPEECH_DURATION_SEC = float(value)
+            except Exception:
+                pass
+
+        elif key == "MIN_SPEECH_DURATION_SEC":
+            try:
+                SpeechRecognition.MIN_SPEECH_DURATION_SEC = float(value)
             except Exception:
                 pass
 

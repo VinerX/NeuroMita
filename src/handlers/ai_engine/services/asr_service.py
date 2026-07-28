@@ -53,9 +53,10 @@ class ASRService:
             sample_rate = int(vad_cfg.get("sample_rate", 16000) or 16000)
             chunk_size = int(vad_cfg.get("chunk_size", 512) or 512)
             vad_threshold = float(vad_cfg.get("vad_threshold", 0.5) or 0.5)
-            silence_timeout = float(vad_cfg.get("silence_timeout", 0.15) or 0.15)
-            pre_buffer_duration = float(vad_cfg.get("pre_buffer_duration", 0.3) or 0.3)
+            silence_timeout = float(vad_cfg.get("silence_timeout", 0.6) or 0.6)
+            pre_buffer_duration = float(vad_cfg.get("pre_buffer_duration", 0.4) or 0.4)
             max_speech_duration = float(vad_cfg.get("max_speech_duration", 30.0) or 30.0)
+            min_speech_duration = float(vad_cfg.get("min_speech_duration", 0.35) or 0.0)
 
             await self._stop_live_internal()
 
@@ -69,6 +70,7 @@ class ASRService:
                 silence_timeout=silence_timeout,
                 pre_buffer_duration=pre_buffer_duration,
                 max_speech_duration=max_speech_duration,
+                min_speech_duration=min_speech_duration,
             )
             return bool(ok)
 
@@ -90,6 +92,7 @@ class ASRService:
         silence_timeout: float,
         pre_buffer_duration: float,
         max_speech_duration: float,
+        min_speech_duration: float = 0.0,
     ) -> bool:
         self._engine_id = engine_id
         self._engine_settings = engine_settings or {}
@@ -169,6 +172,7 @@ class ASRService:
                                 silence_timeout=silence_timeout,
                                 pre_buffer_duration=pre_buffer_duration,
                                 max_speech_duration=max_speech_duration,
+                                min_speech_duration=min_speech_duration,
                             ),
                             is_active=_active_flag,
                             speech_probability=_speech_probability,

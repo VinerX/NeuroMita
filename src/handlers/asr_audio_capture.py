@@ -103,9 +103,12 @@ class AudioCaptureConfig:
     sample_rate: int = 16000
     chunk_size: int = 512
     vad_threshold: float = 0.5
-    silence_timeout: float = 0.15
-    pre_buffer_duration: float = 0.3
+    silence_timeout: float = 0.6
+    pre_buffer_duration: float = 0.4
     max_speech_duration: float = 30.0
+    # Сегменты короче отбрасываем: на щелчках, кашле и одиночных чанках шума
+    # Whisper уверенно галлюцинирует («Продолжение следует...» и подобное).
+    min_speech_duration: float = 0.35
 
 
 class AudioCaptureService:
@@ -131,11 +134,17 @@ class AudioCaptureService:
 
         device_name, host_api_name = _device_description(sd, microphone_index)
 
-        silence_chunks_needed = max(1, int(config.silence_timeout * config.sample_rate / config.chunk_size))
-        pre_buffer_size = max(0, int(config.pre_buffer_duration * config.sample_rate / config.chunk_size))
-        max_speech_chunks = max(1, int(config.max_speech_duration * config.sample_rate / config.chunk_size))
+        # Округляем, а не отсекаем: при chunk=512/16 кГц (32 мс на чанк) усечение
+        # превращало выставленные в настройках 0.15 с в 0.128 с — фактическое
+        # поведение не совпадало со значением в UI.
+        chunks_per_sec = config.sample_rate / config.chunk_size
+        silence_chunks_needed = max(1, round(config.silence_timeout * chunks_per_sec))
+        pre_buffer_size = max(0, round(config.pre_buffer_duration * chunks_per_sec))
+        max_speech_chunks = max(1, round(config.max_speech_duration * chunks_per_sec))
+        min_speech_chunks = max(0, round(config.min_speech_duration * chunks_per_sec))
         pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size else None
         speech_buffer: list[np.ndarray] = []
+        speech_chunks = 0
         is_speaking = False
         silence_counter = 0
         overflow_count = 0
@@ -188,9 +197,11 @@ class AudioCaptureService:
                         if not is_speaking:
                             is_speaking = True
                             speech_buffer.clear()
+                            speech_chunks = 0
                             if pre_speech_buffer is not None:
                                 speech_buffer.extend(pre_speech_buffer)
                         speech_buffer.append(audio_chunk)
+                        speech_chunks += 1
                         silence_counter = 0
                         should_finalize = len(speech_buffer) >= max_speech_chunks
                     elif is_speaking:
@@ -205,9 +216,18 @@ class AudioCaptureService:
 
                     if should_finalize and speech_buffer:
                         audio = np.concatenate(speech_buffer).reshape(-1)
+                        too_short = speech_chunks < min_speech_chunks
                         speech_buffer.clear()
+                        speech_chunks = 0
                         is_speaking = False
                         silence_counter = 0
+                        # Предбуфер копил звук ДО этой реплики: если речь
+                        # продолжится сразу, он подмешал бы в новый сегмент
+                        # хвост уже отданного.
+                        if pre_speech_buffer is not None:
+                            pre_speech_buffer.clear()
+                        if too_short:
+                            continue
                         await on_segment(audio, config.sample_rate)
         except AudioCaptureError:
             raise
