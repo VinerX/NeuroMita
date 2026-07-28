@@ -533,11 +533,41 @@ def test_rag_runtime_uses_independent_slots_in_one_shared_worker() -> None:
         "rag:embeddings",
         "rag:reranker",
     }
-    assert current.calls[-3:] == [
-        ("tts", "init_model", {"model_id": "voice-a"}),
+    # Процесс не менялся, поэтому каждая активация выполняет только свою
+    # валидацию: уже поднятые слоты (tts) переигрывать незачем.
+    assert current.calls == [
         ("rag", "warmup_embeddings", {"model_name": "embed-model"}),
         ("rag", "warmup_reranker", {"model_name": "reranker-model"}),
     ]
+
+
+def test_unchanged_runtime_does_not_replay_other_services_validations() -> None:
+    current = _current_worker(("X:/shared",))
+    registry = _EnvironmentRegistry(("X:/shared",))
+    controller = _controller(current, registry)
+    # Живой цикл ASR уже поднят и записан для переигровки при перезапуске воркера.
+    controller._runtime_validations = {
+        "asr": ("asr", "start_live", {"engine_id": "whisper"}, 1.0),
+    }
+    _Worker.created.clear()
+
+    with patch("controllers.ai_engine_controller._Worker", _Worker):
+        result = controller.activate_environment(
+            "tts",
+            "voice-a",
+            category="tts",
+            timeout=1.0,
+            validation_method="init_model",
+            validation_payload={"model_id": "voice-a"},
+            validation_timeout=1.0,
+        )
+
+    assert result is True
+    assert controller._workers["shared"] is current
+    assert _Worker.created == []
+    # Озвучка не должна ронять и перезагружать распознавание речи.
+    assert current.calls == [("tts", "init_model", {"model_id": "voice-a"})]
+    assert controller._runtime_validations.keys() == {"tts", "asr"}
 
 
 def test_candidate_bootstrap_uses_dedicated_timeout_floor() -> None:

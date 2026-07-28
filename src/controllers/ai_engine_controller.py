@@ -1042,6 +1042,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         timeout: float,
         selection: dict[str, Any] | None = None,
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
+        reuse_validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
         promote: bool = True,
     ) -> bool:
         target_paths = tuple(composition.paths)
@@ -1138,10 +1139,16 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     current = self._workers.get(_SHARED_WORKER)
                 if same_contract(current):
                     assert current is not None
+                    # Процесс тот же самый — состояние всех ранее активированных
+                    # сервисов в нём живо. Переигрывать их валидации незачем:
+                    # для ASR это выгрузка живого цикла и повторная загрузка
+                    # модели на каждый чужой activate_environment (например на
+                    # каждую озвучку). Выполняем только то, что запросил сам
+                    # вызов.
                     if not self._validate_worker_runtime(
                         current,
                         ready_timeout=bootstrap_timeout,
-                        validations=validations,
+                        validations=reuse_validations,
                     ):
                         return False
                     return promote_registry(cleanup=True)
@@ -1884,6 +1891,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
 
         candidate_validations = dict(self._runtime_validations)
         current_selection = self._environments.runtime_selection()
+        requested_validation: tuple[tuple[str, str, dict[str, Any], float], ...] = ()
         if validation_method:
             candidate_validations[slot] = (
                 service_name,
@@ -1891,6 +1899,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 dict(validation_payload or {}),
                 max(1.0, float(validation_timeout or timeout or 0.0)),
             )
+            requested_validation = (candidate_validations[slot],)
         else:
             current_ref = current_selection.get(slot)
             current_identity = (
@@ -1905,6 +1914,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             timeout=timeout,
             selection=selection,
             validations=self._validation_sequence(candidate_validations),
+            reuse_validations=requested_validation,
         ):
             return False
         self._runtime_validations = candidate_validations
