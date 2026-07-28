@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from controllers.ai_engine_controller import AIEngineController
+from controllers.ai_engine_controller import AIEngineController, _RuntimeSwitchGate
 
 
 class _Proc:
@@ -188,12 +188,32 @@ class _Worker:
         return future
 
 
+class _Bus:
+    def __init__(self) -> None:
+        self.emitted: list[tuple[str, dict]] = []
+
+    def emit(self, name, data=None):
+        self.emitted.append((str(name), dict(data or {})))
+        return None
+
+    def restarted_services(self) -> list[dict]:
+        from core.events import Events
+
+        return [
+            data
+            for name, data in self.emitted
+            if name == Events.AI.SERVICE_RESTARTED
+        ]
+
+
 def _controller(current: _Worker, registry: _EnvironmentRegistry) -> AIEngineController:
     controller = AIEngineController.__new__(AIEngineController)
+    controller.event_bus = _Bus()
     controller.mode = "shared"
     controller._environments = registry
     controller._lock = threading.RLock()
     controller._runtime_switch_lock = threading.RLock()
+    controller._runtime_switching = _RuntimeSwitchGate()
     controller._recovery_lock = threading.RLock()
     controller._shutting_down = threading.Event()
     controller._restart_attempts = {}
@@ -530,3 +550,74 @@ def test_candidate_bootstrap_uses_dedicated_timeout_floor() -> None:
     ):
         assert _bootstrap_timeout(1.0) == 123.0
         assert _bootstrap_timeout(240.0) == 240.0
+
+
+def test_lost_models_are_reported_when_rollback_worker_does_not_start() -> None:
+    current = _current_worker(("X:/old-overlay", "X:/old-backend"))
+    registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
+    controller = _controller(current, registry)
+    controller._runtime_validations = {
+        "tts": ("tts", "init_model", {"model_id": "voice-a"}, 1.0),
+    }
+    _Worker.created.clear()
+    _Worker.lifecycle.clear()
+    _Worker.candidate_ready = False
+    _Worker.ready_sequence = [False, False]
+
+    with patch("controllers.ai_engine_controller._Worker", _Worker):
+        result = controller.activate_environment("tts", "voice-a", category="tts", timeout=1.0)
+
+    assert result is False
+    reported = controller.event_bus.restarted_services()
+    assert {item["service"] for item in reported} == {"tts", "asr", "rag", "beats"}
+    assert all(item["ok"] is False for item in reported)
+    # Фоновое уведомление, а не ответ на команду пользователя: GUI не должен
+    # показывать по нему диалоги.
+    assert all(item["requested"] is False for item in reported)
+
+
+def test_successful_switch_does_not_report_lost_models() -> None:
+    current = _current_worker(("X:/old-overlay", "X:/old-backend"))
+    registry = _EnvironmentRegistry(("X:/new-overlay", "X:/new-backend"))
+    controller = _controller(current, registry)
+    controller._runtime_validations = {
+        "tts": ("tts", "init_model", {"model_id": "voice-a"}, 1.0),
+    }
+    _Worker.created.clear()
+    _Worker.lifecycle.clear()
+    _Worker.ready_sequence.clear()
+    _Worker.candidate_ready = True
+
+    with patch("controllers.ai_engine_controller._Worker", _Worker):
+        result = controller.activate_environment("asr", "whisper", category="asr", timeout=1.0)
+
+    # Модели переинициализированы повтором валидаций, кеши GUI сбрасывать не за что.
+    assert result is True
+    assert controller.event_bus.restarted_services() == []
+
+
+def test_exhausted_worker_restart_reports_lost_models() -> None:
+    crashed = _current_worker(("X:/overlay", "X:/cuda-backend"))
+    crashed.proc.alive = False
+    registry = _EnvironmentRegistry(crashed.python_paths)
+    controller = _controller(crashed, registry)
+    _Worker.created.clear()
+    _Worker.ready_sequence.clear()
+    _Worker.candidate_ready = False
+
+    try:
+        with patch("controllers.ai_engine_controller._Worker", _Worker), patch.dict(
+            "os.environ",
+            {
+                "NEUROMITA_AI_RESTART_LIMIT": "1",
+                "NEUROMITA_AI_RESTART_BACKOFF": "0.01",
+            },
+            clear=False,
+        ):
+            controller._recover_worker(crashed, exit_code=1)
+    finally:
+        _Worker.candidate_ready = True
+
+    reported = controller.event_bus.restarted_services()
+    assert {item["service"] for item in reported} == {"tts", "asr", "rag", "beats"}
+    assert all(item["ok"] is False and item["requested"] is False for item in reported)

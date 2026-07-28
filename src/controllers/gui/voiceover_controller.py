@@ -194,9 +194,15 @@ class VoiceoverGuiController(BaseController):
 
         ok = bool(data.get("ok", False))
         err = str(data.get("error") or "").strip()
+        # Событие приходит и в фоне (движок не поднялся после падения). Диалоги
+        # тогда неуместны — состояние достаточно пересинхронизировать.
+        requested = bool(data.get("requested", True))
 
         def apply():
             self._sync_everything(allow_autoload=False)
+
+            if not requested:
+                return
 
             if ok:
                 self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {

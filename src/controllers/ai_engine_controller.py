@@ -7,7 +7,7 @@ import time
 import uuid
 from queue import Full
 from concurrent.futures import CancelledError, Future, InvalidStateError
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence
 
 from core.events import Event, Events, get_event_bus
 from services.contracts import (
@@ -1175,6 +1175,10 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                             f"Failed to restore previous shared AI runtime: {detail}"
                         )
                         rollback.stop(timeout=1.0)
+                        self._notify_models_lost(
+                            previous_services,
+                            f"previous AI runtime could not be restored: {detail}",
+                        )
                         return False
 
                     if previous_validations and not self._validate_worker_runtime(
@@ -1185,6 +1189,10 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         logger.error(
                             "Previous shared AI runtime was restored, but one or more "
                             "service models could not be reinitialized"
+                        )
+                        self._notify_models_lost(
+                            (item[0] for item in previous_validations),
+                            "runtime rollback could not reinitialize service models",
                         )
 
                     rollback.on_crash = self._on_worker_crash
@@ -1444,6 +1452,10 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 f"AI worker '{worker_key}' restart circuit opened after "
                 f"{attempts} attempts"
             )
+            self._notify_models_lost(
+                crashed.service_names,
+                f"AI worker '{worker_key}' did not recover after {attempts} attempts",
+            )
             try:
                 self.event_bus.emit(
                     Events.AI.ENGINE_EVENT,
@@ -1459,6 +1471,30 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 )
             except Exception:
                 pass
+
+    def _notify_models_lost(self, service_names: Iterable[str], reason: str) -> None:
+        """Процесс движка сменился, а повтор init_model не прошёл: модели этих
+        сервисов больше не загружены. Без уведомления GUI продолжает считать их
+        инициализированными по своему кешу и рисует «готово» на пустом месте."""
+        for service_name in dict.fromkeys(
+            str(name or "").strip().lower() for name in service_names
+        ):
+            if not service_name:
+                continue
+            try:
+                self.event_bus.emit(
+                    Events.AI.SERVICE_RESTARTED,
+                    {
+                        "service": service_name,
+                        "ok": False,
+                        "error": reason,
+                        "requested": False,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to notify GUI about lost models of service '{service_name}'"
+                )
 
     def _on_get_engine(self, _event: Event):
         return self
@@ -1489,6 +1525,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     "service": service,
                     "ok": ok,
                     "error": err,
+                    "requested": True,
                 },
             )
 
