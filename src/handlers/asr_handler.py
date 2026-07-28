@@ -100,11 +100,21 @@ def _on_ai_engine_event(event: Event):
     if ev == "error" or (ev == "status" and payload.get("running") is False):
         if not SpeechRecognition._is_running:
             return
+        reason = str(payload.get("reason") or "")
+        if reason in ("requested", "restart"):
+            # Штатный съём живого цикла. При restart движок тут же поднимает
+            # его заново и пришлёт running=true — гасить GUI-состояние нельзя,
+            # иначе на ровном месте получаем «Ошибка» и лишний stop.
+            logger.info(f"ASR live loop stopped by request (reason={reason}).")
+            return
         message = str(payload.get("message") or "")
         if ev == "error":
             logger.error(f"ASR engine reported an error: {message}")
         else:
-            logger.warning("ASR engine stopped unexpectedly (status: running=false).")
+            logger.warning(
+                "ASR engine stopped unexpectedly "
+                f"(status: running=false, reason={reason or 'unknown'})."
+            )
 
         get_event_bus().emit(Events.Speech.ASR_FAILED, {
             "engine": SpeechRecognition._recognizer_type,

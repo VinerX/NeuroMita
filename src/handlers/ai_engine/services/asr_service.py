@@ -14,7 +14,13 @@ class ASRService:
     ASR service, живёт в отдельном процессе.
     Поддерживает live recognition и отдаёт события в GUI через emit_event():
       - event="text": {"text": "..."}
-      - event="status": {"running": bool}
+      - event="status": {"running": bool, "reason": str}
+
+    reason у running=false отличает штатную остановку от аварии:
+      requested      — сняли по запросу (stop_live)
+      restart        — снимаем, чтобы тут же поднять заново (start_live)
+      start_failed   — поднять не удалось
+      capture_stopped — цикл захвата умер сам, никто не просил
     """
 
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
@@ -26,6 +32,7 @@ class ASRService:
 
         self._active: bool = False
         self._task: Optional[asyncio.Task] = None
+        self._stop_reason: Optional[str] = None
 
         self._vad_model = None
 
@@ -58,24 +65,32 @@ class ASRService:
             max_speech_duration = float(vad_cfg.get("max_speech_duration", 30.0) or 30.0)
             min_speech_duration = float(vad_cfg.get("min_speech_duration", 0.35) or 0.0)
 
-            await self._stop_live_internal()
+            await self._stop_live_internal(reason="restart")
 
-            ok = await self._start_live_internal(
-                engine_id=engine_id,
-                mic_index=mic_index,
-                engine_settings=engine_settings,
-                sample_rate=sample_rate,
-                chunk_size=chunk_size,
-                vad_threshold=vad_threshold,
-                silence_timeout=silence_timeout,
-                pre_buffer_duration=pre_buffer_duration,
-                max_speech_duration=max_speech_duration,
-                min_speech_duration=min_speech_duration,
-            )
+            try:
+                ok = await self._start_live_internal(
+                    engine_id=engine_id,
+                    mic_index=mic_index,
+                    engine_settings=engine_settings,
+                    sample_rate=sample_rate,
+                    chunk_size=chunk_size,
+                    vad_threshold=vad_threshold,
+                    silence_timeout=silence_timeout,
+                    pre_buffer_duration=pre_buffer_duration,
+                    max_speech_duration=max_speech_duration,
+                    min_speech_duration=min_speech_duration,
+                )
+            except Exception:
+                # После restart GUI ждёт running=true; если старт не удался,
+                # он обязан узнать, что живого цикла больше нет.
+                self.emit_event("status", {"running": False, "reason": "start_failed"})
+                raise
+            if not ok:
+                self.emit_event("status", {"running": False, "reason": "start_failed"})
             return bool(ok)
 
         if m == "stop_live":
-            await self._stop_live_internal()
+            await self._stop_live_internal(reason="requested")
             return True
 
         raise RuntimeError(f"Unknown asr method: {method}")
@@ -195,8 +210,12 @@ class ASRService:
                     capture_ready.set_exception(
                         RuntimeError("Audio capture stopped before the microphone became ready")
                     )
-                elif not failed:
-                    self.emit_event("status", {"running": False})
+                elif not failed and self._stop_reason is None:
+                    # Цикл захвата завершился сам, снять его никто не просил —
+                    # это авария (например отвалилось устройство).
+                    self.emit_event(
+                        "status", {"running": False, "reason": "capture_stopped"}
+                    )
 
         self._task = asyncio.create_task(_runner())
         try:
@@ -243,7 +262,8 @@ class ASRService:
         self.emit_event("status", {"running": True})
         return True
 
-    async def _stop_live_internal(self):
+    async def _stop_live_internal(self, *, reason: str = "requested"):
+        self._stop_reason = reason
         self._active = False
 
         if self._task is not None:
@@ -266,7 +286,8 @@ class ASRService:
                 self._recognizer = None
 
         self._unload_vad_model()
-        self.emit_event("status", {"running": False})
+        self._stop_reason = None
+        self.emit_event("status", {"running": False, "reason": reason})
 
     async def _get_vad_model(self):
         if self._vad_model is not None:

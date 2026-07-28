@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 
 from core.backends import BackendKind
-from core.events import Events
+from core.events import Event, Events
 from handlers.ai_engine.services.asr_service import ASRService
 from handlers.asr_audio_capture import (
     AudioCaptureConfig,
@@ -400,6 +400,103 @@ class SpeechRecognitionStartTests(unittest.TestCase):
             [("asr", "google", "asr", "start_live")],
         )
         self.assertEqual(fake_engine.calls, [])
+
+
+class AsrEngineStatusReasonTests(unittest.TestCase):
+    """running=false должен отличать штатный съём цикла от аварии."""
+
+    def _service(self, events):
+        return ASRService(emit_event=lambda event, data: events.append((event, data)))
+
+    def _patched_start(self, service):
+        return (
+            patch.object(service, "_get_recognizer", return_value=_FakeRecognizer()),
+            patch.object(
+                service,
+                "_get_vad_model",
+                new=AsyncMock(return_value=lambda *_args: None),
+            ),
+            patch(
+                "handlers.ai_engine.services.asr_service.AudioCaptureService",
+                _ReadyAudioCapture,
+            ),
+        )
+
+    def _start_payload(self):
+        return {
+            "engine_id": "google",
+            "microphone_index": 0,
+            "vad": {"silence_timeout": 0.15, "pre_buffer_duration": 0.3},
+        }
+
+    def test_restart_of_live_loop_is_marked_as_requested_stop(self):
+        events = []
+        service = self._service(events)
+
+        async def scenario():
+            recognizer, vad, capture = self._patched_start(service)
+            with recognizer, vad, capture:
+                await service.handle("start_live", self._start_payload())
+                events.clear()
+                await service.handle("start_live", self._start_payload())
+                await service._stop_live_internal()
+
+        asyncio.run(scenario())
+
+        self.assertIn(("status", {"running": False, "reason": "restart"}), events)
+        self.assertIn(("status", {"running": True}), events)
+
+    def test_capture_dying_on_its_own_is_reported_as_failure(self):
+        events = []
+        service = self._service(events)
+
+        async def scenario():
+            recognizer, vad, capture = self._patched_start(service)
+            with recognizer, vad, capture:
+                await service.handle("start_live", self._start_payload())
+                events.clear()
+                # Цикл захвата умер сам: снять его никто не просил.
+                service._active = False
+                task = service._task
+                if task is not None:
+                    await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+        self.assertIn(
+            ("status", {"running": False, "reason": "capture_stopped"}), events
+        )
+
+    def test_bridge_ignores_requested_stop_and_reports_real_failure(self):
+        from handlers import asr_handler
+
+        def _event(reason):
+            return Event(
+                Events.AI.ENGINE_EVENT,
+                {"service": "asr", "event": "status", "data": {"running": False, "reason": reason}},
+            )
+
+        bus = _FakeEventBus()
+        started_threads = []
+
+        with patch.object(asr_handler, "get_event_bus", return_value=bus), \
+             patch.object(
+                 asr_handler,
+                 "task_supervisor",
+                 return_value=types.SimpleNamespace(
+                     start_thread=lambda *args, **kwargs: started_threads.append(args)
+                 ),
+             ):
+            SpeechRecognition._is_running = True
+            asr_handler._on_ai_engine_event(_event("restart"))
+            self.assertEqual(bus.events, [])
+            self.assertEqual(started_threads, [])
+
+            asr_handler._on_ai_engine_event(_event("capture_stopped"))
+
+        SpeechRecognition._is_running = False
+        self.assertIn(Events.Speech.ASR_FAILED, [name for name, _d in bus.events])
+        self.assertEqual(len(started_threads), 1)
 
 
 if __name__ == "__main__":
