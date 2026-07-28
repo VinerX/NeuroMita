@@ -45,6 +45,10 @@ class SpeechController(SpeechService):
         self.events_bus = get_event_bus()
         self.asr_settings = ensure_asr_settings_service()
 
+        # Старт и стоп распознавания идут с разных рабочих потоков; без общего
+        # замка они наезжают друг на друга при быстром щёлканье тумблером.
+        self._lifecycle_lock = threading.Lock()
+
         self._glossary_lock = threading.RLock()
         self._glossary_cache: list[dict] | None = None
         self._glossary_loading = False
@@ -186,7 +190,8 @@ class SpeechController(SpeechService):
         if self.settings.get("MIC_ACTIVE", False) and not self.mic_recognition_active:
             def _delayed_start():
                 try:
-                    self._start_maybe_install()
+                    with self._lifecycle_lock:
+                        self._start_maybe_install()
                 except Exception as e:
                     logger.error(f"Автозапуск распознавания не удался: {e}")
             task_supervisor().start_thread(
@@ -202,9 +207,11 @@ class SpeechController(SpeechService):
             if bool(value):
                 self._start_maybe_install_async()
             else:
-                SpeechRecognition.speech_recognition_stop()
+                # Флаги гасим сразу, чтобы статус не врал, а сам стоп уводим с
+                # полосы наблюдателей: он ждёт остановки live-цикла до 8 секунд.
                 self.mic_recognition_active = False
                 self.asr_is_ready = False
+                self._stop_recognition_async()
             self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         elif key == "RECOGNIZER_TYPE":
@@ -217,20 +224,11 @@ class SpeechController(SpeechService):
                 return
 
             self.asr_settings.set_selected_engine(engine)
-
-            if self.mic_recognition_active:
-                SpeechRecognition.speech_recognition_stop()
+            was_active = self.mic_recognition_active
+            if was_active:
                 self.mic_recognition_active = False
                 self.asr_is_ready = False
-                time.sleep(0.2)
-
-            SpeechRecognition.set_recognizer_type(engine)
-            SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
-
-            logger.info(f"Тип распознавателя установлен на: {engine}")
-
-            if self.settings and self.settings.get("MIC_ACTIVE", False):
-                self._start_maybe_install_async()
+            self._switch_recognizer_async(engine, was_active)
 
         elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
@@ -281,11 +279,48 @@ class SpeechController(SpeechService):
         model and can block for many seconds. Always do it on a worker thread."""
         def _worker():
             try:
-                self._start_maybe_install()
+                with self._lifecycle_lock:
+                    self._start_maybe_install()
             except Exception as e:
                 logger.error(f"Запуск распознавания не удался: {e}")
         task_supervisor().start_thread(
             self, "speech-start", _worker, replace=True
+        )
+
+    def _stop_recognition_async(self):
+        """Остановка live-цикла ждёт движок и рабочий поток (до 8 секунд), а
+        наблюдатели настроек ходят по общей полосе диспетчера — блокировать её
+        нельзя, иначе на это время встают и все остальные реакции на настройки."""
+        def _worker():
+            try:
+                with self._lifecycle_lock:
+                    SpeechRecognition.speech_recognition_stop()
+            except Exception as e:
+                logger.error(f"Остановка распознавания не удалась: {e}")
+        task_supervisor().start_thread(
+            self, "speech-stop", _worker, replace=True
+        )
+
+    def _switch_recognizer_async(self, engine: str, restart: bool):
+        """Смена движка = стоп + переинициализация: то же самое, что и стоп, с
+        полосы наблюдателей уводим целиком."""
+        def _worker():
+            try:
+                with self._lifecycle_lock:
+                    if restart:
+                        SpeechRecognition.speech_recognition_stop()
+                        time.sleep(0.2)
+                    SpeechRecognition.set_recognizer_type(engine)
+                    SpeechRecognition.apply_settings(
+                        engine, self._asr_settings["models"].get(engine, {})
+                    )
+                    logger.info(f"Тип распознавателя установлен на: {engine}")
+                    if self.settings and self.settings.get("MIC_ACTIVE", False):
+                        self._start_maybe_install()
+            except Exception as e:
+                logger.error(f"Смена движка распознавания не удалась: {e}")
+        task_supervisor().start_thread(
+            self, "speech-engine-switch", _worker, replace=True
         )
 
     def _start_maybe_install(self):
