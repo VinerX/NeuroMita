@@ -161,6 +161,7 @@ class _SandboxStatusRow(QWidget):
         self._active = False
         self._indicator = None  # None | "loading" | "red" | "green"
         self._nested = bool(nested)
+        self._chip_state = None
 
         # nested — подстрока (подчинённая настройка родительской строки выше):
         # сдвиг вправо, «уголок»-ветка и приглушённый лейбл, чтобы читалось как
@@ -255,6 +256,8 @@ class _SandboxStatusRow(QWidget):
         self._apply_chip()
 
     def set_value(self, text: str):
+        if (text or "—") == self._full_value_text:
+            return
         self._full_value_text = text or "—"
         self._value.setToolTip(self._full_value_text)
         self._apply_value_text()
@@ -306,6 +309,11 @@ class _SandboxStatusRow(QWidget):
 
     def _apply_chip(self):
         state = self._resolve_state()
+        # setStyleSheet заставляет Qt заново разобрать стиль и переполировать
+        # виджет — на неизменившемся состоянии это чистая трата кадра.
+        if state == self._chip_state:
+            return
+        self._chip_state = state
         bg, fg = self._CHIP_STYLE[state]
         self._chip.setText(self._chip_label(state))
         self._chip.setToolTip(self._chip_tooltip(state))
@@ -528,6 +536,7 @@ class SandboxPage(QWidget):
         self._chat_panel_actions = chat_panel_actions
         self._page_actions = page_actions
         self._state: SandboxState = view_model.state
+        self._rendered_state: SandboxState | None = None
         self._settings_snapshot = dict(self._state.settings)
         self.setObjectName("SandboxPage")
 
@@ -593,18 +602,52 @@ class SandboxPage(QWidget):
         return self._inspector_stack
 
     def render(self, state: SandboxState) -> None:
+        """Перерисовываем только те блоки, чьи поля состояния реально изменились.
+
+        Сюда прилетает каждая запись настройки (страница подписана на весь
+        реестр), а один щелчок тумблера даёт три состояния подряд: оптимистичное,
+        эхо реестра и результат refresh_status. Полная перерисовка на каждое —
+        это три пересборки комбобоксов и десятки setStyleSheet на строках
+        статуса в потоке Qt, то есть видимые подлагивания на ровном месте."""
+        previous = self._rendered_state
+        self._rendered_state = state
         self._state = state
         self._settings_snapshot = dict(state.settings)
-        self._render_character_selector(state)
-        self._render_model_selector(state)
-        self._render_prompt_selector(state)
-        self._refresh_status_values()
-        self._render_status_indicators(state)
-        self._render_memory(state)
-        self._render_budget(state)
-        self._render_last_request(state)
-        self._sync_toggles_from_settings()
-        self._refresh_debug_summary()
+
+        def changed(*names: str) -> bool:
+            if previous is None:
+                return True
+            return any(getattr(previous, name) != getattr(state, name) for name in names)
+
+        selectors_changed = False
+        if changed("character_items", "current_character_id"):
+            self._render_character_selector(state)
+            selectors_changed = True
+        if changed("model_items", "current_model_id", "selectors_loading"):
+            self._render_model_selector(state)
+            selectors_changed = True
+        if changed("prompt_items", "current_prompt", "selectors_loading"):
+            self._render_prompt_selector(state)
+            selectors_changed = True
+
+        settings_changed = changed("settings")
+        status_changed = changed("status")
+        # Строка «Связь с игрой» читает живое состояние TCP, а не поле состояния,
+        # поэтому её обновляем и когда пришли только статусы.
+        if settings_changed or status_changed:
+            self._refresh_status_values()
+        if settings_changed:
+            self._sync_toggles_from_settings()
+        if status_changed:
+            self._render_status_indicators(state)
+        if changed("memory"):
+            self._render_memory(state)
+        if changed("budget"):
+            self._render_budget(state)
+        if changed("last_request"):
+            self._render_last_request(state)
+        if settings_changed or selectors_changed:
+            self._refresh_debug_summary()
 
     def _handle_effect(self, effect) -> None:
         if isinstance(effect, SandboxHistoryCleared):
