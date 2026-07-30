@@ -13,9 +13,12 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from main_logger import logger
+
+if TYPE_CHECKING:
+    from handlers.llm_providers.base import LLMUsage
 
 
 class FineTuneCollector:
@@ -65,6 +68,7 @@ class FineTuneCollector:
         character_id: str,
         character_name: str,
         game_connected: bool = False,
+        usage: Optional["LLMUsage"] = None,
     ) -> Optional[str]:
         """
         Сохраняет пару запрос-ответ в JSONL.
@@ -98,6 +102,9 @@ class FineTuneCollector:
                 "messages": getattr(req, "messages", []),
                 "response": response_text,
                 "rating": None,
+                # Факт от провайдера (токены, кэш, стоимость): просмотр контекста
+                # открывает именно эту запись, а не отладочный дамп.
+                "usage": usage.to_payload() if usage is not None else None,
             }
 
             file_path = self.data_dir / f"samples_{now.strftime('%Y%m')}.jsonl"

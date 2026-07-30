@@ -112,20 +112,7 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
             }
 
         usage = getattr(response, "usage", None)
-        usage_payload = None
-        if usage is not None:
-            usage_payload = {
-                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                "reasoning_tokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
-                "cached_prompt_tokens": int(getattr(usage, "cached_prompt_tokens", 0) or 0),
-                "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
-                "cost": getattr(usage, "cost", None),
-                "cost_currency": getattr(usage, "cost_currency", None),
-                "cost_source": getattr(usage, "cost_source", None),
-                "raw": getattr(usage, "raw", {}) or {},
-            }
+        usage_payload = usage.to_payload() if usage is not None else None
 
         record.update({
             "response_timestamp": datetime.now(tz=timezone.utc).isoformat(),
@@ -365,6 +352,7 @@ class ChatModel:
                         character_id=char.char_id if char else "unknown",
                         character_name=char.name if char else "unknown",
                         game_connected=game_connected,
+                        usage=response_text.usage,
                     )
                     if sample_id:
                         if not isinstance(response_text.raw, dict):

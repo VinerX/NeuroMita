@@ -140,6 +140,21 @@ class LLMUsage:
 
         return merged
 
+    def to_payload(self) -> Dict[str, Any]:
+        """Плоский dict для дампов, JSONL-выборок и просмотра контекста."""
+        return {
+            "prompt_tokens": int(self.prompt_tokens or 0),
+            "completion_tokens": int(self.completion_tokens or 0),
+            "total_tokens": int(self.total_tokens or 0),
+            "reasoning_tokens": int(self.reasoning_tokens or 0),
+            "cached_prompt_tokens": int(self.cached_prompt_tokens or 0),
+            "cache_write_tokens": int(self.cache_write_tokens or 0),
+            "cost": self.cost,
+            "cost_currency": self.cost_currency,
+            "cost_source": self.cost_source,
+            "raw": self.raw or {},
+        }
+
 
 @dataclass
 class LLMResponse:
