@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from core.app_paths import base_dir
+from core.app_paths import prompts_dir
 from main_logger import logger
 
 
@@ -28,12 +28,7 @@ class PromptDownloader:
         self.repo_url = "https://github.com/VinerX/NeuroMita"
         self.branch = "main"
 
-        configured = str(os.environ.get("NEUROMITA_PROMPTS_DIR", "") or "").strip()
-        self.base_path = (
-            Path(configured).expanduser().resolve()
-            if configured
-            else (base_dir() / "Prompts").resolve()
-        )
+        self.base_path = prompts_dir()
         self.backup_path = self.base_path.with_name(f"{self.base_path.name}_backup")
 
     def download_and_replace_prompts(

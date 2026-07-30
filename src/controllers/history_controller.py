@@ -841,11 +841,9 @@ class HistoryController(HistoryService):
         resolved_template_path = configured_template_path
         if configured_template_path:
             try:
-                from core.app_paths import base_dir
+                from core.app_paths import prompt_path
 
-                candidate = Path(configured_template_path).expanduser()
-                if not candidate.is_absolute():
-                    candidate = base_dir() / candidate
+                candidate = prompt_path(configured_template_path)
                 resolved_template_path = str(candidate.resolve())
                 prompt_template = candidate.read_text(encoding="utf-8").strip()
             except Exception as exc:

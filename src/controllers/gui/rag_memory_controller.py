@@ -194,15 +194,13 @@ def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> 
                 return 1
 
         def _load_prompt_template() -> str:
-            """Load extraction prompt from Prompts/Common or return hardcoded default."""
-            import os
+            """Load extraction prompt from the prompt set or return hardcoded default."""
             try:
-                # Try Prompts/Common relative to current working dir.
-                for base in ("Prompts", os.path.join("..", "Prompts")):
-                    path = os.path.join(base, "System", "graph_extraction_prompt.txt")
-                    if os.path.isfile(path):
-                        with open(path, "r", encoding="utf-8") as f:
-                            return f.read().strip()
+                from core.app_paths import prompt_path
+
+                path = prompt_path("System/graph_extraction_prompt.txt")
+                if path.is_file():
+                    return path.read_text(encoding="utf-8").strip()
             except Exception:
                 pass
             from controllers.graph_controller import _DEFAULT_EXTRACTION_PROMPT
