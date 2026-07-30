@@ -462,10 +462,20 @@ class PromptController(PromptBuilderService):
 
     # Ниже этого порога пауза — обычный ритм живого разговора, сообщать о ней
     # нечего. Выше — уже «отошёл», и это меняет тон реплики.
-    _LAST_INTERACTION_MIN_GAP_SECONDS = 300
+    _DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES = 5
 
-    @classmethod
-    def _format_last_interaction_line(cls, last_message_at: datetime.datetime | None) -> str:
+    def _last_interaction_threshold_seconds(self) -> float:
+        """0 = строка про паузу в [Current State] выключена."""
+        try:
+            minutes = float(self._get_setting(
+                "CURRENT_STATE_GAP_MIN_MINUTES",
+                self._DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES,
+            ) or 0)
+        except (TypeError, ValueError):
+            minutes = self._DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES
+        return max(0.0, minutes * 60.0)
+
+    def _format_last_interaction_line(self, last_message_at: datetime.datetime | None) -> str:
         """Cheap "time since last talk" signal for [Current State].
 
         Returns e.g. ``Time since last message: 3 days`` for a noticeable pause,
@@ -474,8 +484,12 @@ class PromptController(PromptBuilderService):
         if not isinstance(last_message_at, datetime.datetime):
             return ""
 
+        threshold = self._last_interaction_threshold_seconds()
+        if not threshold:
+            return ""
+
         secs = (datetime.datetime.now() - last_message_at).total_seconds()
-        if secs < cls._LAST_INTERACTION_MIN_GAP_SECONDS:
+        if secs < threshold:
             return ""
 
         if secs < 3600:

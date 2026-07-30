@@ -183,19 +183,26 @@ class HistoryController(HistoryService):
     _HISTORY_TIME_FORMATS = ("%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
 
     @classmethod
+    def _message_time(cls, msg: Dict[str, Any]) -> Optional[datetime.datetime]:
+        if not isinstance(msg, dict):
+            return None
+        raw = msg.get("time") or msg.get("timestamp")
+        if not raw:
+            return None
+        for fmt in cls._HISTORY_TIME_FORMATS:
+            try:
+                return datetime.datetime.strptime(str(raw), fmt)
+            except Exception:
+                continue
+        return None
+
+    @classmethod
     def _last_message_time(cls, messages: List[Dict[str, Any]]) -> Optional[datetime.datetime]:
         """Время самого свежего сообщения окна. Нечитаемые таймстемпы пропускаем."""
         for msg in reversed(messages or []):
-            if not isinstance(msg, dict):
-                continue
-            raw = msg.get("time") or msg.get("timestamp")
-            if not raw:
-                continue
-            for fmt in cls._HISTORY_TIME_FORMATS:
-                try:
-                    return datetime.datetime.strptime(str(raw), fmt)
-                except Exception:
-                    continue
+            at = cls._message_time(msg)
+            if at:
+                return at
         return None
 
     def _decorate_messages_with_character_info(
@@ -1417,6 +1424,11 @@ class HistoryController(HistoryService):
         if not prefix:
             return content
 
+        return self._prepend_content_prefix(content, prefix)
+
+    @staticmethod
+    def _prepend_content_prefix(content, prefix: str):
+        """Клеит префикс к тексту сообщения, не теряя картинки в мультимодальном content."""
         if isinstance(content, str):
             return prefix + content
 
@@ -1444,15 +1456,42 @@ class HistoryController(HistoryService):
         return prefix + str(content)
 
 
+    def _time_gap_marker_threshold_seconds(self) -> float:
+        """0 = маркеры разрывов выключены."""
+        if not bool(self._get_setting("HISTORY_TIME_GAP_MARKERS", True)):
+            return 0.0
+        try:
+            minutes = float(self._get_setting("HISTORY_TIME_GAP_MIN_MINUTES", 60) or 0)
+        except (TypeError, ValueError):
+            minutes = 60.0
+        return max(0.0, minutes * 60.0)
+
+    @staticmethod
+    def _format_time_gap(seconds: float) -> str:
+        """Разрыв между двумя соседними репликами. Формулировка абсолютная (не «назад»):
+        дельта между сохранёнными сообщениями не меняется от хода к ходу, поэтому
+        префикс промпта остаётся стабильным и prompt-кэш переживает вставку.
+        """
+        if seconds < 86400:
+            value, unit = int(seconds // 3600), "hour"
+        else:
+            value, unit = int(seconds // 86400), "day"
+        if value <= 0:
+            return ""
+        return f"[Gap: {value} {unit}{'s' if value != 1 else ''}] "
+
     def _sanitize_history_for_llm(self, character, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Возвращает историю в формате, безопасном для провайдеров:
-        только role/content (+ префиксы по speaker/target для понимания диалога).
+        только role/content (+ префиксы по speaker/target для понимания диалога
+        и по паузам между репликами).
         """
         if not messages:
             return []
 
         owner_id = str(getattr(character, "char_id", "") or "")
+        gap_threshold = self._time_gap_marker_threshold_seconds()
+        previous_at: Optional[datetime.datetime] = None
         out: List[Dict[str, Any]] = []
 
         for m in messages:
@@ -1468,7 +1507,20 @@ class HistoryController(HistoryService):
             speaker = str(m.get("speaker") or m.get("sender") or ("Player" if role == "user" else owner_id) or "Player")
             target = str(m.get("target") or "Player")
 
+            # Маркер только перед репликой игрока/событием: в сообщениях Миты
+            # служебный тег учил бы модель писать такие теги в своём ответе.
+            gap_marker = ""
+            current_at = self._message_time(m)
+            if gap_threshold and previous_at and current_at and role in ("user", "event"):
+                gap_seconds = (current_at - previous_at).total_seconds()
+                if gap_seconds >= gap_threshold:
+                    gap_marker = self._format_time_gap(gap_seconds)
+            if current_at:
+                previous_at = current_at
+
             content = self._apply_llm_prefix(role, speaker, target, content)
+            if gap_marker:
+                content = self._prepend_content_prefix(content, gap_marker)
 
             # sanitize keys: strict role/content only
             out.append({"role": role, "content": content})

@@ -855,6 +855,41 @@ def _build_graph_ttl_config(self) -> list:
     ]
 
 
+def _build_time_awareness_config(self) -> list:
+    return [
+        {'label': _('Ощущение времени', 'Time awareness'), 'type': 'subsection'},
+        {'label': _('Сообщать паузу с прошлого сообщения (мин)', 'Report pause since last message (min)'),
+         'key': 'CURRENT_STATE_GAP_MIN_MINUTES', 'type': 'entry', 'default': 5,
+         'validation': self.validate_positive_integer_or_zero,
+         'tooltip': _(
+             'От какой паузы дописывать в блок [Current State] строку «сколько прошло с прошлого '
+             'сообщения». Мита не умеет считать это сама: она видит только текущее время. 0 = не сообщать.',
+             'Minimum pause before the [Current State] block gets a "time since last message" line. '
+             'The character cannot infer this on her own — she only sees the current time. 0 = never.')},
+        {'label': _('Отмечать паузы внутри истории', 'Mark pauses inside history'),
+         'key': 'HISTORY_TIME_GAP_MARKERS', 'type': 'checkbutton', 'default_checkbutton': True,
+         'tooltip': _(
+             'Помечать в истории места, где между репликами прошло много времени: перед сообщением '
+             'игрока дописывается [Gap: 2 days]. Без этого диалог, растянутый на неделю, выглядит '
+             'для модели так же, как разговор за десять минут.',
+             'Mark places in history where a long time passed between messages: [Gap: 2 days] is '
+             'prepended to the player message. Without it a week-long conversation looks the same '
+             'to the model as a ten-minute one.')},
+        {'label': _('Минимальный разрыв для отметки (мин)', 'Minimum gap to mark (min)'),
+         'key': 'HISTORY_TIME_GAP_MIN_MINUTES', 'type': 'entry', 'default': 60,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'HISTORY_TIME_GAP_MARKERS',
+         'tooltip': _(
+             'Разрывы короче этого не отмечаются, иначе история засоряется отметками. '
+             'Отметка считается между соседними сообщениями и не меняется со временем, '
+             'поэтому кэш промпта она не ломает.',
+             'Shorter gaps are not marked, otherwise history gets cluttered. The mark is computed '
+             'between two neighbouring messages and never changes afterwards, so it does not '
+             'invalidate the prompt cache.')},
+        {'type': 'end'},
+    ]
+
+
 def _build_history_compression_config(self, hc_provider_names) -> list:
     return [
         {'label': _('Сжатие истории', 'History compression'), 'type': 'subsection',
@@ -1629,6 +1664,7 @@ def build_memory_section(self, parent, hc_provider_names) -> None:
         }] +
         _build_memory_limits_config(self) +
         _build_history_ttl_config(self) +
+        _build_time_awareness_config(self) +
         _build_history_compression_config(self, hc_provider_names)
     )
     create_settings_section(self, parent,

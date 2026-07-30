@@ -41,15 +41,10 @@ class _StubCharacter:
         self.vars[key] = value
 
 
-class LastMessageTimeTests(unittest.TestCase):
-    """Таймстемп последнего сообщения должен переживать подготовку истории.
+class _HistoryControllerFixture(unittest.TestCase):
+    """Общая заготовка контроллера: тесты ниже отличаются только настройками."""
 
-    Регрессия: `_format_last_interaction_line` читала время из уже
-    санитизированной истории (там строго role/content), поэтому строка
-    «сколько прошло» не печаталась никогда.
-    """
-
-    def _make_controller(self) -> HistoryController:
+    def _make_controller(self, settings: dict | None = None) -> HistoryController:
         controller = HistoryController.__new__(HistoryController)
         controller.event_bus = SimpleNamespace()
         controller._messages_since_last_periodic_compression = {}
@@ -60,7 +55,8 @@ class LastMessageTimeTests(unittest.TestCase):
         controller._compression_cooldowns = {}
         controller._messages_since_last_maintenance = {}
         controller._maintenance_inflight = set()
-        controller._get_setting = lambda key, default=None: default
+        cfg = dict(settings or {})
+        controller._get_setting = lambda key, default=None: cfg.get(key, default)
         return controller
 
     def _prepare(self, messages):
@@ -71,6 +67,15 @@ class LastMessageTimeTests(unittest.TestCase):
             save_missed_history=False,
             image_quality={},
         )
+
+
+class LastMessageTimeTests(_HistoryControllerFixture):
+    """Таймстемп последнего сообщения должен переживать подготовку истории.
+
+    Регрессия: `_format_last_interaction_line` читала время из уже
+    санитизированной истории (там строго role/content), поэтому строка
+    «сколько прошло» не печаталась никогда.
+    """
 
     def test_last_message_time_survives_sanitization(self):
         prepared = self._prepare([
@@ -109,10 +114,107 @@ class LastMessageTimeTests(unittest.TestCase):
         self.assertIsNone(prepared.last_message_at)
 
 
+class HistoryGapMarkerTests(_HistoryControllerFixture):
+    """Отметки долгих пауз между репликами внутри окна истории."""
+
+    def _sanitize(self, messages, settings=None):
+        controller = self._make_controller(settings)
+        return controller._sanitize_history_for_llm(_StubCharacter([]), messages)
+
+    @staticmethod
+    def _text(msg):
+        content = msg["content"]
+        if isinstance(content, str):
+            return content
+        return " ".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+
+    def test_long_pause_is_marked_before_player_message(self):
+        out = self._sanitize([
+            {"role": "user", "content": "пока", "time": "01.02.2026 10:00:00"},
+            {"role": "assistant", "content": "пока-пока", "time": "01.02.2026 10:00:30"},
+            {"role": "user", "content": "я вернулся", "time": "03.02.2026 12:00:00"},
+        ])
+        self.assertTrue(self._text(out[2]).startswith("[Gap: 2 days] "))
+        self.assertEqual("пока", self._text(out[0]))
+
+    def test_short_pause_is_not_marked(self):
+        out = self._sanitize([
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "content": "вопрос", "time": "01.02.2026 10:30:00"},
+        ])
+        self.assertEqual("вопрос", self._text(out[1]))
+
+    def test_marker_is_not_added_to_character_messages(self):
+        """Служебный тег в репликах Миты учил бы модель писать такие теги самой."""
+        out = self._sanitize([
+            {"role": "user", "content": "спокойной ночи", "time": "01.02.2026 23:00:00"},
+            {"role": "assistant", "content": "проснулась", "time": "02.02.2026 09:00:00"},
+        ])
+        self.assertEqual("проснулась", self._text(out[1]))
+
+    def test_threshold_is_configurable(self):
+        messages = [
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "content": "вопрос", "time": "01.02.2026 12:00:00"},
+        ]
+        self.assertTrue(self._text(self._sanitize(messages)[1]).startswith("[Gap: 2 hours] "))
+        out = self._sanitize(messages, {"HISTORY_TIME_GAP_MIN_MINUTES": 240})
+        self.assertEqual("вопрос", self._text(out[1]))
+
+    def test_markers_can_be_disabled(self):
+        out = self._sanitize([
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "content": "вопрос", "time": "05.02.2026 10:00:00"},
+        ], {"HISTORY_TIME_GAP_MARKERS": False})
+        self.assertEqual("вопрос", self._text(out[1]))
+
+    def test_marker_is_stable_across_rebuilds(self):
+        """Отметка не зависит от «сейчас» — иначе каждый ход ломался бы кэш промпта."""
+        messages = [
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "content": "вопрос", "time": "04.02.2026 10:00:00"},
+        ]
+        self.assertEqual(self._sanitize(messages), self._sanitize(messages))
+        self.assertTrue(self._text(self._sanitize(messages)[1]).startswith("[Gap: 3 days] "))
+
+    def test_marker_keeps_images_in_multimodal_message(self):
+        out = self._sanitize([
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "time": "04.02.2026 10:00:00", "content": [
+                {"type": "text", "text": "глянь"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+            ]},
+        ])
+        chunks = out[1]["content"]
+        self.assertEqual("[Gap: 3 days] глянь", chunks[0]["text"])
+        self.assertEqual("image_url", chunks[1]["type"])
+
+    def test_message_without_timestamp_does_not_reset_anchor(self):
+        out = self._sanitize([
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "assistant", "content": "без времени"},
+            {"role": "user", "content": "вопрос", "time": "03.02.2026 10:00:00"},
+        ])
+        self.assertTrue(self._text(out[2]).startswith("[Gap: 2 days] "))
+
+    def test_speaker_prefix_and_gap_coexist(self):
+        out = self._sanitize([
+            {"role": "assistant", "content": "ответ", "time": "01.02.2026 10:00:00"},
+            {"role": "user", "content": "привет", "sender": "Ghost", "time": "04.02.2026 10:00:00"},
+        ])
+        self.assertEqual("[Gap: 3 days] [Собеседник: Ghost] привет", self._text(out[1]))
+
+
 class LastInteractionLineTests(unittest.TestCase):
-    def _line(self, **delta) -> str:
+    def _controller(self, settings: dict | None = None) -> PromptController:
+        controller = PromptController.__new__(PromptController)
+        cfg = dict(settings or {})
+        controller._get_setting = lambda key, default=None: cfg.get(key, default)
+        return controller
+
+    def _line(self, settings: dict | None = None, **delta) -> str:
         then = datetime.datetime.now() - datetime.timedelta(**delta)
-        return PromptController._format_last_interaction_line(then)
+        return self._controller(settings)._format_last_interaction_line(then)
 
     def test_ongoing_conversation_has_no_line(self):
         self.assertEqual("", self._line(minutes=2))
@@ -127,7 +229,15 @@ class LastInteractionLineTests(unittest.TestCase):
         self.assertEqual("Time since last message: 1 day", self._line(days=1, hours=2))
 
     def test_missing_timestamp_has_no_line(self):
-        self.assertEqual("", PromptController._format_last_interaction_line(None))
+        self.assertEqual("", self._controller()._format_last_interaction_line(None))
+
+    def test_threshold_is_configurable(self):
+        settings = {"CURRENT_STATE_GAP_MIN_MINUTES": 120}
+        self.assertEqual("", self._line(settings, minutes=30))
+        self.assertEqual("Time since last message: 3 hours", self._line(settings, hours=3))
+
+    def test_zero_threshold_disables_line(self):
+        self.assertEqual("", self._line({"CURRENT_STATE_GAP_MIN_MINUTES": 0}, days=5))
 
 
 if __name__ == "__main__":
