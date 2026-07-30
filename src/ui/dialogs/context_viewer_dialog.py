@@ -780,6 +780,40 @@ class ContextViewerDialog(QDialog):
                 f"<b>{_('Факт. input (провайдер)', 'Actual input (provider)')}</b></td>"
                 f"<td style='color:{_TEXT};font-weight:bold'>{self._esc(self._fmt_int(actual_input))}</td></tr>"
             )
+        # Кэш провайдер отдаёт только общим числом: какая именно часть префикса
+        # попала в кэш, в ответе не расшифровывается.
+        cached_input = None
+        try:
+            if usage.get("cached_prompt_tokens") not in (None, ""):
+                cached_input = int(usage.get("cached_prompt_tokens"))
+        except Exception:
+            cached_input = None
+        if cached_input:
+            cached_cell = self._esc(self._fmt_int(cached_input))
+            if actual_input:
+                cached_cell += (
+                    f" <span style='color:{_MUTED}'>"
+                    f"({self._esc(self._fmt_pct(cached_input, actual_input))})</span>"
+                )
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Из кэша (провайдер)', 'Cached input (provider)')}</b></td>"
+                f"<td style='color:{_SH_NUMBER}'>{cached_cell}</td></tr>"
+            )
+
+        cache_write = None
+        try:
+            if usage.get("cache_write_tokens") not in (None, ""):
+                cache_write = int(usage.get("cache_write_tokens"))
+        except Exception:
+            cache_write = None
+        if cache_write:
+            head_rows.append(
+                f"<tr><td style='color:{_MUTED};padding-right:14px'>"
+                f"<b>{_('Записано в кэш', 'Written to cache')}</b></td>"
+                f"<td style='color:{_MUTED}'>{self._esc(self._fmt_int(cache_write))}</td></tr>"
+            )
+
         if est_total is not None:
             head_rows.append(
                 f"<tr><td style='color:{_MUTED};padding-right:14px'>"
