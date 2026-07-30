@@ -856,14 +856,15 @@ def _build_graph_ttl_config(self) -> list:
 def _build_time_awareness_config(self) -> list:
     return [
         {'label': _('Ощущение времени', 'Time awareness'), 'type': 'subsection'},
-        {'label': _('Сообщать паузу с прошлого сообщения (мин)', 'Report pause since last message (min)'),
-         'key': 'CURRENT_STATE_GAP_MIN_MINUTES', 'type': 'entry', 'default': 5,
-         'validation': self.validate_positive_integer_or_zero,
+        {'label': _('Сообщать паузу с прошлого сообщения', 'Report pause since last message'),
+         'key': 'CURRENT_STATE_GAP_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(
-             'От какой паузы дописывать в блок [Current State] строку «сколько прошло с прошлого '
-             'сообщения». Мита не умеет считать это сама: она видит только текущее время. 0 = не сообщать.',
-             'Minimum pause before the [Current State] block gets a "time since last message" line. '
-             'The character cannot infer this on her own — she only sees the current time. 0 = never.')},
+             'Дописывать в блок [Current State] строку «сколько прошло с прошлого сообщения». '
+             'Мита не умеет считать это сама: она видит только текущее время. Порога тут нет — '
+             'пауза пишется хоть в секундах, блок и так меняется каждый ход и кэш не ломает.',
+             'Add a "time since last message" line to the [Current State] block. The character '
+             'cannot infer this on her own — she only sees the current time. No threshold here: '
+             'even a few seconds are reported, since the block changes every turn anyway.')},
         {'label': _('Отмечать паузы внутри истории', 'Mark pauses inside history'),
          'key': 'HISTORY_TIME_GAP_MARKERS', 'type': 'checkbutton', 'default_checkbutton': True,
          'tooltip': _(

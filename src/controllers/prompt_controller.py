@@ -460,39 +460,24 @@ class PromptController(PromptBuilderService):
 
         return {"role": "system", "content": "\n".join(lines)}
 
-    # Ниже этого порога пауза — обычный ритм живого разговора, сообщать о ней
-    # нечего. Выше — уже «отошёл», и это меняет тон реплики.
-    _DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES = 5
-
-    def _last_interaction_threshold_seconds(self) -> float:
-        """0 = строка про паузу в [Current State] выключена."""
-        try:
-            minutes = float(self._get_setting(
-                "CURRENT_STATE_GAP_MIN_MINUTES",
-                self._DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES,
-            ) or 0)
-        except (TypeError, ValueError):
-            minutes = self._DEFAULT_LAST_INTERACTION_MIN_GAP_MINUTES
-        return max(0.0, minutes * 60.0)
-
     def _format_last_interaction_line(self, last_message_at: datetime.datetime | None) -> str:
         """Cheap "time since last talk" signal for [Current State].
 
-        Returns e.g. ``Time since last message: 3 days`` for a noticeable pause,
-        otherwise ``""`` (recent chatter needs no signal). Never raises.
+        Порога здесь нет: блок и так переписывается каждый ход (в нём текущее
+        время), поэтому точность до секунд промпт-кэш не ломает — в отличие от
+        отметок внутри истории, где порог обязателен. Never raises.
         """
         if not isinstance(last_message_at, datetime.datetime):
             return ""
 
-        threshold = self._last_interaction_threshold_seconds()
-        if not threshold:
+        if not bool(self._get_setting("CURRENT_STATE_GAP_ENABLED", True)):
             return ""
 
-        secs = (datetime.datetime.now() - last_message_at).total_seconds()
-        if secs < threshold:
-            return ""
+        secs = max(0.0, (datetime.datetime.now() - last_message_at).total_seconds())
 
-        if secs < 3600:
+        if secs < 60:
+            value, unit = int(secs), "second"
+        elif secs < 3600:
             value, unit = int(secs // 60), "minute"
         elif secs < 86400:
             value, unit = int(secs // 3600), "hour"

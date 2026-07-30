@@ -216,8 +216,12 @@ class LastInteractionLineTests(unittest.TestCase):
         then = datetime.datetime.now() - datetime.timedelta(**delta)
         return self._controller(settings)._format_last_interaction_line(then)
 
-    def test_ongoing_conversation_has_no_line(self):
-        self.assertEqual("", self._line(minutes=2))
+    def test_seconds_gap_is_reported(self):
+        """Порог живёт только в истории: активный контекст пишет и секунды."""
+        self.assertEqual("Time since last message: 40 seconds", self._line(seconds=40))
+
+    def test_short_pause_is_reported_in_minutes(self):
+        self.assertEqual("Time since last message: 2 minutes", self._line(minutes=2))
 
     def test_minutes_gap(self):
         self.assertEqual("Time since last message: 25 minutes", self._line(minutes=25))
@@ -231,13 +235,11 @@ class LastInteractionLineTests(unittest.TestCase):
     def test_missing_timestamp_has_no_line(self):
         self.assertEqual("", self._controller()._format_last_interaction_line(None))
 
-    def test_threshold_is_configurable(self):
-        settings = {"CURRENT_STATE_GAP_MIN_MINUTES": 120}
-        self.assertEqual("", self._line(settings, minutes=30))
-        self.assertEqual("Time since last message: 3 hours", self._line(settings, hours=3))
+    def test_line_can_be_switched_off(self):
+        self.assertEqual("", self._line({"CURRENT_STATE_GAP_ENABLED": False}, days=5))
 
-    def test_zero_threshold_disables_line(self):
-        self.assertEqual("", self._line({"CURRENT_STATE_GAP_MIN_MINUTES": 0}, days=5))
+    def test_singular_second(self):
+        self.assertEqual("Time since last message: 1 second", self._line(seconds=1))
 
 
 if __name__ == "__main__":
