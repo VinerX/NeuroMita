@@ -460,45 +460,32 @@ class PromptController(PromptBuilderService):
 
         return {"role": "system", "content": "\n".join(lines)}
 
-    # Timestamp formats seen on history messages: stored history renders
-    # dd.mm.YYYY, the fresh user message uses ISO-like YYYY-mm-dd.
-    _HISTORY_TIME_FORMATS = ("%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
+    # Ниже этого порога пауза — обычный ритм живого разговора, сообщать о ней
+    # нечего. Выше — уже «отошёл», и это меняет тон реплики.
+    _LAST_INTERACTION_MIN_GAP_SECONDS = 300
 
     @classmethod
-    def _format_last_interaction_line(cls, history: List[Dict[str, Any]]) -> str:
+    def _format_last_interaction_line(cls, last_message_at: datetime.datetime | None) -> str:
         """Cheap "time since last talk" signal for [Current State].
 
-        Returns e.g. ``Last conversation: 3 days ago`` when the previous turn is
-        at least an hour old, otherwise ``""`` (recent chatter needs no signal).
-        Never raises: unknown/garbled times are skipped.
+        Returns e.g. ``Time since last message: 3 days`` for a noticeable pause,
+        otherwise ``""`` (recent chatter needs no signal). Never raises.
         """
-        now = datetime.datetime.now()
-        for msg in reversed(history or []):
-            if not isinstance(msg, dict):
-                continue
-            raw = msg.get("time") or msg.get("timestamp")
-            if not raw:
-                continue
-            then = None
-            for fmt in cls._HISTORY_TIME_FORMATS:
-                try:
-                    then = datetime.datetime.strptime(str(raw), fmt)
-                    break
-                except Exception:
-                    continue
-            if then is None:
-                continue
-            secs = (now - then).total_seconds()
-            if secs < 3600:
-                return ""
-            days = int(secs // 86400)
-            hours = int(secs // 3600)
-            if days >= 1:
-                human = f"{days} day{'s' if days != 1 else ''} ago"
-            else:
-                human = f"{hours} hour{'s' if hours != 1 else ''} ago"
-            return f"Last conversation: {human}"
-        return ""
+        if not isinstance(last_message_at, datetime.datetime):
+            return ""
+
+        secs = (datetime.datetime.now() - last_message_at).total_seconds()
+        if secs < cls._LAST_INTERACTION_MIN_GAP_SECONDS:
+            return ""
+
+        if secs < 3600:
+            value, unit = int(secs // 60), "minute"
+        elif secs < 86400:
+            value, unit = int(secs // 3600), "hour"
+        else:
+            value, unit = int(secs // 86400), "day"
+
+        return f"Time since last message: {value} {unit}{'s' if value != 1 else ''}"
 
     @staticmethod
     def _is_volatile_system_block(block: Any) -> bool:
@@ -747,6 +734,7 @@ class PromptController(PromptBuilderService):
 
         history_limited: List[Dict[str, Any]] = []
         history_summary: str = ""
+        last_message_at: datetime.datetime | None = None
         if policy.use_history_in_prompt:
             prepared = use(HistoryService).prepare_for_prompt(
                 character=character,
@@ -757,6 +745,7 @@ class PromptController(PromptBuilderService):
             )
             history_limited = list(prepared.messages)
             history_summary = prepared.summary.strip()
+            last_message_at = prepared.last_message_at
 
         for s in dsl_system_infos:
             if isinstance(s, str):
@@ -821,7 +810,7 @@ class PromptController(PromptBuilderService):
             f"Time: {current_time.strftime('%H:%M:%S')}",
             f"Day of week: {current_time.strftime('%A')}",
         ]
-        last_interaction_line = self._format_last_interaction_line(history_limited)
+        last_interaction_line = self._format_last_interaction_line(last_message_at)
         if last_interaction_line:
             current_state_lines.append(last_interaction_line)
         messages.append({

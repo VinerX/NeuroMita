@@ -10,6 +10,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
 from core.request_policy import RequestPolicy
@@ -396,6 +397,10 @@ class RuntimeCapabilitiesService(ABC):
 class PreparedHistory:
     messages: List[Dict[str, Any]]
     summary: str = ""
+    # Время последнего сообщения истории. Сами messages уезжают провайдеру
+    # строго как role/content, поэтому таймстемп едет отдельным полем —
+    # иначе «сколько прошло с прошлого раза» посчитать не из чего.
+    last_message_at: Optional[datetime] = None
 
 
 class HistoryService(ABC):

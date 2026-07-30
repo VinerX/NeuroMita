@@ -166,10 +166,37 @@ class HistoryController(HistoryService):
         if image_quality.get('enabled', False):
             history_limited = self._apply_history_image_quality_reduction(history_limited, image_quality)
 
+        # Таймстемп снимаем до санитизации: она оставляет только role/content.
+        last_message_at = self._last_message_time(history_limited)
+
         # ключевая часть: подготовка для LLM (без лишних полей + с префиксами speaker/target)
         history_for_llm = self._sanitize_history_for_llm(character, history_limited)
 
-        return PreparedHistory(messages=history_for_llm, summary=history_summary)
+        return PreparedHistory(
+            messages=history_for_llm,
+            summary=history_summary,
+            last_message_at=last_message_at,
+        )
+
+    # Форматы таймстемпов в истории: сохранённая рендерится как dd.mm.YYYY,
+    # свежее сообщение игрока приходит в ISO-подобном YYYY-mm-dd.
+    _HISTORY_TIME_FORMATS = ("%d.%m.%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S")
+
+    @classmethod
+    def _last_message_time(cls, messages: List[Dict[str, Any]]) -> Optional[datetime.datetime]:
+        """Время самого свежего сообщения окна. Нечитаемые таймстемпы пропускаем."""
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict):
+                continue
+            raw = msg.get("time") or msg.get("timestamp")
+            if not raw:
+                continue
+            for fmt in cls._HISTORY_TIME_FORMATS:
+                try:
+                    return datetime.datetime.strptime(str(raw), fmt)
+                except Exception:
+                    continue
+        return None
 
     def _decorate_messages_with_character_info(
         self,
