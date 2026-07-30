@@ -466,9 +466,23 @@ class GeminiProvider(BaseProvider):
         if not isinstance(usage_meta, dict):
             return None
 
+        # promptTokenCount уже включает кэшированную часть, как и у OpenAI-совместимых:
+        # cachedContentTokenCount — подмножество, а не добавка.
         payload = {
             "prompt_tokens": usage_meta.get("promptTokenCount") or usage_meta.get("prompt_token_count"),
             "completion_tokens": usage_meta.get("candidatesTokenCount") or usage_meta.get("candidates_token_count"),
             "total_tokens": usage_meta.get("totalTokenCount") or usage_meta.get("total_token_count"),
+            "prompt_tokens_details": {
+                "cached_tokens": (
+                    usage_meta.get("cachedContentTokenCount")
+                    or usage_meta.get("cached_content_token_count")
+                ),
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": (
+                    usage_meta.get("thoughtsTokenCount")
+                    or usage_meta.get("thoughts_token_count")
+                ),
+            },
         }
         return normalize_usage_payload(payload)
