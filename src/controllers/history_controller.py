@@ -158,15 +158,19 @@ class HistoryController(HistoryService):
 
         # Окно контекста ограничено всегда: промпт не может распухнуть только из-за
         # того, что фоновое сжатие ещё не догнало историю.
-        unsummarized_history = llm_messages_history[self._summary_cut_index(character, llm_messages_history):]
-        missed_messages, history_limited = self._split_history_by_dialog_limit(
+        summary_cut = self._summary_cut_index(character, llm_messages_history)
+        unsummarized_history = llm_messages_history[summary_cut:]
+        window_overflow, history_limited = self._split_history_by_dialog_limit(
             unsummarized_history,
             effective_limit,
         )
 
-        if missed_messages and save_missed_history:
-            logger.info(f"[HistoryController] Сохраняю {len(missed_messages)} пропущенных сообщений для персонажа {char_id}.")
-            character.history_manager.save_missed_history(missed_messages)
+        if save_missed_history:
+            self._archive_out_of_window(
+                character,
+                summarized=llm_messages_history[:summary_cut],
+                window_overflow=window_overflow,
+            )
 
         if image_quality.get('enabled', False):
             history_limited = self._apply_history_image_quality_reduction(history_limited, image_quality)
@@ -182,6 +186,39 @@ class HistoryController(HistoryService):
             summary=history_summary,
             last_message_at=last_message_at,
         )
+
+    def _compression_enabled(self) -> bool:
+        return bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True)) or bool(
+            self._get_setting("ENABLE_HISTORY_COMPRESSION_PERIODIC", False)
+        )
+
+    def _archive_out_of_window(
+        self,
+        character,
+        *,
+        summarized: List[Dict[str, Any]],
+        window_overflow: List[Dict[str, Any]],
+    ) -> None:
+        """Уводит из живой истории то, что больше не понадобится в промпте.
+
+        Архив (is_active=0) — это вход в RAG-поиск: долгая память ищет строго по
+        неактивным строкам. Уходить туда должно свёрнутое — оно уже пересказано в
+        сводке. Несвёрнутое не трогаем: раньше архивировался именно хвост за окном,
+        то есть сообщение исчезало из источника сжатия раньше, чем его успевали
+        свернуть, а свёрнутое при этом висело активным вечно.
+
+        Исключение — выключенное сжатие: свернуть историю некому, и держать её
+        активной бесконечно незачем.
+        """
+        messages = list(summarized)
+        if not self._compression_enabled():
+            messages.extend(window_overflow)
+        if not messages:
+            return
+
+        char_id = getattr(character, "char_id", "Unknown")
+        logger.info(f"[HistoryController][{char_id}] Архивирую {len(messages)} сообщений истории.")
+        character.history_manager.save_missed_history(messages)
 
     # Форматы таймстемпов в истории: сохранённая рендерится как dd.mm.YYYY,
     # свежее сообщение игрока приходит в ISO-подобном YYYY-mm-dd.

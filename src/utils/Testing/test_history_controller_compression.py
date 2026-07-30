@@ -188,6 +188,67 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         )
         self.assertEqual(len(result.messages), 5)
 
+    def _prepare(self, controller, character, *, memory_limit=4):
+        return controller.prepare_for_prompt(
+            character=character,
+            memory_limit=memory_limit,
+            is_game_master=False,
+            save_missed_history=True,
+            image_quality={},
+        )
+
+    def test_archiving_takes_summarized_messages(self):
+        """В архив уходит свёрнутое — оно уже пересказано в сводке.
+
+        Архив (is_active=0) — единственный вход в RAG-поиск, поэтому свёрнутое
+        не должно висеть активным вечно.
+        """
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        messages = [
+            {"role": "user", "content": f"m{i}", "_history_row_id": 700 + i} for i in range(8)
+        ]
+        character = _StubCharacter(messages)
+        character.vars[HistoryController._SUMMARY_ANCHOR_VAR] = 702
+
+        self._prepare(controller, character)
+
+        archived = [m["content"] for m in character.history_manager.saved_missed]
+        self.assertEqual(archived, ["m0", "m1", "m2"])
+
+    def test_unsummarized_tail_is_never_archived(self):
+        """Регрессия: раньше архивировался хвост за окном — ровно то, что сжатие
+        ещё не успело свернуть. При лежащем компрессоре история уезжала в архив,
+        ни разу не попав в сводку: тихая потеря памяти.
+        """
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        messages = [
+            {"role": "user", "content": f"m{i}", "_history_row_id": 800 + i} for i in range(10)
+        ]
+        character = _StubCharacter(messages)
+
+        result = self._prepare(controller, character)
+
+        self.assertEqual(character.history_manager.saved_missed, [])
+        # окно промпта при этом всё равно ограничено
+        self.assertEqual([m["content"] for m in result.messages], ["m6", "m7", "m8", "m9"])
+
+    def test_disabled_compression_still_archives_by_window(self):
+        """Сжатие выключено — сворачивать некому, держать историю активной незачем."""
+        controller = self._make_controller({
+            "HISTORY_COMPRESSION_OUTPUT_TARGET": "history",
+            "ENABLE_HISTORY_COMPRESSION_ON_LIMIT": False,
+            "ENABLE_HISTORY_COMPRESSION_PERIODIC": False,
+        })
+        messages = [
+            {"role": "user", "content": f"m{i}", "_history_row_id": 900 + i} for i in range(6)
+        ]
+        character = _StubCharacter(messages)
+
+        self._prepare(controller, character)
+
+        archived = [m["content"] for m in character.history_manager.saved_missed]
+        self.assertEqual(archived, ["m0", "m1"])
+
     def test_compression_advances_boundary_to_last_compressed_row(self):
         controller = self._make_controller({
             "HISTORY_COMPRESSION_OUTPUT_TARGET": "history",
