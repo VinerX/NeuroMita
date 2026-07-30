@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.events import Events, get_event_bus, shutdown_event_bus
+from core.events import Events, reset_event_bus, shutdown_event_bus
 from core.request_policy import RequestPolicy
 from core.services import services, use
 from services.contracts import CharacterRegistry, ChatGenerationRequest, GenerationService, ModelStateService
@@ -189,8 +189,9 @@ class GenerationTestRuntime:
         self._set_runtime_env()
         os.chdir(self.runtime_base_dir)
 
-        shutdown_event_bus()
-        self.event_bus = get_event_bus()
+        # Живая шина обязательна: фоновое сжатие истории и graph extraction
+        # заводятся уведомлением MESSAGE_COMPLETED, а не вызовом.
+        self.event_bus = reset_event_bus()
 
         from controllers.settings_controller import SettingsController
         from controllers.protocols_controller import ProtocolsController

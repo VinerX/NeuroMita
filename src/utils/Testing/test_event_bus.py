@@ -262,6 +262,45 @@ def test_try_emit_reports_rejection_after_shutdown() -> None:
     assert bus.try_emit("late") is False
 
 
+def test_global_shutdown_poisons_every_later_bus() -> None:
+    """Флаг остановки липкий — иначе поздние emit оживали бы после выхода."""
+    import core.events as events
+
+    saved_bus, saved_flag = events._global_event_bus, events._event_bus_shutdown
+    try:
+        events._global_event_bus = None
+        events._event_bus_shutdown = False
+
+        events.shutdown_event_bus()
+        assert events.get_event_bus().try_emit("late") is False
+    finally:
+        events._global_event_bus, events._event_bus_shutdown = saved_bus, saved_flag
+
+
+def test_reset_event_bus_returns_live_bus_after_shutdown() -> None:
+    """Headless-прогону нужна живая шина: без неё уведомления молча теряются."""
+    import core.events as events
+
+    saved_bus, saved_flag = events._global_event_bus, events._event_bus_shutdown
+    try:
+        events._global_event_bus = None
+        events._event_bus_shutdown = False
+        events.shutdown_event_bus()
+
+        bus = events.reset_event_bus()
+        received: list[str] = []
+        bus.subscribe("notification", lambda event: received.append(event.name), weak=False)
+
+        assert bus.try_emit("notification") is True
+        assert bus.flush(1.0)
+        assert received == ["notification"]
+        assert events.get_event_bus() is bus
+    finally:
+        if events._global_event_bus is not None:
+            events._global_event_bus.shutdown()
+        events._global_event_bus, events._event_bus_shutdown = saved_bus, saved_flag
+
+
 def test_legacy_sync_flag_never_runs_subscriber_inline() -> None:
     bus = EventBus()
     entered = threading.Event()

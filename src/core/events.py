@@ -405,10 +405,27 @@ def get_event_bus() -> EventBus:
 
 
 def shutdown_event_bus() -> None:
+    """Гасит шину окончательно: поздние emit после выхода уже ничего не запускают."""
     global _global_event_bus, _event_bus_shutdown
     _event_bus_shutdown = True
     if _global_event_bus is not None:
         _global_event_bus.shutdown()
+
+
+def reset_event_bus() -> EventBus:
+    """Заменяет шину на новую живую (headless-прогоны, тесты).
+
+    Без этого связка shutdown_event_bus() + get_event_bus() отдаёт мёртвую шину:
+    флаг остановки липкий, и любая новая шина гасится прямо в конструкторе, а
+    try_emit молча отбрасывает события — уведомления (фоновое сжатие, граф)
+    просто не доезжают.
+    """
+    global _global_event_bus, _event_bus_shutdown
+    if _global_event_bus is not None:
+        _global_event_bus.shutdown()
+    _event_bus_shutdown = False
+    _global_event_bus = EventBus()
+    return _global_event_bus
 
 
 def subscribe(
