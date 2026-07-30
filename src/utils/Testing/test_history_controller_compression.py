@@ -456,6 +456,57 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         self.assertEqual(first.max_attempts, 1)  # ретраями рулит HistoryController, не runner
         self.assertEqual(first.character_id, "TestChar")
 
+    def test_compression_prompt_carries_text_not_base64_images(self):
+        """Картинка в окне раздувала запрос сжатия со ~1k до ~180k токенов."""
+        controller = self._make_controller()
+        character = _StubCharacter([])
+        blob = "A" * 20000
+        stub = _install_generation([UtilityGenerationResult(ok=True, text="summary")])
+
+        controller._compress_history(
+            character,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "глянь на это"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{blob}"}},
+                    ],
+                },
+                {"role": "assistant", "content": "вижу"},
+            ],
+        )
+
+        prompt = stub.calls[0].prompt
+        self.assertNotIn(blob, prompt)
+        self.assertIn("глянь на это", prompt)
+        self.assertIn("[image]", prompt)
+        self.assertIn("вижу", prompt)
+
+    def test_memory_candidates_prompt_carries_text_not_base64_images(self):
+        controller = self._make_controller({"MEMORY_SUMMARY_CANDIDATES_ENABLED": True})
+        character = _StubCharacter([], memory_system=SimpleNamespace(add_memory=lambda *_a, **_k: None))
+        blob = "B" * 20000
+        stub = _install_generation([UtilityGenerationResult(ok=True, text="[]")])
+
+        controller._extract_memory_candidates(
+            character,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "запомни это"},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{blob}"}},
+                    ],
+                },
+            ],
+        )
+
+        self.assertTrue(stub.calls, "кандидаты в память не ушли в LLM")
+        prompt = stub.calls[0].prompt
+        self.assertNotIn(blob, prompt)
+        self.assertIn("запомни это", prompt)
+
     def test_compression_falls_back_to_local_summary_after_non_retryable_failure(self):
         controller = self._make_controller(
             {

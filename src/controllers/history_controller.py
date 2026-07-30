@@ -537,10 +537,15 @@ class HistoryController(HistoryService):
             max_n = 3
         max_n = max(1, min(5, max_n))
 
-        chunk = "\n".join(
-            f"[{'Player' if m.get('role') == 'user' else 'Character'}]: {m.get('content')}"
-            for m in messages_to_compress if isinstance(m, dict) and m.get("content")
-        )
+        chunk_lines = []
+        for m in messages_to_compress:
+            if not isinstance(m, dict):
+                continue
+            text = self._content_to_plain_text(m.get("content"))
+            if not text:
+                continue
+            chunk_lines.append(f"[{'Player' if m.get('role') == 'user' else 'Character'}]: {text}")
+        chunk = "\n".join(chunk_lines)
         if not chunk.strip():
             return
 
@@ -857,13 +862,18 @@ class HistoryController(HistoryService):
             prompt_template = self._DEFAULT_COMPRESSION_PROMPT
 
         try:
-            formatted_messages = "\n".join([
-                f"[{msg.get('time', '')}] "
-                f"[{'Player' if msg.get('role') == 'user' else 'Character or System'}]: {msg.get('content')}"
-                if msg.get('time')
-                else f"[{'Player' if msg.get('role') == 'user' else 'Character or System'}]: {msg.get('content')}"
-                for msg in messages_to_compress
-            ])
+            formatted_lines: List[str] = []
+            for msg in messages_to_compress:
+                # Мультимодальный content — список частей: без разбора картинка
+                # уезжает в промпт целиком в base64 (сжатие раздувалось до
+                # ~180k токенов вместо ~1k).
+                text = self._content_to_plain_text(msg.get("content"))
+                if not text:
+                    continue
+                speaker = "Player" if msg.get("role") == "user" else "Character or System"
+                stamp = f"[{msg.get('time')}] " if msg.get("time") else ""
+                formatted_lines.append(f"{stamp}[{speaker}]: {text}")
+            formatted_messages = "\n".join(formatted_lines)
             previous_summary_limit = int(self._get_setting("HISTORY_COMPRESSION_PREVIOUS_SUMMARY_MAX_CHARS", 6000))
             previous_summary_trimmed = self._truncate_text_for_prompt(previous_summary, previous_summary_limit)
             if previous_summary and len(str(previous_summary)) > previous_summary_limit:
