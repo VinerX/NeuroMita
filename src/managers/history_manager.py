@@ -1390,6 +1390,28 @@ class HistoryManager(CharacterScopedService):
             except Exception:
                 pass
 
+    def delete_variables(self, keys) -> int:
+        """Убирает переменные персонажа из БД (сброс состояния)."""
+        keys = [str(k) for k in (keys or []) if str(k or "").strip()]
+        if not keys:
+            return 0
+        conn = self.db.get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _ in keys)
+            cursor.execute(
+                f"DELETE FROM variables WHERE character_id = ? AND key IN ({placeholders})",
+                (self.storage_key, *keys),
+            )
+            deleted = cursor.rowcount or 0
+            conn.commit()
+            return deleted
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def save_missed_history(self, missed_messages: list):
         for msg in missed_messages or []:
             if not isinstance(msg, dict):

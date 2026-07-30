@@ -1112,11 +1112,24 @@ class Character:
             subclass_overrides = getattr(self, "DEFAULT_OVERRIDES", {})
             composed_initials.update(subclass_overrides)
 
+        # Переменные, которых после сброса не останется (сводка истории, её граница,
+        # прогресс сюжета), надо удалить и из БД: чистка только in-memory значила, что
+        # после перезапуска они воскресали поверх пустой истории.
+        previous_keys = set(self.variables.keys())
+
         self.variables.clear()
         for key, value in composed_initials.items():
             self.set_variable(key, value)
 
         self.load_config()
+
+        stale_keys = previous_keys - set(self.variables.keys())
+        if stale_keys:
+            try:
+                self.history_manager.delete_variables(stale_keys)
+            except Exception as e:
+                logger.warning(f"[{self.char_id}] Не удалось удалить переменные при сбросе: {e}", exc_info=True)
+        self.flush_variables()
 
         self.memory_system.clear_memories()
         self.history_manager.clear_history()

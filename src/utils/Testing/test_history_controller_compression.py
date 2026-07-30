@@ -130,9 +130,11 @@ class HistoryControllerCompressionTests(unittest.TestCase):
 
     def test_prepare_for_prompt_returns_existing_summary(self):
         controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
-        character = _StubCharacter([{"role": "user", "content": f"msg-{i}"} for i in range(6)])
+        character = _StubCharacter([
+            {"role": "user", "content": f"msg-{i}", "_history_row_id": 100 + i} for i in range(6)
+        ])
         character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
-        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 3
+        character.vars[HistoryController._SUMMARY_ANCHOR_VAR] = 102
 
         result = controller.prepare_for_prompt(
             character=character,
@@ -142,25 +144,87 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             image_quality={},
         )
         self.assertEqual(result.summary, "summary")
-        self.assertEqual(len(result.messages), 3)  # summary_count=3 отрезал первые три
+        self.assertEqual(len(result.messages), 3)  # свёрнуто всё по строку 102 включительно
+
+    def test_summary_boundary_survives_shrinking_history(self):
+        """Регрессия: свёрнутые сообщения выпадают из активной истории.
+
+        Раньше граница хранилась количеством, и после архивации/очистки старых
+        строк она отрезала всю оставшуюся историю — модель получала промпт
+        вообще без диалога, только со сводкой.
+        """
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        # свёрнуто по строку 102, но строки 100-102 уже не активны
+        character = _StubCharacter([
+            {"role": "user", "content": f"msg-{i}", "_history_row_id": i} for i in (103, 104, 105)
+        ])
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
+        character.vars[HistoryController._SUMMARY_ANCHOR_VAR] = 102
+
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=10,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
+        )
+        self.assertEqual([m["content"] for m in result.messages], ["msg-103", "msg-104", "msg-105"])
+
+    def test_stale_summary_count_no_longer_eats_history(self):
+        """Легаси-счётчик без границы не должен резать историю вообще."""
+        controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
+        character = _StubCharacter([
+            {"role": "user", "content": f"msg-{i}", "_history_row_id": 300 + i} for i in range(5)
+        ])
+        character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
+        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 215
+
+        result = controller.prepare_for_prompt(
+            character=character,
+            memory_limit=10,
+            is_game_master=False,
+            save_missed_history=False,
+            image_quality={},
+        )
+        self.assertEqual(len(result.messages), 5)
+
+    def test_compression_advances_boundary_to_last_compressed_row(self):
+        controller = self._make_controller({
+            "HISTORY_COMPRESSION_OUTPUT_TARGET": "history",
+            "HISTORY_COMPRESSION_KEEP_LAST": 2,
+            "ENABLE_HISTORY_COMPRESSION_ON_LIMIT": True,
+        })
+        controller._compress_history_singleflight = lambda *_a, **_k: "chunk-summary"
+        messages = [
+            {"role": "user", "content": f"m{i}", "_history_row_id": 500 + i} for i in range(6)
+        ]
+        character = _StubCharacter(messages)
+
+        controller._process_history_compression(
+            character, messages, effective_limit=4, history_summary="", summary_cut=0,
+        )
+
+        # сжаты первые четыре (500..503), последние две остаются в окне
+        self.assertEqual(character.vars[HistoryController._SUMMARY_ANCHOR_VAR], 503)
+        self.assertEqual(controller._summary_cut_index(character, messages), 4)
 
     def test_prepare_for_prompt_counts_only_dialog_messages_for_tail_limit(self):
         controller = self._make_controller({"HISTORY_COMPRESSION_OUTPUT_TARGET": "history"})
         character = _StubCharacter(
             [
-                {"role": "user", "content": "already summarized"},
-                {"role": "system", "content": "older system"},
-                {"role": "user", "content": "u1"},
-                {"role": "event", "content": "e1"},
-                {"role": "assistant", "content": "a1"},
-                {"role": "system", "content": "keep system"},
-                {"role": "user", "content": "u2"},
-                {"role": "event", "content": "keep event"},
-                {"role": "assistant", "content": "a2"},
+                {"role": "user", "content": "already summarized", "_history_row_id": 1},
+                {"role": "system", "content": "older system", "_history_row_id": 2},
+                {"role": "user", "content": "u1", "_history_row_id": 3},
+                {"role": "event", "content": "e1", "_history_row_id": 4},
+                {"role": "assistant", "content": "a1", "_history_row_id": 5},
+                {"role": "system", "content": "keep system", "_history_row_id": 6},
+                {"role": "user", "content": "u2", "_history_row_id": 7},
+                {"role": "event", "content": "keep event", "_history_row_id": 8},
+                {"role": "assistant", "content": "a2", "_history_row_id": 9},
             ]
         )
         character.vars[HistoryController._SUMMARY_TEXT_VAR] = "summary"
-        character.vars[HistoryController._SUMMARY_COUNT_VAR] = 1
+        character.vars[HistoryController._SUMMARY_ANCHOR_VAR] = 1
 
         result = controller.prepare_for_prompt(
             character=character,
@@ -171,12 +235,12 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            result.messages,
+            [(m["role"], m["content"]) for m in result.messages],
             [
-                {"role": "system", "content": "keep system"},
-                {"role": "user", "content": "u2"},
-                {"role": "event", "content": "keep event"},
-                {"role": "assistant", "content": "a2"},
+                ("system", "keep system"),
+                ("user", "u2"),
+                ("event", "keep event"),
+                ("assistant", "a2"),
             ],
         )
 
@@ -223,7 +287,6 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             previous_summary="",
             summary_count=4,
             compressed_count=3,
-            history_len=20,
         )
 
         self.assertEqual(summary, "")
@@ -388,15 +451,13 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         character = _StubCharacter([])
 
         rendered, count = controller._apply_layered_compression_result(
-            character, compressed_summary="seg-A", summary_count=0,
-            compressed_count=10, history_len=50,
+            character, compressed_summary="seg-A", summary_count=0, compressed_count=10,
         )
         self.assertEqual(rendered, "seg-A")
         self.assertEqual(count, 10)
 
         rendered, count = controller._apply_layered_compression_result(
-            character, compressed_summary="seg-B", summary_count=10,
-            compressed_count=8, history_len=50,
+            character, compressed_summary="seg-B", summary_count=10, compressed_count=8,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["seg-A", "seg-B"])
@@ -430,7 +491,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
             character.history_manager.load_history()["messages"],
             effective_limit=4,
             history_summary="EXISTING SUMMARY",
-            summary_count=0,
+            summary_cut=0,
         )
         self.assertEqual(fed_previous, [""])
 
@@ -446,8 +507,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         character.vars[HistoryController._SUMMARY_COUNT_VAR] = 5
 
         rendered, count = controller._apply_layered_compression_result(
-            character, compressed_summary="seg-new", summary_count=5,
-            compressed_count=4, history_len=50,
+            character, compressed_summary="seg-new", summary_count=5, compressed_count=4,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["OLD BLOB", "seg-new"])
@@ -470,8 +530,7 @@ class HistoryControllerCompressionTests(unittest.TestCase):
         ])
 
         controller._apply_layered_compression_result(
-            character, compressed_summary="L4", summary_count=9,
-            compressed_count=3, history_len=50,
+            character, compressed_summary="L4", summary_count=9, compressed_count=3,
         )
         segments = json.loads(character.vars[HistoryController._SUMMARY_SEGMENTS_VAR])
         self.assertEqual([s["text"] for s in segments], ["MERGED", "L3", "L4"])

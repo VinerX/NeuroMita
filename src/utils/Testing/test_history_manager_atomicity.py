@@ -132,6 +132,33 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         self.assertEqual(after["_history_row_id"], before["_history_row_id"])
         self.assertEqual(after["content"], "after")
 
+    def test_delete_variables_removes_only_named_keys(self) -> None:
+        """Сброс персонажа обязан выносить переменные из БД, а не только из памяти.
+
+        Регрессия: сводка истории и её граница переживали очистку истории и
+        после перезапуска отрезали уже новый диалог.
+        """
+        self.hm.save_history(
+            {
+                "messages": [],
+                "variables": {
+                    "HISTORY_COMPRESSION_SUMMARY": "old summary",
+                    "HISTORY_COMPRESSION_SUMMARY_ANCHOR": 215,
+                    "attitude": 60,
+                },
+            }
+        )
+
+        deleted = self.hm.delete_variables(
+            ["HISTORY_COMPRESSION_SUMMARY", "HISTORY_COMPRESSION_SUMMARY_ANCHOR"]
+        )
+
+        self.assertEqual(deleted, 2)
+        variables = self.hm.load_history()["variables"]
+        self.assertNotIn("HISTORY_COMPRESSION_SUMMARY", variables)
+        self.assertNotIn("HISTORY_COMPRESSION_SUMMARY_ANCHOR", variables)
+        self.assertEqual(variables["attitude"], 60)
+
     def test_updating_message_content_invalidates_stale_embeddings(self) -> None:
         self.hm.save_history(
             {

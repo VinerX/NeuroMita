@@ -26,7 +26,14 @@ from services.contracts import (
 
 class HistoryController(HistoryService):
     _SUMMARY_TEXT_VAR = "HISTORY_COMPRESSION_SUMMARY"
+    # Сколько сообщений уже свёрнуто — величина справочная (логи, msg_count слоёв).
+    # Резать историю по ней НЕЛЬЗЯ: список из load_history укорачивается спереди
+    # (архивация окна, TTL, удаление сообщений, сброс истории), и счётчик после
+    # этого показывает в пустоту — окно диалога схлопывалось в ноль.
     _SUMMARY_COUNT_VAR = "HISTORY_COMPRESSION_SUMMARY_COUNT"
+    # Граница «сводка кончается здесь» — id строки истории последнего свёрнутого
+    # сообщения. Не зависит от длины списка и переживает любые удаления.
+    _SUMMARY_ANCHOR_VAR = "HISTORY_COMPRESSION_SUMMARY_ANCHOR"
     _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
     _DEFAULT_COMPRESSION_PROMPT = (
         "Summarize the conversation below into a compact factual memory for "
@@ -148,12 +155,10 @@ class HistoryController(HistoryService):
         output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", self._DEFAULT_OUTPUT_TARGET))
         use_external_summary = output_target in self._EXTERNAL_SUMMARY_TARGETS
         history_summary = self._get_history_summary(character) if use_external_summary else ""
-        summary_count = self._get_history_summary_count(character)
-        summary_count = max(0, min(summary_count, len(llm_messages_history)))
 
         # Окно контекста ограничено всегда: промпт не может распухнуть только из-за
         # того, что фоновое сжатие ещё не догнало историю.
-        unsummarized_history = llm_messages_history[summary_count:]
+        unsummarized_history = llm_messages_history[self._summary_cut_index(character, llm_messages_history):]
         missed_messages, history_limited = self._split_history_by_dialog_limit(
             unsummarized_history,
             effective_limit,
@@ -364,7 +369,7 @@ class HistoryController(HistoryService):
         effective_limit: int,
         *,
         history_summary: str = "",
-        summary_count: int = 0,
+        summary_cut: int = 0,
     ) -> None:
         compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 1.0))
         keep_last_setting = int(self._get_setting("HISTORY_COMPRESSION_KEEP_LAST", 10))
@@ -390,7 +395,7 @@ class HistoryController(HistoryService):
         trigger_at = max(trigger_at, keep_last + 1)
 
         use_external_summary = output_target in self._EXTERNAL_SUMMARY_TARGETS
-        source_messages = llm_messages_history[summary_count:]
+        source_messages = llm_messages_history[summary_cut:]
         plan = self._build_compression_plan(
             source_messages=source_messages,
             keep_last=keep_last,
@@ -425,13 +430,13 @@ class HistoryController(HistoryService):
             logger.warning(f"[HistoryController][{char_id}] Сжатие истории не удалось.")
             return
 
+        summary_count = self._get_history_summary_count(character)
         if is_layered:
             _, new_count = self._apply_layered_compression_result(
                 character,
                 compressed_summary=compressed_summary,
                 summary_count=summary_count,
                 compressed_count=len(messages_to_compress),
-                history_len=len(llm_messages_history),
             )
         else:
             _, new_count = self._apply_compression_result(
@@ -441,12 +446,12 @@ class HistoryController(HistoryService):
                 previous_summary=history_summary,
                 summary_count=summary_count,
                 compressed_count=len(messages_to_compress),
-                history_len=len(llm_messages_history),
             )
 
-        # Сжатие реально применилось (summary_count продвинулся) — сообщаем UI,
+        # Сжатие реально применилось — двигаем границу сводки и сообщаем UI,
         # чтобы живые счётчики (напр. «сообщений в окне» в песочнице) обновились.
         if new_count != summary_count:
+            self._set_summary_anchor(character, self._last_row_id(messages_to_compress))
             self._emit_compressed(char_id)
 
         # Страховочный второй путь в долгую память (08 P1): просим ту же модель
@@ -619,9 +624,8 @@ class HistoryController(HistoryService):
         previous_summary: str,
         summary_count: int,
         compressed_count: int,
-        history_len: int,
     ) -> tuple[str, int]:
-        new_count = min(history_len, summary_count + compressed_count)
+        new_count = summary_count + compressed_count
         new_summary = previous_summary
 
         if output_target == "memory":
@@ -739,14 +743,13 @@ class HistoryController(HistoryService):
 
             output_target = str(self._get_setting("HISTORY_COMPRESSION_OUTPUT_TARGET", self._DEFAULT_OUTPUT_TARGET))
             history_summary = self._get_history_summary(character) if output_target in self._EXTERNAL_SUMMARY_TARGETS else ""
-            summary_count = max(0, min(self._get_history_summary_count(character), len(llm_messages_history)))
 
             self._process_history_compression(
                 character,
                 llm_messages_history,
                 effective_limit,
                 history_summary=history_summary,
-                summary_count=summary_count,
+                summary_cut=self._summary_cut_index(character, llm_messages_history),
             )
         except Exception as e:
             logger.warning(
@@ -1022,6 +1025,60 @@ class HistoryController(HistoryService):
         except Exception:
             return 0
 
+    @staticmethod
+    def _history_row_id(message: Any) -> int:
+        if not isinstance(message, dict):
+            return 0
+        try:
+            return int(message.get("_history_row_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _last_row_id(cls, messages: List[Dict[str, Any]]) -> int:
+        for message in reversed(messages or []):
+            row_id = cls._history_row_id(message)
+            if row_id:
+                return row_id
+        return 0
+
+    def _get_summary_anchor(self, character) -> int:
+        try:
+            return max(0, int(character.get_variable(self._SUMMARY_ANCHOR_VAR, 0) or 0))
+        except (TypeError, ValueError, AttributeError):
+            return 0
+
+    def _set_summary_anchor(self, character, anchor_id: int) -> None:
+        # Без id границу не сдвигаем: лучше пересжать кусок повторно, чем потерять окно.
+        if anchor_id <= 0:
+            return
+        try:
+            with character_lock(getattr(character, "char_id", "") or ""):
+                character.set_variable(self._SUMMARY_ANCHOR_VAR, int(anchor_id))
+                if hasattr(character, "flush_variables"):
+                    character.flush_variables()
+        except Exception as e:
+            logger.warning(f"[HistoryController] Не удалось сохранить границу сводки: {e}", exc_info=True)
+
+    def _summary_cut_index(self, character, messages: List[Dict[str, Any]]) -> int:
+        """Сколько сообщений с начала списка уже покрыто сводкой.
+
+        Считаем по id строк истории, а не по количеству свёрнутых: список активных
+        сообщений укорачивается спереди независимо от сжатия, и позиционный счётчик
+        после этого отрезал всю историю целиком.
+        """
+        anchor = self._get_summary_anchor(character)
+        if anchor <= 0:
+            return 0
+
+        cut = 0
+        for message in messages or []:
+            row_id = self._history_row_id(message)
+            if not row_id or row_id > anchor:
+                break
+            cut += 1
+        return cut
+
     def _set_history_summary_state(self, character, summary: str, summary_count: int) -> None:
         # Короткая критическая секция: сам LLM-вызов сжатия идёт вне блокировки,
         # иначе генерация ждала бы его минуту.
@@ -1157,7 +1214,6 @@ class HistoryController(HistoryService):
         compressed_summary: str,
         summary_count: int,
         compressed_count: int,
-        history_len: int,
     ) -> tuple[str, int]:
         segments = self._load_summary_segments(character)
         segments.append({
@@ -1167,7 +1223,7 @@ class HistoryController(HistoryService):
             "created": self._now_iso(),
         })
         segments = self._maybe_rollup_segments(character, segments)
-        new_count = min(history_len, summary_count + compressed_count)
+        new_count = summary_count + compressed_count
         rendered = self._render_summary_segments(segments)
         self._set_summary_segments_state(character, segments, rendered, new_count)
         logger.info(
