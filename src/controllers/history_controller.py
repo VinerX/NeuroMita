@@ -611,18 +611,19 @@ class HistoryController(HistoryService):
             return
 
         # Пока модель думала, историю могли сбросить: факты из стёртого диалога
-        # в свежую память не пишем.
+        # в свежую память не пишем. Эпоха сверяется не один раз на всю пачку, а
+        # внутри каждой записи — сброс может прийти и в середине цикла.
         if not self._epoch_is_current(character, epoch, stage="кандидаты в память"):
             return
 
         candidates = self._parse_memory_candidates(result.text, max_n)
         added = 0
         for prio, content in candidates:
-            try:
-                if mem.add_memory(content=content, priority=prio) is not None:
-                    added += 1
-            except Exception:
+            if not self._add_memory_for_epoch(
+                character, epoch, content=content, priority=prio
+            ):
                 continue
+            added += 1
         if added:
             logger.info(f"[HistoryController][{char_id}] Added {added} memory candidate(s) from compression.")
 
@@ -715,21 +716,23 @@ class HistoryController(HistoryService):
         new_summary = previous_summary
 
         if output_target == "memory":
-            if hasattr(character, 'memory_system') and character.memory_system:
-                character.memory_system.add_memory(
-                    content=compressed_summary,
-                    memory_type="summary"
-                )
-                logger.info(
-                    f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
-                    f"Сжатая сводка добавлена в MemorySystem."
-                )
-            else:
+            if not (hasattr(character, 'memory_system') and character.memory_system):
                 logger.warning(
                     f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
                     f"MemorySystem недоступен для сводки."
                 )
                 return previous_summary, summary_count
+            # Сводка уходит в память тем же check-and-write, что и кандидаты:
+            # иначе сброс истории между записью и _commit_summary_state оставлял
+            # сводку в памяти, хотя сам коммит уже отклонён.
+            if not self._add_memory_for_epoch(
+                character, epoch, content=compressed_summary, memory_type="summary"
+            ):
+                return previous_summary, summary_count
+            logger.info(
+                f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
+                f"Сжатая сводка добавлена в MemorySystem."
+            )
         elif output_target == "history":
             new_summary = compressed_summary
             logger.info(
@@ -1167,6 +1170,36 @@ class HistoryController(HistoryService):
             f"(эпоха {epoch} → {actual}), результат отброшен: {stage}."
         )
         return False
+
+    def _add_memory_for_epoch(self, character, epoch: int, **kwargs) -> bool:
+        """Запись в память под тем же замком, что двигает эпоху истории.
+
+        Проверять эпоху отдельно от записи мало: clear_history() успевает пройти
+        между проверкой и add_memory(), и факт из стёртого диалога переживает
+        очистку. Замок держится на всём check-and-write, поэтому запись либо
+        целиком до сброса (и будет вычищена вместе со всей памятью), либо видит
+        новую эпоху и не происходит вовсе.
+        """
+        char_id = str(getattr(character, "char_id", "") or "")
+        mem = getattr(character, "memory_system", None)
+        if mem is None or not hasattr(mem, "add_memory"):
+            return False
+        try:
+            with character_lock(char_id):
+                actual = self._history_epoch(character)
+                if actual != epoch:
+                    logger.info(
+                        f"[HistoryController][{char_id or 'Unknown'}] Факт не записан: "
+                        f"история сброшена (эпоха {epoch} → {actual})."
+                    )
+                    return False
+                return mem.add_memory(**kwargs) is not None
+        except Exception as e:
+            logger.warning(
+                f"[HistoryController][{char_id or 'Unknown'}] Запись в память не удалась: {e}",
+                exc_info=True,
+            )
+            return False
 
     def _commit_summary_state(
         self,

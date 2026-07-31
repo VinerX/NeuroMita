@@ -20,6 +20,7 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.history_controller import HistoryController
+from core.character_locks import character_lock
 from core.services import services
 from services.contracts import (
     GenerationService,
@@ -79,19 +80,33 @@ class _StubCharacter:
         self._pending.clear()
 
     def clear_history(self):
-        """Ровно то, что делает Character.clear_history() со сводкой."""
-        self.history_epoch += 1
+        """Ровно то, что делает Character.clear_history(): эпоха под замком,
+        затем чистка переменных и памяти."""
+        with character_lock(self.char_id):
+            self.history_epoch += 1
         self.vars.clear()
         self._pending.clear()
+        if self.memory_system is not None:
+            self.memory_system.clear_memories()
 
 
 class _RecordingMemory:
-    def __init__(self):
+    def __init__(self, on_add=None):
         self.added = []
+        self.attempts = 0
+        self.clears = 0
+        self._on_add = on_add
 
     def add_memory(self, content, priority="normal", **_kw):
+        self.attempts += 1
         self.added.append((priority, content))
+        if self._on_add is not None:
+            self._on_add(self)
         return object()
+
+    def clear_memories(self):
+        self.clears += 1
+        self.added.clear()
 
 
 def _make_controller(settings: dict | None = None) -> HistoryController:
@@ -248,6 +263,101 @@ class CompressionAfterResetTests(unittest.TestCase):
         )
 
         self.assertEqual(memory.added, [("high", "секрет")])
+
+
+class MemoryWriteEpochTests(unittest.TestCase):
+    """Проверка эпохи и запись в память — один шаг, а не два.
+
+    Одной проверки на всю пачку мало: очистка чата приходит и в середине цикла,
+    и тогда факт из стёртого диалога записывается уже после clear_memories().
+    """
+
+    _SETTINGS = {"MEMORY_SUMMARY_CANDIDATES_ENABLED": True}
+
+    def test_clear_between_candidates_stops_further_writes(self):
+        controller = _make_controller(self._SETTINGS)
+
+        def _clear_after_first(mem: _RecordingMemory) -> None:
+            if mem.attempts == 1:
+                character.clear_history()
+
+        memory = _RecordingMemory(on_add=_clear_after_first)
+        character = _StubCharacter(memory_system=memory)
+        stub = _StubGenerationService(
+            '[{"priority": "high", "content": "первый"},'
+            ' {"priority": "high", "content": "второй"},'
+            ' {"priority": "high", "content": "третий"}]'
+        )
+        services().register(GenerationService, stub, replace=True)
+
+        controller._extract_memory_candidates(
+            character,
+            [{"role": "user", "content": "диалог"}],
+            epoch=character.history_epoch,
+        )
+
+        self.assertEqual(memory.clears, 1)
+        self.assertEqual(
+            memory.attempts, 1, "после сброса записи не должны даже пытаться пройти"
+        )
+        self.assertEqual(memory.added, [], "в памяти не должно остаться ничего из стёртого чата")
+
+    def test_add_memory_for_epoch_refuses_stale_epoch(self):
+        controller = _make_controller()
+        memory = _RecordingMemory()
+        character = _StubCharacter(memory_system=memory)
+        epoch = character.history_epoch
+        character.clear_history()
+
+        written = controller._add_memory_for_epoch(
+            character, epoch, content="секрет", priority="high"
+        )
+
+        self.assertFalse(written)
+        self.assertEqual(memory.attempts, 0)
+
+    def test_legacy_memory_target_does_not_leave_stale_summary(self):
+        """В режиме target=memory сводка уходила в память до проверки эпохи."""
+        controller = _make_controller()
+        memory = _RecordingMemory()
+        character = _StubCharacter(memory_system=memory)
+        epoch = character.history_epoch
+        character.clear_history()
+
+        summary, count = controller._apply_compression_result(
+            character,
+            output_target="memory",
+            compressed_summary="сводка стёртого диалога",
+            previous_summary="",
+            summary_count=0,
+            compressed_count=4,
+            epoch=epoch,
+            anchor_id=503,
+        )
+
+        self.assertEqual(memory.attempts, 0, "сводка не должна попасть в память после сброса")
+        self.assertEqual((summary, count), ("", 0))
+        self.assertEqual(character.vars, {})
+
+    def test_legacy_memory_target_writes_summary_when_history_is_intact(self):
+        controller = _make_controller()
+        memory = _RecordingMemory()
+        character = _StubCharacter(memory_system=memory)
+
+        summary, count = controller._apply_compression_result(
+            character,
+            output_target="memory",
+            compressed_summary="сводка",
+            previous_summary="",
+            summary_count=0,
+            compressed_count=4,
+            epoch=character.history_epoch,
+            anchor_id=503,
+        )
+
+        self.assertEqual(memory.attempts, 1)
+        self.assertEqual(count, 4)
+        self.assertEqual(character.vars[HistoryController._SUMMARY_ANCHOR_VAR], 503)
 
 
 class HistoryResetHookTests(unittest.TestCase):
