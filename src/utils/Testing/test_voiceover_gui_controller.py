@@ -19,7 +19,7 @@ class _EventBusStub:
     def __init__(self):
         self.emitted: list[tuple[str, dict]] = []
 
-    def emit(self, event_name, payload):
+    def emit(self, event_name, payload=None):
         self.emitted.append((event_name, payload))
 
 
@@ -140,6 +140,26 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(combo.itemData(combo.currentIndex()), "edge_tts_rvc_onnx")
+
+    def test_enabling_tts_allows_autoload(self):
+        controller, _bus = self._make_controller()
+        calls = []
+        controller._ui = lambda callback: callback()
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=True))
+
+        self.assertEqual(calls, [{"allow_autoload": True}])
+
+    def test_disabling_tts_does_not_autoload(self):
+        controller, _bus = self._make_controller()
+        calls = []
+        controller._ui = lambda callback: callback()
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=False))
+
+        self.assertEqual(calls, [{"allow_autoload": False}])
 
 
 if __name__ == "__main__":

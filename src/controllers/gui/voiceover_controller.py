@@ -161,7 +161,11 @@ class VoiceoverGuiController(BaseController):
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
-            self._sync_everything(allow_autoload=False)
+            # При включении TTS автозагрузка должна сработать сразу, а не только
+            # при запуске приложения. Остальные изменения настроек лишь
+            # обновляют состояние UI и не должны повторно запускать модель.
+            allow_autoload = key == "USE_VOICEOVER" and bool(value)
+            self._sync_everything(allow_autoload=allow_autoload)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         self._ui(apply)
