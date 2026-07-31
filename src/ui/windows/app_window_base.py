@@ -69,7 +69,7 @@ class AppWindowBase(QMainWindow):
     hide_loading_popup_signal = pyqtSignal()
 
     clear_user_input_signal = pyqtSignal()
-    insert_user_input_signal = pyqtSignal(str)
+    insert_user_input_signal = pyqtSignal(dict)
     send_text_message_signal = pyqtSignal(str)
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
@@ -146,6 +146,12 @@ class AppWindowBase(QMainWindow):
         self._token_refresh_pending = False
         self._history_load_inflight = False
         self._pending_chat_error = None
+
+        # Отложенная автоотправка голоса: копим распознанное в поле ввода и
+        # отправляем всё разом, когда речь и печать замолчали на заданную паузу.
+        self._voice_autosend_timer = QTimer(self)
+        self._voice_autosend_timer.setSingleShot(True)
+        self._voice_autosend_timer.timeout.connect(self._on_voice_autosend_timeout)
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         from ui.app_icon import application_icon
@@ -408,6 +414,11 @@ class AppWindowBase(QMainWindow):
         self._chat_render_context.bind_chat_window(panel.chat_window)
         self.token_count_label = panel.token_count_label
         self.user_entry = panel.user_entry
+        try:
+            self.user_entry.textChanged.disconnect(self._on_user_entry_edited)
+        except TypeError:
+            pass
+        self.user_entry.textChanged.connect(self._on_user_entry_edited)
         self.attachment_label = panel.attachment_label
         self.attach_button = panel.attach_button
         self.send_screen_button = panel.send_screen_button
@@ -1089,10 +1100,37 @@ class AppWindowBase(QMainWindow):
         if self.user_entry:
             self.user_entry.clear()
 
-    def _on_insert_user_input(self, text: str):
-        if self.user_entry:
+    def _on_insert_user_input(self, data: dict):
+        if not self.user_entry:
+            return
+
+        text = str(data.get("text") or "")
+        if text:
             self.user_entry.insertPlainText(text + " ")
             self.user_entry.ensureCursorVisible()
+
+        # Поле ввода — и есть накопитель голоса: отправляем не отдельную фразу,
+        # а всё, что в нём лежит, включая напечатанное руками.
+        delay = float(data.get("autosend_after") or 0.0)
+        if delay > 0:
+            self._voice_autosend_timer.start(int(delay * 1000))
+        else:
+            self._voice_autosend_timer.stop()
+
+    def _on_user_entry_edited(self):
+        # Пока игрок печатает, отсчёт до автоотправки начинается заново — иначе
+        # таймер обрубил бы фразу на полуслове.
+        if self._voice_autosend_timer.isActive():
+            self._voice_autosend_timer.start()
+
+    def _on_voice_autosend_timeout(self):
+        if not self.user_entry or not self.user_entry.toPlainText().strip():
+            return
+        if not self._shell_actions.voice_autosend_ready():
+            # Ответ ещё генерируется — ждём следующего круга, текст не теряем.
+            self._voice_autosend_timer.start()
+            return
+        self.send_message()
 
     def _on_show_info_message(self, data: dict):
         title = data.get('title', 'Информация')

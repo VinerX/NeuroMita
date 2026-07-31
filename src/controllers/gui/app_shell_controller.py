@@ -9,6 +9,7 @@ from core.events import Events, get_event_bus
 from core.services import services, use
 from main_logger import logger
 from services.contracts import (
+    AudioStateService,
     CaptureService,
     CharacterRegistry,
     GameLinkService,
@@ -132,6 +133,13 @@ class AppShellController:
         if not explicit:
             return draft, True
         return f"{explicit}\n{draft}", True
+
+    def voice_autosend_ready(self) -> bool:
+        """Можно ли прямо сейчас отправить накопленный в поле ввода голос."""
+        if not self.backend_ready:
+            return False
+        audio = services().get_optional(AudioStateService)
+        return not (audio and audio.is_waiting_answer())
 
     def send_message(
         self,

@@ -157,7 +157,7 @@ class ServerController:
         eb.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed, weak=False)
         eb.subscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update, weak=False)
 
-        eb.subscribe(Events.Server.BROADCAST_ASR_TEXT, self._on_broadcast_asr_text, weak=False)
+        eb.subscribe(Events.Server.SEND_ASR_TEXT, self._on_send_asr_text, weak=False)
 
     def _unsubscribe_from_events(self):
         if self.event_bus and not self._destroyed:
@@ -170,8 +170,7 @@ class ServerController:
             eb.unsubscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status_changed)
             eb.unsubscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update)
 
-            asr_evt = getattr(Events.Server, "BROADCAST_ASR_TEXT", "broadcast_asr_text")
-            eb.unsubscribe(asr_evt, self._on_broadcast_asr_text)
+            eb.unsubscribe(Events.Server.SEND_ASR_TEXT, self._on_send_asr_text)
 
     def _init_server(self):
         from game_connections.server import ChatServerNew
@@ -512,19 +511,32 @@ class ServerController:
         if client_id and self.server:
             self.server.schedule_send_task_update(client_id, task)
 
-    def _on_broadcast_asr_text(self, event: Event):
+    def _on_send_asr_text(self, event: Event):
         if not self.server:
             return
         data = event.data or {}
         text = str(data.get("text") or "").strip()
         if not text:
             return
-        engine = str(data.get("engine") or "")
-        ts = data.get("ts", None)
+
+        client_id = self.server.primary_client_id()
+        if not client_id:
+            return
+
         try:
-            self.server.schedule_broadcast_asr_text(text=text, engine=engine, ts=ts)
-        except Exception:
-            pass
+            self.server.schedule_send_asr_text(
+                client_id,
+                text=text,
+                utterance_id=str(data.get("id") or ""),
+                engine=str(data.get("engine") or ""),
+                ts=data.get("ts", None),
+                final=bool(data.get("final", True)),
+                autosend=bool(data.get("autosend", False)),
+                delay_sec=float(data.get("delay_sec", 0.0) or 0.0),
+                merge_input=bool(data.get("merge_input", True)),
+            )
+        except Exception as exc:
+            logger.warning(f"Не удалось отправить asr_text клиенту {client_id}: {exc}")
 
     def _on_echo_chat_message_requested(self, event: Event):
         if self._destroyed:

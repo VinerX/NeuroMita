@@ -432,14 +432,46 @@ class ChatServerNew:
     def schedule_broadcast_loaded_settings(self, body: Dict[str, Any]) -> None:
         self.schedule_broadcast_json({"type": "loaded_settings", "body": body})
 
-    def schedule_broadcast_asr_text(self, text: str, engine: str = "", ts: float | None = None) -> None:
+    def primary_client_id(self) -> str:
+        """Клиент, которому адресуются одиночные push-сообщения (голос).
+
+        Соединений может быть несколько (второй запуск игры, тестовый клиент), а
+        реплика игрока должна породить ровно один ход — иначе broadcast создаст
+        по задаче на каждого. Берём самое свежее подключение: словарь хранит
+        порядок вставки."""
+        conns = self.active_connections
+        if not conns:
+            return ""
+        return next(reversed(conns))
+
+    def schedule_send_asr_text(
+        self,
+        client_id: str,
+        *,
+        text: str,
+        utterance_id: str,
+        engine: str = "",
+        ts: float | None = None,
+        final: bool = True,
+        autosend: bool = False,
+        delay_sec: float = 0.0,
+        merge_input: bool = True,
+    ) -> None:
         payload = {
             "type": "asr_text",
+            "id": str(utterance_id or ""),
             "text": str(text or ""),
             "engine": str(engine or ""),
             "ts": float(ts or time.time()),
+            "final": bool(final),
+            # Политику решает Python и кладёт прямо в сообщение: моду не нужно
+            # синхронизировать настройки, и переключение тумблера не гоняется с
+            # уже летящим текстом.
+            "autosend": bool(autosend),
+            "delay_sec": float(delay_sec),
+            "merge_input": bool(merge_input),
         }
-        self.schedule_broadcast_json(payload)
+        self.schedule_send_json(client_id, payload)
 
     def on_task_status_changed(self, task) -> None:
         try:

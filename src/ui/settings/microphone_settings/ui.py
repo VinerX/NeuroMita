@@ -110,12 +110,46 @@ def build_microphone_settings_ui(self, parent_layout):
     tr_set(self.mic_instant_checkbox, "Мгновенная отправка распознанного текста", "Send recognized text immediately", "setToolTip")
     root_lay.addWidget(make_row(_("Мгновенная отправка", "Instant send"), self.mic_instant_checkbox, label_w))
 
+    self.mic_instant_delay_checkbox = QCheckBox("")
+    self.mic_instant_delay_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_SEND_DELAY_ENABLED", False)))
+    tr_set(
+        self.mic_instant_delay_checkbox,
+        "Копить распознанное в поле ввода и отправлять после паузы, а не сразу",
+        "Collect recognized speech in the input field and send after a pause instead of immediately",
+        "setToolTip",
+    )
+    root_lay.addWidget(
+        make_row(_("Отправлять с паузой", "Send after pause"), self.mic_instant_delay_checkbox, label_w)
+    )
+
+    self.mic_instant_delay_spin = QDoubleSpinBox()
+    self.mic_instant_delay_spin.setRange(0.5, 30.0)
+    self.mic_instant_delay_spin.setValue(float(self.settings.get("MIC_INSTANT_SEND_DELAY_SEC", 3.0) or 3.0))
+    self.mic_instant_delay_spin.setSingleStep(0.5)
+    self.mic_instant_delay_spin.setDecimals(1)
+    self.mic_instant_delay_spin.setSuffix(" s")
+    self.mic_instant_delay_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    self.mic_instant_delay_spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    tr_set(
+        self.mic_instant_delay_spin,
+        "Сколько ждать тишины перед отправкой. Новая речь и печать в чате отсчёт перезапускают",
+        "How long to wait for silence before sending. New speech and typing restart the countdown",
+        "setToolTip",
+    )
+    # Строка с паузой нужна только при включённой отправке с паузой.
+    self.mic_instant_delay_row = make_row(
+        _("Пауза до отправки", "Pause before send"), self.mic_instant_delay_spin, label_w
+    )
+    self.mic_instant_delay_row.setVisible(self.mic_instant_delay_checkbox.isChecked())
+    self.mic_instant_delay_checkbox.toggled.connect(self.mic_instant_delay_row.setVisible)
+    root_lay.addWidget(self.mic_instant_delay_row)
+
     self.mic_instant_merge_input_checkbox = QCheckBox("")
     self.mic_instant_merge_input_checkbox.setChecked(bool(self.settings.get("MIC_INSTANT_MERGE_CHAT_INPUT", True)))
     tr_set(
         self.mic_instant_merge_input_checkbox,
-        "При мгновенной отправке добавлять текст из поля ввода",
-        "On instant send, include the typed chat input",
+        "При мгновенной отправке добавлять текст из поля ввода. При отправке с паузой текст из поля добавляется всегда",
+        "On instant send, include the typed chat input. With a pause, the typed text is always included",
         "setToolTip",
     )
     root_lay.addWidget(

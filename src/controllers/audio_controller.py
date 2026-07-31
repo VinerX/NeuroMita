@@ -60,26 +60,6 @@ class AudioController(AudioStateService):
         except Exception:
             pass
 
-    @staticmethod
-    def _audio_duration(path) -> float:
-        """Длительность аудиофайла в секундах (0.0 — определить не удалось)."""
-        try:
-            import soundfile as sf
-            info = sf.info(path)
-            if info.frames and info.samplerate:
-                return float(info.frames) / float(info.samplerate)
-        except Exception:
-            pass
-        try:
-            import wave
-            with wave.open(path, "rb") as w:
-                fr = w.getframerate()
-                if fr:
-                    return float(w.getnframes()) / float(fr)
-        except Exception:
-            pass
-        return 0.0
-
     def is_waiting_answer(self) -> bool:
         return bool(getattr(self, "waiting_answer", False))
 
@@ -252,9 +232,18 @@ class AudioController(AudioStateService):
                     }
                 })
 
-            is_connected = use(GameLinkService).is_connected()
+            # Звук уезжает в игру вместе с task_update — но только если задача
+            # вообще есть. Ответ, начатый из десктоп-чата при подключённой игре,
+            # задачи не имеет, и раньше его озвучка терялась: локальное
+            # воспроизведение пропускалось, а SET_PATCH_TO_SOUND_FILE никто не
+            # слушает. Решает наличие task_uid, а не сам факт связи.
+            delivered_to_game = bool(task_uid) and use(GameLinkService).is_connected()
 
-            if not is_connected and self.settings.get("VOICEOVER_LOCAL_CHAT"):
+            if delivered_to_game:
+                # Начало и конец воспроизведения сообщит сам мод (speech_state);
+                # гадать по длительности файла больше не нужно.
+                self._emit_show_voicing(voice_profile, character_id, message_id)
+            elif self.settings.get("VOICEOVER_LOCAL_CHAT"):
                 # Воспроизведение идёт в нашем процессе — точно знаем начало и
                 # конец, поэтому держим окно «Мита говорит» открытым на всю
                 # длительность play (см. SpeechController: ASR в это время
@@ -271,17 +260,6 @@ class AudioController(AudioStateService):
                     )
                 finally:
                     self._set_mita_speaking(False)
-            elif is_connected:
-                # Аудио проигрывает мод в игре — конец воспроизведения нам не
-                # виден. Прикидываем окно по длительности самого файла.
-                # Точный момент старта у мода тоже не виден (передача файла по
-                # TCP + запуск play), поэтому окно ASR и статус здесь —
-                # оценочные, но выставляются не раньше готовности файла.
-                self._emit_show_voicing(voice_profile, character_id, message_id)
-                dur = self._audio_duration(result_path)
-                if dur > 0:
-                    self.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {"duration": dur})
-                self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, result_path)
             else:
                 logger.info("Озвучка в локальном чате отключена.")
 

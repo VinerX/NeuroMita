@@ -131,12 +131,23 @@ class ChatController(BaseController):
         self.update_token_count()
 
     def _on_insert_text_to_input(self, event: Event):
-        text = (event.data or {}).get('text', '')
-        if not self.view:
+        data = event.data
+        if isinstance(data, dict):
+            text = str(data.get('text') or '')
+            autosend_after = float(data.get('autosend_after') or 0.0)
+        else:
+            # Правка/повтор сообщения кладёт в событие голую строку.
+            text = str(data or '')
+            autosend_after = 0.0
+
+        if not self.view or not text:
             return
 
         if hasattr(self.view, "insert_user_input_signal"):
-            self.view.insert_user_input_signal.emit(text)
+            self.view.insert_user_input_signal.emit({
+                "text": text,
+                "autosend_after": autosend_after,
+            })
         elif self.view.user_entry:
             QTimer.singleShot(0, lambda: self.view.user_entry.insertPlainText(text + " "))
 

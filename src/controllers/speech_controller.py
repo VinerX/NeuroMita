@@ -2,6 +2,7 @@ import os
 import time
 import re
 import threading
+import uuid
 from itertools import count
 from difflib import SequenceMatcher
 import sounddevice as sd
@@ -578,23 +579,19 @@ class SpeechController(SpeechService):
         return False
 
     def _on_mita_speaking_window(self, event: Event):
+        """Окно «Мита говорит»: локальное воспроизведение или speech_state от мода."""
         data = event.data or {}
-        now = time.monotonic()
-        if "active" in data:
-            if bool(data.get("active")):
-                self._mita_speaking = True
-            else:
-                # Закрыли открытое окно — держим ещё хвост на затухание/VAD.
-                self._mita_speaking = False
-                self._mita_speaking_until = max(self._mita_speaking_until, now + self._MUTE_TAIL_SEC)
-        if "duration" in data:
-            dur = 0.0
-            try:
-                dur = float(data.get("duration") or 0.0)
-            except Exception:
-                dur = 0.0
-            if dur > 0:
-                self._mita_speaking_until = max(self._mita_speaking_until, now + dur + self._MUTE_TAIL_SEC)
+        if "active" not in data:
+            return
+
+        if bool(data.get("active")):
+            self._mita_speaking = True
+        else:
+            # Закрыли открытое окно — держим ещё хвост на затухание/VAD.
+            self._mita_speaking = False
+            self._mita_speaking_until = max(
+                self._mita_speaking_until, time.monotonic() + self._MUTE_TAIL_SEC
+            )
 
     def _is_mita_speaking(self) -> bool:
         return self._mita_speaking or time.monotonic() < self._mita_speaking_until
@@ -619,22 +616,60 @@ class SpeechController(SpeechService):
         self._last_text_norm = self._normalize_asr_text(text)
         self._last_text_time = now
 
-        if use(GameLinkService).is_connected():
-            self.events_bus.emit(Events.Server.BROADCAST_ASR_TEXT, {
+        autosend, delay_sec = self._instant_send_policy()
+
+        # Ветки взаимоисключающие: у реплики игрока ровно один владелец. Раньше
+        # текст при подключённой игре уходил и в мод, и в десктоп-чат — игрок
+        # получал два хода из одной фразы.
+        if self._game_owns_player_turn():
+            logger.info(f"Распознано (в игру): {text}")
+            self.events_bus.emit(Events.Server.SEND_ASR_TEXT, {
+                "id": uuid.uuid4().hex,
                 "text": text,
                 "engine": str(self._asr_settings.get("engine", "") or ""),
                 "ts": time.time(),
+                "final": True,
+                "autosend": autosend,
+                "delay_sec": delay_sec,
+                "merge_input": bool(self.settings.get("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
             })
+            return
 
-        if bool(self.settings.get("MIC_INSTANT_SENT")):
+        logger.info(f"Распознано: {text}")
+        if autosend and delay_sec <= 0:
             audio = services().get_optional(AudioStateService)
-            waiting_answer = bool(audio and audio.is_waiting_answer())
-            if not waiting_answer:
+            if not (audio and audio.is_waiting_answer()):
                 self._send_instant(text)
-        else:
-            logger.info(f"Распознано: {text}")
-            self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": text})
+                return
+            # Ответ ещё генерируется: не теряем сказанное, а кладём в поле ввода.
 
+        self.events_bus.emit(Events.GUI.INSERT_TEXT_TO_INPUT, {
+            "text": text,
+            "autosend_after": delay_sec if autosend else 0.0,
+        })
+
+    def _instant_send_policy(self) -> tuple[bool, float]:
+        """(отправлять ли автоматически, пауза до отправки в секундах)."""
+        if not bool(self.settings.get("MIC_INSTANT_SENT")):
+            return False, 0.0
+        if not bool(self.settings.get("MIC_INSTANT_SEND_DELAY_ENABLED", False)):
+            return True, 0.0
+        try:
+            delay = float(self.settings.get("MIC_INSTANT_SEND_DELAY_SEC", 3.0) or 3.0)
+        except (TypeError, ValueError):
+            delay = 3.0
+        return True, max(0.0, delay)
+
+    def _game_owns_player_turn(self) -> bool:
+        """Ход игрока принадлежит моду: связь жива и запросы игры не заглушены.
+
+        При полной блокировке сервер отбросит create_task, порождённый
+        автоотправкой, поэтому в таком режиме голос остаётся в десктоп-чате."""
+        if not use(GameLinkService).is_connected():
+            return False
+        if not bool(self.settings.get("IGNORE_GAME_REQUESTS", False)):
+            return True
+        return str(self.settings.get("GAME_BLOCK_LEVEL", "Idle events")) != "All events"
 
     def _send_instant(self, text):
         # Через GUI-отправку, а не напрямую SEND_MESSAGE: так подхватываются

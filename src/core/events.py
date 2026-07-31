@@ -715,7 +715,7 @@ class Events:
         SEND_TASK_UPDATE = "send_task_update"
         LOAD_SERVER_SETTINGS = "load_server_settings"
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
-        BROADCAST_ASR_TEXT = "broadcast_asr_text"
+        SEND_ASR_TEXT = "send_asr_text"
 
     class Telegram:
         """События для взаимодействия с Telegram"""

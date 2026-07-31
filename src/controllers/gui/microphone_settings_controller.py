@@ -35,6 +35,7 @@ class MicrophoneSettingsController(BaseController):
     _EXTERNAL_TOGGLES: dict[str, str] = {
         "MIC_ACTIVE": "mic_active_checkbox",
         "MIC_INSTANT_SENT": "mic_instant_checkbox",
+        "MIC_INSTANT_SEND_DELAY_ENABLED": "mic_instant_delay_checkbox",
         "MIC_INSTANT_MERGE_CHAT_INPUT": "mic_instant_merge_input_checkbox",
         "MIC_MUTE_WHILE_SPEAKING": "mic_mute_while_speaking_checkbox",
     }
@@ -71,6 +72,11 @@ class MicrophoneSettingsController(BaseController):
         finally:
             checkbox.blockSignals(False)
 
+        # Сигналы гасим, чтобы значение не ушло обратно в настройки, но вид
+        # зависит от галки (скрытые строки) — его обновляем явно. Слоты
+        # контроллера сидят на stateChanged, петли не будет.
+        checkbox.toggled.emit(value)
+
     def _widgets_signature(self) -> tuple[int, ...] | None:
         v = self.view
         if not v:
@@ -82,6 +88,8 @@ class MicrophoneSettingsController(BaseController):
             "asr_refresh_button",
             "mic_active_checkbox",
             "mic_instant_checkbox",
+            "mic_instant_delay_checkbox",
+            "mic_instant_delay_spin",
             "mic_instant_merge_input_checkbox",
             "mic_mute_while_speaking_checkbox",
             "vad_apply_button",
@@ -127,6 +135,12 @@ class MicrophoneSettingsController(BaseController):
 
         safe_disconnect(v.mic_instant_checkbox.stateChanged, self._on_instant_toggled)
         v.mic_instant_checkbox.stateChanged.connect(self._on_instant_toggled)
+
+        safe_disconnect(v.mic_instant_delay_checkbox.stateChanged, self._on_instant_delay_toggled)
+        v.mic_instant_delay_checkbox.stateChanged.connect(self._on_instant_delay_toggled)
+
+        safe_disconnect(v.mic_instant_delay_spin.valueChanged, self._on_instant_delay_changed)
+        v.mic_instant_delay_spin.valueChanged.connect(self._on_instant_delay_changed)
 
         safe_disconnect(v.mic_instant_merge_input_checkbox.stateChanged, self._on_instant_merge_input_toggled)
         v.mic_instant_merge_input_checkbox.stateChanged.connect(self._on_instant_merge_input_toggled)
@@ -592,6 +606,12 @@ class MicrophoneSettingsController(BaseController):
 
     def _on_instant_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_SENT", bool(state))
+
+    def _on_instant_delay_toggled(self, state: int):
+        self._save_setting("MIC_INSTANT_SEND_DELAY_ENABLED", bool(state))
+
+    def _on_instant_delay_changed(self, value: float):
+        self._save_setting("MIC_INSTANT_SEND_DELAY_SEC", float(value))
 
     def _on_instant_merge_input_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_MERGE_CHAT_INPUT", bool(state))
