@@ -30,6 +30,14 @@ from controllers.gui.settings_data_prefetch import (
 _CURRENT_PROVIDER_ITEM = ("Текущий", "Current", "Текущий")
 
 
+def _emit_index_changed() -> None:
+    """Сообщить UI, что состав векторного индекса изменился (статус «Индекс: ...»)."""
+    try:
+        get_event_bus().emit(Events.RAG.INDEX_CHANGED)
+    except Exception:
+        pass
+
+
 def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWorker:
     """Factory for single-character reindex workers."""
     character_id = str(character_id or "").strip()
@@ -1526,6 +1534,7 @@ def run_reindexing(gui):
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
         gui._reindex_worker = None
+        _emit_index_changed()
 
     def on_error(msg):
         if getattr(gui, "_reindex_cancelled", False):
@@ -1654,6 +1663,7 @@ def run_reindexing_all(gui):
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
         _cleanup()
+        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1781,6 +1791,7 @@ def run_full_reindexing(gui):
         )
         gui._full_reindex_worker = None
         gui._full_reindex_cancelled = False
+        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1886,6 +1897,7 @@ def run_full_reindexing_all(gui):
         )
         gui._full_reindex_all_worker = None
         gui._full_reindex_all_cancelled = False
+        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:

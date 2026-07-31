@@ -801,6 +801,9 @@ class Events:
         GET_EMBEDDING = "rag_get_embedding"
         GET_EMBEDDINGS = "rag_get_embeddings"
         MODEL_CHANGED = "rag_model_changed"
+        # Состав векторного индекса изменилось (пере/до-индексация, чистка).
+        # Уведомление для UI-статусов «Индекс: ...».
+        INDEX_CHANGED = "rag_index_changed"
 
     class Install:
         """Унифицированные события для менеджера установок"""

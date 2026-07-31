@@ -60,6 +60,8 @@ class UiTopic(StrEnum):
     INSTALLABLE_INSTALL = "installable_install"
     INSTALLABLE_UNINSTALL = "installable_uninstall"
 
+    RAG_INDEX_CHANGED = "rag_index_changed"
+
     MODEL_FAILED = "on_failed_response"
     MODEL_STARTED = "on_started_response_generation"
     MODEL_SUCCESS = "on_successful_response"
