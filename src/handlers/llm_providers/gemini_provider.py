@@ -4,6 +4,7 @@ import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from main_logger import logger
+from core.message_content import MessageContentCodec
 from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
 from handlers.llm_providers.param_mapper import filter_jsonable_params
 from schemas.structured_response import StructuredResponse
@@ -163,13 +164,20 @@ class GeminiProvider(BaseProvider):
             for item in content:
                 if not isinstance(item, dict):
                     continue
-                if item.get("type") == "text":
+                item_type = MessageContentCodec.part_type(item)
+                if item_type == "text":
                     parts.append({"text": item.get("text", "")})
-                elif item.get("type") == "image_url":
+                elif item_type == "image_url":
                     image_url = item.get("image_url", {}).get("url", "")
                     if "," in image_url:
                         base64_data = image_url.split(",", 1)[1]
                         parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64_data}})
+                else:
+                    # Незнакомую часть Gemini не примет, но и терять её молча нельзя:
+                    # отдаём плейсхолдером (кодек залогирует тип один раз).
+                    placeholder = MessageContentCodec.placeholder(item)
+                    if placeholder:
+                        parts.append({"text": placeholder})
         elif isinstance(content, dict):
             if "functionCall" in content or "functionResponse" in content:
                 parts.append(content)

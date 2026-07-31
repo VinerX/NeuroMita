@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any, Optional, ClassVar
 
 from main_logger import logger
+from core.message_content import MessageContentCodec
 from managers.database_manager import DatabaseManager
 from managers.character_scoped_service import CharacterScopedService
 
@@ -491,33 +492,8 @@ class HistoryManager(CharacterScopedService):
         return meta
 
     def _extract_text_for_embedding(self, content: Any) -> str:
-        """
-        Делает текст для эмбеддинга из content:
-        - str -> str
-        - list[{"type":"text"}...] -> склеиваем только text части
-        - остальное -> строковое представление (как fallback)
-        """
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for it in content:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("type") == "text":
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    s = str(txt or "").strip()
-                    if s:
-                        parts.append(s)
-            return "\n".join(parts).strip()
-        try:
-            return json.dumps(content, ensure_ascii=False).strip()
-        except Exception:
-            return str(content).strip()
+        """Текст для эмбеддинга. Разбор частей — общий (MessageContentCodec)."""
+        return MessageContentCodec.to_embedding_text(content)
 
     # ---------------------------------------------------------------------
     # Serialization: message <-> db
@@ -539,32 +515,10 @@ class HistoryManager(CharacterScopedService):
             db_content = raw_content
 
         elif isinstance(raw_content, list):
-            text_parts = []
-            other_parts = []
-
-            for item in raw_content:
-                if not isinstance(item, dict):
-                    continue
-
-                item_type = item.get("type")
-                if item_type == "text":
-                    text_parts.append(item.get("text", ""))
-                elif item_type == "image_url":
-                    image_url_dict = item.get("image_url", {}) or {}
-                    url_str = image_url_dict.get("url", "")
-
-                    if isinstance(url_str, str) and url_str.startswith("data:image"):
-                        saved_path = self._save_base64_image_to_disk(url_str)
-                        new_item = item.copy()
-                        new_item["image_url"] = image_url_dict.copy()
-                        new_item["image_url"]["url"] = saved_path
-                        other_parts.append(new_item)
-                    else:
-                        other_parts.append(item)
-                else:
-                    other_parts.append(item)
-
-            db_content = "\n".join(text_parts)
+            db_content, other_parts = MessageContentCodec.split_for_db(
+                raw_content,
+                map_image_url=self._save_base64_image_to_disk,
+            )
             if other_parts:
                 meta_dict["multimodal_parts"] = other_parts
             meta_dict["is_multimodal_list"] = True
@@ -609,11 +563,6 @@ class HistoryManager(CharacterScopedService):
         ui_images: list[dict] = []   # populated inside the if-block when needed
 
         if meta.get("is_multimodal_list", False) or meta.get("multimodal_parts"):
-            reconstructed_list = []
-
-            if db_content:
-                reconstructed_list.append({"type": "text", "text": str(db_content)})
-
             # Resolve stored description: prefer new dict format, fall back to legacy string.
             # Dict format: {"normal": "...", "detailed": "..."} — pick best available variant.
             _desc_dict = meta.get("image_descriptions")
@@ -630,42 +579,21 @@ class HistoryManager(CharacterScopedService):
             elif isinstance(_desc_legacy, str) and _desc_legacy:
                 stored_description = _desc_legacy
 
-            if "multimodal_parts" in meta:
-                parts = meta.get("multimodal_parts") or []
-                for part in parts:
-                    if not isinstance(part, dict):
-                        continue
+            def _collect_ui_image(clean_part: dict, stored_part: dict) -> None:
+                final_url = (clean_part.get("image_url") or {}).get("url", "")
+                if stored_description and final_url:
+                    ui_images.append({
+                        "url": final_url,
+                        "description": stored_description,
+                        "display_role": stored_part.get("display_role"),
+                    })
 
-                    part_type = part.get("type")
-                    if part_type == "image_url":
-                        url = part.get("image_url", {}).get("url", "")
-                        final_url = url
-                        is_local = part.get("is_local_file", False)
-                        if is_local or (url and not str(url).startswith("http") and not str(url).startswith("data:")):
-                            final_url = self._image_file_to_base64(str(url))
-
-                        clean_part = {
-                            "type": "image_url",
-                            "image_url": {"url": final_url}
-                        }
-                        if "detail" in (part.get("image_url") or {}):
-                            clean_part["image_url"]["detail"] = part["image_url"]["detail"]
-                        if part.get("display_role"):
-                            clean_part["display_role"] = part.get("display_role")
-
-                        reconstructed_list.append(clean_part)
-
-                        if stored_description and final_url:
-                            ui_images.append({
-                                "url": final_url,
-                                "description": stored_description,
-                                "display_role": part.get("display_role"),
-                            })
-
-                    elif part_type == "text":
-                        reconstructed_list.append({"type": "text", "text": part.get("text", "")})
-
-            content = reconstructed_list
+            content = MessageContentCodec.merge_from_db(
+                db_content,
+                meta.get("multimodal_parts") or [],
+                map_image_url=self._image_file_to_base64,
+                on_image=_collect_ui_image,
+            )
 
         msg = {"role": role, "content": content}
 

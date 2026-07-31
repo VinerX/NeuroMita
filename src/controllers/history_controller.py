@@ -11,6 +11,7 @@ from io import BytesIO
 from core.character_locks import character_lock
 from core.events import get_event_bus, Events, Event
 from core.executors import Pools, executors
+from core.message_content import MessageContentCodec
 from core.response_status import response_status_kind
 from core.services import services, use
 from main_logger import logger
@@ -1289,27 +1290,8 @@ class HistoryController(HistoryService):
         return text[:keep].rstrip() + "\n...[truncated]"
 
     def _content_to_plain_text(self, content: Any) -> str:
-        if isinstance(content, str):
-            return content.strip()
-
-        if isinstance(content, list):
-            parts: List[str] = []
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                item_type = str(item.get("type") or "")
-                if item_type == "text":
-                    value = item.get("text")
-                    if value is None:
-                        value = item.get("content", "")
-                    text = str(value or "").strip()
-                    if text:
-                        parts.append(text)
-                elif item_type == "image_url":
-                    parts.append("[image]")
-            return " ".join(part for part in parts if part).strip()
-
-        return str(content or "").strip()
+        """Текст для промпта сжатия. Разбор частей — общий (MessageContentCodec)."""
+        return MessageContentCodec.to_prompt_text(content)
 
     def _build_local_compression_fallback(
         self,
@@ -1530,31 +1512,7 @@ class HistoryController(HistoryService):
     @staticmethod
     def _prepend_content_prefix(content, prefix: str):
         """Клеит префикс к тексту сообщения, не теряя картинки в мультимодальном content."""
-        if isinstance(content, str):
-            return prefix + content
-
-        if isinstance(content, list):
-            new_chunks = []
-            inserted = False
-            for it in content:
-                if isinstance(it, dict) and it.get("type") == "text" and not inserted:
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    it2 = dict(it)
-                    if "text" in it2:
-                        it2["text"] = prefix + str(txt or "")
-                    else:
-                        it2["content"] = prefix + str(txt or "")
-                    new_chunks.append(it2)
-                    inserted = True
-                else:
-                    new_chunks.append(it)
-            if not inserted:
-                new_chunks.insert(0, {"type": "text", "text": prefix})
-            return new_chunks
-
-        return prefix + str(content)
+        return MessageContentCodec.prepend_text(content, prefix)
 
 
     def _time_gap_marker_threshold_seconds(self) -> float:
@@ -1630,21 +1588,7 @@ class HistoryController(HistoryService):
 
 
     def _has_visible_message_content(self, content: Any) -> bool:
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            for it in content:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("type") == "text":
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    if str(txt or "").strip():
-                        return True
-                if it.get("type") == "image_url":
-                    return True
-        return False
+        return MessageContentCodec.has_visible_content(content)
 
     def _is_dialog_message(self, message: Dict[str, Any]) -> bool:
         if not isinstance(message, dict):

@@ -2,27 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from core.message_content import MessageContentCodec
+
 
 class HistoryUiProjector:
     def __init__(self, resolve_name: Optional[Callable[[str], str]] = None):
         self._resolve_name = resolve_name
 
     def _has_visible_user_text(self, content: Any) -> bool:
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            for it in content:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("type") == "text":
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    if str(txt or "").strip():
-                        return True
-                if it.get("type") == "image_url":
-                    return True
-        return False
+        return MessageContentCodec.has_visible_content(content)
 
     def _name(self, cid: str) -> str:
         cid = str(cid or "")
