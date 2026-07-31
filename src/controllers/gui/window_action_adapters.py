@@ -80,6 +80,11 @@ class ShellActionsAdapter(_BoundActions):
             return False, False
         return self._target.voice_model_state(model_id)
 
+    def voice_autosend_ready(self) -> bool:
+        if self._target is None:
+            return False
+        return bool(self._target.voice_autosend_ready())
+
 
 class WindowActionsAdapter(_BoundActions):
     def reopen_install_logs(self) -> None:
