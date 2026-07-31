@@ -59,6 +59,9 @@ class SpeechController(SpeechService):
         self._desired_generation = 0
         self._applied_generation = 0
         self._reconcile_pending = False
+        # Явный перезапуск (сменили микрофон): движок тот же, но живой цикл надо
+        # поднять заново.
+        self._restart_requested = False
         # Движок, загруженный в SpeechRecognition, и движок живого цикла
         # (None — распознавание не запущено).
         self._configured_engine: str | None = None
@@ -344,11 +347,14 @@ class SpeechController(SpeechService):
     def _reconcile_once(self) -> None:
         desired_active = self._desired_mic_active()
         desired_engine = self._desired_engine()
+        with self._state_lock:
+            force_restart = self._restart_requested
+            self._restart_requested = False
 
-        # Живой цикл держит старый распознаватель: и выключение, и смена движка
-        # начинаются с остановки.
+        # Живой цикл держит старый распознаватель: выключение, смена движка и
+        # явный перезапуск (сменили микрофон) начинаются с остановки.
         if self._running_engine is not None and (
-            not desired_active or self._running_engine != desired_engine
+            not desired_active or force_restart or self._running_engine != desired_engine
         ):
             self._stop_running()
 
@@ -393,12 +399,7 @@ class SpeechController(SpeechService):
                 )
             })
 
-            try:
-                if self.settings:
-                    self.settings.set("MIC_ACTIVE", False)
-                    self.settings.save_settings()
-            except Exception:
-                pass
+            self._set_mic_desired(False)
 
             try:
                 self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
@@ -424,12 +425,7 @@ class SpeechController(SpeechService):
         включённым и чекбокс «микрофон» горел при мёртвом распознавании."""
         self.mic_recognition_active = False
         self.asr_is_ready = False
-        try:
-            if self.settings and bool(self.settings.get("MIC_ACTIVE", False)):
-                self.settings.set("MIC_ACTIVE", False)
-                self.settings.save_settings()
-        except Exception:
-            pass
+        self._set_mic_desired(False)
         try:
             self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
         except Exception:
@@ -667,52 +663,45 @@ class SpeechController(SpeechService):
                 self.settings.save_settings()
             logger.info(f"Выбран микрофон: {name} (ID: {dev_id})")
 
-    def _on_start_speech_recognition(self, event: Event):
-        dev_id = event.data.get('device_id', self.device_id)
-        loop_service = use(LoopService)
-        if not loop_service.is_running():
-            logger.error("Не удалось получить event loop для запуска распознавания речи")
-            self._handle_start_failure()
+    # Команды START/STOP/RESTART меняют ЖЕЛАЕМОЕ состояние и будят реконсилятор,
+    # а не дёргают движок сами. Прямой старт не знал текущего MIC_ACTIVE: пока
+    # он ждал остановки, пользователь успевал выключить микрофон, реконсилятор
+    # применял выключение — и протухшая команда поднимала распознавание при
+    # снятом чекбоксе. Замок это не лечит: он выстраивает операции в очередь, но
+    # не отменяет устаревшее намерение. Владелец жизненного цикла ровно один.
+    def _set_mic_desired(self, active: bool) -> None:
+        if not self.settings:
             return
+        try:
+            if bool(self.settings.get("MIC_ACTIVE", False)) != bool(active):
+                self.settings.set("MIC_ACTIVE", bool(active))
+                self.settings.save_settings()
+        except Exception as e:
+            logger.error(f"Не удалось записать MIC_ACTIVE={active}: {e}", exc_info=True)
 
-        # Явная команда «включить» тоже проходит через общий замок жизненного
-        # цикла: иначе она разъезжается с реконсилятором так же, как раньше
-        # разъезжались старт и стоп.
-        with self._lifecycle_lock:
-            self.asr_is_ready = False
-            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop_service.loop()))
-            self.mic_recognition_active = started
-            self._running_engine = self._desired_engine() if started else None
-        if not started:
-            self._handle_start_failure()
+    def _on_start_speech_recognition(self, event: Event):
+        dev_id = (event.data or {}).get('device_id')
+        if dev_id is not None:
+            self.device_id = dev_id
+        self._set_mic_desired(True)
+        self._request_reconcile("explicit start")
 
     def _on_stop_speech_recognition(self, _event: Event):
-        with self._lifecycle_lock:
-            SpeechRecognition.speech_recognition_stop()
-            # Остановка ждёт движок несколько секунд, и за это время он мог сам
-            # поднять живой цикл заново (перезапуск воркера переигрывает start_live).
-            # Гасить флаги вслепую нельзя: статус залипнет на «не готов» при
-            # работающем распознавании.
-            if SpeechRecognition._is_running:
-                return
-            self.mic_recognition_active = False
-            self.asr_is_ready = False
-            self._running_engine = None
+        # Движок остановился сам (ошибка рантайма) или остановки просит внешний
+        # код — в обоих случаях микрофон должен быть выключен и в настройках,
+        # иначе чекбокс горит при мёртвом распознавании.
+        self.mic_recognition_active = False
+        self.asr_is_ready = False
+        self._set_mic_desired(False)
+        self._request_reconcile("explicit stop")
 
     def _on_restart_speech_recognition(self, event: Event):
-        dev_id = event.data.get('device_id', self.device_id)
-
-        def restart():
-            try:
-                self.events_bus.emit(Events.Speech.STOP_SPEECH_RECOGNITION)
-                SpeechRecognition._stopped_event.wait(timeout=5.0)
-                self.events_bus.emit(Events.Speech.START_SPEECH_RECOGNITION, {'device_id': dev_id})
-            except Exception as e:
-                logger.error(f"Ошибка перезапуска распознавания: {e}")
-
-        task_supervisor().start_thread(
-            self, "speech-restart", restart, replace=True
-        )
+        dev_id = (event.data or {}).get('device_id')
+        if dev_id is not None:
+            self.device_id = dev_id
+        with self._state_lock:
+            self._restart_requested = True
+        self._request_reconcile("explicit restart")
 
     def _on_get_microphone_list(self, event: Event):
         data = event.data or {}

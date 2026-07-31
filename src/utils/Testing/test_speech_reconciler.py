@@ -22,6 +22,7 @@ if str(PROJECT_SRC) not in sys.path:
 
 import controllers.speech_controller as speech_module
 from controllers.speech_controller import SpeechController
+from core.events import Event
 
 
 class _FakeSettings:
@@ -103,6 +104,7 @@ class _SpeechReconcilerCase(unittest.TestCase):
         controller._configured_engine = "google"
         controller._running_engine = None
         controller._shutting_down = False
+        controller._restart_requested = False
         controller._task_seq = count(1)
 
         # Заглушка ровно на «запустить движок»: проверяем логику согласования,
@@ -194,6 +196,60 @@ class SpeechReconcilerTests(_SpeechReconcilerCase):
         self.assertEqual(recognition.applied, ["vosk"])
         self.assertTrue(recognition.running)
         self.assertEqual(controller._running_engine, "vosk")
+
+    def test_explicit_restart_does_not_revive_a_disabled_mic(self):
+        """Смена микрофона + выключение тумблера: перезапуск не должен победить.
+
+        Раньше restart был отдельным потоком: он останавливал ASR, ждал до пяти
+        секунд и безусловно слал прямой start, ничего не зная про актуальный
+        MIC_ACTIVE. Микрофон включался при снятом чекбоксе.
+        """
+        controller, recognition, settings = self._make(start_delay=0.2)
+        controller._reconcile_once()
+        self.assertTrue(recognition.running)
+
+        controller._on_restart_speech_recognition(Event("restart", {"device_id": 3}))
+        settings.set("MIC_ACTIVE", False)
+        controller._request_reconcile("off")
+
+        self.assertTrue(self._wait_settled(controller))
+        self.assertFalse(recognition.running, "перезапуск не должен пережить выключение")
+        self.assertFalse(controller.mic_recognition_active)
+        self.assertEqual(controller.device_id, 3)
+
+    def test_explicit_restart_reopens_the_engine_when_mic_stays_on(self):
+        controller, recognition, _ = self._make()
+        controller._reconcile_once()
+
+        controller._on_restart_speech_recognition(Event("restart", {"device_id": 7}))
+
+        self.assertTrue(self._wait_settled(controller))
+        self.assertEqual(recognition.events, ["start", "stop", "start"])
+        self.assertTrue(recognition.running)
+        self.assertEqual(controller.device_id, 7)
+
+    def test_explicit_stop_turns_the_setting_off(self):
+        """STOP приходит от движка при ошибке рантайма: чекбокс не должен врать."""
+        controller, recognition, settings = self._make()
+        controller._reconcile_once()
+
+        controller._on_stop_speech_recognition(Event("stop", {}))
+
+        self.assertTrue(self._wait_settled(controller))
+        self.assertFalse(settings.get("MIC_ACTIVE"))
+        self.assertFalse(recognition.running)
+
+    def test_explicit_start_turns_the_setting_on(self):
+        controller, recognition, settings = self._make(mic_active=False)
+        controller._reconcile_once()
+        self.assertFalse(recognition.running)
+
+        controller._on_start_speech_recognition(Event("start", {"device_id": 2}))
+
+        self.assertTrue(self._wait_settled(controller))
+        self.assertTrue(settings.get("MIC_ACTIVE"))
+        self.assertTrue(recognition.running)
+        self.assertEqual(controller.device_id, 2)
 
     def test_shutdown_flag_keeps_the_mic_off(self):
         controller, recognition, _ = self._make()
