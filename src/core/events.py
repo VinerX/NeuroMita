@@ -109,6 +109,10 @@ class EventBus:
         self._subscribers: Dict[str, List[Any]] = {}
         self._lock = threading.RLock()
         self._running = True
+        self._open_dispatchers()
+        self._dropped = 0
+
+    def _open_dispatchers(self) -> None:
         self._critical = SerialDispatcher(
             "event-critical",
             lanes=4,
@@ -124,7 +128,6 @@ class EventBus:
             lanes=8,
             capacity_per_lane=4096,
         )
-        self._dropped = 0
 
     def subscribe(
         self,
@@ -290,6 +293,22 @@ class EventBus:
         self._critical.close(drain=True, timeout=3.0)
         self._ordered.close(drain=True, timeout=3.0)
 
+    def restart(self) -> None:
+        """Поднимает шину обратно, сохраняя объект и подписки.
+
+        Подписчики (контроллеры) держат ссылку на конкретный экземпляр шины и
+        подписаны именно на него. Заменить глобальную шину новым объектом —
+        значит осиротить их всех разом: подписки остались на погашенной шине,
+        а события пошли в новую. Поэтому «сброс» — это перезапуск того же
+        объекта: закрытые диспетчеры открываются заново, подписки не трогаем.
+        """
+        with self._lock:
+            if self._running:
+                return
+            self._open_dispatchers()
+            self._dropped = 0
+            self._running = True
+
     def _dispatch_event(
         self,
         subscribers: tuple[Callable[..., Any], ...] | list[Callable[..., Any]],
@@ -393,39 +412,52 @@ class EventBus:
 
 _global_event_bus: Optional[EventBus] = None
 _event_bus_shutdown = False
+# Один замок на весь жизненный цикл глобальной шины: создание, гашение и
+# перезапуск идут с разных потоков (GUI, headless-прогон, финализаторы).
+_event_bus_lifecycle_lock = threading.RLock()
 
 
 def get_event_bus() -> EventBus:
     global _global_event_bus
-    if _global_event_bus is None:
-        _global_event_bus = EventBus()
-        if _event_bus_shutdown:
-            _global_event_bus.shutdown()
-    return _global_event_bus
+    with _event_bus_lifecycle_lock:
+        if _global_event_bus is None:
+            _global_event_bus = EventBus()
+            if _event_bus_shutdown:
+                _global_event_bus.shutdown()
+        return _global_event_bus
 
 
 def shutdown_event_bus() -> None:
     """Гасит шину окончательно: поздние emit после выхода уже ничего не запускают."""
-    global _global_event_bus, _event_bus_shutdown
-    _event_bus_shutdown = True
-    if _global_event_bus is not None:
-        _global_event_bus.shutdown()
+    global _event_bus_shutdown
+    with _event_bus_lifecycle_lock:
+        _event_bus_shutdown = True
+        if _global_event_bus is not None:
+            _global_event_bus.shutdown()
 
 
 def reset_event_bus() -> EventBus:
-    """Заменяет шину на новую живую (headless-прогоны, тесты).
+    """Оживляет шину (headless-прогоны, тесты), НЕ меняя её identity.
 
     Без этого связка shutdown_event_bus() + get_event_bus() отдаёт мёртвую шину:
     флаг остановки липкий, и любая новая шина гасится прямо в конструкторе, а
     try_emit молча отбрасывает события — уведомления (фоновое сжатие, граф)
     просто не доезжают.
+
+    Раньше здесь создавался новый объект шины. Но контроллеры сохраняют ссылку
+    (`self.event_bus = get_event_bus()`) и подписываются на конкретный экземпляр:
+    после подмены они оставались подписанными на погашенную шину, а события
+    уходили в новую — молча, без единой ошибки. Поэтому объект тот же, а
+    поднимается он через restart().
     """
     global _global_event_bus, _event_bus_shutdown
-    if _global_event_bus is not None:
-        _global_event_bus.shutdown()
-    _event_bus_shutdown = False
-    _global_event_bus = EventBus()
-    return _global_event_bus
+    with _event_bus_lifecycle_lock:
+        _event_bus_shutdown = False
+        if _global_event_bus is None:
+            _global_event_bus = EventBus()
+        else:
+            _global_event_bus.restart()
+        return _global_event_bus
 
 
 def subscribe(

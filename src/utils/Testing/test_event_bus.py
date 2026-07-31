@@ -301,6 +301,48 @@ def test_reset_event_bus_returns_live_bus_after_shutdown() -> None:
         events._global_event_bus, events._event_bus_shutdown = saved_bus, saved_flag
 
 
+def test_reset_keeps_controllers_subscribed() -> None:
+    """Контроллер держит ссылку на шину — сброс не должен его осиротить.
+
+    Раньше reset_event_bus() создавал НОВЫЙ объект: подписки контроллеров
+    оставались на погашенной шине, а события уходили в новую. Молча, без ошибок.
+    """
+    import core.events as events
+
+    saved_bus, saved_flag = events._global_event_bus, events._event_bus_shutdown
+    try:
+        events._global_event_bus = None
+        events._event_bus_shutdown = False
+
+        # Так делает любой контроллер в __init__.
+        class _Controller:
+            def __init__(self) -> None:
+                self.event_bus = events.get_event_bus()
+                self.received: list[str] = []
+                self.event_bus.subscribe("notification", self._on_event, weak=False)
+
+            def _on_event(self, event) -> None:
+                self.received.append(event.name)
+
+        controller = _Controller()
+        events.shutdown_event_bus()
+        bus = events.reset_event_bus()
+
+        assert bus is controller.event_bus
+        assert bus.try_emit("notification") is True
+        assert bus.flush(1.0)
+        assert controller.received == ["notification"]
+
+        # И наоборот: emit через сохранённую ссылку доезжает до глобальной шины.
+        assert controller.event_bus.try_emit("notification") is True
+        assert events.get_event_bus().flush(1.0)
+        assert controller.received == ["notification", "notification"]
+    finally:
+        if events._global_event_bus is not None:
+            events._global_event_bus.shutdown()
+        events._global_event_bus, events._event_bus_shutdown = saved_bus, saved_flag
+
+
 def test_legacy_sync_flag_never_runs_subscriber_inline() -> None:
     bus = EventBus()
     entered = threading.Event()
