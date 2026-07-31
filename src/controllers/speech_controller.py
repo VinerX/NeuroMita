@@ -2,6 +2,7 @@ import os
 import time
 import re
 import threading
+from itertools import count
 from difflib import SequenceMatcher
 import sounddevice as sd
 
@@ -45,9 +46,29 @@ class SpeechController(SpeechService):
         self.events_bus = get_event_bus()
         self.asr_settings = ensure_asr_settings_service()
 
-        # Старт и стоп распознавания идут с разных рабочих потоков; без общего
-        # замка они наезжают друг на друга при быстром щёлканье тумблером.
+        # Старт и стоп — не два независимых задания, а одно: привести реальное
+        # состояние микрофона к желаемому (MIC_ACTIVE + выбранный движок).
+        # Раньше «стоп» и «старт» были разными потоками, и общий замок лишь
+        # выстраивал их в очередь: протухший старт, дождавшись замка, включал
+        # микрофон обратно уже после выключения. Теперь замок держит один
+        # реконсилятор, который перед каждым шагом заново читает желаемое
+        # состояние, а поколение (_desired_generation) гарантирует, что после
+        # любого изменения будет ещё один проход.
         self._lifecycle_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._desired_generation = 0
+        self._applied_generation = 0
+        self._reconcile_pending = False
+        # Движок, загруженный в SpeechRecognition, и движок живого цикла
+        # (None — распознавание не запущено).
+        self._configured_engine: str | None = None
+        self._running_engine: str | None = None
+        self._shutting_down = False
+        # Имена фоновых задач обязаны быть уникальными: супервизор считает
+        # совпадение имени попыткой запустить вторую копию и бросает RuntimeError.
+        # Метка времени тут не годится — на Windows монотонные часы тикают раз в
+        # ~15 мс, и два быстрых щелчка тумблером давали одно и то же имя.
+        self._task_seq = count(1)
 
         self._glossary_lock = threading.RLock()
         self._glossary_cache: list[dict] | None = None
@@ -183,20 +204,12 @@ class SpeechController(SpeechService):
         except Exception:
             pass
 
+        self._configured_engine = engine
         logger.info(f"Тип распознавателя установлен на: {engine}")
         if self.selected_microphone:
             logger.info(f"Загружен микрофон из настроек: {self.selected_microphone} (ID: {self.device_id})")
 
-        if self.settings.get("MIC_ACTIVE", False) and not self.mic_recognition_active:
-            def _delayed_start():
-                try:
-                    with self._lifecycle_lock:
-                        self._start_maybe_install()
-                except Exception as e:
-                    logger.error(f"Автозапуск распознавания не удался: {e}")
-            task_supervisor().start_thread(
-                self, "speech-delayed-start", _delayed_start, replace=True
-            )
+        self._request_reconcile("settings snapshot")
 
     # ——— settings changed
     def _on_setting_changed(self, change):
@@ -204,31 +217,22 @@ class SpeechController(SpeechService):
         value = change.value
 
         if key == "MIC_ACTIVE":
-            if bool(value):
-                self._start_maybe_install_async()
-            else:
-                # Флаги гасим сразу, чтобы статус не врал, а сам стоп уводим с
-                # полосы наблюдателей: он ждёт остановки live-цикла до 8 секунд.
+            if not bool(value):
+                # Флаги гасим сразу, чтобы статус не врал; сам стоп ждёт живой
+                # цикл до 8 секунд и уходит в реконсилятор с полосы наблюдателей.
                 self.mic_recognition_active = False
                 self.asr_is_ready = False
-                self._stop_recognition_async()
+            self._request_reconcile(f"MIC_ACTIVE={bool(value)}")
             self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         elif key == "RECOGNIZER_TYPE":
             engine = str(value)
-            current = self._asr_settings.get("engine", "google")
-
-            if engine == current:
-                logger.info(f"Тип распознавателя установлен на: {engine}")
-                SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
-                return
-
             self.asr_settings.set_selected_engine(engine)
-            was_active = self.mic_recognition_active
-            if was_active:
-                self.mic_recognition_active = False
-                self.asr_is_ready = False
-            self._switch_recognizer_async(engine, was_active)
+            # Настройки движка могли поменяться и без смены самого движка —
+            # заставляем реконсилятор перезалить их в SpeechRecognition.
+            with self._state_lock:
+                self._configured_engine = None
+            self._request_reconcile(f"RECOGNIZER_TYPE={engine}")
 
         elif key in ("SILENCE_THRESHOLD", "VAD_THRESHOLD"):
             try:
@@ -272,56 +276,107 @@ class SpeechController(SpeechService):
             except Exception:
                 pass
 
-    def _start_maybe_install_async(self):
-        """Run the (potentially slow) ASR start off the caller's thread.
+    # ——— реконсилятор состояния микрофона
+    def _desired_mic_active(self) -> bool:
+        if self._shutting_down or not self.settings:
+            return False
+        try:
+            return bool(self.settings.get("MIC_ACTIVE", False))
+        except Exception:
+            return False
 
-        Settings observers may run on the caller thread; starting ASR loads a
-        model and can block for many seconds. Always do it on a worker thread."""
-        def _worker():
-            try:
-                with self._lifecycle_lock:
-                    self._start_maybe_install()
-            except Exception as e:
-                logger.error(f"Запуск распознавания не удался: {e}")
+    def _desired_engine(self) -> str:
+        return str(self._asr_settings.get("engine", "google") or "google")
+
+    def _task_name(self, prefix: str) -> str:
+        return f"{prefix}-{next(self._task_seq)}"
+
+    def _request_reconcile(self, reason: str = "") -> None:
+        """Просит привести микрофон к текущему желаемому состоянию.
+
+        Поколение растёт при каждом запросе: реконсилятор, уже держащий замок,
+        обязательно сделает ещё один проход и увидит последнее значение настроек.
+        Поэтому исход последовательности True→False→True определяется последним
+        щелчком, а не тем, какой поток первым дождался замка.
+        """
+        if self._shutting_down:
+            return
+        with self._state_lock:
+            self._desired_generation += 1
+            # Уже есть поток, который ещё не начал применять состояние, — он
+            # увидит новое поколение сам, второй заводить незачем.
+            if self._reconcile_pending:
+                return
+            self._reconcile_pending = True
+        if reason:
+            logger.debug(f"ASR reconcile requested: {reason}")
+        # Проходы намеренно могут накладываться: пока предыдущий держит
+        # _lifecycle_lock, новый поток просто ждёт на нём. Поэтому у каждого своё
+        # имя — иначе супервизор принял бы их за повтор одной задачи и уронил
+        # RuntimeError прямо в наблюдателя настроек.
         task_supervisor().start_thread(
-            self, "speech-start", _worker, replace=True
+            self,
+            self._task_name("speech-reconcile"),
+            self._reconcile_worker,
         )
 
-    def _stop_recognition_async(self):
-        """Остановка live-цикла ждёт движок и рабочий поток (до 8 секунд), а
-        наблюдатели настроек ходят по общей полосе диспетчера — блокировать её
-        нельзя, иначе на это время встают и все остальные реакции на настройки."""
-        def _worker():
-            try:
-                with self._lifecycle_lock:
-                    SpeechRecognition.speech_recognition_stop()
-            except Exception as e:
-                logger.error(f"Остановка распознавания не удалась: {e}")
-        task_supervisor().start_thread(
-            self, "speech-stop", _worker, replace=True
-        )
+    def _reconcile_worker(self) -> None:
+        while True:
+            with self._lifecycle_lock:
+                with self._state_lock:
+                    self._reconcile_pending = False
+                    generation = self._desired_generation
+                    if generation == self._applied_generation:
+                        return
 
-    def _switch_recognizer_async(self, engine: str, restart: bool):
-        """Смена движка = стоп + переинициализация: то же самое, что и стоп, с
-        полосы наблюдателей уводим целиком."""
-        def _worker():
-            try:
-                with self._lifecycle_lock:
-                    if restart:
-                        SpeechRecognition.speech_recognition_stop()
-                        time.sleep(0.2)
-                    SpeechRecognition.set_recognizer_type(engine)
-                    SpeechRecognition.apply_settings(
-                        engine, self._asr_settings["models"].get(engine, {})
-                    )
-                    logger.info(f"Тип распознавателя установлен на: {engine}")
-                    if self.settings and self.settings.get("MIC_ACTIVE", False):
-                        self._start_maybe_install()
-            except Exception as e:
-                logger.error(f"Смена движка распознавания не удалась: {e}")
-        task_supervisor().start_thread(
-            self, "speech-engine-switch", _worker, replace=True
-        )
+                try:
+                    self._reconcile_once()
+                except Exception as e:
+                    logger.error(f"ASR reconcile failed: {e}", exc_info=True)
+
+                with self._state_lock:
+                    self._applied_generation = generation
+                    if self._desired_generation == generation:
+                        return
+            # Настройки поменялись, пока мы применяли предыдущее состояние —
+            # отпускаем замок и идём ещё круг.
+
+    def _reconcile_once(self) -> None:
+        desired_active = self._desired_mic_active()
+        desired_engine = self._desired_engine()
+
+        # Живой цикл держит старый распознаватель: и выключение, и смена движка
+        # начинаются с остановки.
+        if self._running_engine is not None and (
+            not desired_active or self._running_engine != desired_engine
+        ):
+            self._stop_running()
+
+        if self._configured_engine != desired_engine:
+            SpeechRecognition.set_recognizer_type(desired_engine)
+            SpeechRecognition.apply_settings(
+                desired_engine, self._asr_settings["models"].get(desired_engine, {})
+            )
+            self._configured_engine = desired_engine
+            logger.info(f"Тип распознавателя установлен на: {desired_engine}")
+
+        if not desired_active:
+            return
+        if self._running_engine == desired_engine and self.mic_recognition_active:
+            return
+
+        self._start_maybe_install()
+        self._running_engine = desired_engine if self.mic_recognition_active else None
+
+    def _stop_running(self) -> None:
+        try:
+            SpeechRecognition.speech_recognition_stop()
+            time.sleep(0.2)
+        except Exception as e:
+            logger.error(f"Остановка распознавания не удалась: {e}", exc_info=True)
+        self.mic_recognition_active = False
+        self.asr_is_ready = False
+        self._running_engine = None
 
     def _start_maybe_install(self):
         if self.mic_recognition_active:
@@ -388,6 +443,7 @@ class SpeechController(SpeechService):
         })
 
     def shutdown(self) -> None:
+        self._shutting_down = True
         subscription = self._settings_subscription
         self._settings_subscription = None
         if subscription is not None:
@@ -398,6 +454,7 @@ class SpeechController(SpeechService):
             pass
         self.mic_recognition_active = False
         self.asr_is_ready = False
+        self._running_engine = None
         with self._glossary_lock:
             self._glossary_callbacks.clear()
         task_supervisor().cancel_owner(self, timeout=1.0)
@@ -438,7 +495,7 @@ class SpeechController(SpeechService):
 
         task_supervisor().start_thread(
             self,
-            f"asr-installed-check:{model_type}:{time.monotonic_ns()}",
+            self._task_name(f"asr-installed-check:{model_type}"),
             worker,
         )
 
@@ -618,22 +675,29 @@ class SpeechController(SpeechService):
             self._handle_start_failure()
             return
 
-        self.asr_is_ready = False
-        started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop_service.loop()))
-        self.mic_recognition_active = started
+        # Явная команда «включить» тоже проходит через общий замок жизненного
+        # цикла: иначе она разъезжается с реконсилятором так же, как раньше
+        # разъезжались старт и стоп.
+        with self._lifecycle_lock:
+            self.asr_is_ready = False
+            started = bool(SpeechRecognition.speech_recognition_start(dev_id, loop_service.loop()))
+            self.mic_recognition_active = started
+            self._running_engine = self._desired_engine() if started else None
         if not started:
             self._handle_start_failure()
 
     def _on_stop_speech_recognition(self, _event: Event):
-        SpeechRecognition.speech_recognition_stop()
-        # Остановка ждёт движок несколько секунд, и за это время он мог сам
-        # поднять живой цикл заново (перезапуск воркера переигрывает start_live).
-        # Гасить флаги вслепую нельзя: статус залипнет на «не готов» при
-        # работающем распознавании.
-        if SpeechRecognition._is_running:
-            return
-        self.mic_recognition_active = False
-        self.asr_is_ready = False
+        with self._lifecycle_lock:
+            SpeechRecognition.speech_recognition_stop()
+            # Остановка ждёт движок несколько секунд, и за это время он мог сам
+            # поднять живой цикл заново (перезапуск воркера переигрывает start_live).
+            # Гасить флаги вслепую нельзя: статус залипнет на «не готов» при
+            # работающем распознавании.
+            if SpeechRecognition._is_running:
+                return
+            self.mic_recognition_active = False
+            self.asr_is_ready = False
+            self._running_engine = None
 
     def _on_restart_speech_recognition(self, event: Event):
         dev_id = event.data.get('device_id', self.device_id)
@@ -685,7 +749,7 @@ class SpeechController(SpeechService):
 
         task_supervisor().start_thread(
             self,
-            f"speech-background-{time.monotonic_ns()}",
+            self._task_name("speech-background"),
             worker,
         )
         return None
