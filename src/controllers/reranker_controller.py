@@ -35,6 +35,9 @@ class RerankerController:
         self.event_bus.subscribe(
             Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False
         )
+        self.event_bus.subscribe(
+            Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False
+        )
 
         self._maybe_start_warmup(reason="startup")
 
@@ -90,9 +93,24 @@ class RerankerController:
             return
         self._maybe_start_warmup(reason="install_finished")
 
+    def _on_ai_service_restarted(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        if str(data.get("service") or "").strip().lower() != "rag":
+            return
+
+        # Процесс движка сменился — модели в нём нет, чем бы ни закончился
+        # рестарт. Иначе плашка светит зелёным по прошлому прогреву.
+        from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
+
+        CrossEncoderReranker.forget_runtime(reason="AI-воркер RAG перезапущен")
+        self._maybe_start_warmup(reason="service_restarted")
+
     def shutdown(self) -> None:
         subscription = self._settings_subscription
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
+        # Подписки weak=False держат сильную ссылку на bound method: без снятия
+        # выключенный контроллер продолжит греть модель параллельно новому.
+        self.event_bus.unsubscribe_owner(self)
         task_supervisor().cancel_owner(self, timeout=1.0)

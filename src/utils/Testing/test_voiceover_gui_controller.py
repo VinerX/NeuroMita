@@ -161,6 +161,42 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
+    def test_string_setting_value_does_not_enable_autoload(self):
+        """Настройка может приехать строкой: bool("false") — это True."""
+        controller, _bus = self._make_controller()
+        calls = []
+        controller._ui = lambda callback: callback()
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value="false"))
+
+        self.assertEqual(calls, [{"allow_autoload": False}])
+
+    def _autoload_probe(self, method: str):
+        """Готовит контроллер к автозагрузке: всё сходится, кроме метода."""
+        controller, _bus = self._make_controller()
+        controller._effective_method = lambda: method
+        controller.main_controller = SimpleNamespace(backend_enabled=True)
+        controller._get_setting = lambda key, default=None: (
+            True if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        started: list[str] = []
+        controller._select_model_async = lambda model_id, show_error=False: started.append(model_id)
+        controller._begin_model_loading = lambda model_id, silent=False: started.append(model_id) or True
+        controller._emit_voice_icon_state_from_snapshot = lambda _state: None
+        controller._initialize_local_model = lambda model_id: started.append(model_id)
+
+        controller._maybe_autoload_local_model_from_snapshot(
+            {"current_model_id": "high", "installed": True, "initialized": False}
+        )
+        return started
+
+    def test_telegram_voiceover_does_not_load_local_model(self):
+        self.assertEqual(self._autoload_probe("TG"), [])
+
+    def test_local_voiceover_still_autoloads(self):
+        self.assertEqual(self._autoload_probe("Local"), ["high", "high"])
+
 
 if __name__ == "__main__":
     unittest.main()

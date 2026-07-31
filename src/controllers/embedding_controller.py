@@ -106,7 +106,21 @@ class EmbeddingController(EmbeddingService):
         # этого не поймает, поэтому сбрасываем кэш конфига явно.
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_SAVED, self._on_preset_mutated, weak=False)
         self.event_bus.subscribe(Events.EmbeddingPresets.PRESET_DELETED, self._on_preset_mutated, weak=False)
+        self.event_bus.subscribe(Events.AI.SERVICE_RESTARTED, self._on_ai_service_restarted, weak=False)
         logger.notify("EmbeddingController subscribed to RAG lifecycle facts")
+
+    def _on_ai_service_restarted(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        if str(data.get("service") or "").strip().lower() != "rag":
+            return
+
+        # Процесс движка сменился — прогретой модели в нём больше нет, а
+        # self.handler означает именно «модель в памяти движка».
+        with self._init_lock:
+            self.handler = None
+            self._handler_failed = False
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+        self._maybe_start_warmup(reason="service_restarted")
 
     def _warmup_local_backend(self) -> None:
         # AI engine может подняться позже контроллера, а первый запуск модели —
@@ -224,6 +238,9 @@ class EmbeddingController(EmbeddingService):
         self._settings_subscription = None
         if subscription is not None:
             subscription.close()
+        # Подписки weak=False держат сильную ссылку на bound method — иначе
+        # выключенный контроллер остаётся жив и реагирует на события.
+        self.event_bus.unsubscribe_owner(self)
         with self._init_lock:
             self.handler = None
             self._handler_failed = True

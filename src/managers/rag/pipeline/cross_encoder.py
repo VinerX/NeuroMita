@@ -1,10 +1,19 @@
 """AI-engine proxy for the optional RAG cross-encoder reranker."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from threading import Lock
 
 from handlers.ai_engine.rag_client import rerank_candidates
 from main_logger import logger
+
+
+@dataclass(frozen=True, slots=True)
+class RerankerReadiness:
+    """Состояние реранкера для статуса RAG: без RPC и без загрузки модели."""
+
+    model_loaded: bool = False
+    failed: bool = False
 
 
 class CrossEncoderReranker:
@@ -30,12 +39,31 @@ class CrossEncoderReranker:
         return cls._instances[model_name]
 
     @classmethod
-    def is_loaded(cls, model_name: str) -> bool:
+    def readiness(cls, model_name: str) -> RerankerReadiness:
         """Прогрет ли реранкер в движке — без RPC и без загрузки модели.
         Модель поднимается лениво при первом реранке, поэтому статус RAG обязан
-        различать «включён» и «готов отвечать без минутной паузы»."""
+        различать «включён», «готов отвечать без минутной паузы» и «сломан»:
+        иначе упавший реранкер вечно висит как «загружается»."""
         inst = cls._instances.get(str(model_name or ""))
-        return bool(inst and (inst._runtime_ready or inst._model))
+        if inst is None:
+            return RerankerReadiness()
+        return RerankerReadiness(
+            model_loaded=bool(inst._runtime_ready or inst._model),
+            failed=bool(inst._failed),
+        )
+
+    @classmethod
+    def forget_runtime(cls, *, reason: str = "") -> None:
+        """Движок перезапустился — модели в нём больше нет. Сбрасываем признаки
+        прогрева, иначе статус остаётся зелёным на пустом рантайме."""
+        for inst in list(cls._instances.values()):
+            with inst._load_lock:
+                inst._runtime_ready = False
+                inst._model = None
+                inst._failed = False
+        if reason:
+            logger.info(f"[CrossEncoder] прогрев сброшен: {reason}")
+        cls._notify_status_changed()
 
     def ensure_loaded(self) -> bool:
         """Поднять реранкер заранее (фоновый прогрев на старте). Без этого модель
@@ -82,6 +110,7 @@ class CrossEncoderReranker:
                     )
                 )
                 if self._runtime_ready:
+                    self._failed = False
                     self._notify_status_changed()
                 return self._runtime_ready
             except Exception as exc:
@@ -90,6 +119,14 @@ class CrossEncoderReranker:
                 )
                 self._runtime_ready = False
                 return False
+
+    def _set_failed(self, failed: bool) -> None:
+        # Статус RAG считается по этим флагам, поэтому смена состояния обязана
+        # доехать до индикатора; одинаковое значение шину не дёргает.
+        if bool(self._failed) == bool(failed):
+            return
+        self._failed = bool(failed)
+        self._notify_status_changed()
 
     @staticmethod
     def _notify_status_changed() -> None:
@@ -126,7 +163,7 @@ class CrossEncoderReranker:
 
         if not self._ensure_runtime():
             logger.warning("[CrossEncoder] RAG reranker runtime is unavailable")
-            self._failed = True
+            self._set_failed(True)
             return
 
         try:
@@ -141,7 +178,7 @@ class CrossEncoderReranker:
             )
         except Exception as exc:
             logger.warning(f"[CrossEncoder] AI engine rerank failed (ignored): {exc}")
-            self._failed = True
+            self._set_failed(True)
             return
 
         updates = result.get("updates") if isinstance(result, dict) else None
@@ -172,4 +209,4 @@ class CrossEncoderReranker:
         if bool(result.get("loaded", False)):
             with self._load_lock:
                 self._model = True
-                self._failed = False
+            self._set_failed(False)

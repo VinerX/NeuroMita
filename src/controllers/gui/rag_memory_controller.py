@@ -114,8 +114,7 @@ def _get_ce_loaded_status() -> str:
                 return _("Загружена в память", "Loaded in memory")
         except Exception:
             pass
-        inst = CrossEncoderReranker._instances.get(hf_name)
-        if inst and inst._model is not None:
+        if CrossEncoderReranker.readiness(hf_name).model_loaded:
             return _("Загружена в память", "Loaded in memory")
         return _("Не загружена", "Not loaded")
     except Exception:

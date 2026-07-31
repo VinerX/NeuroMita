@@ -34,9 +34,10 @@ class _Embedder:
         return self._readiness
 
 
-def _run(settings, embedder, *, ce_loaded=False, local_provider=True):
+def _run(settings, embedder, *, ce_loaded=False, ce_failed=False, local_provider=True):
     from managers.rag import install_spec
     from managers.rag import readiness as mod
+    from managers.rag.pipeline.cross_encoder import RerankerReadiness
 
     class _Registry:
         @staticmethod
@@ -48,8 +49,8 @@ def _run(settings, embedder, *, ce_loaded=False, local_provider=True):
          patch.object(install_spec, "_local_provider_enabled", return_value=local_provider), \
          patch.object(install_spec, "resolve_ce_model", return_value="owner/reranker"), \
          patch("core.services.services", return_value=_Registry()), \
-         patch("managers.rag.pipeline.cross_encoder.CrossEncoderReranker.is_loaded",
-               return_value=ce_loaded), \
+         patch("managers.rag.pipeline.cross_encoder.CrossEncoderReranker.readiness",
+               return_value=RerankerReadiness(model_loaded=ce_loaded, failed=ce_failed)), \
          patch("managers.rag.pipeline.config.resolve_ce_model", return_value="owner/reranker"):
         return mod.rag_readiness()
 
@@ -115,6 +116,17 @@ def test_remote_embedding_provider_needs_no_local_model():
     state = _run(_settings(), _Embedder(provider="gemini"), local_provider=False)
     assert state.embeddings == "not_needed"
     assert state.state == "ready"
+
+
+def test_broken_reranker_is_error_not_endless_loading():
+    """Упавший реранкер не должен вечно висеть как «загружается»."""
+    state = _run(
+        _settings(RAG_CROSS_ENCODER_ENABLED=True),
+        _Embedder(model_loaded=True),
+        ce_failed=True,
+    )
+    assert state.reranker == "error"
+    assert state.state == "error"
 
 
 def test_failed_warmup_is_error():

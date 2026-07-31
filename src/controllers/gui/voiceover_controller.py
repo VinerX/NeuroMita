@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QMessageBox
 from main_logger import logger
 from core.events import Events, Event
 from core.services import services
+from core.settings_values import as_bool as _as_bool
 from core.task_supervisor import task_supervisor
 from services.contracts import (
     InstallableCatalogService,
@@ -164,7 +165,7 @@ class VoiceoverGuiController(BaseController):
             # При включении TTS автозагрузка должна сработать сразу, а не только
             # при запуске приложения. Остальные изменения настроек лишь
             # обновляют состояние UI и не должны повторно запускать модель.
-            allow_autoload = key == "USE_VOICEOVER" and bool(value)
+            allow_autoload = key == "USE_VOICEOVER" and _as_bool(value)
             self._sync_everything(allow_autoload=allow_autoload)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
@@ -647,7 +648,12 @@ class VoiceoverGuiController(BaseController):
     def _maybe_autoload_local_model_from_snapshot(self, state: dict):
         if not self._backend_enabled():
             return
-        if not bool(self._get_setting("LOCAL_VOICE_LOAD_LAST", False)):
+        # При озвучке через Telegram локальная модель не нужна — грузить её
+        # (несколько ГБ и минуты) только потому, что включили озвучку, нельзя.
+        # Проверка здесь, а не у вызывающих: путей автозагрузки несколько.
+        if self._effective_method() != "Local":
+            return
+        if not _as_bool(self._get_setting("LOCAL_VOICE_LOAD_LAST", False)):
             return
 
         model_id = str(state.get("current_model_id") or "")

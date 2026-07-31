@@ -58,7 +58,10 @@ def _reranker_state() -> str:
     from managers.rag.pipeline.config import resolve_ce_model
     from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
 
-    return READY if CrossEncoderReranker.is_loaded(resolve_ce_model()) else LOADING
+    status = CrossEncoderReranker.readiness(resolve_ce_model())
+    if status.failed:
+        return ERROR
+    return READY if status.model_loaded else LOADING
 
 
 def rag_readiness() -> RagReadiness:
@@ -77,7 +80,7 @@ def rag_readiness() -> RagReadiness:
     embeddings = _embeddings_state() if TARGET_EMBEDDINGS in targets else NOT_NEEDED
     reranker = _reranker_state() if TARGET_RERANKER in targets else NOT_NEEDED
 
-    if embeddings == ERROR:
+    if ERROR in (embeddings, reranker):
         state = ERROR
     elif LOADING in (embeddings, reranker):
         state = LOADING
