@@ -38,7 +38,6 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
                 weak=False,
             )
         )
-        # После пере/до-индексации строка статуса («Нужна переиндексация...») устарела.
         self.track_subscription(
             presentation.events.subscribe(
                 UiTopic.RAG_INDEX_CHANGED,
@@ -48,6 +47,9 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
         )
 
     def _on_index_changed(self, _event: Any = None) -> None:
+        self._post_ui(self._refresh_index_status)
+
+    def _refresh_index_status(self) -> None:
         if self.state.operation is not None or self.state.testing:
             return
 

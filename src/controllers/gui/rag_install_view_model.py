@@ -69,7 +69,6 @@ class RagInstallViewModel(IntentViewModel[RagInstallState]):
             self.track_subscription(
                 bus.subscribe(event_name, self._on_install_changed, weak=False)
             )
-        # Пере/до-индексация меняет строку «Индекс: ...» — пересчитываем статус.
         self.track_subscription(
             bus.subscribe(Events.RAG.INDEX_CHANGED, self._on_index_changed, weak=False)
         )
@@ -146,12 +145,12 @@ class RagInstallViewModel(IntentViewModel[RagInstallState]):
     def _on_install_changed(self, event: Any) -> None:
         if not _is_rag_install_event(event):
             return
-        self._post_ui(self._refresh_after_install)
+        self._post_ui(self._reload_statuses)
 
     def _on_index_changed(self, event: Any = None) -> None:
-        self._post_ui(self._refresh_after_install)
+        self._post_ui(self._reload_statuses)
 
-    def _refresh_after_install(self) -> None:
+    def _reload_statuses(self) -> None:
         from controllers.gui.settings_data_prefetch import RAG_CE_STATUS, RAG_EMBED_STATUS
 
         self._settings_data.clear(RAG_EMBED_STATUS)

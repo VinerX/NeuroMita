@@ -31,11 +31,18 @@ _CURRENT_PROVIDER_ITEM = ("Текущий", "Current", "Текущий")
 
 
 def _emit_index_changed() -> None:
-    """Сообщить UI, что состав векторного индекса изменился (статус «Индекс: ...»)."""
     try:
         get_event_bus().emit(Events.RAG.INDEX_CHANGED)
     except Exception:
         pass
+
+
+def _wire_index_changed(worker) -> None:
+    """Любой исход индексации (в т.ч. отмена/ошибка) меняет число векторов."""
+    for name in ("finished_signal", "error_signal", "cancelled_signal"):
+        signal = getattr(worker, name, None)
+        if signal is not None:
+            signal.connect(lambda *_: _emit_index_changed())
 
 
 def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWorker:
@@ -930,6 +937,7 @@ def purge_deleted_data(gui):
         lines.append(_("Ошибки:", "Errors:") + "\n" + "\n".join(errors))
 
     QMessageBox.information(gui, _("Готово", "Done"), "\n".join(lines))
+    _emit_index_changed()
 
 
 def clear_history(gui):
@@ -1534,7 +1542,6 @@ def run_reindexing(gui):
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
         gui._reindex_worker = None
-        _emit_index_changed()
 
     def on_error(msg):
         if getattr(gui, "_reindex_cancelled", False):
@@ -1555,6 +1562,7 @@ def run_reindexing(gui):
     gui._reindex_worker.finished_signal.connect(on_finished)
     gui._reindex_worker.error_signal.connect(on_error)
     gui._reindex_worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(gui._reindex_worker)
     progress.canceled.connect(on_cancel)
 
     progress.show()
@@ -1663,7 +1671,6 @@ def run_reindexing_all(gui):
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
         _cleanup()
-        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1698,6 +1705,7 @@ def run_reindexing_all(gui):
     gui._reindex_all_worker.finished_signal.connect(on_finished)
     gui._reindex_all_worker.error_signal.connect(on_error)
     gui._reindex_all_worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(gui._reindex_all_worker)
     progress.stopRequested.connect(on_stop)
 
     progress.show()
@@ -1791,7 +1799,6 @@ def run_full_reindexing(gui):
         )
         gui._full_reindex_worker = None
         gui._full_reindex_cancelled = False
-        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1827,6 +1834,7 @@ def run_full_reindexing(gui):
     gui._full_reindex_worker.finished_signal.connect(on_finished)
     gui._full_reindex_worker.error_signal.connect(on_error)
     gui._full_reindex_worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(gui._full_reindex_worker)
     progress.canceled.connect(on_cancel)
 
     progress.show()
@@ -1897,7 +1905,6 @@ def run_full_reindexing_all(gui):
         )
         gui._full_reindex_all_worker = None
         gui._full_reindex_all_cancelled = False
-        _emit_index_changed()
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1916,6 +1923,29 @@ def run_full_reindexing_all(gui):
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
         gui._full_reindex_all_worker = None
+
+    def on_cancel():
+        gui._full_reindex_all_cancelled = True
+        try:
+            gui._full_reindex_all_worker.requestInterruption()
+        except Exception:
+            pass
+        progress.close()
+
+    def on_cancelled():
+        gui._full_reindex_all_worker = None
+        gui._full_reindex_all_cancelled = False
+
+    gui._full_reindex_all_worker.progress_signal.connect(on_progress)
+    gui._full_reindex_all_worker.finished_signal.connect(on_finished)
+    gui._full_reindex_all_worker.error_signal.connect(on_error)
+    gui._full_reindex_all_worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(gui._full_reindex_all_worker)
+    progress.canceled.connect(on_cancel)
+
+    progress.show()
+    gui._full_reindex_all_worker.start()
+
 
 def export_db_for_character(gui):
     cid = _selected_character_id(gui)
