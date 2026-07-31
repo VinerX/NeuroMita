@@ -218,6 +218,62 @@ class RuntimeSwitchCallTests(unittest.TestCase):
             release.set()
             thread.join(2.0)
 
+    def test_deferred_call_survives_a_second_switch(self):
+        """Две пересборки подряд: отложенный вызов не должен сдаться на первой.
+
+        Раньше отложенный запрос делал ровно одну попытку после закрытия окна.
+        Если пользователь щёлкал в AI Hub второй раз, вызов получал ошибку
+        сервиса за то, что рантайм снова меняют.
+        """
+        gate = _RuntimeSwitchGate()
+        worker = _FakeWorker()
+        controller = _bare_controller(gate, worker)
+
+        first_open = threading.Event()
+        close_first = threading.Event()
+        need_second = threading.Event()
+        second_open = threading.Event()
+
+        def switcher():
+            gate.begin(waitable=True)
+            first_open.set()
+            close_first.wait(5.0)
+            gate.end()
+            # Вторая пересборка стартует ровно в зазоре между wait_idle() и
+            # выбором воркера — то самое окно, в котором терялся вызов.
+            need_second.wait(5.0)
+            gate.begin(waitable=True)
+            second_open.set()
+            time.sleep(0.1)
+            gate.end()
+
+        real_admit = controller._admit_call
+        admits: list[int] = []
+
+        def admit_with_second_switch(service):
+            admits.append(1)
+            if len(admits) == 1:
+                need_second.set()
+                second_open.wait(5.0)
+            return real_admit(service)
+
+        controller._admit_call = admit_with_second_switch
+
+        thread = threading.Thread(target=switcher)
+        thread.start()
+        try:
+            self.assertTrue(first_open.wait(1.0))
+            future = controller.call("rag", "get_embeddings", {"texts": ["a"]})
+            close_first.set()
+
+            self.assertEqual(future.result(timeout=5.0), {"ok": True})
+            self.assertEqual(worker.calls, [("rag", "get_embeddings")])
+            self.assertGreaterEqual(len(admits), 2, "должна была быть вторая попытка")
+        finally:
+            need_second.set()
+            close_first.set()
+            thread.join(5.0)
+
     def test_maintenance_window_fails_calls_immediately(self):
         gate = _RuntimeSwitchGate()
         worker = _FakeWorker()

@@ -1616,15 +1616,11 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             )
 
         future = w.call(m, payload or {}, service=s, timeout=timeout)
-        if future.done():
-            try:
-                error = future.exception()
-            except CancelledError:
-                error = None
-            if isinstance(error, _WorkerUnavailable):
-                return self._retry_after_switch(
-                    s, m, payload or {}, timeout=timeout, epoch=epoch, fallback=error
-                )
+        if future.done() and self._worker_gone(future):
+            return self._retry_after_switch(
+                s, m, payload or {}, timeout=timeout, epoch=epoch,
+                fallback=future.exception(),
+            )
         return future
 
     def _defer_or_fail(
@@ -1660,15 +1656,17 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         целиком, пока мы шли к воркеру), вызов уходит в отложенную очередь, а не
         отдаётся вызывающему как сбой сервиса.
         """
-        with self._lock:
-            switching = self._runtime_switching.is_active()
-            changed = self._runtime_epoch != epoch
-        if switching or changed:
+        if self._switch_in_progress(epoch):
             return self._defer_or_fail(service, method, payload, timeout=timeout)
 
         f = Future()
         f.set_exception(fallback)
         return f
+
+    def _switch_in_progress(self, epoch: int) -> bool:
+        """Идёт ли пересборка сейчас — или прошла целиком с момента допуска."""
+        with self._lock:
+            return self._runtime_switching.is_active() or self._runtime_epoch != epoch
 
     def _call_after_switch(
         self,
@@ -1747,35 +1745,55 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         except RuntimeError:
             return  # уже завершён (например, движок гасится)
 
-        if self._shutting_down.is_set() or not gate.wait_idle(
-            deadline - time.monotonic()
-        ):
-            self._settle_deferred(
-                outer,
-                error=AIRuntimeUnavailable(
-                    gate.reason() or "AI runtime is unavailable"
-                ),
+        # Пересборок может быть две подряд (пользователь щёлкает в AI Hub): одна
+        # попытка после закрытия окна отдавала бы вызывающему ошибку сервиса за
+        # то, что рантайм снова меняют. Пробуем, пока не кончится бюджет
+        # ожидания — та же семантика повтора, что и в обычном call().
+        while True:
+            remaining = deadline - time.monotonic()
+            if (
+                self._shutting_down.is_set()
+                or remaining <= 0.0
+                or not gate.wait_idle(remaining)
+            ):
+                self._settle_deferred(
+                    outer,
+                    error=AIRuntimeUnavailable(
+                        gate.reason() or "AI runtime is unavailable"
+                    ),
+                )
+                return
+
+            # Тот же атомарный допуск, что и в call(): окно только что закрылось,
+            # но состав воркеров мог смениться прямо на этом шаге.
+            w, switching, epoch = self._admit_call(service)
+            if switching:
+                continue
+            if not w:
+                # Воркера нет: либо сервис действительно неизвестен, либо состав
+                # снова пересобирают. Различаем по поколению, а не по догадке.
+                if self._switch_in_progress(epoch):
+                    continue
+                self._settle_deferred(
+                    outer, error=RuntimeError(f"Unknown service: {service}")
+                )
+                return
+
+            inner = w.call(method, payload, service=service, timeout=timeout)
+            if inner.done() and self._worker_gone(inner) and self._switch_in_progress(epoch):
+                # Воркера уже останавливают под новую пересборку — берём нового.
+                continue
+            inner.add_done_callback(
+                lambda done, target=outer: self._copy_result(done, target)
             )
             return
 
-        # Тот же атомарный допуск, что и в call(): окно только что закрылось,
-        # но состав воркеров мог смениться прямо на этом шаге.
-        w, switching, _epoch = self._admit_call(service)
-        if switching or not w:
-            self._settle_deferred(
-                outer,
-                error=(
-                    AIRuntimeUnavailable(gate.reason() or "AI runtime is unavailable")
-                    if switching
-                    else RuntimeError(f"Unknown service: {service}")
-                ),
-            )
-            return
-
-        inner = w.call(method, payload, service=service, timeout=timeout)
-        inner.add_done_callback(
-            lambda done, target=outer: self._copy_result(done, target)
-        )
+    @staticmethod
+    def _worker_gone(future: Future) -> bool:
+        try:
+            return isinstance(future.exception(), _WorkerUnavailable)
+        except CancelledError:
+            return False
 
     def _copy_result(self, source: Future, target: Future) -> None:
         try:
