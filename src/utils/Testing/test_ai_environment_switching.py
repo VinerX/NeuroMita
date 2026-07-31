@@ -214,6 +214,7 @@ def _controller(current: _Worker, registry: _EnvironmentRegistry) -> AIEngineCon
     controller._lock = threading.RLock()
     controller._runtime_switch_lock = threading.RLock()
     controller._runtime_switching = _RuntimeSwitchGate()
+    controller._runtime_epoch = 0
     controller._recovery_lock = threading.RLock()
     controller._shutting_down = threading.Event()
     controller._restart_attempts = {}

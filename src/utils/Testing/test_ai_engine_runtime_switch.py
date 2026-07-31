@@ -37,6 +37,7 @@ def _bare_controller(gate: _RuntimeSwitchGate, worker: _FakeWorker) -> AIEngineC
     controller._deferred_calls = set()
     controller._workers = {"shared": worker}
     controller._service_to_worker = {"rag": "shared"}
+    controller._runtime_epoch = 0
     return controller
 
 
