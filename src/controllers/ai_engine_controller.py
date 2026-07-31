@@ -203,6 +203,9 @@ class _Worker:
         }
         self.stopping = threading.Event()
         self.expected_exit = threading.Event()
+        # Замок допуска: либо запрос попадает в pending до того, как воркер
+        # объявлен останавливающимся, либо получает отказ и уходит на повтор.
+        self.admission_lock = threading.Lock()
 
         self.pending: Dict[str, Future] = {}
         self.pending_deadlines: dict[str, float] = {}
@@ -239,7 +242,8 @@ class _Worker:
     def start(self):
         from handlers.ai_engine.worker_process import run_worker_process
 
-        self.stopping.clear()
+        with self.admission_lock:
+            self.stopping.clear()
         self.expected_exit.clear()
         self.ready.clear()
         for ev in self.ready_by_service.values():
@@ -298,42 +302,7 @@ class _Worker:
             f.set_exception(RuntimeError(f"Worker '{self.worker_name}' does not handle service '{target_service}'"))
             return f
 
-        if self.stopping.is_set():
-            f = Future()
-            f.set_exception(_WorkerUnavailable(f"Worker '{self.worker_name}' is stopping"))
-            return f
-
-        with self.pending_lock:
-            quarantine_reason = self.quarantined_services.get(target_service)
-        if quarantine_reason:
-            f = Future()
-            f.set_exception(
-                RuntimeError(
-                    f"AI service '{target_service}' is quarantined after a timeout: "
-                    f"{quarantine_reason}"
-                )
-            )
-            return f
-
-        proc = self.proc
-        if proc is None or not proc.is_alive():
-            f = Future()
-            exit_code = getattr(proc, "exitcode", None) if proc is not None else None
-            f.set_exception(
-                _WorkerUnavailable(
-                    f"Worker '{self.worker_name}' is not alive (exitcode={exit_code})"
-                )
-            )
-            return f
-
         req_id = str(uuid.uuid4())
-        fut = Future()
-
-        deadline = time.monotonic() + max(0.1, float(timeout or self.request_timeout))
-        with self.pending_lock:
-            self.pending[req_id] = fut
-            self.pending_deadlines[req_id] = deadline
-            self.pending_meta[req_id] = (target_service, str(method))
 
         def cleanup_cancelled(done: Future) -> None:
             if not done.cancelled():
@@ -352,24 +321,64 @@ class _Worker:
                 except Exception:
                     pass
 
-        fut.add_done_callback(cleanup_cancelled)
+        # Проверка «жив ли воркер», регистрация в pending и отправка в очередь —
+        # одна неделимая операция. Иначе stop() успевает вклиниться между
+        # проверкой и регистрацией, и принятый запрос падает с ошибкой
+        # выключения вместо повторной отправки новому воркеру.
+        with self.admission_lock:
+            if self.stopping.is_set():
+                f = Future()
+                f.set_exception(_WorkerUnavailable(f"Worker '{self.worker_name}' is stopping"))
+                return f
 
-        try:
-            self.cmd_q.put_nowait(
-                {
-                    "req_id": req_id,
-                    "service": target_service,
-                    "method": str(method),
-                    "payload": payload or {},
-                }
-            )
-        except Full:
-            e = RuntimeError(f"Worker '{self.worker_name}' command queue is full")
-            self._pop_pending(req_id)
-            fut.set_exception(e)
-        except Exception as e:
-            self._pop_pending(req_id)
-            fut.set_exception(e)
+            with self.pending_lock:
+                quarantine_reason = self.quarantined_services.get(target_service)
+            if quarantine_reason:
+                f = Future()
+                f.set_exception(
+                    RuntimeError(
+                        f"AI service '{target_service}' is quarantined after a timeout: "
+                        f"{quarantine_reason}"
+                    )
+                )
+                return f
+
+            proc = self.proc
+            if proc is None or not proc.is_alive():
+                f = Future()
+                exit_code = getattr(proc, "exitcode", None) if proc is not None else None
+                f.set_exception(
+                    _WorkerUnavailable(
+                        f"Worker '{self.worker_name}' is not alive (exitcode={exit_code})"
+                    )
+                )
+                return f
+
+            fut = Future()
+            deadline = time.monotonic() + max(0.1, float(timeout or self.request_timeout))
+            with self.pending_lock:
+                self.pending[req_id] = fut
+                self.pending_deadlines[req_id] = deadline
+                self.pending_meta[req_id] = (target_service, str(method))
+
+            fut.add_done_callback(cleanup_cancelled)
+
+            try:
+                self.cmd_q.put_nowait(
+                    {
+                        "req_id": req_id,
+                        "service": target_service,
+                        "method": str(method),
+                        "payload": payload or {},
+                    }
+                )
+            except Full:
+                e = RuntimeError(f"Worker '{self.worker_name}' command queue is full")
+                self._pop_pending(req_id)
+                fut.set_exception(e)
+            except Exception as e:
+                self._pop_pending(req_id)
+                fut.set_exception(e)
 
         return fut
 
@@ -662,9 +671,12 @@ class _Worker:
                 pass
 
     def stop(self, timeout: float = 5.0):
-        if self.stopping.is_set():
-            return
-        self.stopping.set()
+        # Под тем же замком, что и допуск: после выхода отсюда ни один новый
+        # запрос в pending уже не попадёт.
+        with self.admission_lock:
+            if self.stopping.is_set():
+                return
+            self.stopping.set()
         expected_exit = getattr(self, "expected_exit", None)
         if expected_exit is None:
             expected_exit = threading.Event()

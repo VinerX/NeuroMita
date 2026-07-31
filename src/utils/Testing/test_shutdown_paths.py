@@ -93,6 +93,7 @@ class ShutdownPathTests(unittest.TestCase):
         worker = _Worker.__new__(_Worker)
         worker.worker_name = "test"
         worker.stopping = threading.Event()
+        worker.admission_lock = threading.Lock()
         worker.cmd_q = _FakeQueue()
         worker.res_q = _FakeQueue()
         worker.log_q = _FakeQueue()
