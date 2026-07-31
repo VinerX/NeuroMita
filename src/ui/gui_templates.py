@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox, 
-                             QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame)
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox,
+                             QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame, QToolButton)
 from PyQt6.QtCore import QSignalBlocker, Qt
 
 from main_logger import logger
@@ -7,7 +7,22 @@ from ui.widgets.settings_sections import CollapsibleSection, InnerCollapsibleSec
 from ui.widgets.tr_combobox import TRQComboBox
 from ui.settings.settings_access import get_setting, set_setting
 from utils import getTranslationVariant as _
-from localization.live import register_if_tr
+from localization.live import register_if_tr, tr_set
+
+
+def _make_reveal_button(edit: QLineEdit) -> QToolButton:
+    """Глаз рядом со скрытым полем — как у ключей в настройках API."""
+    btn = QToolButton()
+    btn.setText("\U0001F441")
+    btn.setCheckable(True)
+    btn.setFixedWidth(24)
+    tr_set(btn, "Показать/скрыть значение", "Show/hide value", "setToolTip")
+    btn.toggled.connect(
+        lambda on: edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
+        )
+    )
+    return btn
 
 
 class SettingsBodyWidget(QWidget):
@@ -476,6 +491,8 @@ def create_setting_widget(
         if toggle_chk:
             layout.addWidget(toggle_chk, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(widget, 1)
+        if hide:
+            layout.addWidget(_make_reveal_button(widget))
 
     elif widget_type == 'combobox':
         # TRQComboBox: значение пункта (itemData) стабильно, переводимые подписи

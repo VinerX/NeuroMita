@@ -26,6 +26,10 @@ from services.contracts import GameLinkService, LoopService, SettingsService
 
 
 class TelegramBotHandler:
+    # Сетевые шаги логина не должны висеть бесконечно: без этого подключение
+    # застревает навсегда, а UI остаётся в состоянии «Подключение...».
+    NETWORK_STEP_TIMEOUT = 30.0
+
     def __init__(self, api_id, api_hash, phone, tg_bot, message_limit_per_minute=20):
         self.event_bus = get_event_bus()
 
@@ -271,7 +275,7 @@ class TelegramBotHandler:
             if not self.client:
                 raise RuntimeError("Telegram client not initialized")
 
-            await self.client.connect()
+            await asyncio.wait_for(self.client.connect(), timeout=self.NETWORK_STEP_TIMEOUT)
 
             loop = use(LoopService).loop()
 
@@ -317,7 +321,9 @@ class TelegramBotHandler:
         Бросает исключение, если авторизоваться не удалось — вызывающий обязан
         трактовать это как неуспех (без ложного «успешно подключен»).
         """
-        await self.client.send_code_request(self.phone)
+        await asyncio.wait_for(
+            self.client.send_code_request(self.phone), timeout=self.NETWORK_STEP_TIMEOUT
+        )
 
         last_error = ""
         for attempt in range(1, max_attempts + 1):
@@ -326,7 +332,10 @@ class TelegramBotHandler:
             )
 
             try:
-                await self.client.sign_in(phone=self.phone, code=verification_code)
+                await asyncio.wait_for(
+                    self.client.sign_in(phone=self.phone, code=verification_code),
+                    timeout=self.NETWORK_STEP_TIMEOUT,
+                )
                 return  # успех
             except (PhoneCodeInvalidError, PhoneCodeEmptyError):
                 last_error = getTranslationVariant(
@@ -341,7 +350,10 @@ class TelegramBotHandler:
                     "The code expired, a new one was requested. Enter the fresh code.",
                 )
                 logger.warning("Telegram: код истёк, запрашиваю новый.")
-                await self.client.send_code_request(self.phone)
+                await asyncio.wait_for(
+                    self.client.send_code_request(self.phone),
+                    timeout=self.NETWORK_STEP_TIMEOUT,
+                )
                 continue
             except SessionPasswordNeededError:
                 await self._sign_in_with_password_retries(loop, max_attempts=max_attempts)
@@ -358,7 +370,10 @@ class TelegramBotHandler:
             )
 
             try:
-                await self.client.sign_in(password=password)
+                await asyncio.wait_for(
+                    self.client.sign_in(password=password),
+                    timeout=self.NETWORK_STEP_TIMEOUT,
+                )
                 return  # успех
             except PasswordHashInvalidError:
                 last_error = getTranslationVariant(

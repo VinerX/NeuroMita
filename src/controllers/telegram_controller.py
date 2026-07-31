@@ -142,6 +142,9 @@ class TelegramController(TelegramService):
     def is_silero_connected(self) -> bool:
         return self.silero_connected
 
+    def is_silero_connecting(self) -> bool:
+        return self._connecting
+
     # ---------------- loop lifecycle ----------------
     def _on_loop_ready(self, event: Event):
         self._loop = (event.data or {}).get("loop")
@@ -205,12 +208,13 @@ class TelegramController(TelegramService):
             if not snap.get("USE_VOICEOVER", False) or snap.get("VOICEOVER_METHOD") != "TG":
                 return False
 
-        # Кулдаун
-        now = time.time()
-        if (now - float(self._last_start_attempt_ts or 0.0)) < float(self._start_cooldown_sec or 20.0):
-            return False
+            # Кулдаун — только против спама автоконнекта. Явный клик пользователя
+            # (force) не должен молча проглатываться после неудачной попытки.
+            now = time.time()
+            if (now - float(self._last_start_attempt_ts or 0.0)) < float(self._start_cooldown_sec or 20.0):
+                return False
 
-        self._last_start_attempt_ts = now
+        self._last_start_attempt_ts = time.time()
         self._connecting = True
         logger.info(f"Запрос на запуск Silero ({source}, force={force})")
         self.start_silero_async()
@@ -236,6 +240,7 @@ class TelegramController(TelegramService):
         else:
             logger.error("Ошибка: Loop не готов для запуска Silero")
             self._connecting = False
+            self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
 
     async def start_silero(self):
         logger.info("Telegram Bot запускается!")

@@ -597,6 +597,10 @@ class TelegramService(ABC):
         """Подключён ли Silero-релей озвучки."""
 
     @abstractmethod
+    def is_silero_connecting(self) -> bool:
+        """Идёт ли попытка подключения прямо сейчас."""
+
+    @abstractmethod
     async def send_voice(
         self, text: str, speaker_command: str, message_id: int = 0
     ) -> str: ...

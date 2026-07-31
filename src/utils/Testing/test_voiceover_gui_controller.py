@@ -57,7 +57,7 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         controller = VoiceoverGuiController.__new__(VoiceoverGuiController)
         controller.event_bus = bus
         controller.view = SimpleNamespace()
-        controller._tg_connecting = False
+        controller._tg_is_connecting = lambda: False
         controller._tg_connected = False
         controller._loading_model_id = None
         controller._effective_use_voice = lambda: True

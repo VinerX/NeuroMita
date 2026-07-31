@@ -8,6 +8,9 @@ class UnavailableTelegramService(TelegramService):
     def is_silero_connected(self) -> bool:
         return False
 
+    def is_silero_connecting(self) -> bool:
+        return False
+
     async def send_voice(
         self, text: str, speaker_command: str, message_id: int = 0
     ) -> str:

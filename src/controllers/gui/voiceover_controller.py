@@ -34,7 +34,6 @@ class VoiceoverGuiController(BaseController):
         self._autoload_done = False
 
         self._tg_connected: bool | None = None
-        self._tg_connecting: bool = False
         self._tg_last_attempt_ts: float = 0.0
         self._tg_attempt_cooldown_sec: float = 20.0
 
@@ -172,22 +171,32 @@ class VoiceoverGuiController(BaseController):
         self._ui(apply)
 
     # ---------- Telegram ----------
+    def _tg_is_connecting(self) -> bool:
+        """Идёт ли попытка подключения — по данным самого TelegramService.
+
+        Собственный флаг в GUI жил дольше попытки: неудачная авторизация или
+        отказ старта по кулдауну оставляли кнопку в «Подключение...» навсегда.
+        """
+        telegram = services().get_optional(TelegramService)
+        if telegram is None:
+            return False
+        try:
+            return bool(telegram.is_silero_connecting())
+        except Exception:
+            return False
+
     def _on_tg_connected_event(self, event: Event):
         data = event.data or {}
         val = data.get("connected", None)
         if isinstance(val, bool):
             self._tg_connected = val
-            if val:
-                self._tg_connecting = False
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
     def _on_tg_start_requested(self, _event: Event):
-        self._tg_connecting = True
         self._tg_last_attempt_ts = time.time()
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
     def _on_tg_stop_requested(self, _event: Event):
-        self._tg_connecting = False
         self._tg_connected = False
         self._ui(lambda: self._sync_everything(allow_autoload=False))
 
@@ -246,12 +255,9 @@ class VoiceoverGuiController(BaseController):
 
                 if connected is not None:
                     self._tg_connected = connected
-                    if connected:
-                        self._tg_connecting = False
-
                     self._ui(lambda: self._sync_tg_button_and_icon_only())
 
-                interval = 1.0 if self._tg_connecting else 5.0
+                interval = 1.0 if self._tg_is_connecting() else 5.0
                 if self._tg_poll_stop.wait(interval):
                     break
 
@@ -281,7 +287,7 @@ class VoiceoverGuiController(BaseController):
             btn.setText(_("Подключиться к Telegram", "Connect Telegram"))
             return
 
-        if self._tg_connecting:
+        if self._tg_is_connecting():
             btn.setEnabled(False)
             btn.setText(_("Подключение...", "Connecting..."))
             return
@@ -307,14 +313,13 @@ class VoiceoverGuiController(BaseController):
         if not autoconnect:
             return
 
-        if self._tg_connected is True or self._tg_connecting:
+        if self._tg_connected is True or self._tg_is_connecting():
             return
 
         now = time.time()
         if (now - float(self._tg_last_attempt_ts or 0.0)) < float(self._tg_attempt_cooldown_sec or 20.0):
             return
 
-        self._tg_connecting = True
         self._tg_last_attempt_ts = now
 
         self.event_bus.emit(Events.Telegram.START_SILERO, {"source": "autoconnect", "force": False})
@@ -849,7 +854,7 @@ class VoiceoverGuiController(BaseController):
             return
 
         if method == "TG":
-            if self._tg_connecting:
+            if self._tg_is_connecting():
                 self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
                     "category": "voice",
                     "state": "loading",
