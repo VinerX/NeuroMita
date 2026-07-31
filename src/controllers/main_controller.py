@@ -81,6 +81,7 @@ class MainController:
         self.audio_controller = None
         self.voice_model_controller = None
         self.embedding_controller = None
+        self.reranker_controller = None
         self.capture_controller = None
         self.reminder_controller = None
         self.speech_controller = None
@@ -392,6 +393,17 @@ class MainController:
         )
         feature_manager.register(
             FeatureSpec(
+                name="reranker",
+                setting_keys=("RAG_ENABLED", "RAG_CROSS_ENCODER_ENABLED"),
+                enabled=lambda settings: bool(settings.get("RAG_ENABLED", False))
+                and bool(settings.get("RAG_CROSS_ENCODER_ENABLED", False)),
+                factory=self._create_reranker_controller,
+                shutdown=lambda controller: controller.shutdown(),
+                priority=72,
+            )
+        )
+        feature_manager.register(
+            FeatureSpec(
                 name="graph",
                 setting_keys=("GRAPH_EXTRACTION_ENABLED",),
                 enabled=enabled("GRAPH_EXTRACTION_ENABLED"),
@@ -495,6 +507,13 @@ class MainController:
 
         controller = EmbeddingController()
         self.embedding_controller = controller
+        return controller
+
+    def _create_reranker_controller(self):
+        from controllers.reranker_controller import RerankerController
+
+        controller = RerankerController()
+        self.reranker_controller = controller
         return controller
 
     def _create_graph_controller(self):

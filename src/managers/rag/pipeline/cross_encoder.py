@@ -29,6 +29,19 @@ class CrossEncoderReranker:
                     cls._instances[model_name] = cls(model_name)
         return cls._instances[model_name]
 
+    @classmethod
+    def is_loaded(cls, model_name: str) -> bool:
+        """Прогрет ли реранкер в движке — без RPC и без загрузки модели.
+        Модель поднимается лениво при первом реранке, поэтому статус RAG обязан
+        различать «включён» и «готов отвечать без минутной паузы»."""
+        inst = cls._instances.get(str(model_name or ""))
+        return bool(inst and (inst._runtime_ready or inst._model))
+
+    def ensure_loaded(self) -> bool:
+        """Поднять реранкер заранее (фоновый прогрев на старте). Без этого модель
+        грузится внутри первого запроса и отъедает у него до минуты."""
+        return self._ensure_runtime()
+
     def _ensure_runtime(self) -> bool:
         if self._runtime_ready:
             try:
@@ -68,6 +81,8 @@ class CrossEncoderReranker:
                         validation_timeout=3600.0,
                     )
                 )
+                if self._runtime_ready:
+                    self._notify_status_changed()
                 return self._runtime_ready
             except Exception as exc:
                 logger.warning(
@@ -75,6 +90,15 @@ class CrossEncoderReranker:
                 )
                 self._runtime_ready = False
                 return False
+
+    @staticmethod
+    def _notify_status_changed() -> None:
+        try:
+            from core.events import Events, get_event_bus
+
+            get_event_bus().emit(Events.GUI.UPDATE_STATUS_COLORS)
+        except Exception:
+            pass
 
     def rerank(
         self,

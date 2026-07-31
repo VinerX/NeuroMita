@@ -34,6 +34,10 @@ from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.overlay_widget import OverlayWidget
 from utils import getTranslationVariant as _
 
+# None — валидное значение индикатора («нет особого состояния»), поэтому
+# «не передан» нужен отдельным сентинелом.
+_UNSET = object()
+
 
 class AppWindowBase(QMainWindow):
     update_chat_signal = pyqtSignal(str, object, bool, str)
@@ -1319,7 +1323,7 @@ class AppWindowBase(QMainWindow):
 
             registry = getattr(self, "_status_indicator_registry", {})
 
-            def apply_to(attr_name, checked=None, text=None):
+            def apply_to(attr_name, checked=None, text=None, indicator=_UNSET):
                 widgets = list(registry.get(attr_name, []))
                 fallback = getattr(self, attr_name, None)
                 if fallback is not None and fallback not in widgets:
@@ -1330,6 +1334,10 @@ class AppWindowBase(QMainWindow):
                         widget.setText(text)
                     if checked is not None and hasattr(widget, "setChecked"):
                         widget.setChecked(bool(checked))
+                    # Плашки статуса умеют больше двух состояний (грузится / ошибка);
+                    # простые индикаторы-точки этого метода не имеют.
+                    if indicator is not _UNSET and hasattr(widget, "set_indicator"):
+                        widget.set_indicator(indicator)
 
             apply_to("game_status_checkbox", checked=bool(state.get("game_connected")))
 
@@ -1344,7 +1352,14 @@ class AppWindowBase(QMainWindow):
                     voice_active = bool(use_voice and state.get("silero_connected"))
                 apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
 
-            apply_to("rag_status_checkbox", checked=bool(state.get("rag_enabled")))
+            # RAG «активен» только когда его модели подняты: настройка RAG_ENABLED
+            # включается мгновенно, а веса эмбеддера/реранкера грузятся минутами.
+            rag_state = str(state.get("rag_state") or "off")
+            apply_to(
+                "rag_status_checkbox",
+                checked=(rag_state == "ready"),
+                indicator={"loading": "loading", "error": "red", "ready": "green"}.get(rag_state),
+            )
             apply_to("mic_status_checkbox", checked=bool(state.get("mic_active")))
             apply_to("screen_capture_status_checkbox", checked=bool(state.get("screen_capture_active")))
             apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))

@@ -32,7 +32,7 @@ if str(PROJECT_SRC) not in sys.path:
 
 import numpy as np
 
-from services.contracts import AIEngineService, EmbeddingService
+from services.contracts import AIEngineService, EmbeddingReadiness, EmbeddingService
 
 DIM = 256
 
@@ -83,6 +83,9 @@ class _FakeEngine(AIEngineService):
 class _FakeEmbeddingService(EmbeddingService):
     """Продовый hot-path для local-эмбеддингов: RAG зовёт EmbeddingService
     напрямую. Отдаёт те же детерминированные вектора, что и _FakeEngine."""
+
+    def readiness(self):
+        return EmbeddingReadiness(model_loaded=True)
 
     def embed_one(self, text, prefix=""):
         return _fake_vec(text)

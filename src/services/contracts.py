@@ -831,10 +831,24 @@ class EmbeddingPresetService(ABC):
     def reorder(self, order: Iterable[Any]) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class EmbeddingReadiness:
+    """Готовность бэкенда эмбеддингов — для честного статуса RAG в UI."""
+
+    provider: str = "local"
+    # Модель реально прогрета в AI-engine (activate_environment + warmup прошли).
+    model_loaded: bool = False
+    failed: bool = False
+
+
 class EmbeddingService(ABC):
     """Локальные эмбеддинги RAG. Реальный бэкенд живёт в AI-engine (service='rag');
     контроллер — мост к нему. RAG зовёт это напрямую вместо синхронного EventBus-запроса, чтобы
     hot-path эмбеддинг запроса не падал guardrail'ом в пуле генерации."""
+
+    @abstractmethod
+    def readiness(self) -> EmbeddingReadiness:
+        """Состояние бэкенда без побочных эффектов (модель не грузит)."""
 
     @abstractmethod
     def embed_one(self, text: str, prefix: str = "") -> Optional[Any]:

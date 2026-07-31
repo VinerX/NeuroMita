@@ -19,6 +19,7 @@ from main_logger import logger
 from services.contracts import (
     AIEngineService,
     AIRuntimeUnavailable,
+    EmbeddingReadiness,
     EmbeddingService,
     SettingsService,
 )
@@ -41,7 +42,6 @@ class EmbeddingController(EmbeddingService):
         "RAG_VECTOR_SEARCH_ENABLED",
         "RAG_EMBED_PRESET_ID",
         "RAG_ENABLED",
-        "RAG_PRELOAD_EMBEDDINGS_MODEL",
     })
 
     def __init__(self) -> None:
@@ -63,16 +63,13 @@ class EmbeddingController(EmbeddingService):
         self._maybe_start_warmup(reason="startup")
 
     def _should_warmup(self) -> bool:
-        """Модель эмбеддингов нужна, когда включён векторный поиск (либо явный
-        preload). Тогда её стоит грузить в фоне заранее — иначе первый RAG-запрос
-        упирается в таймаут на «холодной» загрузке/скачивании весов с HuggingFace."""
-        if not self.settings.get("RAG_ENABLED", False):
-            return False
-        if self._provider_name() != "local":
-            return False
-        preload = bool(self.settings.get("RAG_PRELOAD_EMBEDDINGS_MODEL", False))
-        vector = bool(self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False))
-        return preload or vector
+        """Грузим модель ровно тогда, когда текущая конфигурация её использует —
+        то же решение, что у установщика (``required_model_targets``). Прогрев
+        обязан быть фоновым: иначе первый RAG-запрос упирается в таймаут на
+        «холодной» загрузке/скачивании весов с HuggingFace."""
+        from managers.rag.install_spec import TARGET_EMBEDDINGS, required_model_targets
+
+        return TARGET_EMBEDDINGS in required_model_targets(settings=self.settings)
 
     def _maybe_start_warmup(self, *, reason: str) -> None:
         if not self._should_warmup():
@@ -84,6 +81,15 @@ class EmbeddingController(EmbeddingService):
             f"embed-warmup-{reason}",
             self._warmup_local_backend,
             replace=True,
+        )
+
+    def readiness(self) -> EmbeddingReadiness:
+        # Нужна ли модель вообще — решает конфигурация (required_model_targets),
+        # здесь только факт: прогрета она или нет.
+        return EmbeddingReadiness(
+            provider=self._provider_name(),
+            model_loaded=self.handler is not None,
+            failed=self._handler_failed,
         )
 
     def _provider_name(self) -> str:
@@ -161,6 +167,9 @@ class EmbeddingController(EmbeddingService):
                             "RAG embeddings environment could not be initialized"
                         )
                     self.handler = object()
+                    # Индикатор RAG показывает «готово» только когда модель реально
+                    # в памяти — статус пересчитывается по этому уведомлению.
+                    self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
                 except Exception as e:
                     if "AI engine not available" in str(e):
                         # Движок ещё не поднялся — не окончательный провал, фоновый
@@ -174,6 +183,7 @@ class EmbeddingController(EmbeddingService):
                         exc_info=True,
                     )
                     self._handler_failed = True
+                    self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
                     return False
         return True
 
@@ -201,6 +211,9 @@ class EmbeddingController(EmbeddingService):
                 "key": key,
                 "value": change.value,
             })
+
+        # Сброшенный backend — это «не готово»: индикатор RAG должен об этом узнать.
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
         # Включили векторный поиск / сменили модель — прогреваем в фоне сразу,
         # чтобы первый запрос не ждал холодную загрузку.

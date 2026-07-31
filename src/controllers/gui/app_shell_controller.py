@@ -324,6 +324,9 @@ class AppShellController:
                 and model_id
                 and local_voice.check_initialized(model_id)
             )
+            from managers.rag.readiness import rag_readiness
+
+            rag = rag_readiness()
             return {
                 "game_connected": bool(use(GameLinkService).is_connected()),
                 "silero_connected": bool(telegram and telegram.is_silero_connected()),
@@ -331,6 +334,11 @@ class AppShellController:
                 "screen_capture_active": bool(capture and capture.screen_capture_active()),
                 "camera_capture_active": bool(capture and capture.camera_capture_active()),
                 "rag_enabled": bool(settings.get("RAG_ENABLED", False)),
+                # Настройка говорит «включён», а плашка обязана говорить «работает»:
+                # модели RAG поднимаются уже после старта.
+                "rag_state": rag.state,
+                "rag_embeddings": rag.embeddings,
+                "rag_reranker": rag.reranker,
                 "use_voice": use_voice,
                 "method": method,
                 "voice_initialized": voice_initialized,

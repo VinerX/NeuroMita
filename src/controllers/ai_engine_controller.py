@@ -2002,47 +2002,52 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             )
             return False
 
-        selection = self._environments.selection_with(slot, record)
-        try:
-            composition = self._environments.runtime_composition(
+        # Слоты активируются параллельно (эмбеддинги и реранкер греются в фоне
+        # одновременно), а выбор рантайма и валидации — read-modify-write. Без
+        # общего замка вторая активация собрала бы композицию по устаревшему
+        # снимку и выкинула слот соседа.
+        with self._runtime_switch_lock:
+            selection = self._environments.selection_with(slot, record)
+            try:
+                composition = self._environments.runtime_composition(
+                    selection=selection,
+                )
+            except Exception as exc:
+                logger.error(
+                    f"Cannot compose shared runtime for service={service_name} "
+                    f"item={model_id}: {exc}"
+                )
+                return False
+
+            candidate_validations = dict(self._runtime_validations)
+            current_selection = self._environments.runtime_selection()
+            requested_validation: tuple[tuple[str, str, dict[str, Any], float], ...] = ()
+            if validation_method:
+                candidate_validations[slot] = (
+                    service_name,
+                    str(validation_method),
+                    dict(validation_payload or {}),
+                    max(1.0, float(validation_timeout or timeout or 0.0)),
+                )
+                requested_validation = (candidate_validations[slot],)
+            else:
+                current_ref = current_selection.get(slot)
+                current_identity = (
+                    getattr(current_ref, "logical_id", ""),
+                    getattr(current_ref, "revision_id", ""),
+                )
+                if current_identity != (record.logical_id, record.revision_id):
+                    candidate_validations.pop(slot, None)
+
+            if not self._switch_to_composition(
+                composition,
+                timeout=timeout,
                 selection=selection,
-            )
-        except Exception as exc:
-            logger.error(
-                f"Cannot compose shared runtime for service={service_name} "
-                f"item={model_id}: {exc}"
-            )
-            return False
-
-        candidate_validations = dict(self._runtime_validations)
-        current_selection = self._environments.runtime_selection()
-        requested_validation: tuple[tuple[str, str, dict[str, Any], float], ...] = ()
-        if validation_method:
-            candidate_validations[slot] = (
-                service_name,
-                str(validation_method),
-                dict(validation_payload or {}),
-                max(1.0, float(validation_timeout or timeout or 0.0)),
-            )
-            requested_validation = (candidate_validations[slot],)
-        else:
-            current_ref = current_selection.get(slot)
-            current_identity = (
-                getattr(current_ref, "logical_id", ""),
-                getattr(current_ref, "revision_id", ""),
-            )
-            if current_identity != (record.logical_id, record.revision_id):
-                candidate_validations.pop(slot, None)
-
-        if not self._switch_to_composition(
-            composition,
-            timeout=timeout,
-            selection=selection,
-            validations=self._validation_sequence(candidate_validations),
-            reuse_validations=requested_validation,
-        ):
-            return False
-        self._runtime_validations = candidate_validations
+                validations=self._validation_sequence(candidate_validations),
+                reuse_validations=requested_validation,
+            ):
+                return False
+            self._runtime_validations = candidate_validations
         worker = self._worker_for_service(service_name)
         ready = bool(
             worker is not None
@@ -2084,26 +2089,28 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         ):
             return True
 
-        selection = self._environments.selection_with(slot, None)
-        candidate_validations = dict(self._runtime_validations)
-        candidate_validations.pop(slot, None)
-        try:
-            composition = self._environments.runtime_composition(
-                selection=selection,
-            )
-        except Exception as exc:
-            logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {exc}")
-            return False
+        # Тот же read-modify-write, что и в activate_environment — под общим замком.
+        with self._runtime_switch_lock:
+            selection = self._environments.selection_with(slot, None)
+            candidate_validations = dict(self._runtime_validations)
+            candidate_validations.pop(slot, None)
+            try:
+                composition = self._environments.runtime_composition(
+                    selection=selection,
+                )
+            except Exception as exc:
+                logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {exc}")
+                return False
 
-        ready = self._switch_to_composition(
-            composition,
-            timeout=timeout,
-            selection=selection,
-            validations=self._validation_sequence(candidate_validations),
-            promote=persist,
-        )
-        if ready and persist:
-            self._runtime_validations = candidate_validations
+            ready = self._switch_to_composition(
+                composition,
+                timeout=timeout,
+                selection=selection,
+                validations=self._validation_sequence(candidate_validations),
+                promote=persist,
+            )
+            if ready and persist:
+                self._runtime_validations = candidate_validations
         if ready:
             logger.info(
                 f"Detached environment from shared runtime: service={service_name} item={model_id}"
