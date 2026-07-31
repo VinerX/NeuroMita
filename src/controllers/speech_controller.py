@@ -371,6 +371,12 @@ class SpeechController(SpeechService):
         if self._running_engine == desired_engine and self.mic_recognition_active:
             return
 
+        # Остановка и перенастройка движка занимают заметное время: за них
+        # тумблер успевают выключить. Перечитываем перед стартом, чтобы не
+        # поднимать модель ради немедленной остановки следующим проходом.
+        if not self._desired_mic_active():
+            return
+
         self._start_maybe_install()
         self._running_engine = desired_engine if self.mic_recognition_active else None
 

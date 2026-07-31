@@ -251,6 +251,33 @@ class SpeechReconcilerTests(_SpeechReconcilerCase):
         self.assertTrue(recognition.running)
         self.assertEqual(controller.device_id, 2)
 
+    def test_forced_restart_does_not_raise_a_mic_switched_off_meanwhile(self):
+        """Тумблер выключили, пока проход останавливал движок ради перезапуска.
+
+        Итог был верным и раньше — следующий проход всё выключал, — но модель
+        успевала подняться зря. Желаемое состояние перечитываем перед стартом.
+        """
+        controller, recognition, settings = self._make()
+        controller._reconcile_once()
+        self.assertEqual(recognition.events, ["start"])
+
+        # Выключение приходит ровно в момент остановки старого распознавателя.
+        original_stop = recognition.speech_recognition_stop
+
+        def stop_and_toggle_off():
+            original_stop()
+            settings.set("MIC_ACTIVE", False)
+
+        recognition.speech_recognition_stop = stop_and_toggle_off
+        with controller._state_lock:
+            controller._restart_requested = True
+
+        controller._reconcile_once()
+
+        self.assertEqual(recognition.events, ["start", "stop"], "лишнего старта быть не должно")
+        self.assertFalse(recognition.running)
+        self.assertFalse(controller.mic_recognition_active)
+
     def test_shutdown_flag_keeps_the_mic_off(self):
         controller, recognition, _ = self._make()
         controller._reconcile_once()
