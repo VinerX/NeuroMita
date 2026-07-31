@@ -125,6 +125,25 @@ class HistoryController(HistoryService):
                 character, memory_limit, is_game_master, save_missed_history, image_quality
             )
 
+    def on_history_reset(self, character_id: str) -> None:
+        """История сброшена: снимаем отложенное сжатие и его счётчики.
+
+        Сжатие, которое уже улетело в LLM, отменить нельзя — оно само сверит
+        history_epoch перед записью (см. _commit_summary_state).
+        """
+        char_id = str(character_id or "")
+        if not char_id:
+            return
+
+        with self._compression_guard:
+            timer = self._background_compression_timers.pop(char_id, None)
+            self._compression_cooldowns.pop(char_id, None)
+            self._messages_since_last_periodic_compression.pop(char_id, None)
+            self._messages_since_last_maintenance.pop(char_id, None)
+        if timer is not None:
+            timer.cancel()
+        logger.info(f"[HistoryController][{char_id}] История сброшена: отложенное сжатие снято.")
+
     def _prepare_for_prompt_locked(
         self,
         character,
@@ -408,7 +427,13 @@ class HistoryController(HistoryService):
         *,
         history_summary: str = "",
         summary_cut: int = 0,
+        epoch: Optional[int] = None,
     ) -> None:
+        # Эпоха истории на момент чтения. Всё, что мы сейчас насуммируем, относится
+        # к ней; если история будет сброшена во время LLM-вызова, результат отбросим.
+        if epoch is None:
+            epoch = self._history_epoch(character)
+
         compress_percent = float(self._get_setting("HISTORY_COMPRESSION_MIN_PERCENT_TO_COMPRESS", 1.0))
         keep_last_setting = int(self._get_setting("HISTORY_COMPRESSION_KEEP_LAST", 10))
         enable_on_limit = bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True))
@@ -468,13 +493,19 @@ class HistoryController(HistoryService):
             logger.warning(f"[HistoryController][{char_id}] Сжатие истории не удалось.")
             return
 
+        if not self._epoch_is_current(character, epoch, stage="после сжатия"):
+            return
+
         summary_count = self._get_history_summary_count(character)
+        anchor_id = self._last_row_id(messages_to_compress)
         if is_layered:
             _, new_count = self._apply_layered_compression_result(
                 character,
                 compressed_summary=compressed_summary,
                 summary_count=summary_count,
                 compressed_count=len(messages_to_compress),
+                epoch=epoch,
+                anchor_id=anchor_id,
             )
         else:
             _, new_count = self._apply_compression_result(
@@ -484,19 +515,20 @@ class HistoryController(HistoryService):
                 previous_summary=history_summary,
                 summary_count=summary_count,
                 compressed_count=len(messages_to_compress),
+                epoch=epoch,
+                anchor_id=anchor_id,
             )
 
-        # Сжатие реально применилось — двигаем границу сводки и сообщаем UI,
-        # чтобы живые счётчики (напр. «сообщений в окне» в песочнице) обновились.
+        # Сжатие реально применилось — сообщаем UI, чтобы живые счётчики
+        # (напр. «сообщений в окне» в песочнице) обновились.
         if new_count != summary_count:
-            self._set_summary_anchor(character, self._last_row_id(messages_to_compress))
             self._emit_compressed(char_id)
 
         # Страховочный второй путь в долгую память (08 P1): просим ту же модель
         # выделить из сжимаемого куска 0-3 факта-кандидата и прогоняем через add_memory
         # (там уже дедуп). Опционально, по умолчанию выключено (доп. LLM-вызов).
         try:
-            self._extract_memory_candidates(character, messages_to_compress)
+            self._extract_memory_candidates(character, messages_to_compress, epoch=epoch)
         except Exception as e:
             logger.warning(
                 f"[HistoryController][{char_id}] Memory candidate extraction failed: {e}",
@@ -516,9 +548,11 @@ class HistoryController(HistoryService):
         "Dialogue chunk:\n{chunk}\n\nJSON:"
     )
 
-    def _extract_memory_candidates(self, character, messages_to_compress) -> None:
+    def _extract_memory_candidates(self, character, messages_to_compress, *, epoch: Optional[int] = None) -> None:
         if getattr(self, "_closed", False):
             return
+        if epoch is None:
+            epoch = self._history_epoch(character)
         try:
             if not bool(self._get_setting("MEMORY_SUMMARY_CANDIDATES_ENABLED", False)):
                 return
@@ -574,6 +608,11 @@ class HistoryController(HistoryService):
             return
 
         if not result or not getattr(result, "ok", False) or not (result.text or "").strip():
+            return
+
+        # Пока модель думала, историю могли сбросить: факты из стёртого диалога
+        # в свежую память не пишем.
+        if not self._epoch_is_current(character, epoch, stage="кандидаты в память"):
             return
 
         candidates = self._parse_memory_candidates(result.text, max_n)
@@ -667,7 +706,11 @@ class HistoryController(HistoryService):
         previous_summary: str,
         summary_count: int,
         compressed_count: int,
+        epoch: Optional[int] = None,
+        anchor_id: int = 0,
     ) -> tuple[str, int]:
+        if epoch is None:
+            epoch = self._history_epoch(character)
         new_count = summary_count + compressed_count
         new_summary = previous_summary
 
@@ -699,7 +742,14 @@ class HistoryController(HistoryService):
                 f"Неизвестный target для сжатия истории: {output_target}"
             )
 
-        self._set_history_summary_state(character, new_summary, new_count)
+        if not self._commit_summary_state(
+            character,
+            epoch=epoch,
+            summary_text=new_summary,
+            summary_count=new_count,
+            anchor_id=anchor_id,
+        ):
+            return previous_summary, summary_count
         return new_summary, new_count
 
     def _start_background_compression(self, character) -> None:
@@ -765,6 +815,9 @@ class HistoryController(HistoryService):
 
     def _run_post_response_compression(self, character) -> None:
         try:
+            # Эпоху снимаем ДО чтения истории: всё, что прочитано ниже, относится
+            # к ней, и записать результат мы имеем право только пока она актуальна.
+            epoch = self._history_epoch(character)
             history_data = character.history_manager.load_history()
             llm_messages_history: List[Dict[str, Any]] = history_data.get("messages", []) or []
             if not isinstance(llm_messages_history, list):
@@ -793,6 +846,7 @@ class HistoryController(HistoryService):
                 effective_limit,
                 history_summary=history_summary,
                 summary_cut=self._summary_cut_index(character, llm_messages_history),
+                epoch=epoch,
             )
         except Exception as e:
             logger.warning(
@@ -1094,17 +1148,76 @@ class HistoryController(HistoryService):
         except (TypeError, ValueError, AttributeError):
             return 0
 
-    def _set_summary_anchor(self, character, anchor_id: int) -> None:
-        # Без id границу не сдвигаем: лучше пересжать кусок повторно, чем потерять окно.
-        if anchor_id <= 0:
-            return
+    @staticmethod
+    def _history_epoch(character) -> int:
+        """Поколение истории персонажа. Растёт при каждом clear_history()."""
         try:
-            with character_lock(getattr(character, "char_id", "") or ""):
-                character.set_variable(self._SUMMARY_ANCHOR_VAR, int(anchor_id))
+            return int(getattr(character, "history_epoch", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _epoch_is_current(self, character, epoch: int, *, stage: str) -> bool:
+        char_id = getattr(character, "char_id", "Unknown") or "Unknown"
+        with character_lock(str(getattr(character, "char_id", "") or "")):
+            actual = self._history_epoch(character)
+        if actual == epoch:
+            return True
+        logger.info(
+            f"[HistoryController][{char_id}] История сброшена во время сжатия "
+            f"(эпоха {epoch} → {actual}), результат отброшен: {stage}."
+        )
+        return False
+
+    def _commit_summary_state(
+        self,
+        character,
+        *,
+        epoch: int,
+        summary_text: str,
+        summary_count: int,
+        anchor_id: int = 0,
+        segments: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
+        """Одна запись состояния сводки: слои + текст + счётчик + граница.
+
+        Раньше граница (anchor) писалась отдельным flush уже после текста сводки:
+        падение между двумя записями означало, что тот же кусок истории сожмётся
+        повторно — дубли фактов в сводке. Здесь всё уходит одним flush_variables(),
+        то есть одним update_variables_batch — одной транзакцией.
+
+        Возвращает False, если история была сброшена, пока шёл LLM-вызов: результат
+        старой эпохи не записываем, иначе очистка чата частично откатывается.
+        """
+        char_id = str(getattr(character, "char_id", "") or "")
+        try:
+            with character_lock(char_id):
+                actual = self._history_epoch(character)
+                if actual != epoch:
+                    logger.info(
+                        f"[HistoryController][{char_id or 'Unknown'}] Сводка не записана: "
+                        f"история сброшена (эпоха {epoch} → {actual})."
+                    )
+                    return False
+
+                if segments is not None:
+                    character.set_variable(
+                        self._SUMMARY_SEGMENTS_VAR, json.dumps(segments, ensure_ascii=False)
+                    )
+                # блоб держим синхронным с рендером слоёв — для рендера [HISTORY SUMMARY]
+                # и обратной совместимости (_get_history_summary читает именно его).
+                character.set_variable(self._SUMMARY_TEXT_VAR, str(summary_text or "").strip())
+                character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
+                # Без id границу не сдвигаем: лучше пересжать кусок повторно, чем потерять окно.
+                if anchor_id > 0:
+                    character.set_variable(self._SUMMARY_ANCHOR_VAR, int(anchor_id))
                 if hasattr(character, "flush_variables"):
                     character.flush_variables()
+            return True
         except Exception as e:
-            logger.warning(f"[HistoryController] Не удалось сохранить границу сводки: {e}", exc_info=True)
+            logger.warning(
+                f"[HistoryController] Не удалось сохранить состояние сводки: {e}", exc_info=True
+            )
+            return False
 
     def _summary_cut_index(self, character, messages: List[Dict[str, Any]]) -> int:
         """Сколько сообщений с начала списка уже покрыто сводкой.
@@ -1124,18 +1237,6 @@ class HistoryController(HistoryService):
                 break
             cut += 1
         return cut
-
-    def _set_history_summary_state(self, character, summary: str, summary_count: int) -> None:
-        # Короткая критическая секция: сам LLM-вызов сжатия идёт вне блокировки,
-        # иначе генерация ждала бы его минуту.
-        try:
-            with character_lock(getattr(character, "char_id", "") or ""):
-                character.set_variable(self._SUMMARY_TEXT_VAR, str(summary or "").strip())
-                character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
-                if hasattr(character, "flush_variables"):
-                    character.flush_variables()
-        except Exception as e:
-            logger.warning(f"[HistoryController] Не удалось сохранить состояние summary: {e}", exc_info=True)
 
     # ── Слоистая сводка (layered) ─────────────────────────────────────────────
 
@@ -1186,19 +1287,6 @@ class HistoryController(HistoryService):
             if text:
                 parts.append(text)
         return "\n\n".join(parts).strip()
-
-    def _set_summary_segments_state(self, character, segments, rendered, summary_count) -> None:
-        try:
-            with character_lock(getattr(character, "char_id", "") or ""):
-                character.set_variable(self._SUMMARY_SEGMENTS_VAR, json.dumps(segments, ensure_ascii=False))
-                # блоб держим синхронным с рендером слоёв — для рендера [HISTORY SUMMARY]
-                # и обратной совместимости (_get_history_summary читает именно его).
-                character.set_variable(self._SUMMARY_TEXT_VAR, str(rendered or "").strip())
-                character.set_variable(self._SUMMARY_COUNT_VAR, max(0, int(summary_count or 0)))
-                if hasattr(character, "flush_variables"):
-                    character.flush_variables()
-        except Exception as e:
-            logger.warning(f"[HistoryController] Не удалось сохранить слои сводки: {e}", exc_info=True)
 
     def _maybe_rollup_segments(
         self, character, segments: List[Dict[str, Any]]
@@ -1260,7 +1348,11 @@ class HistoryController(HistoryService):
         compressed_summary: str,
         summary_count: int,
         compressed_count: int,
+        epoch: Optional[int] = None,
+        anchor_id: int = 0,
     ) -> tuple[str, int]:
+        if epoch is None:
+            epoch = self._history_epoch(character)
         segments = self._load_summary_segments(character)
         segments.append({
             "text": str(compressed_summary or "").strip(),
@@ -1268,10 +1360,19 @@ class HistoryController(HistoryService):
             "level": 0,
             "created": self._now_iso(),
         })
+        # Роллап — это ещё один LLM-вызов, поэтому эпоху проверяем уже после него.
         segments = self._maybe_rollup_segments(character, segments)
         new_count = summary_count + compressed_count
         rendered = self._render_summary_segments(segments)
-        self._set_summary_segments_state(character, segments, rendered, new_count)
+        if not self._commit_summary_state(
+            character,
+            epoch=epoch,
+            summary_text=rendered,
+            summary_count=new_count,
+            anchor_id=anchor_id,
+            segments=segments,
+        ):
+            return self._get_history_summary(character), summary_count
         logger.info(
             f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
             f"Layered summary: {len(segments)} слоёв, свёрнуто {new_count} сообщений."

@@ -8,10 +8,11 @@ import json
 from DSL.path_resolver import LocalPathResolver
 from DSL.post_dsl_engine import PostDslInterpreter
 from utils import clamp
+from core.character_locks import character_lock
 from core.events import get_event_bus, Events
 from core.safe_eval import safe_eval_expression
 from core.services import use
-from services.contracts import AppVarsService, SettingsService
+from services.contracts import AppVarsService, HistoryService, SettingsService
 
 from managers.game_manager import GameManager
 from managers.memory_manager import is_island
@@ -101,6 +102,10 @@ class Character:
 
         self.variables: Dict[str, Any] = {}
         self._dirty_vars: set = set()
+        # Поколение истории. Растёт при каждом сбросе; всё, что читало историю до
+        # сброса (фоновое сжатие, кандидаты в память), обязано сверить эпоху перед
+        # записью — иначе результат многосекундного LLM-вызова воскрешает удалённое.
+        self.history_epoch: int = 0
         self.is_cartridge = is_cartridge
         self.app_vars: Dict[str, Any] = {}
 
@@ -1099,6 +1104,16 @@ class Character:
 
     def clear_history(self):
         logger.info(f"[{self.char_id}] Clearing history and resetting state.")
+
+        # Эпоху двигаем под тем же замком, что держит сжатие при записи результата:
+        # либо сжатие успело записаться до сброса, либо увидит новую эпоху и выбросит
+        # свой результат. Середины, в которой сводка переживает очистку, нет.
+        with character_lock(self.char_id):
+            self.history_epoch = int(getattr(self, "history_epoch", 0)) + 1
+        try:
+            use(HistoryService).on_history_reset(self.char_id)
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Не удалось снять отложенное сжатие: {e}", exc_info=True)
 
         # Sticky core-memory triggers (e.g. code 23) are session/chat-scoped.
         try:

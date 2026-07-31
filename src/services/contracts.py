@@ -415,6 +415,16 @@ class HistoryService(ABC):
         image_quality: Dict[str, Any],
     ) -> PreparedHistory: ...
 
+    @abstractmethod
+    def on_history_reset(self, character_id: str) -> None:
+        """История персонажа сброшена: снять отложенное сжатие и его счётчики.
+
+        Вызывается из Character.clear_history() под character_lock. Всё, что уже
+        летит в фоне (сжатие, кандидаты в память), обязано после этого проверить
+        history_epoch персонажа и выбросить свой результат.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Промпт
