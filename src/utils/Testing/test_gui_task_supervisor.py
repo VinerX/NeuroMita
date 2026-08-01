@@ -11,15 +11,27 @@ import gc
 
 import pytest
 
-from core.gui_task_supervisor import GuiTaskSupervisor, TaskAlreadyRunning
+from core.gui_task_supervisor import (
+    GuiTaskSupervisor,
+    TaskAlreadyRunning,
+    TaskOwnerClosed,
+    TaskResourceBusy,
+)
+
+
+class _Dialog:
+    """Двойник окна-владельца. Именно класс, а не `object()`: супервизор держит
+    владельцев слабыми ссылками, и голый object() их не поддерживает."""
 
 
 class _FakeWorker:
     """Минимальный двойник QThread: интересен только его жизненный цикл."""
 
-    def __init__(self, name="w", *, obeys_interruption=True, task_key="", owner=None):
+    def __init__(self, name="w", *, obeys_interruption=True, task_key="", owner=None,
+                 exclusive_resources=()):
         self.name = name
         self.task_key = task_key
+        self.exclusive_resources = frozenset(exclusive_resources)
         self._owner = owner
         self._running = True
         self._finished = False
@@ -208,7 +220,7 @@ def test_cancel_owner_stops_only_the_tasks_of_that_window():
     вправе отменять переиндексацию, запущенную из главного окна.
     """
     sup = GuiTaskSupervisor()
-    dialog = object()
+    dialog = _Dialog()
     mine = _FakeWorker("dialog-task", owner=dialog)
     foreign = _FakeWorker("reindex-all", task_key="reindex_all")
     sup.register(mine)
@@ -226,7 +238,7 @@ def test_cancel_owner_stops_only_the_tasks_of_that_window():
 
 def test_cancel_owner_detaches_a_stubborn_task_of_that_window():
     sup = GuiTaskSupervisor()
-    dialog = object()
+    dialog = _Dialog()
     stubborn = _FakeWorker("stuck", obeys_interruption=False, owner=dialog)
     sup.register(stubborn)
 
@@ -243,6 +255,80 @@ def test_cancel_owner_without_owner_is_a_noop():
 
     assert sup.cancel_owner(None, timeout_ms=10) == []
     assert worker.interrupted is False
+
+
+def test_two_reindexings_of_the_same_base_cannot_run_together():
+    """Разные ключи, одна база — вторая задача не запускается.
+
+    «Индекс нового» и «полная переиндексация» зовутся по-разному, но пишут в
+    одну индексную базу. Одного task_key тут мало — исключение идёт по ресурсу.
+    """
+    sup = GuiTaskSupervisor()
+    first = _FakeWorker("fill", task_key="reindex_all", exclusive_resources={"rag-index"})
+    sup.register(first)
+
+    with pytest.raises(TaskResourceBusy) as conflict:
+        sup.register(_FakeWorker(
+            "full", task_key="full_reindex_all", exclusive_resources={"rag-index"},
+        ))
+
+    assert conflict.value.resource == "rag-index"
+    assert conflict.value.worker is first
+
+
+def test_index_of_all_characters_blocks_a_single_one():
+    """Ресурсы иерархичны: общий занят — частный не пройдёт, и наоборот."""
+    sup = GuiTaskSupervisor()
+    sup.register(_FakeWorker("all", exclusive_resources={"rag-index"}))
+
+    with pytest.raises(TaskResourceBusy):
+        sup.register(_FakeWorker("one", exclusive_resources={"rag-index:crazy"}))
+
+    other = GuiTaskSupervisor()
+    other.register(_FakeWorker("one", exclusive_resources={"rag-index:crazy"}))
+    with pytest.raises(TaskResourceBusy):
+        other.register(_FakeWorker("all", exclusive_resources={"rag-index"}))
+
+
+def test_two_characters_are_indexed_independently():
+    sup = GuiTaskSupervisor()
+    sup.register(_FakeWorker("crazy", exclusive_resources={"rag-index:crazy"}))
+    sup.register(_FakeWorker("kind", exclusive_resources={"rag-index:kind"}))
+
+    assert len(sup.active_workers()) == 2
+
+
+def test_finished_task_releases_its_resource():
+    sup = GuiTaskSupervisor()
+    done = _FakeWorker("done", exclusive_resources={"rag-index"})
+    sup.register(done)
+    done.finish()
+
+    sup.register(_FakeWorker("next", exclusive_resources={"rag-index:crazy"}))
+
+    assert [w.name for w in sup.active_workers()] == ["next"]
+
+
+def test_closed_owner_cannot_start_new_tasks():
+    """Поздний колбэк умершего окна не заводит новую задачу.
+
+    cancel_owner отвязывает колбэки, но один из них мог уже стоять в очереди
+    GUI-потока — и раньше успевал нажать «повторить» на уничтоженном диалоге.
+    """
+    sup = GuiTaskSupervisor()
+    dialog = _Dialog()
+    first = _FakeWorker("first", owner=dialog)
+    sup.register(first)
+    sup.cancel_owner(dialog, timeout_ms=10)
+    sup.forget(first)  # остановленный воркер снимается с учёта по finished
+
+    with pytest.raises(TaskOwnerClosed):
+        sup.register(_FakeWorker("late", owner=dialog))
+
+    # Чужие окна закрытие диалога не задевает.
+    alive = _Dialog()
+    sup.register(_FakeWorker("other", owner=alive))
+    assert [w.name for w in sup.active_workers()] == ["other"]
 
 
 def test_forget_of_unknown_worker_is_harmless():

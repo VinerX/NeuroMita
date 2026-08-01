@@ -62,9 +62,13 @@ class ChatServerNew:
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
-        # Роль подключения: кто вправе принимать голос игрока. Клиент объявляет
-        # её полем client_role в любом своём запросе.
+        # Роль подключения: кто вправе принимать голос игрока. Объявляется
+        # рукопожатием (action=hello) или полем client_role в первом запросе.
         self.client_roles: Dict[str, str] = {}
+        # Таблицы подключений меняет цикл событий сервера, а читают их GUI и
+        # поток ASR — «кому отдать распознанную фразу» спрашивают оттуда.
+        # Без лока читатель видел бы полуобновлённую картину.
+        self._clients_lock = threading.Lock()
         # Порядковый номер подключения: ip:port переиспользуется ОС, а состояние
         # (окно речи, задачи, эхо-подавитель) привязано к конкретной сессии —
         # запоздавшее событие мёртвой сессии не должно попасть в новую.
@@ -190,7 +194,8 @@ class ChatServerNew:
         client_id = f"{addr[0]}:{addr[1]}#{next(self._connection_seq)}"
         logger.info(f"Новое подключение от {client_id}")
 
-        self.active_connections[client_id] = writer
+        with self._clients_lock:
+            self.active_connections[client_id] = writer
         self.client_tasks[client_id] = set()
         self._notify_connection_changed(True, client_id)
 
@@ -241,7 +246,6 @@ class ChatServerNew:
         except Exception as e:
             logger.error(f"Ошибка в handle_client: {e}", exc_info=True)
         finally:
-            self.active_connections.pop(client_id, None)
             self._forget_client_state(client_id)
 
             try:
@@ -255,8 +259,10 @@ class ChatServerNew:
             self._notify_connection_changed(False, client_id)
 
     def _forget_client_state(self, client_id: str) -> None:
+        with self._clients_lock:
+            self.active_connections.pop(client_id, None)
+            self.client_roles.pop(client_id, None)
         self.client_tasks.pop(client_id, None)
-        self.client_roles.pop(client_id, None)
         self.last_participants.pop(client_id, None)
         stale_dialogue_keys = [
             key for key in self._last_sent_dialogue_text
@@ -267,16 +273,18 @@ class ChatServerNew:
 
     async def process_request(self, request: Dict[str, Any], client_id: str):
         if not isinstance(request, dict):
-            writer = self.active_connections.get(client_id)
+            writer = self._writer_for(client_id)
             if writer:
                 await self.send_error(writer, "Request must be a JSON object")
             return
         action = request.get('action')
-        writer = self.active_connections.get(client_id)
+        writer = self._writer_for(client_id)
         if not writer:
             return
 
-        self._remember_client_role(client_id, request.get("client_role"))
+        # Роль принимается и вне hello: мод объявляет её полем запроса, и
+        # рукопожатие для него — не обязательный, а более явный путь.
+        self.declare_client_role(client_id, request.get("client_role"))
 
         handler = self._actions.get(str(action))
         if not handler:
@@ -313,10 +321,10 @@ class ChatServerNew:
         reason: str = 'Blocked by settings',
         req_id: Optional[str] = None
     ):
-        if client_id not in self.active_connections:
+        writer = self._writer_for(client_id)
+        if writer is None:
             return
 
-        writer = self.active_connections[client_id]
         uid = f"abrt_{uuid.uuid4().hex}"
 
         body = {
@@ -336,10 +344,10 @@ class ChatServerNew:
         await self.send_json(writer, message)
 
     async def send_task_update(self, client_id: str, task):
-        if client_id not in self.active_connections:
+        writer = self._writer_for(client_id)
+        if writer is None:
             return
-        writer = self.active_connections[client_id]
-        message = {"type": "task_update", "uid": task.uid, "status": task.status.value, "body": task.to_dict()}
+        message ={"type": "task_update", "uid": task.uid, "status": task.status.value, "body": task.to_dict()}
         await self.send_json(writer, message)
 
     async def send_json(self, writer: asyncio.StreamWriter, data: Dict[str, Any]) -> bool:
@@ -383,14 +391,16 @@ class ChatServerNew:
             await self.server.wait_closed()
             self.server = None
 
-        for writer in list(self.active_connections.values()):
+        for writer in self._writers_snapshot():
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
 
-        self.active_connections.clear()
+        with self._clients_lock:
+            self.active_connections.clear()
+            self.client_roles.clear()
 
     # Runtime setters
     def set_ignore_game_requests(self, value: bool):
@@ -419,7 +429,7 @@ class ChatServerNew:
             return
 
         async def _push():
-            writer = self.active_connections.get(str(client_id or ""))
+            writer = self._writer_for(client_id)
             if writer is not None:
                 await self.send_json(writer, payload)
 
@@ -439,9 +449,9 @@ class ChatServerNew:
             return
 
         async def _push():
-            if not self.active_connections:
+            writers = self._writers_snapshot()
+            if not writers:
                 return
-            writers = list(self.active_connections.values())
             await asyncio.gather(*(self.send_json(w, payload) for w in writers), return_exceptions=True)
 
         try:
@@ -452,35 +462,73 @@ class ChatServerNew:
     def schedule_broadcast_loaded_settings(self, body: Dict[str, Any]) -> None:
         self.schedule_broadcast_json({"type": "loaded_settings", "body": body})
 
-    # Роль, которая вправе принимать ход игрока. Пустая строка — клиент роли не
-    # объявил: старый мод её не шлёт, и отказ ему сломал бы связь до обновления.
-    PLAYER_INPUT_ROLES = frozenset({"game", ""})
+    # Роль игры: только она вправе принимать ход игрока.
+    GAME_ROLE = "game"
+    # Версия протокола, которую сервер объявляет в ответ на рукопожатие.
+    PROTOCOL_VERSION = 1
 
-    def _remember_client_role(self, client_id: str, role: Any) -> None:
-        if role is None:
-            return
+    def _writer_for(self, client_id: str) -> asyncio.StreamWriter | None:
+        with self._clients_lock:
+            return self.active_connections.get(str(client_id or ""))
+
+    def _writers_snapshot(self) -> list[asyncio.StreamWriter]:
+        with self._clients_lock:
+            return list(self.active_connections.values())
+
+    def _clients_snapshot(self) -> list[tuple[str, str]]:
+        """Пары (сессия, роль) в порядке подключения — согласованный срез."""
+        with self._clients_lock:
+            return [(cid, self.client_roles.get(cid, "")) for cid in self.active_connections]
+
+    def declare_client_role(self, client_id: str, role: Any) -> str:
+        """Зафиксировать роль подключения. Возвращает действующую роль.
+
+        Роль объявляется один раз и до разрыва соединения не меняется: иначе
+        клиент, подключившийся как диагностический, мог бы посреди сессии
+        назваться игрой и увести у неё ход игрока.
+        """
+        client_id = str(client_id or "")
         value = str(role or "").strip().lower()
-        if self.client_roles.get(client_id) == value:
-            return
-        self.client_roles[client_id] = value
+        with self._clients_lock:
+            current = self.client_roles.get(client_id, "")
+            if not value or current == value:
+                return current
+            if current:
+                logger.warning(
+                    f"Клиент {client_id} пытался сменить роль {current!r} на {value!r} — отклонено"
+                )
+                return current
+            self.client_roles[client_id] = value
         logger.info(f"Клиент {client_id} объявил роль {value!r}")
+        return value
+
+    @classmethod
+    def _player_input_owner(cls, clients: list[tuple[str, str]]) -> str:
+        """Единственная сессия, которой принадлежит ход игрока.
+
+        Явная роль `game` — владелец; если игр несколько, ход у самой свежей.
+        Клиент без роли — это старый мод, рукопожатия он не знает; ход ему
+        отдаётся только когда явной игры нет и такой клиент один. Иначе
+        подключившаяся утилита молча перехватывала бы голос, а угадывать, кто
+        из двух безымянных — игра, сервер не вправе.
+        """
+        games = [cid for cid, role in clients if role == cls.GAME_ROLE]
+        if games:
+            return games[-1]
+        undeclared = [cid for cid, role in clients if not role]
+        return undeclared[0] if len(undeclared) == 1 else ""
 
     def owns_player_input(self, client_id: str) -> bool:
         """Вправе ли эта сессия получать распознанную речь игрока."""
-        return self.client_roles.get(str(client_id or ""), "") in self.PLAYER_INPUT_ROLES
+        return bool(client_id) and self.primary_client_id() == str(client_id)
 
     def primary_client_id(self) -> str:
         """Клиент, которому адресуются одиночные push-сообщения (голос).
 
         Соединений может быть несколько (второй запуск игры, тестовый клиент), а
         реплика игрока должна породить ровно один ход — иначе broadcast создаст
-        по задаче на каждого. Берём самое свежее подключение из тех, кто вправе
-        принимать ввод: диагностический клиент, подключившийся последним, не
-        должен перехватывать голос у игры."""
-        for client_id in reversed(self.active_connections):
-            if self.owns_player_input(client_id):
-                return client_id
-        return ""
+        по задаче на каждого."""
+        return self._player_input_owner(self._clients_snapshot())
 
     def schedule_send_asr_text(
         self,
@@ -526,7 +574,7 @@ class ChatServerNew:
         target = str(client_id or "")
 
         async def _push() -> bool:
-            writer = self.active_connections.get(target) if target else None
+            writer = self._writer_for(target) if target else None
             if writer is None:
                 logger.info(f"asr_text: сессия {target!r} уже закрыта, отправлять некому")
                 return False

@@ -6,6 +6,7 @@
 Здесь проверяется обе стороны: провал даёт ERROR, а последующий удачный рестарт
 возвращает LOADING и запускает прогрев, который доводит состояние до READY.
 """
+import threading
 from threading import Lock
 
 from core.events import Event
@@ -28,7 +29,8 @@ def _controller():
     ctrl.event_bus = _Bus()
     ctrl._state = ModelState.LOADING
     ctrl._error = ""
-    ctrl._init_lock = Lock()
+    ctrl._state_lock = Lock()
+    ctrl._activation_lock = Lock()
     ctrl._runtime_epoch = 0
     ctrl.warmups = []
     ctrl._maybe_start_warmup = lambda *, reason: ctrl.warmups.append(reason)
@@ -145,15 +147,68 @@ def test_stale_rerank_result_cannot_light_up_a_restarted_runtime():
 
 def test_stale_embedding_warmup_cannot_light_up_a_restarted_runtime():
     ctrl = _controller()
-    epoch = ctrl._current_epoch()
+    epoch = ctrl._snapshot()[2]
 
     ctrl._on_ai_service_restarted(_restarted(False, "worker exited"))
 
     ctrl._set_state(ModelState.READY, epoch=epoch)
     assert ctrl.readiness().state is ModelState.ERROR
 
-    ctrl._set_state(ModelState.READY, epoch=ctrl._current_epoch())
+    ctrl._set_state(ModelState.READY, epoch=ctrl._snapshot()[2])
     assert ctrl.readiness().state is ModelState.READY
+
+
+def test_activation_does_not_freeze_state_while_the_model_loads():
+    """Загрузка модели идёт минутами — состояние на это время не запирается.
+
+    Пока веса тянутся с HuggingFace, индикатор обязан читаться, а смена модели —
+    менять поколение. Заодно проверяется главное следствие: результат активации,
+    начатой в прошлом поколении, зелёный не зажигает.
+    """
+    ctrl = _controller()
+    ctrl.settings = {"RAG_ENABLED": True, "RAG_VECTOR_SEARCH_ENABLED": True}
+    ctrl._provider_name = lambda: "local"
+
+    started, release = threading.Event(), threading.Event()
+
+    def _slow_activation():
+        started.set()
+        assert release.wait(timeout=5)
+
+    ctrl._activate_embeddings = _slow_activation
+
+    result = []
+    worker = threading.Thread(target=lambda: result.append(ctrl._ensure_local_backend()))
+    worker.start()
+    assert started.wait(timeout=5)
+
+    # Активация ещё идёт, а состояние и читается, и меняется.
+    assert ctrl.readiness().state is ModelState.LOADING
+    ctrl._bump_runtime_epoch()
+
+    release.set()
+    worker.join(timeout=5)
+
+    assert result == [False]
+    assert ctrl.readiness().state is ModelState.LOADING
+
+
+def test_saving_the_active_preset_drops_ready_and_rewarms():
+    """Пересохранённый пресет с другой моделью не оставляет зелёный индикатор.
+
+    Id пресета тот же, сигнатура настроек не изменилась — раньше сбрасывался
+    только кэш конфига, и READY продолжал показывать модель, которой в памяти
+    уже нет.
+    """
+    ctrl = _controller()
+    ctrl._set_state(ModelState.READY)
+    epoch = ctrl._snapshot()[2]
+
+    ctrl._on_preset_mutated(Event("embedding_presets.preset_saved", {"preset_id": "p1"}))
+
+    assert ctrl.readiness().state is ModelState.LOADING
+    assert ctrl._snapshot()[2] != epoch
+    assert ctrl.warmups == ["preset_mutated"]
 
 
 def test_error_state_reaches_rag_indicator():

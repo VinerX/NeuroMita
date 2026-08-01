@@ -53,7 +53,14 @@ class EmbeddingController(EmbeddingService):
         )
         self._state: ModelState = ModelState.LOADING
         self._error: str = ""
-        self._init_lock = Lock()
+        # Два разных лока, и это принципиально. Состояние (_state/_error/эпоха)
+        # читают и меняют из GUI, из шины и из shutdown — этот лок обязан
+        # отпускаться мгновенно. Активация же тянет веса с HuggingFace и живёт
+        # минутами; будь она под тем же локом, сменить поколение или погасить
+        # контроллер во время загрузки стало бы невозможно — а вся защита по
+        # поколениям ровно на этом и держится.
+        self._state_lock = Lock()
+        self._activation_lock = Lock()
         # Поколение рантайма: рестарт движка и смена модели делают недействительным
         # прогрев, начатый до них, иначе запоздавший успех зажигает зелёный по
         # уже несуществующей модели.
@@ -76,37 +83,47 @@ class EmbeddingController(EmbeddingService):
 
         return TARGET_EMBEDDINGS in required_model_targets(settings=self.settings)
 
-    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> None:
-        """Единственная точка смены состояния: индикатор RAG читает его же."""
-        with self._init_lock:
+    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> bool:
+        """Единственная точка смены состояния: индикатор RAG читает его же.
+
+        False — результат отброшен как устаревший: рантайм сменился, пока шла
+        активация.
+        """
+        with self._state_lock:
             if epoch is not None and epoch != self._runtime_epoch:
                 logger.debug(
                     f"EmbeddingController: результат поколения {epoch} отброшен — "
                     "рантайм с тех пор сменился"
                 )
-                return
+                return False
             if self._state is state and self._error == error:
-                return
+                return True
             self._state = state
             self._error = error
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+        return True
 
     def _bump_runtime_epoch(self) -> None:
-        with self._init_lock:
+        with self._state_lock:
             self._runtime_epoch += 1
 
-    def _current_epoch(self) -> int:
-        with self._init_lock:
-            return self._runtime_epoch
+    def _snapshot(self) -> tuple[ModelState, str, int]:
+        """Согласованный срез состояния: читать поля по отдельности нельзя —
+        между чтениями рантайм успевает смениться."""
+        with self._state_lock:
+            return self._state, self._error, self._runtime_epoch
 
     def _maybe_start_warmup(self, *, reason: str) -> None:
         if not self._should_warmup():
             return
-        if self._state in (ModelState.READY, ModelState.DISABLED):
+        if self._snapshot()[0] in (ModelState.READY, ModelState.DISABLED):
             return
+        # Имя без причины — чтобы replace=True действительно заменял прогрев, а
+        # не плодил по потоку на каждый повод.
+        logger.debug(f"EmbeddingController: прогрев эмбеддингов, причина — {reason}")
         task_supervisor().start_thread(
             self,
-            f"embed-warmup-{reason}",
+            "embed-warmup",
             self._warmup_local_backend,
             replace=True,
         )
@@ -114,10 +131,11 @@ class EmbeddingController(EmbeddingService):
     def readiness(self) -> EmbeddingReadiness:
         # Нужна ли модель вообще — решает конфигурация (required_model_targets),
         # здесь только факт: прогрета она или нет.
+        state, error, _ = self._snapshot()
         return EmbeddingReadiness(
             provider=self._provider_name(),
-            state=self._state,
-            error=self._error,
+            state=state,
+            error=error,
         )
 
     def _provider_name(self) -> str:
@@ -161,7 +179,7 @@ class EmbeddingController(EmbeddingService):
         # тянуть веса с HF (~минуты). Поэтому ретраим до готовности движка, чтобы
         # прогрев состоялся в фоне, а не сорвался из-за стартовой гонки.
         for _ in range(150):  # ~5 минут ожидания движка (загрузка идёт уже в нём)
-            if self._state in (ModelState.READY, ModelState.DISABLED):
+            if self._snapshot()[0] in (ModelState.READY, ModelState.DISABLED):
                 return
             if not self._should_warmup():
                 return
@@ -175,12 +193,10 @@ class EmbeddingController(EmbeddingService):
             time.sleep(2.0)
 
     def _ensure_local_backend(self, *, force: bool = False) -> bool:
-        # Фиксируем поколение до активации: она длится минуты, и за это время
-        # движок могли перезапустить или сменить модель.
-        epoch = self._current_epoch()
-        if self._state is ModelState.DISABLED:
+        state, _, _ = self._snapshot()
+        if state is ModelState.DISABLED:
             return False
-        if self._state is ModelState.ERROR and not force:
+        if state is ModelState.ERROR and not force:
             return False
         if not self.settings.get("RAG_ENABLED", False):
             return False
@@ -190,74 +206,79 @@ class EmbeddingController(EmbeddingService):
             self._set_state(ModelState.LOADING)
             logger.debug("EmbeddingController: non-local provider, AI engine warmup skipped")
             return False
-        if self._state is ModelState.READY:
+        if state is ModelState.READY:
             return True
 
-        with self._init_lock:
-            if self._state is not ModelState.READY:
-                try:
-                    ms = resolve_model_settings()
-                    engine_service = use(AIEngineService)
-                    engine = engine_service.get_engine()
-                    if engine is None:
-                        raise RuntimeError("AI engine not available")
-                    activate = getattr(engine, "activate_environment", None)
-                    if not callable(activate):
-                        raise RuntimeError("AI engine not available")
-                    if not activate(
-                        "rag",
-                        "embeddings",
-                        category="rag",
-                        runtime_slot="rag:embeddings",
-                        timeout=30.0,
-                        validation_method="warmup_embeddings",
-                        validation_payload={
-                            "model_name": ms["hf_name"],
-                            "query_prefix": ms["query_prefix"],
-                        },
-                        validation_timeout=3600.0,
-                    ):
-                        raise RuntimeError(
-                            "RAG embeddings environment could not be initialized"
-                        )
-                    if epoch != self._runtime_epoch:
-                        logger.debug(
-                            f"EmbeddingController: прогрев поколения {epoch} отброшен — "
-                            "рантайм с тех пор сменился"
-                        )
-                        return False
-                    self._state = ModelState.READY
-                    self._error = ""
-                    # Индикатор RAG показывает «готово» только когда модель реально
-                    # в памяти — статус пересчитывается по этому уведомлению.
-                    self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-                except Exception as e:
-                    if "AI engine not available" in str(e):
-                        # Движок ещё не поднялся — не окончательный провал, фоновый
-                        # прогрев повторит попытку позже.
-                        logger.debug(
-                            "EmbeddingController: AI engine ещё не готов для прогрева эмбеддингов, повторю позже"
-                        )
-                        return False
-                    logger.error(
-                        f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
-                        exc_info=True,
+        # Singleflight: активацию делает один поток, остальные ждут его исхода.
+        # Состояние при этом не заперто — эпоху можно сменить прямо во время
+        # загрузки, и её результат будет отброшен как чужой.
+        with self._activation_lock:
+            state, _, epoch = self._snapshot()
+            if state is ModelState.READY:
+                return True
+            if state is ModelState.DISABLED:
+                return False
+            try:
+                self._activate_embeddings()
+            except Exception as e:
+                if "AI engine not available" in str(e):
+                    # Движок ещё не поднялся — не окончательный провал, фоновый
+                    # прогрев повторит попытку позже.
+                    logger.debug(
+                        "EmbeddingController: AI engine ещё не готов для прогрева эмбеддингов, повторю позже"
                     )
-                    if epoch != self._runtime_epoch:
-                        return False
-                    self._state = ModelState.ERROR
-                    self._error = str(e)
-                    self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
                     return False
-        return True
+                logger.error(
+                    f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
+                    exc_info=True,
+                )
+                self._set_state(ModelState.ERROR, str(e), epoch=epoch)
+                return False
+
+        # Индикатор RAG показывает «готово» только когда модель реально в памяти,
+        # и только если она всё ещё та самая — это решает проверка поколения.
+        return self._set_state(ModelState.READY, epoch=epoch)
+
+    def _activate_embeddings(self) -> None:
+        """Поднять окружение эмбеддингов в AI-движке. Долгая операция."""
+        ms = resolve_model_settings()
+        engine = use(AIEngineService).get_engine()
+        activate = getattr(engine, "activate_environment", None) if engine is not None else None
+        if not callable(activate):
+            raise RuntimeError("AI engine not available")
+        if not activate(
+            "rag",
+            "embeddings",
+            category="rag",
+            runtime_slot="rag:embeddings",
+            timeout=30.0,
+            validation_method="warmup_embeddings",
+            validation_payload={
+                "model_name": ms["hf_name"],
+                "query_prefix": ms["query_prefix"],
+            },
+            validation_timeout=3600.0,
+        ):
+            raise RuntimeError("RAG embeddings environment could not be initialized")
+
+    def _invalidate_runtime(self, *, reason: str) -> None:
+        """Конфигурация эмбеддингов изменилась — прогретая модель больше не та.
+
+        Одного сброса кэша конфига мало: состояние осталось бы READY, и
+        индикатор горел бы зелёным по модели, которой в памяти нет. Сохранённый
+        под тем же id пресет с другой моделью — ровно этот случай.
+        """
+        invalidate_embedding_config_cache()
+        self._bump_runtime_epoch()
+        self._set_state(ModelState.LOADING)
+        self._maybe_start_warmup(reason=reason)
 
     def _on_preset_mutated(self, _event: Event) -> None:
-        invalidate_embedding_config_cache()
+        self._invalidate_runtime(reason="preset_mutated")
 
     def _on_model_changed(self, event: Event) -> None:
-        data = event.data or {}
-        invalidate_embedding_config_cache()
-        logger.info(f"EmbeddingController: MODEL_CHANGED event received: {data}")
+        logger.info(f"EmbeddingController: MODEL_CHANGED event received: {event.data or {}}")
+        self._invalidate_runtime(reason="model_changed")
 
     def _on_setting_changed(self, change) -> None:
         key = change.key
@@ -265,23 +286,21 @@ class EmbeddingController(EmbeddingService):
             return
 
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю local backend cache")
-        invalidate_embedding_config_cache()
-        # Прогрев прошлой модели больше не относится к делу — новое поколение.
-        self._bump_runtime_epoch()
-        self._set_state(ModelState.LOADING)
 
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
+            # Сброс рантайма сделает обработчик MODEL_CHANGED — тот же, что и для
+            # смены модели снаружи. Дублировать его здесь незачем.
             self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
                 "key": key,
                 "value": change.value,
             })
+        else:
+            # Прогрев прошлой конфигурации больше не относится к делу — новое
+            # поколение, LOADING и фоновый прогрев новой.
+            self._invalidate_runtime(reason=f"setting:{key}")
 
         # Сброшенный backend — это «не готово»: индикатор RAG должен об этом узнать.
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-
-        # Включили векторный поиск / сменили модель — прогреваем в фоне сразу,
-        # чтобы первый запрос не ждал холодную загрузку.
-        self._maybe_start_warmup(reason=f"setting:{key}")
 
     def shutdown(self) -> None:
         subscription = self._settings_subscription
@@ -291,7 +310,10 @@ class EmbeddingController(EmbeddingService):
         # Подписки weak=False держат сильную ссылку на bound method — иначе
         # выключенный контроллер остаётся жив и реагирует на события.
         self.event_bus.unsubscribe_owner(self)
-        with self._init_lock:
+        # Гасим сразу и вместе с поколением: активация может идти прямо сейчас,
+        # и ждать её здесь нельзя — её результат просто не будет применён.
+        with self._state_lock:
+            self._runtime_epoch += 1
             self._state = ModelState.DISABLED
             self._error = ""
         task_supervisor().cancel_owner(self, timeout=1.0)

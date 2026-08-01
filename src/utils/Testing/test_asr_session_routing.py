@@ -86,10 +86,24 @@ def test_text_for_closed_session_is_not_delivered_to_the_new_one():
     assert new.payloads() == []
 
 
-def test_primary_client_id_is_the_newest_session():
+def test_newest_game_session_owns_the_turn():
     with _Loop() as loop:
         srv = _server(loop, {"a#1": _FakeWriter(), "b#2": _FakeWriter()})
+        _declare_role(srv, loop, "a#1", "game")
+        _declare_role(srv, loop, "b#2", "game")
+
         assert srv.primary_client_id() == "b#2"
+
+
+def test_two_undeclared_clients_leave_the_turn_to_nobody():
+    """Кто из двух безымянных — игра, сервер не угадывает.
+
+    Раньше ход доставался самому свежему подключению, и подключившаяся утилита
+    молча перехватывала голос. Без объявленной роли фраза уходит в десктоп-чат.
+    """
+    with _Loop() as loop:
+        srv = _server(loop, {"a#1": _FakeWriter(), "b#2": _FakeWriter()})
+        assert srv.primary_client_id() == ""
 
 
 def _declare_role(srv, loop, client_id, role):
@@ -98,6 +112,40 @@ def _declare_role(srv, loop, client_id, role):
         srv.process_request({"action": "unknown_action", "client_role": role}, client_id),
         loop,
     ).result(timeout=5)
+
+
+def _hello(srv, loop, client_id, role):
+    return asyncio.run_coroutine_threadsafe(
+        srv.process_request({"action": "hello", "client_role": role}, client_id),
+        loop,
+    ).result(timeout=5)
+
+
+def test_handshake_answers_with_protocol_and_session():
+    writer = _FakeWriter()
+    with _Loop() as loop:
+        srv = _server(loop, {"game#1": writer})
+        _hello(srv, loop, "game#1", "game")
+
+    ack = writer.payloads()[0]
+    assert ack["type"] == "hello_ack"
+    assert ack["protocol_version"] == 1
+    assert ack["session_id"] == "game#1"
+    assert ack["client_role"] == "game"
+    assert ack["owns_player_input"] is True
+
+
+def test_role_cannot_be_changed_until_reconnect():
+    """Объявленная роль неизменна: иначе диагностический клиент уводил бы ход."""
+    with _Loop() as loop:
+        srv = _server(loop, {"game#1": _FakeWriter(), "tool#2": _FakeWriter()})
+        _declare_role(srv, loop, "game#1", "game")
+        _declare_role(srv, loop, "tool#2", "diagnostic")
+
+        _declare_role(srv, loop, "tool#2", "game")
+
+        assert srv.owns_player_input("tool#2") is False
+        assert srv.primary_client_id() == "game#1"
 
 
 def test_diagnostic_client_does_not_take_over_player_input():

@@ -46,6 +46,27 @@ def _wire_index_changed(worker) -> None:
             signal.connect(lambda *_: _emit_index_changed())
 
 
+# Индексная база RAG. Имя иерархическое: операция над всеми персонажами
+# занимает корень и потому конфликтует с любой операцией над одним из них.
+RAG_INDEX_RESOURCE = "rag-index"
+
+
+def _character_index_resource(character_id: str) -> str:
+    return f"{RAG_INDEX_RESOURCE}:{str(character_id or '').strip()}"
+
+
+def _notify_index_busy(gui) -> None:
+    """Супервизор отказал: индексную базу уже переписывает другая задача."""
+    QMessageBox.information(
+        gui,
+        _("Индексация уже идёт", "Indexing in progress"),
+        _(
+            "Индекс RAG сейчас перестраивается другой задачей. Дождитесь её окончания.",
+            "The RAG index is being rebuilt by another task. Please wait for it to finish.",
+        ),
+    )
+
+
 def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWorker:
     """Factory for single-character reindex workers."""
     character_id = str(character_id or "").strip()
@@ -56,7 +77,11 @@ def _create_reindex_worker(character_id: str, *, full: bool = False) -> TaskWork
         method = rag.index_all if full else rag.index_all_missing
         return method(progress_callback=progress_callback)
 
-    return TaskWorker(_do_reindex, use_progress=True)
+    return TaskWorker(
+        _do_reindex,
+        use_progress=True,
+        exclusive_resources={_character_index_resource(character_id)},
+    )
 
 
 class ReindexAllCharactersWorker(TaskWorker):
@@ -139,7 +164,12 @@ class ReindexAllCharactersWorker(TaskWorker):
                 progress_callback(done_base, max(grand_total, 1))
             return created_total
 
-        super().__init__(_do_all, use_progress=True, task_key="reindex_all")
+        super().__init__(
+            _do_all,
+            use_progress=True,
+            task_key="reindex_all",
+            exclusive_resources={RAG_INDEX_RESOURCE},
+        )
 
 
 class FullReindexAllCharactersWorker(TaskWorker):
@@ -190,7 +220,12 @@ class FullReindexAllCharactersWorker(TaskWorker):
             progress_callback(global_done, max(global_total, 1))
             return processed_total
 
-        super().__init__(_do_all_full, use_progress=True, task_key="full_reindex_all")
+        super().__init__(
+            _do_all_full,
+            use_progress=True,
+            task_key="full_reindex_all",
+            exclusive_resources={RAG_INDEX_RESOURCE},
+        )
 
 
 class DedupeHistoryWorker(TaskWorker):
@@ -1518,7 +1553,9 @@ def run_reindexing(gui):
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    worker.start()
+    if not worker.start():
+        progress.close()
+        _notify_index_busy(gui)
 
 
 def _get_all_character_ids() -> list[str]:
@@ -1548,34 +1585,20 @@ def _get_all_character_ids() -> list[str]:
 
 
 def _reindexing_all_busy(gui, *, own_key: str) -> bool:
-    """Идёт ли уже переиндексация всех персонажей.
+    """Уже запущена своя же переиндексация всех персонажей.
 
-    Обе операции («индекс нового» и полная) переписывают одну и ту же базу, так
-    что параллельно они не запускаются, каким бы ключом ни звались. Своя задача
-    вместо отказа возвращает окно прогресса — это же даёт «показать снова»
-    после кнопки «Скрыть».
+    Здесь не защита от дублей — она в register() по ресурсу `rag-index`, — а
+    поведение кнопки: вместо вопроса «начать?» и последующего отказа своя
+    задача возвращает окно прогресса, спрятанное кнопкой «Скрыть».
     """
-    supervisor = gui_task_supervisor()
-    if supervisor.running(own_key) is not None:
-        dlg = getattr(gui, "_reindex_all_dialog", None)
-        if dlg is not None:
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
-        return True
-
-    other_key = "full_reindex_all" if own_key == "reindex_all" else "reindex_all"
-    if supervisor.running(other_key) is not None:
-        QMessageBox.information(
-            gui,
-            _("Идёт переиндексация", "Reindexing in progress"),
-            _(
-                "Переиндексация всех персонажей уже выполняется. Дождитесь её окончания.",
-                "Reindexing of all characters is already running. Please wait for it to finish.",
-            ),
-        )
-        return True
-    return False
+    if gui_task_supervisor().running(own_key) is None:
+        return False
+    dlg = getattr(gui, "_reindex_all_dialog", None)
+    if dlg is not None:
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+    return True
 
 
 def run_reindexing_all(gui):
@@ -1686,6 +1709,7 @@ def run_reindexing_all(gui):
     if not worker.start():
         _cleanup()
         progress.finish()
+        _notify_index_busy(gui)
 
 
 def run_full_reindexing(gui):
@@ -1803,7 +1827,9 @@ def run_full_reindexing(gui):
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    worker.start()
+    if not worker.start():
+        progress.close()
+        _notify_index_busy(gui)
 
 
 def run_full_reindexing_all(gui):
@@ -1903,6 +1929,7 @@ def run_full_reindexing_all(gui):
     progress.show()
     if not worker.start():
         progress.close()
+        _notify_index_busy(gui)
 
 
 def export_db_for_character(gui):

@@ -16,12 +16,17 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from typing import Any, List
 
 from main_logger import logger
 
 
-class TaskAlreadyRunning(RuntimeError):
+class TaskRefused(RuntimeError):
+    """Супервизор отказал в запуске задачи. Приложение при этом живо."""
+
+
+class TaskAlreadyRunning(TaskRefused):
     """Задача с таким ключом уже под опекой супервизора."""
 
     def __init__(self, task_key: str, worker: Any) -> None:
@@ -30,30 +35,68 @@ class TaskAlreadyRunning(RuntimeError):
         self.worker = worker
 
 
+class TaskResourceBusy(TaskRefused):
+    """Ресурс задачи занят другой, конфликтующей с ней задачей."""
+
+    def __init__(self, resource: str, worker: Any) -> None:
+        super().__init__(f"Ресурс '{resource}' занят другой задачей")
+        self.resource = str(resource or "")
+        self.worker = worker
+
+
+class TaskOwnerClosed(TaskRefused):
+    """Владелец задачи уже закрыт: его задачи не запускаются."""
+
+
+def _conflicts(first: str, second: str) -> bool:
+    """Конфликтуют ли два имени ресурса.
+
+    Имена иерархические через двоеточие: `rag-index` — вся индексная база,
+    `rag-index:crazy` — индекс одного персонажа. Общий ресурс конфликтует и сам
+    с собой, и со всеми своими частями, части между собой — нет.
+    """
+    if first == second:
+        return True
+    return first.startswith(f"{second}:") or second.startswith(f"{first}:")
+
+
 class GuiTaskSupervisor:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._workers: set[Any] = set()
         self._closing = False
+        # Владельцы, чьи окна уже закрыты. Ссылки слабые: закрытый диалог не
+        # должен жить дольше только потому, что супервизор его помнит.
+        self._closed_owners: "weakref.WeakSet[Any]" = weakref.WeakSet()
 
     def register(self, worker: Any) -> None:
         """Взять воркер под опеку.
 
-        RuntimeError — приложение уже закрывается, TaskAlreadyRunning — ключ
-        задачи занят живым воркером. Проверка занятости живёт здесь, а не на
-        стороне вызывающего: `running()` + `start()` двумя шагами — это гонка,
-        в которую пролезали две полные переиндексации одной и той же БД.
+        RuntimeError — приложение уже закрывается. TaskRefused — задачу не
+        запускаем: занят ключ, занят ресурс или закрыт владелец. Все проверки
+        живут здесь, а не на стороне вызывающего: `running()` + `start()` двумя
+        шагами — это гонка, в которую пролезали две переиндексации одной БД.
         """
         key = str(getattr(worker, "task_key", "") or "")
+        resources = self._resources_of(worker)
+        owner = self._owner_of(worker)
         with self._lock:
             if self._closing:
                 raise RuntimeError(
                     "GUI закрывается: новые фоновые задачи не запускаются"
                 )
+            if owner is not None and owner in self._closed_owners:
+                raise TaskOwnerClosed(
+                    "Владелец задачи уже закрыт: запуск отменён"
+                )
             if key:
                 existing = self._live_with_key(key)
                 if existing is not None and existing is not worker:
                     raise TaskAlreadyRunning(key, existing)
+            for resource in resources:
+                holder = self._live_with_resource(resource, worker)
+                if holder is not None:
+                    raise TaskResourceBusy(resource, holder)
             self._workers.add(worker)
 
     def forget(self, worker: Any) -> None:
@@ -83,7 +126,20 @@ class GuiTaskSupervisor:
             return self._live_with_key(key)
 
     def _live_with_key(self, key: str) -> Any:
-        """Воркер с ключом `key`, ещё не доигравший. Вызывать под self._lock.
+        """Воркер с ключом `key`, ещё не доигравший. Вызывать под self._lock."""
+        return self._live_matching(
+            lambda worker: str(getattr(worker, "task_key", "") or "") == key
+        )
+
+    def _live_with_resource(self, resource: str, applicant: Any) -> Any:
+        """Живой воркер, чей ресурс конфликтует с `resource`. Под self._lock."""
+        return self._live_matching(
+            lambda worker: worker is not applicant
+            and any(_conflicts(resource, held) for held in self._resources_of(worker))
+        )
+
+    def _live_matching(self, predicate) -> Any:
+        """Первый подходящий воркер, ещё не доигравший. Вызывать под self._lock.
 
         Зарегистрированный, но не стартовавший воркер тоже считается живым:
         именно между register() и start() ключ должен быть уже занят. А вот
@@ -93,7 +149,7 @@ class GuiTaskSupervisor:
         stale: List[Any] = []
         found: Any = None
         for worker in self._workers:
-            if str(getattr(worker, "task_key", "") or "") != key:
+            if not predicate(worker):
                 continue
             try:
                 if worker.isFinished() and not worker.isRunning():
@@ -110,9 +166,9 @@ class GuiTaskSupervisor:
         """Закрыть ворота и остановить всех. Возвращает не остановившихся.
 
         Бюджет ожидания общий, а не «по timeout на каждого»: закрытие окна не
-        должно расти линейно от числа задач. Выжившие отвязываются от GUI —
-        задача внутри может висеть в SQLite или сетевом запросе, и убить её
-        снаружи нельзя, но её сигналы уже никого не разбудят.
+        должно расти линейно от числа задач. От GUI отвязываются все — задача
+        внутри может висеть в SQLite или сетевом запросе, и убить её снаружи
+        нельзя, но её сигналы уже никого не разбудят.
         """
         with self._lock:
             self._closing = True
@@ -125,10 +181,14 @@ class GuiTaskSupervisor:
         Закрывается диалог — умирают его задачи, а не все подряд: просмотрщик
         БД не вправе гасить переиндексацию, запущенную из главного окна. Ворота
         при этом не закрываются, приложение продолжает работать.
+
+        Владелец запоминается закрытым: его поздний колбэк, доставленный уже
+        после снимка, не должен зарегистрировать новую задачу на мёртвое окно.
         """
         if owner is None:
             return []
         with self._lock:
+            self._closed_owners.add(owner)
             mine = [w for w in self._workers if self._owner_of(w) is owner]
         return self._stop(mine, timeout_ms)
 
@@ -142,7 +202,23 @@ class GuiTaskSupervisor:
         except Exception:
             return None
 
+    @staticmethod
+    def _resources_of(worker: Any) -> frozenset:
+        try:
+            return frozenset(
+                str(name) for name in (getattr(worker, "exclusive_resources", ()) or ())
+            )
+        except Exception:
+            return frozenset()
+
     def _stop(self, workers: List[Any], timeout_ms: int) -> List[Any]:
+        # Отвязываем всех и сразу, до ожидания. Послушный воркер тоже успевает
+        # поставить свой cancelled/finished в очередь GUI-потока, а этот поток
+        # стоит в wait() и уничтожит окно раньше, чем очередь дойдёт до колбэка.
+        # Служебный finished не трогаем: по нему воркер снимется с учёта.
+        for worker in workers:
+            self._detach_ui(worker)
+
         deadline = time.monotonic() + max(0.0, float(timeout_ms) / 1000.0)
         for worker in workers:
             try:
@@ -164,25 +240,26 @@ class GuiTaskSupervisor:
                 logger.debug("Ошибка ожидания GUI-воркера", exc_info=True)
 
         for worker in survivors:
-            # Отвязываем только прикладные колбэки: служебный finished обязан
-            # уцелеть, по нему воркер снимется с учёта, когда всё-таки досчитает.
-            # Список своих сигналов знает сам воркер, не супервизор.
-            detach = getattr(worker, "detach_ui_callbacks", None)
-            if callable(detach):
-                try:
-                    detach()
-                except Exception:
-                    logger.debug("Не удалось отвязать GUI-воркер от сигналов", exc_info=True)
-            else:
-                logger.warning(
-                    "GUI-воркер без detach_ui_callbacks — его колбэки продолжат "
-                    "держать закрытое окно"
-                )
             logger.warning(
                 f"GUI-воркер {getattr(worker, 'objectName', lambda: '')() or worker!r} "
-                "не остановился за отведённое время — отвязан от GUI"
+                "не остановился за отведённое время — оставлен доживать без GUI"
             )
         return survivors
+
+    @staticmethod
+    def _detach_ui(worker: Any) -> None:
+        """Отцепить прикладные колбэки воркера. Список сигналов знает он сам."""
+        detach = getattr(worker, "detach_ui_callbacks", None)
+        if not callable(detach):
+            logger.warning(
+                "GUI-воркер без detach_ui_callbacks — его колбэки продолжат "
+                "держать закрытое окно"
+            )
+            return
+        try:
+            detach()
+        except Exception:
+            logger.debug("Не удалось отвязать GUI-воркер от сигналов", exc_info=True)
 
 
 _supervisor = GuiTaskSupervisor()

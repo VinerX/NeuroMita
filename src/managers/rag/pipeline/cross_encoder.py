@@ -39,6 +39,10 @@ class CrossEncoderReranker:
         self.model_name = str(model_name or "")
         self._state = ModelState.LOADING
         self._error = ""
+        # Лок состояния отдельно от лока загрузки: активация модели длится
+        # минутами, и сброс рантайма не должен её дожидаться, чтобы записать
+        # ERROR — иначе индикатор врёт ровно столько, сколько грузится модель.
+        self._state_lock = Lock()
         self._load_lock = Lock()
 
     @classmethod
@@ -59,7 +63,8 @@ class CrossEncoderReranker:
         inst = cls._instances.get(str(model_name or ""))
         if inst is None:
             return RerankerReadiness()
-        return RerankerReadiness(state=inst._state, error=inst._error)
+        state, error = inst._snapshot()
+        return RerankerReadiness(state=state, error=error)
 
     @classmethod
     def reset_runtime(cls, *, failed: bool, error: str = "", reason: str = "") -> None:
@@ -76,7 +81,7 @@ class CrossEncoderReranker:
             cls._runtime_epoch += 1
             instances = list(cls._instances.values())
         for inst in instances:
-            with inst._load_lock:
+            with inst._state_lock:
                 inst._state = state
                 inst._error = str(error or "") if failed else ""
         if reason:
@@ -94,9 +99,10 @@ class CrossEncoderReranker:
 
     def _ensure_runtime(self, *, force: bool = False) -> bool:
         epoch = self.runtime_epoch()
-        if self._state is ModelState.ERROR and not force:
+        state, _ = self._snapshot()
+        if state is ModelState.ERROR and not force:
             return False
-        if self._state is ModelState.READY:
+        if state is ModelState.READY:
             try:
                 from core.services import use
                 from services.contracts import AIEngineService
@@ -135,15 +141,7 @@ class CrossEncoderReranker:
                     )
                 )
                 if activated:
-                    if epoch != self.runtime_epoch():
-                        logger.debug(
-                            "[CrossEncoder] активация поколения "
-                            f"{epoch} отброшена: рантайм с тех пор сменился"
-                        )
-                        return False
-                    self._state = ModelState.READY
-                    self._error = ""
-                    self._notify_status_changed()
+                    return self._set_state(ModelState.READY, epoch=epoch)
                 return activated
             except Exception as exc:
                 logger.warning(
@@ -156,19 +154,26 @@ class CrossEncoderReranker:
         with cls._cls_lock:
             return cls._runtime_epoch
 
-    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> None:
+    def _snapshot(self) -> tuple[ModelState, str]:
+        with self._state_lock:
+            return self._state, self._error
+
+    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> bool:
         # Статус RAG считается по этому состоянию, поэтому смена обязана доехать
         # до индикатора; одинаковое значение шину не дёргает.
-        if epoch is not None and epoch != self.runtime_epoch():
-            logger.debug(
-                f"[CrossEncoder] результат поколения {epoch} отброшен: рантайм с тех пор сменился"
-            )
-            return
-        if self._state is state and self._error == error:
-            return
-        self._state = state
-        self._error = str(error or "")
+        # False — результат отброшен как устаревший.
+        with self._state_lock:
+            if epoch is not None and epoch != self.runtime_epoch():
+                logger.debug(
+                    f"[CrossEncoder] результат поколения {epoch} отброшен: рантайм с тех пор сменился"
+                )
+                return False
+            if self._state is state and self._error == error:
+                return True
+            self._state = state
+            self._error = str(error or "")
         self._notify_status_changed()
+        return True
 
     @staticmethod
     def _notify_status_changed() -> None:

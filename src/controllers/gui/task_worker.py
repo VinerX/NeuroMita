@@ -3,7 +3,7 @@ import weakref
 from main_logger import logger
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.cancellation import TaskCancelledError
-from core.gui_task_supervisor import TaskAlreadyRunning, gui_task_supervisor
+from core.gui_task_supervisor import TaskRefused, gui_task_supervisor
 
 
 class TaskWorker(QThread):
@@ -18,7 +18,7 @@ class TaskWorker(QThread):
     cancelled_signal = pyqtSignal()
 
     def __init__(self, func, *, args=None, kwargs=None, use_progress: bool = False,
-                 task_key: str = "", owner=None):
+                 task_key: str = "", owner=None, exclusive_resources=()):
         super().__init__()
         self._func = func
         self._args = tuple(args or ())
@@ -26,6 +26,12 @@ class TaskWorker(QThread):
         self._use_progress = bool(use_progress)
         # task_key — имя задачи для супервизора: по нему проверяют «уже запущено».
         self.task_key = str(task_key or "")
+        # exclusive_resources — что задача монопольно занимает. Имена иерархичны
+        # («rag-index» и «rag-index:crazy»): разные задачи над одной базой обязаны
+        # исключать друг друга, даже если называются по-разному.
+        self.exclusive_resources = frozenset(
+            str(name) for name in (exclusive_resources or ())
+        )
         # owner — окно, вместе с которым задача обязана умереть. Ссылка слабая:
         # задача не должна продлевать жизнь закрытому диалогу. Без владельца
         # задача переживает своё окно — так задуманы фоновые переиндексации.
@@ -38,16 +44,16 @@ class TaskWorker(QThread):
     CancelledError = TaskCancelledError
 
     def start(self, *args, **kwargs) -> bool:
-        """Запустить задачу. False — задача с таким же task_key уже идёт.
+        """Запустить задачу. False — супервизор отказал.
 
         Регистрация до запуска: воркер, стартовавший в обход супервизора,
-        пережил бы закрытие окна. Она же занимает task_key, поэтому дубль
-        отсекается атомарно, а не проверкой `running()` перед стартом.
+        пережил бы закрытие окна. Она же занимает task_key и ресурсы, поэтому
+        конфликт отсекается атомарно, а не проверкой `running()` перед стартом.
         """
         try:
             gui_task_supervisor().register(self)
-        except TaskAlreadyRunning as conflict:
-            logger.warning(f"Задача '{conflict.task_key}' уже выполняется — второй запуск отклонён")
+        except TaskRefused as refusal:
+            logger.warning(f"Запуск задачи отклонён: {refusal}")
             return False
         try:
             super().start(*args, **kwargs)
