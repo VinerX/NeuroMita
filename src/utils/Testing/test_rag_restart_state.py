@@ -29,6 +29,7 @@ def _controller():
     ctrl._state = ModelState.LOADING
     ctrl._error = ""
     ctrl._init_lock = Lock()
+    ctrl._runtime_epoch = 0
     ctrl.warmups = []
     ctrl._maybe_start_warmup = lambda *, reason: ctrl.warmups.append(reason)
     return ctrl
@@ -98,6 +99,61 @@ def test_reranker_failed_restart_becomes_error_and_recovers():
     readiness = CrossEncoderReranker.readiness(model)
     assert readiness.state is ModelState.LOADING
     assert readiness.error == ""
+
+
+def test_reranker_failed_restart_does_not_start_warmup():
+    """Провалившийся рестарт не должен запускать прогрев.
+
+    Прогрев — это до 150 попыток `ensure_loaded(force=True)` по две секунды:
+    пять минут стука в мёртвый рантайм. Поведение обязано совпадать с
+    эмбеддингами: модель поднимет следующий успешный рестарт.
+    """
+    from controllers.reranker_controller import RerankerController
+
+    ctrl = object.__new__(RerankerController)
+    warmups = []
+    ctrl._maybe_start_warmup = lambda *, reason: warmups.append(reason)
+
+    ctrl._on_ai_service_restarted(_restarted(False, "worker exited"))
+    assert warmups == []
+
+    ctrl._on_ai_service_restarted(_restarted(True))
+    assert warmups == ["service_restarted"]
+
+
+def test_stale_rerank_result_cannot_light_up_a_restarted_runtime():
+    """Ответ, начатый в прошлом процессе движка, не выставляет READY.
+
+    Реранк живёт десятки секунд; за это время движок успевает перезапуститься.
+    Без поколения такой ответ красил индикатор зелёным по мёртвому рантайму.
+    """
+    from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
+
+    model = "owner/stale-epoch-test"
+    inst = CrossEncoderReranker.get(model)
+
+    epoch = CrossEncoderReranker.runtime_epoch()  # реранк стартовал здесь
+    CrossEncoderReranker.reset_runtime(failed=True, error="worker exited", reason="тест")
+
+    inst._set_state(ModelState.READY, epoch=epoch)
+    assert CrossEncoderReranker.readiness(model).state is ModelState.ERROR
+
+    # Ответ текущего поколения проходит как обычно.
+    inst._set_state(ModelState.READY, epoch=CrossEncoderReranker.runtime_epoch())
+    assert CrossEncoderReranker.readiness(model).state is ModelState.READY
+
+
+def test_stale_embedding_warmup_cannot_light_up_a_restarted_runtime():
+    ctrl = _controller()
+    epoch = ctrl._current_epoch()
+
+    ctrl._on_ai_service_restarted(_restarted(False, "worker exited"))
+
+    ctrl._set_state(ModelState.READY, epoch=epoch)
+    assert ctrl.readiness().state is ModelState.ERROR
+
+    ctrl._set_state(ModelState.READY, epoch=ctrl._current_epoch())
+    assert ctrl.readiness().state is ModelState.READY
 
 
 def test_error_state_reaches_rag_indicator():

@@ -1547,16 +1547,40 @@ def _get_all_character_ids() -> list[str]:
     return result
 
 
-def run_reindexing_all(gui):
-    """Fill missing embeddings for ALL characters."""
-    # Уже запущено — не плодим второй воркер, а возвращаем (возможно скрытое)
-    # окно прогресса. Это же даёт «показать снова» после кнопки «Скрыть».
-    if gui_task_supervisor().running("reindex_all") is not None:
+def _reindexing_all_busy(gui, *, own_key: str) -> bool:
+    """Идёт ли уже переиндексация всех персонажей.
+
+    Обе операции («индекс нового» и полная) переписывают одну и ту же базу, так
+    что параллельно они не запускаются, каким бы ключом ни звались. Своя задача
+    вместо отказа возвращает окно прогресса — это же даёт «показать снова»
+    после кнопки «Скрыть».
+    """
+    supervisor = gui_task_supervisor()
+    if supervisor.running(own_key) is not None:
         dlg = getattr(gui, "_reindex_all_dialog", None)
         if dlg is not None:
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
+        return True
+
+    other_key = "full_reindex_all" if own_key == "reindex_all" else "reindex_all"
+    if supervisor.running(other_key) is not None:
+        QMessageBox.information(
+            gui,
+            _("Идёт переиндексация", "Reindexing in progress"),
+            _(
+                "Переиндексация всех персонажей уже выполняется. Дождитесь её окончания.",
+                "Reindexing of all characters is already running. Please wait for it to finish.",
+            ),
+        )
+        return True
+    return False
+
+
+def run_reindexing_all(gui):
+    """Fill missing embeddings for ALL characters."""
+    if _reindexing_all_busy(gui, own_key="reindex_all"):
         return
 
     character_ids = _get_all_character_ids()
@@ -1659,7 +1683,9 @@ def run_reindexing_all(gui):
     progress.stopRequested.connect(on_stop)
 
     progress.show()
-    worker.start()
+    if not worker.start():
+        _cleanup()
+        progress.finish()
 
 
 def run_full_reindexing(gui):
@@ -1782,6 +1808,9 @@ def run_full_reindexing(gui):
 
 def run_full_reindexing_all(gui):
     """Full re-indexing for ALL characters (regenerate embeddings for all rows)."""
+    if _reindexing_all_busy(gui, own_key="full_reindex_all"):
+        return
+
     character_ids = _get_all_character_ids()
     if not character_ids:
         QMessageBox.warning(gui, _("Ошибка", "Error"), _("Персонажи не найдены.", "No characters found."))
@@ -1872,7 +1901,8 @@ def run_full_reindexing_all(gui):
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    worker.start()
+    if not worker.start():
+        progress.close()
 
 
 def export_db_for_character(gui):

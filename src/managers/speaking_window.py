@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Callable
@@ -101,11 +102,17 @@ class SpeakingWindow:
             return bool(self._leases) or now < self._tail_until
 
     def _lease_for(self, duration_sec: float) -> float:
+        """Длительность аренды по заявленной моду длине реплики.
+
+        NaN обязателен к отсеву: `nan <= 0` — False, `min(nan, MAX)` — тоже nan,
+        и дедлайн `nan` не проходит ни одну проверку истечения. Одно битое поле
+        от мода глушило бы микрофон до перезапуска приложения.
+        """
         try:
             duration = float(duration_sec or 0.0)
         except (TypeError, ValueError):
-            duration = 0.0
-        if duration <= 0.0:
+            return self._lease_sec
+        if not math.isfinite(duration) or duration <= 0.0:
             return self._lease_sec
         return min(duration + self.LEASE_MARGIN_SEC, self.MAX_LEASE_SEC)
 

@@ -7,6 +7,17 @@ from game_connections.handlers.registry import RequestContext
 from main_logger import logger
 
 
+def _as_bool(value: Any) -> bool:
+    """Строковое «false» из JSON мода — это False, а не непустая строка.
+
+    Поле приходит из C#-сериализации, где bool легко превращается в "false"/"False"/"0";
+    `bool("false")` дал бы True и заглушил микрофон до конца аренды.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class SpeechStateAction:
     """Мод сообщает, что реплика Миты реально зазвучала (или отзвучала).
 
@@ -17,7 +28,7 @@ class SpeechStateAction:
     """
 
     async def handle(self, request: Dict[str, Any], ctx: RequestContext) -> None:
-        active = bool(request.get("active", False))
+        active = _as_bool(request.get("active", False))
         character = str(request.get("character") or "")
         # Один клиент может вести несколько реплик сразу (две Миты, добивка
         # предыдущей фразы). Мод присылает id реплики — тогда «конец» закрывает

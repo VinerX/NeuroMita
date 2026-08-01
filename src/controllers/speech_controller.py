@@ -89,8 +89,10 @@ class SpeechController(SpeechService):
         self._speaking_window = SpeakingWindow(tail_sec=self._MUTE_TAIL_SEC)
 
         # Фразы, отданные в игру и ещё не вернувшиеся как недоставленные.
-        # Ход по одной фразе ровно один: пока id здесь — десктоп-чат её не берёт,
-        # а забрав, снимает id, поэтому повторный «недоставлен» уже не сработает.
+        # Пока id здесь — десктоп-чат фразу не берёт, а забрав, снимает id,
+        # поэтому повторный «недоставлен» уже не сработает. Это защита от
+        # раздвоения хода внутри Python; приняла ли фразу игра, отсюда не видно:
+        # ACK по utterance_id в протоколе мода нет, маршрутизация best-effort.
         self._turns_lock = threading.Lock()
         self._turns_in_game: dict[str, float] = {}
 
@@ -604,7 +606,7 @@ class SpeechController(SpeechService):
             self._speaking_window.open(
                 source=source,
                 speech_id=speech_id,
-                duration_sec=float(data.get("duration_sec", 0.0) or 0.0),
+                duration_sec=data.get("duration_sec", 0.0),
             )
         else:
             self._speaking_window.close(source=source, speech_id=speech_id)

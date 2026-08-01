@@ -5,6 +5,11 @@
 обработку разрыва соединения, глушил микрофон до конца аренды. Здесь проверяется
 и то, и другое, плюс страховка по дедлайну на случай мода, упавшего молча.
 """
+import asyncio
+import types
+
+import pytest
+
 from managers.speaking_window import SpeakingWindow
 
 
@@ -126,4 +131,62 @@ def test_known_duration_shortens_the_lease():
 
     win.open(source="c1", speech_id="a", duration_sec=3.0)
     clock.advance(3.0 + SpeakingWindow.LEASE_MARGIN_SEC + 0.1)
+    assert win.is_active() is False
+
+
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_duration_does_not_create_an_eternal_lease(duration):
+    """NaN/inf в длительности не должны глушить микрофон навсегда.
+
+    `nan <= 0` — False, `min(nan, MAX)` — тоже nan, и дедлайн nan не истекает
+    ни при каком времени: одно битое поле от мода запирало микрофон до
+    перезапуска приложения. Аренда обязана свестись к дефолтной.
+    """
+    clock = _Clock()
+    win = _window(clock, lease=60.0)
+
+    win.open(source="c1", speech_id="a", duration_sec=duration)
+    assert win.is_active() is True
+
+    clock.advance(61.0)
+    assert win.is_active() is False
+
+
+def _speech_state_event(request):
+    """Событие шины, которое сформировал бы обработчик speech_state мода."""
+    from game_connections.handlers.actions.speech_state import SpeechStateAction
+
+    emitted = []
+    ctx = types.SimpleNamespace(
+        client_id="127.0.0.1:5000#1",
+        event_bus=types.SimpleNamespace(emit=lambda name, data=None: emitted.append(data)),
+    )
+    asyncio.run(SpeechStateAction().handle(request, ctx))
+    return emitted[0]
+
+
+@pytest.mark.parametrize("raw", ["false", "False", "0", " FALSE "])
+def test_string_false_from_the_mod_does_not_mute_the_microphone(raw):
+    """C#-сериализация присылает bool строкой: `bool("false")` — это True.
+
+    Такое «начал говорить» глушило микрофон на всю длину аренды ровно в тот
+    момент, когда мод сообщал, что реплика закончилась.
+    """
+    assert _speech_state_event({"active": raw, "character": "Crazy"})["active"] is False
+
+
+@pytest.mark.parametrize("raw", ["true", "True", "1", True])
+def test_truthy_active_still_mutes_the_microphone(raw):
+    assert _speech_state_event({"active": raw, "character": "Crazy"})["active"] is True
+
+
+def test_garbage_duration_falls_back_to_default_lease():
+    clock = _Clock()
+    win = _window(clock, lease=60.0)
+
+    win.open(source="c1", speech_id="a", duration_sec="очень долго")
+    clock.advance(59.0)
+    assert win.is_active() is True
+
+    clock.advance(2.0)
     assert win.is_active() is False

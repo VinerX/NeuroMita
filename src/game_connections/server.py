@@ -62,6 +62,9 @@ class ChatServerNew:
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
+        # Роль подключения: кто вправе принимать голос игрока. Клиент объявляет
+        # её полем client_role в любом своём запросе.
+        self.client_roles: Dict[str, str] = {}
         # Порядковый номер подключения: ip:port переиспользуется ОС, а состояние
         # (окно речи, задачи, эхо-подавитель) привязано к конкретной сессии —
         # запоздавшее событие мёртвой сессии не должно попасть в новую.
@@ -253,6 +256,7 @@ class ChatServerNew:
 
     def _forget_client_state(self, client_id: str) -> None:
         self.client_tasks.pop(client_id, None)
+        self.client_roles.pop(client_id, None)
         self.last_participants.pop(client_id, None)
         stale_dialogue_keys = [
             key for key in self._last_sent_dialogue_text
@@ -271,6 +275,8 @@ class ChatServerNew:
         writer = self.active_connections.get(client_id)
         if not writer:
             return
+
+        self._remember_client_role(client_id, request.get("client_role"))
 
         handler = self._actions.get(str(action))
         if not handler:
@@ -446,17 +452,35 @@ class ChatServerNew:
     def schedule_broadcast_loaded_settings(self, body: Dict[str, Any]) -> None:
         self.schedule_broadcast_json({"type": "loaded_settings", "body": body})
 
+    # Роль, которая вправе принимать ход игрока. Пустая строка — клиент роли не
+    # объявил: старый мод её не шлёт, и отказ ему сломал бы связь до обновления.
+    PLAYER_INPUT_ROLES = frozenset({"game", ""})
+
+    def _remember_client_role(self, client_id: str, role: Any) -> None:
+        if role is None:
+            return
+        value = str(role or "").strip().lower()
+        if self.client_roles.get(client_id) == value:
+            return
+        self.client_roles[client_id] = value
+        logger.info(f"Клиент {client_id} объявил роль {value!r}")
+
+    def owns_player_input(self, client_id: str) -> bool:
+        """Вправе ли эта сессия получать распознанную речь игрока."""
+        return self.client_roles.get(str(client_id or ""), "") in self.PLAYER_INPUT_ROLES
+
     def primary_client_id(self) -> str:
         """Клиент, которому адресуются одиночные push-сообщения (голос).
 
         Соединений может быть несколько (второй запуск игры, тестовый клиент), а
         реплика игрока должна породить ровно один ход — иначе broadcast создаст
-        по задаче на каждого. Берём самое свежее подключение: словарь хранит
-        порядок вставки."""
-        conns = self.active_connections
-        if not conns:
-            return ""
-        return next(reversed(conns))
+        по задаче на каждого. Берём самое свежее подключение из тех, кто вправе
+        принимать ввод: диагностический клиент, подключившийся последним, не
+        должен перехватывать голос у игры."""
+        for client_id in reversed(self.active_connections):
+            if self.owns_player_input(client_id):
+                return client_id
+        return ""
 
     def schedule_send_asr_text(
         self,

@@ -953,8 +953,10 @@ class GraphViewPage(QWidget):
         progress.setAutoClose(False)
         progress.setAutoReset(False)
 
-        worker = TaskWorker(self._run_type_backfill, args=(char_ids,), use_progress=True)
-        self._type_backfill_worker = worker
+        # owner=self: задача живёт ровно столько, сколько открыта страница.
+        worker = TaskWorker(
+            self._run_type_backfill, args=(char_ids,), use_progress=True, owner=self
+        )
         self.btn_detect_types.setEnabled(False)
 
         def on_progress(curr: int, total: int):
@@ -964,7 +966,6 @@ class GraphViewPage(QWidget):
 
         def cleanup_worker():
             self.btn_detect_types.setEnabled(True)
-            self._type_backfill_worker = None
 
         def on_finished(res):
             progress.close()
@@ -1051,12 +1052,11 @@ class GraphViewPage(QWidget):
 
     def cleanup(self):
         self.canvas._layout_timer.stop()
-        worker = getattr(self, "_type_backfill_worker", None)
-        if worker is not None:
-            try:
-                worker.requestInterruption()
-            except Exception:
-                pass
+        # Гасим только свои задачи: переиндексация из главного окна закрытием
+        # просмотрщика БД не отменяется.
+        from core.gui_task_supervisor import gui_task_supervisor
+
+        gui_task_supervisor().cancel_owner(self)
 
 
 def _sql_esc(s: str) -> str:

@@ -5,8 +5,11 @@
 распознавания и едет вместе с фразой, а закрытая сессия честно даёт «не
 доставлено», чтобы фраза вернулась в десктоп-чат.
 
-Здесь же — гарантия «одна фраза = один ход»: ACK по utterance_id в протоколе
-мода пока нет, поэтому дедупликация живёт на стороне Python.
+Доставка при этом best-effort, а не exactly-once: подтверждения от мода (ACK по
+utterance_id) в протоколе нет, а успешная запись в сокет ещё не значит, что мод
+фразу принял и применил. Python гарантирует лишь одно: одна фраза не породит
+двух ходов у себя — ни повторным «не доставлено», ни возвратом в десктоп-чат
+поверх уже отданного игре хода.
 """
 import asyncio
 import json
@@ -87,6 +90,64 @@ def test_primary_client_id_is_the_newest_session():
     with _Loop() as loop:
         srv = _server(loop, {"a#1": _FakeWriter(), "b#2": _FakeWriter()})
         assert srv.primary_client_id() == "b#2"
+
+
+def _declare_role(srv, loop, client_id, role):
+    """Роль объявляется полем запроса — как это делает мод."""
+    asyncio.run_coroutine_threadsafe(
+        srv.process_request({"action": "unknown_action", "client_role": role}, client_id),
+        loop,
+    ).result(timeout=5)
+
+
+def test_diagnostic_client_does_not_take_over_player_input():
+    """Самое свежее подключение — не обязательно игра.
+
+    Тестовый клиент или внешняя утилита подключаются последними и раньше
+    перехватывали голос игрока: фраза уезжала туда, а игра её не получала.
+    """
+    with _Loop() as loop:
+        srv = _server(loop, {"game#1": _FakeWriter(), "tool#2": _FakeWriter()})
+        _declare_role(srv, loop, "game#1", "game")
+        _declare_role(srv, loop, "tool#2", "diagnostic")
+
+        assert srv.primary_client_id() == "game#1"
+        assert srv.owns_player_input("tool#2") is False
+
+
+def test_client_without_declared_role_is_still_treated_as_game():
+    """Старый мод роли не шлёт — связь с ним обязана работать по-прежнему."""
+    with _Loop() as loop:
+        srv = _server(loop, {"old#1": _FakeWriter()})
+        assert srv.primary_client_id() == "old#1"
+
+
+def test_no_owner_when_only_diagnostic_clients_are_connected():
+    with _Loop() as loop:
+        srv = _server(loop, {"tool#1": _FakeWriter()})
+        _declare_role(srv, loop, "tool#1", "diagnostic")
+
+        assert srv.primary_client_id() == ""
+
+
+def test_partially_written_message_is_not_reported_as_delivered():
+    """Оборванная на drain() запись — это «не доставлено», а не успех.
+
+    Часть строки уже в сокете, но мод её не применит: подтверждения в протоколе
+    нет, поэтому единственный честный ответ — False, и фраза вернётся в
+    десктоп-чат. Ровно поэтому маршрутизация называется best-effort.
+    """
+
+    class _HalfWriter(_FakeWriter):
+        async def drain(self):
+            raise ConnectionResetError("broken pipe")
+
+    writer = _HalfWriter()
+    with _Loop() as loop:
+        srv = _server(loop, {"c#1": writer})
+        assert _send(srv, "c#1") is False
+
+    assert writer.chunks  # часть байтов ушла в сокет — доставкой это не считается
 
 
 def test_payload_carries_utterance_id_and_policy():

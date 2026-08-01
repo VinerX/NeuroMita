@@ -100,18 +100,27 @@ class RerankerController:
 
         # Процесс движка сменился — модели в нём нет, чем бы ни закончился
         # рестарт. Иначе плашка светит зелёным по прошлому прогреву. Неудачный
-        # рестарт — это ошибка, а не «загружается»: воркер сам уже не поднимется,
-        # и фоновый прогрев вернёт зелёный только если движок реально ожил.
+        # рестарт — это ошибка, а не «загружается»: воркер сам уже не поднимется.
         from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
 
-        ok = data.get("ok") is True
+        if data.get("ok") is True:
+            CrossEncoderReranker.reset_runtime(
+                failed=False,
+                reason="AI-воркер RAG перезапущен",
+            )
+            self._maybe_start_warmup(reason="service_restarted")
+            return
+
         error = str(data.get("error") or "").strip() or "AI-воркер RAG не поднялся"
+        logger.error(f"RerankerController: реранкер недоступен — {error}")
+        # Прогрев здесь не запускаем: рестарт уже провалился, и цикл ensure_loaded
+        # только пять минут стучался бы в мёртвый рантайм. Модель поднимет
+        # следующий успешный рестарт или смена настроек.
         CrossEncoderReranker.reset_runtime(
-            failed=not ok,
+            failed=True,
             error=error,
-            reason="AI-воркер RAG перезапущен" if ok else f"рестарт не удался: {error}",
+            reason=f"рестарт не удался: {error}",
         )
-        self._maybe_start_warmup(reason="service_restarted")
 
     def shutdown(self) -> None:
         subscription = self._settings_subscription

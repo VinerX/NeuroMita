@@ -30,6 +30,10 @@ class CrossEncoderReranker:
 
     _instances: dict[str, "CrossEncoderReranker"] = {}
     _cls_lock: Lock = Lock()
+    # Поколение рантайма. Рантайм у всех экземпляров общий (один процесс движка),
+    # поэтому счётчик классовый: рестарт делает недействительными все ответы,
+    # начатые до него.
+    _runtime_epoch: int = 0
 
     def __init__(self, model_name: str) -> None:
         self.model_name = str(model_name or "")
@@ -63,9 +67,15 @@ class CrossEncoderReranker:
 
         failed=True означает, что воркер не поднялся: это ошибка, а не «грузится».
         Прогрев в таком состоянии бессмысленен — модель поднимет только явный
-        успешный рестарт, он же вернёт состояние в LOADING."""
+        успешный рестарт, он же вернёт состояние в LOADING.
+
+        Смена поколения обязательна: реранк, начатый в прошлом процессе, может
+        вернуться уже после рестарта и выставить READY по мёртвому рантайму."""
         state = ModelState.ERROR if failed else ModelState.LOADING
-        for inst in list(cls._instances.values()):
+        with cls._cls_lock:
+            cls._runtime_epoch += 1
+            instances = list(cls._instances.values())
+        for inst in instances:
             with inst._load_lock:
                 inst._state = state
                 inst._error = str(error or "") if failed else ""
@@ -83,6 +93,7 @@ class CrossEncoderReranker:
         return self._ensure_runtime(force=True)
 
     def _ensure_runtime(self, *, force: bool = False) -> bool:
+        epoch = self.runtime_epoch()
         if self._state is ModelState.ERROR and not force:
             return False
         if self._state is ModelState.READY:
@@ -124,6 +135,12 @@ class CrossEncoderReranker:
                     )
                 )
                 if activated:
+                    if epoch != self.runtime_epoch():
+                        logger.debug(
+                            "[CrossEncoder] активация поколения "
+                            f"{epoch} отброшена: рантайм с тех пор сменился"
+                        )
+                        return False
                     self._state = ModelState.READY
                     self._error = ""
                     self._notify_status_changed()
@@ -134,9 +151,19 @@ class CrossEncoderReranker:
                 )
                 return False
 
-    def _set_state(self, state: ModelState, error: str = "") -> None:
+    @classmethod
+    def runtime_epoch(cls) -> int:
+        with cls._cls_lock:
+            return cls._runtime_epoch
+
+    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> None:
         # Статус RAG считается по этому состоянию, поэтому смена обязана доехать
         # до индикатора; одинаковое значение шину не дёргает.
+        if epoch is not None and epoch != self.runtime_epoch():
+            logger.debug(
+                f"[CrossEncoder] результат поколения {epoch} отброшен: рантайм с тех пор сменился"
+            )
+            return
         if self._state is state and self._error == error:
             return
         self._state = state
@@ -176,9 +203,13 @@ class CrossEncoderReranker:
                 }
             )
 
+        # Поколение фиксируем до RPC: ответ мёртвого процесса не должен ни
+        # зажигать зелёный, ни красить в красный уже перезапущенный рантайм.
+        epoch = self.runtime_epoch()
+
         if not self._ensure_runtime():
             logger.warning("[CrossEncoder] RAG reranker runtime is unavailable")
-            self._set_state(ModelState.ERROR, "рантайм реранкера недоступен")
+            self._set_state(ModelState.ERROR, "рантайм реранкера недоступен", epoch=epoch)
             return
 
         try:
@@ -193,7 +224,7 @@ class CrossEncoderReranker:
             )
         except Exception as exc:
             logger.warning(f"[CrossEncoder] AI engine rerank failed (ignored): {exc}")
-            self._set_state(ModelState.ERROR, str(exc))
+            self._set_state(ModelState.ERROR, str(exc), epoch=epoch)
             return
 
         updates = result.get("updates") if isinstance(result, dict) else None
@@ -222,4 +253,4 @@ class CrossEncoderReranker:
                 pass
 
         if bool(result.get("loaded", False)):
-            self._set_state(ModelState.READY)
+            self._set_state(ModelState.READY, epoch=epoch)

@@ -54,6 +54,10 @@ class EmbeddingController(EmbeddingService):
         self._state: ModelState = ModelState.LOADING
         self._error: str = ""
         self._init_lock = Lock()
+        # Поколение рантайма: рестарт движка и смена модели делают недействительным
+        # прогрев, начатый до них, иначе запоздавший успех зажигает зелёный по
+        # уже несуществующей модели.
+        self._runtime_epoch = 0
 
         self._subscribe_to_events()
 
@@ -72,14 +76,28 @@ class EmbeddingController(EmbeddingService):
 
         return TARGET_EMBEDDINGS in required_model_targets(settings=self.settings)
 
-    def _set_state(self, state: ModelState, error: str = "") -> None:
+    def _set_state(self, state: ModelState, error: str = "", *, epoch: int | None = None) -> None:
         """Единственная точка смены состояния: индикатор RAG читает его же."""
         with self._init_lock:
+            if epoch is not None and epoch != self._runtime_epoch:
+                logger.debug(
+                    f"EmbeddingController: результат поколения {epoch} отброшен — "
+                    "рантайм с тех пор сменился"
+                )
+                return
             if self._state is state and self._error == error:
                 return
             self._state = state
             self._error = error
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _bump_runtime_epoch(self) -> None:
+        with self._init_lock:
+            self._runtime_epoch += 1
+
+    def _current_epoch(self) -> int:
+        with self._init_lock:
+            return self._runtime_epoch
 
     def _maybe_start_warmup(self, *, reason: str) -> None:
         if not self._should_warmup():
@@ -127,6 +145,8 @@ class EmbeddingController(EmbeddingService):
         # Процесс движка сменился — прогретой модели в нём больше нет. Неудачный
         # рестарт означает, что воркер уже не поднимут автоматически: это ошибка,
         # а не «грузится», иначе индикатор висит жёлтым до перезапуска приложения.
+        self._bump_runtime_epoch()
+
         if data.get("ok") is True:
             self._set_state(ModelState.LOADING)
             self._maybe_start_warmup(reason="service_restarted")
@@ -155,6 +175,9 @@ class EmbeddingController(EmbeddingService):
             time.sleep(2.0)
 
     def _ensure_local_backend(self, *, force: bool = False) -> bool:
+        # Фиксируем поколение до активации: она длится минуты, и за это время
+        # движок могли перезапустить или сменить модель.
+        epoch = self._current_epoch()
         if self._state is ModelState.DISABLED:
             return False
         if self._state is ModelState.ERROR and not force:
@@ -197,6 +220,12 @@ class EmbeddingController(EmbeddingService):
                         raise RuntimeError(
                             "RAG embeddings environment could not be initialized"
                         )
+                    if epoch != self._runtime_epoch:
+                        logger.debug(
+                            f"EmbeddingController: прогрев поколения {epoch} отброшен — "
+                            "рантайм с тех пор сменился"
+                        )
+                        return False
                     self._state = ModelState.READY
                     self._error = ""
                     # Индикатор RAG показывает «готово» только когда модель реально
@@ -214,6 +243,8 @@ class EmbeddingController(EmbeddingService):
                         f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
                         exc_info=True,
                     )
+                    if epoch != self._runtime_epoch:
+                        return False
                     self._state = ModelState.ERROR
                     self._error = str(e)
                     self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
@@ -235,6 +266,8 @@ class EmbeddingController(EmbeddingService):
 
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю local backend cache")
         invalidate_embedding_config_cache()
+        # Прогрев прошлой модели больше не относится к делу — новое поколение.
+        self._bump_runtime_epoch()
         self._set_state(ModelState.LOADING)
 
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):

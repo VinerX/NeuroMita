@@ -11,27 +11,33 @@ import gc
 
 import pytest
 
-from core.gui_task_supervisor import GuiTaskSupervisor
+from core.gui_task_supervisor import GuiTaskSupervisor, TaskAlreadyRunning
 
 
 class _FakeWorker:
     """Минимальный двойник QThread: интересен только его жизненный цикл."""
 
-    def __init__(self, name="w", *, obeys_interruption=True, task_key=""):
+    def __init__(self, name="w", *, obeys_interruption=True, task_key="", owner=None):
         self.name = name
         self.task_key = task_key
+        self._owner = owner
         self._running = True
+        self._finished = False
         self._obeys = obeys_interruption
         self.interrupted = False
         self.signals_blocked = False
+        self.detached = False
 
     def isRunning(self):
         return self._running
 
+    def isFinished(self):
+        return self._finished
+
     def requestInterruption(self):
         self.interrupted = True
         if self._obeys:
-            self._running = False
+            self.finish()
 
     def wait(self, msec):
         return not self._running
@@ -39,11 +45,18 @@ class _FakeWorker:
     def blockSignals(self, value):
         self.signals_blocked = bool(value)
 
+    def detach_ui_callbacks(self):
+        self.detached = True
+
+    def task_owner(self):
+        return self._owner
+
     def objectName(self):
         return self.name
 
     def finish(self):
         self._running = False
+        self._finished = True
 
 
 def test_supervisor_keeps_strong_reference():
@@ -77,7 +90,23 @@ def test_worker_ignoring_interruption_becomes_survivor_and_is_detached():
     assert stubborn.interrupted is True
     # Отвязан от GUI: задача внутри может висеть в SQLite, но её сигналы уже
     # никого не разбудят — именно это раньше и роняло приложение при закрытии.
-    assert stubborn.signals_blocked is True
+    assert stubborn.detached is True
+    # blockSignals глушит и служебный finished — по нему воркер снимается с
+    # учёта, так что заглушить его значило бы держать поток вечно.
+    assert stubborn.signals_blocked is False
+
+
+def test_survivor_disappears_from_supervisor_when_it_finally_finishes():
+    sup = GuiTaskSupervisor()
+    stubborn = _FakeWorker("stubborn", obeys_interruption=False)
+    sup.register(stubborn)
+    sup.stop_all(timeout_ms=10)
+
+    # Досчитал уже после закрытия окна: finished жив, значит forget доедет.
+    stubborn.finish()
+    sup.forget(stubborn)
+
+    assert sup.active_workers() == []
 
 
 def test_start_is_forbidden_after_shutdown_began():
@@ -92,16 +121,71 @@ def test_start_is_forbidden_after_shutdown_began():
 def test_finished_old_worker_does_not_drop_the_new_one():
     sup = GuiTaskSupervisor()
     old = _FakeWorker("old", task_key="reindex_all")
-    new = _FakeWorker("new", task_key="reindex_all")
     sup.register(old)
+    old.finish()
+
+    new = _FakeWorker("new", task_key="reindex_all")
     sup.register(new)
 
     # Старый досчитал и отписался — ссылка на новый обязана уцелеть.
-    old.finish()
     sup.forget(old)
 
     assert [w.name for w in sup.active_workers()] == ["new"]
     assert sup.running("reindex_all") is new
+
+
+def test_second_task_with_the_same_key_is_refused():
+    sup = GuiTaskSupervisor()
+    first = _FakeWorker("first", task_key="full_reindex_all")
+    sup.register(first)
+
+    with pytest.raises(TaskAlreadyRunning) as conflict:
+        sup.register(_FakeWorker("second", task_key="full_reindex_all"))
+
+    assert conflict.value.worker is first
+    assert [w.name for w in sup.active_workers()] == ["first"]
+
+
+def test_key_is_taken_from_registration_not_from_start():
+    """Занятость ключа начинается с register(), а не с реального старта.
+
+    Регистрация идёт до `QThread.start()`; если бы «занято» считалось по
+    isRunning(), в это окно пролезала бы вторая переиндексация той же БД.
+    """
+    sup = GuiTaskSupervisor()
+    pending = _FakeWorker("pending", task_key="full_reindex_all")
+    pending._running = False  # зарегистрирован, поток ещё не стартовал
+
+    sup.register(pending)
+
+    assert sup.running("full_reindex_all") is pending
+    with pytest.raises(TaskAlreadyRunning):
+        sup.register(_FakeWorker("second", task_key="full_reindex_all"))
+
+
+def test_finished_task_frees_its_key_even_before_forget():
+    """Между концом потока и forget() ключ обязан освободиться.
+
+    `finished` доставляется очередью в поток-владелец, поэтому forget может
+    опоздать на целый цикл событий — кнопку к этому моменту уже нажали.
+    """
+    sup = GuiTaskSupervisor()
+    done = _FakeWorker("done", task_key="full_reindex_all")
+    sup.register(done)
+    done.finish()
+
+    fresh = _FakeWorker("fresh", task_key="full_reindex_all")
+    sup.register(fresh)
+
+    assert sup.running("full_reindex_all") is fresh
+
+
+def test_tasks_without_key_are_never_treated_as_duplicates():
+    sup = GuiTaskSupervisor()
+    sup.register(_FakeWorker("a"))
+    sup.register(_FakeWorker("b"))
+
+    assert len(sup.active_workers()) == 2
 
 
 def test_running_ignores_finished_and_foreign_tasks():
@@ -115,6 +199,50 @@ def test_running_ignores_finished_and_foreign_tasks():
     assert sup.running("reindex_all") is None
     assert sup.running("export") is other
     assert sup.running("") is None
+
+
+def test_cancel_owner_stops_only_the_tasks_of_that_window():
+    """Закрытый диалог гасит свои задачи и не трогает чужие.
+
+    Единственный глобальный stop_all для этого не годится: просмотрщик БД не
+    вправе отменять переиндексацию, запущенную из главного окна.
+    """
+    sup = GuiTaskSupervisor()
+    dialog = object()
+    mine = _FakeWorker("dialog-task", owner=dialog)
+    foreign = _FakeWorker("reindex-all", task_key="reindex_all")
+    sup.register(mine)
+    sup.register(foreign)
+
+    sup.cancel_owner(dialog, timeout_ms=10)
+
+    assert mine.interrupted is True
+    assert foreign.interrupted is False
+    assert sup.running("reindex_all") is foreign
+    # Ворота остались открытыми: приложение живёт дальше.
+    assert sup.is_shutting_down() is False
+    assert sup.register(_FakeWorker("next")) is None
+
+
+def test_cancel_owner_detaches_a_stubborn_task_of_that_window():
+    sup = GuiTaskSupervisor()
+    dialog = object()
+    stubborn = _FakeWorker("stuck", obeys_interruption=False, owner=dialog)
+    sup.register(stubborn)
+
+    survivors = sup.cancel_owner(dialog, timeout_ms=10)
+
+    assert survivors == [stubborn]
+    assert stubborn.detached is True
+
+
+def test_cancel_owner_without_owner_is_a_noop():
+    sup = GuiTaskSupervisor()
+    worker = _FakeWorker("ownerless")
+    sup.register(worker)
+
+    assert sup.cancel_owner(None, timeout_ms=10) == []
+    assert worker.interrupted is False
 
 
 def test_forget_of_unknown_worker_is_harmless():
