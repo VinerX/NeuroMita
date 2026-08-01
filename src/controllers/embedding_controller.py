@@ -21,6 +21,7 @@ from services.contracts import (
     AIRuntimeUnavailable,
     EmbeddingReadiness,
     EmbeddingService,
+    ModelState,
     SettingsService,
 )
 
@@ -50,8 +51,8 @@ class EmbeddingController(EmbeddingService):
         self._settings_subscription = self.settings.subscribe(
             self._on_setting_changed, keys=self._EMBED_SETTING_KEYS
         )
-        self.handler: object | None = None
-        self._handler_failed: bool = False
+        self._state: ModelState = ModelState.LOADING
+        self._error: str = ""
         self._init_lock = Lock()
 
         self._subscribe_to_events()
@@ -71,10 +72,19 @@ class EmbeddingController(EmbeddingService):
 
         return TARGET_EMBEDDINGS in required_model_targets(settings=self.settings)
 
+    def _set_state(self, state: ModelState, error: str = "") -> None:
+        """Единственная точка смены состояния: индикатор RAG читает его же."""
+        with self._init_lock:
+            if self._state is state and self._error == error:
+                return
+            self._state = state
+            self._error = error
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
     def _maybe_start_warmup(self, *, reason: str) -> None:
         if not self._should_warmup():
             return
-        if self.handler is not None or self._handler_failed:
+        if self._state in (ModelState.READY, ModelState.DISABLED):
             return
         task_supervisor().start_thread(
             self,
@@ -88,8 +98,8 @@ class EmbeddingController(EmbeddingService):
         # здесь только факт: прогрета она или нет.
         return EmbeddingReadiness(
             provider=self._provider_name(),
-            model_loaded=self.handler is not None,
-            failed=self._handler_failed,
+            state=self._state,
+            error=self._error,
         )
 
     def _provider_name(self) -> str:
@@ -114,50 +124,54 @@ class EmbeddingController(EmbeddingService):
         if str(data.get("service") or "").strip().lower() != "rag":
             return
 
-        # Процесс движка сменился — прогретой модели в нём больше нет, а
-        # self.handler означает именно «модель в памяти движка». Признак поломки
-        # снимаем только при удачном рестарте: иначе прошлая ошибка затирается и
-        # индикатор вместо красного показывает вечную загрузку.
-        with self._init_lock:
-            self.handler = None
-            if data.get("ok") is True:
-                self._handler_failed = False
-        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
-        self._maybe_start_warmup(reason="service_restarted")
+        # Процесс движка сменился — прогретой модели в нём больше нет. Неудачный
+        # рестарт означает, что воркер уже не поднимут автоматически: это ошибка,
+        # а не «грузится», иначе индикатор висит жёлтым до перезапуска приложения.
+        if data.get("ok") is True:
+            self._set_state(ModelState.LOADING)
+            self._maybe_start_warmup(reason="service_restarted")
+            return
+
+        reason = str(data.get("error") or "").strip() or "AI-воркер RAG не поднялся"
+        logger.error(f"EmbeddingController: эмбеддинги недоступны — {reason}")
+        self._set_state(ModelState.ERROR, reason)
 
     def _warmup_local_backend(self) -> None:
         # AI engine может подняться позже контроллера, а первый запуск модели —
         # тянуть веса с HF (~минуты). Поэтому ретраим до готовности движка, чтобы
         # прогрев состоялся в фоне, а не сорвался из-за стартовой гонки.
         for _ in range(150):  # ~5 минут ожидания движка (загрузка идёт уже в нём)
-            if self.handler is not None or self._handler_failed:
+            if self._state in (ModelState.READY, ModelState.DISABLED):
                 return
             if not self._should_warmup():
                 return
             try:
-                if self._ensure_local_backend():
+                # force: фоновый прогрев — единственный путь выхода из ошибки,
+                # запросу пользователя ждать мёртвый рантайм нельзя.
+                if self._ensure_local_backend(force=True):
                     return
             except Exception:
                 pass
             time.sleep(2.0)
 
-    def _ensure_local_backend(self) -> bool:
-        if self._handler_failed:
+    def _ensure_local_backend(self, *, force: bool = False) -> bool:
+        if self._state is ModelState.DISABLED:
+            return False
+        if self._state is ModelState.ERROR and not force:
             return False
         if not self.settings.get("RAG_ENABLED", False):
             return False
         if not self.settings.get("RAG_VECTOR_SEARCH_ENABLED", False):
             return False
         if self._provider_name() != "local":
-            with self._init_lock:
-                self.handler = None
+            self._set_state(ModelState.LOADING)
             logger.debug("EmbeddingController: non-local provider, AI engine warmup skipped")
             return False
-        if self.handler is not None:
+        if self._state is ModelState.READY:
             return True
 
         with self._init_lock:
-            if self.handler is None and not self._handler_failed:
+            if self._state is not ModelState.READY:
                 try:
                     ms = resolve_model_settings()
                     engine_service = use(AIEngineService)
@@ -183,7 +197,8 @@ class EmbeddingController(EmbeddingService):
                         raise RuntimeError(
                             "RAG embeddings environment could not be initialized"
                         )
-                    self.handler = object()
+                    self._state = ModelState.READY
+                    self._error = ""
                     # Индикатор RAG показывает «готово» только когда модель реально
                     # в памяти — статус пересчитывается по этому уведомлению.
                     self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
@@ -199,7 +214,8 @@ class EmbeddingController(EmbeddingService):
                         f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
                         exc_info=True,
                     )
-                    self._handler_failed = True
+                    self._state = ModelState.ERROR
+                    self._error = str(e)
                     self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
                     return False
         return True
@@ -219,9 +235,7 @@ class EmbeddingController(EmbeddingService):
 
         logger.info(f"EmbeddingController: настройка '{key}' изменилась, сбрасываю local backend cache")
         invalidate_embedding_config_cache()
-        with self._init_lock:
-            self.handler = None
-            self._handler_failed = False
+        self._set_state(ModelState.LOADING)
 
         if key in ("RAG_EMBED_MODEL", "RAG_EMBED_MODEL_CUSTOM"):
             self.event_bus.emit(Events.RAG.MODEL_CHANGED, {
@@ -245,8 +259,8 @@ class EmbeddingController(EmbeddingService):
         # выключенный контроллер остаётся жив и реагирует на события.
         self.event_bus.unsubscribe_owner(self)
         with self._init_lock:
-            self.handler = None
-            self._handler_failed = True
+            self._state = ModelState.DISABLED
+            self._error = ""
         task_supervisor().cancel_owner(self, timeout=1.0)
 
     def _on_install_task_finished(self, event: Event) -> None:
@@ -257,9 +271,7 @@ class EmbeddingController(EmbeddingService):
             return
 
         invalidate_embedding_config_cache()
-        with self._init_lock:
-            self.handler = None
-            self._handler_failed = False
+        self._set_state(ModelState.LOADING)
 
         # Модель эмбеддингов только что доустановлена — прогреем в фоне.
         self._maybe_start_warmup(reason="install_finished")

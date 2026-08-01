@@ -1,27 +1,7 @@
-import threading
-import weakref
-
 from main_logger import logger
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.cancellation import TaskCancelledError
-
-_active_workers: "weakref.WeakSet[TaskWorker]" = weakref.WeakSet()
-_active_lock = threading.Lock()
-
-
-def stop_all_workers(timeout_ms: int = 2000) -> None:
-    """Прервать все живые воркеры. Иначе QThread переживает закрытие окна и
-    дёргает колбэки с уже уничтоженными Qt-объектами."""
-    with _active_lock:
-        workers = [w for w in _active_workers if w is not None]
-    for worker in workers:
-        try:
-            if not worker.isRunning():
-                continue
-            worker.requestInterruption()
-            worker.wait(int(timeout_ms))
-        except Exception:
-            logger.debug("Не удалось остановить TaskWorker", exc_info=True)
+from core.gui_task_supervisor import gui_task_supervisor
 
 
 class TaskWorker(QThread):
@@ -35,24 +15,31 @@ class TaskWorker(QThread):
     error_signal = pyqtSignal(str)
     cancelled_signal = pyqtSignal()
 
-    def __init__(self, func, *, args=None, kwargs=None, use_progress: bool = False):
+    def __init__(self, func, *, args=None, kwargs=None, use_progress: bool = False,
+                 task_key: str = ""):
         super().__init__()
         self._func = func
         self._args = tuple(args or ())
         self._kwargs = dict(kwargs or {})
         self._use_progress = bool(use_progress)
+        # task_key — имя задачи для супервизора: по нему проверяют «уже запущено».
+        self.task_key = str(task_key or "")
         self.finished.connect(self._forget)
 
     CancelledError = TaskCancelledError
 
     def start(self, *args, **kwargs):
-        with _active_lock:
-            _active_workers.add(self)
-        super().start(*args, **kwargs)
+        # Регистрация до запуска: воркер, стартовавший в обход супервизора,
+        # пережил бы закрытие окна.
+        gui_task_supervisor().register(self)
+        try:
+            super().start(*args, **kwargs)
+        except Exception:
+            gui_task_supervisor().forget(self)
+            raise
 
     def _forget(self) -> None:
-        with _active_lock:
-            _active_workers.discard(self)
+        gui_task_supervisor().forget(self)
 
     def _emit_progress(self, curr: int, total: int):
         # Cooperative cancellation: tasks that call progress_callback can be interrupted safely.

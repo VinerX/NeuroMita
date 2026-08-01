@@ -7,7 +7,7 @@
 """
 from unittest.mock import patch
 
-from services.contracts import EmbeddingReadiness
+from services.contracts import EmbeddingReadiness, ModelState
 
 
 def _settings(**overrides):
@@ -26,9 +26,17 @@ def _settings(**overrides):
     return _SettingsManager
 
 
+def _state(model_loaded: bool = False, failed: bool = False) -> ModelState:
+    if failed:
+        return ModelState.ERROR
+    return ModelState.READY if model_loaded else ModelState.LOADING
+
+
 class _Embedder:
-    def __init__(self, **kwargs):
-        self._readiness = EmbeddingReadiness(**kwargs)
+    def __init__(self, provider="local", model_loaded=False, failed=False):
+        self._readiness = EmbeddingReadiness(
+            provider=provider, state=_state(model_loaded, failed)
+        )
 
     def readiness(self):
         return self._readiness
@@ -50,7 +58,7 @@ def _run(settings, embedder, *, ce_loaded=False, ce_failed=False, local_provider
          patch.object(install_spec, "resolve_ce_model", return_value="owner/reranker"), \
          patch("core.services.services", return_value=_Registry()), \
          patch("managers.rag.pipeline.cross_encoder.CrossEncoderReranker.readiness",
-               return_value=RerankerReadiness(model_loaded=ce_loaded, failed=ce_failed)), \
+               return_value=RerankerReadiness(state=_state(ce_loaded, ce_failed))), \
          patch("managers.rag.pipeline.config.resolve_ce_model", return_value="owner/reranker"):
         return mod.rag_readiness()
 

@@ -39,6 +39,18 @@ def _b(value, default: bool = False) -> bool:
         return default
 
 
+def _map_state(state) -> str:
+    from services.contracts import ModelState
+
+    if state is ModelState.ERROR:
+        return ERROR
+    if state is ModelState.READY:
+        return READY
+    if state is ModelState.DISABLED:
+        return NOT_NEEDED
+    return LOADING
+
+
 def _embeddings_state() -> str:
     from core.services import services
     from services.contracts import EmbeddingService
@@ -48,20 +60,14 @@ def _embeddings_state() -> str:
         # Модель нужна, а сервиса нет — эмбеддингов не будет.
         return ERROR
 
-    status = embedder.readiness()
-    if status.failed:
-        return ERROR
-    return READY if status.model_loaded else LOADING
+    return _map_state(embedder.readiness().state)
 
 
 def _reranker_state() -> str:
     from managers.rag.pipeline.config import resolve_ce_model
     from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
 
-    status = CrossEncoderReranker.readiness(resolve_ce_model())
-    if status.failed:
-        return ERROR
-    return READY if status.model_loaded else LOADING
+    return _map_state(CrossEncoderReranker.readiness(resolve_ce_model()).state)
 
 
 def rag_readiness() -> RagReadiness:

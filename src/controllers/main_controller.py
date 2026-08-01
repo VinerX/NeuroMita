@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import threading
 from typing import TYPE_CHECKING
 
@@ -8,6 +7,7 @@ from main_logger import logger
 from core.events import Event, EventDelivery, Events, get_event_bus, shutdown_event_bus
 from core.app_paths import settings_dir, settings_path
 from core.executors import executors
+from core.gui_task_supervisor import gui_task_supervisor
 from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
 from startup.startup_profiler import startup_trace
@@ -620,9 +620,7 @@ class MainController:
 
         # Воркеры настроек (переиндексация, миграции, экспорт) переживают закрытие
         # окна и дёргают колбэки с уже уничтоженными виджетами — гасим до GUI.
-        task_worker_module = sys.modules.get("controllers.gui.task_worker")
-        if task_worker_module is not None:
-            shutdown_step("GUI task workers", task_worker_module.stop_all_workers)
+        shutdown_step("GUI task workers", gui_task_supervisor().stop_all)
 
         gui_controller = getattr(self, "gui_controller", None)
         if gui_controller is not None:

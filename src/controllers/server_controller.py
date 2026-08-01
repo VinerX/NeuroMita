@@ -117,6 +117,9 @@ class ServerController:
         self.event_bus = get_event_bus()
         self.game_link = game_link
         self.game_link.attach_probe(self._probe_connection)
+        attach_owner = getattr(self.game_link, "attach_owner_probe", None)
+        if callable(attach_owner):
+            attach_owner(self._player_turn_owner)
         self.server = None
         self.running = False
         self.ConnectedToGame = False
@@ -331,6 +334,14 @@ class ServerController:
             return bool(conns)
         return None
 
+    def _player_turn_owner(self) -> str:
+        if self._destroyed or not self.server:
+            return ""
+        try:
+            return str(self.server.primary_client_id() or "")
+        except Exception:
+            return ""
+
     def _on_stop_server(self, event: Event):
         if self._destroyed:
             return
@@ -524,8 +535,16 @@ class ServerController:
             self._report_asr_undelivered(data)
             return
 
+        # Адресат выбран там же, где решался владелец хода; пустой client_id —
+        # событие от старого кода, тогда берём активную сессию.
+        client_id = str(data.get("client_id") or "") or self.server.primary_client_id()
+        if not client_id:
+            self._report_asr_undelivered(data)
+            return
+
         try:
-            future = self.server.schedule_send_asr_text_to_primary(
+            future = self.server.schedule_send_asr_text(
+                client_id=client_id,
                 text=text,
                 utterance_id=str(data.get("id") or ""),
                 engine=str(data.get("engine") or ""),

@@ -5,6 +5,7 @@ import threading
 import time
 import os
 from concurrent.futures import Future
+from itertools import count
 from typing import Optional, Dict, Any, Set, Callable
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -61,6 +62,10 @@ class ChatServerNew:
 
         self.client_tasks: Dict[str, Set[str]] = {}
         self.last_idle_tasks: Dict[str, str] = {}
+        # Порядковый номер подключения: ip:port переиспользуется ОС, а состояние
+        # (окно речи, задачи, эхо-подавитель) привязано к конкретной сессии —
+        # запоздавшее событие мёртвой сессии не должно попасть в новую.
+        self._connection_seq = count(1)
 
         self.ignore_game_requests: bool = False
         self.game_block_level: str = 'Idle events'
@@ -179,7 +184,7 @@ class ChatServerNew:
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info('peername')
-        client_id = f"{addr[0]}:{addr[1]}"
+        client_id = f"{addr[0]}:{addr[1]}#{next(self._connection_seq)}"
         logger.info(f"Новое подключение от {client_id}")
 
         self.active_connections[client_id] = writer
@@ -453,9 +458,10 @@ class ChatServerNew:
             return ""
         return next(reversed(conns))
 
-    def schedule_send_asr_text_to_primary(
+    def schedule_send_asr_text(
         self,
         *,
+        client_id: str,
         text: str,
         utterance_id: str,
         engine: str = "",
@@ -465,12 +471,16 @@ class ChatServerNew:
         delay_sec: float = 0.0,
         merge_input: bool = True,
     ) -> "Future[bool]":
-        """Отправить распознанную фразу активному клиенту мода.
+        """Отправить распознанную фразу конкретной сессии мода.
 
-        Клиент выбирается внутри корутины loop'а, а результат — реальный факт
-        записи в сокет: между «игра подключена» и отправкой соединение может
-        исчезнуть, и тогда фраза игрока обязана вернуться в десктоп-чат, а не
-        потеряться молча."""
+        client_id — сессия, которой ход игрока принадлежал в момент распознавания:
+        пока фраза шла через ASR, «самое свежее подключение» могло смениться на
+        второй запуск игры или тестовый клиент, и голос уехал бы не туда.
+
+        Результат Future — факт записи в сокет, а не обработки модом: соединение
+        может исчезнуть между проверкой связи и отправкой, и тогда фраза обязана
+        вернуться в десктоп-чат, а не потеряться молча. Подтверждения от мода
+        (ack по utterance_id) в протоколе пока нет."""
         payload = {
             "type": "asr_text",
             "id": str(utterance_id or ""),
@@ -489,10 +499,12 @@ class ChatServerNew:
         if not self.can_schedule():
             return _finished_future(False)
 
+        target = str(client_id or "")
+
         async def _push() -> bool:
-            client_id = self.primary_client_id()
-            writer = self.active_connections.get(client_id) if client_id else None
+            writer = self.active_connections.get(target) if target else None
             if writer is None:
+                logger.info(f"asr_text: сессия {target!r} уже закрыта, отправлять некому")
                 return False
             return bool(await self.send_json(writer, payload))
 

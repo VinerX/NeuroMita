@@ -18,11 +18,27 @@ class ServerGameLinkService(GameLinkService):
         self._lock = threading.Lock()
         self._connected = False
         self._probe: Optional[Callable[[], Optional[bool]]] = None
+        self._owner_probe: Optional[Callable[[], str]] = None
 
     def attach_probe(self, probe: Callable[[], Optional[bool]]) -> None:
         """probe() -> True/False по живым соединениям, либо None если неизвестно."""
         with self._lock:
             self._probe = probe
+
+    def attach_owner_probe(self, probe: Callable[[], str]) -> None:
+        """probe() -> client_id активной игровой сессии ("" — таковой нет)."""
+        with self._lock:
+            self._owner_probe = probe
+
+    def player_turn_owner(self) -> str:
+        with self._lock:
+            probe = self._owner_probe
+        if probe is None:
+            return ""
+        try:
+            return str(probe() or "")
+        except Exception:
+            return ""
 
     def set_connected(self, connected: bool) -> None:
         with self._lock:

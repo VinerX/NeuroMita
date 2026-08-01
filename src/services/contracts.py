@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
 from core.request_policy import RequestPolicy
@@ -371,6 +372,14 @@ class LoopService(ABC):
 class GameLinkService(ABC):
     @abstractmethod
     def is_connected(self) -> bool: ...
+
+    def player_turn_owner(self) -> str:
+        """Клиент мода, которому сейчас принадлежит ход игрока ("" — некому).
+
+        Голос игрока обязан уехать именно в ту сессию, в которой он прозвучал:
+        «последний подключившийся сокет» мог смениться, пока фраза распознавалась.
+        """
+        return ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -835,14 +844,35 @@ class EmbeddingPresetService(ABC):
     def reorder(self, order: Iterable[Any]) -> bool: ...
 
 
+class ModelState(str, Enum):
+    """Состояние модели в AI-engine — одно поле вместо пары флагов.
+
+    Пара «загружено/сломано» допускала противоречия: после провалившегося
+    рестарта движка модели нет, а ошибки нет — и UI показывал вечную загрузку
+    вместо ошибки.
+    """
+
+    DISABLED = "disabled"
+    LOADING = "loading"
+    READY = "ready"
+    ERROR = "error"
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingReadiness:
     """Готовность бэкенда эмбеддингов — для честного статуса RAG в UI."""
 
     provider: str = "local"
-    # Модель реально прогрета в AI-engine (activate_environment + warmup прошли).
-    model_loaded: bool = False
-    failed: bool = False
+    state: ModelState = ModelState.LOADING
+    error: str = ""
+
+    @property
+    def model_loaded(self) -> bool:
+        return self.state is ModelState.READY
+
+    @property
+    def failed(self) -> bool:
+        return self.state is ModelState.ERROR
 
 
 class EmbeddingService(ABC):

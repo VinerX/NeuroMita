@@ -7,6 +7,7 @@ from PyQt6.QtCore import QUrl, Qt, QTimer
 from PyQt6.QtGui import QDesktopServices
 
 from controllers.gui.task_worker import TaskWorker
+from core.gui_task_supervisor import gui_task_supervisor
 from utils import getTranslationVariant as _
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -138,7 +139,7 @@ class ReindexAllCharactersWorker(TaskWorker):
                 progress_callback(done_base, max(grand_total, 1))
             return created_total
 
-        super().__init__(_do_all, use_progress=True)
+        super().__init__(_do_all, use_progress=True, task_key="reindex_all")
 
 
 class FullReindexAllCharactersWorker(TaskWorker):
@@ -189,7 +190,7 @@ class FullReindexAllCharactersWorker(TaskWorker):
             progress_callback(global_done, max(global_total, 1))
             return processed_total
 
-        super().__init__(_do_all_full, use_progress=True)
+        super().__init__(_do_all_full, use_progress=True, task_key="full_reindex_all")
 
 
 class DedupeHistoryWorker(TaskWorker):
@@ -1076,11 +1077,11 @@ def _start_migration_worker(gui, character_id: str | None):
     Background migration with progress + cancel.
     `character_id=None` means "all characters".
     """
-    gui._migration_cancelled = False
+    cancelled = False
 
     # Keep strong reference
     kwargs = {"character_id": character_id} if character_id else {"character_id": None}
-    gui._migration_worker = TaskWorker(run_json_migration, kwargs=kwargs, use_progress=True)
+    worker = TaskWorker(run_json_migration, kwargs=kwargs, use_progress=True)
 
     progress = QProgressDialog(
         _("Миграция данных...", "Migrating data..."),
@@ -1132,9 +1133,7 @@ def _start_migration_worker(gui, character_id: str | None):
         return "\n".join(parts).strip()
 
     def on_finished(result):
-        if getattr(gui, "_migration_cancelled", False):
-            gui._migration_worker = None
-            gui._migration_cancelled = False
+        if cancelled:
             return
         progress.close()
 
@@ -1158,40 +1157,30 @@ def _start_migration_worker(gui, character_id: str | None):
             except Exception:
                 pass
 
-        gui._migration_worker = None
-        gui._migration_cancelled = False
 
     def on_error(msg: str):
-        if getattr(gui, "_migration_cancelled", False):
-            gui._migration_worker = None
-            gui._migration_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._migration_worker = None
-        gui._migration_cancelled = False
 
     def on_cancel():
-        gui._migration_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
-            gui._migration_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._migration_worker = None
-        gui._migration_cancelled = False
-
-    gui._migration_worker.progress_signal.connect(on_progress)
-    gui._migration_worker.finished_signal.connect(on_finished)
-    gui._migration_worker.error_signal.connect(on_error)
-    gui._migration_worker.cancelled_signal.connect(on_cancelled)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
     # Let dialog paint before heavy work starts
-    QTimer.singleShot(0, gui._migration_worker.start)
+    QTimer.singleShot(0, worker.start)
 
 
 def migrate_db_to_structured(gui, character_id: str | None = "current"):
@@ -1242,7 +1231,7 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
     progress.setAutoReset(False)
 
     kwargs = {"character_id": character_id}
-    gui._struct_migration_worker = TaskWorker(run_tags_to_structured_migration, kwargs=kwargs, use_progress=True)
+    worker = TaskWorker(run_tags_to_structured_migration, kwargs=kwargs, use_progress=True)
 
     def on_progress(curr, total):
         try:
@@ -1261,7 +1250,6 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
 
     def on_finished(result):
         progress.close()
-        gui._struct_migration_worker = None
         res = result if isinstance(result, dict) else {}
         updated = res.get("rows_updated", "?")
         skipped = res.get("rows_skipped", "?")
@@ -1274,24 +1262,23 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
 
     def on_error(err):
         progress.close()
-        gui._struct_migration_worker = None
         QMessageBox.critical(gui, _("Ошибка", "Error"), str(err))
 
     def on_cancel():
         try:
-            gui._struct_migration_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    gui._struct_migration_worker.progress_signal.connect(on_progress)
-    gui._struct_migration_worker.finished_signal.connect(on_finished)
-    gui._struct_migration_worker.error_signal.connect(on_error)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
     from PyQt6.QtCore import QTimer
-    QTimer.singleShot(0, gui._struct_migration_worker.start)
+    QTimer.singleShot(0, worker.start)
 
 
 def open_db_viewer(gui, character_id: str | None = None):
@@ -1328,11 +1315,11 @@ def run_history_dedup(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    gui._dedupe_cancelled = False
+    cancelled = False
     from managers.database_manager import DatabaseManager
     db = DatabaseManager()
 
-    gui._dedupe_worker = TaskWorker(db.dedupe_history, kwargs={"character_id": str(character_id)})
+    worker = TaskWorker(db.dedupe_history, kwargs={"character_id": str(character_id)})
 
     progress = QProgressDialog(_("Очистка дублей...", "Removing duplicates..."),
                                _("Отмена", "Cancel"),
@@ -1344,9 +1331,7 @@ def run_history_dedup(gui):
 
     def on_finished(result):
         # If user already closed the dialog, don't show popups.
-        if getattr(gui, "_dedupe_cancelled", False):
-            gui._dedupe_worker = None
-            gui._dedupe_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(
@@ -1354,8 +1339,6 @@ def run_history_dedup(gui):
             _("Готово", "Done"),
             _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(result or 0))
         )
-        gui._dedupe_worker = None
-        gui._dedupe_cancelled = False
         # по желанию можно обновить UI/данные
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
@@ -1365,36 +1348,27 @@ def run_history_dedup(gui):
             gui.update_debug_info()
 
     def on_error(msg: str):
-        if getattr(gui, "_dedupe_cancelled", False):
-            gui._dedupe_worker = None
-            gui._dedupe_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._dedupe_worker = None
-        gui._dedupe_cancelled = False
 
     def on_cancel():
+        nonlocal cancelled
         # Важно: НЕ роняем ссылку на поток пока он работает (это может крашить процесс в PyQt).
-        gui._dedupe_cancelled = True
+        cancelled = True
         try:
-            gui._dedupe_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        # Поток завершился по cooperative cancel (если операция поддерживает cancel)
-        gui._dedupe_worker = None
-        gui._dedupe_cancelled = False
-
-    gui._dedupe_worker.finished_signal.connect(on_finished)
-    gui._dedupe_worker.error_signal.connect(on_error)
-    gui._dedupe_worker.cancelled_signal.connect(on_cancelled)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    gui._dedupe_worker.start()
+    worker.start()
 
 def run_history_dedup_all(gui):
     title = _("Подтверждение", "Confirmation")
@@ -1413,11 +1387,11 @@ def run_history_dedup_all(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    gui._dedupe_all_cancelled = False
+    cancelled = False
     from managers.database_manager import DatabaseManager
     db = DatabaseManager()
 
-    gui._dedupe_all_worker = TaskWorker(db.dedupe_history, kwargs={"character_id": None})
+    worker = TaskWorker(db.dedupe_history, kwargs={"character_id": None})
 
     progress = QProgressDialog(_("Очистка дублей (все персонажи)...", "Removing duplicates (all characters)..."),
                                _("Отмена", "Cancel"),
@@ -1428,9 +1402,7 @@ def run_history_dedup_all(gui):
     progress.setAutoReset(False)
 
     def on_finished(result):
-        if getattr(gui, "_dedupe_all_cancelled", False):
-            gui._dedupe_all_worker = None
-            gui._dedupe_all_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(
@@ -1438,8 +1410,6 @@ def run_history_dedup_all(gui):
             _("Готово", "Done"),
             _("Удалено дублей: {n}", "Duplicates removed: {n}").format(n=int(result or 0))
         )
-        gui._dedupe_all_worker = None
-        gui._dedupe_all_cancelled = False
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1448,34 +1418,26 @@ def run_history_dedup_all(gui):
             gui.update_debug_info()
 
     def on_error(msg: str):
-        if getattr(gui, "_dedupe_all_cancelled", False):
-            gui._dedupe_all_worker = None
-            gui._dedupe_all_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._dedupe_all_worker = None
-        gui._dedupe_all_cancelled = False
 
     def on_cancel():
-        gui._dedupe_all_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
-            gui._dedupe_all_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._dedupe_all_worker = None
-        gui._dedupe_all_cancelled = False
-
-    gui._dedupe_all_worker.finished_signal.connect(on_finished)
-    gui._dedupe_all_worker.error_signal.connect(on_error)
-    gui._dedupe_all_worker.cancelled_signal.connect(on_cancelled)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    gui._dedupe_all_worker.start()
+    worker.start()
 
 def run_reindexing(gui):
     character_id = _selected_character_id(gui)
@@ -1504,8 +1466,7 @@ def run_reindexing(gui):
 
     # Запуск воркера
     worker = _create_reindex_worker(character_id, full=False)
-    gui._reindex_worker = worker
-    gui._reindex_cancelled = False
+    cancelled = False
 
     progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0, 100,
                                gui)
@@ -1517,8 +1478,9 @@ def run_reindexing(gui):
 
 
     def on_cancel():
+        nonlocal cancelled
         # Важно: НЕ обнуляем ссылку на поток пока он работает (может крашить процесс).
-        gui._reindex_cancelled = True
+        cancelled = True
         try:
             worker.requestInterruption()
         except Exception:
@@ -1532,9 +1494,7 @@ def run_reindexing(gui):
         progress.setValue(curr)
 
     def on_finished(count):
-        if getattr(gui, "_reindex_cancelled", False):
-            gui._reindex_worker = None
-            gui._reindex_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(
@@ -1542,27 +1502,18 @@ def run_reindexing(gui):
             _("Готово", "Done"),
             _("Векторов создано: {n}", "Embeddings created: {n}").format(n=int(count or 0))
         )
-        gui._reindex_worker = None
 
     def on_error(msg):
-        if getattr(gui, "_reindex_cancelled", False):
-            gui._reindex_worker = None
-            gui._reindex_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._reindex_worker = None
 
 
-
-    def on_cancelled():
-        gui._reindex_worker = None
-        gui._reindex_cancelled = False
 
     worker.progress_signal.connect(on_progress)
     worker.finished_signal.connect(on_finished)
     worker.error_signal.connect(on_error)
-    worker.cancelled_signal.connect(on_cancelled)
     _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
@@ -1600,8 +1551,7 @@ def run_reindexing_all(gui):
     """Fill missing embeddings for ALL characters."""
     # Уже запущено — не плодим второй воркер, а возвращаем (возможно скрытое)
     # окно прогресса. Это же даёт «показать снова» после кнопки «Скрыть».
-    existing = getattr(gui, "_reindex_all_worker", None)
-    if existing is not None and existing.isRunning():
+    if gui_task_supervisor().running("reindex_all") is not None:
         dlg = getattr(gui, "_reindex_all_dialog", None)
         if dlg is not None:
             dlg.show()
@@ -1629,8 +1579,7 @@ def run_reindexing_all(gui):
     from ui.dialogs.background_task_dialog import BackgroundTaskDialog
 
     worker = ReindexAllCharactersWorker(character_ids)
-    gui._reindex_all_worker = worker
-    gui._reindex_all_cancelled = False
+    cancelled = False
 
     progress = BackgroundTaskDialog(
         gui,
@@ -1658,12 +1607,10 @@ def run_reindexing_all(gui):
             pass
 
     def _cleanup():
-        gui._reindex_all_worker = None
-        gui._reindex_all_cancelled = False
         gui._reindex_all_dialog = None
 
     def on_finished(count):
-        if getattr(gui, "_reindex_all_cancelled", False):
+        if cancelled:
             _cleanup()
             return
         progress.finish()
@@ -1684,7 +1631,7 @@ def run_reindexing_all(gui):
                 pass
 
     def on_error(msg):
-        if getattr(gui, "_reindex_all_cancelled", False):
+        if cancelled:
             _cleanup()
             return
         progress.finish()
@@ -1692,7 +1639,8 @@ def run_reindexing_all(gui):
         _cleanup()
 
     def on_stop():
-        gui._reindex_all_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
             worker.requestInterruption()
         except Exception:
@@ -1764,8 +1712,7 @@ def run_full_reindexing(gui):
 
     # Запуск воркера
     worker = _create_reindex_worker(character_id, full=True)
-    gui._full_reindex_worker = worker
-    gui._full_reindex_cancelled = False
+    cancelled = False
 
     progress = QProgressDialog(
         _("Полная переиндексация...", "Full re-indexing..."),
@@ -1790,9 +1737,7 @@ def run_full_reindexing(gui):
         )
 
     def on_finished(count):
-        if getattr(gui, "_full_reindex_cancelled", False):
-            gui._full_reindex_worker = None
-            gui._full_reindex_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(
@@ -1800,8 +1745,6 @@ def run_full_reindexing(gui):
             _("Готово", "Done"),
             _("Переиндексировано записей: {n}", "Records re-indexed: {n}").format(n=count)
         )
-        gui._full_reindex_worker = None
-        gui._full_reindex_cancelled = False
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1813,30 +1756,23 @@ def run_full_reindexing(gui):
                 pass
 
     def on_error(msg):
-        if getattr(gui, "_full_reindex_cancelled", False):
-            gui._full_reindex_worker = None
-            gui._full_reindex_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._full_reindex_worker = None
 
     def on_cancel():
-        gui._full_reindex_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
             worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._full_reindex_worker = None
-        gui._full_reindex_cancelled = False
-
     worker.progress_signal.connect(on_progress)
     worker.finished_signal.connect(on_finished)
     worker.error_signal.connect(on_error)
-    worker.cancelled_signal.connect(on_cancelled)
     _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
@@ -1866,8 +1802,7 @@ def run_full_reindexing_all(gui):
         return
 
     worker = FullReindexAllCharactersWorker(character_ids)
-    gui._full_reindex_all_worker = worker
-    gui._full_reindex_all_cancelled = False
+    cancelled = False
 
     progress = QProgressDialog(
         _("Полная переиндексация (все персонажи)...", "Full re-indexing (all characters)..."),
@@ -1897,9 +1832,7 @@ def run_full_reindexing_all(gui):
             pass
 
     def on_finished(count):
-        if getattr(gui, "_full_reindex_all_cancelled", False):
-            gui._full_reindex_all_worker = None
-            gui._full_reindex_all_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(
@@ -1907,8 +1840,6 @@ def run_full_reindexing_all(gui):
             _("Готово", "Done"),
             _("Переиндексировано записей: {n}", "Records re-indexed: {n}").format(n=int(count or 0))
         )
-        gui._full_reindex_all_worker = None
-        gui._full_reindex_all_cancelled = False
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
@@ -1920,30 +1851,23 @@ def run_full_reindexing_all(gui):
                 pass
 
     def on_error(msg):
-        if getattr(gui, "_full_reindex_all_cancelled", False):
-            gui._full_reindex_all_worker = None
-            gui._full_reindex_all_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._full_reindex_all_worker = None
 
     def on_cancel():
-        gui._full_reindex_all_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
             worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._full_reindex_all_worker = None
-        gui._full_reindex_all_cancelled = False
-
     worker.progress_signal.connect(on_progress)
     worker.finished_signal.connect(on_finished)
     worker.error_signal.connect(on_error)
-    worker.cancelled_signal.connect(on_cancelled)
     _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
@@ -1977,8 +1901,8 @@ def _start_export_worker(gui, settings: dict):
     from managers.database_manager import DatabaseManager
     db = DatabaseManager()
 
-    gui._export_cancelled = False
-    gui._export_worker = TaskWorker(db.export_to_json_file, kwargs=settings, use_progress=True)
+    cancelled = False
+    worker = TaskWorker(db.export_to_json_file, kwargs=settings, use_progress=True)
 
     progress = QProgressDialog(
         _("Выгрузка данных...", "Exporting data..."),
@@ -2006,9 +1930,7 @@ def _start_export_worker(gui, settings: dict):
             pass
 
     def on_finished(result):
-        if getattr(gui, "_export_cancelled", False):
-            gui._export_worker = None
-            gui._export_cancelled = False
+        if cancelled:
             return
         progress.close()
 
@@ -2016,39 +1938,29 @@ def _start_export_worker(gui, settings: dict):
         QMessageBox.information(gui, _("Успех", "Success"),
                                 _("Выгрузка завершена.\n\n{msg}", "Export completed.\n\n{msg}").format(msg=msg))
 
-        gui._export_worker = None
-        gui._export_cancelled = False
 
     def on_error(msg: str):
-        if getattr(gui, "_export_cancelled", False):
-            gui._export_worker = None
-            gui._export_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._export_worker = None
-        gui._export_cancelled = False
 
     def on_cancel():
-        gui._export_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
-            gui._export_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._export_worker = None
-        gui._export_cancelled = False
-
-    gui._export_worker.progress_signal.connect(on_progress)
-    gui._export_worker.finished_signal.connect(on_finished)
-    gui._export_worker.error_signal.connect(on_error)
-    gui._export_worker.cancelled_signal.connect(on_cancelled)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    QTimer.singleShot(0, gui._export_worker.start)
+    QTimer.singleShot(0, worker.start)
 
 
 def import_db_for_character(gui):
@@ -2076,8 +1988,8 @@ def _start_import_worker(gui, path: str, override_character_id: str | None):
     from managers.database_manager import DatabaseManager
     db = DatabaseManager()
 
-    gui._import_cancelled = False
-    gui._import_worker = TaskWorker(
+    cancelled = False
+    worker = TaskWorker(
         db.import_from_json_file,
         kwargs={"path": path, "override_character_id": override_character_id},
         use_progress=True
@@ -2105,48 +2017,36 @@ def _start_import_worker(gui, path: str, override_character_id: str | None):
             pass
 
     def on_finished(result):
-        if getattr(gui, "_import_cancelled", False):
-            gui._import_worker = None
-            gui._import_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.information(gui, _("Успех", "Success"),
                                 _("Загрузка завершена.\n\n{msg}", "Import completed.\n\n{msg}").format(msg=str(result or "")))
-        gui._import_worker = None
-        gui._import_cancelled = False
         try:
             get_event_bus().emit(Events.Character.RELOAD_DATA)
         except Exception:
             pass
 
     def on_error(msg: str):
-        if getattr(gui, "_import_cancelled", False):
-            gui._import_worker = None
-            gui._import_cancelled = False
+        if cancelled:
             return
         progress.close()
         QMessageBox.critical(gui, _("Ошибка", "Error"), msg)
-        gui._import_worker = None
-        gui._import_cancelled = False
 
     def on_cancel():
-        gui._import_cancelled = True
+        nonlocal cancelled
+        cancelled = True
         try:
-            gui._import_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
 
-    def on_cancelled():
-        gui._import_worker = None
-        gui._import_cancelled = False
-
-    gui._import_worker.progress_signal.connect(on_progress)
-    gui._import_worker.finished_signal.connect(on_finished)
-    gui._import_worker.error_signal.connect(on_error)
-    gui._import_worker.cancelled_signal.connect(on_cancelled)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    QTimer.singleShot(0, gui._import_worker.start)
+    QTimer.singleShot(0, worker.start)
 

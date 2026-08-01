@@ -20,6 +20,7 @@ from services.contracts import (
     SettingsService,
     SpeechService,
 )
+from managers.speaking_window import SpeakingWindow
 from services.asr_settings_service import ensure_asr_settings_service
 from utils import getTranslationVariant as _
 
@@ -36,9 +37,6 @@ class SpeechController(SpeechService):
     # Хвост после конца реплики: гасим затухание звука и задержку VAD,
     # который выдаёт текст уже после паузы.
     _MUTE_TAIL_SEC = 0.4
-
-    # Потолок одной реплики: мод мог упасть, не прислав active=False.
-    _SPEAKING_MAX_SEC = 180.0
 
     def __init__(self):
         self.settings = use(SettingsService)
@@ -88,13 +86,13 @@ class SpeechController(SpeechService):
 
         # «Мита говорит» — чтобы ASR не засчитывал её собственный голос из
         # микрофона (см. _on_speech_text_recognized / _is_mita_speaking).
-        # Источников несколько (локальное воспроизведение + каждый клиент мода),
-        # поэтому храним дедлайны по источникам: «конец речи» от одного не должен
-        # снимать блокировку, пока говорит другой. Дедлайн-сторож обязателен —
-        # мод может упасть между active=True и active=False и заглушить микрофон
-        # навсегда.
-        self._speaking_sources: dict[str, float] = {}
-        self._mita_speaking_until = 0.0    # хвост на затухание (монотонные секунды)
+        self._speaking_window = SpeakingWindow(tail_sec=self._MUTE_TAIL_SEC)
+
+        # Фразы, отданные в игру и ещё не вернувшиеся как недоставленные.
+        # Ход по одной фразе ровно один: пока id здесь — десктоп-чат её не берёт,
+        # а забрав, снимает id, поэтому повторный «недоставлен» уже не сработает.
+        self._turns_lock = threading.Lock()
+        self._turns_in_game: dict[str, float] = {}
 
         self._settings_subscription = self.settings.subscribe(
             self._on_setting_changed, keys=self._SETTING_KEYS
@@ -468,6 +466,9 @@ class SpeechController(SpeechService):
         self.mic_recognition_active = False
         self.asr_is_ready = False
         self._running_engine = None
+        # Подписки weak=False держат сильную ссылку на bound method: без снятия
+        # выключенный контроллер продолжает реагировать на события шины.
+        self.events_bus.unsubscribe_owner(self)
         with self._glossary_lock:
             self._glossary_callbacks.clear()
         task_supervisor().cancel_owner(self, timeout=1.0)
@@ -594,37 +595,27 @@ class SpeechController(SpeechService):
         if "active" not in data:
             return
 
+        # Одна реплика — одна аренда. Ключ реплики даёт мод (speech_id), иначе
+        # различаем хотя бы по персонажу: две Миты одного клиента говорят
+        # независимо, и конец одной не открывает микрофон посреди другой.
         source = str(data.get("source") or "").strip() or "local"
+        speech_id = str(data.get("speech_id") or data.get("character") or "").strip()
         if bool(data.get("active")):
-            self._speaking_sources[source] = time.monotonic() + self._SPEAKING_MAX_SEC
+            self._speaking_window.open(
+                source=source,
+                speech_id=speech_id,
+                duration_sec=float(data.get("duration_sec", 0.0) or 0.0),
+            )
         else:
-            # Закрыли открытое окно — держим ещё хвост на затухание/VAD.
-            self._speaking_sources.pop(source, None)
-            self._mita_speaking_until = max(
-                self._mita_speaking_until, time.monotonic() + self._MUTE_TAIL_SEC
-            )
-
-    def _forget_speaking_source(self, source: str) -> None:
-        if self._speaking_sources.pop(str(source or ""), None) is not None:
-            self._mita_speaking_until = max(
-                self._mita_speaking_until, time.monotonic() + self._MUTE_TAIL_SEC
-            )
+            self._speaking_window.close(source=source, speech_id=speech_id)
 
     def _on_client_disconnected(self, event: Event):
         client_id = str((event.data or {}).get("client_id") or "")
         if client_id:
-            self._forget_speaking_source(client_id)
+            self._speaking_window.close_source(client_id)
 
     def _is_mita_speaking(self) -> bool:
-        now = time.monotonic()
-        for source, deadline in list(self._speaking_sources.items()):
-            if deadline <= now:
-                logger.warning(
-                    f"speech_state: источник '{source}' не сообщил о конце речи за "
-                    f"{self._SPEAKING_MAX_SEC:.0f}с — снимаю блокировку микрофона"
-                )
-                self._speaking_sources.pop(source, None)
-        return bool(self._speaking_sources) or now < self._mita_speaking_until
+        return self._speaking_window.is_active()
 
     def _on_speech_text_recognized(self, event: Event):
         text = (event.data or {}).get('text', '').strip()
@@ -651,10 +642,16 @@ class SpeechController(SpeechService):
         # Ветки взаимоисключающие: у реплики игрока ровно один владелец. Раньше
         # текст при подключённой игре уходил и в мод, и в десктоп-чат — игрок
         # получал два хода из одной фразы.
-        if self._game_owns_player_turn():
+        # Адресат фиксируется здесь же, где принято решение «ход у игры»: пока
+        # фраза дойдёт до отправки, активной может стать другая сессия мода.
+        turn_owner = self._player_turn_owner()
+        if turn_owner:
+            utterance_id = uuid.uuid4().hex
+            self._claim_game_turn(utterance_id)
             logger.info(f"Распознано (в игру): {text}")
             self.events_bus.emit(Events.Server.SEND_ASR_TEXT, {
-                "id": uuid.uuid4().hex,
+                "id": utterance_id,
+                "client_id": turn_owner,
                 "text": text,
                 "engine": str(self._asr_settings.get("engine", "") or ""),
                 "ts": time.time(),
@@ -668,11 +665,34 @@ class SpeechController(SpeechService):
         logger.info(f"Распознано: {text}")
         self._route_to_desktop(text, autosend, delay_sec)
 
+    _MAX_TURNS_IN_GAME = 64
+
+    def _claim_game_turn(self, utterance_id: str) -> None:
+        if not utterance_id:
+            return
+        with self._turns_lock:
+            self._turns_in_game[utterance_id] = time.time()
+            while len(self._turns_in_game) > self._MAX_TURNS_IN_GAME:
+                oldest = min(self._turns_in_game, key=self._turns_in_game.get)
+                self._turns_in_game.pop(oldest, None)
+
+    def _release_game_turn(self, utterance_id: str) -> bool:
+        """True — ход по этой фразе освободился и его можно отдать десктоп-чату."""
+        if not utterance_id:
+            # Событие без id: старый эмиттер, дедуплицировать нечем.
+            return True
+        with self._turns_lock:
+            return self._turns_in_game.pop(utterance_id, None) is not None
+
     def _on_asr_text_undelivered(self, event: Event):
         """Мод отвалился между проверкой связи и отправкой — фраза не должна пропасть."""
         data = event.data or {}
         text = str(data.get("text") or "").strip()
         if not text:
+            return
+        utterance_id = str(data.get("id") or "")
+        if not self._release_game_turn(utterance_id):
+            logger.debug(f"asr_text {utterance_id}: ход уже отдан, повтор игнорирую")
             return
         self._route_to_desktop(
             text,
@@ -705,16 +725,20 @@ class SpeechController(SpeechService):
             delay = 3.0
         return True, max(0.0, delay)
 
-    def _game_owns_player_turn(self) -> bool:
-        """Ход игрока принадлежит моду: связь жива и запросы игры не заглушены.
+    def _player_turn_owner(self) -> str:
+        """Сессия мода, которой принадлежит ход игрока ("" — ход у десктоп-чата).
 
-        При полной блокировке сервер отбросит create_task, порождённый
-        автоотправкой, поэтому в таком режиме голос остаётся в десктоп-чате."""
-        if not use(GameLinkService).is_connected():
-            return False
-        if not bool(self.settings.get("IGNORE_GAME_REQUESTS", False)):
-            return True
-        return str(self.settings.get("GAME_BLOCK_LEVEL", "Idle events")) != "All events"
+        Ход у игры, когда связь жива и запросы игры не заглушены: при полной
+        блокировке сервер отбросит create_task, порождённый автоотправкой,
+        поэтому в таком режиме голос остаётся в десктоп-чате."""
+        link = use(GameLinkService)
+        if not link.is_connected():
+            return ""
+        if bool(self.settings.get("IGNORE_GAME_REQUESTS", False)) and (
+            str(self.settings.get("GAME_BLOCK_LEVEL", "Idle events")) == "All events"
+        ):
+            return ""
+        return link.player_turn_owner()
 
     def _send_instant(self, text):
         # Через GUI-отправку, а не напрямую SEND_MESSAGE: так подхватываются

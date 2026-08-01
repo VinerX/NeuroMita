@@ -19,10 +19,23 @@ class SpeechStateAction:
     async def handle(self, request: Dict[str, Any], ctx: RequestContext) -> None:
         active = bool(request.get("active", False))
         character = str(request.get("character") or "")
+        # Один клиент может вести несколько реплик сразу (две Миты, добивка
+        # предыдущей фразы). Мод присылает id реплики — тогда «конец» закрывает
+        # именно её; старый мод его не шлёт, и различаем по персонажу.
+        speech_id = str(request.get("speech_id") or request.get("id") or "")
+        try:
+            duration_sec = float(request.get("duration_sec", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            duration_sec = 0.0
 
-        logger.debug(f"speech_state от {ctx.client_id}: active={active} character={character!r}")
+        logger.debug(
+            f"speech_state от {ctx.client_id}: active={active} character={character!r} "
+            f"speech_id={speech_id!r} duration={duration_sec}"
+        )
         ctx.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {
             "active": active,
             "character": character,
+            "speech_id": speech_id,
+            "duration_sec": duration_sec,
             "source": str(ctx.client_id or ""),
         })

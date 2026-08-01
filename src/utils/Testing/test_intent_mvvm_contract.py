@@ -106,7 +106,7 @@ class IntentMvvmContractTests(unittest.TestCase):
         уменьшать можно, расти нельзя. Домигрировал файл — убери его из списка.
         """
         allowed_counts = {
-            "character_settings_logic.py": 171,
+            "character_settings_logic.py": 11,
         }
         controllers_root = _SRC_ROOT / "controllers" / "gui"
         actual_counts: dict[str, int] = {}
