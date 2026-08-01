@@ -1,4 +1,4 @@
-﻿"""Live socket scenario for the Unity multi-Mita dialogue pipeline.
+"""Live socket scenario for the Unity multi-Mita dialogue pipeline.
 
 Run only against the normal game/Python boot, never against a production server.
 The request mirrors NetworkController.SendCreateTaskAsync and emulates a player
@@ -67,6 +67,35 @@ def build_player_turn() -> dict:
     }
 
 
+def build_game_master_turn(command: str) -> dict:
+    """Build a three-Mita moderator task against the normal socket server."""
+    payload = build_player_turn()
+    payload["type"] = "game_master_observe"
+    payload["character"] = "GameMaster"
+    payload["sender"] = "Kind"
+    payload["participants"] = ["Kind", "Crazy", "Cappie"]
+    payload["data"] = {
+        "message": f"[INSTRUCTION] {command.strip()}\n[/INSTRUCTION]"
+    }
+    dialogue = payload["context"]["dialogue"]
+    dialogue["responder_actor_id"] = ""
+    dialogue["participants"].append(
+        {
+            "actor_id": "actor_cappie_test_01",
+            "character_id": "Cappie",
+            "display_name": "Cappie",
+            "world_id": "crazy_house",
+            "room_id": "kitchen",
+            "distance_to_player": 3.5,
+            "is_active": True,
+            "can_hear_player": True,
+            "can_hear_speaker": True,
+            "can_speak": True,
+            "presence_reason": "within_hearing_range",
+        }
+    )
+    return payload
+
 def decode_messages(raw: str) -> list[dict]:
     decoder = json.JSONDecoder()
     messages: list[dict] = []
@@ -116,9 +145,11 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=12345)
     parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--game-master-command", default="", help="Run a three-Mita GameMaster directive request.")
+    parser.add_argument("--expect-broadcast", default="", help="Expected text in the GameMaster broadcast intent.")
     args = parser.parse_args()
 
-    payload = build_player_turn()
+    payload = build_game_master_turn(args.game_master_command) if args.game_master_command.strip() else build_player_turn()
     print("REQUEST")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     responses = exchange(args.host, args.port, payload, args.timeout)
@@ -137,6 +168,21 @@ def main() -> int:
     if status != "SUCCESS":
         print(f"TEST FAILED: task status={status}; error={error or 'not provided'}")
         return 2
+
+    if args.expect_broadcast:
+        result = final.get("body", {}).get("result", {})
+        broadcast_messages = [
+            str(intent.get("payload", {}).get("message") or "")
+            for segment in result.get("segments", [])
+            if isinstance(segment, dict)
+            for intent in segment.get("intents", [])
+            if isinstance(intent, dict) and intent.get("type") == "dialogue.broadcast_system_message"
+        ]
+        if not any(args.expect_broadcast.casefold() in message.casefold() for message in broadcast_messages):
+            print("TEST FAILED: GameMaster broadcast payload lacks the expected directive text")
+            return 3
+        print("TEST PASSED: GameMaster produced the expected broadcast directive")
+        return 0
 
     print("TEST PASSED: player-like dialogue request completed")
     return 0

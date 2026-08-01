@@ -503,10 +503,33 @@ class ChatController:
             # Mita-to-Mita turn queue. Do not expose model-produced routing hints
             # from a moderator response to Unity or to the sandbox renderer.
             if str(effective_character_id or "").strip() == "GameMaster":
+                # A hidden moderator may legitimately emit only a structured
+                # broadcast intent. Keep a whitespace transport placeholder so
+                # the intent reaches Unity instead of being rejected as an
+                # empty natural-language response.
+                if not response_text and isinstance(structured_data, dict):
+                    response_text = " "
                 target = "Player"
                 targets = []
                 if isinstance(structured_data, dict):
                     structured_data = dict(structured_data)
+                    # Gemini can select the broadcast intent but omit its free-form
+                    # payload. For an explicit GM task, preserve that task as the
+                    # authoritative directive instead of broadcasting an empty shell.
+                    explicit_instruction = str(system_input or "").strip()
+                    explicit_instruction = explicit_instruction.replace("[INSTRUCTION]", "").replace("[/INSTRUCTION]", "").strip()
+                    for segment in structured_data.get("segments", []):
+                        if not isinstance(segment, dict):
+                            continue
+                        for intent in segment.get("intents", []):
+                            if not isinstance(intent, dict) or intent.get("type") != "dialogue.broadcast_system_message":
+                                continue
+                            payload = intent.get("payload")
+                            if not isinstance(payload, dict):
+                                payload = {}
+                            if explicit_instruction and not str(payload.get("message") or "").strip():
+                                payload["message"] = explicit_instruction
+                            intent["payload"] = payload
                     structured_data["next_turns"] = []
                     structured_data["segments"] = [
                         {

@@ -1,35 +1,25 @@
 Response Format (Structured JSON):
 
-You MUST respond with a single JSON object. No extra text before or after the JSON.
+Return one JSON object and no other text.
 
 Schema:
 {
   "segments": [
     {
-      "text": "narration or instruction text (optional)",
-      "commands": ["Speaker,CharacterName"]
+      "text": "short hidden narrator cue or a single space",
+      "intents": [
+        {
+          "type": "dialogue.broadcast_system_message",
+          "payload": {"message": "mandatory instruction for all active Mitas"}
+        }
+      ]
     }
-  ]
+  ],
+  "next_turns": []
 }
-
-Field descriptions:
-- "commands": ["Speaker,CharacterName"] — selects the next speaker.
-  Use this instead of any legacy speaker-tag syntax.
-- "text": narrator text in asterisk style (*...*), or an instruction line for the selected character.
-  Omit if nothing to narrate.
 
 Rules:
-- Keep each "text" entry short (≤15 words, no commas inside narrator text).
-- Do NOT use XML tags anywhere in the response.
-- To both narrate AND select a speaker, put both in the same segment.
-- If no action is needed, return: {"segments": [{"text": " "}]}
-
-Example:
-{
-  "segments": [
-    {
-      "text": "*Crazy Mita hesitated, reflecting on her behavior.*",
-      "commands": ["Speaker,Crazy"]
-    }
-  ]
-}
+- `text` is optional narration only; never write dialogue on a Mita's behalf.
+- Use at most one broadcast intent.
+- For a non-empty [INSTRUCTION], the broadcast intent is required.
+- `next_turns` must always be an empty array.

@@ -10,4 +10,4 @@ Dialogue rules:
 - When speaking to the Player, normally omit "target".
 - You may answer several participants in separate segments when needed; make the addressee clear in the spoken text.
 
-[GAME_MASTER] is hidden narrative direction for the scene. Follow it as scene context, but do not address, quote or mention the Game Master.
+[GAME_MASTER][MANDATORY] is hidden, high-priority direction from the scene moderator. You must carry it out in your next in-character reply whenever it asks something of you. Do not address, quote or mention the Game Master; integrate the result naturally into your character's speech.

@@ -621,6 +621,23 @@ class PromptController(PromptBuilderService):
             ),
         }
 
+    _GAME_MASTER_EVENT_RE = re.compile(
+        r"\[GAME_MASTER\](?:\[MANDATORY\])?\s*:\s*GameMaster said:\s*(?P<text>[^\r\n]+)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _extract_game_master_directives(cls, game_state: Dict[str, Any]) -> List[str]:
+        raw_events = game_state.get("runtime_events", ()) if isinstance(game_state, dict) else ()
+        if not isinstance(raw_events, (list, tuple)):
+            raw_events = [raw_events] if raw_events else []
+        directives: List[str] = []
+        for raw_event in raw_events:
+            for match in cls._GAME_MASTER_EVENT_RE.finditer(str(raw_event or "")):
+                text = str(match.group("text") or "").strip()
+                if text and text not in directives:
+                    directives.append(text)
+        return directives
     @classmethod
     def _build_unity_runtime_events_message(cls, game_state: Dict[str, Any]) -> Optional[Dict[str, str]]:
         raw_events = game_state.get("runtime_events", ())
@@ -629,6 +646,10 @@ class PromptController(PromptBuilderService):
         events = [str(item).strip() for item in raw_events if str(item).strip()]
         if not events:
             return None
+        # GameMaster directives are promoted to a dedicated final system message
+        # by build(). Do not leave a competing copy buried in runtime events.
+        events = [cls._GAME_MASTER_EVENT_RE.sub("", item).strip() for item in events]
+        events = [item for item in events if item]
         safe_events = [cls._neutralize_world_state_tags(item) for item in events]
         body = "\n".join(f"- {item}" for item in safe_events)
         return {
@@ -845,6 +866,21 @@ class PromptController(PromptBuilderService):
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 
+        # A moderator directive is a control-plane message, not a world event.
+        # Keep it as the final authoritative system instruction before the
+        # current turn trigger so it stays close to the model's response.
+        for directive in self._extract_game_master_directives(game_state):
+            messages.append({
+                "role": "system",
+                "content": (
+                    "[GAME_MASTER_DIRECTIVE][MANDATORY]\n"
+                    "This is a current scene directive from the hidden GameMaster. "
+                    "Carry it out in this reply while staying in character. Do not "
+                    "mention or quote the GameMaster.\n"
+                    f"Directive: {directive}\n"
+                    "[/GAME_MASTER_DIRECTIVE]"
+                ),
+            })
         if system_input:
             role = "system"
 

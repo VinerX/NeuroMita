@@ -389,6 +389,24 @@ class CreateTaskAction:
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
+        # ── game_master_observe ───────────────────────────────────────────────
+        if event_type == "game_master_observe":
+            policy = resolve_policy(model_event_type="chat")
+            observation = str(data.get("message") or "").strip()
+            if not observation:
+                observation = "Review the active conversation and issue a mandatory scene directive when needed."
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type="chat",
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=observation,
+                images=[],
+                image_source="",
+                abort_reason="Failed to create GameMaster observation",
+            )
+            return
 
         # ── system_info_flush ─────────────────────────────────────────────────
         if event_type == "system_info_flush":
