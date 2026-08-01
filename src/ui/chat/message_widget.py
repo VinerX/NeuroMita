@@ -6,6 +6,7 @@ import os
 import math
 import time as _time
 import base64
+import re
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
@@ -33,6 +34,50 @@ AVATAR_MAP = {
     "Sleepy Mita":    "sleepy.png",
     "GameMaster":     "gamemaster.png",
 }
+
+def _normalise_avatar_identity(value: str) -> str:
+    """Return a stable lookup key for a character id or a UI display name."""
+    # The chat label can carry an addressing suffix (``Kind Mita → Cappie``),
+    # while Unity sends ids such as ``kind_mita``. Only the speaker part is
+    # relevant for its avatar.
+    speaker = str(value or "").split("→", 1)[0].strip()
+    return re.sub(r"[^a-z0-9]+", "", speaker.casefold())
+
+
+_AVATAR_ALIASES = {
+    _normalise_avatar_identity(display_name): filename
+    for display_name, filename in AVATAR_MAP.items()
+}
+_AVATAR_ALIASES.update({
+    "crazy": "crazy.png",
+    "kind": "kind.png",
+    "shorthair": "shorthair.png",
+    "ghost": "ghost.png",
+    "cappie": "cappie.png",
+    "mila": "mila.png",
+    "creepy": "creepy.png",
+    "sleepy": "sleepy.png",
+    "gamemaster": "gamemaster.png",
+})
+
+
+def _resolve_avatar_filename(character_name: str) -> str | None:
+    """Map Unity ids and display labels to a bundled avatar file name."""
+    identity = _normalise_avatar_identity(character_name)
+    if not identity:
+        return None
+
+    # Covers exact display names plus snake_case/camel-case Unity ids.
+    filename = _AVATAR_ALIASES.get(identity)
+    if filename:
+        return filename
+
+    # Preserve legacy support for labels with an additional suffix after the
+    # character name without allowing a generic "Mita" match.
+    for alias, mapped_filename in _AVATAR_ALIASES.items():
+        if len(alias) >= 4 and identity.startswith(alias):
+            return mapped_filename
+    return None
 
 AVATAR_SIZE = 36
 TAIL_W = 8
@@ -129,12 +174,7 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
     cached = _AVATAR_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    filename = AVATAR_MAP.get(character_name)
-    if not filename and character_name:
-        for key, val in AVATAR_MAP.items():
-            if character_name.startswith(key):
-                filename = val
-                break
+    filename = _resolve_avatar_filename(character_name)
     if filename:
         path = os.path.join(_get_avatar_dir(), filename)
         if os.path.isfile(path):
@@ -149,22 +189,16 @@ def _get_avatar_pixmap(character_name: str, role: str) -> QPixmap:
 
 
 def resolve_character_avatar(character_id: str, size: int = 32, role: str = "assistant") -> QPixmap:
-    """Аватар персонажа по его ID ИЛИ display-name. В отличие от
-    _get_avatar_pixmap (матчит только точные/префиксные ключи AVATAR_MAP —
-    display-имена вида "Kind Mita"), понимает и голый id "KindMita", и "Kind".
-    Если реального файла нет — плашка с инициалом."""
+    """Аватар персонажа по Unity id или display-name.
+
+    Принимает, в частности, ``kind_mita``, ``KindMita`` и ``Kind Mita``.
+    Если реального файла нет — плашка с инициалом.
+    """
     char_id = (character_id or "").strip()
-    candidates = []
-    if char_id:
-        low = char_id.lower()
-        for key, fn in AVATAR_MAP.items():
-            kl = key.lower()
-            if kl.startswith(low) or low.startswith(kl.split()[0]):
-                candidates.append(fn)
-        candidates.append(f"{low}.png")
+    filename = _resolve_avatar_filename(char_id)
     avatar_dir = _get_avatar_dir()
-    for fn in candidates:
-        path = os.path.join(avatar_dir, fn)
+    if filename:
+        path = os.path.join(avatar_dir, filename)
         if os.path.isfile(path):
             pm = QPixmap(path)
             if not pm.isNull():

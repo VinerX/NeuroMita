@@ -499,6 +499,24 @@ class ChatController:
             assistant_message_id = result.message_id
             sample_id = getattr(result, "sample_id", "") or ""
 
+            # GameMaster may comment on a dialogue, but never participates in the
+            # Mita-to-Mita turn queue. Do not expose model-produced routing hints
+            # from a moderator response to Unity or to the sandbox renderer.
+            if str(effective_character_id or "").strip() == "GameMaster":
+                target = "Player"
+                targets = []
+                if isinstance(structured_data, dict):
+                    structured_data = dict(structured_data)
+                    structured_data["next_turns"] = []
+                    structured_data["segments"] = [
+                        {
+                            **segment,
+                            "target": "Player",
+                        }
+                        if isinstance(segment, dict) else segment
+                        for segment in structured_data.get("segments", [])
+                    ]
+
             if not response_text:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)

@@ -208,6 +208,13 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
             ),
         },
         {
+            'label': _('Автоходов Мит после сообщения игрока (0–24)', 'Mita auto-turns after a player message (0–24)'),
+            'key': 'DIALOGUE_MAX_AUTO_TURNS',
+            'type': 'entry',
+            'default': 6,
+            'validation': getattr(self, 'validate_positive_integer_or_zero', None),
+            'tooltip': _('0 отключает автоходы. Значение задаёт максимум реплик Мит после ответа первой адресованной Миты; по умолчанию 6.', '0 disables auto-turns. The value sets the maximum Mita replies after the first addressed Mita answers; default is 6.'),
+        },        {
             'label': _('Лимит разговоров NPC %', 'Limit NPC conversation'),
             'key': 'CC_Limit_mod',
             'type': 'entry',

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from core.services import use
-from services.contracts import CharacterRegistry, SettingsService, TaskService, TelegramService
+from services.contracts import SettingsService, TaskService, TelegramService
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
 
@@ -28,12 +28,21 @@ class GetTaskStatusAction:
                 response.setdefault("result", {})["audio_path"] = audio_path
 
             response["silero_connected"] = use(TelegramService).is_silero_connected()
+            # GameMaster is an optional moderator, not the selected active Mita.
+            # The previous implementation looked at CharacterRegistry.current_id(),
+            # making GM_ON/GM_REPEAT UI settings ineffective for normal dialogues.
+            settings = use(SettingsService)
+            gm_enabled = bool(settings.get("GM_ON", False))
+            try:
+                gm_repeat = int(settings.get("GM_REPEAT", 2) or 2)
+            except (TypeError, ValueError):
+                gm_repeat = 2
+            # The legacy Unity controller treats this as a number of NPC turns.
+            # Keep a bounded positive interval even if settings were edited manually.
+            gm_repeat = max(2, min(gm_repeat, 100))
 
-            is_gm = (use(CharacterRegistry).current_id() == "GameMaster")
-
-            response["GM_ON"] = is_gm
-            response["GM_READ"] = is_gm
-
-            response["GM_VOICE"] = bool(is_gm and use(SettingsService).get("GM_VOICE", False))
-
+            response["GM_ON"] = gm_enabled
+            response["GM_READ"] = gm_enabled
+            response["GM_VOICE"] = bool(gm_enabled and settings.get("GM_VOICE", False))
+            response["GM_REPEAT"] = gm_repeat
         await ctx.server.send_json(ctx.writer, response)

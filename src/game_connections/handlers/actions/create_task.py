@@ -297,7 +297,12 @@ class CreateTaskAction:
             policy = resolve_policy(model_event_type=model_event_type)
             user_input = data.get("message", "")
 
-            if user_input:
+            # The player needs to see their own line in the desktop Sandbox.
+            # Inter-Mita auto-turns already have a visible preceding reply and
+            # a visible generated answer; echoing their internal relay prompt
+            # produces a redundant English service bubble such as
+            # "kind_mita: Kind Mita asks Cappie …".
+            if user_input and sender == "Player":
                 event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
                     "client_id": ctx.client_id,
                     "sender": sender,

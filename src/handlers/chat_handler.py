@@ -309,16 +309,18 @@ class ChatModel:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
             _char = getattr(self, "current_character", None)
-            if _debug_dumps_enabled(self.settings):
-                try:
-                    executors().try_submit(
-                        Pools.DEBUG_DUMP,
-                        _save_last_request_context,
-                        req,
-                        character_name=getattr(_char, "name", "") or "",
-                    )
-                except Exception:
-                    pass
+            # The Sandbox context viewer is a normal user-facing diagnostic,
+            # not a debug-only feature. Its fallback file must therefore be
+            # captured for every request.
+            try:
+                executors().try_submit(
+                    Pools.DEBUG_DUMP,
+                    _save_last_request_context,
+                    req,
+                    character_name=getattr(_char, "name", "") or "",
+                )
+            except Exception:
+                pass
             return req
 
         try:
@@ -366,7 +368,7 @@ class ChatModel:
             cleaned_response = self._clean_response(response_text.text)
             if cleaned_response:
                 response_text.text = cleaned_response
-                if _last_req[0] and _debug_dumps_enabled(self.settings):
+                if _last_req[0]:
                     try:
                         executors().try_submit(
                             Pools.DEBUG_DUMP,
