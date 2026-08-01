@@ -775,7 +775,10 @@ class PromptController(PromptBuilderService):
                 f"world_id={get_value('world_id', '')} room_id={get_value('room_id', '')}",
                 f"speaker_actor_id={get_value('speaker_actor_id', '')}",
                 f"responder_actor_id={get_value('responder_actor_id', '')}",
-                "Only schedule a next_turn when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
+                f"auto_turns_since_player={get_value('auto_turns_since_player', 0)} max_auto_turns={get_value('max_auto_turns', 0)}",
+                f"spoken_actor_ids={','.join(str(actor_id) for actor_id in (get_value('spoken_actor_ids', []) or []))}",
+                "Only schedule another character's turn only when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
+                "If the Player asks the present characters to hold a discussion, choose one eligible next speaker who has not yet spoken in this player turn before returning to someone in spoken_actor_ids. Stop naturally when no next reply is needed; never manufacture extra turns.",
             ]
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
