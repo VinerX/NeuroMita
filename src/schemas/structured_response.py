@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - schema must import even without logging
 # Python-side version of the structured-response protocol. The model never
 # supplies this value; it is stamped into the outgoing result dict so downstream
 # consumers (Unity, debug dumps) can tell which response contract produced it.
-RESPONSE_PROTOCOL_VERSION = 2
+RESPONSE_PROTOCOL_VERSION = 3
 
 def _to_gemini_schema(schema: dict) -> dict:
     """
@@ -303,6 +303,40 @@ class ResponseSegment(BaseModel):
         return data
 
 
+class NextTurnDirective(BaseModel):
+    """Кто должен ответить следующим — выбор смысла, а не факта.
+
+    Python решает, у кого есть повод вступить; Unity перед исполнением проверяет,
+    что этот экземпляр всё ещё существует, находится рядом и слышит разговор.
+    """
+
+    target_actor_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Exact actor instance that should respond next. "
+            "Must be copied from CURRENT CONVERSATION participants."
+        ),
+    )
+
+    target_character_id: str = Field(
+        description="Character identity that should respond next.",
+    )
+
+    input_text: str = Field(
+        description=(
+            "Compact factual description of what this character "
+            "is responding to. Do not write their response for them."
+        ),
+    )
+
+    reason: str = Field(
+        default="conversation_follow_up",
+        description="Why this participant should answer.",
+    )
+
+    delay_ms: int = Field(default=650, ge=0, le=5000)
+
+
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
@@ -326,6 +360,17 @@ class StructuredResponse(BaseModel):
     segments: List[ResponseSegment] = Field(
         default_factory=list,
         description="Ordered list of response segments with positional commands",
+    )
+
+    # Кому передать слово после этой реплики. Поле уходит провайдеру только когда
+    # в ходе реально есть другие участники (capability schema_next_turns).
+    next_turns: List[NextTurnDirective] = Field(
+        default_factory=list,
+        description=(
+            "Optional NPC follow-up turns. Usually empty. "
+            "Only select actors that are present and can hear the speaker. "
+            "Do not schedule more than two follow-ups."
+        ),
     )
 
     # Secret reveal flag — set to true when the character's secret is discovered.
@@ -399,6 +444,26 @@ class StructuredResponse(BaseModel):
             value = getattr(self, field, 0.0)
             if not isinstance(value, (int, float)) or not math.isfinite(value):
                 setattr(self, field, 0.0)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_next_turns(self) -> "StructuredResponse":
+        """Не больше двух follow-up, без дублей и без пустых адресатов.
+
+        Дубли и лишние ходы модель выдаёт регулярно, а каждый лишний — это ещё
+        одна автоматическая реплика в игре, поэтому режем здесь, а не в Unity.
+        """
+        deduplicated: List[NextTurnDirective] = []
+        seen: set[str] = set()
+
+        for turn in list(self.next_turns or [])[:2]:
+            key = str(turn.target_actor_id or turn.target_character_id or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(turn)
+
+        self.next_turns = deduplicated
         return self
 
     def full_text(self) -> str:

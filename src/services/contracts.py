@@ -436,6 +436,47 @@ class HistoryService(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Разговор
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class DialogueParticipant:
+    """Один участник текущего разговора в понимании Unity.
+
+    ``character_id`` — личность (промпт, память), ``actor_id`` — конкретный
+    экземпляр GameObject. Одна личность может быть заспавнена несколько раз,
+    поэтому смешивать их нельзя.
+    """
+
+    actor_id: str
+    character_id: str
+    display_name: str = ""
+    world_id: str = ""
+    room_id: str = ""
+    distance_to_player: float = 0.0
+    can_hear_player: bool = True
+    can_hear_speaker: bool = True
+    can_speak: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueTurnContext:
+    """Ход конкретного разговора: кто говорит, кто отвечает, кто рядом."""
+
+    conversation_id: str = ""
+    epoch: int = 0
+    turn_index: int = 0
+
+    speaker_actor_id: str = ""
+    responder_actor_id: str = ""
+
+    world_id: str = ""
+    room_id: str = ""
+
+    participants: List[DialogueParticipant] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Промпт
 # ---------------------------------------------------------------------------
 
@@ -459,6 +500,7 @@ class PromptBuildRequest:
     sender: str = "Player"
     participants: List[str] = field(default_factory=list)
     capabilities: Dict[str, Any] = field(default_factory=dict)
+    dialogue: Optional[DialogueTurnContext] = None
 
 
 @dataclass(frozen=True)
@@ -498,6 +540,7 @@ class ChatGenerationRequest:
     policy: Optional[RequestPolicy] = None
     disable_history_compression: bool = False
     game_state: Dict[str, Any] = field(default_factory=dict)
+    dialogue: Optional[DialogueTurnContext] = None
 
 
 @dataclass(frozen=True)
@@ -516,6 +559,8 @@ class ChatGenerationResult:
     context_snapshot_id: str = ""
     error: str = ""
     error_details: Optional[Dict[str, Any]] = None
+    # Кому Python предлагает слово после этой реплики (протокол ответа v3).
+    next_turns: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

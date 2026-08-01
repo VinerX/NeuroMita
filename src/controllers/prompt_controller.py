@@ -20,6 +20,7 @@ from services.contracts import (
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
 from services.runtime_capabilities import runtime_capabilities
+from domain.world_character_relations import get_world_character_context
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
              "bool": "boolean", "str": "string", "string": "string"}
@@ -797,6 +798,7 @@ class PromptController(PromptBuilderService):
         if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
+            world_relation = get_world_character_context(character_id=str(getattr(character, "id", "") or ""), world_id=str(get_value("world_id", "") or ""))
             lines = [
                 "[Conversation Context]",
                 f"conversation_id={get_value('conversation_id', '')}",
@@ -808,6 +810,8 @@ class PromptController(PromptBuilderService):
                 f"spoken_actor_ids={','.join(str(actor_id) for actor_id in (get_value('spoken_actor_ids', []) or []))}",
                 "Only schedule another character's turn only when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
                 "If the Player asks the present characters to hold a discussion, choose one eligible next speaker who has not yet spoken in this player turn before returning to someone in spoken_actor_ids. Stop naturally when no next reply is needed; never manufacture extra turns.",
+                f"your_world_relation={world_relation['relation']}",
+                *[f"world_fact={fact}" for fact in world_relation['facts']],
             ]
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
