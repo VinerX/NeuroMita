@@ -317,6 +317,9 @@ class ServerController:
                 logger.warning(f"Failed to send initial settings to {client_id}: {exc}")
         elif not bool(client_connected) and client_id:
             self.echo_suppressor.forget_client(client_id)
+            self.event_bus.emit(
+                Events.Server.CLIENT_DISCONNECTED, {"client_id": str(client_id)}
+            )
 
     def _probe_connection(self) -> Optional[bool]:
         """Живое состояние соединений сервера; None — если сказать нечего."""
@@ -512,20 +515,17 @@ class ServerController:
             self.server.schedule_send_task_update(client_id, task)
 
     def _on_send_asr_text(self, event: Event):
-        if not self.server:
-            return
         data = event.data or {}
         text = str(data.get("text") or "").strip()
         if not text:
             return
 
-        client_id = self.server.primary_client_id()
-        if not client_id:
+        if not self.server:
+            self._report_asr_undelivered(data)
             return
 
         try:
-            self.server.schedule_send_asr_text(
-                client_id,
+            future = self.server.schedule_send_asr_text_to_primary(
                 text=text,
                 utterance_id=str(data.get("id") or ""),
                 engine=str(data.get("engine") or ""),
@@ -536,7 +536,26 @@ class ServerController:
                 merge_input=bool(data.get("merge_input", True)),
             )
         except Exception as exc:
-            logger.warning(f"Не удалось отправить asr_text клиенту {client_id}: {exc}")
+            logger.warning(f"Не удалось отправить asr_text в игру: {exc}")
+            self._report_asr_undelivered(data)
+            return
+
+        def _on_sent(fut) -> None:
+            try:
+                delivered = bool(fut.result())
+            except Exception:
+                delivered = False
+            if not delivered:
+                self._report_asr_undelivered(data)
+
+        future.add_done_callback(_on_sent)
+
+    def _report_asr_undelivered(self, data: dict) -> None:
+        """Фраза не доехала до мода — её обязан подобрать десктоп-чат."""
+        if self._destroyed or not self.event_bus:
+            return
+        logger.info("asr_text не доставлен в игру — возвращаю фразу в десктоп-чат")
+        self.event_bus.emit(Events.Server.ASR_TEXT_UNDELIVERED, dict(data))
 
     def _on_echo_chat_message_requested(self, event: Event):
         if self._destroyed:

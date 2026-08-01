@@ -115,10 +115,13 @@ class EmbeddingController(EmbeddingService):
             return
 
         # Процесс движка сменился — прогретой модели в нём больше нет, а
-        # self.handler означает именно «модель в памяти движка».
+        # self.handler означает именно «модель в памяти движка». Признак поломки
+        # снимаем только при удачном рестарте: иначе прошлая ошибка затирается и
+        # индикатор вместо красного показывает вечную загрузку.
         with self._init_lock:
             self.handler = None
-            self._handler_failed = False
+            if data.get("ok") is True:
+                self._handler_failed = False
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
         self._maybe_start_warmup(reason="service_restarted")
 

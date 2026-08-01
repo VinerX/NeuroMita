@@ -1503,7 +1503,8 @@ def run_reindexing(gui):
         logger.warning(f"Skipping pre-check due to error: {e}")
 
     # Запуск воркера
-    gui._reindex_worker = _create_reindex_worker(character_id, full=False)
+    worker = _create_reindex_worker(character_id, full=False)
+    gui._reindex_worker = worker
     gui._reindex_cancelled = False
 
     progress = QProgressDialog(_("Генерация векторов...", "Generating embeddings..."), _("Отмена", "Cancel"), 0, 100,
@@ -1519,7 +1520,7 @@ def run_reindexing(gui):
         # Важно: НЕ обнуляем ссылку на поток пока он работает (может крашить процесс).
         gui._reindex_cancelled = True
         try:
-            gui._reindex_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
@@ -1558,15 +1559,15 @@ def run_reindexing(gui):
         gui._reindex_worker = None
         gui._reindex_cancelled = False
 
-    gui._reindex_worker.progress_signal.connect(on_progress)
-    gui._reindex_worker.finished_signal.connect(on_finished)
-    gui._reindex_worker.error_signal.connect(on_error)
-    gui._reindex_worker.cancelled_signal.connect(on_cancelled)
-    _wire_index_changed(gui._reindex_worker)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    gui._reindex_worker.start()
+    worker.start()
 
 
 def _get_all_character_ids() -> list[str]:
@@ -1627,7 +1628,8 @@ def run_reindexing_all(gui):
 
     from ui.dialogs.background_task_dialog import BackgroundTaskDialog
 
-    gui._reindex_all_worker = ReindexAllCharactersWorker(character_ids)
+    worker = ReindexAllCharactersWorker(character_ids)
+    gui._reindex_all_worker = worker
     gui._reindex_all_cancelled = False
 
     progress = BackgroundTaskDialog(
@@ -1692,7 +1694,7 @@ def run_reindexing_all(gui):
     def on_stop():
         gui._reindex_all_cancelled = True
         try:
-            gui._reindex_all_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.finish()
@@ -1700,16 +1702,16 @@ def run_reindexing_all(gui):
     def on_cancelled():
         _cleanup()
 
-    gui._reindex_all_worker.progress_signal.connect(on_progress)
-    gui._reindex_all_worker.status_signal.connect(progress.set_status)
-    gui._reindex_all_worker.finished_signal.connect(on_finished)
-    gui._reindex_all_worker.error_signal.connect(on_error)
-    gui._reindex_all_worker.cancelled_signal.connect(on_cancelled)
-    _wire_index_changed(gui._reindex_all_worker)
+    worker.progress_signal.connect(on_progress)
+    worker.status_signal.connect(progress.set_status)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(worker)
     progress.stopRequested.connect(on_stop)
 
     progress.show()
-    gui._reindex_all_worker.start()
+    worker.start()
 
 
 def run_full_reindexing(gui):
@@ -1761,7 +1763,8 @@ def run_full_reindexing(gui):
         total_count = 0  # unknown; proceed
 
     # Запуск воркера
-    gui._full_reindex_worker = _create_reindex_worker(character_id, full=True)
+    worker = _create_reindex_worker(character_id, full=True)
+    gui._full_reindex_worker = worker
     gui._full_reindex_cancelled = False
 
     progress = QProgressDialog(
@@ -1821,7 +1824,7 @@ def run_full_reindexing(gui):
     def on_cancel():
         gui._full_reindex_cancelled = True
         try:
-            gui._full_reindex_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
@@ -1830,15 +1833,15 @@ def run_full_reindexing(gui):
         gui._full_reindex_worker = None
         gui._full_reindex_cancelled = False
 
-    gui._full_reindex_worker.progress_signal.connect(on_progress)
-    gui._full_reindex_worker.finished_signal.connect(on_finished)
-    gui._full_reindex_worker.error_signal.connect(on_error)
-    gui._full_reindex_worker.cancelled_signal.connect(on_cancelled)
-    _wire_index_changed(gui._full_reindex_worker)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    gui._full_reindex_worker.start()
+    worker.start()
 
 
 def run_full_reindexing_all(gui):
@@ -1862,7 +1865,8 @@ def run_full_reindexing_all(gui):
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    gui._full_reindex_all_worker = FullReindexAllCharactersWorker(character_ids)
+    worker = FullReindexAllCharactersWorker(character_ids)
+    gui._full_reindex_all_worker = worker
     gui._full_reindex_all_cancelled = False
 
     progress = QProgressDialog(
@@ -1927,7 +1931,7 @@ def run_full_reindexing_all(gui):
     def on_cancel():
         gui._full_reindex_all_cancelled = True
         try:
-            gui._full_reindex_all_worker.requestInterruption()
+            worker.requestInterruption()
         except Exception:
             pass
         progress.close()
@@ -1936,15 +1940,15 @@ def run_full_reindexing_all(gui):
         gui._full_reindex_all_worker = None
         gui._full_reindex_all_cancelled = False
 
-    gui._full_reindex_all_worker.progress_signal.connect(on_progress)
-    gui._full_reindex_all_worker.finished_signal.connect(on_finished)
-    gui._full_reindex_all_worker.error_signal.connect(on_error)
-    gui._full_reindex_all_worker.cancelled_signal.connect(on_cancelled)
-    _wire_index_changed(gui._full_reindex_all_worker)
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    worker.cancelled_signal.connect(on_cancelled)
+    _wire_index_changed(worker)
     progress.canceled.connect(on_cancel)
 
     progress.show()
-    gui._full_reindex_all_worker.start()
+    worker.start()
 
 
 def export_db_for_character(gui):
@@ -2146,26 +2150,3 @@ def _start_import_worker(gui, path: str, override_character_id: str | None):
     progress.show()
     QTimer.singleShot(0, gui._import_worker.start)
 
-
-def cleanup_character_workers(gui):
-    """Stop and clean up any running background workers. Call from closeEvent."""
-    _WORKER_ATTRS = (
-        "_reindex_worker",
-        "_migration_worker",
-        "_dedupe_worker",
-        "_export_worker",
-        "_import_worker",
-    )
-    for attr in _WORKER_ATTRS:
-        worker = getattr(gui, attr, None)
-        if worker is None:
-            continue
-        try:
-            worker.requestInterruption()
-            worker.wait(2000)
-        except Exception:
-            pass
-        try:
-            setattr(gui, attr, None)
-        except Exception:
-            pass

@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 import os
+from concurrent.futures import Future
 from typing import Optional, Dict, Any, Set, Callable
 from main_logger import logger
 from core.events import get_event_bus, Events
@@ -13,6 +14,12 @@ import uuid
 
 from game_connections.handlers import build_action_registry
 from game_connections.handlers.registry import RequestContext
+
+
+def _finished_future(value: bool) -> "Future[bool]":
+    future: "Future[bool]" = Future()
+    future.set_result(value)
+    return future
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -324,14 +331,16 @@ class ChatServerNew:
         message = {"type": "task_update", "uid": task.uid, "status": task.status.value, "body": task.to_dict()}
         await self.send_json(writer, message)
 
-    async def send_json(self, writer: asyncio.StreamWriter, data: Dict[str, Any]):
+    async def send_json(self, writer: asyncio.StreamWriter, data: Dict[str, Any]) -> bool:
         try:
             json_str = json.dumps(data)
             writer.write(json_str.encode('utf-8'))
             writer.write(b'\n')
             await writer.drain()
+            return True
         except Exception as e:
             logger.error(f"Ошибка отправки JSON: {e}")
+            return False
 
     async def send_error(self, writer: asyncio.StreamWriter, error: str):
         await self.send_json(writer, {"type": "error", "error": error})
@@ -444,9 +453,8 @@ class ChatServerNew:
             return ""
         return next(reversed(conns))
 
-    def schedule_send_asr_text(
+    def schedule_send_asr_text_to_primary(
         self,
-        client_id: str,
         *,
         text: str,
         utterance_id: str,
@@ -456,7 +464,13 @@ class ChatServerNew:
         autosend: bool = False,
         delay_sec: float = 0.0,
         merge_input: bool = True,
-    ) -> None:
+    ) -> "Future[bool]":
+        """Отправить распознанную фразу активному клиенту мода.
+
+        Клиент выбирается внутри корутины loop'а, а результат — реальный факт
+        записи в сокет: между «игра подключена» и отправкой соединение может
+        исчезнуть, и тогда фраза игрока обязана вернуться в десктоп-чат, а не
+        потеряться молча."""
         payload = {
             "type": "asr_text",
             "id": str(utterance_id or ""),
@@ -471,7 +485,22 @@ class ChatServerNew:
             "delay_sec": float(delay_sec),
             "merge_input": bool(merge_input),
         }
-        self.schedule_send_json(client_id, payload)
+
+        if not self.can_schedule():
+            return _finished_future(False)
+
+        async def _push() -> bool:
+            client_id = self.primary_client_id()
+            writer = self.active_connections.get(client_id) if client_id else None
+            if writer is None:
+                return False
+            return bool(await self.send_json(writer, payload))
+
+        try:
+            return asyncio.run_coroutine_threadsafe(_push(), self._loop)
+        except Exception as exc:
+            logger.warning(f"Не удалось запланировать отправку asr_text: {exc}")
+            return _finished_future(False)
 
     def on_task_status_changed(self, task) -> None:
         try:

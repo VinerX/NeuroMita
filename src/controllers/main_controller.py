@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from typing import TYPE_CHECKING
 
@@ -616,6 +617,12 @@ class MainController:
             close_history = getattr(history_controller, "close", None)
             if callable(close_history):
                 shutdown_step("history timers", close_history)
+
+        # Воркеры настроек (переиндексация, миграции, экспорт) переживают закрытие
+        # окна и дёргают колбэки с уже уничтоженными виджетами — гасим до GUI.
+        task_worker_module = sys.modules.get("controllers.gui.task_worker")
+        if task_worker_module is not None:
+            shutdown_step("GUI task workers", task_worker_module.stop_all_workers)
 
         gui_controller = getattr(self, "gui_controller", None)
         if gui_controller is not None:

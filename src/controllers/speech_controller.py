@@ -37,6 +37,9 @@ class SpeechController(SpeechService):
     # который выдаёт текст уже после паузы.
     _MUTE_TAIL_SEC = 0.4
 
+    # Потолок одной реплики: мод мог упасть, не прислав active=False.
+    _SPEAKING_MAX_SEC = 180.0
+
     def __init__(self):
         self.settings = use(SettingsService)
         self.device_id = 0
@@ -85,8 +88,13 @@ class SpeechController(SpeechService):
 
         # «Мита говорит» — чтобы ASR не засчитывал её собственный голос из
         # микрофона (см. _on_speech_text_recognized / _is_mita_speaking).
-        self._mita_speaking = False        # открытое окно (локальное воспроизведение)
-        self._mita_speaking_until = 0.0    # окно по таймеру (монотонные секунды)
+        # Источников несколько (локальное воспроизведение + каждый клиент мода),
+        # поэтому храним дедлайны по источникам: «конец речи» от одного не должен
+        # снимать блокировку, пока говорит другой. Дедлайн-сторож обязателен —
+        # мод может упасть между active=True и active=False и заглушить микрофон
+        # навсегда.
+        self._speaking_sources: dict[str, float] = {}
+        self._mita_speaking_until = 0.0    # хвост на затухание (монотонные секунды)
 
         self._settings_subscription = self.settings.subscribe(
             self._on_setting_changed, keys=self._SETTING_KEYS
@@ -140,6 +148,8 @@ class SpeechController(SpeechService):
         eb.subscribe(Events.Speech.SET_INSTANT_SEND_STATUS, self._on_set_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
         eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
+        eb.subscribe(Events.Server.CLIENT_DISCONNECTED, self._on_client_disconnected, weak=False)
+        eb.subscribe(Events.Server.ASR_TEXT_UNDELIVERED, self._on_asr_text_undelivered, weak=False)
 
         eb.subscribe(Events.Speech.SET_MICROPHONE, self._on_set_microphone, weak=False)
         eb.subscribe(Events.Speech.START_SPEECH_RECOGNITION, self._on_start_speech_recognition, weak=False)
@@ -584,17 +594,37 @@ class SpeechController(SpeechService):
         if "active" not in data:
             return
 
+        source = str(data.get("source") or "").strip() or "local"
         if bool(data.get("active")):
-            self._mita_speaking = True
+            self._speaking_sources[source] = time.monotonic() + self._SPEAKING_MAX_SEC
         else:
             # Закрыли открытое окно — держим ещё хвост на затухание/VAD.
-            self._mita_speaking = False
+            self._speaking_sources.pop(source, None)
             self._mita_speaking_until = max(
                 self._mita_speaking_until, time.monotonic() + self._MUTE_TAIL_SEC
             )
 
+    def _forget_speaking_source(self, source: str) -> None:
+        if self._speaking_sources.pop(str(source or ""), None) is not None:
+            self._mita_speaking_until = max(
+                self._mita_speaking_until, time.monotonic() + self._MUTE_TAIL_SEC
+            )
+
+    def _on_client_disconnected(self, event: Event):
+        client_id = str((event.data or {}).get("client_id") or "")
+        if client_id:
+            self._forget_speaking_source(client_id)
+
     def _is_mita_speaking(self) -> bool:
-        return self._mita_speaking or time.monotonic() < self._mita_speaking_until
+        now = time.monotonic()
+        for source, deadline in list(self._speaking_sources.items()):
+            if deadline <= now:
+                logger.warning(
+                    f"speech_state: источник '{source}' не сообщил о конце речи за "
+                    f"{self._SPEAKING_MAX_SEC:.0f}с — снимаю блокировку микрофона"
+                )
+                self._speaking_sources.pop(source, None)
+        return bool(self._speaking_sources) or now < self._mita_speaking_until
 
     def _on_speech_text_recognized(self, event: Event):
         text = (event.data or {}).get('text', '').strip()
@@ -636,6 +666,21 @@ class SpeechController(SpeechService):
             return
 
         logger.info(f"Распознано: {text}")
+        self._route_to_desktop(text, autosend, delay_sec)
+
+    def _on_asr_text_undelivered(self, event: Event):
+        """Мод отвалился между проверкой связи и отправкой — фраза не должна пропасть."""
+        data = event.data or {}
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return
+        self._route_to_desktop(
+            text,
+            bool(data.get("autosend", False)),
+            float(data.get("delay_sec", 0.0) or 0.0),
+        )
+
+    def _route_to_desktop(self, text: str, autosend: bool, delay_sec: float):
         if autosend and delay_sec <= 0:
             audio = services().get_optional(AudioStateService)
             if not (audio and audio.is_waiting_answer()):

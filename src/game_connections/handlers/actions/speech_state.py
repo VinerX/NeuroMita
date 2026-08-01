@@ -24,4 +24,5 @@ class SpeechStateAction:
         ctx.event_bus.emit(Events.Audio.MITA_SPEAKING_WINDOW, {
             "active": active,
             "character": character,
+            "source": str(ctx.client_id or ""),
         })

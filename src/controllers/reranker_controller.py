@@ -102,7 +102,11 @@ class RerankerController:
         # рестарт. Иначе плашка светит зелёным по прошлому прогреву.
         from managers.rag.pipeline.cross_encoder import CrossEncoderReranker
 
-        CrossEncoderReranker.forget_runtime(reason="AI-воркер RAG перезапущен")
+        ok = data.get("ok") is True
+        CrossEncoderReranker.forget_runtime(
+            reason="AI-воркер RAG перезапущен" if ok else "рестарт AI-воркера RAG не удался",
+            clear_failed=ok,
+        )
         self._maybe_start_warmup(reason="service_restarted")
 
     def shutdown(self) -> None:

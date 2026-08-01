@@ -716,6 +716,8 @@ class Events:
         LOAD_SERVER_SETTINGS = "load_server_settings"
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
         SEND_ASR_TEXT = "send_asr_text"
+        CLIENT_DISCONNECTED = "server_client_disconnected"
+        ASR_TEXT_UNDELIVERED = "asr_text_undelivered"
 
     class Telegram:
         """События для взаимодействия с Telegram"""

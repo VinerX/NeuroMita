@@ -53,14 +53,18 @@ class CrossEncoderReranker:
         )
 
     @classmethod
-    def forget_runtime(cls, *, reason: str = "") -> None:
+    def forget_runtime(cls, *, reason: str = "", clear_failed: bool = True) -> None:
         """Движок перезапустился — модели в нём больше нет. Сбрасываем признаки
-        прогрева, иначе статус остаётся зелёным на пустом рантайме."""
+        прогрева, иначе статус остаётся зелёным на пустом рантайме.
+
+        clear_failed=False — рестарт не удался: прошлую ошибку затирать нельзя,
+        иначе красный статус подменяется бесконечным «загружается»."""
         for inst in list(cls._instances.values()):
             with inst._load_lock:
                 inst._runtime_ready = False
                 inst._model = None
-                inst._failed = False
+                if clear_failed:
+                    inst._failed = False
         if reason:
             logger.info(f"[CrossEncoder] прогрев сброшен: {reason}")
         cls._notify_status_changed()
