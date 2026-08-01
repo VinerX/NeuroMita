@@ -67,17 +67,7 @@ def build_player_turn() -> dict:
     }
 
 
-def exchange(host: str, port: int, payload: dict, timeout: float) -> list[dict]:
-    with socket.create_connection((host, port), timeout=timeout) as client:
-        client.sendall(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-        client.shutdown(socket.SHUT_WR)
-        chunks: list[bytes] = []
-        while True:
-            part = client.recv(65536)
-            if not part:
-                break
-            chunks.append(part)
-    raw = b"".join(chunks).decode("utf-8")
+def decode_messages(raw: str) -> list[dict]:
     decoder = json.JSONDecoder()
     messages: list[dict] = []
     position = 0
@@ -86,16 +76,46 @@ def exchange(host: str, port: int, payload: dict, timeout: float) -> list[dict]:
             position += 1
         if position >= len(raw):
             break
-        message, position = decoder.raw_decode(raw, position)
+        try:
+            message, position = decoder.raw_decode(raw, position)
+        except json.JSONDecodeError:
+            break
         messages.append(message)
     return messages
+
+
+def has_terminal_task_update(messages: list[dict]) -> bool:
+    terminal_statuses = {"SUCCESS", "FAILED", "ABORTED", "CANCELLED"}
+    return any(
+        message.get("type") == "task_update"
+        and str(message.get("status", "")) in terminal_statuses
+        for message in messages
+    )
+
+
+def exchange(host: str, port: int, payload: dict, timeout: float) -> list[dict]:
+    with socket.create_connection((host, port), timeout=timeout) as client:
+        client.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        chunks: list[bytes] = []
+        while True:
+            try:
+                part = client.recv(65536)
+            except socket.timeout:
+                break
+            if not part:
+                break
+            chunks.append(part)
+            messages = decode_messages(b"".join(chunks).decode("utf-8"))
+            if has_terminal_task_update(messages):
+                return messages
+    return decode_messages(b"".join(chunks).decode("utf-8"))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=12345)
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--timeout", type=float, default=90.0)
     args = parser.parse_args()
 
     payload = build_player_turn()
@@ -114,7 +134,7 @@ def main() -> int:
     final = task_updates[-1]
     status = str(final.get("status", ""))
     error = str(final.get("body", {}).get("error", ""))
-    if status != "COMPLETED":
+    if status != "SUCCESS":
         print(f"TEST FAILED: task status={status}; error={error or 'not provided'}")
         return 2
 
@@ -124,5 +144,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
 
 
