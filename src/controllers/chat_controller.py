@@ -293,6 +293,7 @@ class ChatController:
         policy: dict | None = None,
         images_shown: bool = False,
         game_state: dict | None = None,
+        dialogue: Any = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -475,6 +476,7 @@ class ChatController:
                     task_uid=task_uid,
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
+                    dialogue=dialogue,
                 )
             )
 
@@ -697,6 +699,7 @@ class ChatController:
             policy=data.get("policy"),
             images_shown=bool(data.get("images_shown", False)),
             game_state=data.get("game_state"),
+            dialogue=data.get("dialogue"),
         )
 
     @staticmethod
@@ -717,6 +720,7 @@ class ChatController:
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
             result["memory_merge"] = structured_data.get("memory_merge", [])
+            result["next_turns"] = structured_data.get("next_turns", [])
         return result
 
     def _on_get_llm_processing_status(self, event: Event):
@@ -740,6 +744,7 @@ class ChatController:
             participants=self._normalize_participants(data.get("participants")),
             policy=data.get("policy"),
             game_state=data.get("game_state"),
+            dialogue=data.get("dialogue"),
         )
 
     def _on_clear_chat(self, event: Event):

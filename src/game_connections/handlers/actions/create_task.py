@@ -141,6 +141,7 @@ async def _dispatch_task(
     req_id,
     origin_message_id,
     event_type: str,
+    dialogue: Optional[dict] = None,
     game_state: Optional[dict] = None,
     image_source: str = "",
     extra_task_data: Optional[dict] = None,
@@ -162,6 +163,7 @@ async def _dispatch_task(
         "participants": participants,
         "origin_message_id": origin_message_id,
         "policy": policy_dict,
+        "dialogue": dict(dialogue or {}),
     }
     if extra_task_data:
         task_data.update(extra_task_data)
@@ -185,6 +187,7 @@ async def _dispatch_task(
             "origin_message_id": origin_message_id,
             "policy": policy_dict,
             "game_state": dict(game_state or {}),
+            "dialogue": dict(dialogue or {}),
         })
     else:
         await server._send_aborted_update(
@@ -204,6 +207,7 @@ class CreateTaskAction:
         data = request.get("data", {}) or {}
         context = request.get("context", {}) or {}
         req_id = request.get("req_id", None)
+        dialogue_payload = context.get("dialogue") if isinstance(context.get("dialogue"), dict) else {}
 
         sender = str(request.get("sender") or data.get("sender") or "Player")
         origin_message_id = request.get("origin_message_id") or data.get("origin_message_id")
@@ -283,6 +287,7 @@ class CreateTaskAction:
             req_id=req_id,
             origin_message_id=origin_message_id,
             event_type=event_type,
+            dialogue=dialogue_payload,
             game_state=game_state_payload,
         )
 
@@ -356,6 +361,7 @@ class CreateTaskAction:
                 "participants": participants,
                 "origin_message_id": origin_message_id,
                 "policy": policy_dict,
+        "dialogue": dict(dialogue or {}),
             })
             if task:
                 server.client_tasks[ctx.client_id].add(task.uid)

@@ -764,6 +764,27 @@ class PromptController(PromptBuilderService):
 
         messages.extend(history_limited)
 
+        dialogue = request.dialogue
+        if dialogue:
+            get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
+            snapshot = get_value("participants", []) or []
+            lines = [
+                "[Conversation Context]",
+                f"conversation_id={get_value('conversation_id', '')}",
+                f"epoch={get_value('epoch', 0)} turn_index={get_value('turn_index', 0)}",
+                f"world_id={get_value('world_id', '')} room_id={get_value('room_id', '')}",
+                f"speaker_actor_id={get_value('speaker_actor_id', '')}",
+                f"responder_actor_id={get_value('responder_actor_id', '')}",
+                "Only schedule a next_turn when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
+            ]
+            for participant in snapshot:
+                getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
+                lines.append(
+                    f"participant actor_id={getter('actor_id', '')}; character_id={getter('character_id', '')}; "
+                    f"can_speak={getter('can_speak', False)}; can_hear_speaker={getter('can_hear_speaker', False)}"
+                )
+            messages.append({"role": "system", "content": "\n".join(lines)})
+
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
 

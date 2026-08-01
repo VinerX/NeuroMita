@@ -1516,6 +1516,7 @@ class ModelController(GenerationService, ModelStateService):
             sender=sender,
             participants=participants,
             capabilities=effective_capabilities,
+            dialogue=request.dialogue,
         )
         self._capture_generation_input(
             request=request,

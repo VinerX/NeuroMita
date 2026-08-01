@@ -574,6 +574,16 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
         "segments": segments_out,
         "response": response.full_text(),
+        "next_turns": [
+            {
+                "target_actor_id": turn.target_actor_id,
+                "target_character_id": turn.target_character_id,
+                "input_text": turn.input_text,
+                "reason": turn.reason,
+                "delay_ms": turn.delay_ms,
+            }
+            for turn in (response.next_turns or [])
+        ],
         "attitude_change": response.attitude_change,
         "boredom_change": response.boredom_change,
         "stress_change": response.stress_change,
