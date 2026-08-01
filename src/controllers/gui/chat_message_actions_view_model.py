@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,6 +102,15 @@ class ChatMessageActionsViewModel(IntentViewModel[_ChatMessageActionsState]):
 
     def _load_context(self, sample_id: str) -> tuple[dict[str, Any] | None, bool]:
         normalized = str(sample_id or "").strip()
+        base = str(os.environ.get("NEUROMITA_BASE_DIR", "") or "").strip()
+        if re.fullmatch(r"ctx_[0-9a-f]{32}", normalized, flags=re.IGNORECASE):
+            root = os.path.join(base, "SavedMessages") if base else "SavedMessages"
+            path = os.path.join(root, "request_contexts", f"{normalized}.json")
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                return (dict(payload), False) if isinstance(payload, dict) else (None, False)
+            return None, False
         if normalized:
             samples = self._finetune.load_samples()
             matched = next(

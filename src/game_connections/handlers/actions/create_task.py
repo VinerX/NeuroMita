@@ -366,7 +366,6 @@ class CreateTaskAction:
                 "participants": participants,
                 "origin_message_id": origin_message_id,
                 "policy": policy_dict,
-        "dialogue": dict(dialogue or {}),
             })
             if task:
                 server.client_tasks[ctx.client_id].add(task.uid)

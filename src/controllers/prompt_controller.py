@@ -787,6 +787,14 @@ class PromptController(PromptBuilderService):
 
         dialogue = request.dialogue
         if dialogue:
+            # Some direct/system tasks carry an empty dialogue object. It is not
+            # an active conversation and only creates a misleading blank block
+            # in the model context viewer.
+            _dialogue_get = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
+            _dialogue_participants = _dialogue_get("participants", []) or []
+            if not str(_dialogue_get("conversation_id", "") or "").strip() and not _dialogue_participants:
+                dialogue = None
+        if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
             lines = [
@@ -866,21 +874,6 @@ class PromptController(PromptBuilderService):
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 
-        # A moderator directive is a control-plane message, not a world event.
-        # Keep it as the final authoritative system instruction before the
-        # current turn trigger so it stays close to the model's response.
-        for directive in self._extract_game_master_directives(game_state):
-            messages.append({
-                "role": "system",
-                "content": (
-                    "[GAME_MASTER_DIRECTIVE][MANDATORY]\n"
-                    "This is a current scene directive from the hidden GameMaster. "
-                    "Carry it out in this reply while staying in character. Do not "
-                    "mention or quote the GameMaster.\n"
-                    f"Directive: {directive}\n"
-                    "[/GAME_MASTER_DIRECTIVE]"
-                ),
-            })
         if system_input:
             role = "system"
 
@@ -897,6 +890,22 @@ class PromptController(PromptBuilderService):
             messages.append({
                 "role": "system",
                 "content": hidden_user_context,
+            })
+
+        # A moderator directive is a control-plane message, not a world event.
+        # It must be the final system instruction: generic relay text, current
+        # state, and hidden transport context are lower-priority setup only.
+        for directive in self._extract_game_master_directives(game_state):
+            messages.append({
+                "role": "system",
+                "content": (
+                    "[GAME_MASTER_DIRECTIVE][MANDATORY]\n"
+                    "This is a current scene directive from the hidden GameMaster. "
+                    "Carry it out in this reply while staying in character. Do not "
+                    "mention or quote the GameMaster.\n"
+                    f"Directive: {directive}\n"
+                    "[/GAME_MASTER_DIRECTIVE]"
+                ),
             })
 
         user_message_for_history: Optional[Dict[str, Any]] = None

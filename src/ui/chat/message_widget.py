@@ -407,7 +407,7 @@ class MessageWidget(QWidget):
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
                  message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None,
-                 show_rating_controls=False, rating_callback=None, parent=None):
+                 context_snapshot_id=None, show_rating_controls=False, rating_callback=None, parent=None):
         super().__init__(parent)
         self._role = role
         self._speaker_name = speaker_name
@@ -416,6 +416,7 @@ class MessageWidget(QWidget):
         self._font_xs = max(7, font_size - 3)
         self._structured_panel = None
         self._sample_id = sample_id
+        self._context_snapshot_id = context_snapshot_id or None
         self._message_id = message_id
         self._show_rating_controls = bool(show_rating_controls)
         self._rating_callback = rating_callback
@@ -589,6 +590,10 @@ class MessageWidget(QWidget):
         """То же для finetune-сэмпла: он создаётся только после ответа модели."""
         self._sample_id = sample_id or None
 
+    def set_context_snapshot_id(self, context_snapshot_id: str):
+        """Bind the immutable request snapshot when a streamed reply finishes."""
+        self._context_snapshot_id = context_snapshot_id or None
+
     def _add_rating_buttons(self, name_row, sample_id: str, font_size: int):
         try:
             import qtawesome as qta
@@ -675,7 +680,7 @@ class MessageWidget(QWidget):
                 regen_action.triggered.connect(lambda: self.regenerate_requested.emit(self._message_id or ""))
                 menu.addAction(regen_action)
                 ctx_action = QAction(_("Просмотреть контекст запроса", "View request context"), self)
-                _sid = self._sample_id or ""
+                _sid = self._context_snapshot_id or self._sample_id or ""
                 ctx_action.triggered.connect(lambda: self.view_context_requested.emit(_sid))
                 menu.addAction(ctx_action)
                 resp_ctx_action = QAction(_("Просмотреть контекст ответа", "View response context"), self)

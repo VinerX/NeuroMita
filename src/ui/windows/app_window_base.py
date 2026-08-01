@@ -1412,6 +1412,7 @@ class AppWindowBase(QMainWindow):
         structured_data = None
         message_id = None
         sample_id = None
+        context_snapshot_id = None
         if role == "assistant":
             structured_data = getattr(self, '_pending_structured_data', None)
             self._pending_structured_data = None
@@ -1419,6 +1420,8 @@ class AppWindowBase(QMainWindow):
             self._pending_message_id = None
             sample_id = getattr(self, '_pending_sample_id', None) or None
             self._pending_sample_id = None
+            context_snapshot_id = getattr(self, '_pending_context_snapshot_id', None) or None
+            self._pending_context_snapshot_id = None
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
@@ -1431,6 +1434,7 @@ class AppWindowBase(QMainWindow):
             structured_data=structured_data,
             message_id=message_id,
             sample_id=sample_id,
+            context_snapshot_id=context_snapshot_id,
         )
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
@@ -1487,6 +1491,7 @@ class AppWindowBase(QMainWindow):
             message_id=str(payload.get("message_id") or ""),
             character_id=str(payload.get("character_id") or ""),
             sample_id=str(payload.get("sample_id") or ""),
+            context_snapshot_id=str(payload.get("context_snapshot_id") or ""),
         )
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====

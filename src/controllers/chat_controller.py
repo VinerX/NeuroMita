@@ -498,6 +498,7 @@ class ChatController:
             structured_data = result.structured
             assistant_message_id = result.message_id
             sample_id = getattr(result, "sample_id", "") or ""
+            context_snapshot_id = getattr(result, "context_snapshot_id", "") or ""
 
             # GameMaster may comment on a dialogue, but never participates in the
             # Mita-to-Mita turn queue. Do not expose model-produced routing hints
@@ -518,18 +519,48 @@ class ChatController:
                     # authoritative directive instead of broadcasting an empty shell.
                     explicit_instruction = str(system_input or "").strip()
                     explicit_instruction = explicit_instruction.replace("[INSTRUCTION]", "").replace("[/INSTRUCTION]", "").strip()
-                    for segment in structured_data.get("segments", []):
+                    has_broadcast_directive = False
+                    segments = structured_data.get("segments", [])
+                    if not isinstance(segments, list):
+                        segments = []
+                        structured_data["segments"] = segments
+                    for segment in segments:
                         if not isinstance(segment, dict):
                             continue
-                        for intent in segment.get("intents", []):
-                            if not isinstance(intent, dict) or intent.get("type") != "dialogue.broadcast_system_message":
+                        intents = segment.get("intents", [])
+                        if not isinstance(intents, list):
+                            intents = []
+                        valid_intents = []
+                        for intent in intents:
+                            if not isinstance(intent, dict):
                                 continue
+                            intent_type = str(intent.get("type") or "").strip()
                             payload = intent.get("payload")
-                            if not isinstance(payload, dict):
-                                payload = {}
-                            if explicit_instruction and not str(payload.get("message") or "").strip():
-                                payload["message"] = explicit_instruction
-                            intent["payload"] = payload
+                            payload = dict(payload) if isinstance(payload, dict) else {}
+                            if intent_type == "dialogue.send_system_message":
+                                # Gemini occasionally emits an empty personal intent.
+                                # It is not executable and must not poison an otherwise
+                                # valid GameMaster turn.
+                                if not str(payload.get("character") or "").strip() or not str(payload.get("message") or "").strip():
+                                    continue
+                            if intent_type == "dialogue.broadcast_system_message":
+                                if explicit_instruction and not str(payload.get("message") or "").strip():
+                                    payload["message"] = explicit_instruction
+                                has_broadcast_directive = bool(str(payload.get("message") or "").strip())
+                            valid_intents.append({**intent, "type": intent_type, "payload": payload})
+                        segment["intents"] = valid_intents
+                    if explicit_instruction and not has_broadcast_directive:
+                        # Explicit tester/GM instructions are authoritative. The
+                        # model may omit the action despite selecting narration;
+                        # preserve the scene directive as a deterministic fallback.
+                        carrier = next((item for item in segments if isinstance(item, dict)), None)
+                        if carrier is None:
+                            carrier = {"text": " ", "target": "Player", "intents": []}
+                            segments.append(carrier)
+                        carrier.setdefault("intents", []).append({
+                            "type": "dialogue.broadcast_system_message",
+                            "payload": {"message": explicit_instruction},
+                        })
                     structured_data["next_turns"] = []
                     structured_data["segments"] = [
                         {
@@ -628,6 +659,7 @@ class ChatController:
                     "message_id": assistant_message_id or "",
                     "character_id": effective_character_id or "",
                     "sample_id": sample_id or "",
+                    "context_snapshot_id": context_snapshot_id or "",
                 }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
@@ -663,6 +695,7 @@ class ChatController:
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
                     "sample_id": sample_id or "",
+                    "context_snapshot_id": context_snapshot_id or "",
                 }, delivery=EventDelivery.ORDERED)
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)

@@ -511,6 +511,9 @@ class ChatGenerationResult:
     structured: Optional[Dict[str, Any]] = None
     message_id: str = ""
     sample_id: str = ""
+    # Immutable diagnostic snapshot of the exact request behind this reply.
+    # Unlike a finetune sample it exists even when collection is disabled.
+    context_snapshot_id: str = ""
     error: str = ""
     error_details: Optional[Dict[str, Any]] = None
 

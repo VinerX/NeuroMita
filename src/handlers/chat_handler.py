@@ -1,6 +1,7 @@
 # src/handlers/chat_handler.py
 import re
 import threading
+import uuid
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
@@ -41,26 +42,48 @@ def _debug_dumps_enabled(settings: Any) -> bool:
 from utils.context_token_stats import compute_token_usage as _compute_token_usage
 
 
-def _save_last_request_context(req, character_name: str = "") -> None:
-    """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
+_CONTEXT_SNAPSHOT_ID_RE = re.compile(r"^ctx_[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def _context_snapshot_paths(context_snapshot_id: str = "") -> list[str]:
+    """Return the global fallback plus an immutable per-request snapshot path."""
+    import os
+
+    base = os.environ.get("NEUROMITA_BASE_DIR", "")
+    saved = os.path.join(base, "SavedMessages") if base else "SavedMessages"
+    paths = [os.path.join(saved, "last_request_context.json")]
+    snapshot_id = str(context_snapshot_id or "").strip()
+    if _CONTEXT_SNAPSHOT_ID_RE.fullmatch(snapshot_id):
+        paths.append(os.path.join(saved, "request_contexts", f"{snapshot_id}.json"))
+    return paths
+
+
+def _write_context_record(record: Dict[str, Any], context_snapshot_id: str = "") -> None:
     import json
     import os
+
+    for path in _context_snapshot_paths(context_snapshot_id):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
+
+
+def _save_last_request_context(req, character_name: str = "") -> None:
+    """Save both the latest diagnostic context and its immutable request snapshot."""
     from datetime import datetime, timezone
 
     _KEEP = {
         "temperature", "max_tokens", "max_response_tokens", "top_p", "top_k",
-        "presence_penalty", "frequency_penalty",
-        "openrouter_routing",
+        "presence_penalty", "frequency_penalty", "openrouter_routing",
         "openrouter_session_id",
     }
     try:
-        base = os.environ.get("NEUROMITA_BASE_DIR", "")
-        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
-        os.makedirs(out_dir, exist_ok=True)
         extra_raw = getattr(req, "extra", {}) or {}
+        context_snapshot_id = str(extra_raw.get("context_snapshot_id") or "").strip()
         messages = redact_image_payloads(getattr(req, "messages", []))
         record = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "context_snapshot_id": context_snapshot_id,
             "model": getattr(req, "model", None),
             "provider_name": getattr(req, "provider_name", None),
             "protocol_id": getattr(req, "protocol_id", None),
@@ -70,50 +93,42 @@ def _save_last_request_context(req, character_name: str = "") -> None:
             "token_usage": _compute_token_usage(messages),
             "messages": messages,
         }
-        with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        _write_context_record(record, context_snapshot_id)
     except Exception as _e:
         logger.debug(f"[ContextSave] {_e}")
 
-
 def _save_last_response_context(req, response: LLMResponse, *, raw_response_text: str = "", cleaned_response_text: str = "") -> None:
-    """Дописывает последний ответ и usage в last_request_context.json."""
+    """Attach response data to the exact request snapshot and update the fallback."""
     import json
     import os
     from datetime import datetime, timezone
 
     try:
-        base = os.environ.get("NEUROMITA_BASE_DIR", "")
-        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, "last_request_context.json")
-
+        extra_raw = getattr(req, "extra", {}) or {}
+        context_snapshot_id = str(extra_raw.get("context_snapshot_id") or "").strip()
+        paths = _context_snapshot_paths(context_snapshot_id)
         record: Dict[str, Any] = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    record = loaded
-            except Exception:
-                record = {}
-
+        # Prefer the immutable request snapshot; it cannot be overwritten by a
+        # concurrently finishing response from another Mita.
+        preferred = paths[-1] if len(paths) > 1 else paths[0]
+        if os.path.isfile(preferred):
+            with open(preferred, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                record = loaded
         if not record:
-            extra_raw = getattr(req, "extra", {}) or {}
             record = {
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "context_snapshot_id": context_snapshot_id,
                 "model": getattr(req, "model", None),
                 "provider_name": getattr(req, "provider_name", None),
                 "protocol_id": getattr(req, "protocol_id", None),
                 "dialect_id": getattr(req, "dialect_id", None),
                 "character_name": "",
-                "extra": extra_raw,
+                "extra": {},
                 "messages": redact_image_payloads(getattr(req, "messages", [])),
             }
-
         usage = getattr(response, "usage", None)
-        usage_payload = usage.to_payload() if usage is not None else None
-
         record.update({
             "response_timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "response": cleaned_response_text or getattr(response, "text", "") or "",
@@ -121,11 +136,9 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
             "response_model": getattr(response, "model", None) or getattr(req, "model", None),
             "response_provider_name": getattr(response, "provider_name", None) or getattr(req, "provider_name", None),
             "finish_reason": getattr(response, "finish_reason", None),
-            "usage": usage_payload,
+            "usage": usage.to_payload() if usage is not None else None,
         })
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        _write_context_record(record, context_snapshot_id)
     except Exception as _e:
         logger.debug(f"[ContextSaveResponse] {_e}")
 
@@ -203,6 +216,7 @@ class ChatModel:
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_name: str = "",
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
@@ -215,6 +229,7 @@ class ChatModel:
             capabilities_override=capabilities_override,
             request_options_override=request_options_override,
             structured_model=structured_model,
+            context_character_name=context_character_name,
         )
         if not success:
             return None
@@ -231,6 +246,7 @@ class ChatModel:
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_name: str = "",
     ):
         request_options = dict(request_options_override or {})
         max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
@@ -293,6 +309,9 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            # UI context inspection must identify this exact request even when
+            # finetune collection is disabled or several Mitas answer at once.
+            req.extra["context_snapshot_id"] = f"ctx_{uuid.uuid4().hex}"
             req.extra["http_timeout_seconds"] = float(request_timeout)
             if preset_settings.protocol_id == "openrouter_default":
                 routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
@@ -313,11 +332,12 @@ class ChatModel:
             # not a debug-only feature. Its fallback file must therefore be
             # captured for every request.
             try:
-                executors().try_submit(
-                    Pools.DEBUG_DUMP,
-                    _save_last_request_context,
+                # This is executed on a generation worker, not the UI thread.
+                # Save synchronously so a response cannot race ahead and replace
+                # the immutable request snapshot before it is written.
+                _save_last_request_context(
                     req,
-                    character_name=getattr(_char, "name", "") or "",
+                    character_name=str(context_character_name or getattr(_char, "name", "") or ""),
                 )
             except Exception:
                 pass
@@ -342,6 +362,11 @@ class ChatModel:
         self.last_error = self.request_runner.last_error
 
         if response_text and _last_req[0]:
+            if not isinstance(response_text.raw, dict):
+                response_text.raw = {}
+            response_text.raw["context_snapshot_id"] = str(
+                (_last_req[0].extra or {}).get("context_snapshot_id") or ""
+            )
             try:
                 from managers.finetune_collector import FineTuneCollector
                 fc = FineTuneCollector.instance
@@ -370,9 +395,7 @@ class ChatModel:
                 response_text.text = cleaned_response
                 if _last_req[0]:
                     try:
-                        executors().try_submit(
-                            Pools.DEBUG_DUMP,
-                            _save_last_response_context,
+                        _save_last_response_context(
                             _last_req[0],
                             response_text,
                             raw_response_text=raw_response_text,

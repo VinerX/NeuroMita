@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import datetime
 import re
@@ -1594,6 +1595,7 @@ class ModelController(GenerationService, ModelStateService):
                 request_id=str(task_uid or req_id or origin_message_id or ""),
                 capabilities_override=effective_capabilities,
                 structured_model=structured_model_cls,
+                context_character_name=char_name,
             )
 
             if not llm_response or not llm_response.text:
@@ -1668,6 +1670,12 @@ class ModelController(GenerationService, ModelStateService):
                     sample_id=sample_id,
                 )
                 if structured_result is not None:
+                    structured_result = dataclasses.replace(
+                        structured_result,
+                        context_snapshot_id=str(
+                            (getattr(llm_response, "raw", {}) or {}).get("context_snapshot_id") or ""
+                        ),
+                    )
                     self._consume_temporary_system_infos(char_id, extra_system_infos)
                 return structured_result
 
@@ -1769,6 +1777,9 @@ class ModelController(GenerationService, ModelStateService):
                 think=think_text or None,
                 message_id=assistant_message_id,
                 sample_id=sample_id or "",
+                context_snapshot_id=str(
+                    (getattr(llm_response, "raw", {}) or {}).get("context_snapshot_id") or ""
+                ),
             )
 
         except Exception as e:

@@ -109,6 +109,7 @@ class ChatController(BaseController):
             self.view._pending_message_id = message_id
             if role == "assistant":
                 self.view._pending_sample_id = str(data.get("sample_id") or "")
+                self.view._pending_context_snapshot_id = str(data.get("context_snapshot_id") or "")
         self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
 
     def _on_prepare_stream_ui(self, event: Event):
