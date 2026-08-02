@@ -17,6 +17,51 @@ from services.contracts import PromptBuildRequest
 
 
 class PromptSystemStateTests(unittest.TestCase):
+    class _DialogueCharacter:
+        char_id = "Test"
+        id = "Test"
+
+        def get_variable(self, _name, default=None):
+            return default
+
+    def _build_dialogue_prompt(self, enabled):
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
+        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+        result = controller.build(PromptBuildRequest(
+            character=self._DialogueCharacter(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Спросите друг друга, что произошло.",
+            dialogue={
+                "conversation_id": "conv-test",
+                "epoch": 1,
+                "turn_index": 1,
+                "speaker_actor_id": "player",
+                "responder_actor_id": "actor-kind-1",
+                "auto_dialogue_enabled": enabled,
+                "auto_turns_since_player": 0,
+                "max_auto_turns": 6,
+                "participants": [
+                    {"actor_id": "actor-kind-1", "character_id": "Kind", "can_speak": True, "can_hear_speaker": True},
+                    {"actor_id": "actor-crazy-1", "character_id": "Crazy", "can_speak": True, "can_hear_speaker": True},
+                ],
+            },
+        ))
+        return next(message["content"] for message in result.messages if "[Conversation Context]" in message.get("content", ""))
+
+    def test_dialogue_context_delegates_auto_routing_to_python(self):
+        content = self._build_dialogue_prompt(True)
+        self.assertIn("auto_dialogue_enabled=true", content)
+        self.assertIn("Python is the sole turn router", content)
+        self.assertIn("exact actor_id", content)
+        self.assertIn("actor-crazy-1", content)
+
+    def test_dialogue_context_disables_auto_routing_when_setting_is_false(self):
+        content = self._build_dialogue_prompt(False)
+        self.assertIn("auto_dialogue_enabled=false", content)
+        self.assertIn("keep next_turns empty", content)
+        self.assertNotIn("do not wait for a new Player message", content)
     def test_relevant_memories_follow_active_memory(self):
         class _Character:
             char_id = "Test"

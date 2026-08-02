@@ -469,6 +469,7 @@ class DialogueTurnContext:
 
     speaker_actor_id: str = ""
     responder_actor_id: str = ""
+    auto_dialogue_enabled: bool = False
 
     world_id: str = ""
     room_id: str = ""

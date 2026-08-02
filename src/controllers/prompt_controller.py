@@ -798,6 +798,7 @@ class PromptController(PromptBuilderService):
         if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
+            auto_dialogue_enabled = str(get_value("auto_dialogue_enabled", False)).strip().lower() in {"1", "true", "yes", "on"}
             world_relation = get_world_character_context(character_id=str(getattr(character, "id", "") or ""), world_id=str(get_value("world_id", "") or ""))
             lines = [
                 "[Conversation Context]",
@@ -807,12 +808,26 @@ class PromptController(PromptBuilderService):
                 f"speaker_actor_id={get_value('speaker_actor_id', '')}",
                 f"responder_actor_id={get_value('responder_actor_id', '')}",
                 f"auto_turns_since_player={get_value('auto_turns_since_player', 0)} max_auto_turns={get_value('max_auto_turns', 0)}",
+                f"auto_dialogue_enabled={str(auto_dialogue_enabled).lower()}",
                 f"spoken_actor_ids={','.join(str(actor_id) for actor_id in (get_value('spoken_actor_ids', []) or []))}",
                 "Only schedule another character's turn only when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
                 "If the Player asks the present characters to hold a discussion, choose one eligible next speaker who has not yet spoken in this player turn before returning to someone in spoken_actor_ids. Stop naturally when no next reply is needed; never manufacture extra turns.",
                 f"your_world_relation={world_relation['relation']}",
                 *[f"world_fact={fact}" for fact in world_relation['facts']],
             ]
+            if auto_dialogue_enabled:
+                lines.extend([
+                    "AUTOMATIC MITA DIALOGUE IS ENABLED: Python is the sole turn router; Unity only validates and executes your next_turns.",
+                    "After this reply, do not wait for a new Player message. If a present participant has a concrete reason to answer and the auto-turn budget remains, return next_turns with the chosen participant's exact actor_id.",
+                    "Return at most two next_turns, normally the single best next speaker. Each input_text is a short factual cue for that speaker, not their answer.",
+                    "The next_turns JSON shape is [{target_actor_id, target_character_id, input_text, reason, delay_ms}]. target_actor_id must be copied exactly from one eligible participant below.",
+                    "Use an empty next_turns list only when the conversation should naturally stop, no eligible participant remains, or max_auto_turns has been reached.",
+                ])
+            else:
+                lines.extend([
+                    "AUTOMATIC MITA DIALOGUE IS DISABLED: keep next_turns empty unless the Player explicitly asks the present characters to continue or pass the word.",
+                ])
+
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
                 lines.append(

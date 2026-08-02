@@ -310,11 +310,11 @@ class NextTurnDirective(BaseModel):
     что этот экземпляр всё ещё существует, находится рядом и слышит разговор.
     """
 
-    target_actor_id: Optional[str] = Field(
-        default=None,
+    target_actor_id: str = Field(
         description=(
             "Exact actor instance that should respond next. "
-            "Must be copied from CURRENT CONVERSATION participants."
+            "This is required whenever a next turn is returned and must be "
+            "copied from CURRENT CONVERSATION participants."
         ),
     )
 
