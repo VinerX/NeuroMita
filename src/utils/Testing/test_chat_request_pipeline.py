@@ -224,10 +224,10 @@ class ChatRequestPipelineTests(unittest.TestCase):
             "Player",
             {"response_protocol_version": 2, "segments": [{"text": "hello"}]},
         )
-        self.assertEqual(result["response_protocol_version"], 2)
+        self.assertEqual(result["response_protocol_version"], 3)
 
         plain_result = ChatController._build_task_result("hello", "Player", None)
-        self.assertEqual(plain_result["response_protocol_version"], 2)
+        self.assertEqual(plain_result["response_protocol_version"], 1)
 
     def test_non_stream_request_does_not_create_presentation_coalescer(self):
         services().register(GenerationService, _ImmediateGeneration(), replace=True)

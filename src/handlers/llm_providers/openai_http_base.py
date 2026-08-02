@@ -230,6 +230,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
+                excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
                 # intents is an internal Unity channel — hidden from the model
                 # unless the selected DSL main template explicitly enables support_intents.

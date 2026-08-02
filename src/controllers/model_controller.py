@@ -28,6 +28,7 @@ from services.contracts import (
     UtilityGenerationRequest,
     UtilityGenerationResult,
     SettingsService,
+    parse_dialogue_turn_context,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -1282,6 +1283,9 @@ class ModelController(GenerationService, ModelStateService):
             return self._generate_chat_serialized(request, char)
 
     def _generate_chat_serialized(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+        if request.dialogue is not None and not hasattr(request.dialogue, "participants"):
+            request.dialogue = parse_dialogue_turn_context(request.dialogue)
+
         user_input = request.user_input or ""
         visible_user_input = user_input
         system_input = request.system_input or ""
@@ -1373,6 +1377,13 @@ class ModelController(GenerationService, ModelStateService):
         remote_only_segment_fields = self._remote_only_structured_segment_fields()
         if remote_only_segment_fields:
             effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
+
+        dialogue_context = request.dialogue
+        dialogue_participants = list(getattr(dialogue_context, "participants", []) or []) if dialogue_context is not None else []
+        dialogue_enabled = bool(getattr(dialogue_context, "auto_dialogue_enabled", False)) if dialogue_context is not None else False
+        eligible_dialogue_participants = [item for item in dialogue_participants if bool(getattr(item, "can_speak", False)) and bool(getattr(item, "can_hear_speaker", False))]
+        if not dialogue_context or not dialogue_enabled or not eligible_dialogue_participants:
+            effective_capabilities["structured_exclude_fields"] = ("next_turns",)
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
@@ -1668,6 +1679,7 @@ class ModelController(GenerationService, ModelStateService):
                     image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
                     sample_id=sample_id,
+                    dialogue=request.dialogue,
                 )
                 if structured_result is not None:
                     structured_result = dataclasses.replace(
@@ -1744,6 +1756,7 @@ class ModelController(GenerationService, ModelStateService):
                     thinking=think_text or None,
                     llm_usage=usage_snapshot,
                     sample_id=sample_id,
+                    dialogue=request.dialogue,
                 )
 
             self._store_last_usage(
@@ -1947,6 +1960,7 @@ class ModelController(GenerationService, ModelStateService):
         image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
         sample_id: str | None = None,
+        dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
         try:
             structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
@@ -2069,6 +2083,7 @@ class ModelController(GenerationService, ModelStateService):
                 image_descriptions=image_descriptions,
                 targets=targets,
                 voice_profile=voice_profile,
+                dialogue=dialogue,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -2223,6 +2238,7 @@ class ModelController(GenerationService, ModelStateService):
         image_descriptions: dict[str, str] | None = None,
         targets: list[str] | None = None,
         voice_profile=None,
+        dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
@@ -2276,6 +2292,7 @@ class ModelController(GenerationService, ModelStateService):
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
                 sample_id=sample_id,
+                dialogue=dialogue,
             )
 
         # Emit first response to UI (shows "I'll check that" message)
@@ -2426,6 +2443,7 @@ class ModelController(GenerationService, ModelStateService):
             image_descriptions=image_descriptions,
             structured_model_cls=structured_model_cls,
             sample_id=sample_id_2,
+            dialogue=dialogue,
         )
 
     # ---------------------------------------------------------------------

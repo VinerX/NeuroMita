@@ -469,12 +469,79 @@ class DialogueTurnContext:
 
     speaker_actor_id: str = ""
     responder_actor_id: str = ""
-    auto_dialogue_enabled: bool = False
+    auto_dialogue_enabled: bool = True
+    auto_turns_since_player: int = 0
+    max_auto_turns: int = 0
+    spoken_actor_ids: List[str] = field(default_factory=list)
 
     world_id: str = ""
     room_id: str = ""
 
     participants: List[DialogueParticipant] = field(default_factory=list)
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_dialogue_turn_context(raw: object) -> Optional[DialogueTurnContext]:
+    """Normalize a raw Unity conversation snapshot into one typed context."""
+    if raw is None:
+        return None
+    if isinstance(raw, DialogueTurnContext):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+
+    def _int(name: str) -> int:
+        try:
+            return int(raw.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    participants: List[DialogueParticipant] = []
+    for item in raw.get("participants", []) or []:
+        if isinstance(item, DialogueParticipant):
+            participant = item
+        elif isinstance(item, dict):
+            try:
+                participant = DialogueParticipant(
+                    actor_id=str(item.get("actor_id") or "").strip(),
+                    character_id=str(item.get("character_id") or "").strip(),
+                    display_name=str(item.get("display_name") or ""),
+                    world_id=str(item.get("world_id") or ""),
+                    room_id=str(item.get("room_id") or ""),
+                    distance_to_player=float(item.get("distance_to_player") or 0.0),
+                    can_hear_player=_coerce_bool(item.get("can_hear_player"), True),
+                    can_hear_speaker=_coerce_bool(item.get("can_hear_speaker"), True),
+                    can_speak=_coerce_bool(item.get("can_speak"), True),
+                )
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+        if participant.actor_id:
+            participants.append(participant)
+
+    spoken = [str(actor_id).strip() for actor_id in (raw.get("spoken_actor_ids", []) or []) if str(actor_id).strip()]
+    return DialogueTurnContext(
+        conversation_id=str(raw.get("conversation_id") or "").strip(),
+        epoch=_int("epoch"),
+        turn_index=_int("turn_index"),
+        speaker_actor_id=str(raw.get("speaker_actor_id") or "").strip(),
+        responder_actor_id=str(raw.get("responder_actor_id") or "").strip(),
+        auto_dialogue_enabled=_coerce_bool(raw.get("auto_dialogue_enabled"), True),
+        auto_turns_since_player=_int("auto_turns_since_player"),
+        max_auto_turns=_int("max_auto_turns"),
+        spoken_actor_ids=spoken,
+        world_id=str(raw.get("world_id") or "").strip(),
+        room_id=str(raw.get("room_id") or "").strip(),
+        participants=participants,
+    )
 
 
 # ---------------------------------------------------------------------------

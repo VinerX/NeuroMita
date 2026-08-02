@@ -249,6 +249,24 @@ class ConversationEventWriter:
         except Exception as e:
             logger.warning(f"[ConversationEventWriter] Failed to save easel drawing: {e}")
 
+    @staticmethod
+    def _dialogue_metadata(dialogue: Any) -> dict:
+        if dialogue is None:
+            return {}
+        participants = getattr(dialogue, "participants", []) or []
+        return {
+            "conversation_id": str(getattr(dialogue, "conversation_id", "") or ""),
+            "conversation_epoch": int(getattr(dialogue, "epoch", 0) or 0),
+            "turn_index": int(getattr(dialogue, "turn_index", 0) or 0),
+            "speaker_actor_id": str(getattr(dialogue, "speaker_actor_id", "") or ""),
+            "responder_actor_id": str(getattr(dialogue, "responder_actor_id", "") or ""),
+            "participant_actor_ids": [
+                str(getattr(item, "actor_id", "") or "")
+                for item in participants
+                if str(getattr(item, "actor_id", "") or "")
+            ],
+        }
+
     def write_turn(
         self,
         *,
@@ -269,6 +287,7 @@ class ConversationEventWriter:
         thinking: str | None = None,
         llm_usage: dict | None = None,
         sample_id: str | None = None,
+        dialogue: Any = None,
     ) -> str:
         sender = str(sender or "Player")
         responder_character_id = str(responder_character_id or "").strip()
@@ -280,6 +299,7 @@ class ConversationEventWriter:
         if event_type == "easel_drawing" and image_data:
             self._save_drawings_to_disk(image_data, responder_character_id)
 
+        dialogue_metadata = self._dialogue_metadata(dialogue)
         pts = self.normalize_participants(participants)
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
@@ -314,6 +334,11 @@ class ConversationEventWriter:
             sample_id=sample_id,
             turn_id=turn_id,
         )
+
+        if dialogue_metadata:
+            if isinstance(user_event, dict):
+                user_event.update(dialogue_metadata)
+            assistant_event.update(dialogue_metadata)
 
         self._fanout_turn(user_event, assistant_event, pts)
         return str(assistant_event.get("message_id") or "")

@@ -19,6 +19,7 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    parse_dialogue_turn_context,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from services.stream_presentation import TextDeltaCoalescer
@@ -302,6 +303,7 @@ class ChatController:
         игры, telegram), а вызывающий поток шины стоял на fut.result(600).
         """
         eff_policy = None
+        dialogue = parse_dialogue_turn_context(dialogue)
         stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
         stream_started = False
         stream_finished = False
@@ -476,7 +478,7 @@ class ChatController:
                     task_uid=task_uid,
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
-                    dialogue=dialogue,
+                    dialogue=parse_dialogue_turn_context(dialogue),
                 )
             )
 
@@ -495,7 +497,7 @@ class ChatController:
             target = result.target
             targets: list[str] = result.targets
             think_text = result.think
-            structured_data = result.structured
+            structured_data = self._filter_dialogue_next_turns(result.structured, dialogue)
             assistant_message_id = result.message_id
             sample_id = getattr(result, "sample_id", "") or ""
             context_snapshot_id = getattr(result, "context_snapshot_id", "") or ""
@@ -777,10 +779,70 @@ class ChatController:
         )
 
     @staticmethod
+    def _filter_dialogue_next_turns(
+        structured_data: dict | None,
+        dialogue: Any,
+    ) -> dict | None:
+        """Keep routing directives inside the live Unity participant contract."""
+        if not isinstance(structured_data, dict):
+            return structured_data
+        data = dict(structured_data)
+        raw_turns = data.get("next_turns")
+        if not isinstance(raw_turns, list):
+            return data
+        if dialogue is None:
+            data["next_turns"] = []
+            return data
+
+        enabled = bool(getattr(dialogue, "auto_dialogue_enabled", False))
+        participants = {
+            str(item.actor_id): item
+            for item in (getattr(dialogue, "participants", []) or [])
+            if getattr(item, "actor_id", "")
+        }
+        current_responder = str(getattr(dialogue, "responder_actor_id", "") or "")
+        filtered = []
+        seen = set()
+        for item in raw_turns:
+            if not isinstance(item, dict):
+                continue
+            actor_id = str(item.get("target_actor_id") or "").strip()
+            target = participants.get(actor_id)
+            if not enabled or target is None or actor_id in seen:
+                continue
+            if actor_id == current_responder:
+                continue
+            if not bool(getattr(target, "can_speak", False)) or not bool(getattr(target, "can_hear_speaker", False)):
+                continue
+            if not str(item.get("input_text") or "").strip():
+                continue
+            character_id = str(item.get("target_character_id") or "").strip()
+            if character_id and character_id.lower() != str(getattr(target, "character_id", "")).lower():
+                continue
+            normalized = dict(item)
+            normalized["target_actor_id"] = actor_id
+            normalized["target_character_id"] = str(getattr(target, "character_id", "") or character_id)
+            seen.add(actor_id)
+            filtered.append(normalized)
+            if len(filtered) >= 2:
+                break
+        data["next_turns"] = filtered
+        return data
+
+    @staticmethod
     def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
-        """Build the result dict for task_update, optionally including structured segments."""
+        """Build a task result whose protocol matches the actual payload."""
+        has_v3_payload = isinstance(structured_data, dict) and (
+            "segments" in structured_data or "next_turns" in structured_data
+        )
+        has_legacy_targets = bool(targets) or bool(
+            isinstance(structured_data, dict) and (
+                structured_data.get("target") or structured_data.get("targets")
+            )
+        )
+        protocol_version = RESPONSE_PROTOCOL_VERSION if has_v3_payload else (2 if has_legacy_targets else 1)
         result = {
-            "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
+            "response_protocol_version": protocol_version,
             "response": response_text,
             "target": target,
             "targets": targets or [],

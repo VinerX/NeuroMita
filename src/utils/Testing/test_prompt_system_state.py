@@ -13,7 +13,7 @@ from controllers.prompt_controller import PromptController
 from handlers.llm_providers.message_preprocessor import _convert_event_content_to_user
 from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
-from services.contracts import PromptBuildRequest
+from services.contracts import parse_dialogue_turn_context, PromptBuildRequest
 
 
 class PromptSystemStateTests(unittest.TestCase):
@@ -23,6 +23,25 @@ class PromptSystemStateTests(unittest.TestCase):
 
         def get_variable(self, _name, default=None):
             return default
+
+    def test_dialogue_context_parser_keeps_auto_turn_state(self):
+        context = parse_dialogue_turn_context({
+            "conversation_id": "conv-1",
+            "auto_dialogue_enabled": True,
+            "auto_turns_since_player": 2,
+            "max_auto_turns": 6,
+            "spoken_actor_ids": ["actor-kind"],
+            "participants": [{
+                "actor_id": "actor-crazy",
+                "character_id": "Crazy",
+                "can_speak": True,
+                "can_hear_speaker": True,
+            }],
+        })
+        self.assertEqual(context.auto_turns_since_player, 2)
+        self.assertEqual(context.max_auto_turns, 6)
+        self.assertEqual(context.spoken_actor_ids, ["actor-kind"])
+        self.assertEqual(context.participants[0].actor_id, "actor-crazy")
 
     def _build_dialogue_prompt(self, enabled):
         controller = PromptController()
