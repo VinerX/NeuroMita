@@ -821,11 +821,11 @@ class PromptController(PromptBuilderService):
                     "After this reply, do not wait for a new Player message. If a present participant has a concrete reason to answer and the auto-turn budget remains, return next_turns with the chosen participant's exact actor_id.",
                     "Return at most two next_turns, normally the single best next speaker. Each input_text is a short factual cue for that speaker, not their answer.",
                     "The next_turns JSON shape is [{target_actor_id, target_character_id, input_text, reason, delay_ms}]. target_actor_id must be copied exactly from one eligible participant below.",
-                    "Use an empty next_turns list only when the conversation should naturally stop, no eligible participant remains, or max_auto_turns has been reached.",
+                    "When auto_dialogue_enabled is false or max_auto_turns has been reached, always return an empty next_turns list.",
                 ])
             else:
                 lines.extend([
-                    "AUTOMATIC MITA DIALOGUE IS DISABLED: keep next_turns empty unless the Player explicitly asks the present characters to continue or pass the word.",
+                    "AUTOMATIC MITA DIALOGUE IS DISABLED: always return an empty next_turns list.",
                 ])
 
             for participant in snapshot:

@@ -13,7 +13,7 @@ from controllers.prompt_controller import PromptController
 from handlers.llm_providers.message_preprocessor import _convert_event_content_to_user
 from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
-from services.contracts import parse_dialogue_turn_context, PromptBuildRequest
+from services.contracts import parse_dialogue_turn_context, PromptBuildRequest, dialogue_has_auto_turn_budget
 
 
 class PromptSystemStateTests(unittest.TestCase):
@@ -79,8 +79,23 @@ class PromptSystemStateTests(unittest.TestCase):
     def test_dialogue_context_disables_auto_routing_when_setting_is_false(self):
         content = self._build_dialogue_prompt(False)
         self.assertIn("auto_dialogue_enabled=false", content)
-        self.assertIn("keep next_turns empty", content)
+        self.assertIn("always return an empty next_turns list", content)
         self.assertNotIn("do not wait for a new Player message", content)
+
+    def test_auto_turn_budget_is_enforced_at_python_boundary(self):
+        exhausted = parse_dialogue_turn_context({
+            "auto_dialogue_enabled": True,
+            "auto_turns_since_player": 6,
+            "max_auto_turns": 6,
+        })
+        available = parse_dialogue_turn_context({
+            "auto_dialogue_enabled": True,
+            "auto_turns_since_player": 5,
+            "max_auto_turns": 6,
+        })
+        self.assertFalse(dialogue_has_auto_turn_budget(exhausted))
+        self.assertTrue(dialogue_has_auto_turn_budget(available))
+
     def test_relevant_memories_follow_active_memory(self):
         class _Character:
             char_id = "Test"

@@ -794,7 +794,12 @@ class ChatController:
             data["next_turns"] = []
             return data
 
-        enabled = bool(getattr(dialogue, "auto_dialogue_enabled", False))
+        from services.contracts import dialogue_has_auto_turn_budget
+
+        if not dialogue_has_auto_turn_budget(dialogue):
+            data["next_turns"] = []
+            return data
+
         participants = {
             str(item.actor_id): item
             for item in (getattr(dialogue, "participants", []) or [])
@@ -808,7 +813,7 @@ class ChatController:
                 continue
             actor_id = str(item.get("target_actor_id") or "").strip()
             target = participants.get(actor_id)
-            if not enabled or target is None or actor_id in seen:
+            if target is None or actor_id in seen:
                 continue
             if actor_id == current_responder:
                 continue

@@ -29,6 +29,7 @@ from services.contracts import (
     UtilityGenerationResult,
     SettingsService,
     parse_dialogue_turn_context,
+    dialogue_has_auto_turn_budget,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -1380,9 +1381,14 @@ class ModelController(GenerationService, ModelStateService):
 
         dialogue_context = request.dialogue
         dialogue_participants = list(getattr(dialogue_context, "participants", []) or []) if dialogue_context is not None else []
-        dialogue_enabled = bool(getattr(dialogue_context, "auto_dialogue_enabled", False)) if dialogue_context is not None else False
-        eligible_dialogue_participants = [item for item in dialogue_participants if bool(getattr(item, "can_speak", False)) and bool(getattr(item, "can_hear_speaker", False))]
-        if not dialogue_context or not dialogue_enabled or not eligible_dialogue_participants:
+        current_responder_actor_id = str(getattr(dialogue_context, "responder_actor_id", "") or "")
+        eligible_dialogue_participants = [
+            item for item in dialogue_participants
+            if str(getattr(item, "actor_id", "") or "") != current_responder_actor_id
+            and bool(getattr(item, "can_speak", False))
+            and bool(getattr(item, "can_hear_speaker", False))
+        ]
+        if not dialogue_has_auto_turn_budget(dialogue_context) or not eligible_dialogue_participants:
             effective_capabilities["structured_exclude_fields"] = ("next_turns",)
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
