@@ -1388,9 +1388,17 @@ class ModelController(GenerationService, ModelStateService):
             and bool(getattr(item, "can_speak", False))
             and bool(getattr(item, "can_hear_speaker", False))
         ]
+        excluded_structured_fields = {
+            str(name).strip()
+            for name in (effective_capabilities.get("structured_exclude_fields", ()) or ())
+            if str(name).strip()
+        }
         if dialogue_auto_turns_remaining(dialogue_context) <= 0 or not eligible_dialogue_participants:
-            effective_capabilities["structured_exclude_fields"] = ("next_turns",)
-
+            excluded_structured_fields.add("next_turns")
+        if excluded_structured_fields:
+            effective_capabilities["structured_exclude_fields"] = tuple(
+                sorted(excluded_structured_fields)
+            )
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":

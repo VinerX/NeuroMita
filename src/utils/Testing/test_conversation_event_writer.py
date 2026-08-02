@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from managers.conversation_event_writer import ConversationEventWriter
 
 
@@ -41,3 +43,40 @@ def test_write_turn_fans_out_user_and_assistant_as_one_batch() -> None:
         "Hi",
     ]
     assert {message["turn_id"] for message in character.batches[0]} == {"turn:task-1"}
+
+
+def test_write_turn_separates_source_and_responder_actor_metadata() -> None:
+    character = _Character("Mita")
+    writer = ConversationEventWriter(
+        character_ref_resolver=lambda character_id: character if character_id == "Mita" else None
+    )
+
+    writer.write_turn(
+        responder_character_id="Mita",
+        sender="Crazy",
+        participants=["Crazy", "Mita"],
+        user_input="A question",
+        image_data=[],
+        req_id="request-2",
+        origin_message_id=None,
+        assistant_text="An answer",
+        assistant_target="Crazy",
+        event_type="chat",
+        task_uid="task-2",
+        dialogue=SimpleNamespace(
+            conversation_id="conv-1",
+            epoch=2,
+            turn_index=4,
+            speaker_actor_id="actor-crazy",
+            responder_actor_id="actor-kind",
+            participants=[
+                SimpleNamespace(actor_id="actor-crazy"),
+                SimpleNamespace(actor_id="actor-kind"),
+            ],
+        ),
+    )
+
+    user_event, assistant_event = character.batches[0]
+    assert user_event["speaker_actor_id"] == "actor-crazy"
+    assert assistant_event["speaker_actor_id"] == "actor-kind"
+    assert assistant_event["source_actor_id"] == "actor-crazy"

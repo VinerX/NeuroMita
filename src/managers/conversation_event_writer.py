@@ -337,8 +337,23 @@ class ConversationEventWriter:
 
         if dialogue_metadata:
             if isinstance(user_event, dict):
-                user_event.update(dialogue_metadata)
-            assistant_event.update(dialogue_metadata)
+                user_metadata = dict(dialogue_metadata)
+                user_metadata["speaker_actor_id"] = str(
+                    getattr(dialogue, "speaker_actor_id", "") or ""
+                )
+                user_event.update(user_metadata)
+
+            # The assistant event is authored by the responder. Keep the
+            # triggering actor separately so consumers can distinguish the
+            # source of the turn from the actor whose text was persisted.
+            assistant_metadata = dict(dialogue_metadata)
+            assistant_metadata["source_actor_id"] = str(
+                getattr(dialogue, "speaker_actor_id", "") or ""
+            )
+            assistant_metadata["speaker_actor_id"] = str(
+                getattr(dialogue, "responder_actor_id", "") or ""
+            )
+            assistant_event.update(assistant_metadata)
 
         self._fanout_turn(user_event, assistant_event, pts)
         return str(assistant_event.get("message_id") or "")
