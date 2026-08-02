@@ -29,7 +29,7 @@ from services.contracts import (
     UtilityGenerationResult,
     SettingsService,
     parse_dialogue_turn_context,
-    dialogue_has_auto_turn_budget,
+    dialogue_auto_turns_remaining,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -1388,7 +1388,7 @@ class ModelController(GenerationService, ModelStateService):
             and bool(getattr(item, "can_speak", False))
             and bool(getattr(item, "can_hear_speaker", False))
         ]
-        if not dialogue_has_auto_turn_budget(dialogue_context) or not eligible_dialogue_participants:
+        if dialogue_auto_turns_remaining(dialogue_context) <= 0 or not eligible_dialogue_participants:
             effective_capabilities["structured_exclude_fields"] = ("next_turns",)
 
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
@@ -2157,6 +2157,7 @@ class ModelController(GenerationService, ModelStateService):
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
                 sample_id=sample_id,
+                dialogue=dialogue,
             )
 
         self._store_last_usage(

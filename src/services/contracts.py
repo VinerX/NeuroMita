@@ -480,16 +480,21 @@ class DialogueTurnContext:
     participants: List[DialogueParticipant] = field(default_factory=list)
 
 
-def dialogue_has_auto_turn_budget(dialogue: Optional[DialogueTurnContext]) -> bool:
-    """Return whether Python may emit another automatic NPC follow-up."""
+def dialogue_auto_turns_remaining(dialogue: Optional[DialogueTurnContext]) -> int:
+    """Return the exact number of automatic NPC turns still available."""
     if dialogue is None or not dialogue.auto_dialogue_enabled:
-        return False
+        return 0
     try:
         limit = max(0, int(dialogue.max_auto_turns))
         used = max(0, int(dialogue.auto_turns_since_player))
     except (TypeError, ValueError):
-        return False
-    return limit > 0 and used < limit
+        return 0
+    return max(0, limit - used)
+
+
+def dialogue_has_auto_turn_budget(dialogue: Optional[DialogueTurnContext]) -> bool:
+    """Return whether Python may emit another automatic NPC follow-up."""
+    return dialogue_auto_turns_remaining(dialogue) > 0
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:

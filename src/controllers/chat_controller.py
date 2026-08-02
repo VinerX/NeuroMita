@@ -794,9 +794,10 @@ class ChatController:
             data["next_turns"] = []
             return data
 
-        from services.contracts import dialogue_has_auto_turn_budget
+        from services.contracts import dialogue_auto_turns_remaining
 
-        if not dialogue_has_auto_turn_budget(dialogue):
+        remaining_budget = dialogue_auto_turns_remaining(dialogue)
+        if remaining_budget <= 0:
             data["next_turns"] = []
             return data
 
@@ -829,7 +830,7 @@ class ChatController:
             normalized["target_character_id"] = str(getattr(target, "character_id", "") or character_id)
             seen.add(actor_id)
             filtered.append(normalized)
-            if len(filtered) >= 2:
+            if len(filtered) >= min(2, remaining_budget):
                 break
         data["next_turns"] = filtered
         return data

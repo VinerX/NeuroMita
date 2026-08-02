@@ -13,7 +13,7 @@ from controllers.prompt_controller import PromptController
 from handlers.llm_providers.message_preprocessor import _convert_event_content_to_user
 from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
-from services.contracts import parse_dialogue_turn_context, PromptBuildRequest, dialogue_has_auto_turn_budget
+from services.contracts import parse_dialogue_turn_context, PromptBuildRequest, dialogue_has_auto_turn_budget, dialogue_auto_turns_remaining
 
 
 class PromptSystemStateTests(unittest.TestCase):
@@ -95,6 +95,8 @@ class PromptSystemStateTests(unittest.TestCase):
         })
         self.assertFalse(dialogue_has_auto_turn_budget(exhausted))
         self.assertTrue(dialogue_has_auto_turn_budget(available))
+        self.assertEqual(dialogue_auto_turns_remaining(available), 1)
+        self.assertEqual(dialogue_auto_turns_remaining(exhausted), 0)
 
     def test_relevant_memories_follow_active_memory(self):
         class _Character:
