@@ -253,12 +253,35 @@ class CreateTaskAction:
 
         character_stats = _get_character_stats(character_id)
 
+        dialogue_world_id = (
+            str(dialogue_payload.get("world_id") or "").strip()
+            if isinstance(dialogue_payload, dict)
+            else ""
+        )
+        # New Unity clients send explicit worldPlayer/worldMita fields. The
+        # world_id fallbacks keep Python compatible while Unity is migrated.
+        world_player = str(
+            context.get("worldPlayer")
+            or context.get("world_id")
+            or dialogue_world_id
+            or ""
+        ).strip()
+        world_mita = str(
+            context.get("worldMita")
+            or context.get("world_id")
+            or dialogue_world_id
+            or world_player
+            or ""
+        ).strip()
+
         game_state_payload = {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
             "roomPlayer": int(context.get("roomPlayer", 0)),
             "roomMita": int(context.get("roomMita", 0)),
             "nearObjects": context.get("hierarchy", ""),
             "world_state": context.get("world_state", ""),
+            "worldPlayer": world_player,
+            "worldMita": world_mita,
             "runtime_rules": context.get("runtime_rules", ""),
             "runtime_static_catalog": context.get("runtime_static_catalog", ""),
             "runtime_capabilities": context.get("runtime_capabilities", ""),

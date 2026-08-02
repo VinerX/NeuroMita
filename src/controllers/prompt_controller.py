@@ -664,6 +664,26 @@ class PromptController(PromptBuilderService):
             ),
         }
 
+    @classmethod
+    def _build_character_world_context_message(
+        cls, game_state: Dict[str, Any]
+    ) -> Optional[Dict[str, str]]:
+        """Add lore for this character's world as ephemeral system context."""
+        context = game_state.get("character_world_context", "")
+        if not context or not str(context).strip():
+            return None
+        safe_context = cls._neutralize_world_state_tags(str(context).strip())
+        return {
+            "role": "system",
+            "content": (
+                "[Character World Context]\n"
+                "This is temporary lore about what the current world means to you. "
+                "Use it as background knowledge, not as a dialogue line.\n\n"
+                f"{safe_context}\n"
+                "[/Character World Context]"
+            ),
+        }
+
     def build(self, request: PromptBuildRequest) -> PromptBuildResult:
         character = request.character
         char_id = str(getattr(character, "char_id", "") or "")
@@ -750,6 +770,7 @@ class PromptController(PromptBuilderService):
                 self._build_unity_runtime_capabilities_message(game_state),
                 self._build_unity_world_state_message(game_state),
                 self._build_unity_runtime_events_message(game_state),
+                self._build_character_world_context_message(game_state),
             ) if m]
         messages.extend(stable_system_messages)
 

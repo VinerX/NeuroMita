@@ -41,6 +41,7 @@ from managers.model_pricing_manager import ModelPricingManager, known_model_cont
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
+from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
     parse_structured_response,
     structured_response_to_result_dict,
@@ -1329,6 +1330,21 @@ class ModelController(GenerationService, ModelStateService):
             if request.game_state
             else self.game_state.to_prompt_dict()
         )
+
+        # World lore is character-specific. Resolve it on this request's
+        # private snapshot so concurrent Mita generations cannot leak one
+        # another's interpretation into global GameState or history.
+        character_world = str(
+            game_state.get("worldMita")
+            or game_state.get("worldPlayer")
+            or ""
+        ).strip()
+        character_world_context = get_world_context_text(
+            character_id=char_id,
+            world_id=character_world,
+        )
+        if character_world_context:
+            game_state["character_world_context"] = character_world_context
 
         with self._temporary_system_infos_lock:
             extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))

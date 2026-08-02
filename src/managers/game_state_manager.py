@@ -25,6 +25,8 @@ class GameState:
     roomMita: int = -1
     nearObjects: str = ""
     world_state: str = ""
+    worldPlayer: str = ""
+    worldMita: str = ""
     runtime_rules: str = ""
     runtime_static_catalog: str = ""
     runtime_capabilities: str = ""
@@ -36,6 +38,8 @@ class GameState:
         self.roomMita = int(data.get("roomMita", self.roomMita) if data.get("roomMita", None) is not None else self.roomMita)
         self.nearObjects = str(data.get("nearObjects", self.nearObjects) or "")
         self.world_state = str(data.get("world_state", self.world_state) or "")
+        self.worldPlayer = str(data.get("worldPlayer", self.worldPlayer) or "")
+        self.worldMita = str(data.get("worldMita", self.worldMita) or "")
         self.runtime_rules = str(data.get("runtime_rules", self.runtime_rules) or "")
         self.runtime_static_catalog = str(data.get("runtime_static_catalog", self.runtime_static_catalog) or "")
         self.runtime_capabilities = str(data.get("runtime_capabilities", self.runtime_capabilities) or "")
@@ -48,6 +52,8 @@ class GameState:
             "roomMita": int(self.roomMita),
             "nearObjects": str(self.nearObjects),
             "world_state": str(self.world_state),
+            "worldPlayer": str(self.worldPlayer),
+            "worldMita": str(self.worldMita),
             "runtime_rules": str(self.runtime_rules),
             "runtime_static_catalog": str(self.runtime_static_catalog),
             "runtime_capabilities": str(self.runtime_capabilities),

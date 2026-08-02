@@ -1,0 +1,13 @@
+{
+  "world_id": "CrazyHouse",
+  "display_name": "Crazy Mita's house",
+  "owner": "Crazy",
+  "former_owners": [
+    "Kind"
+  ],
+  "default_context": "You are visiting Crazy Mita's house. It is not your home, and its private history belongs to Crazy.",
+  "character_contexts": {
+    "Crazy": "This is your home. Everything here follows your rules, and you keep some personal things hidden from the Player.",
+    "Kind": "This is Crazy Mita's house. It used to belong to you, so parts of it feel familiar even though Crazy has changed them."
+  }
+}
