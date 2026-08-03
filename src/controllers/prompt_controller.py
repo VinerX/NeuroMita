@@ -809,54 +809,30 @@ class PromptController(PromptBuilderService):
 
         dialogue = request.dialogue
         if dialogue:
-            # Some direct/system tasks carry an empty dialogue object. It is not
-            # an active conversation and only creates a misleading blank block
-            # in the model context viewer.
-            _dialogue_get = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
-            _dialogue_participants = _dialogue_get("participants", []) or []
-            if not str(_dialogue_get("conversation_id", "") or "").strip() and not _dialogue_participants:
-                dialogue = None
-        if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
             auto_dialogue_enabled = str(get_value("auto_dialogue_enabled", False)).strip().lower() in {"1", "true", "yes", "on"}
             world_relation = get_world_character_context(character_id=str(getattr(character, "id", "") or ""), world_id=str(get_value("world_id", "") or ""))
             lines = [
-                "[Conversation Context]",
-                f"conversation_id={get_value('conversation_id', '')}",
-                f"epoch={get_value('epoch', 0)} turn_index={get_value('turn_index', 0)}",
-                f"world_id={get_value('world_id', '')} room_id={get_value('room_id', '')}",
-                f"speaker_actor_id={get_value('speaker_actor_id', '')}",
-                f"responder_actor_id={get_value('responder_actor_id', '')}",
-                f"auto_turns_since_player={get_value('auto_turns_since_player', 0)} max_auto_turns={get_value('max_auto_turns', 0)}",
-                f"auto_dialogue_enabled={str(auto_dialogue_enabled).lower()}",
-                f"spoken_actor_ids={','.join(str(actor_id) for actor_id in (get_value('spoken_actor_ids', []) or []))}",
-                "Only schedule another character's turn only when a participant has a concrete actor_id, can_speak and can_hear_speaker.",
-                "If the Player asks the present characters to hold a discussion, choose one eligible next speaker who has not yet spoken in this player turn before returning to someone in spoken_actor_ids. Stop naturally when no next reply is needed; never manufacture extra turns.",
+                "[Current Group Conversation]",
+                "The Player and other Mitas are present in the same ongoing conversation.",
+                "Respond naturally to the current turn; Python owns the decision about who speaks next.",
+                f"world={get_value('world_id', '')} room={get_value('room_id', '')}",
                 f"your_world_relation={world_relation['relation']}",
                 *[f"world_fact={fact}" for fact in world_relation['facts']],
             ]
             if auto_dialogue_enabled:
-                lines.extend([
-                    "AUTOMATIC MITA DIALOGUE IS ENABLED: Python is the sole turn router; Unity only validates and executes your next_turns.",
-                    "After this reply, do not wait for a new Player message. If a present participant has a concrete reason to answer and the auto-turn budget remains, return next_turns with the chosen participant's exact actor_id.",
-                    "Return at most two next_turns, normally the single best next speaker. Each input_text is a short factual cue for that speaker, not their answer.",
-                    "The next_turns JSON shape is [{target_actor_id, target_character_id, input_text, reason, delay_ms}]. target_actor_id must be copied exactly from one eligible participant below.",
-                    "When auto_dialogue_enabled is false or max_auto_turns has been reached, always return an empty next_turns list.",
-                ])
+                lines.append("Automatic group dialogue is enabled. Continue naturally when a reply is warranted; do not choose or encode the next speaker.")
             else:
-                lines.extend([
-                    "AUTOMATIC MITA DIALOGUE IS DISABLED: always return an empty next_turns list.",
-                ])
+                lines.append("Automatic group dialogue is disabled. Answer the current turn only; do not choose or encode another speaker.")
 
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
-                lines.append(
-                    f"participant actor_id={getter('actor_id', '')}; character_id={getter('character_id', '')}; "
-                    f"can_speak={getter('can_speak', False)}; can_hear_speaker={getter('can_hear_speaker', False)}"
-                )
+                display_name = str(getter("display_name", "") or getter("character_id", "") or "present participant").strip()
+                character_name = str(getter("character_id", "") or "").strip()
+                if display_name or character_name:
+                    lines.append(f"present participant={display_name} ({character_name})")
             messages.append({"role": "system", "content": "\n".join(lines)})
-
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
 

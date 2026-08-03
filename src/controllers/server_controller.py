@@ -126,7 +126,7 @@ class ServerController:
         self._destroyed = False
 
         self.settings_to_send = [
-            'ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'DIALOGUE_MAX_AUTO_TURNS', 'GM_ON', 'GM_REPEAT',
+            'ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'MITA_DIALOGUE_AUTO', 'DIALOGUE_MAX_AUTO_TURNS', 'GM_ON', 'GM_REPEAT',
             'CHARACTER', 'WORLD_HIERARCHY_TREE',
             'BEAT_SYNC_ENABLED', 'BEAT_SYNC_STREAMING', 'BEAT_SYNC_CHUNK_SECONDS',
             'BEAT_SYNC_MIN_CONFIDENCE', 'BEAT_SYNC_AUTO_INSTALL',
@@ -458,7 +458,8 @@ class ServerController:
         except Exception as e:
             logger.warning(f"Failed to describe shared image transfer settings: {e}")
 
-        body = {"settings": settings, "characters_stats": characters_stats}
+        settings["MITA_DIALOGUE_AUTO_LIMIT"] = settings.get("DIALOGUE_MAX_AUTO_TURNS", 6)
+        body = {"settings": settings, "characters_stats": characters_stats, "settings_revision": int(getattr(self.settings, "revision", 0) or 0)}
         if shared_transfer:
             body["shared_image_transfer"] = shared_transfer
         return body

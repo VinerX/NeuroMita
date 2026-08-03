@@ -67,20 +67,21 @@ class PromptSystemStateTests(unittest.TestCase):
                 ],
             },
         ))
-        return next(message["content"] for message in result.messages if "[Conversation Context]" in message.get("content", ""))
+        return next(message["content"] for message in result.messages if "[Current Group Conversation]" in message.get("content", ""))
 
     def test_dialogue_context_delegates_auto_routing_to_python(self):
         content = self._build_dialogue_prompt(True)
-        self.assertIn("auto_dialogue_enabled=true", content)
-        self.assertIn("Python is the sole turn router", content)
-        self.assertIn("exact actor_id", content)
-        self.assertIn("actor-crazy-1", content)
+        self.assertIn("Automatic group dialogue is enabled", content)
+        self.assertIn("Python owns the decision about who speaks next", content)
+
+        self.assertNotIn("conversation_id=", content)
+        self.assertNotIn("next_turns", content)
 
     def test_dialogue_context_disables_auto_routing_when_setting_is_false(self):
         content = self._build_dialogue_prompt(False)
-        self.assertIn("auto_dialogue_enabled=false", content)
-        self.assertIn("always return an empty next_turns list", content)
-        self.assertNotIn("do not wait for a new Player message", content)
+        self.assertIn("Automatic group dialogue is disabled", content)
+        self.assertIn("do not choose or encode another speaker", content)
+        self.assertNotIn("next_turns", content)
 
     def test_auto_turn_budget_is_enforced_at_python_boundary(self):
         exhausted = parse_dialogue_turn_context({

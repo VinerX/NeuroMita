@@ -126,36 +126,22 @@ class IntentsPassthroughTests(unittest.TestCase):
 
 
 class NextTurnProtocolTests(unittest.TestCase):
-    def test_next_turns_round_trip_and_deduplicate(self) -> None:
+    def test_next_turns_are_not_part_of_the_llm_payload(self) -> None:
         response = StructuredResponse.model_validate({
-            "segments": [{"text": "Продолжим."}],
-            "next_turns": [
-                {
-                    "target_actor_id": "actor-crazy-1",
-                    "target_character_id": "Crazy",
-                    "input_text": "Kind asked why you are here.",
-                    "reason": "direct_question",
-                    "delay_ms": 650,
-                },
-                {
-                    "target_actor_id": "actor-crazy-1",
-                    "target_character_id": "Crazy",
-                    "input_text": "Duplicate must be removed.",
-                    "reason": "duplicate",
-                    "delay_ms": 650,
-                },
-            ],
+            "segments": [{"text": "?????????."}],
+            # Unknown legacy routing data is ignored by the LLM schema.
+            "next_turns": [{"target_actor_id": "actor-crazy-1"}],
         })
         result = structured_response_to_result_dict(response)
-        self.assertEqual(result["response_protocol_version"], RESPONSE_PROTOCOL_VERSION)
-        self.assertEqual(len(result["next_turns"]), 1)
-        self.assertEqual(result["next_turns"][0]["target_actor_id"], "actor-crazy-1")
+        self.assertNotIn("next_turns", result)
+        self.assertEqual(result["segments"][0]["text"], "?????????.")
 
-    def test_next_turns_are_visible_in_provider_schemas(self) -> None:
+    def test_next_turns_are_hidden_from_provider_schemas(self) -> None:
         openai = StructuredResponse.openai_response_format()
-        self.assertIn("next_turns", openai["json_schema"]["schema"]["properties"])
+        self.assertNotIn("next_turns", openai["json_schema"]["schema"]["properties"])
         gemini = StructuredResponse.gemini_schema_dict()
-        self.assertIn("next_turns", gemini["properties"])
+        self.assertNotIn("next_turns", gemini["properties"])
+
 class ProtocolVersionTests(unittest.TestCase):
     def test_protocol_version_stamped(self) -> None:
         response = parse_structured_response(json.dumps({"segments": [{"text": "hi"}]}))

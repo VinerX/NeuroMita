@@ -24,6 +24,11 @@ from core.request_policy import RequestPolicy
 class SettingsService(ABC):
     """Единственный источник значений настроек."""
 
+    @property
+    def revision(self) -> int:
+        """Monotonic settings revision used by runtime mirrors."""
+        return 0
+
     @abstractmethod
     def get(self, key: str, default: Any = None) -> Any: ...
 
@@ -457,6 +462,7 @@ class DialogueParticipant:
     can_hear_player: bool = True
     can_hear_speaker: bool = True
     can_speak: bool = True
+    is_active: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +484,14 @@ class DialogueTurnContext:
     room_id: str = ""
 
     participants: List[DialogueParticipant] = field(default_factory=list)
+
+    # Client values are diagnostic mirrors only. Python routing uses the
+    # authoritative SettingsService values.
+    client_auto_dialogue_enabled: Optional[bool] = None
+    client_auto_turn_limit: Optional[int] = None
+    client_settings_revision: Optional[int] = None
+    client_gm_enabled: Optional[bool] = None
+    client_gm_repeat: Optional[int] = None
 
 
 def dialogue_auto_turns_remaining(dialogue: Optional[DialogueTurnContext]) -> int:
@@ -536,6 +550,7 @@ def parse_dialogue_turn_context(raw: object) -> Optional[DialogueTurnContext]:
                     can_hear_player=_coerce_bool(item.get("can_hear_player"), True),
                     can_hear_speaker=_coerce_bool(item.get("can_hear_speaker"), True),
                     can_speak=_coerce_bool(item.get("can_speak"), True),
+                    is_active=_coerce_bool(item.get("is_active"), True),
                 )
             except (TypeError, ValueError):
                 continue
@@ -558,6 +573,31 @@ def parse_dialogue_turn_context(raw: object) -> Optional[DialogueTurnContext]:
         world_id=str(raw.get("world_id") or "").strip(),
         room_id=str(raw.get("room_id") or "").strip(),
         participants=participants,
+        client_auto_dialogue_enabled=(
+            _coerce_bool(raw.get("client_auto_dialogue_enabled"))
+            if raw.get("client_auto_dialogue_enabled") is not None
+            else None
+        ),
+        client_auto_turn_limit=(
+            _int("client_auto_turn_limit")
+            if raw.get("client_auto_turn_limit") is not None
+            else None
+        ),
+        client_settings_revision=(
+            _int("client_settings_revision")
+            if raw.get("client_settings_revision") is not None
+            else None
+        ),
+        client_gm_enabled=(
+            _coerce_bool(raw.get("client_gm_enabled"))
+            if raw.get("client_gm_enabled") is not None
+            else None
+        ),
+        client_gm_repeat=(
+            _int("client_gm_repeat")
+            if raw.get("client_gm_repeat") is not None
+            else None
+        ),
     )
 
 

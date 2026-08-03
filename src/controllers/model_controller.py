@@ -29,7 +29,6 @@ from services.contracts import (
     UtilityGenerationResult,
     SettingsService,
     parse_dialogue_turn_context,
-    dialogue_auto_turns_remaining,
 )
 
 from managers.api_preset_resolver import ApiPresetResolver
@@ -1395,26 +1394,6 @@ class ModelController(GenerationService, ModelStateService):
         if remote_only_segment_fields:
             effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
-        dialogue_context = request.dialogue
-        dialogue_participants = list(getattr(dialogue_context, "participants", []) or []) if dialogue_context is not None else []
-        current_responder_actor_id = str(getattr(dialogue_context, "responder_actor_id", "") or "")
-        eligible_dialogue_participants = [
-            item for item in dialogue_participants
-            if str(getattr(item, "actor_id", "") or "") != current_responder_actor_id
-            and bool(getattr(item, "can_speak", False))
-            and bool(getattr(item, "can_hear_speaker", False))
-        ]
-        excluded_structured_fields = {
-            str(name).strip()
-            for name in (effective_capabilities.get("structured_exclude_fields", ()) or ())
-            if str(name).strip()
-        }
-        if dialogue_auto_turns_remaining(dialogue_context) <= 0 or not eligible_dialogue_participants:
-            excluded_structured_fields.add("next_turns")
-        if excluded_structured_fields:
-            effective_capabilities["structured_exclude_fields"] = tuple(
-                sorted(excluded_structured_fields)
-            )
         _tools_on = bool(self.settings.get("TOOLS_ON", True))
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":

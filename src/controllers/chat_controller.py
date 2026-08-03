@@ -22,6 +22,7 @@ from services.contracts import (
     parse_dialogue_turn_context,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
+from services.dialogue_turn_router import get_dialogue_turn_router, route_to_transport
 from services.stream_presentation import TextDeltaCoalescer
 from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
 
@@ -195,6 +196,7 @@ class StructuredJsonStreamFilter:
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
+        self.dialogue_router = get_dialogue_turn_router(settings)
         self.event_bus = get_event_bus()
 
         # Генераций может идти несколько (игра + чат + idle), поэтому счётчик,
@@ -497,7 +499,7 @@ class ChatController:
             target = result.target
             targets: list[str] = result.targets
             think_text = result.think
-            structured_data = self._filter_dialogue_next_turns(result.structured, dialogue)
+            structured_data = result.structured
             assistant_message_id = result.message_id
             sample_id = getattr(result, "sample_id", "") or ""
             context_snapshot_id = getattr(result, "context_snapshot_id", "") or ""
@@ -563,7 +565,6 @@ class ChatController:
                             "type": "dialogue.broadcast_system_message",
                             "payload": {"message": explicit_instruction},
                         })
-                    structured_data["next_turns"] = []
                     structured_data["segments"] = [
                         {
                             **segment,
@@ -573,6 +574,17 @@ class ChatController:
                         for segment in structured_data.get("segments", [])
                     ]
 
+            # Python owns the control-plane route. The model contributes only
+            # the current reply and semantic GM intents; Unity executes one
+            # exact route after live scene validation.
+            route = self.dialogue_router.route_after_response(
+                dialogue,
+                structured=structured_data,
+                character_id=str(effective_character_id or ""),
+                event_type=effective_event_type,
+            )
+            transport_route = route_to_transport(route)
+            transport_next_turns = [transport_route] if transport_route else []
             if not response_text:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)
@@ -610,7 +622,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": self._build_task_result(response_text, target, structured_data, targets)
+                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -631,21 +643,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": self._build_task_result(response_text, target, structured_data, targets)
+                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": self._build_task_result(response_text, target, structured_data, targets)
+                            "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": self._build_task_result(response_text, target, structured_data, targets)
+                        "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -779,68 +791,16 @@ class ChatController:
         )
 
     @staticmethod
-    def _filter_dialogue_next_turns(
-        structured_data: dict | None,
-        dialogue: Any,
-    ) -> dict | None:
-        """Keep routing directives inside the live Unity participant contract."""
-        if not isinstance(structured_data, dict):
-            return structured_data
-        data = dict(structured_data)
-        raw_turns = data.get("next_turns")
-        if not isinstance(raw_turns, list):
-            return data
-        if dialogue is None:
-            data["next_turns"] = []
-            return data
-
-        from services.contracts import dialogue_auto_turns_remaining
-
-        remaining_budget = dialogue_auto_turns_remaining(dialogue)
-        if remaining_budget <= 0:
-            data["next_turns"] = []
-            return data
-
-        participants = {
-            str(item.actor_id): item
-            for item in (getattr(dialogue, "participants", []) or [])
-            if getattr(item, "actor_id", "")
-        }
-        current_responder = str(getattr(dialogue, "responder_actor_id", "") or "")
-        filtered = []
-        seen = set()
-        for item in raw_turns:
-            if not isinstance(item, dict):
-                continue
-            actor_id = str(item.get("target_actor_id") or "").strip()
-            target = participants.get(actor_id)
-            if target is None or actor_id in seen:
-                continue
-            if actor_id == current_responder:
-                continue
-            if not bool(getattr(target, "can_speak", False)) or not bool(getattr(target, "can_hear_speaker", False)):
-                continue
-            if not str(item.get("input_text") or "").strip():
-                continue
-            character_id = str(item.get("target_character_id") or "").strip()
-            if character_id and character_id.lower() != str(getattr(target, "character_id", "")).lower():
-                continue
-            normalized = dict(item)
-            normalized["target_actor_id"] = actor_id
-            normalized["target_character_id"] = str(getattr(target, "character_id", "") or character_id)
-            seen.add(actor_id)
-            filtered.append(normalized)
-            if len(filtered) >= min(2, remaining_budget):
-                break
-        data["next_turns"] = filtered
-        return data
-
-    @staticmethod
-    def _build_task_result(response_text: str, target: str, structured_data: dict | None = None, targets: list[str] | None = None) -> dict:
-        """Build a task result whose protocol matches the actual payload."""
-        has_v3_payload = isinstance(structured_data, dict) and (
-            "segments" in structured_data or "next_turns" in structured_data
-        )
+    def _build_task_result(
+        response_text: str,
+        target: str,
+        structured_data: dict | None = None,
+        targets: list[str] | None = None,
+        *,
+        transport_next_turns: list[dict] | None = None,
+    ) -> dict:
+        """Build a task result with Python-owned transport routing."""
+        has_v3_payload = isinstance(structured_data, dict) and "segments" in structured_data
         has_legacy_targets = bool(targets) or bool(
             isinstance(structured_data, dict) and (
                 structured_data.get("target") or structured_data.get("targets")
@@ -862,7 +822,7 @@ class ChatController:
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
             result["memory_merge"] = structured_data.get("memory_merge", [])
-            result["next_turns"] = structured_data.get("next_turns", [])
+            result["next_turns"] = list(transport_next_turns or [])
         return result
 
     def _on_get_llm_processing_status(self, event: Event):

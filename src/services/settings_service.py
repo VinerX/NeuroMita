@@ -16,6 +16,14 @@ class SettingsManagerService(SettingsService):
         """Сырой SettingsManager. Нужен коду, который ещё принимает его в конструктор."""
         return self._settings
 
+    @property
+    def revision(self) -> int:
+        registry = getattr(self._settings, "registry", None)
+        try:
+            return int(getattr(registry, "revision", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def get(self, key: str, default: Any = None) -> Any:
         return self._settings.get(key, default)
 
