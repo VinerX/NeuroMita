@@ -800,7 +800,8 @@ class ChatController:
         transport_next_turns: list[dict] | None = None,
     ) -> dict:
         """Build a task result with Python-owned transport routing."""
-        has_v3_payload = isinstance(structured_data, dict) and "segments" in structured_data
+        segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
+        has_v3_payload = isinstance(segments, list) and bool(segments)
         has_legacy_targets = bool(targets) or bool(
             isinstance(structured_data, dict) and (
                 structured_data.get("target") or structured_data.get("targets")

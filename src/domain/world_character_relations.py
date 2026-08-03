@@ -19,6 +19,27 @@ _WORLD_ID_ALIASES = {
     "ghosthouse": "GhostHouse",
 }
 
+_CHARACTER_ID_ALIASES = {
+    "crazy": "Crazy",
+    "crazymita": "Crazy",
+    "crazy_mita": "Crazy",
+    "kind": "Kind",
+    "kindmita": "Kind",
+    "kind_mita": "Kind",
+    "cappie": "Cappie",
+    "cappy": "Cappie",
+    "shorthair": "ShortHair",
+    "short_hair": "ShortHair",
+    "short_hair_mita": "ShortHair",
+    "mila": "Mila",
+    "sleepy": "Sleepy",
+    "sleepy_mita": "Sleepy",
+    "creepy": "Creepy",
+    "creepy_mita": "Creepy",
+    "ghost": "Ghost",
+    "ghost_mita": "Ghost",
+}
+
 # Stable runtime character IDs. Unknown IDs are still accepted and receive a
 # world's visitor context, which keeps custom characters safe by default.
 KNOWN_CHARACTER_IDS = (
@@ -43,12 +64,14 @@ def normalize_character_id(character_id: Any) -> str:
     raw = str(character_id or "").strip()
     if not raw:
         return ""
+    alias = _CHARACTER_ID_ALIASES.get(_compact_key(raw))
+    if alias:
+        return alias
     for known_id in KNOWN_CHARACTER_IDS:
         if known_id.casefold() == raw.casefold():
             return known_id
-    if raw.casefold() == "cappy":
-        return "Cappie"
     return raw
+
 
 
 @dataclass(frozen=True)

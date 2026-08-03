@@ -14,6 +14,7 @@ from services.dialogue_turn_router import (
     DialogueTurnRouter,
     ROUTE_GAME_MASTER,
     ROUTE_GAME_MASTER_DIRECTIVE,
+    ROUTE_CONTINUE,
     ROUTE_MITA_FOLLOW_UP,
 )
 
@@ -149,6 +150,66 @@ class DialogueTurnRouterTests(unittest.TestCase):
         context = _context(current="actor-crazy")
         self.assertTrue(router.authorize_continue(context, character_id="Crazy"))
         self.assertFalse(router.authorize_continue(context, character_id="Crazy"))
+    def test_continue_intent_routes_only_current_responder(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=1))
+        context = _context(current="actor-crazy")
+        route = router.route_after_response(
+            context,
+            structured={"segments": [{"text": "more", "intents": [{"type": "dialogue.continue", "payload": {}}]}]},
+            character_id="Crazy",
+            event_type="answer",
+        )
+        self.assertEqual(route.route_kind, ROUTE_CONTINUE)
+        self.assertEqual(route.event_type, "continue")
+        self.assertEqual(route.target_actor_id, "actor-crazy")
+        self.assertTrue(route.continue_route_reserved)
+        self.assertTrue(router.consume_continue_reservation(context, character_id="Crazy"))
+        self.assertFalse(router.consume_continue_reservation(context, character_id="Crazy"))
+
+    def test_continue_event_does_not_fall_through_to_round_robin(self):
+        router = DialogueTurnRouter(_Settings())
+        self.assertIsNone(router.route_after_response(
+            _context(current="actor-crazy"),
+            structured={"segments": [{"text": "continued"}]},
+            character_id="Crazy",
+            event_type="continue",
+        ))
+
+    def test_game_master_without_target_resumes_round_robin(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True, GM_REPEAT=2))
+        router.route_after_response(
+            _context(current="actor-crazy"),
+            structured={"segments": [{"text": "one"}]},
+            character_id="Crazy",
+            event_type="answer",
+        )
+        second_context = _context(current="actor-kind", spoken=["actor-crazy"])
+        second_context["speaker_actor_id"] = "actor-crazy"
+        second = router.route_after_response(
+            second_context,
+            structured={"segments": [{"text": "two"}]},
+            character_id="Kind",
+            event_type="answer",
+        )
+        self.assertEqual(second.route_kind, ROUTE_GAME_MASTER)
+        gm_context = _context(current="", spoken=["actor-crazy", "actor-kind"])
+        resumed = router.route_after_response(
+            gm_context,
+            structured={"segments": [{"text": "No explicit target."}]},
+            character_id="GameMaster",
+            event_type="game_master_observe",
+        )
+        self.assertEqual(resumed.target_actor_id, "actor-cappie")
+
+    def test_game_master_target_accepts_character_alias(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True))
+        route = router.route_after_response(
+            _context(current="actor-kind"),
+            structured={"segments": [{"intents": [{"type": "dialogue.send_system_message", "payload": {"character": "crazy_mita", "message": "Answer."}}]}]},
+            character_id="GameMaster",
+            event_type="game_master_observe",
+        )
+        self.assertEqual(route.target_actor_id, "actor-crazy")
 
 
 if __name__ == "__main__":

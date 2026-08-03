@@ -214,16 +214,6 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
             'default': 6,
             'validation': getattr(self, 'validate_positive_integer_or_zero', None),
             'tooltip': _('0 отключает автоходы. Значение задаёт максимум реплик Мит после ответа первой адресованной Миты; по умолчанию 6.', '0 disables auto-turns. The value sets the maximum Mita replies after the first addressed Mita answers; default is 6.'),
-        },        {
-            'label': _('Лимит разговоров NPC %', 'Limit NPC conversation'),
-            'key': 'CC_Limit_mod',
-            'type': 'entry',
-            'default': 100,
-            'tooltip': _(
-                'Насколько может отклоняться длина диалога NPC без участия игрока',
-                'How long NPC can talk ignoring player',
-            ),
-            'depends_on': 'MITA_DIALOGUE_AUTO',
         },
         {
             'label': _('ГеймМастер — экспериментальная функция', 'GameMaster is experimental feature'),

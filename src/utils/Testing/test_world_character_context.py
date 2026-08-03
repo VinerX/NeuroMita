@@ -16,6 +16,7 @@ from domain.world_character_relations import (
     get_world_character_context,
     get_world_context_text,
     load_world_contexts,
+    normalize_character_id,
     normalize_world_id,
 )
 from managers.game_state_manager import GameState
@@ -35,6 +36,10 @@ class WorldCharacterContextTests(unittest.TestCase):
         self.assertIn("keep some personal things hidden", crazy)
         self.assertIn("used to belong to you", kind)
         self.assertNotEqual(crazy, kind)
+
+    def test_character_aliases_resolve_to_canonical_home_context(self):
+        self.assertEqual(normalize_character_id("crazy_mita"), "Crazy")
+        self.assertEqual(get_world_character_context("crazy_mita", "CrazyHouse")["relation"], "home")
 
     def test_unknown_world_is_safe_and_does_not_invent_lore(self):
         self.assertEqual(get_world_context_text("Crazy", "UnknownWorld"), "")

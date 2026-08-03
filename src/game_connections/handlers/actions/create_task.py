@@ -320,7 +320,13 @@ class CreateTaskAction:
         # counter: the same conversation router owns its central limit.
         if event_type == "continue":
             router = get_dialogue_turn_router(use(SettingsService))
-            if not router.authorize_continue(dialogue_payload, character_id=character_id):
+            route_reserved = bool(data.get("continue_route_reserved", False))
+            authorized = (
+                router.consume_continue_reservation(dialogue_payload, character_id=character_id)
+                if route_reserved
+                else router.authorize_continue(dialogue_payload, character_id=character_id)
+            )
+            if not authorized:
                 await server._send_aborted_update(
                     ctx.client_id,
                     event_type,

@@ -71,16 +71,17 @@ class PromptSystemStateTests(unittest.TestCase):
 
     def test_dialogue_context_delegates_auto_routing_to_python(self):
         content = self._build_dialogue_prompt(True)
-        self.assertIn("Automatic group dialogue is enabled", content)
+        self.assertNotIn("Automatic group dialogue is enabled", content)
+        self.assertNotIn("Automatic group dialogue is disabled", content)
         self.assertIn("Python owns the decision about who speaks next", content)
 
         self.assertNotIn("conversation_id=", content)
         self.assertNotIn("next_turns", content)
 
-    def test_dialogue_context_disables_auto_routing_when_setting_is_false(self):
+    def test_dialogue_context_does_not_expose_client_auto_flag(self):
         content = self._build_dialogue_prompt(False)
-        self.assertIn("Automatic group dialogue is disabled", content)
-        self.assertIn("do not choose or encode another speaker", content)
+        self.assertNotIn("Automatic group dialogue is disabled", content)
+        self.assertNotIn("Automatic group dialogue is enabled", content)
         self.assertNotIn("next_turns", content)
 
     def test_auto_turn_budget_is_enforced_at_python_boundary(self):

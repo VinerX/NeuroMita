@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -20,6 +21,7 @@ from services.contracts import (
     dialogue_auto_turns_remaining,
     parse_dialogue_turn_context,
 )
+from domain.world_character_relations import normalize_character_id
 
 
 ROUTE_MITA_FOLLOW_UP = "mita_follow_up"
@@ -42,6 +44,7 @@ class RoutedDialogueRoute:
     delay_ms: int = 650
     conversation_id: str = ""
     epoch: int = 0
+    continue_route_reserved: bool = False
 
 
 @dataclass(slots=True)
@@ -49,6 +52,10 @@ class _ConversationRouterState:
     epoch: int = 0
     mita_responses_since_gm: int = 0
     consecutive_continues: int = 0
+    resume_after_actor_id: str = ""
+    latest_speaker_actor_id: str = ""
+    last_used_at: float = 0.0
+    reserved_continues: int = 0
 
 
 class DialogueTurnRouter:
@@ -68,6 +75,7 @@ class DialogueTurnRouter:
         self._settings = settings
         self._lock = threading.RLock()
         self._states: dict[str, _ConversationRouterState] = {}
+        self._max_states = 256
 
     def _get_setting(self, key: str, default: Any = None) -> Any:
         settings = self._settings
@@ -287,6 +295,11 @@ class DialogueTurnRouter:
         if state is None or state.epoch != epoch:
             state = _ConversationRouterState(epoch=epoch)
             self._states[conversation_id] = state
+        state.last_used_at = time.monotonic()
+        if len(self._states) > self._max_states:
+            oldest_id = min(self._states, key=lambda item: self._states[item].last_used_at)
+            if oldest_id != conversation_id:
+                self._states.pop(oldest_id, None)
         return state
 
     @staticmethod
@@ -294,13 +307,33 @@ class DialogueTurnRouter:
         dialogue: DialogueTurnContext,
         character_id: str,
     ) -> DialogueParticipant | None:
-        wanted = str(character_id or "").strip().casefold()
+        wanted = normalize_character_id(character_id).casefold()
         if not wanted or wanted == "gamemaster":
             return None
         for participant in dialogue.participants:
-            if str(participant.character_id or "").strip().casefold() == wanted:
+            if normalize_character_id(participant.character_id).casefold() == wanted:
                 return participant
         return None
+
+    @staticmethod
+    def _requests_continue(structured: dict[str, Any]) -> tuple[bool, str]:
+        """Read explicit continuation without selecting a new actor."""
+        for segment in structured.get("segments", []) or []:
+            if not isinstance(segment, dict):
+                continue
+            for intent in segment.get("intents", []) or []:
+                if not isinstance(intent, dict):
+                    continue
+                if str(intent.get("type") or "").strip().casefold() != "dialogue.continue":
+                    continue
+                payload = intent.get("payload")
+                payload = payload if isinstance(payload, dict) else {}
+                return True, str(
+                    payload.get("message")
+                    or payload.get("instruction")
+                    or "Continue your current thought naturally."
+                ).strip()
+        return False, ""
 
     def _extract_gm_control(
         self,
@@ -345,6 +378,7 @@ class DialogueTurnRouter:
         self,
         context: DialogueTurnContext,
         structured: dict[str, Any],
+        state: _ConversationRouterState,
     ) -> Optional[RoutedDialogueRoute]:
         target_character, target = self._extract_gm_control(structured, context)
         if target_character == "stop":
@@ -377,8 +411,15 @@ class DialogueTurnRouter:
                     epoch=max(0, int(context.epoch)),
                 )
 
+        resume_actor_id = state.resume_after_actor_id or context.responder_actor_id
+        if not resume_actor_id:
+            return None
         return self._select_from_context(
-            context,
+            replace(
+                context,
+                speaker_actor_id="GameMaster",
+                responder_actor_id=resume_actor_id,
+            ),
             reason="python_round_robin_after_game_master",
             input_text="Continue the current conversation after the GameMaster directive.",
         )
@@ -404,16 +445,46 @@ class DialogueTurnRouter:
 
         with self._lock:
             state = self._state_for(context.conversation_id, int(context.epoch))
+            state.latest_speaker_actor_id = context.responder_actor_id or context.speaker_actor_id
+            requested_continue, continue_instruction = self._requests_continue(structured or {})
             if context.speaker_actor_id.casefold() == "player":
                 state.mita_responses_since_gm = 0
+                if not requested_continue:
+                    state.consecutive_continues = 0
+            elif event != "continue" and not requested_continue:
                 state.consecutive_continues = 0
-            elif event != "continue":
-                state.consecutive_continues = 0
+
+            if requested_continue and not is_game_master:
+                current = next((item for item in context.participants if item.actor_id == context.responder_actor_id), None)
+                if current is None or not current.can_speak:
+                    return None
+                limit = self._server_settings()["continue_limit"]
+                if limit <= 0 or state.consecutive_continues >= limit:
+                    logger.warning(
+                        "[DialogueRouter] Continue rejected for %s: central continuation limit reached.",
+                        context.conversation_id,
+                    )
+                    return None
+                state.consecutive_continues += 1
+                state.reserved_continues += 1
+                return RoutedDialogueRoute(
+                    route_kind=ROUTE_CONTINUE,
+                    event_type="continue",
+                    target_actor_id=context.responder_actor_id,
+                    target_character_id=current.character_id,
+                    input_text=continue_instruction,
+                    reason="dialogue_continue_intent",
+                    conversation_id=context.conversation_id,
+                    epoch=max(0, int(context.epoch)),
+                    continue_route_reserved=True,
+                )
 
             if is_game_master:
-                return self._route_after_game_master(context, structured or {})
+                return self._route_after_game_master(context, structured or {}, state)
 
             if event not in {"answer", "chat", "continue"}:
+                return None
+            if event == "continue":
                 return None
 
             settings = self._server_settings()
@@ -423,6 +494,8 @@ class DialogueTurnRouter:
                 state.mita_responses_since_gm += 1
                 if state.mita_responses_since_gm >= settings["gm_repeat"]:
                     state.mita_responses_since_gm = 0
+                    state.resume_after_actor_id = context.responder_actor_id
+                    state.latest_speaker_actor_id = context.responder_actor_id
                     return RoutedDialogueRoute(
                         route_kind=ROUTE_GAME_MASTER,
                         event_type="game_master_observe",
@@ -475,6 +548,29 @@ class DialogueTurnRouter:
             state.consecutive_continues += 1
             return True
 
+    def consume_continue_reservation(
+        self,
+        dialogue: DialogueTurnContext | dict[str, Any] | None,
+        *,
+        character_id: str,
+    ) -> bool:
+        """Consume one reservation emitted with a Python ``continue`` route."""
+        context = self.authoritative_context(dialogue)
+        if context is None or not context.conversation_id or not context.responder_actor_id:
+            return False
+        current = next(
+            (item for item in context.participants if item.actor_id == context.responder_actor_id),
+            None,
+        )
+        if current is None or normalize_character_id(current.character_id).casefold() != normalize_character_id(character_id).casefold():
+            return False
+        with self._lock:
+            state = self._state_for(context.conversation_id, int(context.epoch))
+            if state.reserved_continues <= 0:
+                return False
+            state.reserved_continues -= 1
+            return True
+
     def reset_conversation(self, conversation_id: str) -> None:
         with self._lock:
             self._states.pop(str(conversation_id or ""), None)
@@ -493,6 +589,7 @@ def route_to_transport(route: RoutedDialogueRoute | None) -> dict[str, Any] | No
         "delay_ms": max(0, min(5000, int(route.delay_ms))),
         "conversation_id": route.conversation_id,
         "epoch": max(0, int(route.epoch)),
+        "continue_route_reserved": bool(route.continue_route_reserved),
     }
 
 

@@ -811,7 +811,6 @@ class PromptController(PromptBuilderService):
         if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
-            auto_dialogue_enabled = str(get_value("auto_dialogue_enabled", False)).strip().lower() in {"1", "true", "yes", "on"}
             world_relation = get_world_character_context(character_id=str(getattr(character, "id", "") or ""), world_id=str(get_value("world_id", "") or ""))
             lines = [
                 "[Current Group Conversation]",
@@ -821,10 +820,6 @@ class PromptController(PromptBuilderService):
                 f"your_world_relation={world_relation['relation']}",
                 *[f"world_fact={fact}" for fact in world_relation['facts']],
             ]
-            if auto_dialogue_enabled:
-                lines.append("Automatic group dialogue is enabled. Continue naturally when a reply is warranted; do not choose or encode the next speaker.")
-            else:
-                lines.append("Automatic group dialogue is disabled. Answer the current turn only; do not choose or encode another speaker.")
 
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
@@ -837,7 +832,7 @@ class PromptController(PromptBuilderService):
             messages.append({"role": "system", "content": game_state_prompt_content})
 
         non_player_participants = [p for p in participants if p and p != "Player"]
-        if len(non_player_participants) >= 2:
+        if dialogue is None and len(non_player_participants) >= 2:
             sys_txt = self._load_participants_system(character, non_player_participants, sender)
             if sys_txt:
                 messages.append({"role": "system", "content": sys_txt})
