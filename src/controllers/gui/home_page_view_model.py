@@ -805,7 +805,13 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 eta_text = ""
                 if smoothed_speed > 0 and total > downloaded:
                     eta_seconds = int((total - downloaded) / smoothed_speed)
-                    eta_text = _(" · ~{seconds} с", " · ~{seconds}s").format(seconds=max(1, eta_seconds))
+                    eta_seconds = max(1, eta_seconds)
+                    if eta_seconds < 60:
+                        eta_text = _(" · ~{seconds} с", " · ~{seconds}s").format(seconds=eta_seconds)
+                    elif eta_seconds < 3600:
+                        eta_text = _(" · ~{minutes} мин", " · ~{minutes} min").format(minutes=eta_seconds // 60)
+                    else:
+                        eta_text = _(" · ~{hours:.1f} ч", " · ~{hours:.1f} h").format(hours=eta_seconds / 3600.0)
                 text = _(
                     "Загрузка{item} · {pct}%{speed}{eta}",
                     "Downloading{item} · {pct}%{speed}{eta}",
