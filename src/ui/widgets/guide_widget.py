@@ -134,6 +134,28 @@ class GuideWidget(QWidget):
                 color: {muted};
                 background-color: transparent;
             }
+            #DescriptionFrame {
+                background-color: rgba({sidebar_panel_rgb}, 0.52);
+                border: 1px solid {outline};
+                border-radius: 12px;
+            }
+            #DescriptionFrame QScrollBar:vertical,
+            #ImageFrame QScrollBar:vertical {
+                width: 10px;
+                margin: 4px;
+            }
+            #DescriptionFrame QScrollBar::handle:vertical,
+            #ImageFrame QScrollBar::handle:vertical {
+                background-color: {accent};
+                border-radius: 5px;
+                min-height: 24px;
+            }
+            #DescriptionFrame QScrollBar::add-line:vertical,
+            #DescriptionFrame QScrollBar::sub-line:vertical,
+            #ImageFrame QScrollBar::add-line:vertical,
+            #ImageFrame QScrollBar::sub-line:vertical {
+                height: 0;
+            }
             QRadioButton {
                 background-color: {chip_bg};
                 color: {text};
@@ -247,32 +269,40 @@ class GuideWidget(QWidget):
         container_layout.addLayout(header_layout)
 
         # Прокручиваемая область для картинки
+        # Keep image and description in independent viewports so long screenshots
+        # do not force the text into an unreadable strip.
         self.image_scroll = QScrollArea()
-        self.image_scroll.setObjectName("ImageFrame")          # чтобы стили работали
+        self.image_scroll.setObjectName("ImageFrame")
         self.image_scroll.setWidgetResizable(True)
-        self.image_scroll.setMinimumHeight(120)
-        self.image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_scroll.setMinimumHeight(210)
+        self.image_scroll.setMaximumHeight(350)
+        self.image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.image_scroll.setStyleSheet("QScrollArea { border: none; }")
-        self.image_scroll.setSizePolicy(
-            self.image_scroll.sizePolicy().horizontalPolicy(),
-            QSizePolicy.Expanding
-        )
+        self.image_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.image_label = QLabel()
         self.image_label.setObjectName("ImageLabel")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        # self.image_label.setMinimumWidth(200)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         self.image_scroll.setWidget(self.image_label)
+        container_layout.addWidget(self.image_scroll, 3)
 
-        container_layout.addWidget(self.image_scroll, 1)
+        self.description_scroll = QScrollArea()
+        self.description_scroll.setObjectName("DescriptionFrame")
+        self.description_scroll.setWidgetResizable(True)
+        self.description_scroll.setMinimumHeight(145)
+        self.description_scroll.setMaximumHeight(270)
+        self.description_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.description_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.description_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.description_label = QLabel("")
         self.description_label.setObjectName("GuideDescription")
         self.description_label.setWordWrap(True)
-        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.description_label.setTextFormat(Qt.TextFormat.RichText)
-        container_layout.addWidget(self.description_label)
+        self.description_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.description_scroll.setWidget(self.description_label)
+        container_layout.addWidget(self.description_scroll, 2)
 
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(15)
@@ -435,7 +465,7 @@ class GuideWidget(QWidget):
         if not filename:
             no_image_text = "Изображение не загружено" if self.current_language == "ru" else "Image not loaded"
             self.image_label.setText(no_image_text)
-            self.image_frame.setFixedHeight(120)
+            self.image_scroll.setMinimumHeight(120)
             return None
 
         image_path = os.path.join("assets", filename)
@@ -446,7 +476,7 @@ class GuideWidget(QWidget):
 
         no_image_text = f"Изображение не загружено:\n{filename}" if self.current_language == "ru" else f"Image not loaded:\n{filename}"
         self.image_label.setText(no_image_text)
-        self.image_frame.setFixedHeight(120)
+        self.image_scroll.setMinimumHeight(120)
         return None
 
     @staticmethod
@@ -505,27 +535,22 @@ class GuideWidget(QWidget):
             pixmap = self._load_image(image_filename)
 
             if pixmap:
-                viewport_width = self.image_scroll.viewport().width() - 10
+                viewport_width = self.image_scroll.viewport().width() - 16
                 if viewport_width < 100:
                     viewport_width = self.width() - 80
 
-                # Если картинка и так влезает — показываем 1:1
-                if pixmap.width() <= viewport_width:
-                    scaled_pixmap = pixmap
-                else:
-                    # Уменьшаем до ширины viewport'а с высоким качеством
+                # Scale to the available width, but keep the full image height.
+                # The image viewport owns vertical scrolling for tall screenshots.
+                target_width = min(pixmap.width(), max(100, viewport_width))
+                if pixmap.width() != target_width:
                     scaled_pixmap = pixmap.scaled(
-                        viewport_width,
+                        target_width,
                         pixmap.height(),
                         Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
+                        Qt.TransformationMode.SmoothTransformation,
                     )
-                    # пересчитать пиксели с лучшим сглаживанием
-                    scaled_pixmap = scaled_pixmap.scaled(
-                        scaled_pixmap.size(),
-                        Qt.AspectRatioMode.IgnoreAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
+                else:
+                    scaled_pixmap = pixmap
 
                 self.image_label.setPixmap(scaled_pixmap)
                 self.image_label.setFixedSize(scaled_pixmap.size())
