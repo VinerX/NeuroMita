@@ -216,6 +216,7 @@ class ChatModel:
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_id: str = "",
         context_character_name: str = "",
     ) -> Optional[LLMResponse]:
         if messages is None:
@@ -229,6 +230,7 @@ class ChatModel:
             capabilities_override=capabilities_override,
             request_options_override=request_options_override,
             structured_model=structured_model,
+            context_character_id=context_character_id,
             context_character_name=context_character_name,
         )
         if not success:
@@ -246,6 +248,7 @@ class ChatModel:
         capabilities_override: Optional[Dict[str, Any]] = None,
         request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_id: str = "",
         context_character_name: str = "",
     ):
         request_options = dict(request_options_override or {})
@@ -321,13 +324,13 @@ class ChatModel:
                     (preset_settings.openrouter_routing or {}).get("tail_system_to_user", True)
                 )
                 session_id = build_openrouter_session_id(
-                    getattr(getattr(self, "current_character", None), "char_id", "") or "",
-                    getattr(getattr(self, "current_character", None), "name", "") or "",
+                    str(context_character_id or ""),
+                    str(context_character_name or ""),
                 )
                 if session_id:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
-            _char = getattr(self, "current_character", None)
+            _char = None
             # The Sandbox context viewer is a normal user-facing diagnostic,
             # not a debug-only feature. Its fallback file must therefore be
             # captured for every request.
@@ -337,7 +340,7 @@ class ChatModel:
                 # the immutable request snapshot before it is written.
                 _save_last_request_context(
                     req,
-                    character_name=str(context_character_name or getattr(_char, "name", "") or ""),
+                    character_name=str(context_character_name or ""),
                 )
             except Exception:
                 pass
@@ -371,13 +374,12 @@ class ChatModel:
                 from managers.finetune_collector import FineTuneCollector
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
-                    char = self.current_character
                     game_connected = bool(use(GameLinkService).is_connected())
                     sample_id = fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text.text,
-                        character_id=char.char_id if char else "unknown",
-                        character_name=char.name if char else "unknown",
+                        character_id=str(context_character_id or "unknown"),
+                        character_name=str(context_character_name or "unknown"),
                         game_connected=game_connected,
                         usage=response_text.usage,
                     )

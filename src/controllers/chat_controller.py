@@ -503,6 +503,8 @@ class ChatController:
             assistant_message_id = result.message_id
             sample_id = getattr(result, "sample_id", "") or ""
             context_snapshot_id = getattr(result, "context_snapshot_id", "") or ""
+            structured_parse_level = getattr(result, "structured_parse_level", "") or ""
+            control_plane_trusted = bool(getattr(result, "control_plane_trusted", False))
 
             # GameMaster may comment on a dialogue, but never participates in the
             # Mita-to-Mita turn queue. Do not expose model-produced routing hints
@@ -579,7 +581,7 @@ class ChatController:
             # exact route after live scene validation.
             route = self.dialogue_router.route_after_response(
                 dialogue,
-                structured=structured_data,
+                structured=structured_data if control_plane_trusted else None,
                 character_id=str(effective_character_id or ""),
                 event_type=effective_event_type,
             )
@@ -622,7 +624,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
+                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -643,21 +645,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
+                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
+                            "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns)
+                        "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -798,6 +800,8 @@ class ChatController:
         targets: list[str] | None = None,
         *,
         transport_next_turns: list[dict] | None = None,
+        structured_parse_level: str = "",
+        control_plane_trusted: bool = False,
     ) -> dict:
         """Build a task result with Python-owned transport routing."""
         segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
@@ -824,6 +828,8 @@ class ChatController:
             result["memory_delete"] = structured_data.get("memory_delete", [])
             result["memory_merge"] = structured_data.get("memory_merge", [])
             result["next_turns"] = list(transport_next_turns or [])
+            result["structured_parse_level"] = structured_parse_level
+            result["control_plane_trusted"] = bool(control_plane_trusted)
         return result
 
     def _on_get_llm_processing_status(self, event: Event):

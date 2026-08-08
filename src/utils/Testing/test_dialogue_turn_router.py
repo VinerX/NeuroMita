@@ -10,6 +10,7 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
+import services.dialogue_turn_router as router_module
 from services.dialogue_turn_router import (
     DialogueTurnRouter,
     ROUTE_GAME_MASTER,
@@ -174,6 +175,27 @@ class DialogueTurnRouterTests(unittest.TestCase):
             character_id="Crazy",
             event_type="continue",
         ))
+
+    def test_continue_spends_shared_auto_turn_budget(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=3))
+        context = _context(current="actor-crazy")
+        context["auto_turns_since_player"] = 6
+        structured = {"segments": [{"text": "more", "intents": [{"type": "dialogue.continue", "payload": {}}]}]}
+        self.assertIsNone(router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+        ))
+
+    def test_route_contains_freshness_and_one_shot_metadata(self):
+        router = DialogueTurnRouter(_Settings())
+        route = router.select_next_turn(_context(current="actor-crazy"))
+        self.assertEqual(route.source_turn_index, 0)
+        self.assertTrue(route.route_id)
+        payload = router_module.route_to_transport(route)
+        self.assertEqual(payload["source_turn_index"], 0)
+        self.assertEqual(payload["route_id"], route.route_id)
 
     def test_game_master_without_target_resumes_round_robin(self):
         router = DialogueTurnRouter(_Settings(GM_ON=True, GM_REPEAT=2))

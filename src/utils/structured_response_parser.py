@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
@@ -17,7 +18,29 @@ class StructuredResponseParseError(Exception):
     pass
 
 
-def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredResponse] = StructuredResponse) -> StructuredResponse:
+@dataclass(frozen=True, slots=True)
+class StructuredParseOutcome:
+    """Parsed response plus trust metadata for control-plane decisions."""
+
+    response: StructuredResponse
+    parse_level: str
+    schema_coerced: bool = False
+    fallback_kind: str = ""
+
+    @property
+    def control_plane_trusted(self) -> bool:
+        return (
+            self.parse_level == "direct"
+            and not self.schema_coerced
+            and not self.fallback_kind
+        )
+
+
+def parse_structured_response_with_meta(
+    raw_text: str,
+    *,
+    model_cls: Type[StructuredResponse] = StructuredResponse,
+) -> StructuredParseOutcome:
     if not raw_text or not isinstance(raw_text, str):
         raise StructuredResponseParseError("Empty or non-string response")
 
@@ -58,7 +81,7 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
     if parse_level != "direct":
         logger.warning(f"[StructuredResponseParser] JSON repaired via: {parse_level}")
 
-    response = _validate_with_coerce(data, model_cls=model_cls)
+    response, schema_coerced = _validate_with_coerce(data, model_cls=model_cls)
 
     if not response.segments:
         if response.tool_call:
@@ -66,21 +89,21 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
             logger.debug(
                 "[StructuredResponseParser] Tool call with empty segments — created default segment"
             )
-            return response
+            return StructuredParseOutcome(response, parse_level, schema_coerced, "synthetic_empty_tool_segment")
 
         converted = _try_convert_legacy_flat_json(data, model_cls=model_cls)
         if converted is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used legacy flat-JSON fallback"
             )
-            return converted
+            return StructuredParseOutcome(response=converted, parse_level=parse_level, schema_coerced=schema_coerced, fallback_kind="legacy_flat")
 
         partial = _extract_partial_response(raw_text, model_cls=model_cls)
         if partial is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used partial text extraction"
             )
-            return partial
+            return StructuredParseOutcome(response=partial, parse_level=parse_level, schema_coerced=schema_coerced, fallback_kind="partial_extraction")
 
         raise StructuredResponseParseError(
             "StructuredResponse has no segments (segments list is empty)"
@@ -93,7 +116,17 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
         f"stress_change={response.stress_change}"
     )
 
-    return response
+    return StructuredParseOutcome(response, parse_level, schema_coerced)
+
+
+def parse_structured_response(
+    raw_text: str,
+    *,
+    model_cls: Type[StructuredResponse] = StructuredResponse,
+) -> StructuredResponse:
+    """Compatibility wrapper for callers that only need the response model."""
+
+    return parse_structured_response_with_meta(raw_text, model_cls=model_cls).response
 
 
 def _try_json_loads(text: str, level: str = "direct") -> tuple[Optional[dict], str]:
@@ -199,13 +232,13 @@ def _close_truncated_json(text: str) -> str:
     return text + suffix
 
 
-def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> StructuredResponse:
+def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> tuple[StructuredResponse, bool]:
     try:
-        return model_cls.model_validate(data)
+        return model_cls.model_validate(data), False
     except Exception as first_error:
         try:
             data = _schema_aware_coerce(data, model_cls=model_cls)
-            return model_cls.model_validate(data)
+            return model_cls.model_validate(data), True
         except Exception as second_error:
             raise StructuredResponseParseError(
                 f"JSON does not match StructuredResponse schema "

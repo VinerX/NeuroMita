@@ -42,7 +42,7 @@ from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
 from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
-    parse_structured_response,
+    parse_structured_response_with_meta,
     structured_response_to_result_dict,
     StructuredResponseParseError,
 )
@@ -1615,6 +1615,7 @@ class ModelController(GenerationService, ModelStateService):
                 request_id=str(task_uid or req_id or origin_message_id or ""),
                 capabilities_override=effective_capabilities,
                 structured_model=structured_model_cls,
+                context_character_id=char_id,
                 context_character_name=char_name,
             )
 
@@ -1972,7 +1973,8 @@ class ModelController(GenerationService, ModelStateService):
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
         try:
-            structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
+            parse_outcome = parse_structured_response_with_meta(visible_raw, model_cls=structured_model_cls)
+            structured = parse_outcome.response
         except StructuredResponseParseError as e:
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
@@ -2018,6 +2020,8 @@ class ModelController(GenerationService, ModelStateService):
                 targets=fallback_targets,
                 think=think_text or None,
                 sample_id=sample_id or "",
+                structured_parse_level="legacy_fallback",
+                control_plane_trusted=False,
             )
 
         self._sanitize_structured_segment_fields(structured, capabilities)
@@ -2210,6 +2214,8 @@ class ModelController(GenerationService, ModelStateService):
             structured=result_dict,
             message_id=assistant_message_id,
             sample_id=sample_id or "",
+            structured_parse_level=parse_outcome.parse_level,
+            control_plane_trusted=parse_outcome.control_plane_trusted,
         )
 
     # ---------------------------------------------------------------------
@@ -2388,6 +2394,8 @@ class ModelController(GenerationService, ModelStateService):
             preset_id=preset_id,
             capabilities_override=(capabilities or None),
             structured_model=structured_model_cls,
+            context_character_id=char_id,
+            context_character_name=char_name,
         )
 
         if not llm_response_2 or not llm_response_2.text:
@@ -2409,6 +2417,8 @@ class ModelController(GenerationService, ModelStateService):
                 think=think_text or None,
                 structured=result_dict,
                 message_id=first_assistant_message_id,
+                structured_parse_level="tool_intermediate",
+                control_plane_trusted=False,
             )
 
         visible_raw_2, think_text_2 = self._split_response_thinking(llm_response_2)

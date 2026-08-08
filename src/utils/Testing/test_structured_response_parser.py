@@ -10,7 +10,10 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from utils.structured_response_parser import parse_structured_response
+from utils.structured_response_parser import (
+    parse_structured_response,
+    parse_structured_response_with_meta,
+)
 
 
 class StructuredResponseParserCoerceTests(unittest.TestCase):
@@ -39,6 +42,21 @@ class StructuredResponseParserCoerceTests(unittest.TestCase):
         self.assertEqual(segment.music, ["Music 3 Tamagochi"])
         self.assertEqual(segment.movement_modes, ["Стоять на месте"])
         self.assertEqual(segment.hint, "Не зли Миту")
+
+    def test_direct_schema_valid_response_is_trusted(self) -> None:
+        outcome = parse_structured_response_with_meta(
+            json.dumps({"segments": [{"text": "Hello"}]})
+        )
+        self.assertEqual(outcome.parse_level, "direct")
+        self.assertFalse(outcome.schema_coerced)
+        self.assertTrue(outcome.control_plane_trusted)
+
+    def test_schema_coercion_is_untrusted_for_control_plane(self) -> None:
+        outcome = parse_structured_response_with_meta(
+            json.dumps({"segments": [{"text": 123, "commands": "wave"}]})
+        )
+        self.assertTrue(outcome.schema_coerced)
+        self.assertFalse(outcome.control_plane_trusted)
 
     def test_scalar_text_and_allow_sleep_are_coerced(self) -> None:
         payload = {

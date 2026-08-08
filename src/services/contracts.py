@@ -686,6 +686,9 @@ class ChatGenerationResult:
     error_details: Optional[Dict[str, Any]] = None
     # Кому Python предлагает слово после этой реплики (протокол ответа v3).
     next_turns: List[Dict[str, Any]] = field(default_factory=list)
+    # Repaired structured output remains displayable but cannot authorize routing.
+    structured_parse_level: str = ""
+    control_plane_trusted: bool = False
 
 
 @dataclass

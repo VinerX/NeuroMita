@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -45,6 +46,8 @@ class RoutedDialogueRoute:
     conversation_id: str = ""
     epoch: int = 0
     continue_route_reserved: bool = False
+    source_turn_index: int = 0
+    route_id: str = ""
 
 
 @dataclass(slots=True)
@@ -278,6 +281,8 @@ class DialogueTurnRouter:
             reason=reason,
             conversation_id=dialogue.conversation_id,
             epoch=max(0, int(dialogue.epoch)),
+            source_turn_index=max(0, int(dialogue.turn_index)),
+            route_id=uuid.uuid4().hex,
         )
 
     def select_next_turn(
@@ -388,6 +393,8 @@ class DialogueTurnRouter:
                 reason="game_master_stop",
                 conversation_id=context.conversation_id,
                 epoch=max(0, int(context.epoch)),
+                source_turn_index=max(0, int(context.turn_index)),
+                route_id=uuid.uuid4().hex,
             )
 
         if target is not None:
@@ -409,6 +416,8 @@ class DialogueTurnRouter:
                     reason="game_master_directive",
                     conversation_id=context.conversation_id,
                     epoch=max(0, int(context.epoch)),
+                    source_turn_index=max(0, int(context.turn_index)),
+                    route_id=uuid.uuid4().hex,
                 )
 
         resume_actor_id = state.resume_after_actor_id or context.responder_actor_id
@@ -455,6 +464,14 @@ class DialogueTurnRouter:
                 state.consecutive_continues = 0
 
             if requested_continue and not is_game_master:
+                # Every automatic LLM call, including an explicit continuation,
+                # spends the same shared post-player budget.
+                if dialogue_auto_turns_remaining(context) <= 0:
+                    logger.warning(
+                        "[DialogueRouter] Continue rejected for %s: auto-turn budget exhausted.",
+                        context.conversation_id,
+                    )
+                    return None
                 current = next((item for item in context.participants if item.actor_id == context.responder_actor_id), None)
                 if current is None or not current.can_speak:
                     return None
@@ -477,6 +494,8 @@ class DialogueTurnRouter:
                     conversation_id=context.conversation_id,
                     epoch=max(0, int(context.epoch)),
                     continue_route_reserved=True,
+                    source_turn_index=max(0, int(context.turn_index)),
+                    route_id=uuid.uuid4().hex,
                 )
 
             if is_game_master:
@@ -493,6 +512,8 @@ class DialogueTurnRouter:
             else:
                 state.mita_responses_since_gm += 1
                 if state.mita_responses_since_gm >= settings["gm_repeat"]:
+                    if dialogue_auto_turns_remaining(context) <= 0:
+                        return None
                     state.mita_responses_since_gm = 0
                     state.resume_after_actor_id = context.responder_actor_id
                     state.latest_speaker_actor_id = context.responder_actor_id
@@ -507,6 +528,8 @@ class DialogueTurnRouter:
                         reason="game_master_cadence",
                         conversation_id=context.conversation_id,
                         epoch=max(0, int(context.epoch)),
+                        source_turn_index=max(0, int(context.turn_index)),
+                        route_id=uuid.uuid4().hex,
                     )
 
             return self._select_from_context(context)
@@ -538,6 +561,8 @@ class DialogueTurnRouter:
 
         with self._lock:
             state = self._state_for(context.conversation_id, int(context.epoch))
+            if dialogue_auto_turns_remaining(context) <= 0:
+                return False
             limit = self._server_settings()["continue_limit"]
             if limit <= 0 or state.consecutive_continues >= limit:
                 logger.warning(
@@ -590,6 +615,8 @@ def route_to_transport(route: RoutedDialogueRoute | None) -> dict[str, Any] | No
         "conversation_id": route.conversation_id,
         "epoch": max(0, int(route.epoch)),
         "continue_route_reserved": bool(route.continue_route_reserved),
+        "source_turn_index": max(0, int(route.source_turn_index)),
+        "route_id": route.route_id,
     }
 
 
