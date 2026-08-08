@@ -1308,41 +1308,25 @@ class AppWindowBase(QMainWindow):
         self.overlay.hide_animated()
 
     def _setup_guide_highlights(self, guide_widget):
-        if len(guide_widget.pages) > 1:
-            guide_widget.pages[1].set_highlight_target(
-                lambda: self.settings_buttons.get("language") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 2:
-            guide_widget.pages[2].set_highlight_target(
-                lambda: self.settings_buttons.get("api") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 3:
-            guide_widget.pages[3].set_highlight_target(
-                lambda: self.settings_buttons.get("models") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 4:
-            guide_widget.pages[4].set_highlight_target(
-                lambda: self.settings_buttons.get("voice") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 5:
-            guide_widget.pages[5].set_highlight_target(
-                lambda: self.settings_buttons.get("microphone") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 6:
-            guide_widget.pages[6].set_highlight_target(
-                lambda: self.settings_buttons.get("characters") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 7:
-            guide_widget.pages[7].set_highlight_target(
-                lambda: self.chat_window if hasattr(self, 'chat_window') else None
-            )
-        if len(guide_widget.pages) > 8:
-            guide_widget.pages[8].set_highlight_target(
-                lambda: self.token_count_label if hasattr(self, 'token_count_label') else None
-            )
-        if len(guide_widget.pages) > 9:
-            guide_widget.pages[9].set_highlight_target(
-                lambda: self.settings_buttons.get("debug") if hasattr(self, 'settings_buttons') else None
+        """Bind guide pages to the settings controls they describe."""
+        targets = {
+            1: "api",
+            2: "voice",
+            3: "microphone",
+            4: "models",
+            5: "screen",
+            6: "models",
+            7: "debug",
+        }
+        for page_index, setting_key in targets.items():
+            if page_index >= len(guide_widget.pages):
+                continue
+            guide_widget.pages[page_index].set_highlight_target(
+                lambda key=setting_key: (
+                    self.settings_buttons.get(key)
+                    if hasattr(self, "settings_buttons")
+                    else None
+                )
             )
 
         # ===== Обновление индикаторов статуса =====

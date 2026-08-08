@@ -61,6 +61,7 @@ FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
 
 ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
+    (PROJECT_DIR / "assets" / "guide", OUTPUT_DIR / "assets" / "guide"),
     (PROJECT_DIR / "docs" / "wiki", OUTPUT_DIR / "docs" / "wiki"),
 ]
 

@@ -1,12 +1,13 @@
 # src/ui/widgets/guide_widget.py
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox, QScrollArea, QSizePolicy
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
 from localization import available_languages, language_display_name, translate_for_language
 from main_logger import logger
 import os
+import re
 from styles.theme import get_theme
 from utils import render_qss
 from ui.settings.settings_access import get_setting, set_setting
@@ -15,31 +16,36 @@ class IGuidePage(ABC):
     min_mode: str = "basic"
 
     def __init__(self):
-        pass
-        
+        self._highlight_target = None
+
+    def set_highlight_target(self, target):
+        """Store an optional UI target for callers that decorate guide steps."""
+        self._highlight_target = target
+
     @abstractmethod
     def get_title_ru(self) -> str:
         pass
-        
+
     @abstractmethod
     def get_title_en(self) -> str:
         pass
-        
+
     @abstractmethod
     def get_description_ru(self) -> str:
         pass
-        
+
     @abstractmethod
     def get_description_en(self) -> str:
         pass
-        
+
     @abstractmethod
-    def get_image_filename(self) -> str:
+    def get_image_filename(self, language: str) -> str:
         pass
+
 
 class GuideWidget(QWidget):
     closed = pyqtSignal()
-    
+
     def __init__(self, settings_view_model, parent=None):
         super().__init__(parent)
         self.settings_view_model = settings_view_model
@@ -49,6 +55,7 @@ class GuideWidget(QWidget):
         self._guide_level = "basic"
         self._filtered_pages = []
         self._lang_buttons: dict[str, QRadioButton] = {}
+        self._level_group = None
         from ui.widgets.settings_panel import normalize_mode
         saved = get_setting(self, "GUIDE_LEVEL")
         if saved in ("basic", "advanced", "full"):
@@ -56,20 +63,22 @@ class GuideWidget(QWidget):
         else:
             iface = get_setting(self, "INTERFACE_MODE")
             self._guide_level = normalize_mode(iface)
+            if self._guide_level not in ("basic", "advanced", "full"):
+                self._guide_level = "basic"
         self.current_language = str(
             get_setting(self, "LANGUAGE", "RU") or "RU"
         ).strip().lower()
         self.setObjectName("GuideWidget")
         self.setup_ui()
         self._init_pages()
-    
+
     def setup_ui(self):
         self.setStyleSheet(render_qss("""
             #GuideWidget {
                 background-color: transparent;
             }
             #GuideContainer {
-                background-color: rgba({settings_panel_rgb}, 0.95);
+                background-color: rgba({settings_panel_rgb}, 1.0);
                 border: 1px solid {border_soft};
                 border-radius: 16px;
             }
@@ -108,20 +117,6 @@ class GuideWidget(QWidget):
                 background-color: {btn_disabled_bg};
                 color: {btn_disabled_fg};
                 border: 1px solid {outline};
-            }
-            #SkipButton {
-                background-color: {chip_bg};
-                color: {text};
-                border: 1px solid {outline};
-                padding: 8px 16px;
-                font-weight: 600;
-                border-radius: 10px;
-            }
-            #SkipButton:hover {
-                background-color: {chip_hover};
-            }
-            #SkipButton:pressed {
-                background-color: {chip_pressed};
             }
             #PageIndicator {
                 color: {muted};
@@ -201,57 +196,35 @@ class GuideWidget(QWidget):
                 border-radius: 8px;
                 background-color: {chip_bg};
             }
+            #CloseButton {
+                background-color: {chip_bg};
+                color: {text};
+                border: 1px solid {outline};
+                padding: 8px 16px;
+                font-weight: 600;
+                border-radius: 10px;
+            }
+            #CloseButton:hover {
+                background-color: {chip_hover};
+            }
+            #CloseButton:pressed {
+                background-color: {chip_pressed};
+            }
         """, get_theme()))
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         container = QFrame()
         container.setObjectName("GuideContainer")
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(20, 20, 20, 20)
         container_layout.setSpacing(15)
-        
+
         self.setMinimumSize(720, 520)
         self.setMaximumSize(920, 760)
-        
-        # --- Level selector ---
-        level_row = QWidget()
-        level_row.setObjectName("GuideLevelRow")
-        # Плоский QWidget без этого атрибута не рисует фон из QSS.
-        level_row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        level_row_layout = QHBoxLayout(level_row)
-        level_row_layout.setContentsMargins(8, 6, 8, 6)
-        level_row_layout.setSpacing(8)
-        level_row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._level_group = QButtonGroup(level_row)
-        self._level_group.setExclusive(True)
-
-        # Кнопки уровней были захардкожены по-русски — теперь локализуются под
-        # выбранный язык и переподписываются при его смене.
-        self._level_buttons: dict[str, QRadioButton] = {}
-        for key in ("basic", "advanced", "full"):
-            rb = QRadioButton("")
-            rb.setObjectName("GuideLevelButton")
-            rb.setProperty("level_key", key)
-            if key == self._guide_level:
-                rb.setChecked(True)
-            level_row_layout.addWidget(rb)
-            self._level_group.addButton(rb)
-            self._level_buttons[key] = rb
-
-        self._level_group.buttonClicked.connect(self._on_level_changed)
-        container_layout.addWidget(level_row)
-
-        # Пояснение, что показывает выбранный уровень (раньше уровни никак не
-        # раскрывались — было непонятно, чем они отличаются).
-        self._level_hint = QLabel("")
-        self._level_hint.setObjectName("GuideLevelHint")
-        self._level_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._level_hint.setWordWrap(True)
-        container_layout.addWidget(self._level_hint)
-        self._update_level_texts()
+        self._level_hint = None
 
         header_layout = QVBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -265,12 +238,83 @@ class GuideWidget(QWidget):
         title_row.addWidget(self.title_label, 1)
         title_row.addStretch()
 
-        self.skip_button = QPushButton("Пропустить")
-        self.skip_button.setObjectName("SkipButton")
-        self.skip_button.clicked.connect(self._on_skip)
-        title_row.addWidget(self.skip_button, 0, Qt.AlignmentFlag.AlignTop)
+        self.close_button = QPushButton("Завершить")
+        self.close_button.setObjectName("CloseButton")
+        self.close_button.clicked.connect(self._on_close)
+        title_row.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
         header_layout.addLayout(title_row)
-        
+
+        container_layout.addLayout(header_layout)
+
+        # Прокручиваемая область для картинки
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setObjectName("ImageFrame")          # чтобы стили работали
+        self.image_scroll.setWidgetResizable(True)
+        self.image_scroll.setMinimumHeight(120)
+        self.image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_scroll.setStyleSheet("QScrollArea { border: none; }")
+        self.image_scroll.setSizePolicy(
+            self.image_scroll.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Expanding
+        )
+
+        self.image_label = QLabel()
+        self.image_label.setObjectName("ImageLabel")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # self.image_label.setMinimumWidth(200)
+        self.image_scroll.setWidget(self.image_label)
+
+        container_layout.addWidget(self.image_scroll, 1)
+
+        self.description_label = QLabel("")
+        self.description_label.setObjectName("GuideDescription")
+        self.description_label.setWordWrap(True)
+        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.description_label.setTextFormat(Qt.TextFormat.RichText)
+        container_layout.addWidget(self.description_label)
+
+        nav_layout = QHBoxLayout()
+        nav_layout.setSpacing(15)
+
+        self.prev_button = QPushButton(qta.icon('fa5s.angle-left', color='white'), '')
+        self.prev_button.setObjectName("NavigationButton")
+        self.prev_button.setFixedSize(40, 35)
+        self.prev_button.clicked.connect(self._prev_page)
+        nav_layout.addWidget(self.prev_button)
+
+        self.page_indicator = QLabel("1 / 1")
+        self.page_indicator.setObjectName("PageIndicator")
+        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nav_layout.addWidget(self.page_indicator)
+
+        self.next_button = QPushButton(qta.icon('fa5s.angle-right', color='white'), '')
+        self.next_button.setObjectName("NavigationButton")
+        self.next_button.setFixedSize(40, 35)
+        self.next_button.clicked.connect(self._next_page)
+        nav_layout.addWidget(self.next_button)
+
+        nav_layout.addStretch()
+
+        # Переключатель уровня «Базовый / Полный» (внизу по центру)
+        self._level_group = QButtonGroup(self)
+        self._level_group.setExclusive(True)
+        self._level_buttons: dict[str, QRadioButton] = {}
+        for key in ("basic", "advanced", "full"):
+            rb = QRadioButton("")
+            rb.setObjectName("GuideLevelButton")
+            rb.setProperty("level_key", key)
+            rb.setMinimumHeight(36)
+            if key == self._guide_level:
+                rb.setChecked(True)
+            nav_layout.addWidget(rb)
+            self._level_group.addButton(rb)
+            self._level_buttons[key] = rb
+        self._level_group.buttonClicked.connect(self._on_level_changed)
+        self._update_level_texts()            # чтобы текст появился сразу
+        nav_layout.addSpacing(20)
+
+        # Перенесённый переключатель языка (справа внизу)
         lang_layout = QHBoxLayout()
         lang_layout.setContentsMargins(0, 0, 0, 0)
         lang_layout.setSpacing(10)
@@ -280,11 +324,6 @@ class GuideWidget(QWidget):
         lang_layout.addWidget(self.lang_label)
 
         self.lang_selector = QComboBox()
-        # Заполняем и выставляем стартовый индекс при ЗАГЛУШЁННЫХ сигналах, а
-        # обработчик подключаем уже ПОСЛЕ. Иначе setCurrentIndex(...) во время
-        # построения дёргал _on_language_changed, который обращается к ещё не
-        # созданным виджетам (close_button) и зовёт show_page() до инициализации
-        # страниц → жёсткий вылет процесса при первом запуске (краш на «Принять»).
         self.lang_selector.blockSignals(True)
         for code in available_languages():
             lowered = code.lower()
@@ -299,73 +338,20 @@ class GuideWidget(QWidget):
         self.lang_selector.blockSignals(False)
         self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
         lang_layout.addWidget(self.lang_selector, 0)
-        lang_layout.addStretch(1)
-        header_layout.addLayout(lang_layout)
 
-        container_layout.addLayout(header_layout)
-        
-        self.image_frame = QFrame()
-        self.image_frame.setObjectName("ImageFrame")
-        self.image_frame.setMinimumHeight(120)
-        self.image_frame.setMaximumHeight(350)
-        image_layout = QVBoxLayout(self.image_frame)
-        image_layout.setContentsMargins(10, 10, 10, 10)
-        
-        self.image_label = QLabel()
-        self.image_label.setObjectName("ImageLabel")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(200, 100)
-        image_layout.addWidget(self.image_label)
-        
-        container_layout.addWidget(self.image_frame)
-        
-        self.description_label = QLabel("")
-        self.description_label.setObjectName("GuideDescription")
-        self.description_label.setWordWrap(True)
-        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.description_label.setTextFormat(Qt.TextFormat.RichText)
-        container_layout.addWidget(self.description_label, 1)
-        
-        nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(15)
-        
-        self.prev_button = QPushButton(qta.icon('fa5s.angle-left', color='white'), '')
-        self.prev_button.setObjectName("NavigationButton")
-        self.prev_button.setFixedSize(40, 35)
-        self.prev_button.clicked.connect(self._prev_page)
-        nav_layout.addWidget(self.prev_button)
-        
-        self.page_indicator = QLabel("1 / 1")
-        self.page_indicator.setObjectName("PageIndicator")
-        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nav_layout.addWidget(self.page_indicator)
-        
-        self.next_button = QPushButton(qta.icon('fa5s.angle-right', color='white'), '')
-        self.next_button.setObjectName("NavigationButton")
-        self.next_button.setFixedSize(40, 35)
-        self.next_button.clicked.connect(self._next_page)
-        nav_layout.addWidget(self.next_button)
-        
-        nav_layout.addStretch()
-        
-        self.close_button = QPushButton("Завершить")
-        self.close_button.setObjectName("NavigationButton")
-        self.close_button.clicked.connect(self._on_close)
-        self.close_button.hide()
-        nav_layout.addWidget(self.close_button)
-        
+        nav_layout.addLayout(lang_layout)
+
         container_layout.addLayout(nav_layout)
+
         self._update_language_label_text()
-        self._update_skip_button_text()
         self._update_close_button_text()
-        
-        main_layout.addWidget(container)  
+
+        main_layout.addWidget(container)
 
     def _on_language_changed(self):
         code = self.lang_selector.currentData() if hasattr(self, "lang_selector") else None
         self.current_language = str(code or "ru")
         self._update_language_label_text()
-        self._update_skip_button_text()
         self._update_close_button_text()
         self._update_level_texts()
         self.show_page(self.current_page_index)
@@ -377,12 +363,12 @@ class GuideWidget(QWidget):
         "full": ("Полный", "Full"),
     }
     _LEVEL_HINTS = {
-        "basic": ("Только самое необходимое для старта: подключение, персонаж, чат.",
-                  "Just the essentials to get started: connection, character, chat."),
-        "advanced": ("Базовый + озвучка и микрофон.",
-                     "Basic + voiceover and microphone."),
-        "full": ("Все разделы: + анализ экрана, модели и тонкости чата.",
-                 "All sections: + screen analysis, models and chat details."),
+        "basic": ("Только самое необходимое для старта: подключение и готово!",
+                  "Just the essentials to get started: connection and you're ready!"),
+        "advanced": ("Базовый гайд + озвучка и микрофон.",
+                     "Basic guide + voiceover and microphone."),
+        "full": ("Все разделы: + память, экран, модели и песочница.",
+                 "All sections: + memory, screen, models, and sandbox."),
     }
 
     def _update_level_texts(self):
@@ -395,22 +381,17 @@ class GuideWidget(QWidget):
         if hint is not None:
             hru, hen = self._LEVEL_HINTS.get(self._guide_level, ("", ""))
             hint.setText(translate_for_language(self.current_language, hru, hen))
-        
-    def _update_skip_button_text(self):
-        self.skip_button.setText(
-            translate_for_language(self.current_language, "Пропустить", "Skip")
-        )
 
     def _update_language_label_text(self):
         self.lang_label.setText(
             translate_for_language(self.current_language, "Язык", "Language")
         )
-            
+
     def _update_close_button_text(self):
         self.close_button.setText(
             translate_for_language(self.current_language, "Завершить", "Finish")
         )
-        
+
     def _on_level_changed(self, btn):
         level = btn.property("level_key")
         if not level:
@@ -439,34 +420,71 @@ class GuideWidget(QWidget):
     def _init_pages(self):
         self.pages = [
             WelcomeGuidePage(),
-            APIGuidePage(),
-            CharactersGuidePage(),
+            PresetGuidePage(),
             VoiceoverGuidePage(),
             MicrophoneGuidePage(),
+            MemoryGuidePage(),
             ScreenAnalysisGuidePage(),
             ModelsGuidePage(),
-            ChatGuidePage(),
+            SandboxGuidePage(),
             FinalGuidePage(),
         ]
         self._update_filtered_pages()
-        
+
     def _load_image(self, filename):
         if not filename:
             no_image_text = "Изображение не загружено" if self.current_language == "ru" else "Image not loaded"
             self.image_label.setText(no_image_text)
             self.image_frame.setFixedHeight(120)
             return None
-            
+
         image_path = os.path.join("assets", filename)
         if os.path.exists(image_path):
             pixmap = QPixmap(image_path)
             if not pixmap.isNull():
                 return pixmap
-        
+
         no_image_text = f"Изображение не загружено:\n{filename}" if self.current_language == "ru" else f"Image not loaded:\n{filename}"
         self.image_label.setText(no_image_text)
         self.image_frame.setFixedHeight(120)
         return None
+
+    @staticmethod
+    def _format_description(text: str) -> str:
+        """Convert plain-text paragraphs and bullet lines to compact rich text."""
+        blocks = []
+        list_items = []
+
+        def flush_list():
+            if list_items:
+                blocks.append(
+                    "<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>"
+                )
+                list_items.clear()
+
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                flush_list()
+                continue
+
+            bullet = re.match(r"^(?:[\u2022-]|\u2014)\s+(.*)$", line)
+            if bullet:
+                list_items.append(bullet.group(1))
+                continue
+
+            # Some archived pages omit the bullet before a numbered step.
+            # Keep such lines in the current list instead of making a paragraph.
+            numbered_step = re.search(r"<b>\s*\d+\s*[-+]", line)
+            if numbered_step:
+                list_items.append(line)
+                continue
+
+            flush_list()
+            blocks.append(f"<p>{line}</p>")
+
+        flush_list()
+        return "".join(blocks)
 
     def show_page(self, index: int):
         if 0 <= index < len(self._filtered_pages):
@@ -476,39 +494,55 @@ class GuideWidget(QWidget):
             self.title_label.setText(
                 translate_for_language(self.current_language, page.get_title_ru(), page.get_title_en())
             )
-            self.description_label.setText(
-                translate_for_language(self.current_language, page.get_description_ru(), page.get_description_en())
+            description = translate_for_language(
+                self.current_language,
+                page.get_description_ru(),
+                page.get_description_en(),
             )
+            self.description_label.setText(self._format_description(description))
 
-            image_filename = page.get_image_filename()
+            image_filename = page.get_image_filename(self.current_language)
             pixmap = self._load_image(image_filename)
 
             if pixmap:
-                available_width = self.width() - 80
-                available_height = 320
+                viewport_width = self.image_scroll.viewport().width() - 10
+                if viewport_width < 100:
+                    viewport_width = self.width() - 80
 
-                scaled_pixmap = pixmap.scaled(
-                    available_width,
-                    available_height,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
+                # Если картинка и так влезает — показываем 1:1
+                if pixmap.width() <= viewport_width:
+                    scaled_pixmap = pixmap
+                else:
+                    # Уменьшаем до ширины viewport'а с высоким качеством
+                    scaled_pixmap = pixmap.scaled(
+                        viewport_width,
+                        pixmap.height(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    # пересчитать пиксели с лучшим сглаживанием
+                    scaled_pixmap = scaled_pixmap.scaled(
+                        scaled_pixmap.size(),
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
 
                 self.image_label.setPixmap(scaled_pixmap)
-
-                needed_height = scaled_pixmap.height() + 20
-                final_height = max(120, min(needed_height, 350))
-                self.image_frame.setFixedHeight(final_height)
+                self.image_label.setFixedSize(scaled_pixmap.size())
+            else:
+                self.image_label.clear()
+                no_image_text = "Изображение не загружено" if self.current_language == "ru" else "Image not loaded"
+                self.image_label.setText(no_image_text)
+                self.image_label.setMinimumSize(200, 100)
 
             self.page_indicator.setText(f"{index + 1} / {len(self._filtered_pages)}")
 
             self.prev_button.setEnabled(index > 0)
             self.next_button.setVisible(index < len(self._filtered_pages) - 1)
-            self.close_button.setVisible(index == len(self._filtered_pages) - 1)
 
     def start(self):
         self.show_page(0)
-        
+
     def _prev_page(self):
         if self.current_page_index > 0:
             self.show_page(self.current_page_index - 1)
@@ -516,14 +550,11 @@ class GuideWidget(QWidget):
     def _next_page(self):
         if self.current_page_index < len(self._filtered_pages) - 1:
             self.show_page(self.current_page_index + 1)
-            
-    def _on_skip(self):
-        self._on_close()
-        
+
     def _on_close(self):
         self.closed.emit()
 
-# ----------------- СТРАНИЦЫ РУКОВОДСТВА -----------------
+# ----------------- СТРАНИЦЫ РУКОВОДСТВА (обновлённые) -----------------
 
 _LEVEL_RANK = {"basic": 0, "advanced": 1, "full": 2}
 
@@ -533,279 +564,415 @@ class WelcomeGuidePage(IGuidePage):
 
     def get_title_ru(self):
         return "Добро пожаловать в NeuroMita!"
-        
+
     def get_title_en(self):
         return "Welcome to NeuroMita!"
-        
+
     def get_description_ru(self):
-        return """Привет! Это краткое руководство поможет вам быстро разобраться в основах. 
-NeuroMita — это ваш умный AI-ассистент, которого можно настроить под любые задачи.
+        return """Привет! Это краткое руководство поможет вам быстро освоиться в NeuroMita.
 
-В этом гайде мы пройдемся по самым важным настройкам, чтобы вы могли сразу начать общение. 
-Нажмите 'Далее', чтобы начать, или 'Пропустить', если хотите разобраться сами."""
-        
+В этом гайде мы пройдёмся по самым важным настройкам, чтобы вы могли сразу начать общение.
+Нажмите 'Далее', чтобы начать, или 'Завершить', если хотите разобраться сами."""
+
     def get_description_en(self):
-        return """Hello! This quick guide will help you understand the basics.
-NeuroMita is your smart AI assistant that can be configured for any task.
+        return """Hello! This quick guide will help you get comfortable with NeuroMita.
 
-In this guide, we'll walk through the most important settings so you can start chatting right away.
-Click 'Next' to begin, or 'Skip' if you want to figure it out on your own."""
-        
-    def get_image_filename(self):
-        return "guide_welcome.jpg"
+In this guide, we’ll walk through the most important settings so you can start chatting right away.
+Click 'Next' to begin, or 'Finish' if you want to figure it out on your own."""
 
-class APIGuidePage(IGuidePage):
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_welcome.png" if language == "ru" else "guide/guide_welcome1.png"
+
+
+class PresetGuidePage(IGuidePage):
     min_mode = "basic"
 
     def get_title_ru(self):
-        return "Шаг 1: Подключение к 'мозгу' AI"
-        
+        return "Создание своего пресета"
+
     def get_title_en(self):
-        return "Step 1: Connecting to the AI 'Brain'"
-        
+        return "Creating Your Own Preset"
+
     def get_description_ru(self):
-        return """Чтобы ассистент заработал, ему нужен доступ к большой языковой модели (LLM) — это и есть его "мозг". Этот доступ осуществляется через API.
+        return """Чтобы НейроМита ожила и могла с вами общаться, ей нужен доступ к языковой модели — её «мозгу». Для этого мы создадим ваш первый пресет API. Это просто!
 
-В настройках API (иконка <b>вилки</b>) вы можете выбрать <b>Провайдера</b>:
-• <b>g4f (бесплатно)</b>: Отличный вариант для начала! Использует различные бесплатные сервисы. Просто выберите его, и можно начинать.
-• <b>OpenAI, Claude и др. (платно)</b>: Более стабильные и мощные модели. Для них нужен <b>API-ключ</b> (ваш личный "пароль"), который можно получить на сайте провайдера.
+• Откройте настройки и перейдите во вкладку <b>API</b>. Нажмите <b>1 +</b>, чтобы добавить новый пресет.
+• Выберите <b>2 - Шаблон</b> провайдера — например, OpenRouter, Gemini, или KodikRouter и нажмите <b>OK</b>. Если вашего провайдера нет в списке, используйте вариант «Без шаблона».
+Затем вам понадобится <b>3 - API-ключ</b>. Перейдите по ссылке <b>4 - Получить ключ</b>, зарегистрируйтесь у провайдера и вставьте ключ в соответствующее поле.
+Чтобы проверить, всё ли работает, нажмите <b>5 - Тест подключения</b> и выберите модель из списка. Или оставьте ту, что предложена по умолчанию.
+В конце нажмите <b>6 - Сохранить</b> — и пресет готов! Теперь Мита будет думать именно с помощью этой модели."""
 
-<b>Проще говоря:</b> выберите 'g4f' в списке, чтобы сразу начать, или вставьте свой ключ от платного сервиса для максимального качества."""
-        
     def get_description_en(self):
-        return """For the assistant to work, it needs access to a large language model (LLM) — its "brain." This access is provided via an API.
+        return """For NeuroMita to come alive and chat with you, she needs access to a language model — her “brain”. Let’s create your first API preset. It’s easy!
 
-In the API settings (<b>plug</b> icon), you can select a <b>Provider</b>:
-• <b>g4f (free)</b>: A great option to start! It uses various free services. Just select it, and you're ready to go.
-• <b>OpenAI, Claude, etc. (paid)</b>: More stable and powerful models. They require an <b>API key</b> (your personal "password"), which you can get from the provider's website.
+Open the settings and go to the <b>API</b> tab. Click <b>1 +</b> to add a new preset.
+Choose a <b>2 - Template</b> — for example, OpenRouter, Gemini, or KodikRouter — and click <b>OK</b>. If your provider isn't listed, select “No template”.
+Next, you’ll need an <b>3 - API key</b>. Follow the <b>4 - Get key</b> link, sign up with the provider, and paste the key into the field.
+To make sure everything works, click <b>5 - Test Connection</b> and pick a model from the list. Or keep the default one.
+Finally, click <b>6 - Save</b> — and your preset is ready! Now Mita will think using this model."""
 
-<b>Simply put:</b> choose 'g4f' from the list to start immediately, or insert your key from a paid service for maximum quality."""
-        
-    def get_image_filename(self):
-        return "guide_api.jpg"
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_preset.png" if language == "ru" else "guide/guide_preset1.png"
 
-class CharactersGuidePage(IGuidePage):
-    min_mode = "basic"
-
-    def get_title_ru(self):
-        return "Шаг 2: Выбор Персонажа"
-        
-    def get_title_en(self):
-        return "Step 2: Choosing a Character"
-        
-    def get_description_ru(self):
-        return """Персонаж — это личность вашего ассистента. Он определяет, как AI будет с вами общаться, его характер и знания.
-
-В настройках Персонажей (иконка <b>человека</b>) вы можете:
-• <b>Выбрать готового персонажа</b> из списка.
-• <b>Настроить промпты</b>: это инструкции, которые формируют поведение персонажа. Можно выбрать готовый набор промптов из "Каталога" или создать свой.
-• <b>Управлять историей</b>: очищать память персонажа или открывать папку с диалогами.
-
-<b>Проще говоря:</b> выберите персонажа, который вам нравится. Для начала отлично подойдет "Crazy"."""
-        
-    def get_description_en(self):
-        return """A character is your assistant's personality. It defines how the AI will communicate with you, its nature, and its knowledge.
-
-In the Character settings (<b>user</b> icon), you can:
-• <b>Select a pre-made character</b> from the list.
-• <b>Configure prompts</b>: these are instructions that shape the character's behavior. You can choose a pre-made prompt set from the "Catalogue" or create your own.
-• <b>Manage history</b>: clear the character's memory or open the folder with dialogues.
-
-<b>Simply put:</b> choose a character you like. "Crazy" is a great one to start with."""
-        
-    def get_image_filename(self):
-        return "guide_characters.jpg"
 
 class VoiceoverGuidePage(IGuidePage):
     min_mode = "advanced"
 
     def get_title_ru(self):
-        return "Шаг 3: Настройка голоса (Озвучка)"
-        
+        return "Озвучка - голосовые ответы"
+
     def get_title_en(self):
-        return "Step 3: Setting up the Voice (Voiceover)"
-        
+        return "Voiceover — Voice Responses"
+
     def get_description_ru(self):
-        return """Хотите, чтобы ассистент отвечал вам голосом? Это просто!
+        return """Хотите, чтобы Мита общалась голосом?
+• В настройках Озвучки (иконка динамика) включите <b>1 - Использовать озвучку</b>.
 
-В настройках Озвучки (иконка <b>динамика</b>) сначала поставьте галочку <b>"Использовать озвучку"</b>. Затем выберите метод:
-• <b>TG (через Telegram)</b>: Самый простой способ. Не требует настроек, работает через ботов в Telegram.
-• <b>Local (локально)</b>: Качественный голос, который генерируется на вашем ПК. Требует мощной видеокарты и предварительной установки моделей.
+После включения станут доступны два метода:
+• <b>TG (Telegram)</b> — простой способ, потребуется связать аккаунт Telegram.
+• <b>Local</b> — качественная локальная генерация голоса с помощью скачиваемой модели (нужна мощная видеокарта).
 
-<b>Проще говоря:</b> для начала выберите метод "TG". Если у вас мощный компьютер, можете попробовать "Local" для лучшего качества."""
-        
+Выберите подходящий вариант.
+
+Если вы предпочитаете Local, потребуется скачать модель синтеза речи:
+• Включите <b>1 - Использовать озвучку</b>, если ещё не включили, и выберите <b>2 - Local</b> в списке методов.
+• Выберите <b>3 - язык озвучки</b>.
+• Нажмите кнопку <b>4 - Установить</b> — откроется <b>AI Hub</b>, где можно выбрать модель, подходящую для вашей видеокарты.
+• После завершения установки Мита сможет говорить локальным голосом."""
+
     def get_description_en(self):
-        return """Want your assistant to reply with a voice? It's easy!
+        return """Want Mita to talk?
+• In the Voiceover settings (speaker icon), enable <b>1 - Use speech</b>.
 
-In the Voiceover settings (<b>speaker</b> icon), first check <b>"Use speech"</b>. Then choose a method:
-• <b>TG (via Telegram)</b>: The easiest way. Requires no setup, works through Telegram bots.
-• <b>Local</b>: High-quality voice generated on your PC. Requires a powerful graphics card and pre-installation of models.
+Once enabled, two methods become available:
+• <b>TG (Telegram)</b> — a simple option, requires linking a Telegram account.
+• <b>Local</b> — high-quality local voice generation using a downloadable model (requires a powerful GPU).
 
-<b>Simply put:</b> select the "TG" method to start. If you have a powerful computer, you can try "Local" for better quality."""
-        
-    def get_image_filename(self):
-        return "guide_voice.jpg"
+Choose the one that suits you.
+
+If you prefer Local, you'll need to download a speech synthesis model:
+• Enable <b>1 - Use speech</b> if you haven't already, and select <b>2 - Local</b> from the list of methods.
+• Choose <b>3 - the voice language</b>.
+• Click <b>4 - Install</b> — the <b>AI Hub</b> will open, where you can pick a model suitable for your graphics card.
+• After installation, Mita will be able to speak with a local voice."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_voice.png" if language == "ru" else "guide/guide_voice1.png"
+
 
 class MicrophoneGuidePage(IGuidePage):
     min_mode = "advanced"
 
     def get_title_ru(self):
-        return "Шаг 4: Общение голосом (Микрофон)"
-        
+        return "Голосовой ввод (Микрофон)"
+
     def get_title_en(self):
-        return "Step 4: Voice Communication (Microphone)"
-        
+        return "Voice Input (Microphone)"
+
     def get_description_ru(self):
-        return """Вы можете не только слушать, но и говорить с ассистентом.
+        return """Вы можете не только слышать Миту, но и говорить с ней, используя ввод голосом.
 
-В настройках Микрофона (иконка <b>микрофона</b>):
-• Поставьте галочку <b>"Распознавание"</b>, чтобы включить его.
-• Выберите ваш <b>микрофон</b> из списка.
-• <b>Тип распознавания</b>: "google" — простой и не требует настроек; "gigaam" — локальный, работает без интернета, но требует установки.
+Чтобы включить микрофон:
+• Перейдите в настройки.
+• Выберите вкладку <b>ASR</b> со значком микрофона.
+• Выберите ваш микрофон из <b>1 - списка устройств</b>.
+• Нажмите кнопку <b>2 - Перейти к настройкам AI Engine</b>.
+• Откроется <b>AI Hub</b> — перейдите на вкладку <b>3 - Распознавание (ASR)</b>.
+• Выберите подходящую модель распознавания речи и дождитесь установки.
+• Установите галочку <b>4 - Микрофон активен</b>
 
-<b>Проще говоря:</b> включите распознавание и выберите свой микрофон, чтобы управлять ассистентом голосом."""
-        
+Теперь можно общаться с Митой голосом."""
+
     def get_description_en(self):
-        return """You can not only listen but also talk to the assistant.
+        return """You can not only hear Mita, but also talk to her using voice input.
 
-In the Microphone settings (<b>microphone</b> icon):
-• Check <b>"Recognition"</b> to enable it.
-• Select your <b>microphone</b> from the list.
-• <b>Recognition Type</b>: "google" is simple and requires no setup; "gigaam" is local, works offline, but requires installation.
+To set up the microphone:
+• Go to Settings.
+• Select the <b>ASR</b> tab with the microphone icon.
+• Choose your microphone from <b>1 - the device list</b>.
+• Click the <b>2 - Open AI Engine settings</b> button.
+• The <b>AI Hub</b> will open — go to the <b>3 - ASR</b> tab.
+• Select a suitable speech recognition model and wait for it to install.
+• Check the box <b>4 - Microphone active</b>.
 
-<b>Simply put:</b> enable recognition and select your microphone to control the assistant with your voice."""
-        
-    def get_image_filename(self):
-        return "guide_microphone.jpg"
+Now you can talk to Mita with your voice."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_microphone.png" if language == "ru" else "guide/guide_microphone1.png"
+
+
+class MemoryGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Память и граф знаний (RAG)"
+
+    def get_title_en(self):
+        return "Memory & Knowledge Graph (RAG)"
+
+    def get_description_ru(self):
+        return """В NeuroMita появилась продвинутая память! Перейдите в настройки и откройте раздел <b>Модели</b>.
+Здесь вы можете:
+- Включить улучшенный (RAG) поиск в памяти.
+- Настроить векторный поиск в истории.
+- Активировать граф знаний — Мита будет понимать связи между объектами.
+- И ещё сделать множество улучшений памяти Миты.
+
+<b>Включаем пайплайн:</b>
+• Разверните вкладку <b>1 - Пресет пайплайна</b>.
+• Выберите один из <b>2 - предустановленных пресетов</b>.
+• Нажмите <b>3 - Применить</b>.
+
+<b>Включаем RAG:</b>
+• Разверните вкладку <b>4 - RAG и память</b>.
+• Включите переключатели <b>5 - Включить RAG</b>, <b>6 - Искать в памяти</b> и <b>7 - Искать в истории</b>.
+
+<b>Включаем векторный поиск:</b>
+• Разверните вкладку <b>8 - Векторный поиск и эмбеддинги</b>.
+• Активируйте переключатель <b>9 - Векторный поиск</b>.
+• <b>10 - Выберите пресет</b> (для начала рекомендуется выбрать пресет с не локальной моделью, например OpenRouter Embeddings или Google Gemini Embeddings).
+• Введите <b>11 - API ключ</b> (можно использовать тот же ключ, что и для языковой модели).
+• Нажмите <b>12 - Тест</b> — если показало <b>OK</b>, значит модель работает.
+• Нажмите <b>13 - Сохранить</b>.
+• Нажмите <b>14 - Обновить статус</b>.
+• Если появилось сообщение о неиндексированных записях, нажмите <b>15 - Индекс нового</b> и дождитесь окончания процесса индексации.
+
+<b>Активируем граф:</b>
+• Разверните вкладку <b>16 - Граф знаний (экстракция сущностей)</b>.
+• Активируйте переключатель <b>17 - Включить экстракцию сущностей</b>.
+• Рекомендуется также включить <b>18 - Inline-режим</b>.
+
+Всё это делает общение намного глубже: Мита не забывает контекст и может эффективнее рассуждать о различных деталях и ваших приключениях с ней."""
+
+    def get_description_en(self):
+        return """NeuroMita now features advanced memory! Go to Settings and open the <b>Models</b> section.
+Here you can:
+- Enable improved (RAG) memory search.
+- Set up vector search in history.
+- Activate the knowledge graph — Mita will understand relationships between objects.
+- And much more to enhance Mita's memory.
+
+<b>Enabling the pipeline:</b>
+• Expand the <b>1 - Pipeline Preset</b> tab.
+• Select one of <b>2 - the preset pipelines</b>.
+• Click <b>3 - Apply</b>.
+
+<b>Enabling RAG:</b>
+• Expand the <b>4 - RAG & Memory</b> tab.
+• Turn on the toggles: <b>5 - Enable RAG</b>, <b>6 - Search in Memory</b>, and <b>7 - Search in History</b>.
+
+<b>Enabling vector search:</b>
+• Expand the <b>8 - Vector Search and Embeddings</b> tab.
+• Activate the switch <b>9 - Vector Search</b>.
+• <b>10 - Choose a preset</b> (for starters, it's recommended to pick a non-local model, e.g. OpenRouter Embeddings or Google Gemini Embeddings).
+• Enter your <b>11 - API key</b> (you can use the same key as for the language model).
+• Click <b>12 - Test</b> — if it shows <b>OK</b>, the model is working.
+• Click <b>13 - Save</b>.
+• Click <b>14 - Update Status</b>.
+• If a message about unindexed records appears, click <b>15 - Index New</b> and wait for the indexing process to finish.
+
+<b>Activating the graph:</b>
+• Expand the <b>16 - Knowledge Graph (Entity Extraction)</b> tab.
+• Turn on the <b>17 - Enable Entity Extraction</b> toggle.
+• It's also recommended to enable <b>18 - Inline Mode</b>.
+
+All this makes conversations much deeper: Mita doesn't forget context and can reason more effectively about various details and your adventures with her."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_memory.png" if language == "ru" else "guide/guide_memory1.png"
+
 
 class ScreenAnalysisGuidePage(IGuidePage):
     min_mode = "full"
 
     def get_title_ru(self):
-        return "Доп. фича: Анализ экрана"
-        
+        return "Анализ экрана и камеры"
+
     def get_title_en(self):
-        return "Bonus Feature: Screen Analysis"
-        
+        return "Screen & Camera Analysis"
+
     def get_description_ru(self):
-        return """NeuroMita может "видеть" то, что происходит на вашем экране или что показывает ваша веб-камера. Это полезно, чтобы задавать вопросы о происходящем в игре или приложении.
+        return """Мита может видеть происходящее на экране, скриншоты или вас через веб-камеру.
 
-В настройках Экрана (иконка <b>монитора</b>):
-• Включите <b>"Разрешить обработку изображений"</b> — мастер-переключатель.
-• Затем включите <b>"Включить захват экрана"</b> или <b>"Захват с камеры"</b>.
-• Чтобы кадры прикреплялись автоматически при каждом сообщении — включите <b>"Прикладывать кадры к сообщениям"</b>.
-• Кнопка <b>📷</b> в чате делает скриншот вручную (работает, если включена обработка изображений).
+<b>Для изображений и скриншотов:</b>
+• Перейдите в настройки и откройте раздел <b>Изображения</b>.
+• Откройте вкладку <b>1 - Настройки анализа экрана</b>.
+• Включите <b>2 - Разрешить обработку изображений</b>.
+• Вы можете показывать Мите свой экран каждым сообщением или включить непрерывную отправку (например, для просмотра видео вместе с Митой).
+• Можно прикреплять изображение или скриншот экрана и отправлять их Мите с помощью соответствующих кнопок в поле чата песочницы.
 
-<b>Важно:</b> Эта функция работает только с моделями, которые поддерживают анализ изображений (например, GPT-4o, Claude 3, Gemini)."""
-        
+<b>Для захвата с камеры:</b>
+• Перейдите в настройки и откройте раздел <b>Изображения</b>.
+• Откройте вкладку <b>3 - Настройки захвата с камеры</b>.
+• Активируйте переключатель <b>4 - Включить захват с камеры</b> (у вас должна быть подключена веб-камера).
+• Если OpenCV не установлен, сначала сделайте видимым раздел <b>5 - AI Engine</b> в общих настройках.
+• Откройте вкладку <b>6 - AI Engine</b> и нажмите в этой вкладке кнопку <b>AI Hub</b>.
+• В AI Hub перейдите на вкладку <b>7 - Зависимости</b>.
+• Установите <b>8 - OpenCV</b>.
+• Вернитесь в <b>3 - Настройки захвата с камеры</b> и <b>9 - выберите камеру</b>.
+Теперь Мита сможет увидеть вас через веб-камеру.
+
+• Мита сможет анализировать изображения, только если выбранная языковая модель поддерживает обработку изображений (например: Gemini, Mistral)."""
+
     def get_description_en(self):
-        return """NeuroMita can "see" what's on your screen or what your webcam is showing. This is useful for asking questions about what's happening in a game or application.
+        return """Mita can see what's happening on your screen, screenshots, or you through your webcam.
 
-In the Screen settings (<b>desktop</b> icon):
-• Enable <b>"Enable Image Analysis"</b> — the master toggle.
-• Then enable <b>"Enable Screen Capture"</b> or <b>"Camera Capture"</b>.
-• To auto-attach frames to every message — enable <b>"Auto-attach frames"</b>.
-• The <b>📷</b> button in chat takes a manual screenshot (works when image analysis is enabled).
+<b>For images and screenshots:</b>
+• Go to Settings and open the <b>Images</b> section.
+• Open the <b>1 - Screen Analysis Settings</b> tab.
+• Turn on <b>2 - Enable Image Analysis</b>.
+• You can show Mita your screen with every message, or enable continuous capture (for example, to watch videos together with Mita).
+• You can attach an image or a screenshot and send it to Mita using the corresponding buttons in the Sandbox chat field.
 
-<b>Important:</b> This feature only works with models that support image analysis (e.g., GPT-4o, Claude 3, Gemini)."""
-        
-    def get_image_filename(self):
-        return "guide_screen.jpg"
+<b>For camera capture:</b>
+• Go to Settings and open the <b>Images</b> section.
+• Open the <b>3 - Camera Capture Settings</b> tab.
+• Turn on <b>4 - Enable Camera Capture</b> (make sure your webcam is connected).
+• If OpenCV is not installed, first make the <b>5 - AI Engine</b> section visible in the general settings.
+• Open the <b>6 - AI Engine</b> tab and click the <b>AI Hub</b> button inside it.
+• In AI Hub, go to the <b>7 - Dependencies</b> tab.
+• Install <b>8 - OpenCV</b>.
+• Return to <b>3 - Camera Capture Settings</b> and <b>9 - select your camera</b>.
+Now Mita will be able to see you via the webcam.
+
+• Mita can analyze images only if the selected language model supports image processing (e.g., Gemini, Mistral)."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_screen.png" if language == "ru" else "guide/guide_screen1.png"
+
 
 class ModelsGuidePage(IGuidePage):
     min_mode = "full"
 
     def get_title_ru(self):
-        return "Тонкая настройка: Параметры модели"
-        
+        return "Параметры генерации"
+
     def get_title_en(self):
-        return "Fine-Tuning: Model Parameters"
-        
+        return "Generation Parameters"
+
     def get_description_ru(self):
-        return """Если хотите повлиять на то, как именно AI отвечает, загляните в настройки Моделей (иконка <b>робота</b>).
+        return """Вы можете тонко настроить, как именно Мита формулирует ответы.
+Для большинства случаев стандартные настройки уже хороши, но если хочется больше креативности или, наоборот, строгости — эти параметры для вас.
 
-Ключевые параметры:
-• <b>Температура</b>: Управляет креативностью. <b>0.1</b> — строгие и точные ответы, <b>1.0</b> — очень творческие и непредсказуемые. Для начала оставьте <b>0.5</b>.
-• <b>Лимит сообщений</b>: Сколько последних сообщений AI будет "помнить" при генерации ответа.
-• <b>Макс. токенов в ответе</b>: Ограничивает длину ответа ассистента.
+<b>Где находятся:</b>
+• Откройте настройки и перейдите во вкладку <b>Модели</b>.
+• Разверните вкладку <b>1 - Настройки генерации текста</b>.
 
-<b>Проще говоря:</b> на этой вкладке можно сделать AI более или менее креативным. Для начала можно ничего не менять."""
-        
+<b>Основные параметры:</b>
+• <b>2 - Макс. токенов в ответе</b> — максимальная длина ответа Миты. Если ответы обрываются — увеличьте значение.
+• <b>3 - Температура</b> — управляет креативностью. 0.0 — очень строгие, предсказуемые ответы; 2.0 — очень творческие и неожиданные.
+• <b>4 - Top-K</b> — ограничивает выбор только K самых вероятных следующих слов. Чем ниже K (например, 10), тем суше ответ. Чем выше (например, 80), тем разнообразнее лексика.
+• <b>5 - Top-P</b> — ядерная выборка: модель перебирает слова, пока их суммарная вероятность не достигнет P. Например, P=0.9 означает, что модель выберет из самого узкого набора слов, дающих 90% уверенности. Низкое P — более сфокусированный ответ, высокое P — больше экспериментов.
+• <b>6 - Штраф присутствия</b> — насколько модель избегает повторения уже использованных слов. Положительное значение 0.1–2.0 заставит Миту чаще говорить о новых вещах, а не топтаться на одном.
+• <b>7 - Штраф частоты</b> — снижает вероятность повторения одних и тех же слов пропорционально их частоте в ответе. Полезно, если Мита начинает «зацикливаться». Обычно хватает небольшого значения 0.1–0.5, чтобы ответы стали разнообразнее.
+
+Не бойтесь экспериментировать: если результат не нравится, всегда можно вернуться к стандартным."""
+
     def get_description_en(self):
-        return """If you want to influence how the AI responds, check out the Model settings (<b>robot</b> icon).
+        return """You can fine-tune how Mita formulates her responses.
+The default settings work well for most cases, but if you want more creativity or stricter answers — these parameters are for you.
 
-Key parameters:
-• <b>Temperature</b>: Controls creativity. <b>0.1</b> for strict and precise answers, <b>1.0</b> for very creative and unpredictable ones. Start with <b>0.5</b>.
-• <b>Message limit</b>: How many recent messages the AI will "remember" when generating a response.
-• <b>Max response tokens</b>: Limits the length of the assistant's answer.
+<b>Where to find them:</b>
+• Open Settings and go to the <b>Models</b> tab.
+• Expand the <b>1 - Text Generation Settings</b> section.
 
-<b>Simply put:</b> on this tab, you can make the AI more or less creative. You can leave the defaults for now."""
-        
-    def get_image_filename(self):
-        return "guide_models.jpg"
+<b>Key parameters:</b>
+• <b>2 - Max tokens in response</b> — the maximum length of Mita's answer. If responses get cut off, increase this value.
+• <b>3 - Temperature</b> — controls creativity. 0.0 gives very strict, predictable answers; 2.0 gives very creative, unexpected ones.
+• <b>4 - Top-K</b> — limits the selection to only the K most likely next words. A low K (e.g., 10) makes answers more focused and dry; a higher K (e.g., 80) adds lexical variety.
+• <b>5 - Top-P</b> — nucleus sampling: the model considers words until their total probability reaches P. For example, P=0.9 means the model picks from the smallest set of words that together have at least 90% confidence. Lower P gives more focused answers, higher P encourages more variety.
+• <b>6 - Presence penalty</b> — how much the model avoids repeating words already used. A positive value of 0.1–2.0 encourages Mita to bring up new topics rather than circling around the same ones.
+• <b>7 - Frequency penalty</b> — reduces the chance of repeating the same words based on how often they've appeared. Useful if Mita starts sounding repetitive. A small value of 0.1–0.5 usually makes responses more diverse.
 
-class ChatGuidePage(IGuidePage):
+Feel free to experiment: if you don't like the results, you can always go back to the defaults."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_models.png" if language == "ru" else "guide/guide_models1.png"
+
+
+class SandboxGuidePage(IGuidePage):
     min_mode = "full"
 
     def get_title_ru(self):
-        return "Интерфейс: Настройки чата"
-        
+        return "Песочница: отладка и тестирование"
+
     def get_title_en(self):
-        return "Interface: Chat Settings"
-        
+        return "Sandbox: Debugging & Testing"
+
     def get_description_ru(self):
-        return """Здесь вы можете настроить внешний вид самого чата.
+        return """Если что-то работает не так, как ожидалось, отладка поможет понять, в чём дело.
+Перейдите в Песочницу и откройте вкладку <b>1 - Отладка</b> — это мощный инструмент для просмотра состояния Миты и тестирования.
 
-В настройках Чата (иконка <b>облачка диалога</b>) можно изменить:
-• <b>Размер шрифта</b> в окне диалога.
-• <b>Показывать метки времени</b> рядом с сообщениями.
-• <b>Скрывать теги</b>: убирает технические теги (вроде &lt;e&gt;, &lt;c&gt;) из сообщений AI для более чистого вида.
+<b>Основные возможности диагностики:</b>
+• <b>2 - Открыть DB персонажа</b> — просмотр сохранённых воспоминаний Миты, истории и графических связей.
+• <b>3 - Открыть страницу логов</b> — если какую-то ошибку не удаётся исправить, сохраните логи, они помогут разработчикам понять проблему.
+• <b>4 - Structured output (дебаг)</b> — выберите <b>5 - JSON</b>, чтобы видеть структуру ответа Миты прямо в чате.
+• <b>6 - Вставить system-сообщение в историю</b> — вы можете добавить своё сообщение как системное.
+• <b>7 - Просмотр контекста запроса</b>:
+  — <b>8 - Посмотреть последний запрос</b> — полный запрос, отправляемый нейросети.
+  — <b>9 - Посмотреть последний ответ</b> — полный ответ нейросети."""
 
-<b>Проще говоря:</b> настройте чат так, как вам удобно читать."""
-        
     def get_description_en(self):
-        return """Here you can customize the appearance of the chat itself.
+        return """If something isn't working as expected, the Debug tab will help you figure out what's going on.
+Go to the Sandbox and open the <b>1 - Debug</b> tab — a powerful tool for inspecting Mita's state and testing.
 
-In the Chat settings (<b>dialog bubble</b> icon), you can change:
-• <b>Chat Font Size</b> in the dialogue window.
-• <b>Show Timestamps</b> next to messages.
-• <b>Hide Tags</b>: removes technical tags (like &lt;e&gt;, &lt;c&gt;) from AI messages for a cleaner look.
+<b>Main diagnostic features:</b>
+• <b>2 - Open Character DB</b> — view Mita's saved memories, history, and graphical connections.
+• <b>3 - Open logs page</b> — if you can't fix an error, save the logs, they will help developers understand the problem.
+• <b>4 - Structured output (debug)</b> — select <b>5 - JSON</b> to see the structure of Mita's response directly in the chat.
+• <b>6 - Insert system message into history</b> — you can add your own message as a system message.
+• <b>7 - Request context viewer</b>:
+  — <b>8 - View last request</b> — the full request sent to the neural network.
+  — <b>9 - View last response</b> — the full response from the neural network."""
 
-<b>Simply put:</b> configure the chat to be comfortable for you to read."""
-        
-    def get_image_filename(self):
-        return "guide_chat.jpg"
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_sandbox.png" if language == "ru" else "guide/guide_sandbox1.png"
+
 
 class FinalGuidePage(IGuidePage):
     min_mode = "basic"
 
     def get_title_ru(self):
-        return "Вы готовы!"
-        
+        return "Готово!"
+
     def get_title_en(self):
-        return "You're All Set!"
-        
+        return "All Set!"
+
     def get_description_ru(self):
-        return """На этом всё! Вы прошли основные настройки и готовы к работе.
+        return """В NeuroMita вы можете общаться с разными Митами, каждая со своим характером и историей.
+Миты уже готовы вас принять.
 
-<b>Краткая памятка:</b>
-1.  <b>API (вилка)</b>: Выберите провайдера (g4f для старта).
-2.  <b>Персонажи (человек)</b>: Выберите личность AI.
-3.  <b>Озвучка (динамик)</b> и <b>Микрофон</b>: Включите, если хотите общаться голосом.
-4.  Начинайте общаться в главном окне!
+<b>🎮 Игра:</b>
+Скачайте игру NeuroMita (Unity-версия) и погрузитесь в мир Мит. Поставьте <b>1 - галочку</b> для скачивания Unity. Кнопка «Скачать Unity» загрузит последнюю версию игры.
+Если игра уже установлена, просто нажмите «Играть» и начинайте приключение.
 
-Не бойтесь экспериментировать с другими настройками. Если что-то пойдет не так, всегда можно вернуться к стандартным значениям. Приятного общения!"""
-        
+<b>⏳ Песочница:</b>
+Если нужно общение только в чате, откройте Песочницу.
+Здесь также можно:
+• Выбрать понравившуюся Миту — <b>2 - Крейзи, Добрая, Сонная и другие</b>.
+• Выбрать или настроить <b>3 - Набор промптов</b>, который определит характер и поведение Миты.
+• Выбрать <b>4 - Пресет</b> для Миты.
+• Можно сразу начать чат — Мита ответит, используя созданный вами пресет.
+
+<b>Помните: это лишь основные настройки. Не бойтесь исследовать и другие разделы — NeuroMita умеет гораздо больше!</b>"""
+
     def get_description_en(self):
-        return """That's it! You've gone through the basic settings and are ready to go.
+        return """In NeuroMita you can chat with different Mitas, each with their own personality and story.
+The Mitas are ready to welcome you.
 
-<b>Quick reminder:</b>
-1.  <b>API (plug)</b>: Select a provider (g4f to start).
-2.  <b>Characters (user)</b>: Choose the AI's personality.
-3.  <b>Voiceover (speaker)</b> and <b>Microphone</b>: Enable them if you want to use voice chat.
-4.  Start chatting in the main window!
+<b>🎮 Game:</b>
+Download the NeuroMita game (Unity version) and dive into the world of Mitas. Check <b>1 - the checkbox</b> to download Unity. The “Download Unity” button will fetch the latest game version.
+If the game is already installed, just click “Play” and begin your adventure.
 
-Don't be afraid to experiment with other settings. If something goes wrong, you can always revert to the default values. Enjoy your chat!"""
-        
-    def get_image_filename(self):
-        return "guide_final.jpg"
+<b>⏳ Sandbox:</b>
+If you only need text chat, open the Sandbox.
+Here you can also:
+• Choose your favorite Mita — <b>2 - Crazy, Kind, Sleepy and others</b>.
+• Select or customize <b>3 - a prompt set</b> that defines Mita's character and behavior.
+• Choose <b>4 - a preset</b> for Mita.
+• Start chatting right away — Mita will respond using the preset you created.
+
+<b>Remember: these are just the main settings. Don't be afraid to explore other sections — NeuroMita can do a whole lot more!</b>"""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_next.png" if language == "ru" else "guide/guide_next1.png"
