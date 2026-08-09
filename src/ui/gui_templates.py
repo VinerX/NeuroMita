@@ -342,13 +342,18 @@ def create_setting_widget(
 
         vlay.addWidget(widget)
 
+        def _apply_textarea_value(value) -> None:
+            text = str(value if value is not None else default)
+            if widget.toPlainText() != text:
+                widget.setPlainText(text)
+
         if not _bind_setting_two_way(
             gui,
             setting_key,
             widget,
             widget.textChanged,
             widget.toPlainText,
-            lambda value: widget.setPlainText(str(value if value is not None else default)),
+            _apply_textarea_value,
             default=default,
         ):
             widget.textChanged.connect(
@@ -358,7 +363,7 @@ def create_setting_widget(
                 gui,
                 setting_key,
                 widget,
-                lambda value: widget.setPlainText(str(value if value is not None else default)),
+                _apply_textarea_value,
             )
 
         if tooltip:

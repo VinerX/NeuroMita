@@ -28,6 +28,7 @@ class _SandboxRouterSettings:
             "MITA_DIALOGUE_AUTO": bool(config.auto_dialogue_enabled),
             "DIALOGUE_MAX_AUTO_TURNS": int(config.max_auto_turns),
             "DIALOGUE_AUTO_TURN_COUNT_MODE": str(config.auto_turn_count_mode or "fixed"),
+            "DIALOGUE_AUTO_TURNS_PER_PARTICIPANT": int(config.auto_turns_per_participant),
             "DIALOGUE_MAX_CONTINUES": int(config.max_consecutive_continues),
             "GM_ON": bool(config.game_master_enabled),
             "GM_REPEAT": int(config.gm_repeat),
@@ -453,7 +454,7 @@ class SandboxDialogueController:
     def _effective_auto_turn_limit_locked(self) -> int:
         mode = str(self._config.auto_turn_count_mode or "fixed").strip().lower()
         if mode == "per_participant":
-            return sum(
+            participant_count = sum(
                 1
                 for participant in self._participants
                 if (
@@ -462,6 +463,11 @@ class SandboxDialogueController:
                     and participant.can_speak
                 )
             )
+            turns_per_participant = max(
+                1,
+                min(24, int(self._config.auto_turns_per_participant)),
+            )
+            return min(24, participant_count * turns_per_participant)
         return max(0, int(self._config.max_auto_turns))
 
     def _build_context(self) -> dict[str, Any]:

@@ -45,6 +45,19 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             ),
         },
         {
+            "label": _("Автоходов на одну Миту (1–24)", "Automatic turns per active Mita (1–24)"),
+            "key": "DIALOGUE_AUTO_TURNS_PER_PARTICIPANT",
+            "type": "spinbox",
+            "default": 1,
+            "minimum": 1,
+            "maximum": 24,
+            "depends_on": "MITA_DIALOGUE_AUTO",
+            "tooltip": _(
+                "Используется только при режиме «По одному на каждую Миту». Итоговый лимит — число активных говорящих Мит, умноженное на это число.",
+                "Used only in One per active Mita mode. The total limit is the active speaking Mitas multiplied by this number.",
+            ),
+        },
+        {
             "label": _("Фиксированный лимит автоходов (0–24)", "Fixed automatic-turn limit (0–24)"),
             "key": "DIALOGUE_MAX_AUTO_TURNS",
             "type": "spinbox",
@@ -61,8 +74,8 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         {
             "type": "text",
             "label": _(
-                "«По одному на каждую Миту» не использует фиксированное число: лимит равен числу активных говорящих Мит в текущем разговоре.",
-                "One per active Mita does not use the fixed number: its budget equals the active speaking Mitas in the current conversation.",
+                "Используется одно из чисел выше: фиксированный режим берёт фиксированный лимит, а режим «По одной на Миту» умножает число активных говорящих Мит на значение «Автоходов на одну Миту».",
+                "Only one number above is used: Fixed limit uses the fixed value, while One per active Mita multiplies active speaking Mitas by the turns-per-Mita value.",
             ),
         },
         {"type": "end"},

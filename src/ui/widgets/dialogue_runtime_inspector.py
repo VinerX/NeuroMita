@@ -77,6 +77,7 @@ class DialogueRuntimeInspector(QWidget):
         self._max_auto_spin = QSpinBox()
         self._auto_turn_mode_combo = QComboBox()
         self._auto_turn_budget_hint = QLabel()
+        self._auto_turns_per_participant_spin = QSpinBox()
         self._max_continue_spin = QSpinBox()
         self._gm_repeat_spin = QSpinBox()
         self._gm_instruction_edit = QPlainTextEdit()
@@ -214,10 +215,32 @@ class DialogueRuntimeInspector(QWidget):
         self._auto_turn_budget_hint.setWordWrap(True)
         session_layout.addRow("", self._auto_turn_budget_hint)
         self._configure_spin(self._max_auto_spin, 0, 24, 6)
+        self._configure_spin(self._auto_turns_per_participant_spin, 1, 24, 1)
+        try:
+            self._auto_turns_per_participant_spin.setValue(
+                max(
+                    1,
+                    min(
+                        24,
+                        int(
+                            self._global_dialogue_setting(
+                                "DIALOGUE_AUTO_TURNS_PER_PARTICIPANT",
+                                "1",
+                            )
+                        ),
+                    ),
+                )
+            )
+        except (TypeError, ValueError):
+            pass
         self._configure_spin(self._max_continue_spin, 0, 12, 3)
         self._configure_spin(self._gm_repeat_spin, 1, 100, 2)
         session_layout.addRow(
-            _("Automatic turns", "Automatic turns"),
+            _("Turns per selected Mita", "Turns per selected Mita"),
+            self._auto_turns_per_participant_spin,
+        )
+        session_layout.addRow(
+            _("Fixed automatic turns", "Fixed automatic turns"),
             self._max_auto_spin,
         )
         session_layout.addRow(
@@ -426,8 +449,15 @@ class DialogueRuntimeInspector(QWidget):
         mode = str(self._auto_turn_mode_combo.currentData() or "fixed")
         if mode == "per_participant":
             self._auto_turn_budget_hint.setText(
-                _("One automatic turn per selected Mita: ", "One automatic turn per selected Mita: ")
-                + str(participant_count)
+                _("Automatic turns: ", "Automatic turns: ")
+                + str(
+                    participant_count
+                    * self._auto_turns_per_participant_spin.value()
+                )
+                + _(
+                    " (active Mitas × turns per Mita)",
+                    " (active Mitas × turns per Mita)",
+                )
             )
         else:
             self._auto_turn_budget_hint.setText(
@@ -484,6 +514,7 @@ class DialogueRuntimeInspector(QWidget):
             manual_step_mode=manual_step,
             max_auto_turns=self._max_auto_spin.value(),
             auto_turn_count_mode=str(self._auto_turn_mode_combo.currentData() or "fixed"),
+            auto_turns_per_participant=self._auto_turns_per_participant_spin.value(),
             max_consecutive_continues=self._max_continue_spin.value(),
             game_master_enabled=self._gm_check.isChecked(),
             gm_repeat=self._gm_repeat_spin.value(),
@@ -570,14 +601,19 @@ class DialogueRuntimeInspector(QWidget):
             self._gm_check,
             self._auto_turn_mode_combo,
             self._max_auto_spin,
+            self._auto_turns_per_participant_spin,
             self._max_continue_spin,
             self._gm_repeat_spin,
             self._gm_instruction_edit,
         ):
             widget.setEnabled(configuration_enabled)
-        self._max_auto_spin.setEnabled(
-            configuration_enabled
-            and str(self._auto_turn_mode_combo.currentData() or "fixed") == "fixed"
+        is_per_participant = (
+            str(self._auto_turn_mode_combo.currentData() or "fixed")
+            == "per_participant"
+        )
+        self._max_auto_spin.setEnabled(configuration_enabled and not is_per_participant)
+        self._auto_turns_per_participant_spin.setEnabled(
+            configuration_enabled and is_per_participant
         )
         self._refresh_auto_turn_budget_hint()
         for check in self._character_checks.values():

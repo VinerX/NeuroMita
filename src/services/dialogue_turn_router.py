@@ -127,6 +127,16 @@ class DialogueTurnRouter:
         ).strip().lower()
         if auto_turn_count_mode not in {"fixed", "per_participant"}:
             auto_turn_count_mode = "fixed"
+        auto_turns_per_participant = max(
+            1,
+            min(
+                24,
+                self._as_int(
+                    self._get_setting("DIALOGUE_AUTO_TURNS_PER_PARTICIPANT", 1),
+                    1,
+                ),
+            ),
+        )
         revision = self._as_int(
             getattr(self._settings, "revision", None)
             if self._settings is not None
@@ -140,6 +150,7 @@ class DialogueTurnRouter:
             "auto": self._as_bool(self._get_setting("MITA_DIALOGUE_AUTO", False)),
             "max_auto": max_auto,
             "auto_turn_count_mode": auto_turn_count_mode,
+            "auto_turns_per_participant": auto_turns_per_participant,
             "gm_on": self._as_bool(self._get_setting("GM_ON", False)),
             "gm_repeat": gm_repeat,
             "continue_limit": continue_limit,
@@ -166,7 +177,11 @@ class DialogueTurnRouter:
         settings: dict[str, Any],
     ) -> int:
         if settings["auto_turn_count_mode"] == "per_participant":
-            return self._participant_auto_turn_limit(dialogue)
+            return min(
+                24,
+                self._participant_auto_turn_limit(dialogue)
+                * int(settings["auto_turns_per_participant"]),
+            )
         return int(settings["max_auto"])
 
     def authoritative_context(

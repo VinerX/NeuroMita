@@ -85,9 +85,10 @@ class SandboxDialogueControllerTests(unittest.TestCase):
             auto_dialogue_enabled=True,
             max_auto_turns=1,
             auto_turn_count_mode="per_participant",
+            auto_turns_per_participant=3,
         )
 
-        self.assertEqual(self.controller._effective_auto_turn_limit_locked(), 2)
+        self.assertEqual(self.controller._effective_auto_turn_limit_locked(), 6)
 
     def test_route_target_character_must_match_participant(self) -> None:
         self.assertFalse(
