@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from localization.live import tr_set
 from ui.chat.chat_widget import ChatWidget
+from ui.chat.dialogue_presentation import format_conversation_title, format_runtime_source
 from ui.widgets.chat_panel_presentation import (
     ChatCaptureScreenRequested,
     ChatClearStagedRequested,
@@ -60,6 +61,7 @@ class ChatPanel(QWidget):
         self._state: ChatPanelState = view_model.state
         self._staged_images: list[bytes] = []
         self._conversation_title_label: QLabel | None = None
+        self._conversation_source_label: QLabel | None = None
         self.image_preview_bar: ImagePreviewBar | None = None
 
         self.attach_button: QPushButton
@@ -96,9 +98,12 @@ class ChatPanel(QWidget):
         self._state = state
         if self._conversation_title_label is not None:
             self._conversation_title_label.setText(
-                _("Разговор с ", "Conversation with ")
-                + (state.character_id or _("персонажем", "character"))
+                format_conversation_title(state.dialogue_snapshot, state.character_id)
             )
+        if self._conversation_source_label is not None:
+            source_label = format_runtime_source(state.dialogue_snapshot)
+            self._conversation_source_label.setText(source_label)
+            self._conversation_source_label.setVisible(bool(source_label))
         self.composer_warning_label.setText(state.warning)
         self.composer_bar.setVisible(not state.blocked)
         self.composer_warning.setVisible(state.blocked)
@@ -267,6 +272,12 @@ class ChatPanel(QWidget):
         title.setObjectName("ChatStripTitle")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         self._conversation_title_label = title
+
+        source_label = QLabel("")
+        source_label.setObjectName("ChatStripSourceBadge")
+        source_label.setVisible(False)
+        layout.addWidget(source_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._conversation_source_label = source_label
         layout.addStretch(1)
 
         history_button = QPushButton()
