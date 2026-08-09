@@ -84,12 +84,12 @@ class GuideWidget(QWidget):
     closed = pyqtSignal()
 
     _SECTION_NAMES = {
-        "start": ("??????", "Getting started"),
-        "voice": ("????? ? ????", "Voice & input"),
-        "memory": ("??????", "Memory"),
-        "vision": ("????? ? ??????", "Screen & camera"),
-        "tools": ("?????? ? ?????????", "Models & sandbox"),
-        "finish": ("??????", "Finish"),
+        "start": ("Начало", "Getting started"),
+        "voice": ("Голос и ввод", "Voice & input"),
+        "memory": ("Память", "Memory"),
+        "vision": ("Экран и камера", "Screen & camera"),
+        "tools": ("Модели и песочница", "Models & sandbox"),
+        "finish": ("Готово", "Finish"),
     }
 
     # Normalized rectangles are relative to the cropped image shown on each page.
@@ -222,9 +222,36 @@ class GuideWidget(QWidget):
             #GuideHelpButton:hover {
                 background-color: {chip_hover};
             }
-            #GuideProgressTrack {
+            #GuideProgressTrack,
+            #GuideProgressSectionTrack {
                 background-color: transparent;
                 border: none;
+            }
+            #GuideSectionTab {
+                background-color: {chip_bg};
+                color: {muted_text};
+                border: 1px solid {outline};
+                border-radius: 8px;
+                min-height: 24px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+                text-align: center;
+            }
+            #GuideSectionTab:hover {
+                border: 1px solid {accent_alt};
+                background-color: {chip_hover};
+                color: {text};
+            }
+            #GuideSectionTab[progressState="done"] {
+                background-color: rgba(171, 80, 133, 0.22);
+                border: 1px solid {accent_border};
+                color: {text};
+            }
+            #GuideSectionTab[progressState="current"] {
+                background-color: rgba(214, 90, 149, 0.24);
+                border: 1px solid {accent_alt};
+                color: {text};
             }
             #GuideProgressSegment {
                 background-color: {chip_bg};
@@ -576,14 +603,31 @@ class GuideWidget(QWidget):
 
         self.progress_track = QFrame()
         self.progress_track.setObjectName("GuideProgressTrack")
-        self.progress_layout = QHBoxLayout(self.progress_track)
+        self.progress_tracks_layout = QVBoxLayout(self.progress_track)
+        self.progress_tracks_layout.setContentsMargins(0, 0, 0, 0)
+        self.progress_tracks_layout.setSpacing(5)
+
+        self.progress_section_track = QFrame()
+        self.progress_section_track.setObjectName("GuideProgressSectionTrack")
+        self.progress_section_layout = QHBoxLayout(self.progress_section_track)
+        self.progress_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.progress_section_layout.setSpacing(6)
+        self.progress_tracks_layout.addWidget(self.progress_section_track)
+
+        self.progress_segment_track = QFrame()
+        self.progress_segment_track.setObjectName("GuideProgressTrack")
+        self.progress_layout = QHBoxLayout(self.progress_segment_track)
         self.progress_layout.setContentsMargins(0, 1, 0, 1)
         self.progress_layout.setSpacing(3)
+        self.progress_tracks_layout.addWidget(self.progress_segment_track)
+
         progress_row.addWidget(self.progress_track, 1)
         container_layout.addLayout(progress_row)
 
         self._progress_buttons = []
         self._progress_sections = []
+        self._progress_section_buttons = []
+        self._progress_section_ranges = []
 
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(15)
@@ -742,14 +786,47 @@ class GuideWidget(QWidget):
         if not hasattr(self, "progress_layout"):
             return
         self._clear_layout(self.progress_layout)
+        if hasattr(self, "progress_section_layout"):
+            self._clear_layout(self.progress_section_layout)
         self._progress_buttons = []
         self._progress_sections = []
+        self._progress_section_buttons = []
+        self._progress_section_ranges = []
         page_count = len(self._filtered_pages)
+        section_ranges = []
+        start_index = 0
+        while start_index < page_count:
+            section = self._page_section_key(self._filtered_pages[start_index])
+            end_index = start_index
+            while end_index + 1 < page_count and self._page_section_key(self._filtered_pages[end_index + 1]) == section:
+                end_index += 1
+            section_ranges.append((section, start_index, end_index))
+            start_index = end_index + 1
+
+        for section, first_index, last_index in section_ranges:
+            section_button = QPushButton(self._section_title(section))
+            section_button.setObjectName("GuideSectionTab")
+            section_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            section_button.setProperty("progressState", "upcoming")
+            section_button.clicked.connect(lambda checked=False, i=first_index: self.show_page(i))
+            section_button.setToolTip(
+                f"{self._section_title(section)} · {first_index + 1}-{last_index + 1}/{page_count}\n" +
+                translate_for_language(
+                    self.current_language,
+                    "Нажмите, чтобы перейти к разделу",
+                    "Click to open this section",
+                )
+            )
+            if hasattr(self, "progress_section_layout"):
+                self.progress_section_layout.addWidget(section_button, max(1, last_index - first_index + 1))
+            self._progress_section_buttons.append(section_button)
+            self._progress_section_ranges.append((section, first_index, last_index, section_button))
+
         previous_section = None
         for index, page in enumerate(self._filtered_pages):
             section = self._page_section_key(page)
             if previous_section is not None and section != previous_section:
-                self.progress_layout.addSpacing(7)
+                self.progress_layout.addSpacing(3)
             button = QPushButton("")
             button.setObjectName("GuideProgressSegment")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -758,8 +835,8 @@ class GuideWidget(QWidget):
             button.clicked.connect(lambda checked=False, i=index: self.show_page(i))
             title = self._page_title(page)
             button.setToolTip(
-                f"{self._section_title(section)} ? {index + 1}/{page_count}\n{title}\n" +
-                translate_for_language(self.current_language, "???????, ????? ???????", "Click to open")
+                f"{self._section_title(section)} · {index + 1}/{page_count}\n{title}\n" +
+                translate_for_language(self.current_language, "Нажмите, чтобы перейти", "Click to open")
             )
             self.progress_layout.addWidget(button, 1)
             self._progress_buttons.append(button)
@@ -770,12 +847,24 @@ class GuideWidget(QWidget):
     def _update_progress_state(self, current_index):
         for index, button in enumerate(getattr(self, "_progress_buttons", [])):
             state = "done" if index < current_index else "current" if index == current_index else "upcoming"
-            if button.property("progressState") == state:
-                continue
-            button.setProperty("progressState", state)
-            button.style().unpolish(button)
-            button.style().polish(button)
-            button.update()
+            if button.property("progressState") != state:
+                button.setProperty("progressState", state)
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
+
+        for section, first_index, last_index, button in getattr(self, "_progress_section_ranges", []):
+            if current_index > last_index:
+                state = "done"
+            elif first_index <= current_index <= last_index:
+                state = "current"
+            else:
+                state = "upcoming"
+            if button.property("progressState") != state:
+                button.setProperty("progressState", state)
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
 
     def _show_contents_menu(self):
         if not self._filtered_pages:
@@ -869,18 +958,20 @@ class GuideWidget(QWidget):
     def _format_description(text: str) -> str:
         """Render compact text; numbered screenshot references become interactive steps."""
         blocks = []
-        marker_re = re.compile(r"<b>\s*(\d+)\s*(?:[-??]\s*)?([^<]*?)</b>")
+        marker_re = re.compile(r"<b>\s*(\d+)\s*(?:[-\u2013\u2014]\s*)?([^<]*?)</b>")
 
         def render_markers(value):
             def repl(match):
                 number = int(match.group(1))
                 label = match.group(2).strip()
+                number_html = (
+                    f'<a href="guide-step:{number}" '
+                    'style="text-decoration:none; color:#ec6ea7;">'
+                    f'<b>{number}.</b></a>'
+                )
                 if label:
-                    return (
-                        f'<a href="guide-step:{number}" style="text-decoration:none;">'
-                        f'<b>{number}.</b></a> <b>{label}</b>'
-                    )
-                return f'<a href="guide-step:{number}" style="text-decoration:none;"><b>{number}.</b></a>'
+                    return f'{number_html} <b>{label}</b>'
+                return number_html
             return marker_re.sub(repl, value)
 
         for raw_line in str(text or "").splitlines():
@@ -994,7 +1085,7 @@ class GuideWidget(QWidget):
                 actual_percent = round((scaled.width() / max(1, pixmap.width())) * 100)
                 self.zoom_label.setText(f"{actual_percent}%")
             else:
-                self.zoom_label.setText("?")
+                self.zoom_label.setText("—")
         if hasattr(self, "zoom_out_button"):
             self.zoom_out_button.setEnabled(self._image_zoom > 1.0)
         if hasattr(self, "zoom_in_button"):
