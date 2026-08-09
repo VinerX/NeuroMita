@@ -307,7 +307,7 @@ class PromptController(PromptBuilderService):
             instruction = (
                 gm_instruction_override
                 if gm_instruction_override is not None
-                else self._get_setting("GM_SMALL_PROMPT", "")
+                else self._get_setting("GM_SMALL_PROMPT", "??????? ??? ???????")
             )
             character.set_variable("GM_INSTRUCTION", instruction or "")
 

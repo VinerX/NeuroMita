@@ -118,7 +118,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "label": _("Задача GameMaster", "GameMaster prompt"),
             "key": "GM_SMALL_PROMPT",
             "type": "textarea",
-            "default": "",
+            "default": "??????? ??? ???????",
         },
     ]
 

@@ -463,7 +463,10 @@ class DialogueRuntimeInspector(QWidget):
 
     @classmethod
     def _global_gm_instruction(cls) -> str:
-        return cls._global_dialogue_setting("GM_SMALL_PROMPT")
+        return cls._global_dialogue_setting(
+            "GM_SMALL_PROMPT",
+            "??????? ??? ???????",
+        )
 
     def _refresh_auto_turn_budget_hint(self, *_args) -> None:
         participant_count = sum(
