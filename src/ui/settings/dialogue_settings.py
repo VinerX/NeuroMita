@@ -30,7 +30,22 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             ),
         },
         {
-            "label": _("Максимум автоходов после запроса (0–24)", "Maximum automatic turns after a player message (0–24)"),
+            "label": _("Как считать автоходы", "How to count automatic turns"),
+            "key": "DIALOGUE_AUTO_TURN_COUNT_MODE",
+            "type": "combobox",
+            "options": [
+                (_("Фиксированный лимит", "Fixed limit"), "fixed"),
+                (_("По одному на каждую Миту", "One per active Mita"), "per_participant"),
+            ],
+            "default": "fixed",
+            "depends_on": "MITA_DIALOGUE_AUTO",
+            "tooltip": _(
+                "Фиксированный режим использует число ниже. Второй режим игнорирует его и даёт один ход на каждую активную говорящую Миту.",
+                "Fixed mode uses the number below. The other mode ignores it and gives one turn to each active Mita that can speak.",
+            ),
+        },
+        {
+            "label": _("Фиксированный лимит автоходов (0–24)", "Fixed automatic-turn limit (0–24)"),
             "key": "DIALOGUE_MAX_AUTO_TURNS",
             "type": "spinbox",
             "default": 6,
@@ -39,23 +54,15 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "special_value_text": _("Откл.", "Off"),
             "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "0 отключает автоматические ходы.",
-                "0 disables automatic turns.",
+                "Используется только при режиме «Фиксированный лимит». 0 отключает автоматические ходы.",
+                "Used only in Fixed limit mode. 0 disables automatic turns.",
             ),
         },
         {
-            "label": _("Подсчёт лимита автоходов", "Automatic turn budget"),
-            "key": "DIALOGUE_AUTO_TURN_COUNT_MODE",
-            "type": "combobox",
-            "options": [
-                (_("Фиксированный лимит", "Fixed limit"), "fixed"),
-                (_("По одному на каждую Миту", "One per selected Mita"), "per_participant"),
-            ],
-            "default": "fixed",
-            "depends_on": "MITA_DIALOGUE_AUTO",
-            "tooltip": _(
-                "Во втором режиме размер цепочки равен количеству активных Мит в разговоре.",
-                "In the second mode, the chain budget equals the number of active Mitas in the conversation.",
+            "type": "text",
+            "label": _(
+                "«По одному на каждую Миту» не использует фиксированное число: лимит равен числу активных говорящих Мит в текущем разговоре.",
+                "One per active Mita does not use the fixed number: its budget equals the active speaking Mitas in the current conversation.",
             ),
         },
         {"type": "end"},
