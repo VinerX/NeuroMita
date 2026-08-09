@@ -393,8 +393,9 @@ class DialogueTurnRouter:
         self,
         structured: dict[str, Any],
         dialogue: DialogueTurnContext,
-    ) -> tuple[str, DialogueParticipant | None]:
+    ) -> tuple[str, str, DialogueParticipant | None]:
         target_character = ""
+        directive_text = ""
         for segment in structured.get("segments", []) or []:
             if not isinstance(segment, dict):
                 continue
@@ -413,6 +414,13 @@ class DialogueTurnRouter:
                     target_character = str(
                         payload.get("character") or payload.get("target") or ""
                     ).strip()
+                    directive_text = str(
+                        payload.get("message")
+                        or payload.get("instruction")
+                        or payload.get("text")
+                        or payload.get("value")
+                        or ""
+                    ).strip()
                     if target_character:
                         break
             if target_character:
@@ -426,7 +434,11 @@ class DialogueTurnRouter:
             if target_character:
                 break
 
-        return target_character, self._participant_by_character(dialogue, target_character)
+        return (
+            target_character,
+            directive_text,
+            self._participant_by_character(dialogue, target_character),
+        )
 
     def _route_after_game_master(
         self,
@@ -434,7 +446,10 @@ class DialogueTurnRouter:
         structured: dict[str, Any],
         state: _ConversationRouterState,
     ) -> Optional[RoutedDialogueRoute]:
-        target_character, target = self._extract_gm_control(structured, context)
+        target_character, directive_text, target = self._extract_gm_control(
+            structured,
+            context,
+        )
         if target_character == "stop":
             return RoutedDialogueRoute(
                 route_kind=ROUTE_STOP,
@@ -446,7 +461,7 @@ class DialogueTurnRouter:
                 route_id=uuid.uuid4().hex,
             )
 
-        if target is not None:
+        if target is not None and directive_text:
             eligible_ids = {
                 item.actor_id for item in self._eligible_participants(
                     replace(
@@ -461,7 +476,7 @@ class DialogueTurnRouter:
                     event_type="answer",
                     target_actor_id=target.actor_id,
                     target_character_id=target.character_id,
-                    input_text="Carry out the current GameMaster directive naturally.",
+                    input_text=directive_text,
                     reason="game_master_directive",
                     conversation_id=context.conversation_id,
                     epoch=max(0, int(context.epoch)),

@@ -209,6 +209,26 @@ class DialogueTurnRouterTests(unittest.TestCase):
         route = router.route_after_response(context, structured=structured, character_id="GameMaster", event_type="game_master_observe", control_plane_trusted=True)
         self.assertEqual(route.route_kind, ROUTE_GAME_MASTER_DIRECTIVE)
         self.assertEqual(route.target_actor_id, "actor-kind")
+        self.assertEqual(route.input_text, "Answer.")
+
+    def test_game_master_target_without_text_does_not_create_directive(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True))
+        route = router.route_after_response(
+            _context(current=""),
+            structured={
+                "segments": [{
+                    "intents": [{
+                        "type": "dialogue.send_system_message",
+                        "payload": {"character": "Kind"},
+                    }],
+                }],
+            },
+            character_id="GameMaster",
+            event_type="game_master_observe",
+            control_plane_trusted=True,
+        )
+
+        self.assertIsNone(route)
 
     def test_continue_uses_central_limit(self):
         router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=1))
