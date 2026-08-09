@@ -252,16 +252,36 @@ class DialogueRuntimeInspector(QWidget):
             _("Mita replies between GM checks", "Mita replies between GM checks"),
             self._gm_repeat_spin,
         )
+        gm_command_card = QFrame()
+        gm_command_card.setObjectName("DialogueGmCommandCard")
+        gm_command_layout = QVBoxLayout(gm_command_card)
+        gm_command_layout.setContentsMargins(10, 9, 10, 10)
+        gm_command_layout.setSpacing(4)
+
+        gm_command_title = QLabel(
+            _("Оперативная команда GameMaster", "Live GameMaster command")
+        )
+        gm_command_title.setObjectName("DialogueGmCommandTitle")
+        gm_command_layout.addWidget(gm_command_title)
+
+        gm_command_hint = QLabel(
+            _(
+                "Применяется к следующему ходу GM; во время сессии обновляется сразу.",
+                "Applies to the next GM turn and updates immediately during a session.",
+            )
+        )
+        gm_command_hint.setObjectName("DialogueGmCommandHint")
+        gm_command_hint.setWordWrap(True)
+        gm_command_layout.addWidget(gm_command_hint)
+
         self._gm_instruction_edit.setObjectName("DialogueGameMasterInstruction")
-        self._gm_instruction_edit.setFixedHeight(74)
+        self._gm_instruction_edit.setFixedHeight(82)
         self._gm_instruction_edit.setPlaceholderText(
-            _("Optional task for this session's GameMaster", "Optional task for this session's GameMaster")
+            _("Например: направь разговор к общей цели.", "For example: steer the conversation toward a shared goal.")
         )
         self._gm_instruction_edit.setPlainText(self._global_gm_instruction())
-        session_layout.addRow(
-            _("GameMaster task (updates the next GM turn)", "GameMaster task (updates the next GM turn)"),
-            self._gm_instruction_edit,
-        )
+        gm_command_layout.addWidget(self._gm_instruction_edit)
+        session_layout.addRow(gm_command_card)
         self._gm_instruction_edit.textChanged.connect(
             self._update_live_gm_instruction
         )

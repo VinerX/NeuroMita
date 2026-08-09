@@ -231,6 +231,36 @@ QToolButton#DialogueTechnicalDetailsToggle[expanded="true"] {
     border: 1px solid rgba({accent_rgb}, 0.34);
 }
 
+QFrame#DialogueGmCommandCard {
+    background-color: rgba({accent_rgb}, 0.07);
+    border: 1px solid rgba({accent_rgb}, 0.28);
+    border-radius: 11px;
+}
+
+QLabel#DialogueGmCommandTitle {
+    color: {text};
+    font-size: 9pt;
+    font-weight: 800;
+}
+
+QLabel#DialogueGmCommandHint {
+    color: {muted};
+    font-size: 8pt;
+}
+
+QPlainTextEdit#DialogueGameMasterInstruction {
+    background-color: rgba(7, 7, 16, 0.78);
+    border: 1px solid rgba({accent_rgb}, 0.22);
+    border-radius: 8px;
+    color: {text};
+    padding: 6px 8px;
+}
+
+QPlainTextEdit#DialogueGameMasterInstruction:focus {
+    border: 1px solid rgba({accent_rgb}, 0.70);
+    background-color: rgba(7, 7, 16, 0.94);
+}
+
 QLabel#DialogueTechnicalDetails {
     color: {muted};
     background-color: rgba(7, 7, 16, 0.56);
