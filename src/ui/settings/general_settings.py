@@ -132,7 +132,14 @@ def setup_general_settings_controls(self, parent):
         {'label': _('Скрывать (приватные) данные', 'Hide (private) data'), 
          'key': 'HIDE_PRIVATE',
          'type': 'checkbutton', 
-         'default_checkbutton': True},
+         'default_checkbutton': True,
+         'tooltip': _(
+             'Маскирует в интерфейсе значения Telegram ID/Hash/Phone и '
+             'Google API Key/CSE ID. Не шифрует, не удаляет и не меняет '
+             'отправку данных.',
+             'Masks Telegram ID/Hash/Phone and Google API Key/CSE ID in the '
+             'interface. It does not encrypt, delete, or change how data is sent.',
+         )},
     ]
     create_settings_section(
         self, 
