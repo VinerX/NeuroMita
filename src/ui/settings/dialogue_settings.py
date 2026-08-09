@@ -51,9 +51,8 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "default": 1,
             "minimum": 1,
             "maximum": 24,
-            "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Используется только при режиме «По одному на каждую Миту». Итоговый лимит — число активных говорящих Мит, умноженное на это число.",
+                "Итоговый лимит — число активных говорящих Мит, умноженное на это число.",
                 "Used only in One per active Mita mode. The total limit is the active speaking Mitas multiplied by this number.",
             ),
         },
@@ -65,17 +64,9 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "minimum": 0,
             "maximum": 24,
             "special_value_text": _("Откл.", "Off"),
-            "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Используется только при режиме «Фиксированный лимит». 0 отключает автоматические ходы.",
+                "0 отключает автоматические ходы.",
                 "Used only in Fixed limit mode. 0 disables automatic turns.",
-            ),
-        },
-        {
-            "type": "text",
-            "label": _(
-                "Используется одно из чисел выше: фиксированный режим берёт фиксированный лимит, а режим «По одной на Миту» умножает число активных говорящих Мит на значение «Автоходов на одну Миту».",
-                "Only one number above is used: Fixed limit uses the fixed value, while One per active Mita multiplies active speaking Mitas by the turns-per-Mita value.",
             ),
         },
         {"type": "end"},
@@ -138,3 +129,18 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         config,
         icon_name="fa6s.comments",
     )
+
+    auto_enabled = self.MITA_DIALOGUE_AUTO
+    count_mode = self.DIALOGUE_AUTO_TURN_COUNT_MODE
+    fixed_limit_frame = self.DIALOGUE_MAX_AUTO_TURNS_frame
+    per_mita_frame = self.DIALOGUE_AUTO_TURNS_PER_PARTICIPANT_frame
+
+    def sync_budget_controls(*_args) -> None:
+        enabled = bool(auto_enabled.isChecked())
+        mode = str(count_mode.currentData() or "per_participant")
+        fixed_limit_frame.setVisible(enabled and mode == "fixed")
+        per_mita_frame.setVisible(enabled and mode == "per_participant")
+
+    auto_enabled.stateChanged.connect(sync_budget_controls)
+    count_mode.currentIndexChanged.connect(sync_budget_controls)
+    sync_budget_controls()
