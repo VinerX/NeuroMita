@@ -14,6 +14,7 @@ from services.contracts import (
     DialogueTurnContext,
     SandboxDialogueConfig,
     SandboxDialogueUiState,
+    SettingsService,
     TaskService,
 )
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
@@ -63,6 +64,7 @@ class SandboxDialogueController:
         self._active = False
         self._ui_status_code = "inactive"
         self._ui_status_detail = ""
+        self._settings_subscription = None
         self._bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status, weak=False)
 
     @property
@@ -74,6 +76,11 @@ class SandboxDialogueController:
     def session_id(self) -> str:
         with self._lock:
             return self._session_id
+
+    @property
+    def gm_instruction(self) -> str:
+        with self._lock:
+            return self._config.gm_instruction if self._active else ""
 
     def ui_state(self) -> SandboxDialogueUiState:
         """Return a stable snapshot for UI consumers without exposing internals."""
@@ -141,6 +148,7 @@ class SandboxDialogueController:
             DialogueRuntimeSource.SANDBOX,
             game_master_enabled=self._config.game_master_enabled,
         )
+        self._ensure_gm_instruction_subscription()
         return True
 
     def stop_session(self) -> None:
@@ -161,6 +169,21 @@ class SandboxDialogueController:
 
     def reset_session(self) -> None:
         self.stop_session()
+
+    def _ensure_gm_instruction_subscription(self) -> None:
+        if self._settings_subscription is not None:
+            return
+        settings = services().get_optional(SettingsService)
+        if settings is not None:
+            self._settings_subscription = settings.subscribe(
+                self._on_gm_instruction_setting_changed,
+                keys={"GM_SMALL_PROMPT"},
+            )
+
+    def _on_gm_instruction_setting_changed(self, change) -> None:
+        if getattr(change, "key", "") != "GM_SMALL_PROMPT":
+            return
+        self.update_gm_instruction(str(getattr(change, "value", "") or ""))
 
     def update_gm_instruction(self, instruction: str) -> bool:
         """Apply a session-local GameMaster task to future moderator turns."""

@@ -72,6 +72,19 @@ class SandboxDialogueControllerTests(unittest.TestCase):
             "Prioritize the player vote.",
         )
 
+    def test_settings_instruction_updates_active_sandbox_session(self) -> None:
+        self.controller._on_gm_instruction_setting_changed(
+            SimpleNamespace(
+                key="GM_SMALL_PROMPT",
+                value="Ask everyone to meow.",
+            )
+        )
+
+        self.assertEqual(
+            self.controller.gm_instruction,
+            "Ask everyone to meow.",
+        )
+
     def test_valid_route_advances_exactly_one_turn(self) -> None:
         with patch.object(self.controller, "_emit_request", return_value=True):
             self.assertTrue(self.controller.execute_route(self._route()))

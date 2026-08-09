@@ -593,13 +593,10 @@ class DialogueRuntimeInspector(QWidget):
         controller = get_sandbox_dialogue_controller()
         if controller.active:
             controller.update_gm_instruction(instruction)
-            return
 
-        snapshot = get_dialogue_runtime_state_service().snapshot()
-        if snapshot.source is DialogueRuntimeSource.UNITY:
-            settings = services().get_optional(SettingsService)
-            if settings is not None:
-                settings.set("GM_SMALL_PROMPT", instruction)
+        settings = services().get_optional(SettingsService)
+        if settings is not None:
+            settings.set("GM_SMALL_PROMPT", instruction)
 
     def _stop_session(self) -> None:
         get_sandbox_dialogue_controller().stop_session()
@@ -685,6 +682,11 @@ class DialogueRuntimeInspector(QWidget):
             configuration_enabled and is_per_participant
         )
         self._gm_instruction_edit.setEnabled(not unity_active)
+        if sandbox_active and not self._gm_instruction_edit.hasFocus():
+            with QSignalBlocker(self._gm_instruction_edit):
+                self._gm_instruction_edit.setPlainText(
+                    get_sandbox_dialogue_controller().gm_instruction
+                )
         if unity_active:
             self._sync_unity_gm_controls()
             self._gm_check.setEnabled(True)
