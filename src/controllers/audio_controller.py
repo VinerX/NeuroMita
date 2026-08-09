@@ -6,6 +6,7 @@ from handlers.audio_handler import AudioHandler
 from main_logger import logger
 from presets.local_voice_models import LOCAL_VOICE_MODELS
 from core.events import get_event_bus, Events, Event
+from core.performance_trace import perf_mark, perf_span, performance_traces
 from core.services import use
 from services.contracts import (
     AudioStateService,
@@ -106,6 +107,8 @@ class AudioController(AudioStateService):
         text = data.get("text", "")
         task_uid = data.get("task_uid")
         message_id = data.get("message_id")
+        trace_id = str(data.get("trace_id") or "").strip() or None
+        perf_mark(trace_id, "tts.controller_received")
 
         character_id = data.get("character_id")
         voice_profile = data.get("voice_profile")
@@ -120,6 +123,7 @@ class AudioController(AudioStateService):
             speaker = speaker or self.get_speaker_text()
 
         if not text:
+            performance_traces().finish(trace_id, "error", error_stage="tts.empty") if trace_id else None
             return
 
         original_text = text
@@ -131,6 +135,7 @@ class AudioController(AudioStateService):
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, "Event loop not ready")
             self.waiting_answer = False
+            performance_traces().finish(trace_id, "error", error_stage="tts") if trace_id else None
             return
 
         self.waiting_answer = True
@@ -145,6 +150,7 @@ class AudioController(AudioStateService):
                     speaker,
                     task_uid,
                     message_id=message_id,
+                    trace_id=trace_id,
                 ))
 
             elif self.voiceover_method == "Local":
@@ -155,6 +161,7 @@ class AudioController(AudioStateService):
                     character_id=character_id,
                     voice_profile=voice_profile,
                     message_id=message_id,
+                    trace_id=trace_id,
                 ))
 
             else:
@@ -162,6 +169,7 @@ class AudioController(AudioStateService):
                 if task_uid:
                     self._update_task_failed_voiceover(task_uid, "Unknown voiceover method")
                 self.waiting_answer = False
+                performance_traces().finish(trace_id, "error", error_stage="tts.method") if trace_id else None
                 return
 
             logger.info("Запрос озвучки принят")
@@ -170,20 +178,27 @@ class AudioController(AudioStateService):
             # блокировка ASR срабатывали раньше фактической озвучки. Теперь
             # показ переехал к моменту старта воспроизведения (см. корутины ниже).
         except Exception as e:
+            performance_traces().finish(trace_id, "error", error_stage="tts.request", error_type=type(e).__name__) if trace_id else None
             logger.error(f"Ошибка при отправке текста на озвучку: {e}")
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, str(e))
             self.waiting_answer = False
 
-    async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None, message_id=None):
+    async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None, message_id=None, trace_id=None):
         logger.info("Попытка получить фразу (Telegram)")
 
         logger.notify(f"Отправка на озвучку в Telegram текста: {voice_text[:50]}...")
 
+        trace_status = "ok"
+        trace_error_stage = ""
+        trace_error_type = ""
         try:
-            voiceover_path = await use(TelegramService).send_voice(
-                voice_text, speaker_command, 0
-            )
+            with perf_span(trace_id, "tts.telegram", method="telegram"):
+                voiceover_path = await use(TelegramService).send_voice(
+                    voice_text, speaker_command, 0
+                )
+            if voiceover_path:
+                perf_mark(trace_id, "tts.ready")
             logger.notify(voiceover_path)
 
             # Синтез завершён, файл получен — только теперь показываем «Озвучивает…».
@@ -198,11 +213,21 @@ class AudioController(AudioStateService):
                     }
                 })
         except Exception as e:
+            trace_status = "error"
+            trace_error_stage = "tts.telegram"
+            trace_error_type = type(e).__name__
             logger.error(f"Ошибка при получении озвучки через Telegram: {e}")
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, str(e))
         finally:
             self.waiting_answer = False
+            if trace_id:
+                performance_traces().finish(
+                    trace_id,
+                    trace_status,
+                    error_stage=trace_error_stage,
+                    error_type=trace_error_type,
+                )
             self.event_bus.emit(Events.GUI.HIDE_MITA_VOICING)
 
         logger.info("Завершение получения фразы (Telegram)")
@@ -215,13 +240,20 @@ class AudioController(AudioStateService):
         character_id: Optional[str] = None,
         voice_profile: Optional[dict] = None,
         message_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ):
+        trace_status = "ok"
+        trace_error_stage = ""
+        trace_error_type = ""
         try:
-            result_path = await use(LocalVoiceService).synthesize(
-                voice_text,
-                character_id=character_id,
-                voice_profile=voice_profile,
-            )
+            with perf_span(trace_id, "tts.synthesis", method="local"):
+                result_path = await use(LocalVoiceService).synthesize(
+                    voice_text,
+                    character_id=character_id,
+                    voice_profile=voice_profile,
+                )
+            if result_path:
+                perf_mark(trace_id, "tts.ready")
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -252,23 +284,41 @@ class AudioController(AudioStateService):
                 self._emit_show_voicing(voice_profile, character_id, message_id)
                 self._set_mita_speaking(True)
                 try:
-                    await AudioHandler.handle_voice_file(
-                        result_path,
-                        self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
-                        if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
-                        volume=self._local_playback_volume(),
-                    )
+                    perf_mark(trace_id, "audio.playback_started")
+                    try:
+                        with perf_span(trace_id, "audio.playback"):
+                            await AudioHandler.handle_voice_file(
+                                result_path,
+                                self.settings.get("LOCAL_VOICE_DELETE_AUDIO", True)
+                                if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1" else True,
+                                volume=self._local_playback_volume(),
+                            )
+                    except Exception as playback_error:
+                        trace_error_stage = "audio.playback"
+                        trace_error_type = type(playback_error).__name__
+                        raise
+                    perf_mark(trace_id, "audio.playback_complete")
                 finally:
                     self._set_mita_speaking(False)
             else:
                 logger.info("Озвучка в локальном чате отключена.")
 
         except Exception as e:
+            trace_status = "error"
+            trace_error_stage = trace_error_stage or "tts.local"
+            trace_error_type = trace_error_type or type(e).__name__
             logger.error(f"Ошибка при выполнении локальной озвучки: {e}")
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, str(e))
         finally:
             self.waiting_answer = False
+            if trace_id:
+                performance_traces().finish(
+                    trace_id,
+                    trace_status,
+                    error_stage=trace_error_stage,
+                    error_type=trace_error_type,
+                )
             self.event_bus.emit(Events.GUI.HIDE_MITA_VOICING)
 
     def _local_playback_volume(self) -> int:

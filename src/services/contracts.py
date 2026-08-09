@@ -694,6 +694,7 @@ class ChatGenerationRequest:
     game_state: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
     gm_instruction_override: Optional[str] = None
+    trace_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
