@@ -275,6 +275,18 @@ class MainWindowCoordinator:
         if callable(callback):
             callback()
 
+    def open_wiki_document(self, target: str, *, anchor: str = "") -> None:
+        target = str(target or "").strip()
+        if not target:
+            return
+        self.switch_page("wiki")
+        self.when_page_ready(
+            "wiki",
+            lambda page: page.open_target(target, anchor=anchor)
+            if hasattr(page, "open_target")
+            else None,
+        )
+
     def view_last_context(self) -> None:
         callback = getattr(self._view, "_on_debug_view_last_context", None)
         if callable(callback):
