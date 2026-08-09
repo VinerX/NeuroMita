@@ -314,11 +314,47 @@ def _build_danger_zone(self) -> QWidget:
     hint.setWordWrap(True)
     section.add_widget(hint)
 
+    self.btn_all_history_view = tr_set(QPushButton(), "Открыть (все)", "Open (all)")
+    tr_set(self.btn_all_history_view,
+           "Просмотр базы данных истории всех персонажей",
+           "View the history database for all characters", "setToolTip")
+    self.btn_all_history_view.setIcon(qta.icon('fa5s.table', color='#ffffff'))
+    self.btn_all_history_view.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_history_view)
+
+    self.btn_all_history_export = tr_set(QPushButton(), "Выгрузить (все)", "Export (all)")
+    tr_set(self.btn_all_history_export,
+           "Выгрузить данные всех персонажей из БД в файл",
+           "Export all characters' data from DB to file", "setToolTip")
+    self.btn_all_history_export.setIcon(qta.icon('fa5s.file-export', color='#ffffff'))
+    self.btn_all_history_export.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_history_export)
+
+    self.btn_all_history_import = tr_set(QPushButton(), "Загрузить (все)", "Import (all)")
+    tr_set(self.btn_all_history_import,
+           "Загрузить данные из файла в БД для всех персонажей",
+           "Import data from file into the DB for all characters", "setToolTip")
+    self.btn_all_history_import.setIcon(qta.icon('fa5s.file-import', color='#ffffff'))
+    self.btn_all_history_import.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_history_import)
+
+    section.add_widget(_btn_row(self.btn_all_history_view, self.btn_all_history_export))
+    section.add_widget(_btn_row(self.btn_all_history_import))
+
     # «all»-обслуживание (не деструктивное) — сверху.
     self.btn_all_files_db = tr_set(QPushButton(), "Файлы → БД (все)", "Files → DB (all)")
     self.btn_all_files_db.setIcon(qta.icon('fa5s.database', color='#ffffff'))
     self.btn_all_files_db.setObjectName("SecondaryButton")
     _make_compact(self.btn_all_files_db)
+
+    self.btn_all_tags = tr_set(QPushButton(), "Теги → данные (все)", "Tags → data (all)")
+    tr_set(self.btn_all_tags,
+           "Перенести теги из поля content в structured_data для всех персонажей",
+           "Move inline tags from content into structured_data for all characters",
+           "setToolTip")
+    self.btn_all_tags.setIcon(qta.icon('fa5s.exchange-alt', color='#ffffff'))
+    self.btn_all_tags.setObjectName("SecondaryButton")
+    _make_compact(self.btn_all_tags)
 
     self.btn_all_dedupe = tr_set(QPushButton(), "Удалить дубли (все)", "Remove duplicates (all)")
     self.btn_all_dedupe.setIcon(qta.icon('fa5s.broom', color='#ffffff'))
@@ -326,6 +362,7 @@ def _build_danger_zone(self) -> QWidget:
     _make_compact(self.btn_all_dedupe)
 
     section.add_widget(_btn_row(self.btn_all_files_db, self.btn_all_dedupe))
+    section.add_widget(_btn_row(self.btn_all_tags))
 
     self.btn_all_index_new = tr_set(QPushButton(), "Индекс нового (все)", "Index new (all)")
     self.btn_all_index_new.setIcon(qta.icon('fa5s.brain', color='#ffffff'))

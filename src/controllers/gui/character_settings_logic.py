@@ -573,6 +573,14 @@ def wire_character_settings_logic(self, *, settings_data):
     # --- Опасная зона (все персонажи) — вне секций (#17) ---
     if hasattr(self, 'btn_all_files_db'):
         self.btn_all_files_db.clicked.connect(lambda: migrate_to_db_all(self))
+    if hasattr(self, 'btn_all_tags'):
+        self.btn_all_tags.clicked.connect(lambda: migrate_db_to_structured(self, None))
+    if hasattr(self, 'btn_all_history_view'):
+        self.btn_all_history_view.clicked.connect(lambda: open_db_viewer_global(self))
+    if hasattr(self, 'btn_all_history_export'):
+        self.btn_all_history_export.clicked.connect(lambda: export_db_for_all(self))
+    if hasattr(self, 'btn_all_history_import'):
+        self.btn_all_history_import.clicked.connect(lambda: import_db_for_all(self))
     if hasattr(self, 'btn_all_dedupe'):
         self.btn_all_dedupe.clicked.connect(lambda: run_history_dedup_all(self))
     if hasattr(self, 'btn_all_index_new'):
