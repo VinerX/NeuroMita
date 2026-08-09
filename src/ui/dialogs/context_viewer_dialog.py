@@ -157,7 +157,6 @@ _COARSE_GROUPS = {
     "prompt":  ("📖", "#F0A868", ("Промпт", "Prompt")),
     "history": ("🕰", "#60A5FA", ("История", "History")),
     "context": ("🧠", "#34D399", ("Активный контекст", "Active context")),
-    "directive": ("🧭", "#F472B6", ("Директива GameMaster", "GameMaster directive")),
     "input":   ("💬", "#F4D35E", ("Ввод игрока", "Player input")),
 }
 _SECTION_TO_GROUP = {
@@ -170,7 +169,7 @@ _SECTION_TO_GROUP = {
     "MiSide World State": "context",
     "Unity runtime": "context",
     "group conversation": "context",
-    "game master directive": "directive",
+    "game master directive": "context",
     "System State": "context",
     "reminders": "context",
     "core memories": "context",
@@ -1363,6 +1362,12 @@ class ContextViewerDialog(QDialog):
         # Снимаем провайдерский префикс [RUNTIME EVENT], чтобы под ним увидеть
         # настоящий заголовок блока ([Unity Runtime Capabilities] и т.п.).
         first = re.sub(r"^\[\s*RUNTIME EVENT\s*\]\s*", "", first)
+        if first.startswith("[GAME_MASTER_DIRECTIVE]"):
+            s_icon, s_color, s_label = self._marker_meta(
+                "GAME_MASTER_DIRECTIVE"
+            )
+            return f"{s_icon} {s_label}", s_color
+
         m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if m:
             name = m.group(2) if m.re is _RE_TAG_RAW else m.group(1)
