@@ -494,6 +494,70 @@ class DialogueTurnContext:
     client_gm_repeat: Optional[int] = None
 
 
+class DialogueRuntimeSource(str, Enum):
+    """Origin of the dialogue snapshot shown by the Python UI."""
+
+    NONE = "none"
+    SANDBOX = "sandbox"
+    UNITY = "unity"
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueParticipantView:
+    """UI-safe participant projection; never used to authorize a route."""
+
+    actor_id: str
+    character_id: str
+    display_name: str = ""
+    is_active: bool = True
+    can_speak: bool = True
+    can_hear_speaker: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueRuntimeSnapshot:
+    """Ephemeral view state for the active Unity or Sandbox dialogue."""
+
+    source: DialogueRuntimeSource = DialogueRuntimeSource.NONE
+    conversation_id: str = ""
+    epoch: int = 0
+    turn_index: int = 0
+    auto_dialogue_enabled: bool = False
+    auto_turns_used: int = 0
+    auto_turns_max: int = 0
+    speaker_actor_id: str = ""
+    responder_actor_id: str = ""
+    participants: tuple[DialogueParticipantView, ...] = ()
+    pending_route_kind: str = ""
+    pending_route_target_actor_id: str = ""
+    pending_route_id: str = ""
+    pending_route_source_turn_index: int = 0
+    game_master_enabled: bool = False
+    control_plane_trusted: bool = False
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self.conversation_id and self.source is not DialogueRuntimeSource.NONE)
+
+    @property
+    def auto_turns_remaining(self) -> int:
+        return max(0, int(self.auto_turns_max) - int(self.auto_turns_used))
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxDialogueConfig:
+    """Session-local multi-Mita settings; never persisted to game settings."""
+
+    participant_character_ids: tuple[str, ...] = ()
+    initial_character_id: str = ""
+    auto_dialogue_enabled: bool = True
+    max_auto_turns: int = 6
+    max_consecutive_continues: int = 3
+    game_master_enabled: bool = False
+    gm_repeat: int = 2
+    delay_ms: int = 0
+
+
 def dialogue_auto_turns_remaining(dialogue: Optional[DialogueTurnContext]) -> int:
     """Return the exact number of automatic NPC turns still available."""
     if dialogue is None or not dialogue.auto_dialogue_enabled:

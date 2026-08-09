@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ui.mvvm import UiEffect, UiIntent
+from services.contracts import DialogueRuntimeSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +19,7 @@ class ChatPanelState:
     has_text: bool = False
     staged_count: int = 0
     revision: int = 0
+    dialogue_snapshot: DialogueRuntimeSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)

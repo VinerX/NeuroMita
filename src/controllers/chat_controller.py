@@ -20,9 +20,11 @@ from services.contracts import (
     ChatGenerationResult,
     GenerationService,
     parse_dialogue_turn_context,
+    DialogueRuntimeSource,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from services.dialogue_turn_router import get_dialogue_turn_router, route_to_transport
+from services.dialogue_runtime_state import get_dialogue_runtime_state_service
 from services.stream_presentation import TextDeltaCoalescer
 from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
 
@@ -198,6 +200,7 @@ class ChatController:
         self.settings = settings
         self.dialogue_router = get_dialogue_turn_router(settings)
         self.event_bus = get_event_bus()
+        self.dialogue_runtime_state = get_dialogue_runtime_state_service()
 
         # Генераций может идти несколько (игра + чат + idle), поэтому счётчик,
         # а не bool: одиночный флаг гасил статус после первой завершившейся.
@@ -297,6 +300,8 @@ class ChatController:
         images_shown: bool = False,
         game_state: dict | None = None,
         dialogue: Any = None,
+        dialogue_source: DialogueRuntimeSource | str | None = None,
+        dialogue_router: Any = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -306,6 +311,13 @@ class ChatController:
         """
         eff_policy = None
         dialogue = parse_dialogue_turn_context(dialogue)
+        runtime_source = dialogue_source or (
+            DialogueRuntimeSource.SANDBOX
+            if dialogue is not None and str(dialogue.conversation_id).startswith("sandbox:")
+            else DialogueRuntimeSource.UNITY
+        )
+        if dialogue is not None and dialogue.conversation_id:
+            self.dialogue_runtime_state.update_from_context(dialogue, runtime_source)
         stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
         stream_started = False
         stream_finished = False
@@ -579,13 +591,18 @@ class ChatController:
             # Python owns the control-plane route. The model contributes only
             # the current reply and semantic GM intents; Unity executes one
             # exact route after live scene validation.
-            route = self.dialogue_router.route_after_response(
+            route = (dialogue_router or self.dialogue_router).route_after_response(
                 dialogue,
                 structured=structured_data,
                 control_plane_trusted=control_plane_trusted,
                 character_id=str(effective_character_id or ""),
                 event_type=effective_event_type,
             )
+            if dialogue is not None and dialogue.conversation_id:
+                self.dialogue_runtime_state.set_pending_route(
+                    route,
+                    control_plane_trusted=control_plane_trusted,
+                )
             transport_route = route_to_transport(route)
             transport_next_turns = [transport_route] if transport_route else []
             if not response_text:
@@ -791,6 +808,8 @@ class ChatController:
             images_shown=bool(data.get("images_shown", False)),
             game_state=data.get("game_state"),
             dialogue=data.get("dialogue"),
+            dialogue_source=data.get("dialogue_source"),
+            dialogue_router=data.get("_dialogue_router"),
         )
 
     @staticmethod

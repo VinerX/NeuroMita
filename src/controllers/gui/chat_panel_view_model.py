@@ -46,6 +46,13 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
                 self._bus.subscribe(event_name, self._on_dependency_changed, weak=False)
             )
         self.track_subscription(
+            self._bus.subscribe(
+                Events.Dialogue.RUNTIME_STATE_CHANGED,
+                self._on_runtime_state_changed,
+                weak=False,
+            )
+        )
+        self.track_subscription(
             self._settings.subscribe(
                 self._on_setting_changed,
                 keys=("AUTO_ATTACH_IMAGES", "ENABLE_CAMERA_CAPTURE", "LAST_API_PRESET_ID"),
@@ -283,6 +290,10 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
 
     def _on_dependency_changed(self, event: Any) -> None:
         self._post_ui(self.refresh)
+
+    def _on_runtime_state_changed(self, event: Any) -> None:
+        snapshot = getattr(event, "data", None)
+        self._post_ui(lambda: self.update_state(dialogue_snapshot=snapshot))
 
     def _on_setting_changed(self, change: Any) -> None:
         self._post_ui(self.refresh)

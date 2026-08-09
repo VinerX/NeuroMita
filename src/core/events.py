@@ -618,6 +618,11 @@ class Events:
         SAVE_SNAPSHOT = "chat_save_snapshot"
         LOAD_SNAPSHOT = "chat_load_snapshot"
 
+    class Dialogue:
+        """Ephemeral dialogue runtime facts consumed by the Python UI."""
+
+        RUNTIME_STATE_CHANGED = "dialogue_runtime_state_changed"
+
     class Audio:
         """События для управления озвучкой и аудиофайлами"""
         SELECT_VOICE_MODEL = "select_voice_model"
