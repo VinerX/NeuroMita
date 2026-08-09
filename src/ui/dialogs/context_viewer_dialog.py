@@ -167,6 +167,7 @@ _SECTION_TO_GROUP = {
     "user input": "input",
     "system input": "context",
     "MiSide World State": "context",
+    "Character World Context": "context",
     "Unity runtime": "context",
     "group conversation": "context",
     "game master directive": "context",

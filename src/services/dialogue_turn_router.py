@@ -396,6 +396,7 @@ class DialogueTurnRouter:
     ) -> tuple[str, str, DialogueParticipant | None]:
         target_character = ""
         directive_text = ""
+        broadcast_text = ""
         for segment in structured.get("segments", []) or []:
             if not isinstance(segment, dict):
                 continue
@@ -406,7 +407,7 @@ class DialogueTurnRouter:
                 payload = intent.get("payload")
                 payload = payload if isinstance(payload, dict) else {}
                 if intent_type in {"dialogue.stop", "dialogue.stop_chain", "dialogue.end"}:
-                    return "stop", None
+                    return "stop", "", None
                 if intent_type in {
                     "dialogue.send_system_message",
                     "dialogue.direct_system_message",
@@ -423,6 +424,14 @@ class DialogueTurnRouter:
                     ).strip()
                     if target_character:
                         break
+                elif intent_type == "dialogue.broadcast_system_message":
+                    broadcast_text = str(
+                        payload.get("message")
+                        or payload.get("instruction")
+                        or payload.get("text")
+                        or payload.get("value")
+                        or ""
+                    ).strip()
             if target_character:
                 break
 
@@ -436,7 +445,7 @@ class DialogueTurnRouter:
 
         return (
             target_character,
-            directive_text,
+            directive_text or broadcast_text,
             self._participant_by_character(dialogue, target_character),
         )
 
@@ -461,15 +470,24 @@ class DialogueTurnRouter:
                 route_id=uuid.uuid4().hex,
             )
 
+        eligible_participants = self._eligible_participants(
+            replace(
+                context,
+                responder_actor_id="",
+            )
+        )
+        if target is None and directive_text:
+            preferred_actor_id = state.resume_after_actor_id or context.responder_actor_id
+            target = next(
+                (
+                    item for item in eligible_participants
+                    if item.actor_id == preferred_actor_id
+                ),
+                eligible_participants[0] if eligible_participants else None,
+            )
+
         if target is not None and directive_text:
-            eligible_ids = {
-                item.actor_id for item in self._eligible_participants(
-                    replace(
-                        context,
-                        responder_actor_id="",
-                    )
-                )
-            }
+            eligible_ids = {item.actor_id for item in eligible_participants}
             if target.actor_id in eligible_ids and dialogue_auto_turns_remaining(context) > 0:
                 return RoutedDialogueRoute(
                     route_kind=ROUTE_GAME_MASTER_DIRECTIVE,

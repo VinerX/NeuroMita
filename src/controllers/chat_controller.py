@@ -529,6 +529,20 @@ class ChatController:
             # Mita-to-Mita turn queue. Do not expose model-produced routing hints
             # from a moderator response to Unity or to the sandbox renderer.
             if str(effective_character_id or "").strip() == "GameMaster":
+                raw_system_input = str(system_input or "").strip()
+                configured_task = str(
+                    gm_instruction_override
+                    if gm_instruction_override is not None
+                    else self.settings.get("GM_SMALL_PROMPT", "")
+                ).strip()
+                has_explicit_test_task = "[INSTRUCTION]" in raw_system_input
+                if (
+                    not isinstance(structured_data, dict)
+                    and (configured_task or has_explicit_test_task)
+                ):
+                    structured_data = {"segments": []}
+                    control_plane_trusted = True
+
                 # A hidden moderator may legitimately emit only a structured
                 # broadcast intent. Keep a whitespace transport placeholder so
                 # the intent reaches Unity instead of being rejected as an
@@ -539,14 +553,29 @@ class ChatController:
                 targets = []
                 if isinstance(structured_data, dict):
                     structured_data = dict(structured_data)
-                    # Gemini can select the broadcast intent but omit its free-form
-                    # payload. For an explicit GM task, preserve that task as the
-                    # authoritative directive instead of broadcasting an empty shell.
-                    explicit_instruction = str(system_input or "").strip()
-                    explicit_instruction = explicit_instruction.replace("[INSTRUCTION]", "").replace("[/INSTRUCTION]", "").strip()
-                    has_broadcast_directive = False
+                    # A task configured by the user is trusted control-plane input.
+                    # Prefer an explicit test instruction, otherwise use the live GM task.
+                    raw_system_input = str(system_input or "").strip()
+                    if "[INSTRUCTION]" in raw_system_input:
+                        explicit_instruction = raw_system_input.replace(
+                            "[INSTRUCTION]",
+                            "",
+                        ).replace(
+                            "[/INSTRUCTION]",
+                            "",
+                        ).strip()
+                    else:
+                        explicit_instruction = str(
+                            gm_instruction_override
+                            if gm_instruction_override is not None
+                            else self.settings.get("GM_SMALL_PROMPT", "")
+                        ).strip()
+                    has_actionable_directive = False
                     segments = structured_data.get("segments", [])
                     if not isinstance(segments, list):
+                        segments = []
+                        structured_data["segments"] = segments
+                    if explicit_instruction and not control_plane_trusted:
                         segments = []
                         structured_data["segments"] = segments
                     for segment in segments:
@@ -568,13 +597,17 @@ class ChatController:
                                 # valid GameMaster turn.
                                 if not str(payload.get("character") or "").strip() or not str(payload.get("message") or "").strip():
                                     continue
+                                has_actionable_directive = True
                             if intent_type == "dialogue.broadcast_system_message":
                                 if explicit_instruction and not str(payload.get("message") or "").strip():
                                     payload["message"] = explicit_instruction
-                                has_broadcast_directive = bool(str(payload.get("message") or "").strip())
+                                has_actionable_directive = (
+                                    has_actionable_directive
+                                    or bool(str(payload.get("message") or "").strip())
+                                )
                             valid_intents.append({**intent, "type": intent_type, "payload": payload})
                         segment["intents"] = valid_intents
-                    if explicit_instruction and not has_broadcast_directive:
+                    if explicit_instruction and not has_actionable_directive:
                         # Explicit tester/GM instructions are authoritative. The
                         # model may omit the action despite selecting narration;
                         # preserve the scene directive as a deterministic fallback.

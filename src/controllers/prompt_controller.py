@@ -699,6 +699,23 @@ class PromptController(PromptBuilderService):
             ),
         }
 
+    @staticmethod
+    def _build_game_master_task_message(instruction: str) -> Optional[Dict[str, str]]:
+        task = str(instruction or "").strip()
+        if not task:
+            return None
+        return {
+            "role": "system",
+            "content": (
+                "[GAME_MASTER_TASK]\n"
+                "You are a hidden scene director. Carry out this task by sending "
+                "one non-empty dialogue.send_system_message intent to a present "
+                "Mita. Set character to the target Mita and message to the "
+                "directive she should follow. Do not only narrate or discuss it.\n"
+                f"Task: {task}\n"
+                "[/GAME_MASTER_TASK]"
+            ),
+        }
     def build(self, request: PromptBuildRequest) -> PromptBuildResult:
         character = request.character
         char_id = str(getattr(character, "char_id", "") or "")
@@ -910,6 +927,13 @@ class PromptController(PromptBuilderService):
             messages.append(dialogue_context_message)
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
+
+        if char_id == "GameMaster":
+            game_master_task = self._build_game_master_task_message(
+                character.get_variable("GM_INSTRUCTION", "")
+            )
+            if game_master_task is not None:
+                messages.append(game_master_task)
 
         if system_input:
             role = "system"

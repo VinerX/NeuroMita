@@ -407,6 +407,28 @@ class DialogueTurnRouterTests(unittest.TestCase):
         )
         self.assertEqual(resumed.target_actor_id, "actor-cappie")
 
+    def test_game_master_broadcast_directive_targets_resuming_mita(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True))
+        route = router.route_after_response(
+            _context(current="actor-kind"),
+            structured={
+                "segments": [{
+                    "intents": [{
+                        "type": "dialogue.broadcast_system_message",
+                        "payload": {"message": "Meow naturally in your reply."},
+                    }],
+                }],
+            },
+            character_id="GameMaster",
+            event_type="game_master_observe",
+            control_plane_trusted=True,
+        )
+
+        self.assertIsNotNone(route)
+        self.assertEqual(route.route_kind, ROUTE_GAME_MASTER_DIRECTIVE)
+        self.assertEqual(route.target_actor_id, "actor-kind")
+        self.assertEqual(route.input_text, "Meow naturally in your reply.")
+
     def test_game_master_target_accepts_character_alias(self):
         router = DialogueTurnRouter(_Settings(GM_ON=True))
         route = router.route_after_response(

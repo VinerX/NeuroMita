@@ -82,6 +82,15 @@ class WorldCharacterContextTests(unittest.TestCase):
         self.assertEqual(prompt_state["worldMita"], "KindHouse")
         self.assertNotIn("character_world_context", prompt_state)
 
+    def test_game_master_task_requires_a_targeted_directive(self):
+        message = PromptController._build_game_master_task_message(
+            "Ask the Mitas to meow."
+        )
+
+        self.assertIsNotNone(message)
+        self.assertIn("[GAME_MASTER_TASK]", message["content"])
+        self.assertIn("dialogue.send_system_message", message["content"])
+
     def test_prompt_context_is_ephemeral_system_block(self):
         message = PromptController._build_character_world_context_message({
             "character_world_context": "This is your home."

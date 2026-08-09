@@ -11,6 +11,7 @@ _SECTION_MARKERS = (
     ("[Current Group Conversation]", "group conversation"),
     ("[GAME_MASTER_DIRECTIVE]", "game master directive"),
     ("[MiSide World State]", "MiSide World State"),
+    ("[Character World Context]", "Character World Context"),
     ("[System State]", "System State"),
     ("[Behavior State]", "System State"),
     ("[Current State]", "System State"),
