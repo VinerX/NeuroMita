@@ -186,6 +186,100 @@ class DialogueTurnRouterTests(unittest.TestCase):
         self.assertTrue(router.consume_continue_reservation(context, character_id="Crazy"))
         self.assertFalse(router.consume_continue_reservation(context, character_id="Crazy"))
 
+    def test_continue_limit_falls_back_to_next_mita(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=1))
+        context = _context(current="actor-crazy")
+        structured = {"segments": [{"intents": [{"type": "dialogue.continue", "payload": {}}]}]}
+
+        first = router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(first.route_kind, ROUTE_CONTINUE)
+
+        fallback = router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(fallback.route_kind, ROUTE_MITA_FOLLOW_UP)
+        self.assertEqual(fallback.target_actor_id, "actor-kind")
+
+    def test_zero_continue_limit_only_disables_continuations(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=0))
+        route = router.route_after_response(
+            _context(current="actor-crazy"),
+            structured={"segments": [{"intents": [{"type": "dialogue.continue", "payload": {}}]}]},
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(route.route_kind, ROUTE_MITA_FOLLOW_UP)
+        self.assertEqual(route.target_actor_id, "actor-kind")
+
+    def test_continue_limit_fallback_preserves_game_master_cadence(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=1, GM_ON=True, GM_REPEAT=1))
+        context = _context(current="actor-crazy")
+        structured = {"segments": [{"intents": [{"type": "dialogue.continue", "payload": {}}]}]}
+
+        first = router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(first.route_kind, ROUTE_CONTINUE)
+
+        fallback = router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(fallback.route_kind, ROUTE_GAME_MASTER)
+
+    def test_fallback_to_next_mita_starts_a_fresh_continue_streak(self):
+        router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_CONTINUES=1))
+        context = _context(current="actor-crazy")
+        structured = {"segments": [{"intents": [{"type": "dialogue.continue", "payload": {}}]}]}
+
+        self.assertEqual(
+            router.route_after_response(
+                context,
+                structured=structured,
+                character_id="Crazy",
+                event_type="answer",
+                control_plane_trusted=True,
+            ).route_kind,
+            ROUTE_CONTINUE,
+        )
+        fallback = router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(fallback.target_actor_id, "actor-kind")
+
+        next_context = _context(current="actor-kind")
+        next_context["speaker_actor_id"] = "actor-crazy"
+        next_route = router.route_after_response(
+            next_context,
+            structured=structured,
+            character_id="Kind",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+        self.assertEqual(next_route.route_kind, ROUTE_CONTINUE)
+        self.assertEqual(next_route.target_actor_id, "actor-kind")
     def test_continue_event_does_not_fall_through_to_round_robin(self):
         router = DialogueTurnRouter(_Settings())
         self.assertIsNone(router.route_after_response(

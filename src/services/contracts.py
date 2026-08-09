@@ -545,6 +545,21 @@ class DialogueRuntimeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SandboxDialogueUiState:
+    """Read-only controller state intended for UI consumers."""
+
+    active: bool = False
+    session_id: str = ""
+    busy: bool = False
+    manual_step_mode: bool = False
+    auto_dialogue_enabled: bool = False
+    has_pending_route: bool = False
+    pending_route_kind: str = ""
+    pending_target_actor_id: str = ""
+    status_code: str = "inactive"
+    status_detail: str = ""
+
+@dataclass(frozen=True, slots=True)
 class SandboxDialogueConfig:
     """Session-local multi-Mita settings; never persisted to game settings."""
 

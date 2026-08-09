@@ -39,7 +39,7 @@ class GetTaskStatusAction:
                 gm_repeat = 2
             # The legacy Unity controller treats this as a number of NPC turns.
             # Keep a bounded positive interval even if settings were edited manually.
-            gm_repeat = max(2, min(gm_repeat, 100))
+            gm_repeat = max(1, min(gm_repeat, 100))
 
             response["GM_ON"] = gm_enabled
             response["GM_READ"] = gm_enabled

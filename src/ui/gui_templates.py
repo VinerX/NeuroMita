@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QComboBox,
-                             QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame, QToolButton)
+                             QCheckBox, QPushButton, QTextEdit, QSizePolicy, QFrame, QToolButton, QSpinBox)
 from PyQt6.QtCore import QSignalBlocker, Qt
 
 from main_logger import logger
@@ -144,6 +144,11 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
                 hide_when_disabled=cfg.get('hide_when_disabled', False),
                 toggle_key=cfg.get('toggle_key'),
                 toggle_default=cfg.get('toggle_default'),
+                minimum=cfg.get('minimum'),
+                maximum=cfg.get('maximum'),
+                step=cfg.get('step', 1),
+                suffix=cfg.get('suffix', ''),
+                special_value_text=cfg.get('special_value_text'),
             )
         if w:
             (current_sub or root).add_widget(w)
@@ -206,6 +211,11 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
                 hide_when_disabled=cfg.get('hide_when_disabled', False),
                 toggle_key=cfg.get('toggle_key'),
                 toggle_default=cfg.get('toggle_default'),
+                minimum=cfg.get('minimum'),
+                maximum=cfg.get('maximum'),
+                step=cfg.get('step', 1),
+                suffix=cfg.get('suffix', ''),
+                special_value_text=cfg.get('special_value_text'),
             )
         
         if w:
@@ -294,6 +304,11 @@ def create_setting_widget(
         hide_when_disabled: bool = False,
         toggle_key: str | None = None,
         toggle_default: bool | None = None,
+        minimum: int | None = None,
+        maximum: int | None = None,
+        step: int = 1,
+        suffix: str = "",
+        special_value_text: str | None = None,
         **kwargs
 ):
     if setting_key and get_setting(gui, setting_key) is None:
@@ -459,6 +474,56 @@ def create_setting_widget(
         layout.addLayout(title_col, 1)
         layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+    elif widget_type == 'spinbox':
+        widget = QSpinBox()
+        try:
+            spin_default = int(default)
+        except (TypeError, ValueError):
+            spin_default = 0
+        try:
+            spin_value = int(get_setting(gui, setting_key, spin_default))
+        except (TypeError, ValueError):
+            spin_value = spin_default
+        spin_minimum = 0 if minimum is None else int(minimum)
+        spin_maximum = 100 if maximum is None else int(maximum)
+        widget.setRange(spin_minimum, spin_maximum)
+        widget.setSingleStep(max(1, int(step)))
+        widget.setValue(max(spin_minimum, min(spin_maximum, spin_value)))
+        if suffix:
+            widget.setSuffix(str(suffix))
+        if special_value_text is not None:
+            widget.setSpecialValueText(str(special_value_text))
+        widget.setMinimumWidth(72)
+
+        def _save_spin(value: int) -> None:
+            value = int(value)
+            gui._save_setting(setting_key, value)
+            if command:
+                command(value)
+
+        if not _bind_setting_two_way(
+            gui,
+            setting_key,
+            widget,
+            widget.valueChanged,
+            widget.value,
+            lambda value: widget.setValue(int(value)),
+            default=spin_default,
+            transform=int,
+            after_write=command,
+        ):
+            widget.valueChanged.connect(_save_spin)
+            _bind_setting_value(
+                gui,
+                setting_key,
+                widget,
+                lambda value: widget.setValue(int(value)),
+            )
+
+        layout.addWidget(lbl)
+        if toggle_chk:
+            layout.addWidget(toggle_chk, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight)
     elif widget_type == 'entry':
         widget = QLineEdit(str(get_setting(gui, setting_key, default)))
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -598,7 +663,7 @@ def create_setting_widget(
         else:
             def _dep_sync(_=None):
                 active = True
-                if isinstance(controller, QCheckBox):
+                if hasattr(controller, "isChecked"):
                     active = controller.isChecked()
                 elif isinstance(controller, QComboBox):
                     if depends_on_value is not None:
@@ -620,7 +685,7 @@ def create_setting_widget(
 
             _dep_sync()
 
-            if isinstance(controller, QCheckBox):
+            if hasattr(controller, "stateChanged"):
                 controller.stateChanged.connect(_dep_sync)
             elif hasattr(controller, "currentTextChanged"):
                 controller.currentTextChanged.connect(_dep_sync)

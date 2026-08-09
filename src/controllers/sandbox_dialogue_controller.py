@@ -13,6 +13,7 @@ from services.contracts import (
     DialogueRuntimeSource,
     DialogueTurnContext,
     SandboxDialogueConfig,
+    SandboxDialogueUiState,
     TaskService,
 )
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
@@ -58,6 +59,8 @@ class SandboxDialogueController:
         self._pending_route: dict[str, Any] | None = None
         self._consumed_route_ids: set[str] = set()
         self._active = False
+        self._ui_status_code = "inactive"
+        self._ui_status_detail = ""
         self._bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status, weak=False)
 
     @property
@@ -70,6 +73,22 @@ class SandboxDialogueController:
         with self._lock:
             return self._session_id
 
+    def ui_state(self) -> SandboxDialogueUiState:
+        """Return a stable snapshot for UI consumers without exposing internals."""
+        with self._lock:
+            pending_route = self._pending_route if isinstance(self._pending_route, dict) else {}
+            return SandboxDialogueUiState(
+                active=bool(self._active),
+                session_id=self._session_id if self._active else "",
+                busy=bool(self._pending_task_uid),
+                manual_step_mode=bool(self._config.manual_step_mode),
+                auto_dialogue_enabled=bool(self._config.auto_dialogue_enabled),
+                has_pending_route=bool(pending_route),
+                pending_route_kind=str(pending_route.get("route_kind") or ""),
+                pending_target_actor_id=str(pending_route.get("target_actor_id") or ""),
+                status_code=self._ui_status_code if self._active else "inactive",
+                status_detail=self._ui_status_detail if self._active else "",
+            )
     def start_session(self, config: SandboxDialogueConfig | None = None) -> bool:
         current = self._runtime_state.snapshot()
         if current.source is DialogueRuntimeSource.UNITY:
@@ -112,6 +131,8 @@ class SandboxDialogueController:
             self._pending_route = None
             self._consumed_route_ids.clear()
             self._active = True
+            self._ui_status_code = "ready"
+            self._ui_status_detail = ""
             context = self._build_context()
         self._runtime_state.update_from_context(
             context,
@@ -127,6 +148,8 @@ class SandboxDialogueController:
             self._pending_task_uid = ""
             self._pending_route = None
             self._conversation_id = ""
+            self._ui_status_code = "inactive"
+            self._ui_status_detail = ""
             self._consumed_route_ids.clear()
             router = self._router
             self._router = None
@@ -179,6 +202,9 @@ class SandboxDialogueController:
     ) -> bool:
         task_service = services().get_optional(TaskService)
         if task_service is None:
+            with self._lock:
+                self._ui_status_code = "task_failed"
+                self._ui_status_detail = "The sandbox task service is unavailable."
             return False
         task = task_service.create_task(
             "sandbox_dialogue",
@@ -188,6 +214,9 @@ class SandboxDialogueController:
             if not self._active:
                 return False
             self._pending_task_uid = str(task.uid)
+            self._ui_status_code = "waiting_model"
+            target = character_id or "the model"
+            self._ui_status_detail = f"Waiting for {target}..."
             router = self._router
         self._bus.emit(
             Events.Chat.SEND_MESSAGE,
@@ -218,6 +247,7 @@ class SandboxDialogueController:
                 or ""
             ).strip().upper()
             if status in {"PENDING", "QUEUED", "RUNNING", "STARTED", "VOICING"}:
+                self._ui_status_code = "waiting_model"
                 return
 
             self._pending_task_uid = ""
@@ -229,6 +259,8 @@ class SandboxDialogueController:
             }
             if status not in {"SUCCESS", "COMPLETED"}:
                 self._pending_route = None
+                self._ui_status_code = "task_failed"
+                self._ui_status_detail = "The model response could not be completed."
                 route = None
                 should_clear = True
             else:
@@ -237,12 +269,34 @@ class SandboxDialogueController:
                 route = routes[0] if routes else None
                 if self._config.manual_step_mode and isinstance(route, dict):
                     self._pending_route = dict(route)
+                    self._ui_status_code = "manual_route_ready"
+                    target = str(route.get("target_character_id") or route.get("target_actor_id") or "").strip()
+                    self._ui_status_detail = f"Next turn is ready: {target}" if target else "Next turn is ready."
                     return
                 self._pending_route = None
+                if route is None:
+                    if not bool(result.get("control_plane_trusted", True)):
+                        self._ui_status_code = "route_rejected"
+                        self._ui_status_detail = "The model response could not authorize automatic routing."
+                    elif not self._config.auto_dialogue_enabled:
+                        self._ui_status_code = "auto_disabled"
+                        self._ui_status_detail = "Automatic dialogue is disabled."
+                    elif self._auto_turns_used >= int(self._config.max_auto_turns):
+                        self._ui_status_code = "budget_exhausted"
+                        self._ui_status_detail = f"Automatic dialogue finished: {self._auto_turns_used}/{self._config.max_auto_turns} turns used."
+                    else:
+                        self._ui_status_code = "no_next_route"
+                        self._ui_status_detail = "No additional turn requested."
                 should_clear = route is None
 
         if route is not None:
+            with self._lock:
+                self._ui_status_code = "automatic_running"
+                self._ui_status_detail = ""
             if not self.execute_route(route):
+                with self._lock:
+                    self._ui_status_code = "route_rejected"
+                    self._ui_status_detail = "The next route was rejected by the active session."
                 self._runtime_state.clear_pending_route(**scope)
         elif should_clear:
             self._runtime_state.clear_pending_route(**scope)
@@ -271,6 +325,8 @@ class SandboxDialogueController:
             if route_kind == "stop":
                 self._consumed_route_ids.add(route_id)
                 self._active = False
+                self._ui_status_code = "inactive"
+                self._ui_status_detail = ""
                 self._pending_task_uid = ""
                 self._pending_route = None
                 self._runtime_state.reset(DialogueRuntimeSource.SANDBOX)
@@ -382,6 +438,8 @@ class SandboxDialogueController:
         self._spoken_actor_ids.clear()
         self._consumed_route_ids.clear()
         self._pending_route = None
+        self._ui_status_code = "waiting_model"
+        self._ui_status_detail = ""
         if self._router is not None and self._conversation_id:
             self._router.reset_conversation(self._conversation_id)
 

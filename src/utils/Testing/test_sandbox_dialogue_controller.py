@@ -115,6 +115,34 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         self.assertEqual(self.controller._speaker_actor_id, "player")
         self.assertEqual(self.controller._spoken_actor_ids, [])
 
+    def test_ui_state_reports_pending_route_and_busy_task(self) -> None:
+        self.controller._config = SandboxDialogueConfig(
+            participant_character_ids=("A", "B"),
+            auto_dialogue_enabled=True,
+            max_auto_turns=1,
+            manual_step_mode=True,
+        )
+        self.controller._ui_status_code = "manual_route_ready"
+        self.controller._pending_route = self._route()
+        state = self.controller.ui_state()
+        self.assertTrue(state.active)
+        self.assertTrue(state.manual_step_mode)
+        self.assertTrue(state.has_pending_route)
+        self.assertEqual(state.pending_route_kind, "mita_follow_up")
+        self.assertEqual(state.pending_target_actor_id, "sandbox:B:0")
+        self.assertFalse(state.busy)
+
+        self.controller._pending_task_uid = "task-1"
+        self.assertTrue(self.controller.ui_state().busy)
+
+    def test_player_message_resets_ui_status_and_budget(self) -> None:
+        self.controller._auto_turns_used = 1
+        self.controller._ui_status_code = "budget_exhausted"
+        with patch.object(self.controller, "_emit_request", return_value=True):
+            self.assertTrue(self.controller.send_player_message("Hello"))
+        state = self.controller.ui_state()
+        self.assertEqual(state.status_code, "waiting_model")
+        self.assertFalse(state.has_pending_route)
     def test_intermediate_task_status_keeps_request_pending(self) -> None:
         self.controller._pending_task_uid = "task-1"
         event = SimpleNamespace(

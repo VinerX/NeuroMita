@@ -486,22 +486,26 @@ class DialogueTurnRouter:
                         "[DialogueRouter] Continue rejected for %s: central continuation limit reached.",
                         context.conversation_id,
                     )
-                    return None
-                state.consecutive_continues += 1
-                state.reserved_continues += 1
-                return RoutedDialogueRoute(
-                    route_kind=ROUTE_CONTINUE,
-                    event_type="continue",
-                    target_actor_id=context.responder_actor_id,
-                    target_character_id=current.character_id,
-                    input_text=continue_instruction,
-                    reason="dialogue_continue_intent",
-                    conversation_id=context.conversation_id,
-                    epoch=max(0, int(context.epoch)),
-                    continue_route_reserved=True,
-                    source_turn_index=max(0, int(context.turn_index)),
-                    route_id=uuid.uuid4().hex,
-                )
+                    # A same-Mita continuation limit must not terminate the
+                    # shared dialogue chain. Continue below through the
+                    # normal GM/round-robin priority instead.
+                    state.consecutive_continues = 0
+                else:
+                    state.consecutive_continues += 1
+                    state.reserved_continues += 1
+                    return RoutedDialogueRoute(
+                        route_kind=ROUTE_CONTINUE,
+                        event_type="continue",
+                        target_actor_id=context.responder_actor_id,
+                        target_character_id=current.character_id,
+                        input_text=continue_instruction,
+                        reason="dialogue_continue_intent",
+                        conversation_id=context.conversation_id,
+                        epoch=max(0, int(context.epoch)),
+                        continue_route_reserved=True,
+                        source_turn_index=max(0, int(context.turn_index)),
+                        route_id=uuid.uuid4().hex,
+                    )
 
             if is_game_master:
                 return self._route_after_game_master(context, structured or {}, state)

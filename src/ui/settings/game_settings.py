@@ -191,66 +191,6 @@ def _create_beat_status_label_widget(gui) -> QWidget:
 def setup_game_controls(self, parent, *, beat_view_model) -> None:
     _attach_beat_view_model(self, beat_view_model)
 
-    dialogue_config = [
-        {
-            'label': _('Управление автодиалогами Мит и режимом ГеймМастера.',
-                       'Manage Mitas auto-dialogues and the GameMaster mode.'),
-            'type': 'text',
-        },
-        {
-            'label': _('Диалоги Мит автоматически', "Mitas's dialogues automatically"),
-            'key': 'MITA_DIALOGUE_AUTO',
-            'type': 'checkbutton',
-            'default_checkbutton': False,
-            'tooltip': _(
-                'Миты автоматически отвечают по порядку, без вызова команд',
-                'Mitas response by order, without using commands',
-            ),
-        },
-        {
-            'label': _('Автоходов Мит после сообщения игрока (0–24)', 'Mita auto-turns after a player message (0–24)'),
-            'key': 'DIALOGUE_MAX_AUTO_TURNS',
-            'type': 'entry',
-            'default': 6,
-            'validation': getattr(self, 'validate_positive_integer_or_zero', None),
-            'tooltip': _('0 отключает автоходы. Значение задаёт максимум реплик Мит после ответа первой адресованной Миты; по умолчанию 6.', '0 disables auto-turns. The value sets the maximum Mita replies after the first addressed Mita answers; default is 6.'),
-        },
-        {
-            'label': _('ГеймМастер — экспериментальная функция', 'GameMaster is experimental feature'),
-            'type': 'text',
-        },
-        {
-            'label': _('ГеймМастер включён', 'GameMaster is on'),
-            'key': 'GM_ON',
-            'type': 'checkbutton',
-            'default_checkbutton': False,
-            'tooltip': _('Помогает вести диалоги, в теории устраняя проблемы', 'Helps manage dialogues and reduce issues in theory'),
-        },
-        {
-            'label': _('Задача ГМу', 'GM task'),
-            'key': 'GM_SMALL_PROMPT',
-            'type': 'textarea',
-            'default': "",
-        },
-        {
-            'label': _('ГеймМастер вмешивается каждые', 'GameMaster intervene each'),
-            'key': 'GM_REPEAT',
-            'type': 'entry',
-            'default': 2,
-            'tooltip': _(
-                'Пример: 3 означает, что после каждых двух фраз ГМ напишет своё сообщение',
-                'Example: 3 means that after 2 phrases GM will write his message',
-            ),
-        },
-    ]
-
-    create_settings_section(
-        self,
-        parent,
-        _("Настройки диалогов и GameMaster", "Dialogue and GameMaster Settings"),
-        dialogue_config
-    )
-
     mod_config = [
         {
             'label': _('Внутриигровые меню мода и обработка запросов из игры.',
