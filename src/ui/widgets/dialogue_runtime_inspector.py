@@ -54,6 +54,7 @@ class DialogueRuntimeInspector(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("DialogueRuntimeInspector")
+        self.setMinimumWidth(0)
         self._character_ids: tuple[str, ...] = ()
         self._character_checks: dict[str, QCheckBox] = {}
         self._character_names: dict[str, str] = {}
@@ -66,6 +67,7 @@ class DialogueRuntimeInspector(QWidget):
         self._budget_label = QLabel()
         self._route_label = QLabel()
         self._technical_label = QLabel()
+        self._technical_toggle = QToolButton()
         self._mode_group = QButtonGroup(self)
         self._mode_buttons: dict[str, QPushButton] = {}
         self._initial_combo = QComboBox()
@@ -120,9 +122,11 @@ class DialogueRuntimeInspector(QWidget):
         layout.addWidget(participants_title)
 
         character_scroll = QScrollArea()
+        character_scroll.setObjectName("DialogueParticipantsList")
         character_scroll.setWidgetResizable(True)
         character_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        character_scroll.setMaximumHeight(170)
+        character_scroll.setMinimumHeight(230)
+        character_scroll.setMaximumHeight(280)
         self._character_host.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
@@ -139,23 +143,41 @@ class DialogueRuntimeInspector(QWidget):
         session_layout.setContentsMargins(10, 8, 10, 8)
         session_layout.setHorizontalSpacing(12)
         session_layout.setVerticalSpacing(6)
+        session_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        session_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+
+        mode_label = QLabel(_("Dialogue mode", "Dialogue mode"))
+        mode_label.setObjectName("SandboxInspectorSectionTitle")
+        session_layout.addRow(mode_label)
 
         mode_host = QWidget()
+        mode_host.setObjectName("DialogueModeControl")
+        mode_host.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         mode_layout = QHBoxLayout(mode_host)
         mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.setSpacing(0)
+        mode_layout.setSpacing(4)
         for mode in ("off", "automatic", "step"):
             button = QPushButton(_(*self._MODE_LABELS[mode]))
             button.setObjectName("DialogueModeSegment")
             button.setCheckable(True)
+            button.setMinimumWidth(0)
             button.setProperty("mode", mode)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
             self._mode_group.addButton(button)
             self._mode_buttons[mode] = button
-            mode_layout.addWidget(button)
+            mode_layout.addWidget(button, 1)
         self._mode_group.buttonClicked.connect(
             lambda button: self._set_dialogue_mode(str(button.property("mode")))
         )
-        session_layout.addRow(_("Dialogue mode", "Dialogue mode"), mode_host)
+        session_layout.addRow(mode_host)
 
         self._initial_combo.setObjectName("DialogueInitialCharacter")
         session_layout.addRow(_("Starts with", "Starts with"), self._initial_combo)
@@ -181,13 +203,20 @@ class DialogueRuntimeInspector(QWidget):
         self._participants_label.setObjectName("SandboxInspectorHint")
         layout.addWidget(self._participants_label)
 
-        technical_toggle = QToolButton()
-        technical_toggle.setText(_("Technical details", "Technical details"))
-        technical_toggle.setCheckable(True)
-        technical_toggle.setObjectName("DialogueTechnicalDetails")
-        technical_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        technical_toggle.toggled.connect(self._technical_label.setVisible)
-        layout.addWidget(technical_toggle)
+        self._technical_toggle.setText(
+            _("Show technical details", "Show technical details")
+        )
+        self._technical_toggle.setCheckable(True)
+        self._technical_toggle.setObjectName("DialogueTechnicalDetailsToggle")
+        self._technical_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._technical_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._technical_toggle.setToolTip(
+            _("Show protocol and routing diagnostics", "Show protocol and routing diagnostics")
+        )
+        self._technical_toggle.toggled.connect(self._toggle_technical_details)
+        layout.addWidget(self._technical_toggle)
 
         self._technical_label.setObjectName("DialogueTechnicalDetails")
         self._technical_label.setWordWrap(True)
@@ -213,6 +242,24 @@ class DialogueRuntimeInspector(QWidget):
         buttons.addWidget(self._stop_button)
         layout.addLayout(buttons)
         layout.addStretch(1)
+
+    def _toggle_technical_details(self, visible: bool) -> None:
+        self._technical_label.setVisible(bool(visible))
+        self._technical_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
+        )
+        self._technical_toggle.setText(
+            _(
+                "Hide technical details" if visible else "Show technical details",
+                "Hide technical details" if visible else "Show technical details",
+            )
+        )
+        self._technical_toggle.setProperty("expanded", bool(visible))
+        style = self._technical_toggle.style()
+        if style is not None:
+            style.unpolish(self._technical_toggle)
+            style.polish(self._technical_toggle)
+        self._technical_toggle.update()
 
     @staticmethod
     def _configure_spin(spin: QSpinBox, minimum: int, maximum: int, value: int) -> None:
@@ -254,23 +301,33 @@ class DialogueRuntimeInspector(QWidget):
             row = QFrame()
             row.setObjectName("DialogueParticipantRow")
             row.setProperty("character_id", character_id)
+            row.setMinimumHeight(46)
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(4, 2, 4, 2)
-            row_layout.setSpacing(8)
+            row_layout.setContentsMargins(8, 5, 8, 5)
+            row_layout.setSpacing(9)
             check = QCheckBox()
             check.setAccessibleName(display_name)
             check.setProperty("character_id", character_id)
             check.setToolTip(character_id)
             check.stateChanged.connect(self._sync_initial_options)
             check.stateChanged.connect(self._refresh_selection_controls)
-            row_layout.addWidget(check)
+            row_layout.addWidget(check, 0, Qt.AlignmentFlag.AlignTop)
+            participant_text = QWidget()
+            participant_text_layout = QVBoxLayout(participant_text)
+            participant_text_layout.setContentsMargins(0, 0, 0, 0)
+            participant_text_layout.setSpacing(1)
             name_label = QLabel(display_name)
             name_label.setObjectName("DialogueParticipantName")
-            row_layout.addWidget(name_label, 1)
+            name_label.setWordWrap(True)
+            participant_text_layout.addWidget(name_label)
             id_label = QLabel(character_id)
             id_label.setObjectName("DialogueParticipantId")
-            id_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            row_layout.addWidget(id_label)
+            id_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            id_label.setWordWrap(True)
+            participant_text_layout.addWidget(id_label)
+            row_layout.addWidget(participant_text, 1)
             self._character_layout.addWidget(row)
             self._character_checks[character_id] = check
         if not ids:

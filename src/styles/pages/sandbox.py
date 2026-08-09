@@ -159,6 +159,87 @@ QFrame#SandboxInspectorCard {
     border: 1px solid {panel_border};
     border-radius: 16px;
 }
+QScrollArea#DialogueParticipantsList {
+    background-color: rgba(7, 7, 16, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+}
+
+QScrollArea#DialogueParticipantsList::viewport {
+    background: transparent;
+}
+
+QFrame#DialogueParticipantRow {
+    background-color: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.045);
+    border-radius: 9px;
+}
+
+QFrame#DialogueParticipantRow:hover {
+    background-color: rgba({accent_rgb}, 0.08);
+    border: 1px solid rgba({accent_rgb}, 0.22);
+}
+
+QLabel#DialogueParticipantName {
+    color: {text};
+    font-size: 9pt;
+    font-weight: 700;
+}
+
+QLabel#DialogueParticipantId {
+    color: {muted};
+    font-size: 8pt;
+}
+
+QPushButton#DialogueModeSegment {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: {muted};
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 9px;
+    min-height: 30px;
+    padding: 4px 4px;
+    font-size: 8pt;
+    font-weight: 700;
+}
+
+QPushButton#DialogueModeSegment:hover {
+    color: {text};
+    background-color: rgba({accent_rgb}, 0.12);
+    border: 1px solid rgba({accent_rgb}, 0.32);
+}
+
+QPushButton#DialogueModeSegment[checked="true"] {
+    color: #ffffff;
+    background-color: rgba({accent_rgb}, 0.74);
+    border: 1px solid rgba({accent_rgb}, 0.92);
+}
+
+QToolButton#DialogueTechnicalDetailsToggle {
+    color: {text};
+    background-color: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 9px;
+    padding: 7px 10px;
+    font-size: 9pt;
+    font-weight: 700;
+    text-align: left;
+}
+
+QToolButton#DialogueTechnicalDetailsToggle:hover,
+QToolButton#DialogueTechnicalDetailsToggle[expanded="true"] {
+    background-color: rgba({accent_rgb}, 0.12);
+    border: 1px solid rgba({accent_rgb}, 0.34);
+}
+
+QLabel#DialogueTechnicalDetails {
+    color: {muted};
+    background-color: rgba(7, 7, 16, 0.56);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 9px;
+    padding: 8px 10px;
+    font-family: "Consolas", "Cascadia Mono", "Courier New", monospace;
+    font-size: 8pt;
+}
 
 QLabel#SandboxHeroIcon {
     background: transparent;
