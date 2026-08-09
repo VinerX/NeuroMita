@@ -152,11 +152,15 @@ class ChatController(BaseController):
             QTimer.singleShot(0, lambda: self.view.user_entry.insertPlainText(text + " "))
 
     def _on_send_text_message(self, event: Event):
-        text = (event.data or {}).get('text', '')
+        payload = event.data or {}
+        text = payload.get("text", "") if isinstance(payload, dict) else payload
         if not self.view or not str(text).strip():
             return
         if hasattr(self.view, "send_text_message_signal"):
-            self.view.send_text_message_signal.emit(str(text))
+            self.view.send_text_message_signal.emit({
+                "text": str(text),
+                "trace_id": payload.get("trace_id") if isinstance(payload, dict) else None,
+            })
 
     def _on_check_user_entry_exists(self, event: Event):
         return bool(self.view and self.view.user_entry)

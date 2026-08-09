@@ -14,6 +14,7 @@ from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
 from handlers.asr_models.registry import create_recognizer, engine_classes
 from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
 from core.events import get_event_bus, Events, Event
+from core.performance_trace import performance_traces
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.task_supervisor import task_supervisor
 
@@ -75,7 +76,9 @@ def _on_ai_engine_event(event: Event):
     if ev == "text":
         text = str(payload.get("text") or "").strip()
         if text:
-            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text})
+            trace = performance_traces().start(source="asr", attributes={"engine": str(payload.get("engine") or "remote")})
+            trace.mark("asr.text_ready")
+            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {"text": text, "trace_id": trace.trace_id})
         return
 
     # Движок может поднять живое распознавание сам: при смене состава окружений
@@ -391,9 +394,24 @@ class SpeechRecognition:
                             return float(vad_model(tensor, sample_rate).item())
 
                         async def transcribe_segment(audio: np.ndarray, sample_rate: int) -> None:
-                            text = await inst.transcribe(audio, sample_rate)
-                            if text:
-                                await SpeechRecognition._handle_voice_message(text)
+                            trace = performance_traces().start(
+                                source="asr",
+                                attributes={
+                                    "engine": str(SpeechRecognition._recognizer_type or "local"),
+                                    "segment_audio_sec": round(float(len(audio)) / max(1, int(sample_rate)), 3),
+                                },
+                            )
+                            try:
+                                with trace.span("asr.transcribe"):
+                                    text = await inst.transcribe(audio, sample_rate)
+                                text = str(text or "").strip()
+                                if text:
+                                    await SpeechRecognition._handle_voice_message(text, trace_id=trace.trace_id)
+                                else:
+                                    performance_traces().finish(trace.trace_id, "empty")
+                            except Exception as exc:
+                                performance_traces().finish(trace.trace_id, "error", error_stage="asr.transcribe", error_type=type(exc).__name__)
+                                raise
 
                         capture = AudioCaptureService(logger)
                         await capture.run(
@@ -445,9 +463,9 @@ class SpeechRecognition:
         logger.info("Speech recognition loop stopped.")
 
     @staticmethod
-    async def _handle_voice_message(text: str):
+    async def _handle_voice_message(text: str, trace_id: str | None = None):
         if text and text.strip():
-            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {'text': text.strip()})
+            get_event_bus().emit(Events.Speech.SPEECH_TEXT_RECOGNIZED, {'text': text.strip(), 'trace_id': trace_id})
 
     @staticmethod
     def _get_ai_engine():

@@ -233,6 +233,7 @@ class ChatModel:
         structured_model: Optional[type] = None,
     ):
         request_options = dict(request_options_override or {})
+        trace_id = str(request_options.get("trace_id") or "").strip() or None
         max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
         retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
         request_timeout = float(request_options.get("request_timeout", 240) or 240)
@@ -331,6 +332,7 @@ class ChatModel:
                 retry_delay=retry_delay,
                 request_timeout=request_timeout,
                 suppress_failure_events=suppress_failure_events,
+                trace_id=trace_id,
             )
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)

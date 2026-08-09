@@ -498,6 +498,7 @@ class ChatGenerationRequest:
     policy: Optional[RequestPolicy] = None
     disable_history_compression: bool = False
     game_state: Dict[str, Any] = field(default_factory=dict)
+    trace_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

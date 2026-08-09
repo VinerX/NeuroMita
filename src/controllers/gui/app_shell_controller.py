@@ -147,6 +147,7 @@ class AppShellController:
         system_input: str = "",
         image_data: list[bytes] | None = None,
         user_input: str | None = None,
+        trace_id: str | None = None,
         merge_input_from_entry: bool = False,
     ) -> bool:
         if not self.backend_ready:
@@ -188,6 +189,7 @@ class AppShellController:
                 camera_frames=camera_frames,
                 staged_image_data=staged_images,
                 character_id=character_id,
+                trace_id=trace_id,
                 from_entry=from_entry,
                 clear_entry_after_send=clear_entry_after_send,
             )
@@ -215,6 +217,7 @@ class AppShellController:
         camera_frames: list[Any],
         staged_image_data: list[Any],
         character_id: str,
+        trace_id: str | None,
         from_entry: bool,
         clear_entry_after_send: bool,
     ) -> None:
@@ -269,6 +272,7 @@ class AppShellController:
                 "sender": "Player",
                 "req_id": req_id,
                 "images_shown": bool(all_image_data),
+                "trace_id": trace_id,
             },
         )
         self._view.show_thinking_now()

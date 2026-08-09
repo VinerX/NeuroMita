@@ -70,7 +70,7 @@ class AppWindowBase(QMainWindow):
 
     clear_user_input_signal = pyqtSignal()
     insert_user_input_signal = pyqtSignal(dict)
-    send_text_message_signal = pyqtSignal(str)
+    send_text_message_signal = pyqtSignal(object)
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
@@ -244,8 +244,9 @@ class AppWindowBase(QMainWindow):
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.send_text_message_signal.connect(
-            lambda text: self.send_message(
-                user_input=text,
+            lambda payload: self.send_message(
+                user_input=payload.get("text", "") if isinstance(payload, dict) else payload,
+                trace_id=payload.get("trace_id") if isinstance(payload, dict) else None,
                 merge_input_from_entry=bool(self._get_setting("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
             ),
             type=Qt.ConnectionType.QueuedConnection,
@@ -862,11 +863,13 @@ class AppWindowBase(QMainWindow):
         image_data: list[bytes] | None = None,
         user_input: str | None = None,
         merge_input_from_entry: bool = False,
+        trace_id: str | None = None,
     ):
         result = self._shell_actions.send_message(
             system_input=system_input,
             image_data=image_data,
             user_input=user_input,
+            trace_id=trace_id,
             merge_input_from_entry=merge_input_from_entry,
         )
         if result is False:

@@ -5,6 +5,7 @@ from importlib import import_module
 from typing import Any, Dict, List, Optional
 
 from main_logger import logger
+from core.performance_trace import perf_span
 from managers.tools.base import Tool
 from managers.tools.dialects.registry import ToolDialectRegistry
 
@@ -159,12 +160,13 @@ class ToolManager:
             if callable(setter):
                 setter(char_id)
 
-    def run(self, name: str, arguments: dict):
+    def run(self, name: str, arguments: dict, *, trace_id: str | None = None):
         tool = self._tools.get(name)
         if not tool:
             return f"[Tool-Error] Неизвестный инструмент: {name}"
         try:
-            return tool.run(**(arguments or {}))
+            with perf_span(trace_id, "tool.call", tool=name):
+                return tool.run(**(arguments or {}))
         except Exception as exc:
             return f"[Tool-Error] {name} вызвал исключение: {exc}"
 
