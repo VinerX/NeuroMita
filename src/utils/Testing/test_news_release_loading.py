@@ -42,6 +42,7 @@ def test_build_release_preview_keeps_summary_short():
     assert "Fixed startup freeze" in summary
     assert "Added better loading state" in summary
     assert has_details is True
+    assert summary.endswith("…")
 
 
 def test_build_release_news_items_uses_prepared_cache():
@@ -63,6 +64,25 @@ def test_build_release_news_items_uses_prepared_cache():
     assert items[0].title == "v1.2.3"
     assert items[0].summary == "Fast release summary"
     assert items[0].full_text == ""
+
+
+def test_build_release_news_items_keeps_full_text_for_expandable_card():
+    store = NewsReleasesStore()
+    store.cards = [
+        {
+            "name": "v1.2.3",
+            "tag_name": "v1.2.3",
+            "summary": "Short preview …",
+            "full_text": "Short preview\n\nFull release notes",
+            "published": "2026-07-04",
+            "tag": "RELEASE",
+            "url": "https://example.com/release",
+        }
+    ]
+
+    items = build_release_news_items(store, limit=None)
+
+    assert items[0].full_text == "Short preview\n\nFull release notes"
 
 
 def test_news_page_shows_loading_message_while_background_fetch_runs(monkeypatch):

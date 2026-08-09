@@ -169,8 +169,16 @@ def _build_release_preview(body: str, *, limit: int = 280) -> tuple[str, bool]:
     if not candidate_lines:
         return _("Без описания.", "No description."), False
 
-    summary = " ".join(candidate_lines).strip()[:limit]
-    has_details = meaningful_count > len(candidate_lines)
+    candidate = " ".join(candidate_lines).strip()
+    truncated_by_limit = len(candidate) > limit
+    has_details = meaningful_count > len(candidate_lines) or truncated_by_limit
+    summary = candidate[:limit].rstrip()
+    if truncated_by_limit:
+        word_boundary = summary.rfind(" ")
+        if word_boundary > limit // 2:
+            summary = summary[:word_boundary].rstrip()
+    if has_details:
+        summary = f"{summary} …"
     return summary, has_details
 
 
@@ -181,12 +189,14 @@ def _prepare_release_cards(releases: list[dict[str, Any]]) -> list[dict[str, Any
         tag_name = str(release.get("tag_name") or "")
         name = str(release.get("name") or "").strip() or tag_name or _("Релиз", "Release")
         body = str(release.get("body") or "").strip()
-        summary, _has_details = _build_release_preview(body, limit=280)
+        summary, has_details = _build_release_preview(body, limit=280)
+        full_text = normalize_release_body(body)
         prepared.append(
             {
                 "name": name,
                 "tag_name": tag_name,
                 "summary": summary,
+                "full_text": full_text if has_details else "",
                 "published": str(release.get("published_at") or "")[:10],
                 "tag": "PRE-RELEASE" if release.get("prerelease") else "RELEASE",
                 "url": str(release.get("html_url") or repo_url),
@@ -349,6 +359,7 @@ def build_release_news_items(store: NewsReleasesStore, *, limit: int | None = 8)
         published = str(release.get("published") or "")[:10]
         tag = str(release.get("tag") or "RELEASE")
         url = str(release.get("url") or f"https://github.com/{NEWS_REPO}/releases")
+        full_text = str(release.get("full_text") or "").strip()
         items.append(
             NewsItem(
                 name,
@@ -356,7 +367,7 @@ def build_release_news_items(store: NewsReleasesStore, *, limit: int | None = 8)
                 tag=tag,
                 item_id=tag_name or name,
                 timestamp=published,
-                full_text="",
+                full_text=full_text,
                 action=DashboardAction(
                     _("Открыть релиз", "Open release"),
                     callback=lambda _checked=False, target_url=url: QDesktopServices.openUrl(QUrl(target_url)),

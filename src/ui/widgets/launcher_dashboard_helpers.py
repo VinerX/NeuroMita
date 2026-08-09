@@ -420,19 +420,14 @@ def _create_news_card(item: NewsItem) -> QFrame:
     summary.setWordWrap(True)
     layout.addWidget(summary)
 
-    details_scroll = None
-    toggle_btn = None
     full_text = str(item.full_text or "").strip()
     if full_text and full_text != str(item.summary or "").strip():
         details = QLabel(full_text)
         details.setObjectName("LauncherShellBody")
         details.setWordWrap(True)
-        details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         details.setContentsMargins(12, 10, 12, 10)
         details.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Длинный changelog уезжает в скролл с ограниченной высотой — карточка
-        # больше не «выспамливает километровые описания» на всю страницу.
         details_scroll = QScrollArea()
         details_scroll.setObjectName("LauncherShellDetailsScroll")
         details_scroll.setWidgetResizable(True)
@@ -443,26 +438,30 @@ def _create_news_card(item: NewsItem) -> QFrame:
         details_scroll.setVisible(False)
         layout.addWidget(details_scroll)
 
-        toggle_btn = QPushButton(_("Развернуть", "Expand"))
-        toggle_btn.setObjectName("LauncherShellGhostButton")
-        toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        toggle_btn.setIcon(qta.icon("fa6s.angle-down", color="#ffd2ec"))
-
-        def _toggle_details(_checked=False, area=details_scroll, button=toggle_btn):
-            expanded = not area.isVisible()
+        def _toggle_details(_event=None, area=details_scroll, preview=summary):
+            if _event is not None and _event.button() != Qt.MouseButton.LeftButton:
+                _event.ignore()
+                return False
+            expanded = area.isHidden()
             area.setVisible(expanded)
-            button.setText(_("Свернуть", "Collapse") if expanded else _("Развернуть", "Expand"))
-            button.setIcon(qta.icon("fa6s.angle-up" if expanded else "fa6s.angle-down", color="#ffd2ec"))
+            preview.setVisible(not expanded)
+            return expanded
 
-        toggle_btn.clicked.connect(_toggle_details)
+        hint = _(
+            "Щёлкните, чтобы прочитать полный changelog.",
+            "Click to read the full changelog.",
+        )
+        summary.setCursor(Qt.CursorShape.PointingHandCursor)
+        summary.setToolTip(hint)
+        details.setCursor(Qt.CursorShape.PointingHandCursor)
+        details.setToolTip(_("Щёлкните, чтобы свернуть changelog.", "Click to collapse the changelog."))
+        summary.mousePressEvent = _toggle_details
+        details.mousePressEvent = _toggle_details
 
-    if item.action is not None or toggle_btn is not None:
+    if item.action is not None:
         row = QHBoxLayout()
         row.setContentsMargins(0, 2, 0, 0)
-        if toggle_btn is not None:
-            row.addWidget(toggle_btn)
-        if item.action is not None:
-            row.addWidget(_create_action_button(item.action))
+        row.addWidget(_create_action_button(item.action))
         row.addStretch(1)
         layout.addLayout(row)
 
