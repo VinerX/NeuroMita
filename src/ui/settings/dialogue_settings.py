@@ -43,6 +43,21 @@ def setup_dialogue_settings_controls(self, parent) -> None:
                 "0 disables automatic turns.",
             ),
         },
+        {
+            "label": _("Подсчёт лимита автоходов", "Automatic turn budget"),
+            "key": "DIALOGUE_AUTO_TURN_COUNT_MODE",
+            "type": "combobox",
+            "options": [
+                (_("Фиксированный лимит", "Fixed limit"), "fixed"),
+                (_("По одному на каждую Миту", "One per selected Mita"), "per_participant"),
+            ],
+            "default": "fixed",
+            "depends_on": "MITA_DIALOGUE_AUTO",
+            "tooltip": _(
+                "Во втором режиме размер цепочки равен количеству активных Мит в разговоре.",
+                "In the second mode, the chain budget equals the number of active Mitas in the conversation.",
+            ),
+        },
         {"type": "end"},
         {
             "type": "subsection",

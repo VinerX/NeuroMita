@@ -302,6 +302,7 @@ class ChatController:
         dialogue: Any = None,
         dialogue_source: DialogueRuntimeSource | str | None = None,
         dialogue_router: DialogueTurnRouter | None = None,
+        gm_instruction_override: str | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -498,6 +499,7 @@ class ChatController:
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
                     dialogue=parse_dialogue_turn_context(dialogue),
+                    gm_instruction_override=gm_instruction_override,
                 )
             )
 
@@ -825,6 +827,7 @@ class ChatController:
             dialogue=data.get("dialogue"),
             dialogue_source=data.get("dialogue_source"),
             dialogue_router=data.get("_dialogue_router"),
+            gm_instruction_override=data.get("gm_instruction_override"),
         )
 
     @staticmethod

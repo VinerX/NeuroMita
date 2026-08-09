@@ -27,6 +27,7 @@ class _SandboxRouterSettings:
         self._values = {
             "MITA_DIALOGUE_AUTO": bool(config.auto_dialogue_enabled),
             "DIALOGUE_MAX_AUTO_TURNS": int(config.max_auto_turns),
+            "DIALOGUE_AUTO_TURN_COUNT_MODE": str(config.auto_turn_count_mode or "fixed"),
             "DIALOGUE_MAX_CONTINUES": int(config.max_consecutive_continues),
             "GM_ON": bool(config.game_master_enabled),
             "GM_REPEAT": int(config.gm_repeat),
@@ -231,6 +232,11 @@ class SandboxDialogueController:
                 "dialogue": context,
                 "dialogue_source": DialogueRuntimeSource.SANDBOX.value,
                 "_dialogue_router": router,
+                "gm_instruction_override": (
+                    self._config.gm_instruction
+                    if character_id.casefold() == "gamemaster"
+                    else None
+                ),
             },
         )
         return True
@@ -281,9 +287,10 @@ class SandboxDialogueController:
                     elif not self._config.auto_dialogue_enabled:
                         self._ui_status_code = "auto_disabled"
                         self._ui_status_detail = "Automatic dialogue is disabled."
-                    elif self._auto_turns_used >= int(self._config.max_auto_turns):
+                    elif self._auto_turns_used >= self._effective_auto_turn_limit_locked():
                         self._ui_status_code = "budget_exhausted"
-                        self._ui_status_detail = f"Automatic dialogue finished: {self._auto_turns_used}/{self._config.max_auto_turns} turns used."
+                        limit = self._effective_auto_turn_limit_locked()
+                        self._ui_status_detail = f"Automatic dialogue finished: {self._auto_turns_used}/{limit} turns used."
                     else:
                         self._ui_status_code = "no_next_route"
                         self._ui_status_detail = "No additional turn requested."
@@ -341,7 +348,7 @@ class SandboxDialogueController:
                 return False
             if not self._config.auto_dialogue_enabled:
                 return False
-            if self._auto_turns_used >= int(self._config.max_auto_turns):
+            if self._auto_turns_used >= self._effective_auto_turn_limit_locked():
                 return False
             if route_kind == "continue":
                 if not bool(route.get("continue_route_reserved")):
@@ -443,6 +450,20 @@ class SandboxDialogueController:
         if self._router is not None and self._conversation_id:
             self._router.reset_conversation(self._conversation_id)
 
+    def _effective_auto_turn_limit_locked(self) -> int:
+        mode = str(self._config.auto_turn_count_mode or "fixed").strip().lower()
+        if mode == "per_participant":
+            return sum(
+                1
+                for participant in self._participants
+                if (
+                    participant.character_id.casefold() != "gamemaster"
+                    and participant.is_active
+                    and participant.can_speak
+                )
+            )
+        return max(0, int(self._config.max_auto_turns))
+
     def _build_context(self) -> dict[str, Any]:
         return {
             "conversation_id": self._conversation_id,
@@ -452,7 +473,7 @@ class SandboxDialogueController:
             "responder_actor_id": self._responder_actor_id,
             "auto_dialogue_enabled": self._config.auto_dialogue_enabled,
             "auto_turns_since_player": self._auto_turns_used,
-            "max_auto_turns": self._config.max_auto_turns,
+            "max_auto_turns": self._effective_auto_turn_limit_locked(),
             "spoken_actor_ids": list(self._spoken_actor_ids),
             "participants": [item.__dict__ if hasattr(item, "__dict__") else {
                 "actor_id": item.actor_id,

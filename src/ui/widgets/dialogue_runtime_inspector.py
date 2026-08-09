@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QPlainTextEdit,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -23,6 +24,7 @@ from core.services import services
 from services.contracts import (
     CharacterRegistry,
     DialogueRuntimeSource,
+    SettingsService,
     SandboxDialogueConfig,
 )
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
@@ -73,8 +75,11 @@ class DialogueRuntimeInspector(QWidget):
         self._initial_combo = QComboBox()
         self._gm_check = QCheckBox(_("GameMaster", "GameMaster"))
         self._max_auto_spin = QSpinBox()
+        self._auto_turn_mode_combo = QComboBox()
+        self._auto_turn_budget_hint = QLabel()
         self._max_continue_spin = QSpinBox()
         self._gm_repeat_spin = QSpinBox()
+        self._gm_instruction_edit = QPlainTextEdit()
         self._start_button = QPushButton(_("Start session", "Start session"))
         self._stop_button = QPushButton(_("Stop", "Stop"))
         self._step_button = QPushButton(_("Run next turn", "Run next turn"))
@@ -181,6 +186,33 @@ class DialogueRuntimeInspector(QWidget):
 
         self._initial_combo.setObjectName("DialogueInitialCharacter")
         session_layout.addRow(_("Starts with", "Starts with"), self._initial_combo)
+        self._auto_turn_mode_combo.addItem(
+            _("Fixed limit", "Fixed limit"),
+            userData="fixed",
+        )
+        self._auto_turn_mode_combo.addItem(
+            _("One per selected Mita", "One per selected Mita"),
+            userData="per_participant",
+        )
+        saved_auto_turn_mode = self._global_dialogue_setting(
+            "DIALOGUE_AUTO_TURN_COUNT_MODE",
+            "fixed",
+        )
+        saved_auto_turn_mode_index = self._auto_turn_mode_combo.findData(
+            saved_auto_turn_mode
+        )
+        if saved_auto_turn_mode_index >= 0:
+            self._auto_turn_mode_combo.setCurrentIndex(saved_auto_turn_mode_index)
+        self._auto_turn_mode_combo.currentIndexChanged.connect(
+            self._refresh_auto_turn_budget_hint
+        )
+        session_layout.addRow(
+            _("Auto-turn budget", "Auto-turn budget"),
+            self._auto_turn_mode_combo,
+        )
+        self._auto_turn_budget_hint.setObjectName("SandboxInspectorHint")
+        self._auto_turn_budget_hint.setWordWrap(True)
+        session_layout.addRow("", self._auto_turn_budget_hint)
         self._configure_spin(self._max_auto_spin, 0, 24, 6)
         self._configure_spin(self._max_continue_spin, 0, 12, 3)
         self._configure_spin(self._gm_repeat_spin, 1, 100, 2)
@@ -196,6 +228,16 @@ class DialogueRuntimeInspector(QWidget):
         session_layout.addRow(
             _("Mita replies between GM checks", "Mita replies between GM checks"),
             self._gm_repeat_spin,
+        )
+        self._gm_instruction_edit.setObjectName("DialogueGameMasterInstruction")
+        self._gm_instruction_edit.setFixedHeight(74)
+        self._gm_instruction_edit.setPlaceholderText(
+            _("Optional task for this session's GameMaster", "Optional task for this session's GameMaster")
+        )
+        self._gm_instruction_edit.setPlainText(self._global_gm_instruction())
+        session_layout.addRow(
+            _("GameMaster task", "GameMaster task"),
+            self._gm_instruction_edit,
         )
         layout.addWidget(session_frame)
 
@@ -364,7 +406,37 @@ class DialogueRuntimeInspector(QWidget):
             self._initial_combo.blockSignals(False)
         self._refresh_selection_controls()
 
+    @staticmethod
+    def _global_dialogue_setting(key: str, default: str = "") -> str:
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return default
+        return str(settings.get(key, default) or default)
+
+    @classmethod
+    def _global_gm_instruction(cls) -> str:
+        return cls._global_dialogue_setting("GM_SMALL_PROMPT")
+
+    def _refresh_auto_turn_budget_hint(self, *_args) -> None:
+        participant_count = sum(
+            1
+            for character_id in self._selected_character_ids()
+            if character_id.casefold() != "gamemaster"
+        )
+        mode = str(self._auto_turn_mode_combo.currentData() or "fixed")
+        if mode == "per_participant":
+            self._auto_turn_budget_hint.setText(
+                _("One automatic turn per selected Mita: ", "One automatic turn per selected Mita: ")
+                + str(participant_count)
+            )
+        else:
+            self._auto_turn_budget_hint.setText(
+                _("Fixed automatic-turn limit: ", "Fixed automatic-turn limit: ")
+                + str(self._max_auto_spin.value())
+            )
+
     def _refresh_selection_controls(self, *_args) -> None:
+        self._refresh_auto_turn_budget_hint()
         snapshot = get_dialogue_runtime_state_service().snapshot()
         ui_state = get_sandbox_dialogue_controller().ui_state()
         self._start_button.setEnabled(
@@ -411,9 +483,11 @@ class DialogueRuntimeInspector(QWidget):
             auto_dialogue_enabled=auto_enabled,
             manual_step_mode=manual_step,
             max_auto_turns=self._max_auto_spin.value(),
+            auto_turn_count_mode=str(self._auto_turn_mode_combo.currentData() or "fixed"),
             max_consecutive_continues=self._max_continue_spin.value(),
             game_master_enabled=self._gm_check.isChecked(),
             gm_repeat=self._gm_repeat_spin.value(),
+            gm_instruction=self._gm_instruction_edit.toPlainText().strip(),
         )
         if not get_sandbox_dialogue_controller().start_session(config):
             self._show_error(
@@ -494,11 +568,18 @@ class DialogueRuntimeInspector(QWidget):
             *self._mode_buttons.values(),
             self._initial_combo,
             self._gm_check,
+            self._auto_turn_mode_combo,
             self._max_auto_spin,
             self._max_continue_spin,
             self._gm_repeat_spin,
+            self._gm_instruction_edit,
         ):
             widget.setEnabled(configuration_enabled)
+        self._max_auto_spin.setEnabled(
+            configuration_enabled
+            and str(self._auto_turn_mode_combo.currentData() or "fixed") == "fixed"
+        )
+        self._refresh_auto_turn_budget_hint()
         for check in self._character_checks.values():
             check.setEnabled(configuration_enabled)
         self._start_button.setEnabled(configuration_enabled and len(self._selected_character_ids()) >= 2)

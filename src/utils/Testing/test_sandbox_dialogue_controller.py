@@ -79,6 +79,16 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         self.controller._auto_turns_used = 1
         self.assertFalse(self.controller.execute_route(self._route(route_id="route-2")))
 
+    def test_participant_budget_uses_selected_mitas(self) -> None:
+        self.controller._config = SandboxDialogueConfig(
+            participant_character_ids=("A", "B"),
+            auto_dialogue_enabled=True,
+            max_auto_turns=1,
+            auto_turn_count_mode="per_participant",
+        )
+
+        self.assertEqual(self.controller._effective_auto_turn_limit_locked(), 2)
+
     def test_route_target_character_must_match_participant(self) -> None:
         self.assertFalse(
             self.controller.execute_route(self._route(target_character_id="A"))

@@ -283,7 +283,12 @@ class PromptController(PromptBuilderService):
             return "clean"
         return "full"
 
-    def _setup_character_for_prompt(self, character, event_type: str):
+    def _setup_character_for_prompt(
+        self,
+        character,
+        event_type: str,
+        gm_instruction_override: str | None = None,
+    ):
         now_str = datetime.datetime.now().strftime("%Y %B %d (%A) %H:%M")
         character.set_variable("SYSTEM_DATETIME", now_str)
         character.update_app_vars(use(AppVarsService).snapshot())
@@ -299,7 +304,12 @@ class PromptController(PromptBuilderService):
         )
 
         if getattr(character, "char_id", "") == "GameMaster":
-            character.set_variable("GM_INSTRUCTION", self._get_setting("GM_SMALL_PROMPT", "") or "")
+            instruction = (
+                gm_instruction_override
+                if gm_instruction_override is not None
+                else self._get_setting("GM_SMALL_PROMPT", "")
+            )
+            character.set_variable("GM_INSTRUCTION", instruction or "")
 
     def _build_system_messages(
         self,
@@ -308,8 +318,13 @@ class PromptController(PromptBuilderService):
         separate_prompts: bool,
         policy: RequestPolicy | None = None,
         capabilities: Dict[str, Any] | None = None,
+        gm_instruction_override: str | None = None,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
-        self._setup_character_for_prompt(character, event_type)
+        self._setup_character_for_prompt(
+            character,
+            event_type,
+            gm_instruction_override=gm_instruction_override,
+        )
 
         # Prompt features are ephemeral declarations of the selected template.
         # They live inside the DSL interpreter and never enter persisted character variables.
@@ -720,8 +735,12 @@ class PromptController(PromptBuilderService):
         messages: List[Dict[str, Any]] = []
 
         stable_system_messages, volatile_system_messages, dsl_system_infos = self._build_system_messages(
-            character, event_type, separate_prompts, policy=policy,
+            character,
+            event_type,
+            separate_prompts,
+            policy=policy,
             capabilities=capabilities,
+            gm_instruction_override=request.gm_instruction_override,
         )
         dsl_interpreter = getattr(character, "dsl_interpreter", None)
         get_prompt_feature = getattr(dsl_interpreter, "get_prompt_feature", None)

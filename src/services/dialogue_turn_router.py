@@ -122,6 +122,11 @@ class DialogueTurnRouter:
             3,
         )
         continue_limit = max(0, min(24, continue_limit))
+        auto_turn_count_mode = str(
+            self._get_setting("DIALOGUE_AUTO_TURN_COUNT_MODE", "fixed") or "fixed"
+        ).strip().lower()
+        if auto_turn_count_mode not in {"fixed", "per_participant"}:
+            auto_turn_count_mode = "fixed"
         revision = self._as_int(
             getattr(self._settings, "revision", None)
             if self._settings is not None
@@ -134,11 +139,35 @@ class DialogueTurnRouter:
         return {
             "auto": self._as_bool(self._get_setting("MITA_DIALOGUE_AUTO", False)),
             "max_auto": max_auto,
+            "auto_turn_count_mode": auto_turn_count_mode,
             "gm_on": self._as_bool(self._get_setting("GM_ON", False)),
             "gm_repeat": gm_repeat,
             "continue_limit": continue_limit,
             "revision": revision,
         }
+
+    @staticmethod
+    def _participant_auto_turn_limit(dialogue: DialogueTurnContext) -> int:
+        participants = {
+            str(participant.actor_id or "").strip()
+            for participant in dialogue.participants
+            if (
+                str(participant.actor_id or "").strip()
+                and str(participant.character_id or "").strip().casefold() != "gamemaster"
+                and bool(getattr(participant, "is_active", True))
+                and bool(getattr(participant, "can_speak", True))
+            )
+        }
+        return min(24, len(participants))
+
+    def _effective_auto_turn_limit(
+        self,
+        dialogue: DialogueTurnContext,
+        settings: dict[str, Any],
+    ) -> int:
+        if settings["auto_turn_count_mode"] == "per_participant":
+            return self._participant_auto_turn_limit(dialogue)
+        return int(settings["max_auto"])
 
     def authoritative_context(
         self,
@@ -152,6 +181,7 @@ class DialogueTurnRouter:
             return None
 
         settings = self._server_settings()
+        effective_max_auto = self._effective_auto_turn_limit(context, settings)
         client_values = {
             "auto": getattr(context, "client_auto_dialogue_enabled", None),
             "max_auto": getattr(context, "client_auto_turn_limit", None),
@@ -162,8 +192,8 @@ class DialogueTurnRouter:
         mismatches: list[str] = []
         if client_values["auto"] is not None and client_values["auto"] != settings["auto"]:
             mismatches.append(f"auto server={settings['auto']} client={client_values['auto']}")
-        if client_values["max_auto"] is not None and client_values["max_auto"] != settings["max_auto"]:
-            mismatches.append(f"limit server={settings['max_auto']} client={client_values['max_auto']}")
+        if client_values["max_auto"] is not None and client_values["max_auto"] != effective_max_auto:
+            mismatches.append(f"limit server={effective_max_auto} client={client_values['max_auto']}")
         if client_values["gm_on"] is not None and client_values["gm_on"] != settings["gm_on"]:
             mismatches.append(f"gm server={settings['gm_on']} client={client_values['gm_on']}")
         if client_values["gm_repeat"] is not None and client_values["gm_repeat"] != settings["gm_repeat"]:
@@ -185,7 +215,7 @@ class DialogueTurnRouter:
         return replace(
             context,
             auto_dialogue_enabled=settings["auto"],
-            max_auto_turns=settings["max_auto"],
+            max_auto_turns=effective_max_auto,
         )
 
     @staticmethod

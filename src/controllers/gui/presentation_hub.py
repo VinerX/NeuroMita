@@ -122,6 +122,11 @@ class _SettingsSectionsController:
                 wire_characters=self.wire_characters,
             )
             return
+        if key == "dialogue":
+            from ui.settings.dialogue_settings import setup_dialogue_settings_controls
+
+            setup_dialogue_settings_controls(gui, parent)
+            return
         if key == "voice":
             from ui.settings.voiceover_settings import setup_voiceover_controls
 

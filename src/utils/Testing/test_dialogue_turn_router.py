@@ -86,6 +86,18 @@ class DialogueTurnRouterTests(unittest.TestCase):
         router = DialogueTurnRouter(_Settings(DIALOGUE_MAX_AUTO_TURNS=0))
         self.assertIsNone(router.select_next_turn(_context()))
 
+    def test_router_can_budget_one_turn_per_active_mita(self):
+        router = DialogueTurnRouter(
+            _Settings(DIALOGUE_AUTO_TURN_COUNT_MODE="per_participant")
+        )
+        context = _context()
+        context["auto_turns_since_player"] = 3
+
+        authoritative = router.authoritative_context(context)
+
+        self.assertEqual(authoritative.max_auto_turns, 3)
+        self.assertIsNone(router.select_next_turn(context))
+
     def test_router_selects_next_actor_in_stable_order(self):
         router = DialogueTurnRouter(_Settings())
         route = router.select_next_turn(_context(current="actor-crazy", spoken=["actor-crazy"]))

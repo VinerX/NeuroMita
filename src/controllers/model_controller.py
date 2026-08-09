@@ -1538,6 +1538,7 @@ class ModelController(GenerationService, ModelStateService):
             participants=participants,
             capabilities=effective_capabilities,
             dialogue=request.dialogue,
+            gm_instruction_override=request.gm_instruction_override,
         )
         self._capture_generation_input(
             request=request,

@@ -567,9 +567,11 @@ class SandboxDialogueConfig:
     initial_character_id: str = ""
     auto_dialogue_enabled: bool = True
     max_auto_turns: int = 6
+    auto_turn_count_mode: str = "fixed"
     max_consecutive_continues: int = 3
     game_master_enabled: bool = False
     gm_repeat: int = 2
+    gm_instruction: str = ""
     delay_ms: int = 0
     manual_step_mode: bool = False
 
@@ -706,6 +708,7 @@ class PromptBuildRequest:
     participants: List[str] = field(default_factory=list)
     capabilities: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    gm_instruction_override: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -746,6 +749,7 @@ class ChatGenerationRequest:
     disable_history_compression: bool = False
     game_state: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    gm_instruction_override: Optional[str] = None
 
 
 @dataclass(frozen=True)
