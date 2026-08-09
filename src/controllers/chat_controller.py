@@ -23,7 +23,7 @@ from services.contracts import (
     DialogueRuntimeSource,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
-from services.dialogue_turn_router import get_dialogue_turn_router, route_to_transport
+from services.dialogue_turn_router import DialogueTurnRouter, get_dialogue_turn_router, route_to_transport
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
 from services.stream_presentation import TextDeltaCoalescer
 from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
@@ -301,7 +301,7 @@ class ChatController:
         game_state: dict | None = None,
         dialogue: Any = None,
         dialogue_source: DialogueRuntimeSource | str | None = None,
-        dialogue_router: Any = None,
+        dialogue_router: DialogueTurnRouter | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -316,6 +316,11 @@ class ChatController:
             if dialogue is not None and str(dialogue.conversation_id).startswith("sandbox:")
             else DialogueRuntimeSource.UNITY
         )
+        if not isinstance(runtime_source, DialogueRuntimeSource):
+            try:
+                runtime_source = DialogueRuntimeSource(str(runtime_source).strip().lower())
+            except ValueError:
+                runtime_source = DialogueRuntimeSource.NONE
         if dialogue is not None and dialogue.conversation_id:
             self.dialogue_runtime_state.update_from_context(dialogue, runtime_source)
         stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
@@ -591,7 +596,13 @@ class ChatController:
             # Python owns the control-plane route. The model contributes only
             # the current reply and semantic GM intents; Unity executes one
             # exact route after live scene validation.
-            route = (dialogue_router or self.dialogue_router).route_after_response(
+            effective_router = self.dialogue_router
+            if (
+                runtime_source is DialogueRuntimeSource.SANDBOX
+                and isinstance(dialogue_router, DialogueTurnRouter)
+            ):
+                effective_router = dialogue_router
+            route = effective_router.route_after_response(
                 dialogue,
                 structured=structured_data,
                 control_plane_trusted=control_plane_trusted,
@@ -601,6 +612,10 @@ class ChatController:
             if dialogue is not None and dialogue.conversation_id:
                 self.dialogue_runtime_state.set_pending_route(
                     route,
+                    source=runtime_source,
+                    conversation_id=dialogue.conversation_id,
+                    epoch=dialogue.epoch,
+                    source_turn_index=dialogue.turn_index,
                     control_plane_trusted=control_plane_trusted,
                 )
             transport_route = route_to_transport(route)

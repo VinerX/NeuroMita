@@ -556,6 +556,7 @@ class SandboxDialogueConfig:
     game_master_enabled: bool = False
     gm_repeat: int = 2
     delay_ms: int = 0
+    manual_step_mode: bool = False
 
 
 def dialogue_auto_turns_remaining(dialogue: Optional[DialogueTurnContext]) -> int:

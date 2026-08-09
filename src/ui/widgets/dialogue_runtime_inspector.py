@@ -42,6 +42,7 @@ class DialogueRuntimeInspector(QWidget):
         self._budget_label = QLabel()
         self._route_label = QLabel()
         self._auto_check = QCheckBox(_("Auto dialogue", "Auto dialogue"))
+        self._manual_step_check = QCheckBox(_("Manual route stepping", "Manual route stepping"))
         self._gm_check = QCheckBox(_("Game Master", "Game Master"))
         self._max_auto_spin = QSpinBox()
         self._max_continue_spin = QSpinBox()
@@ -108,6 +109,7 @@ class DialogueRuntimeInspector(QWidget):
         controls_layout.setHorizontalSpacing(12)
         controls_layout.setVerticalSpacing(5)
         controls_layout.addRow(self._auto_check)
+        controls_layout.addRow(self._manual_step_check)
         controls_layout.addRow(self._gm_check)
         self._configure_spin(self._max_auto_spin, 0, 100, 6)
         self._configure_spin(self._max_continue_spin, 0, 100, 3)
@@ -194,6 +196,7 @@ class DialogueRuntimeInspector(QWidget):
             participant_character_ids=selected,
             initial_character_id=selected[0],
             auto_dialogue_enabled=self._auto_check.isChecked(),
+            manual_step_mode=self._manual_step_check.isChecked(),
             max_auto_turns=self._max_auto_spin.value(),
             max_consecutive_continues=self._max_continue_spin.value(),
             game_master_enabled=self._gm_check.isChecked(),
@@ -261,6 +264,7 @@ class DialogueRuntimeInspector(QWidget):
 
         for widget in (
             self._auto_check,
+            self._manual_step_check,
             self._gm_check,
             self._max_auto_spin,
             self._max_continue_spin,

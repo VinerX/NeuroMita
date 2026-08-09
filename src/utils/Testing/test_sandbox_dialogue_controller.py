@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
@@ -33,6 +34,7 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         self.controller._responder_actor_id = "sandbox:A:0"
         self.controller._spoken_actor_ids = []
         self.controller._pending_task_uid = ""
+        self.controller._pending_route = None
         self.controller._consumed_route_ids.clear()
         self.controller._active = True
 
@@ -76,6 +78,68 @@ class SandboxDialogueControllerTests(unittest.TestCase):
     def test_auto_budget_is_shared_with_follow_up_routes(self) -> None:
         self.controller._auto_turns_used = 1
         self.assertFalse(self.controller.execute_route(self._route(route_id="route-2")))
+
+    def test_route_target_character_must_match_participant(self) -> None:
+        self.assertFalse(
+            self.controller.execute_route(self._route(target_character_id="A"))
+        )
+        self.assertNotIn("route-1", self.controller._consumed_route_ids)
+
+    def test_game_master_directive_target_must_be_participant(self) -> None:
+        self.assertFalse(
+            self.controller.execute_route(
+                self._route(
+                    route_kind="game_master_directive",
+                    target_actor_id="sandbox:unknown:0",
+                    target_character_id="Unknown",
+                )
+            )
+        )
+
+    def test_continue_target_must_be_current_responder(self) -> None:
+        self.assertFalse(
+            self.controller.execute_route(
+                self._route(
+                    route_kind="continue",
+                    continue_route_reserved=True,
+                )
+            )
+        )
+
+    def test_player_message_starts_new_turn(self) -> None:
+        with patch.object(self.controller, "_emit_request", return_value=True):
+            self.assertTrue(self.controller.send_player_message("Hello"))
+        self.assertEqual(self.controller._epoch, 2)
+        self.assertEqual(self.controller._turn_index, 1)
+        self.assertEqual(self.controller._auto_turns_used, 0)
+        self.assertEqual(self.controller._speaker_actor_id, "player")
+        self.assertEqual(self.controller._spoken_actor_ids, [])
+
+    def test_intermediate_task_status_keeps_request_pending(self) -> None:
+        self.controller._pending_task_uid = "task-1"
+        event = SimpleNamespace(
+            data={
+                "task": SimpleNamespace(
+                    uid="task-1",
+                    status=SimpleNamespace(value="RUNNING"),
+                    result=None,
+                )
+            }
+        )
+        self.controller._on_task_status(event)
+        self.assertEqual(self.controller._pending_task_uid, "task-1")
+
+    def test_manual_step_executes_pending_route(self) -> None:
+        self.controller._config = SandboxDialogueConfig(
+            participant_character_ids=("A", "B"),
+            auto_dialogue_enabled=True,
+            max_auto_turns=1,
+            manual_step_mode=True,
+        )
+        self.controller._pending_route = self._route()
+        with patch.object(self.controller, "execute_route", return_value=True) as execute:
+            self.assertTrue(self.controller.step_once())
+        execute.assert_called_once_with(self._route())
 
 
 if __name__ == "__main__":

@@ -269,16 +269,16 @@ class AppShellController:
             if not user_input:
                 self._view.show_send_error("Sandbox requires a text prompt.")
                 return
+            accepted = sandbox.send_player_message(user_input, all_image_data)
+            if not accepted:
+                self._view.show_send_error("Sandbox session is busy or unavailable.")
+                return
             self._view.render_outgoing_message(
                 user_input=user_input,
                 image_content=image_content,
                 message_id=user_message_id,
                 clear_entry=bool(from_entry or clear_entry_after_send),
             )
-            accepted = sandbox.send_player_message(user_input, all_image_data)
-            if not accepted:
-                self._view.show_send_error("Sandbox session is busy or unavailable.")
-                return
             self._view.show_thinking_now()
             if staged_image_data:
                 self._event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)

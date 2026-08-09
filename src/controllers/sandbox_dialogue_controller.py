@@ -55,6 +55,7 @@ class SandboxDialogueController:
         self._responder_actor_id = ""
         self._spoken_actor_ids: list[str] = []
         self._pending_task_uid = ""
+        self._pending_route: dict[str, Any] | None = None
         self._consumed_route_ids: set[str] = set()
         self._active = False
         self._bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status, weak=False)
@@ -74,12 +75,18 @@ class SandboxDialogueController:
         if current.source is DialogueRuntimeSource.UNITY:
             return False
         selected = config or self._default_config()
-        character_ids = tuple(
-            str(item).strip()
-            for item in selected.participant_character_ids
-            if str(item).strip()
-        )
+        seen_character_ids: set[str] = set()
+        normalized_character_ids: list[str] = []
+        for value in selected.participant_character_ids:
+            item = str(value).strip()
+            if item and item not in seen_character_ids:
+                seen_character_ids.add(item)
+                normalized_character_ids.append(item)
+        character_ids = tuple(normalized_character_ids)
         if len(character_ids) < 2:
+            return False
+        initial_character_id = str(selected.initial_character_id or "").strip() or character_ids[0]
+        if initial_character_id not in character_ids:
             return False
         with self._lock:
             self.stop_session()
@@ -99,10 +106,10 @@ class SandboxDialogueController:
             self._turn_index = 0
             self._auto_turns_used = 0
             self._speaker_actor_id = "player"
-            initial = self._config.initial_character_id or character_ids[0]
-            self._responder_actor_id = self._actor_id(initial)
+            self._responder_actor_id = self._actor_id(initial_character_id)
             self._spoken_actor_ids = []
             self._pending_task_uid = ""
+            self._pending_route = None
             self._consumed_route_ids.clear()
             self._active = True
             context = self._build_context()
@@ -118,6 +125,7 @@ class SandboxDialogueController:
             conversation_id = self._conversation_id
             self._active = False
             self._pending_task_uid = ""
+            self._pending_route = None
             self._conversation_id = ""
             self._consumed_route_ids.clear()
             router = self._router
@@ -134,6 +142,7 @@ class SandboxDialogueController:
         with self._lock:
             if not self._active or not message or self._pending_task_uid:
                 return False
+            self._begin_player_turn_locked()
             target = self._responder_actor_id
             character_id = self._character_id_for_actor(target)
             context = self._build_context()
@@ -148,19 +157,15 @@ class SandboxDialogueController:
 
     def step_once(self) -> bool:
         with self._lock:
-            if not self._active or self._pending_task_uid:
+            if (
+                not self._active
+                or self._pending_task_uid
+                or not self._config.manual_step_mode
+                or not self._pending_route
+            ):
                 return False
-            target = self._responder_actor_id
-            context = self._build_context()
-            character_id = self._character_id_for_actor(target)
-        return self._emit_request(
-            user_input="Continue the current sandbox conversation naturally.",
-            character_id=character_id,
-            sender="Player",
-            context=context,
-            image_data=[],
-            event_type="chat",
-        )
+            route = dict(self._pending_route)
+        return self.execute_route(route)
 
     def _emit_request(
         self,
@@ -208,16 +213,39 @@ class SandboxDialogueController:
         with self._lock:
             if not self._active or str(task.uid) != self._pending_task_uid:
                 return
-            status = getattr(getattr(task, "status", None), "value", getattr(task, "status", ""))
-            self._pending_task_uid = ""
-            if str(status) != "SUCCESS":
+            status = str(
+                getattr(getattr(task, "status", None), "value", getattr(task, "status", ""))
+                or ""
+            ).strip().upper()
+            if status in {"PENDING", "QUEUED", "RUNNING", "STARTED", "VOICING"}:
                 return
-            result = task.result if isinstance(task.result, dict) else {}
-            routes = result.get("next_turns") or []
-        if routes:
-            self.execute_route(routes[0])
-        else:
-            self._runtime_state.clear_pending_route()
+
+            self._pending_task_uid = ""
+            scope = {
+                "source": DialogueRuntimeSource.SANDBOX,
+                "conversation_id": self._conversation_id,
+                "epoch": self._epoch,
+                "source_turn_index": self._turn_index,
+            }
+            if status not in {"SUCCESS", "COMPLETED"}:
+                self._pending_route = None
+                route = None
+                should_clear = True
+            else:
+                result = task.result if isinstance(task.result, dict) else {}
+                routes = result.get("next_turns") or []
+                route = routes[0] if routes else None
+                if self._config.manual_step_mode and isinstance(route, dict):
+                    self._pending_route = dict(route)
+                    return
+                self._pending_route = None
+                should_clear = route is None
+
+        if route is not None:
+            if not self.execute_route(route):
+                self._runtime_state.clear_pending_route(**scope)
+        elif should_clear:
+            self._runtime_state.clear_pending_route(**scope)
 
     def execute_route(self, route: dict[str, Any]) -> bool:
         if not isinstance(route, dict):
@@ -225,57 +253,95 @@ class SandboxDialogueController:
         with self._lock:
             if not self._active:
                 return False
+            try:
+                route_epoch = int(route.get("epoch", 0))
+                source_turn_index = int(route.get("source_turn_index", -1))
+            except (TypeError, ValueError):
+                return False
             if str(route.get("conversation_id") or "") != self._conversation_id:
                 return False
-            if int(route.get("epoch") or 0) != self._epoch:
+            if route_epoch != self._epoch or source_turn_index != self._turn_index:
                 return False
-            if int(route.get("source_turn_index") or -1) != self._turn_index:
-                return False
+
             route_id = str(route.get("route_id") or "").strip()
             if not route_id or route_id in self._consumed_route_ids:
                 return False
-            self._consumed_route_ids.add(route_id)
             route_kind = str(route.get("route_kind") or "").strip().lower()
+
             if route_kind == "stop":
+                self._consumed_route_ids.add(route_id)
                 self._active = False
                 self._pending_task_uid = ""
+                self._pending_route = None
                 self._runtime_state.reset(DialogueRuntimeSource.SANDBOX)
                 return True
-            if route_kind not in {"continue", "mita_follow_up", "game_master", "game_master_directive"}:
+
+            if route_kind not in {
+                "continue",
+                "mita_follow_up",
+                "game_master",
+                "game_master_directive",
+            }:
                 return False
             if not self._config.auto_dialogue_enabled:
                 return False
             if self._auto_turns_used >= int(self._config.max_auto_turns):
                 return False
-            if route_kind == "continue" and not bool(route.get("continue_route_reserved")):
-                return False
+            if route_kind == "continue":
+                if not bool(route.get("continue_route_reserved")):
+                    return False
+                if str(route.get("target_actor_id") or "").strip() != self._responder_actor_id:
+                    return False
+
             target_actor = str(route.get("target_actor_id") or "").strip()
+            target_character = ""
+            target_participant = None
             if route_kind == "game_master":
                 target_actor = "sandbox:GameMaster:0"
-            if not target_actor:
-                return False
-            if route_kind != "game_master" and route_kind != "game_master_directive":
-                participant_actor_ids = {item.actor_id for item in self._participants}
-                if target_actor not in participant_actor_ids:
+                provided_character = str(route.get("target_character_id") or "").strip()
+                if provided_character and provided_character.casefold() != "gamemaster":
                     return False
+                target_character = "GameMaster"
+            else:
+                target_participant = next(
+                    (item for item in self._participants if item.actor_id == target_actor),
+                    None,
+                )
+                if (
+                    target_participant is None
+                    or not target_participant.is_active
+                    or not target_participant.can_speak
+                ):
+                    return False
+                provided_character = str(route.get("target_character_id") or "").strip()
+                if (
+                    provided_character
+                    and provided_character.casefold() != target_participant.character_id.casefold()
+                ):
+                    return False
+                target_character = target_participant.character_id
+
             input_text = str(route.get("input_text") or "").strip()
-            if not input_text:
+            if not target_actor or not input_text:
                 return False
+
+            route_id = str(route_id)
+            self._consumed_route_ids.add(route_id)
             source_actor = self._responder_actor_id
-            target_character = str(route.get("target_character_id") or "").strip()
-            if not target_character:
-                target_character = self._character_id_for_actor(target_actor)
             previous_turn_index = self._turn_index
             previous_auto_turns = self._auto_turns_used
             previous_speaker_actor = self._speaker_actor_id
             previous_responder_actor = self._responder_actor_id
             previous_spoken_count = len(self._spoken_actor_ids)
+            previous_pending_route = self._pending_route
+            self._pending_route = None
             self._turn_index += 1
             self._auto_turns_used += 1
             self._speaker_actor_id = source_actor
             self._responder_actor_id = target_actor
             self._spoken_actor_ids.append(target_actor)
             context = self._build_context()
+
         self._runtime_state.update_from_context(
             context,
             DialogueRuntimeSource.SANDBOX,
@@ -283,7 +349,7 @@ class SandboxDialogueController:
         )
         accepted = self._emit_request(
             user_input=input_text,
-            character_id=target_character or "GameMaster",
+            character_id=target_character,
             sender=self._character_id_for_actor(source_actor) or "Player",
             context=context,
             image_data=[],
@@ -291,11 +357,13 @@ class SandboxDialogueController:
         )
         if accepted:
             return True
+
         with self._lock:
             self._turn_index = previous_turn_index
             self._auto_turns_used = previous_auto_turns
             self._speaker_actor_id = previous_speaker_actor
             self._responder_actor_id = previous_responder_actor
+            self._pending_route = previous_pending_route
             del self._spoken_actor_ids[previous_spoken_count:]
             self._consumed_route_ids.discard(route_id)
             rollback_context = self._build_context()
@@ -305,6 +373,17 @@ class SandboxDialogueController:
             game_master_enabled=self._config.game_master_enabled,
         )
         return False
+
+    def _begin_player_turn_locked(self) -> None:
+        self._epoch += 1
+        self._turn_index += 1
+        self._auto_turns_used = 0
+        self._speaker_actor_id = "player"
+        self._spoken_actor_ids.clear()
+        self._consumed_route_ids.clear()
+        self._pending_route = None
+        if self._router is not None and self._conversation_id:
+            self._router.reset_conversation(self._conversation_id)
 
     def _build_context(self) -> dict[str, Any]:
         return {

@@ -75,9 +75,20 @@ class DialogueRuntimeStateService:
         self,
         route: Any,
         *,
+        source: DialogueRuntimeSource | str | None = None,
+        conversation_id: str = "",
+        epoch: int | None = None,
+        source_turn_index: int | None = None,
         control_plane_trusted: bool = False,
     ) -> DialogueRuntimeSnapshot:
         with self._lock:
+            if not self._scope_matches_locked(
+                source=source,
+                conversation_id=conversation_id,
+                epoch=epoch,
+                source_turn_index=source_turn_index,
+            ):
+                return self._snapshot
             if route is None:
                 self._snapshot = replace(
                     self._snapshot,
@@ -101,8 +112,39 @@ class DialogueRuntimeStateService:
         self._publish(snapshot)
         return snapshot
 
-    def clear_pending_route(self) -> DialogueRuntimeSnapshot:
-        return self.set_pending_route(None)
+    def clear_pending_route(
+        self,
+        *,
+        source: DialogueRuntimeSource | str | None = None,
+        conversation_id: str = "",
+        epoch: int | None = None,
+        source_turn_index: int | None = None,
+    ) -> DialogueRuntimeSnapshot:
+        return self.set_pending_route(
+            None,
+            source=source,
+            conversation_id=conversation_id,
+            epoch=epoch,
+            source_turn_index=source_turn_index,
+        )
+
+    def _scope_matches_locked(
+        self,
+        *,
+        source: DialogueRuntimeSource | str | None,
+        conversation_id: str,
+        epoch: int | None,
+        source_turn_index: int | None,
+    ) -> bool:
+        if source is not None and self._snapshot.source is not self._source(source):
+            return False
+        if conversation_id and self._snapshot.conversation_id != str(conversation_id):
+            return False
+        if epoch is not None and int(self._snapshot.epoch) != int(epoch):
+            return False
+        if source_turn_index is not None and int(self._snapshot.turn_index) != int(source_turn_index):
+            return False
+        return True
 
     def reset(self, source: DialogueRuntimeSource | str | None = None) -> DialogueRuntimeSnapshot:
         source_value = self._source(source) if source is not None else None

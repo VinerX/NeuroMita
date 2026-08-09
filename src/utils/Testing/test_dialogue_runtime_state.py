@@ -38,6 +38,51 @@ class DialogueRuntimeStateTests(unittest.TestCase):
         finally:
             bus.shutdown()
 
+    def test_pending_route_scope_rejects_stale_generation(self) -> None:
+        bus = EventBus()
+        service = DialogueRuntimeStateService(bus)
+        try:
+            first = {
+                "conversation_id": "sandbox:one",
+                "epoch": 1,
+                "turn_index": 2,
+                "participants": [],
+            }
+            second = dict(first, turn_index=3)
+            service.update_from_context(first, DialogueRuntimeSource.SANDBOX)
+            service.set_pending_route(
+                {"route_kind": "mita_follow_up", "route_id": "route-a", "source_turn_index": 2},
+                source=DialogueRuntimeSource.SANDBOX,
+                conversation_id="sandbox:one",
+                epoch=1,
+                source_turn_index=2,
+            )
+            service.update_from_context(second, DialogueRuntimeSource.SANDBOX)
+            service.set_pending_route(
+                {"route_kind": "mita_follow_up", "route_id": "route-stale", "source_turn_index": 2},
+                source=DialogueRuntimeSource.SANDBOX,
+                conversation_id="sandbox:one",
+                epoch=1,
+                source_turn_index=2,
+            )
+            self.assertEqual(service.snapshot().pending_route_id, "")
+            service.set_pending_route(
+                {"route_kind": "mita_follow_up", "route_id": "route-b", "source_turn_index": 3},
+                source=DialogueRuntimeSource.SANDBOX,
+                conversation_id="sandbox:one",
+                epoch=1,
+                source_turn_index=3,
+            )
+            service.clear_pending_route(
+                source=DialogueRuntimeSource.SANDBOX,
+                conversation_id="sandbox:one",
+                epoch=1,
+                source_turn_index=2,
+            )
+            self.assertEqual(service.snapshot().pending_route_id, "route-b")
+        finally:
+            bus.shutdown()
+
     def test_pending_route_is_observable_and_reset_is_scoped(self) -> None:
         bus = EventBus()
         service = DialogueRuntimeStateService(bus)
