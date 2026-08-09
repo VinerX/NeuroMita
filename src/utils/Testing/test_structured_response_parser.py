@@ -51,6 +51,20 @@ class StructuredResponseParserCoerceTests(unittest.TestCase):
         self.assertFalse(outcome.schema_coerced)
         self.assertTrue(outcome.control_plane_trusted)
 
+    def test_markdown_json_fence_is_trusted(self) -> None:
+        outcome = parse_structured_response_with_meta(
+            "```json\n{\"segments\": [{\"text\": \"Hello\"}]}\n```"
+        )
+        self.assertEqual(outcome.extraction_kind, "markdown_json_fence")
+        self.assertTrue(outcome.control_plane_trusted)
+
+    def test_embedded_json_is_untrusted_for_control_plane(self) -> None:
+        outcome = parse_structured_response_with_meta(
+            "Model preface\n{\"segments\": [{\"text\": \"Hello\"}]}\nModel suffix"
+        )
+        self.assertEqual(outcome.extraction_kind, "embedded_json")
+        self.assertFalse(outcome.control_plane_trusted)
+
     def test_schema_coercion_is_untrusted_for_control_plane(self) -> None:
         outcome = parse_structured_response_with_meta(
             json.dumps({"segments": [{"text": 123, "commands": "wave"}]})

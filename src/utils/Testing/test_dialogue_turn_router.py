@@ -60,6 +60,24 @@ def _context(*, current="actor-crazy", spoken=None, client=None, epoch=1):
 
 
 class DialogueTurnRouterTests(unittest.TestCase):
+    def test_route_after_response_requires_trusted_control_plane(self):
+        router = DialogueTurnRouter(_Settings())
+        context = _context()
+        structured = {"segments": [{"text": "one"}]}
+        self.assertIsNone(router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+        ))
+        self.assertIsNotNone(router.route_after_response(
+            context,
+            structured=structured,
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        ))
+
     def test_router_disabled_returns_no_turn(self):
         router = DialogueTurnRouter(_Settings(MITA_DIALOGUE_AUTO=False))
         self.assertIsNone(router.select_next_turn(_context()))
@@ -131,18 +149,18 @@ class DialogueTurnRouterTests(unittest.TestCase):
 
     def test_gm_cadence_routes_to_game_master(self):
         router = DialogueTurnRouter(_Settings(GM_ON=True, GM_REPEAT=2))
-        first = router.route_after_response(_context(), structured={"segments": [{"text": "one"}]}, character_id="Crazy", event_type="answer")
+        first = router.route_after_response(_context(), structured={"segments": [{"text": "one"}]}, character_id="Crazy", event_type="answer", control_plane_trusted=True)
         self.assertEqual(first.route_kind, ROUTE_MITA_FOLLOW_UP)
         second_context = _context(current="actor-kind", spoken=["actor-crazy"], client=None)
         second_context["speaker_actor_id"] = "actor-crazy"
-        second = router.route_after_response(second_context, structured={"segments": [{"text": "two"}]}, character_id="Kind", event_type="answer")
+        second = router.route_after_response(second_context, structured={"segments": [{"text": "two"}]}, character_id="Kind", event_type="answer", control_plane_trusted=True)
         self.assertEqual(second.route_kind, ROUTE_GAME_MASTER)
 
     def test_gm_directive_is_python_validated(self):
         router = DialogueTurnRouter(_Settings(GM_ON=True))
         context = _context(current="actor-gm")
         structured = {"segments": [{"text": "", "intents": [{"type": "dialogue.send_system_message", "payload": {"character": "Kind", "message": "Answer."}}]}]}
-        route = router.route_after_response(context, structured=structured, character_id="GameMaster", event_type="game_master_observe")
+        route = router.route_after_response(context, structured=structured, character_id="GameMaster", event_type="game_master_observe", control_plane_trusted=True)
         self.assertEqual(route.route_kind, ROUTE_GAME_MASTER_DIRECTIVE)
         self.assertEqual(route.target_actor_id, "actor-kind")
 
@@ -159,6 +177,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"text": "more", "intents": [{"type": "dialogue.continue", "payload": {}}]}]},
             character_id="Crazy",
             event_type="answer",
+            control_plane_trusted=True,
         )
         self.assertEqual(route.route_kind, ROUTE_CONTINUE)
         self.assertEqual(route.event_type, "continue")
@@ -174,6 +193,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"text": "continued"}]},
             character_id="Crazy",
             event_type="continue",
+            control_plane_trusted=True,
         ))
 
     def test_continue_spends_shared_auto_turn_budget(self):
@@ -186,6 +206,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured=structured,
             character_id="Crazy",
             event_type="answer",
+            control_plane_trusted=True,
         ))
 
     def test_route_contains_freshness_and_one_shot_metadata(self):
@@ -204,6 +225,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"text": "one"}]},
             character_id="Crazy",
             event_type="answer",
+            control_plane_trusted=True,
         )
         second_context = _context(current="actor-kind", spoken=["actor-crazy"])
         second_context["speaker_actor_id"] = "actor-crazy"
@@ -212,6 +234,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"text": "two"}]},
             character_id="Kind",
             event_type="answer",
+            control_plane_trusted=True,
         )
         self.assertEqual(second.route_kind, ROUTE_GAME_MASTER)
         gm_context = _context(current="", spoken=["actor-crazy", "actor-kind"])
@@ -220,6 +243,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"text": "No explicit target."}]},
             character_id="GameMaster",
             event_type="game_master_observe",
+            control_plane_trusted=True,
         )
         self.assertEqual(resumed.target_actor_id, "actor-cappie")
 
@@ -230,6 +254,7 @@ class DialogueTurnRouterTests(unittest.TestCase):
             structured={"segments": [{"intents": [{"type": "dialogue.send_system_message", "payload": {"character": "crazy_mita", "message": "Answer."}}]}]},
             character_id="GameMaster",
             event_type="game_master_observe",
+            control_plane_trusted=True,
         )
         self.assertEqual(route.target_actor_id, "actor-crazy")
 

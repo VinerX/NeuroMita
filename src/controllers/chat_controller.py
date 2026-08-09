@@ -581,7 +581,8 @@ class ChatController:
             # exact route after live scene validation.
             route = self.dialogue_router.route_after_response(
                 dialogue,
-                structured=structured_data if control_plane_trusted else None,
+                structured=structured_data,
+                control_plane_trusted=control_plane_trusted,
                 character_id=str(effective_character_id or ""),
                 event_type=effective_event_type,
             )

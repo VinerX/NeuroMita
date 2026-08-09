@@ -440,10 +440,15 @@ class DialogueTurnRouter:
         structured: dict[str, Any] | None,
         character_id: str,
         event_type: str,
+        control_plane_trusted: bool = False,
     ) -> Optional[RoutedDialogueRoute]:
         """Route one successful structured response through Python control state."""
         context = self.authoritative_context(dialogue)
-        if context is None or not self._has_structured_response(structured):
+        if (
+            not control_plane_trusted
+            or context is None
+            or not self._has_structured_response(structured)
+        ):
             return None
         if not context.conversation_id or context.epoch < 0:
             return None

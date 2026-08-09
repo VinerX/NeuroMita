@@ -26,6 +26,7 @@ class StructuredParseOutcome:
     parse_level: str
     schema_coerced: bool = False
     fallback_kind: str = ""
+    extraction_kind: str = "raw_json"
 
     @property
     def control_plane_trusted(self) -> bool:
@@ -33,6 +34,7 @@ class StructuredParseOutcome:
             self.parse_level == "direct"
             and not self.schema_coerced
             and not self.fallback_kind
+            and self.extraction_kind in {"raw_json", "markdown_json_fence"}
         )
 
 
@@ -44,7 +46,7 @@ def parse_structured_response_with_meta(
     if not raw_text or not isinstance(raw_text, str):
         raise StructuredResponseParseError("Empty or non-string response")
 
-    cleaned = _extract_json_string(raw_text)
+    cleaned, extraction_kind = _extract_json_string(raw_text)
 
     data, parse_level = _try_json_loads(cleaned, level="direct")
 
@@ -89,21 +91,39 @@ def parse_structured_response_with_meta(
             logger.debug(
                 "[StructuredResponseParser] Tool call with empty segments — created default segment"
             )
-            return StructuredParseOutcome(response, parse_level, schema_coerced, "synthetic_empty_tool_segment")
+            return StructuredParseOutcome(
+                response,
+                parse_level,
+                schema_coerced,
+                "synthetic_empty_tool_segment",
+                extraction_kind,
+            )
 
         converted = _try_convert_legacy_flat_json(data, model_cls=model_cls)
         if converted is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used legacy flat-JSON fallback"
             )
-            return StructuredParseOutcome(response=converted, parse_level=parse_level, schema_coerced=schema_coerced, fallback_kind="legacy_flat")
+            return StructuredParseOutcome(
+                response=converted,
+                parse_level=parse_level,
+                schema_coerced=schema_coerced,
+                fallback_kind="legacy_flat",
+                extraction_kind=extraction_kind,
+            )
 
         partial = _extract_partial_response(raw_text, model_cls=model_cls)
         if partial is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used partial text extraction"
             )
-            return StructuredParseOutcome(response=partial, parse_level=parse_level, schema_coerced=schema_coerced, fallback_kind="partial_extraction")
+            return StructuredParseOutcome(
+                response=partial,
+                parse_level=parse_level,
+                schema_coerced=schema_coerced,
+                fallback_kind="partial_extraction",
+                extraction_kind=extraction_kind,
+            )
 
         raise StructuredResponseParseError(
             "StructuredResponse has no segments (segments list is empty)"
@@ -116,7 +136,7 @@ def parse_structured_response_with_meta(
         f"stress_change={response.stress_change}"
     )
 
-    return StructuredParseOutcome(response, parse_level, schema_coerced)
+    return StructuredParseOutcome(response, parse_level, schema_coerced, extraction_kind=extraction_kind)
 
 
 def parse_structured_response(
@@ -515,15 +535,18 @@ def _try_convert_legacy_flat_json(data: dict, *, model_cls: Type[StructuredRespo
         )
 
 
-def _extract_json_string(text: str) -> str:
+def _extract_json_string(text: str) -> tuple[str, str]:
     text = text.strip()
+    extraction_kind = "raw_json"
 
     if text.startswith("\ufeff"):
         text = text[1:]
 
     if text.startswith("```json"):
+        extraction_kind = "markdown_json_fence"
         text = text[len("```json"):]
     elif text.startswith("```"):
+        extraction_kind = "markdown_json_fence"
         text = text[3:]
 
     if text.endswith("```"):
@@ -532,17 +555,20 @@ def _extract_json_string(text: str) -> str:
     text = text.strip()
 
     if not text.startswith("{"):
+        extraction_kind = "embedded_json"
         brace_start = text.find("{")
         if brace_start == -1:
-            return text
+            return text, extraction_kind
         text = text[brace_start:]
 
     if not text.endswith("}"):
         brace_end = text.rfind("}")
         if brace_end != -1:
+            if text[brace_end + 1:].strip():
+                extraction_kind = "embedded_json"
             text = text[:brace_end + 1]
 
-    return text
+    return text, extraction_kind
 
 
 def structured_response_to_result_dict(response: StructuredResponse) -> dict:
