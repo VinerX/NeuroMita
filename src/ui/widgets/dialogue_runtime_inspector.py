@@ -197,7 +197,7 @@ class DialogueRuntimeInspector(QWidget):
         )
         saved_auto_turn_mode = self._global_dialogue_setting(
             "DIALOGUE_AUTO_TURN_COUNT_MODE",
-            "fixed",
+            "per_participant",
         )
         saved_auto_turn_mode_index = self._auto_turn_mode_combo.findData(
             saved_auto_turn_mode
@@ -259,8 +259,11 @@ class DialogueRuntimeInspector(QWidget):
         )
         self._gm_instruction_edit.setPlainText(self._global_gm_instruction())
         session_layout.addRow(
-            _("GameMaster task", "GameMaster task"),
+            _("GameMaster task (updates the next GM turn)", "GameMaster task (updates the next GM turn)"),
             self._gm_instruction_edit,
+        )
+        self._gm_instruction_edit.textChanged.connect(
+            self._update_live_gm_instruction
         )
         layout.addWidget(session_frame)
 
@@ -531,6 +534,13 @@ class DialogueRuntimeInspector(QWidget):
             self._clear_error()
             self.refresh()
 
+    def _update_live_gm_instruction(self) -> None:
+        controller = get_sandbox_dialogue_controller()
+        if controller.active:
+            controller.update_gm_instruction(
+                self._gm_instruction_edit.toPlainText()
+            )
+
     def _stop_session(self) -> None:
         get_sandbox_dialogue_controller().stop_session()
         self._clear_error()
@@ -604,7 +614,6 @@ class DialogueRuntimeInspector(QWidget):
             self._auto_turns_per_participant_spin,
             self._max_continue_spin,
             self._gm_repeat_spin,
-            self._gm_instruction_edit,
         ):
             widget.setEnabled(configuration_enabled)
         is_per_participant = (
@@ -615,6 +624,7 @@ class DialogueRuntimeInspector(QWidget):
         self._auto_turns_per_participant_spin.setEnabled(
             configuration_enabled and is_per_participant
         )
+        self._gm_instruction_edit.setEnabled(not unity_active)
         self._refresh_auto_turn_budget_hint()
         for check in self._character_checks.values():
             check.setEnabled(configuration_enabled)

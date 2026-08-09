@@ -22,7 +22,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "label": _("Автодиалоги между персонажами", "Automatic dialogues between characters"),
             "key": "MITA_DIALOGUE_AUTO",
             "type": "checkbutton",
-            "default_checkbutton": False,
+            "default_checkbutton": True,
             "widget_name": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
                 "Разрешать роутеру назначать следующие ходы после ответа Миты.",
@@ -37,7 +37,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
                 (_("Фиксированный лимит", "Fixed limit"), "fixed"),
                 (_("По одному на каждую Миту", "One per active Mita"), "per_participant"),
             ],
-            "default": "fixed",
+            "default": "per_participant",
             "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
                 "Фиксированный режим использует число ниже. Второй режим игнорирует его и даёт один ход на каждую активную говорящую Миту.",

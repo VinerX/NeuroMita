@@ -168,6 +168,7 @@ _SECTION_TO_GROUP = {
     "system input": "context",
     "MiSide World State": "context",
     "Unity runtime": "context",
+    "group conversation": "context",
     "System State": "context",
     "reminders": "context",
     "core memories": "context",

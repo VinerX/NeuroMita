@@ -162,6 +162,17 @@ class SandboxDialogueController:
     def reset_session(self) -> None:
         self.stop_session()
 
+    def update_gm_instruction(self, instruction: str) -> bool:
+        """Apply a session-local GameMaster task to future moderator turns."""
+        with self._lock:
+            if not self._active:
+                return False
+            self._config = replace(
+                self._config,
+                gm_instruction=str(instruction or "").strip(),
+            )
+            return True
+
     def send_player_message(self, text: str, image_data: list[bytes] | None = None) -> bool:
         message = str(text or "").strip()
         with self._lock:

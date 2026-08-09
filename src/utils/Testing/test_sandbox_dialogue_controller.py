@@ -56,6 +56,22 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         route.update(overrides)
         return route
 
+    def test_sandbox_defaults_to_one_turn_per_participant(self) -> None:
+        config = SandboxDialogueConfig()
+
+        self.assertTrue(config.auto_dialogue_enabled)
+        self.assertEqual(config.auto_turn_count_mode, "per_participant")
+        self.assertEqual(config.auto_turns_per_participant, 1)
+
+    def test_active_session_can_update_gm_instruction(self) -> None:
+        self.assertTrue(
+            self.controller.update_gm_instruction("Prioritize the player vote.")
+        )
+        self.assertEqual(
+            self.controller._config.gm_instruction,
+            "Prioritize the player vote.",
+        )
+
     def test_valid_route_advances_exactly_one_turn(self) -> None:
         with patch.object(self.controller, "_emit_request", return_value=True):
             self.assertTrue(self.controller.execute_route(self._route()))

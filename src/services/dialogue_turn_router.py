@@ -123,10 +123,11 @@ class DialogueTurnRouter:
         )
         continue_limit = max(0, min(24, continue_limit))
         auto_turn_count_mode = str(
-            self._get_setting("DIALOGUE_AUTO_TURN_COUNT_MODE", "fixed") or "fixed"
+            self._get_setting("DIALOGUE_AUTO_TURN_COUNT_MODE", "per_participant")
+            or "per_participant"
         ).strip().lower()
         if auto_turn_count_mode not in {"fixed", "per_participant"}:
-            auto_turn_count_mode = "fixed"
+            auto_turn_count_mode = "per_participant"
         auto_turns_per_participant = max(
             1,
             min(
@@ -147,7 +148,7 @@ class DialogueTurnRouter:
             registry = getattr(self._settings, "registry", None)
             revision = self._as_int(getattr(registry, "revision", 0), 0)
         return {
-            "auto": self._as_bool(self._get_setting("MITA_DIALOGUE_AUTO", False)),
+            "auto": self._as_bool(self._get_setting("MITA_DIALOGUE_AUTO", True), True),
             "max_auto": max_auto,
             "auto_turn_count_mode": auto_turn_count_mode,
             "auto_turns_per_participant": auto_turns_per_participant,

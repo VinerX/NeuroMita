@@ -826,27 +826,32 @@ class PromptController(PromptBuilderService):
 
         messages.extend(history_limited)
 
+        dialogue_context_message = None
         dialogue = request.dialogue
         if dialogue:
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
-            world_relation = get_world_character_context(character_id=str(getattr(character, "id", "") or ""), world_id=str(get_value("world_id", "") or ""))
-            lines = [
-                "[Current Group Conversation]",
-                "The Player and other Mitas are present in the same ongoing conversation.",
-                "Respond naturally to the current turn; Python owns the decision about who speaks next.",
-                f"world={get_value('world_id', '')} room={get_value('room_id', '')}",
-                f"your_world_relation={world_relation['relation']}",
-                *[f"world_fact={fact}" for fact in world_relation['facts']],
-            ]
-
+            participant_names = []
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
-                display_name = str(getter("display_name", "") or getter("character_id", "") or "present participant").strip()
-                character_name = str(getter("character_id", "") or "").strip()
-                if display_name or character_name:
-                    lines.append(f"present participant={display_name} ({character_name})")
-            messages.append({"role": "system", "content": "\n".join(lines)})
+                display_name = str(
+                    getter("display_name", "")
+                    or getter("character_id", "")
+                    or ""
+                ).strip()
+                if display_name:
+                    participant_names.append(display_name)
+
+            lines = [
+                "[Current Group Conversation]",
+                "Reply naturally to the current turn. Python owns the decision about who speaks next.",
+            ]
+            if participant_names:
+                lines.append("Present: " + ", ".join(participant_names))
+            dialogue_context_message = {
+                "role": "system",
+                "content": "\n".join(lines),
+            }
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
 
@@ -901,6 +906,8 @@ class PromptController(PromptBuilderService):
         })
 
         messages.append(self._build_system_state_message())
+        if dialogue_context_message is not None:
+            messages.append(dialogue_context_message)
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 

@@ -77,6 +77,8 @@ class PromptSystemStateTests(unittest.TestCase):
 
         self.assertNotIn("conversation_id=", content)
         self.assertNotIn("next_turns", content)
+        self.assertNotIn("world=", content)
+        self.assertNotIn("world_fact=", content)
 
     def test_dialogue_context_does_not_expose_client_auto_flag(self):
         content = self._build_dialogue_prompt(False)

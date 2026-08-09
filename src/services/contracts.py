@@ -567,7 +567,7 @@ class SandboxDialogueConfig:
     initial_character_id: str = ""
     auto_dialogue_enabled: bool = True
     max_auto_turns: int = 6
-    auto_turn_count_mode: str = "fixed"
+    auto_turn_count_mode: str = "per_participant"
     auto_turns_per_participant: int = 1
     max_consecutive_continues: int = 3
     game_master_enabled: bool = False

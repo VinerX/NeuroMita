@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 _SECTION_MARKERS = (
     ("[Available Tools]", "tools"),
+    ("[Current Group Conversation]", "group conversation"),
     ("[MiSide World State]", "MiSide World State"),
     ("[System State]", "System State"),
     ("[Behavior State]", "System State"),
