@@ -185,6 +185,23 @@ class DialogueTurnRouterTests(unittest.TestCase):
         second = router.route_after_response(second_context, structured={"segments": [{"text": "two"}]}, character_id="Kind", event_type="answer", control_plane_trusted=True)
         self.assertEqual(second.route_kind, ROUTE_GAME_MASTER)
 
+    def test_gm_cadence_can_run_after_mita_budget_is_exhausted(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True, GM_REPEAT=1))
+        context = _context()
+        context["auto_turns_since_player"] = 6
+        context["max_auto_turns"] = 6
+
+        route = router.route_after_response(
+            context,
+            structured={"segments": [{"text": "one"}]},
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertIsNotNone(route)
+        self.assertEqual(route.route_kind, ROUTE_GAME_MASTER)
+
     def test_gm_directive_is_python_validated(self):
         router = DialogueTurnRouter(_Settings(GM_ON=True))
         context = _context(current="actor-gm")

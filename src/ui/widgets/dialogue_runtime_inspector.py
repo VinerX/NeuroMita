@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QSignalBlocker, QTimer, Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -282,6 +282,8 @@ class DialogueRuntimeInspector(QWidget):
         self._gm_instruction_edit.setPlainText(self._global_gm_instruction())
         gm_command_layout.addWidget(self._gm_instruction_edit)
         session_layout.addRow(gm_command_card)
+        self._gm_check.stateChanged.connect(self._update_live_gm_settings)
+        self._gm_repeat_spin.valueChanged.connect(self._update_live_gm_settings)
         self._gm_instruction_edit.textChanged.connect(
             self._update_live_gm_instruction
         )
@@ -554,12 +556,47 @@ class DialogueRuntimeInspector(QWidget):
             self._clear_error()
             self.refresh()
 
+    def _update_live_gm_settings(self, *_args) -> None:
+        snapshot = get_dialogue_runtime_state_service().snapshot()
+        if snapshot.source is not DialogueRuntimeSource.UNITY:
+            return
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return
+        settings.set("GM_ON", self._gm_check.isChecked())
+        settings.set("GM_REPEAT", self._gm_repeat_spin.value())
+
+    def _sync_unity_gm_controls(self) -> None:
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return
+        try:
+            repeat = max(1, min(100, int(settings.get("GM_REPEAT", 2) or 2)))
+        except (TypeError, ValueError):
+            repeat = 2
+
+        with QSignalBlocker(self._gm_check), QSignalBlocker(self._gm_repeat_spin):
+            self._gm_check.setChecked(bool(settings.get("GM_ON", False)))
+            self._gm_repeat_spin.setValue(repeat)
+
+        if not self._gm_instruction_edit.hasFocus():
+            with QSignalBlocker(self._gm_instruction_edit):
+                self._gm_instruction_edit.setPlainText(
+                    str(settings.get("GM_SMALL_PROMPT", "") or "")
+                )
+
     def _update_live_gm_instruction(self) -> None:
+        instruction = self._gm_instruction_edit.toPlainText()
         controller = get_sandbox_dialogue_controller()
         if controller.active:
-            controller.update_gm_instruction(
-                self._gm_instruction_edit.toPlainText()
-            )
+            controller.update_gm_instruction(instruction)
+            return
+
+        snapshot = get_dialogue_runtime_state_service().snapshot()
+        if snapshot.source is DialogueRuntimeSource.UNITY:
+            settings = services().get_optional(SettingsService)
+            if settings is not None:
+                settings.set("GM_SMALL_PROMPT", instruction)
 
     def _stop_session(self) -> None:
         get_sandbox_dialogue_controller().stop_session()
@@ -645,6 +682,11 @@ class DialogueRuntimeInspector(QWidget):
             configuration_enabled and is_per_participant
         )
         self._gm_instruction_edit.setEnabled(not unity_active)
+        if unity_active:
+            self._sync_unity_gm_controls()
+            self._gm_check.setEnabled(True)
+            self._gm_repeat_spin.setEnabled(True)
+            self._gm_instruction_edit.setEnabled(True)
         self._refresh_auto_turn_budget_hint()
         for check in self._character_checks.values():
             check.setEnabled(configuration_enabled)

@@ -788,8 +788,8 @@ class PromptController(PromptBuilderService):
             unity_dynamic_messages = [m for m in (
                 self._build_unity_runtime_capabilities_message(game_state),
                 self._build_unity_world_state_message(game_state),
-                self._build_unity_runtime_events_message(game_state),
                 self._build_character_world_context_message(game_state),
+                self._build_unity_runtime_events_message(game_state),
             ) if m]
         messages.extend(stable_system_messages)
 

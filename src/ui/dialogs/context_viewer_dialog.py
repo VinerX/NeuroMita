@@ -157,6 +157,7 @@ _COARSE_GROUPS = {
     "prompt":  ("📖", "#F0A868", ("Промпт", "Prompt")),
     "history": ("🕰", "#60A5FA", ("История", "History")),
     "context": ("🧠", "#34D399", ("Активный контекст", "Active context")),
+    "directive": ("🧭", "#F472B6", ("Директива GameMaster", "GameMaster directive")),
     "input":   ("💬", "#F4D35E", ("Ввод игрока", "Player input")),
 }
 _SECTION_TO_GROUP = {
@@ -169,6 +170,7 @@ _SECTION_TO_GROUP = {
     "MiSide World State": "context",
     "Unity runtime": "context",
     "group conversation": "context",
+    "game master directive": "directive",
     "System State": "context",
     "reminders": "context",
     "core memories": "context",
@@ -1323,6 +1325,8 @@ class ContextViewerDialog(QDialog):
             cat = "participant"
         # Unity/MiSide-блоки распознаём до generic "state"/"game": и
         # "MiSide World State", и "System State" содержат "state".
+        elif "game master directive" in key:
+            cat = "game"
         elif "world" in key or "miside" in key:
             cat = "world"
         elif "unity" in key or "runtime" in key or "intent" in key or "capabilit" in key:

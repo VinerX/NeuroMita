@@ -95,6 +95,32 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         self.controller._auto_turns_used = 1
         self.assertFalse(self.controller.execute_route(self._route(route_id="route-2")))
 
+    def test_game_master_check_does_not_spend_auto_budget(self) -> None:
+        self.controller._config = SandboxDialogueConfig(
+            participant_character_ids=("A", "B"),
+            auto_dialogue_enabled=True,
+            max_auto_turns=1,
+            game_master_enabled=True,
+        )
+        self.controller._auto_turns_used = 1
+
+        with patch.object(self.controller, "_emit_request", return_value=True):
+            self.assertTrue(
+                self.controller.execute_route(
+                    self._route(
+                        route_kind="game_master",
+                        event_type="game_master_observe",
+                        target_actor_id="",
+                        target_character_id="GameMaster",
+                        route_id="gm-route-1",
+                    )
+                )
+            )
+
+        self.assertEqual(self.controller._auto_turns_used, 1)
+        self.assertEqual(self.controller._turn_index, 1)
+        self.assertEqual(self.controller._spoken_actor_ids, [])
+
     def test_participant_budget_uses_selected_mitas(self) -> None:
         self.controller._config = SandboxDialogueConfig(
             participant_character_ids=("A", "B"),

@@ -360,7 +360,13 @@ class SandboxDialogueController:
                 return False
             if not self._config.auto_dialogue_enabled:
                 return False
-            if self._auto_turns_used >= self._effective_auto_turn_limit_locked():
+            is_game_master_route = route_kind == "game_master"
+            if is_game_master_route and not self._config.game_master_enabled:
+                return False
+            if (
+                not is_game_master_route
+                and self._auto_turns_used >= self._effective_auto_turn_limit_locked()
+            ):
                 return False
             if route_kind == "continue":
                 if not bool(route.get("continue_route_reserved")):
@@ -411,10 +417,11 @@ class SandboxDialogueController:
             previous_pending_route = self._pending_route
             self._pending_route = None
             self._turn_index += 1
-            self._auto_turns_used += 1
+            if not is_game_master_route:
+                self._auto_turns_used += 1
+                self._spoken_actor_ids.append(target_actor)
             self._speaker_actor_id = source_actor
             self._responder_actor_id = target_actor
-            self._spoken_actor_ids.append(target_actor)
             context = self._build_context()
 
         self._runtime_state.update_from_context(

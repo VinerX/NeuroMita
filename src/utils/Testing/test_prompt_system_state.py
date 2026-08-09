@@ -164,6 +164,7 @@ class PromptSystemStateTests(unittest.TestCase):
                 "runtime_static_catalog": "Available animations: Wave, Sit.",
                 "runtime_capabilities": "Nearby interactions: Chair.",
                 "world_state": "Player is in the kitchen.",
+                "character_world_context": "The character knows this is her home.",
                 "runtime_events": ["Player stood up."],
             },
         ))
@@ -178,6 +179,7 @@ class PromptSystemStateTests(unittest.TestCase):
         i_mem = contents.index("[active memory]")
         i_caps = idx("[Unity Runtime Capabilities]")
         i_world = idx("[MiSide World State]")
+        i_character_world = idx("[Character World Context]")
         i_events = idx("[Unity Runtime Events]")
         i_cur = idx("[Current State]")
         i_sys = contents.index("[system state]")
@@ -189,8 +191,10 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(i_catalog, i_mem)
         # Динамический Unity — после памяти, вплотную перед состоянием/вводом.
         self.assertLess(i_mem, i_caps)
-        for i_dyn in (i_caps, i_world, i_events):
+        for i_dyn in (i_caps, i_world, i_character_world, i_events):
             self.assertLess(i_dyn, i_cur)
+        self.assertLess(i_world, i_character_world)
+        self.assertLess(i_character_world, i_events)
         self.assertLess(i_cur, i_sys)
         self.assertLess(i_sys, i_event)
         # Capabilities напоминает про ранее переданные Rules/Contract.
