@@ -1,6 +1,6 @@
 # src/ui/widgets/guide_widget.py
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox, QScrollArea, QSizePolicy
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox, QSizePolicy, QScrollArea, QProgressBar
 from PyQt6.QtGui import QPixmap
 import qtawesome as qta
 from abc import ABC, abstractmethod
@@ -42,13 +42,22 @@ class IGuidePage(ABC):
     def get_image_filename(self, language: str) -> str:
         pass
 
+    def get_image_crop(self):
+        """Optional normalized crop: (left, top, right, bottom)."""
+        return None
+
+    def get_wiki_target(self):
+        """Optional local Wiki document related to this guide page."""
+        return None
+
 
 class GuideWidget(QWidget):
     closed = pyqtSignal()
 
-    def __init__(self, settings_view_model, parent=None):
+    def __init__(self, settings_view_model, parent=None, open_wiki=None):
         super().__init__(parent)
         self.settings_view_model = settings_view_model
+        self._open_wiki_callback = open_wiki
         self.pages = []
         self.current_page_index = 0
         self.current_language = "ru"
@@ -56,6 +65,9 @@ class GuideWidget(QWidget):
         self._filtered_pages = []
         self._lang_buttons: dict[str, QRadioButton] = {}
         self._level_group = None
+        self._current_pixmap = None
+        self._image_zoom = 1.0
+        self._current_wiki_target = None
         from ui.widgets.settings_panel import normalize_mode
         saved = get_setting(self, "GUIDE_LEVEL")
         if saved in ("basic", "advanced", "full"):
@@ -93,10 +105,54 @@ class GuideWidget(QWidget):
             #GuideDescription {
                 font-size: 13px;
                 color: {text};
-                padding: 10px;
-                line-height: 1.55;
+                padding: 6px;
+                line-height: 1.45;
+                background-color: transparent;
+            }
+            #ImageToolbarButton {
+                background-color: {chip_bg};
+                color: {text};
+                border: 1px solid {outline};
                 border-radius: 8px;
-                background-color: rgba({sidebar_panel_rgb}, 0.52);
+                padding: 3px 8px;
+                min-width: 24px;
+                min-height: 24px;
+                font-weight: 600;
+            }
+            #ImageToolbarButton:hover {
+                background-color: {chip_hover};
+            }
+            #ImageZoomLabel {
+                color: {muted};
+                font-size: 11px;
+                min-width: 42px;
+            }
+            #ImageScroll {
+                background-color: transparent;
+                border: none;
+            }
+            #GuideHelpButton {
+                background-color: {chip_bg};
+                color: {text};
+                border: 1px solid {outline};
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            #GuideHelpButton:hover {
+                background-color: {chip_hover};
+            }
+            #GuideProgress {
+                background-color: {chip_bg};
+                border: none;
+                border-radius: 3px;
+                min-height: 5px;
+                max-height: 5px;
+            }
+            #GuideProgress::chunk {
+                background-color: {accent};
+                border-radius: 3px;
             }
             #NavigationButton {
                 background-color: {accent};
@@ -105,7 +161,7 @@ class GuideWidget(QWidget):
                 padding: 8px 16px;
                 font-weight: 600;
                 border-radius: 10px;
-                min-width: 80px;
+                min-width: 48px;
             }
             #NavigationButton:hover {
                 background-color: {accent_alt};
@@ -243,8 +299,11 @@ class GuideWidget(QWidget):
         container_layout.setContentsMargins(20, 20, 20, 20)
         container_layout.setSpacing(15)
 
-        self.setMinimumSize(720, 520)
-        self.setMaximumSize(920, 760)
+        # Keep screenshot-heavy onboarding spacious while allowing free resizing.
+        self.setMinimumSize(880, 640)
+        self.setMaximumSize(16777215, 16777215)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.resize(1100, 760)
 
         self._level_hint = None
 
@@ -267,66 +326,14 @@ class GuideWidget(QWidget):
         header_layout.addLayout(title_row)
 
         container_layout.addLayout(header_layout)
+        # Keep the guide readable at a glance: controls above, screenshot and
+        # explanation side by side, navigation by itself at the bottom.
+        meta_row = QFrame()
+        meta_row.setObjectName("GuideLevelRow")
+        meta_layout = QHBoxLayout(meta_row)
+        meta_layout.setContentsMargins(10, 6, 10, 6)
+        meta_layout.setSpacing(8)
 
-        # Прокручиваемая область для картинки
-        # Keep image and description in independent viewports so long screenshots
-        # do not force the text into an unreadable strip.
-        self.image_scroll = QScrollArea()
-        self.image_scroll.setObjectName("ImageFrame")
-        self.image_scroll.setWidgetResizable(True)
-        self.image_scroll.setMinimumHeight(210)
-        self.image_scroll.setMaximumHeight(350)
-        self.image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.image_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        self.image_label = QLabel()
-        self.image_label.setObjectName("ImageLabel")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        self.image_scroll.setWidget(self.image_label)
-        container_layout.addWidget(self.image_scroll, 3)
-
-        self.description_scroll = QScrollArea()
-        self.description_scroll.setObjectName("DescriptionFrame")
-        self.description_scroll.setWidgetResizable(True)
-        self.description_scroll.setMinimumHeight(145)
-        self.description_scroll.setMaximumHeight(270)
-        self.description_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.description_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.description_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        self.description_label = QLabel("")
-        self.description_label.setObjectName("GuideDescription")
-        self.description_label.setWordWrap(True)
-        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.description_label.setTextFormat(Qt.TextFormat.RichText)
-        self.description_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.description_scroll.setWidget(self.description_label)
-        container_layout.addWidget(self.description_scroll, 2)
-
-        nav_layout = QHBoxLayout()
-        nav_layout.setSpacing(15)
-
-        self.prev_button = QPushButton(qta.icon('fa5s.angle-left', color='white'), '')
-        self.prev_button.setObjectName("NavigationButton")
-        self.prev_button.setFixedSize(40, 35)
-        self.prev_button.clicked.connect(self._prev_page)
-        nav_layout.addWidget(self.prev_button)
-
-        self.page_indicator = QLabel("1 / 1")
-        self.page_indicator.setObjectName("PageIndicator")
-        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nav_layout.addWidget(self.page_indicator)
-
-        self.next_button = QPushButton(qta.icon('fa5s.angle-right', color='white'), '')
-        self.next_button.setObjectName("NavigationButton")
-        self.next_button.setFixedSize(40, 35)
-        self.next_button.clicked.connect(self._next_page)
-        nav_layout.addWidget(self.next_button)
-
-        nav_layout.addStretch()
-
-        # Переключатель уровня «Базовый / Полный» (внизу по центру)
         self._level_group = QButtonGroup(self)
         self._level_group.setExclusive(True)
         self._level_buttons: dict[str, QRadioButton] = {}
@@ -334,25 +341,19 @@ class GuideWidget(QWidget):
             rb = QRadioButton("")
             rb.setObjectName("GuideLevelButton")
             rb.setProperty("level_key", key)
-            rb.setMinimumHeight(36)
+            rb.setMinimumHeight(32)
             if key == self._guide_level:
                 rb.setChecked(True)
-            nav_layout.addWidget(rb)
+            meta_layout.addWidget(rb)
             self._level_group.addButton(rb)
             self._level_buttons[key] = rb
         self._level_group.buttonClicked.connect(self._on_level_changed)
-        self._update_level_texts()            # чтобы текст появился сразу
-        nav_layout.addSpacing(20)
+        self._update_level_texts()
 
-        # Перенесённый переключатель языка (справа внизу)
-        lang_layout = QHBoxLayout()
-        lang_layout.setContentsMargins(0, 0, 0, 0)
-        lang_layout.setSpacing(10)
-
+        meta_layout.addStretch()
         self.lang_label = QLabel("")
         self.lang_label.setObjectName("GuideMetaLabel")
-        lang_layout.addWidget(self.lang_label)
-
+        meta_layout.addWidget(self.lang_label)
         self.lang_selector = QComboBox()
         self.lang_selector.blockSignals(True)
         for code in available_languages():
@@ -367,14 +368,114 @@ class GuideWidget(QWidget):
             self.lang_selector.setCurrentIndex(current_index)
         self.lang_selector.blockSignals(False)
         self.lang_selector.currentIndexChanged.connect(self._on_language_changed)
-        lang_layout.addWidget(self.lang_selector, 0)
+        meta_layout.addWidget(self.lang_selector)
+        container_layout.addWidget(meta_row)
 
-        nav_layout.addLayout(lang_layout)
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(16)
 
+        self.image_frame = QFrame()
+        self.image_frame.setObjectName("ImageFrame")
+        image_layout = QVBoxLayout(self.image_frame)
+        image_layout.setContentsMargins(10, 8, 10, 10)
+        image_layout.setSpacing(6)
+
+        zoom_layout = QHBoxLayout()
+        zoom_layout.setContentsMargins(0, 0, 0, 0)
+        zoom_layout.setSpacing(5)
+        zoom_layout.addStretch()
+        self.zoom_out_button = QPushButton("\u2212")
+        self.zoom_out_button.setObjectName("ImageToolbarButton")
+        self.zoom_out_button.setFixedSize(30, 28)
+        self.zoom_out_button.clicked.connect(lambda: self._change_image_zoom(-0.25))
+        zoom_layout.addWidget(self.zoom_out_button)
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setObjectName("ImageZoomLabel")
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_layout.addWidget(self.zoom_label)
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setObjectName("ImageToolbarButton")
+        self.zoom_in_button.setFixedSize(30, 28)
+        self.zoom_in_button.clicked.connect(lambda: self._change_image_zoom(0.25))
+        zoom_layout.addWidget(self.zoom_in_button)
+        self.zoom_fit_button = QPushButton("")
+        self.zoom_fit_button.setObjectName("ImageToolbarButton")
+        self.zoom_fit_button.setMinimumHeight(28)
+        self.zoom_fit_button.clicked.connect(self._fit_image)
+        zoom_layout.addWidget(self.zoom_fit_button)
+        image_layout.addLayout(zoom_layout)
+
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setObjectName("ImageScroll")
+        self.image_scroll.setWidgetResizable(False)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self.image_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.image_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.image_label = QLabel()
+        self.image_label.setObjectName("ImageLabel")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self.image_label.setMinimumSize(0, 0)
+        self.image_scroll.setWidget(self.image_label)
+        image_layout.addWidget(self.image_scroll, 1)
+        content_layout.addWidget(self.image_frame, 5)
+
+        self.description_frame = QFrame()
+        self.description_frame.setObjectName("DescriptionFrame")
+        description_layout = QVBoxLayout(self.description_frame)
+        description_layout.setContentsMargins(12, 10, 12, 10)
+        description_layout.setSpacing(8)
+        self.description_label = QLabel("")
+        self.description_label.setObjectName("GuideDescription")
+        self.description_label.setWordWrap(True)
+        self.description_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.description_label.setTextFormat(Qt.TextFormat.RichText)
+        self.description_label.setMinimumSize(0, 0)
+        self.description_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        description_layout.addWidget(self.description_label, 1)
+        help_layout = QHBoxLayout()
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        help_layout.addStretch()
+        self.help_button = QPushButton("")
+        self.help_button.setObjectName("GuideHelpButton")
+        self.help_button.clicked.connect(self._open_help)
+        self.help_button.setVisible(False)
+        help_layout.addWidget(self.help_button)
+        description_layout.addLayout(help_layout)
+        content_layout.addWidget(self.description_frame, 3)
+        container_layout.addLayout(content_layout, 1)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("GuideProgress")
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setTextVisible(False)
+        container_layout.addWidget(self.progress_bar)
+
+        nav_layout = QHBoxLayout()
+        nav_layout.setSpacing(15)
+        nav_layout.addStretch()
+        self.prev_button = QPushButton(qta.icon('fa5s.angle-left', color='white'), '')
+        self.prev_button.setObjectName("NavigationButton")
+        self.prev_button.setFixedSize(48, 35)
+        self.prev_button.clicked.connect(self._prev_page)
+        nav_layout.addWidget(self.prev_button)
+        self.page_indicator = QLabel("1 / 1")
+        self.page_indicator.setObjectName("PageIndicator")
+        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_indicator.setMinimumWidth(64)
+        nav_layout.addWidget(self.page_indicator)
+        self.next_button = QPushButton(qta.icon('fa5s.angle-right', color='white'), '')
+        self.next_button.setObjectName("NavigationButton")
+        self.next_button.setFixedSize(48, 35)
+        self.next_button.clicked.connect(self._next_page)
+        nav_layout.addWidget(self.next_button)
+        nav_layout.addStretch()
         container_layout.addLayout(nav_layout)
 
         self._update_language_label_text()
         self._update_close_button_text()
+        self._update_auxiliary_texts()
 
         main_layout.addWidget(container)
 
@@ -384,23 +485,22 @@ class GuideWidget(QWidget):
         self._update_language_label_text()
         self._update_close_button_text()
         self._update_level_texts()
+        self._update_auxiliary_texts()
         self.show_page(self.current_page_index)
-
     # Подписи и пояснения уровней (локализуются под выбранный язык).
     _LEVEL_LABELS = {
-        "basic": ("Базовый", "Basic"),
-        "advanced": ("Продвинутый", "Advanced"),
-        "full": ("Полный", "Full"),
+        "basic": ("Быстрый старт", "Quick start"),
+        "advanced": ("Голос и ввод", "Voice & input"),
+        "full": ("Все возможности", "Everything"),
     }
     _LEVEL_HINTS = {
-        "basic": ("Только самое необходимое для старта: подключение и готово!",
-                  "Just the essentials to get started: connection and you're ready!"),
-        "advanced": ("Базовый гайд + озвучка и микрофон.",
-                     "Basic guide + voiceover and microphone."),
-        "full": ("Все разделы: + память, экран, модели и песочница.",
-                 "All sections: + memory, screen, models, and sandbox."),
+        "basic": ("Подключение модели и запуск общения.",
+                  "Connect a model and start chatting."),
+        "advanced": ("Быстрый старт + озвучка и микрофон.",
+                     "Quick start + voiceover and microphone."),
+        "full": ("Все разделы: память, изображения, модели и песочница.",
+                 "All sections: memory, images, models, and sandbox."),
     }
-
     def _update_level_texts(self):
         for key, rb in getattr(self, "_level_buttons", {}).items():
             ru, en = self._LEVEL_LABELS.get(key, (key, key))
@@ -422,15 +522,50 @@ class GuideWidget(QWidget):
             translate_for_language(self.current_language, "Завершить", "Finish")
         )
 
+    def _update_auxiliary_texts(self):
+        if hasattr(self, "zoom_fit_button"):
+            self.zoom_fit_button.setText(
+                translate_for_language(self.current_language, "\u0412\u043f\u0438\u0441\u0430\u0442\u044c", "Fit")
+            )
+            self.zoom_fit_button.setToolTip(
+                translate_for_language(
+                    self.current_language,
+                    "\u0412\u043f\u0438\u0441\u0430\u0442\u044c \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u0446\u0435\u043b\u0438\u043a\u043e\u043c \u0432 \u043e\u0431\u043b\u0430\u0441\u0442\u044c \u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440\u0430",
+                    "Fit the full image into the viewport",
+                )
+            )
+        if hasattr(self, "zoom_out_button"):
+            self.zoom_out_button.setToolTip(translate_for_language(self.current_language, "\u0423\u043c\u0435\u043d\u044c\u0448\u0438\u0442\u044c", "Zoom out"))
+        if hasattr(self, "zoom_in_button"):
+            self.zoom_in_button.setToolTip(translate_for_language(self.current_language, "\u0423\u0432\u0435\u043b\u0438\u0447\u0438\u0442\u044c", "Zoom in"))
+        if hasattr(self, "help_button"):
+            self.help_button.setText(translate_for_language(self.current_language, "\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435 \u0432 Wiki \u2192", "Read more in Wiki \u2192"))
+
     def _on_level_changed(self, btn):
         level = btn.property("level_key")
         if not level:
             return
+
+        current_page = None
+        if 0 <= self.current_page_index < len(self._filtered_pages):
+            current_page = self._filtered_pages[self.current_page_index]
+
         self._guide_level = level
         self._update_filtered_pages()
         self._update_level_texts()
-        self.current_page_index = 0
-        self.show_page(0)
+
+        if self._filtered_pages:
+            if current_page in self._filtered_pages:
+                new_index = self._filtered_pages.index(current_page)
+            else:
+                new_index = 0
+                if current_page in self.pages:
+                    master_index = self.pages.index(current_page)
+                    for candidate in reversed(self.pages[:master_index]):
+                        if candidate in self._filtered_pages:
+                            new_index = self._filtered_pages.index(candidate)
+                            break
+            self.show_page(new_index)
         # Раньше здесь были: SettingsManager.set() без сохранения на диск и emit
         # несуществующего Events.Settings.GUIDE_LEVEL_CHANGED — оба под try/except,
         # то есть уровень гайда молча не сохранялся и никто о смене не узнавал.
@@ -453,19 +588,19 @@ class GuideWidget(QWidget):
             PresetGuidePage(),
             VoiceoverGuidePage(),
             MicrophoneGuidePage(),
-            MemoryGuidePage(),
-            ScreenAnalysisGuidePage(),
+            MemoryRagGuidePage(),
+            MemoryVectorGuidePage(),
+            MemoryGraphGuidePage(),
+            ScreenCaptureGuidePage(),
+            CameraGuidePage(),
+            CameraDependenciesGuidePage(),
             ModelsGuidePage(),
             SandboxGuidePage(),
             FinalGuidePage(),
         ]
         self._update_filtered_pages()
-
     def _load_image(self, filename):
         if not filename:
-            no_image_text = "Изображение не загружено" if self.current_language == "ru" else "Image not loaded"
-            self.image_label.setText(no_image_text)
-            self.image_scroll.setMinimumHeight(120)
             return None
 
         image_path = os.path.join("assets", filename)
@@ -473,48 +608,102 @@ class GuideWidget(QWidget):
             pixmap = QPixmap(image_path)
             if not pixmap.isNull():
                 return pixmap
-
-        no_image_text = f"Изображение не загружено:\n{filename}" if self.current_language == "ru" else f"Image not loaded:\n{filename}"
-        self.image_label.setText(no_image_text)
-        self.image_scroll.setMinimumHeight(120)
         return None
 
     @staticmethod
     def _format_description(text: str) -> str:
-        """Convert plain-text paragraphs and bullet lines to compact rich text."""
+        """Render compact rich text without Qt's oversized default list indents."""
         blocks = []
-        list_items = []
-
-        def flush_list():
-            if list_items:
-                blocks.append(
-                    "<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>"
-                )
-                list_items.clear()
-
         for raw_line in str(text or "").splitlines():
-            line = raw_line.strip()
-            if not line:
-                flush_list()
+            stripped = raw_line.strip()
+            if not stripped:
                 continue
 
-            bullet = re.match(r"^(?:[\u2022-]|\u2014)\s+(.*)$", line)
+            bullet = re.match(r"^(?:[\u2022-]|\u2014)\s+(.*)$", stripped)
             if bullet:
-                list_items.append(bullet.group(1))
+                blocks.append(
+                    '<table cellspacing="0" cellpadding="0" width="100%" style="margin:0 0 4px 0;">'
+                    '<tr><td width="14" valign="top">&#8226;</td>'
+                    f'<td valign="top">{bullet.group(1)}</td></tr></table>'
+                )
                 continue
 
-            # Some archived pages omit the bullet before a numbered step.
-            # Keep such lines in the current list instead of making a paragraph.
-            numbered_step = re.search(r"<b>\s*\d+\s*[-+]", line)
-            if numbered_step:
-                list_items.append(line)
-                continue
+            is_heading = stripped.startswith("<b>") and stripped.endswith("</b>")
+            margin = "7px 0 3px 0" if is_heading else "0 0 5px 0"
+            blocks.append(f'<p style="margin:{margin};">{stripped}</p>')
 
-            flush_list()
-            blocks.append(f"<p>{line}</p>")
-
-        flush_list()
         return "".join(blocks)
+
+    @staticmethod
+    def _crop_pixmap(pixmap, crop):
+        if not crop:
+            return pixmap
+        left, top, right, bottom = crop
+        left = max(0.0, min(1.0, float(left)))
+        top = max(0.0, min(1.0, float(top)))
+        right = max(left, min(1.0, float(right)))
+        bottom = max(top, min(1.0, float(bottom)))
+        x = round(pixmap.width() * left)
+        y = round(pixmap.height() * top)
+        width = round(pixmap.width() * (right - left))
+        height = round(pixmap.height() * (bottom - top))
+        if width < 2 or height < 2:
+            return pixmap
+        return pixmap.copy(x, y, width, height)
+
+    def _rescale_current_image(self):
+        pixmap = self._current_pixmap
+        if pixmap is None or pixmap.isNull() or not hasattr(self, "image_scroll"):
+            return
+
+        viewport = self.image_scroll.viewport()
+        max_width = max(100, viewport.width() - 4)
+        max_height = max(100, viewport.height() - 4)
+        fitted = pixmap.scaled(
+            max_width,
+            max_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        target_width = max(1, round(fitted.width() * self._image_zoom))
+        target_height = max(1, round(fitted.height() * self._image_zoom))
+        scaled = pixmap.scaled(
+            target_width,
+            target_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setText("")
+        self.image_label.setPixmap(scaled)
+        self.image_label.setFixedSize(scaled.size())
+        self._update_zoom_controls()
+
+    def _change_image_zoom(self, delta: float):
+        self._image_zoom = max(1.0, min(3.0, self._image_zoom + delta))
+        self._rescale_current_image()
+
+    def _fit_image(self):
+        self._image_zoom = 1.0
+        self._rescale_current_image()
+        if hasattr(self, "image_scroll"):
+            self.image_scroll.horizontalScrollBar().setValue(0)
+            self.image_scroll.verticalScrollBar().setValue(0)
+
+    def _update_zoom_controls(self):
+        if hasattr(self, "zoom_label"):
+            self.zoom_label.setText(f"{round(self._image_zoom * 100):d}%")
+        if hasattr(self, "zoom_out_button"):
+            self.zoom_out_button.setEnabled(self._image_zoom > 1.0)
+        if hasattr(self, "zoom_in_button"):
+            self.zoom_in_button.setEnabled(self._image_zoom < 3.0)
+
+    def _open_help(self):
+        if self._current_wiki_target and callable(self._open_wiki_callback):
+            self._open_wiki_callback(self._current_wiki_target)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale_current_image()
 
     def show_page(self, index: int):
         if 0 <= index < len(self._filtered_pages):
@@ -533,37 +722,26 @@ class GuideWidget(QWidget):
 
             image_filename = page.get_image_filename(self.current_language)
             pixmap = self._load_image(image_filename)
-
+            self._image_zoom = 1.0
             if pixmap:
-                viewport_width = self.image_scroll.viewport().width() - 16
-                if viewport_width < 100:
-                    viewport_width = self.width() - 80
-
-                # Scale to the available width, but keep the full image height.
-                # The image viewport owns vertical scrolling for tall screenshots.
-                target_width = min(pixmap.width(), max(100, viewport_width))
-                if pixmap.width() != target_width:
-                    scaled_pixmap = pixmap.scaled(
-                        target_width,
-                        pixmap.height(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                else:
-                    scaled_pixmap = pixmap
-
-                self.image_label.setPixmap(scaled_pixmap)
-                self.image_label.setFixedSize(scaled_pixmap.size())
+                self._current_pixmap = self._crop_pixmap(pixmap, page.get_image_crop())
+                QTimer.singleShot(0, self._rescale_current_image)
             else:
+                self._current_pixmap = None
                 self.image_label.clear()
                 no_image_text = "Изображение не загружено" if self.current_language == "ru" else "Image not loaded"
                 self.image_label.setText(no_image_text)
-                self.image_label.setMinimumSize(200, 100)
 
-            self.page_indicator.setText(f"{index + 1} / {len(self._filtered_pages)}")
-
+            page_count = len(self._filtered_pages)
+            self.page_indicator.setText(f"{index + 1} / {page_count}")
+            self.progress_bar.setValue(round(((index + 1) / max(1, page_count)) * 1000))
             self.prev_button.setEnabled(index > 0)
-            self.next_button.setVisible(index < len(self._filtered_pages) - 1)
+            self.next_button.setVisible(index < page_count - 1)
+
+            self._current_wiki_target = page.get_wiki_target()
+            self.help_button.setVisible(
+                bool(self._current_wiki_target) and callable(self._open_wiki_callback)
+            )
 
     def start(self):
         self.show_page(0)
@@ -608,6 +786,10 @@ Click 'Next' to begin, or 'Finish' if you want to figure it out on your own."""
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_welcome.png" if language == "ru" else "guide/guide_welcome1.png"
 
+    def get_wiki_target(self):
+        return "getting-started.md"
+
+
 
 class PresetGuidePage(IGuidePage):
     min_mode = "basic"
@@ -639,50 +821,51 @@ Finally, click <b>6 - Save</b> — and your preset is ready! Now Mita will think
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_preset.png" if language == "ru" else "guide/guide_preset1.png"
 
+    def get_wiki_target(self):
+        return "getting-started.md"
+
+
 
 class VoiceoverGuidePage(IGuidePage):
     min_mode = "advanced"
 
     def get_title_ru(self):
-        return "Озвучка - голосовые ответы"
+        return "Озвучка — голосовые ответы"
 
     def get_title_en(self):
         return "Voiceover — Voice Responses"
 
     def get_description_ru(self):
-        return """Хотите, чтобы Мита общалась голосом?
-• В настройках Озвучки (иконка динамика) включите <b>1 - Использовать озвучку</b>.
+        return """Хотите, чтобы Мита отвечала голосом?
+• Включите <b>1 - Использовать озвучку</b>.
+• В <b>2 - Методе озвучки</b> выберите <b>TG</b> для Telegram или <b>Local</b> для локального синтеза.
 
-После включения станут доступны два метода:
-• <b>TG (Telegram)</b> — простой способ, потребуется связать аккаунт Telegram.
-• <b>Local</b> — качественная локальная генерация голоса с помощью скачиваемой модели (нужна мощная видеокарта).
+<b>Если выбрали Local:</b>
+• Укажите <b>3 - язык озвучки</b>.
+• Нажмите <b>4 - Установить</b>. Откроется <b>AI Hub</b>, где можно подобрать голосовую модель.
 
-Выберите подходящий вариант.
-
-Если вы предпочитаете Local, потребуется скачать модель синтеза речи:
-• Включите <b>1 - Использовать озвучку</b>, если ещё не включили, и выберите <b>2 - Local</b> в списке методов.
-• Выберите <b>3 - язык озвучки</b>.
-• Нажмите кнопку <b>4 - Установить</b> — откроется <b>AI Hub</b>, где можно выбрать модель, подходящую для вашей видеокарты.
-• После завершения установки Мита сможет говорить локальным голосом."""
+После установки локальная озвучка готова к работе."""
 
     def get_description_en(self):
-        return """Want Mita to talk?
-• In the Voiceover settings (speaker icon), enable <b>1 - Use speech</b>.
+        return """Want Mita to answer with a voice?
+• Enable <b>1 - Use speech</b>.
+• In <b>2 - Voiceover Method</b>, choose <b>TG</b> for Telegram or <b>Local</b> for local synthesis.
 
-Once enabled, two methods become available:
-• <b>TG (Telegram)</b> — a simple option, requires linking a Telegram account.
-• <b>Local</b> — high-quality local voice generation using a downloadable model (requires a powerful GPU).
+<b>If you choose Local:</b>
+• Select <b>3 - the voice language</b>.
+• Click <b>4 - Install</b>. <b>AI Hub</b> will open so you can choose a voice model.
 
-Choose the one that suits you.
-
-If you prefer Local, you'll need to download a speech synthesis model:
-• Enable <b>1 - Use speech</b> if you haven't already, and select <b>2 - Local</b> from the list of methods.
-• Choose <b>3 - the voice language</b>.
-• Click <b>4 - Install</b> — the <b>AI Hub</b> will open, where you can pick a model suitable for your graphics card.
-• After installation, Mita will be able to speak with a local voice."""
+After installation, local voiceover is ready to use."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_voice.png" if language == "ru" else "guide/guide_voice1.png"
+
+    def get_wiki_target(self):
+        return "voice-microphone-camera-and-screen.md"
+
+
+    def get_image_crop(self):
+        return (0.02, 0.09, 0.98, 0.70)
 
 
 class MicrophoneGuidePage(IGuidePage):
@@ -724,6 +907,10 @@ Now you can talk to Mita with your voice."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_microphone.png" if language == "ru" else "guide/guide_microphone1.png"
+
+    def get_wiki_target(self):
+        return "voice-microphone-camera-and-screen.md"
+
 
 
 class MemoryGuidePage(IGuidePage):
@@ -866,8 +1053,223 @@ Now Mita will be able to see you via the webcam.
         return "guide/guide_screen.png" if language == "ru" else "guide/guide_screen1.png"
 
 
+class MemoryRagGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Память — включаем RAG"
+
+    def get_title_en(self):
+        return "Memory — Enable RAG"
+
+    def get_description_ru(self):
+        return """Начните с готового пресета и базового RAG-поиска.
+• Раскройте <b>1 - Пресет пайплайна</b>, выберите <b>2 - пресет</b> и нажмите <b>3 - Применить</b>.
+• Раскройте <b>4 - RAG и память</b>.
+• Включите <b>5 - RAG</b>, <b>6 - поиск в памяти</b> и <b>7 - поиск в истории</b>.
+
+Этого уже достаточно для полезной базовой памяти. Следующий шаг — семантический поиск."""
+
+    def get_description_en(self):
+        return """Start with a ready-made pipeline and basic RAG search.
+• Expand <b>1 - Pipeline Preset</b>, choose <b>2 - a preset</b>, and click <b>3 - Apply</b>.
+• Expand <b>4 - RAG & Memory</b>.
+• Enable <b>5 - RAG</b>, <b>6 - memory search</b>, and <b>7 - history search</b>.
+
+That is enough for a useful basic memory setup. Next, add semantic search."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_memory.png" if language == "ru" else "guide/guide_memory1.png"
+
+    def get_wiki_target(self):
+        return "memory-data-ai-hub-and-debugging.md"
+
+
+    def get_image_crop(self):
+        return (0.02, 0.08, 0.98, 0.36)
+
+
+class MemoryVectorGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Память — векторный поиск"
+
+    def get_title_en(self):
+        return "Memory — Vector Search"
+
+    def get_description_ru(self):
+        return """Векторный поиск находит воспоминания, похожие по смыслу.
+• Раскройте <b>8 - Векторный поиск и эмбеддинги</b> и включите <b>9 - Векторный поиск</b>.
+• Выберите <b>10 - пресет</b>, введите <b>11 - API-ключ</b> и нажмите <b>12 - Тест</b>.
+• Если тест успешен, нажмите <b>13 - Сохранить</b>, затем <b>14 - Обновить статус</b>.
+• При наличии неиндексированных записей нажмите <b>15 - Индекс нового</b>."""
+
+    def get_description_en(self):
+        return """Vector search finds memories that are similar in meaning.
+• Expand <b>8 - Vector Search and Embeddings</b> and enable <b>9 - Vector Search</b>.
+• Choose <b>10 - a preset</b>, enter <b>11 - the API key</b>, and click <b>12 - Test</b>.
+• If the test passes, click <b>13 - Save</b>, then <b>14 - Refresh Status</b>.
+• If records are not indexed yet, click <b>15 - Index New</b>."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_memory.png" if language == "ru" else "guide/guide_memory1.png"
+
+    def get_wiki_target(self):
+        return "memory-data-ai-hub-and-debugging.md"
+
+
+    def get_image_crop(self):
+        return (0.02, 0.34, 0.98, 0.83)
+
+
+class MemoryGraphGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Память — граф знаний"
+
+    def get_title_en(self):
+        return "Memory — Knowledge Graph"
+
+    def get_description_ru(self):
+        return """Граф знаний сохраняет сущности и связи между ними.
+• Раскройте <b>16 - Граф знаний</b>.
+• Включите <b>17 - экстракцию сущностей</b>.
+• Для обычного использования рекомендуется также включить <b>18 - Inline-режим</b>.
+
+RAG, векторный поиск и граф теперь можно настраивать независимо."""
+
+    def get_description_en(self):
+        return """The knowledge graph stores entities and relationships between them.
+• Expand <b>16 - Knowledge Graph</b>.
+• Enable <b>17 - Entity Extraction</b>.
+• For normal use, also enable <b>18 - Inline Mode</b>.
+
+RAG, vector search, and the graph can now be tuned independently."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_memory.png" if language == "ru" else "guide/guide_memory1.png"
+
+    def get_wiki_target(self):
+        return "memory-data-ai-hub-and-debugging.md"
+
+
+    def get_image_crop(self):
+        return (0.02, 0.82, 0.98, 0.985)
+
+
+class ScreenCaptureGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Изображения — экран и скриншоты"
+
+    def get_title_en(self):
+        return "Images — Screen & Screenshots"
+
+    def get_description_ru(self):
+        return """Мита может анализировать экран и прикреплённые изображения.
+• В разделе <b>Изображения</b> раскройте <b>1 - Анализ экрана</b>.
+• Включите <b>2 - обработку изображений</b>.
+• При необходимости включите отправку экрана с сообщениями или непрерывный захват.
+• Отдельные изображения и скриншоты можно прикреплять из чата песочницы.
+
+Выбранная языковая модель должна поддерживать изображения."""
+
+    def get_description_en(self):
+        return """Mita can analyze your screen and attached images.
+• In <b>Images</b>, expand <b>1 - Screen Analysis</b>.
+• Enable <b>2 - image analysis</b>.
+• Optionally send the screen with messages or enable continuous capture.
+• Individual images and screenshots can also be attached from the Sandbox chat.
+
+The selected language model must support image input."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_screen.png" if language == "ru" else "guide/guide_screen1.png"
+
+    def get_wiki_target(self):
+        return "voice-microphone-camera-and-screen.md"
+
+
+    def get_image_crop(self):
+        return (0.0, 0.0, 1.0, 0.205)
+
+
+class CameraGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Камера — включение"
+
+    def get_title_en(self):
+        return "Camera — Enable Capture"
+
+    def get_description_ru(self):
+        return """Для веб-камеры используется отдельный захват.
+• Раскройте <b>3 - Настройки камеры</b>.
+• Включите <b>4 - захват с камеры</b>.
+• Если камера уже доступна, выберите её в <b>9 - списке устройств</b>.
+
+Если вместо списка написано, что OpenCV не установлен, перейдите к следующему шагу."""
+
+    def get_description_en(self):
+        return """Webcam input uses a separate capture path.
+• Expand <b>3 - Camera Capture Settings</b>.
+• Enable <b>4 - Camera Capture</b>.
+• If a camera is already available, choose it in <b>9 - the device list</b>.
+
+If the list says OpenCV is not installed, continue to the next step."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_screen.png" if language == "ru" else "guide/guide_screen1.png"
+
+    def get_wiki_target(self):
+        return "voice-microphone-camera-and-screen.md"
+
+
+    def get_image_crop(self):
+        return (0.0, 0.205, 1.0, 0.405)
+
+
+class CameraDependenciesGuidePage(IGuidePage):
+    min_mode = "full"
+
+    def get_title_ru(self):
+        return "Камера — установка OpenCV"
+
+    def get_title_en(self):
+        return "Camera — Install OpenCV"
+
+    def get_description_ru(self):
+        return """Этот шаг нужен только если камера требует OpenCV.
+• В общих настройках сделайте видимым <b>5 - AI Engine</b>.
+• Откройте <b>6 - AI Engine</b> и перейдите в <b>AI Hub</b>.
+• В AI Hub выберите <b>7 - Зависимости</b> и установите <b>8 - OpenCV</b>.
+• Вернитесь к настройкам камеры и выберите устройство в <b>9</b>."""
+
+    def get_description_en(self):
+        return """You only need this step if camera capture requires OpenCV.
+• In General settings, make <b>5 - AI Engine</b> visible.
+• Open <b>6 - AI Engine</b> and enter <b>AI Hub</b>.
+• In AI Hub, choose <b>7 - Dependencies</b> and install <b>8 - OpenCV</b>.
+• Return to Camera settings and select the device in <b>9</b>."""
+
+    def get_image_filename(self, language: str) -> str:
+        return "guide/guide_screen.png" if language == "ru" else "guide/guide_screen1.png"
+
+    def get_wiki_target(self):
+        return "voice-microphone-camera-and-screen.md"
+
+
+    def get_image_crop(self):
+        return (0.0, 0.39, 1.0, 1.0)
+
+
 class ModelsGuidePage(IGuidePage):
     min_mode = "full"
+
 
     def get_title_ru(self):
         return "Параметры генерации"
@@ -953,6 +1355,10 @@ Go to the Sandbox and open the <b>1 - Debug</b> tab — a powerful tool for insp
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_sandbox.png" if language == "ru" else "guide/guide_sandbox1.png"
 
+    def get_wiki_target(self):
+        return "memory-data-ai-hub-and-debugging.md"
+
+
 
 class FinalGuidePage(IGuidePage):
     min_mode = "basic"
@@ -1001,3 +1407,6 @@ Here you can also:
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_next.png" if language == "ru" else "guide/guide_next1.png"
+
+    def get_wiki_target(self):
+        return "getting-started.md"

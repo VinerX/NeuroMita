@@ -121,6 +121,10 @@ class MainPageActionsAdapter(_BoundActions):
         if self._target is not None:
             self._target.show_guide()
 
+    def open_wiki_document(self, target: str, *, anchor: str = "") -> None:
+        if self._target is not None:
+            self._target.open_wiki_document(target, anchor=anchor)
+
     def view_last_context(self) -> None:
         if self._target is not None:
             self._target.view_last_context()

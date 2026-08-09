@@ -1296,13 +1296,43 @@ class AppWindowBase(QMainWindow):
             "You cannot use the software without accepting the license agreement.")
         self.close()
 
+    def _ensure_guide_window_size(self):
+        """Give screenshot-heavy onboarding more room without forcing maximized mode."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        max_width = max(1, int(available.width() * 0.94))
+        max_height = max(1, int(available.height() * 0.94))
+        target_width = max(self.width(), min(1180, max_width))
+        target_height = max(self.height(), min(820, max_height))
+        if target_width == self.width() and target_height == self.height():
+            return
+        self.resize(target_width, target_height)
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
+
     def _show_guide(self):
         from ui.widgets.guide_widget import GuideWidget
-        guide_widget = GuideWidget(self.settings_binding or self.settings)
+        self._ensure_guide_window_size()
+        guide_widget = GuideWidget(
+            self.settings_binding or self.settings,
+            open_wiki=self._open_guide_wiki,
+        )
         guide_widget.closed.connect(lambda: self._on_guide_closed(guide_widget))
         self.overlay.set_content(guide_widget)
         self.overlay.show_animated()
         guide_widget.start()
+
+    def _open_guide_wiki(self, target: str):
+        page_actions = getattr(self, "_page_actions", None)
+        if page_actions is None or not hasattr(page_actions, "open_wiki_document"):
+            return
+        self.overlay.hide_animated()
+        page_actions.open_wiki_document(target)
 
     def _on_guide_closed(self, guide_widget):
         self.overlay.hide_animated()
