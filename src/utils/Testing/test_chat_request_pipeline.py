@@ -23,6 +23,7 @@ from core.events import Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
+from core.request_policy import resolve_policy
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
@@ -98,6 +99,20 @@ class _StreamingGeneration(GenerationService):
 
     def generate_utility(self, request):
         raise AssertionError("не используется")
+
+
+class _HiddenGameMasterGeneration(GenerationService):
+    def generate_chat(self, request: ChatGenerationRequest):
+        return ChatGenerationResult(
+            text="",
+            character_id="GameMaster",
+            structured={"actions": []},
+            structured_parse_level="direct",
+            control_plane_trusted=True,
+        )
+
+    def generate_utility(self, request):
+        raise AssertionError("?? ????????????")
 
 
 class _ImmediateGeneration(GenerationService):
@@ -217,6 +232,23 @@ class ChatRequestPipelineTests(unittest.TestCase):
 
         self.assertEqual(generation.request.game_state, snapshot)
         self.assertIsNot(generation.request.game_state, snapshot)
+
+    def test_hidden_game_master_result_has_no_empty_ui_bubble(self):
+        services().register(GenerationService, _HiddenGameMasterGeneration(), replace=True)
+        self.controller.settings = _StubSettings({"GM_ALLOW_ROUTING": True})
+
+        with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+            result = self.controller._run_request(
+                "",
+                character_id="GameMaster",
+                event_type="game_master_observe",
+                policy={"echo_to_ui": True, "allow_streaming": True, "write_to_history": True},
+            )
+
+        self.assertEqual(result, "")
+        emitted_events = [call.args[0] for call in emit.call_args_list if call.args]
+        self.assertNotIn(Events.GUI.UPDATE_CHAT_UI, emitted_events)
+        self.assertNotIn(Events.Model.ON_FAILED_RESPONSE, emitted_events)
 
     def test_task_result_keeps_response_protocol_version(self):
         result = ChatController._build_task_result(

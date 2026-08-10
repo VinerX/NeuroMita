@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from domain.game_master import GameMasterDirective
+from domain.game_master import GameMasterDirective, game_master_source_for_event
+from core.request_policy import resolve_policy
 from schemas.game_master_response import GameMasterResponse
 from services.dialogue_transcript_service import DialogueTranscriptService
 from services.game_master_action_executor import GameMasterActionExecutor
@@ -39,6 +41,51 @@ class GameMasterControlPlaneTests(unittest.TestCase):
         rejected = registry.upsert("conv", self._rule(source="auto_corrector", instruction="Do not meow"))
         self.assertIsNone(rejected)
         self.assertEqual(registry.snapshot("conv")[0].instruction, "Meow")
+
+    def test_blank_target_is_rejected_and_never_becomes_broadcast(self):
+        registry = GameMasterDirectiveRegistry()
+        self.assertIsNone(registry.upsert("conv", self._rule(target="")))
+        self.assertEqual(registry.snapshot("conv"), ())
+
+    def test_clear_target_does_not_remove_global_rule(self):
+        registry = GameMasterDirectiveRegistry()
+        global_rule = registry.upsert("conv", self._rule(target="*", key="global"))
+        mita_rule = registry.upsert("conv", self._rule(target="Mita", key="mita"))
+        self.assertEqual(registry.clear_target("conv", "Mita"), 1)
+        self.assertEqual({item.directive_id for item in registry.snapshot("conv")}, {global_rule.directive_id})
+        self.assertEqual(registry.clear_target("conv", "*"), 1)
+        self.assertEqual(registry.snapshot("conv"), ())
+
+    def test_model_rule_id_cannot_overwrite_unrelated_slot(self):
+        registry = GameMasterDirectiveRegistry()
+        user_rule = registry.upsert("conv", self._rule(target="Mita", key="task"))
+        auto_rule = registry.upsert(
+            "conv",
+            replace(
+                self._rule(
+                    source="auto_corrector",
+                    target="Other",
+                    key="other",
+                    instruction="Automatic",
+                ),
+                directive_id=user_rule.directive_id,
+            ),
+        )
+        self.assertIsNotNone(auto_rule)
+        self.assertEqual({item.target_character_id for item in registry.snapshot("conv")}, {"Mita", "Other"})
+        self.assertNotEqual(user_rule.directive_id, auto_rule.directive_id)
+
+    def test_periodic_and_manual_game_master_sources_are_explicit(self):
+        self.assertEqual(game_master_source_for_event("game_master_observe"), "auto_corrector")
+        self.assertEqual(game_master_source_for_event("game_master_command"), "user_director")
+        periodic = resolve_policy(model_event_type="game_master_observe")
+        manual = resolve_policy(model_event_type="game_master_command")
+        self.assertFalse(periodic.use_history_in_prompt)
+        self.assertFalse(periodic.write_to_history)
+        self.assertFalse(periodic.allow_voiceover)
+        self.assertFalse(periodic.allow_streaming)
+        self.assertFalse(periodic.echo_to_ui)
+        self.assertFalse(manual.write_to_history)
 
     def test_ttl_is_consumed_only_for_target_reply(self):
         registry = GameMasterDirectiveRegistry()
@@ -88,7 +135,9 @@ class GameMasterControlPlaneTests(unittest.TestCase):
             DialogueTranscriptService(),
         )
         messages = context.build_messages(dialogue={"conversation_id": "conv", "participants": []})
-        self.assertNotIn("[DIRECTOR_TASK]", messages[0]["content"])
+        content = messages[0]["content"]
+        self.assertNotIn("[DIRECTOR_TASK]", content)
+        self.assertNotIn("meow", content.casefold())
 
     def test_game_master_context_does_not_include_character_side_context(self):
         from services.game_master_context_builder import GameMasterContextBuilder
@@ -111,10 +160,70 @@ class GameMasterControlPlaneTests(unittest.TestCase):
         self.assertNotIn("[Hidden image context]", content)
         self.assertIn("[GAME_MASTER_CONTROL_PLANE]", content)
         self.assertIn("[DIRECTOR_TASK]", content)
+        self.assertIn("[CHARACTER_ANCHORS]", content)
     def test_scheduler_triggers_after_interval(self):
         scheduler = GameMasterScheduler()
         self.assertFalse(scheduler.note_mita_reply("conv", interval=2))
         self.assertTrue(scheduler.note_mita_reply("conv", interval=2))
+
+    def test_action_executor_rejects_blank_upsert_and_respects_capabilities(self):
+        registry = GameMasterDirectiveRegistry()
+        executor = GameMasterActionExecutor(registry)
+        response = GameMasterResponse.model_validate({"actions": [
+            {"type": "upsert_rule", "target": "", "instruction": "Broadcast meow"},
+            {"type": "route", "target": "actor-mita", "instruction": "Route meow"},
+            {"type": "narrate", "instruction": "Narrate meow"},
+        ]})
+        result = executor.apply(
+            response,
+            conversation_id="conv",
+            participants=[{"actor_id": "actor-mita", "character_id": "Mita", "can_speak": True, "is_active": True}],
+            turn_index=3,
+            source="auto_corrector",
+            allow_routing=False,
+            allow_narration=False,
+        )
+        self.assertFalse(result.had_action)
+        self.assertEqual(registry.snapshot("conv"), ())
+
+    def test_manual_command_can_create_five_targeted_rules_without_broadcast(self):
+        registry = GameMasterDirectiveRegistry()
+        executor = GameMasterActionExecutor(registry)
+        participants = [
+            {
+                "actor_id": f"actor-{index}",
+                "character_id": f"Mita{index}",
+                "can_speak": True,
+                "is_active": True,
+            }
+            for index in range(5)
+        ]
+        response = GameMasterResponse.model_validate({
+            "actions": [
+                {
+                    "type": "upsert_rule",
+                    "target": f"Mita{index}",
+                    "key": "task",
+                    "instruction": f"Follow command {index}.",
+                    "lifetime": "scene",
+                }
+                for index in range(5)
+            ]
+        })
+
+        result = executor.apply(
+            response,
+            conversation_id="conv",
+            participants=participants,
+            turn_index=4,
+            source="user_director",
+        )
+
+        self.assertEqual(len(result.applied_rule_ids), 5)
+        rules = registry.snapshot("conv")
+        self.assertEqual(len(rules), 5)
+        self.assertEqual({rule.target_scope for rule in rules}, {f"Mita{index}" for index in range(5)})
+        self.assertNotIn("*", {rule.target_scope for rule in rules})
 
     def test_action_executor_targets_one_present_mita_and_rejects_unknown(self):
         registry = GameMasterDirectiveRegistry()

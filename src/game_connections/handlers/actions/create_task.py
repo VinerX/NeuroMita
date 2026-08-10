@@ -146,6 +146,7 @@ async def _dispatch_task(
     game_state: Optional[dict] = None,
     image_source: str = "",
     extra_task_data: Optional[dict] = None,
+    gm_instruction_override: Optional[str] = None,
     abort_reason: str = "Failed to create task",
 ) -> Any:
     """
@@ -166,6 +167,8 @@ async def _dispatch_task(
         "policy": policy_dict,
         "dialogue": dict(dialogue or {}),
     }
+    if gm_instruction_override is not None:
+        task_data["gm_instruction_override"] = str(gm_instruction_override or "")
     if extra_task_data:
         task_data.update(extra_task_data)
 
@@ -189,6 +192,7 @@ async def _dispatch_task(
             "policy": policy_dict,
             "game_state": dict(game_state or {}),
             "dialogue": dict(dialogue or {}),
+            **({"gm_instruction_override": str(gm_instruction_override or "")} if gm_instruction_override is not None else {}),
         })
     else:
         await server._send_aborted_update(
@@ -450,26 +454,49 @@ class CreateTaskAction:
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
-        # ── game_master_observe ───────────────────────────────────────────────
-        if event_type == "game_master_observe":
-            policy = resolve_policy(model_event_type="chat")
-            observation = str(data.get("message") or "").strip()
-            if not observation:
-                observation = "Review the active conversation and issue a mandatory scene directive when needed."
+        # GameMaster control-plane events use a hidden policy and explicit trigger.
+        if event_type in {"game_master_observe", "game_master_command"}:
+            command = str(
+                data.get("command")
+                or data.get("instruction")
+                or data.get("message")
+                or ""
+            ).strip()
+            if event_type == "game_master_command" and not command:
+                await server._send_aborted_update(
+                    ctx.client_id,
+                    event_type,
+                    "GameMaster",
+                    reason="GameMaster command is empty",
+                    req_id=req_id,
+                )
+                return
+            policy = resolve_policy(model_event_type=event_type)
+            gm_shared = dict(_shared)
+            gm_shared["character_id"] = "GameMaster"
+            gm_shared["character_stats"] = _get_character_stats("GameMaster")
             await _dispatch_task(
-                **_shared,
+                **gm_shared,
                 task_type="chat",
-                model_event_type="chat",
+                model_event_type=event_type,
                 policy_dict=policy.to_dict(),
                 user_input="",
-                system_input=observation,
+                system_input=(
+                    "Review the active conversation and issue a Python-validated "
+                    "GameMaster directive when intervention is needed."
+                    if event_type == "game_master_observe" else ""
+                ),
                 images=[],
                 image_source="",
-                abort_reason="Failed to create GameMaster observation",
+                gm_instruction_override=command if event_type == "game_master_command" else None,
+                abort_reason=(
+                    "Failed to create GameMaster command"
+                    if event_type == "game_master_command"
+                    else "Failed to create GameMaster observation"
+                ),
             )
             return
 
-        # ── system_info_flush ─────────────────────────────────────────────────
         if event_type == "system_info_flush":
             policy = resolve_policy(model_event_type="chat")
             runtime_events = context.get("runtime_events", [])

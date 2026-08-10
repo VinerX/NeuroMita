@@ -1309,7 +1309,13 @@ class ModelController(GenerationService, ModelStateService):
         task_uid = request.task_uid or None
         origin_message_id = request.origin_message_id or None
 
-        policy = request.policy or resolve_policy(model_event_type=str(event_type))
+        normalized_event_type = str(event_type or "").strip().lower()
+        if normalized_event_type in {"game_master_observe", "game_master_command"}:
+            # GameMaster requests are always hidden, even when a lower layer
+            # supplied a stale or caller-crafted visible policy.
+            policy = resolve_policy(model_event_type=normalized_event_type)
+        else:
+            policy = request.policy or resolve_policy(model_event_type=str(event_type))
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
@@ -1406,6 +1412,9 @@ class ModelController(GenerationService, ModelStateService):
         # character-side effects are never available to it.
         if is_game_master:
             effective_capabilities["structured_output"] = True
+            effective_capabilities["gm_allow_routing"] = bool(self.settings.get("GM_ALLOW_ROUTING", True))
+            effective_capabilities["gm_allow_narration"] = bool(self.settings.get("GM_ALLOW_NARRATION", False))
+            effective_capabilities["gm_show_narration"] = bool(self.settings.get("GM_SHOW_NARRATION", False))
         _tools_on = bool(self.settings.get("TOOLS_ON", True)) and not is_game_master
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
@@ -1979,6 +1988,7 @@ class ModelController(GenerationService, ModelStateService):
         char_id: str,
         sample_id: str | None,
         control_plane_trusted: bool,
+        structured_parse_level: str = "direct",
     ) -> ChatGenerationResult:
         """Return a hidden control-plane result without character side effects."""
         data = structured.model_dump(exclude_none=True)
@@ -1994,13 +2004,13 @@ class ModelController(GenerationService, ModelStateService):
         )
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
         return ChatGenerationResult(
-            text=" ",
+            text="",
             character_id=char_id,
             target="Player",
             structured=data,
             think=think_text or None,
             sample_id=sample_id or "",
-            structured_parse_level="direct",
+            structured_parse_level=structured_parse_level,
             control_plane_trusted=bool(control_plane_trusted),
         )
     def _process_structured_output(
@@ -2050,13 +2060,14 @@ class ModelController(GenerationService, ModelStateService):
                     char_id=char_id,
                     sample_id=sample_id,
                     control_plane_trusted=parse_outcome.control_plane_trusted,
+                    structured_parse_level=parse_outcome.parse_level,
                 )
         except StructuredResponseParseError as e:
             if char_id.casefold() == "gamemaster":
                 logger.warning("[ModelController] Invalid GameMaster action document; ignoring it: %s", e)
                 self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
                 return ChatGenerationResult(
-                    text=" ",
+                    text="",
                     character_id=char_id,
                     structured={"actions": []},
                     structured_parse_level="invalid_gm_plan",

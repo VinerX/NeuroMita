@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from domain.game_master import GameMasterDirective
-from schemas.game_master_response import GameMasterAction, GameMasterResponse
+from schemas.game_master_response import GameMasterResponse
 from services.game_master_directive_registry import GameMasterDirectiveRegistry
 
 
@@ -68,6 +68,8 @@ class GameMasterActionExecutor:
             if target and target != "*" and target_item is None:
                 continue
             if action.type == "upsert_rule":
+                if not target:
+                    continue
                 instruction = str(action.instruction or "").strip()
                 if not instruction:
                     continue
@@ -80,7 +82,7 @@ class GameMasterActionExecutor:
                     continue
                 character = str(self._get(target_item, "character_id", "") or "") if target_item else ""
                 rule = GameMasterDirective(
-                    directive_id=str(action.rule_id or "").strip(),
+                    directive_id="",
                     key=str(action.key or "instruction").strip() or "instruction",
                     target_scope="*" if target in {"", "*"} else character,
                     target_character_id=character,
@@ -106,6 +108,8 @@ class GameMasterActionExecutor:
                     actions.append(action.model_dump())
                     had_action = True
             elif action.type == "clear_rules":
+                if not target:
+                    continue
                 target_character = str(self._get(target_item, "character_id", "") or "") if target_item else target
                 count = self.registry.clear_target(conversation_id, target_character or "*", source=None if source == "user_director" else source)
                 if count:

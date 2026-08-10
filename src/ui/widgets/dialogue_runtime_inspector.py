@@ -81,6 +81,7 @@ class DialogueRuntimeInspector(QWidget):
         self._max_continue_spin = QSpinBox()
         self._gm_repeat_spin = QSpinBox()
         self._gm_instruction_edit = QPlainTextEdit()
+        self._gm_apply_button = QPushButton("Apply now")
         self._start_button = QPushButton(_("Start session", "Start session"))
         self._stop_button = QPushButton(_("Stop", "Stop"))
         self._step_button = QPushButton(_("Run next turn", "Run next turn"))
@@ -267,7 +268,7 @@ class DialogueRuntimeInspector(QWidget):
         gm_command_hint = QLabel(
             _(
                 "Применяется к следующему ходу GM; во время сессии обновляется сразу.",
-                "Applies to the next GM turn and updates immediately during a session.",
+                "One-shot command: sends to GameMaster immediately and is not saved as a periodic task.",
             )
         )
         gm_command_hint.setObjectName("DialogueGmCommandHint")
@@ -279,14 +280,13 @@ class DialogueRuntimeInspector(QWidget):
         self._gm_instruction_edit.setPlaceholderText(
             _("Например: направь разговор к общей цели.", "For example: steer the conversation toward a shared goal.")
         )
-        self._gm_instruction_edit.setPlainText(self._global_gm_instruction())
         gm_command_layout.addWidget(self._gm_instruction_edit)
+        self._gm_apply_button.setObjectName("DialogueGmApplyButton")
+        self._gm_apply_button.clicked.connect(self._apply_gm_command)
+        gm_command_layout.addWidget(self._gm_apply_button, 0, Qt.AlignmentFlag.AlignRight)
         session_layout.addRow(gm_command_card)
         self._gm_check.stateChanged.connect(self._update_live_gm_settings)
         self._gm_repeat_spin.valueChanged.connect(self._update_live_gm_settings)
-        self._gm_instruction_edit.textChanged.connect(
-            self._update_live_gm_instruction
-        )
         layout.addWidget(session_frame)
 
         self._participants_label.setWordWrap(True)
@@ -461,14 +461,6 @@ class DialogueRuntimeInspector(QWidget):
             return default
         return str(settings.get(key, default) or default)
 
-    @classmethod
-    def _global_gm_instruction(cls) -> str:
-        settings = services().get_optional(SettingsService)
-        if settings is None:
-            return "Заставь мит мяукать"
-        value = settings.get("GM_SMALL_PROMPT", None)
-        return "Заставь мит мяукать" if value is None else str(value)
-
     def _refresh_auto_turn_budget_hint(self, *_args) -> None:
         participant_count = sum(
             1
@@ -547,7 +539,6 @@ class DialogueRuntimeInspector(QWidget):
             max_consecutive_continues=self._max_continue_spin.value(),
             game_master_enabled=self._gm_check.isChecked(),
             gm_repeat=self._gm_repeat_spin.value(),
-            gm_instruction=self._gm_instruction_edit.toPlainText().strip(),
         )
         if not get_sandbox_dialogue_controller().start_session(config):
             self._show_error(
@@ -584,21 +575,19 @@ class DialogueRuntimeInspector(QWidget):
             self._gm_check.setChecked(bool(settings.get("GM_ON", False)))
             self._gm_repeat_spin.setValue(repeat)
 
-        if not self._gm_instruction_edit.hasFocus():
-            with QSignalBlocker(self._gm_instruction_edit):
-                self._gm_instruction_edit.setPlainText(
-                    str(settings.get("GM_SMALL_PROMPT", "") or "")
-                )
-
-    def _update_live_gm_instruction(self) -> None:
-        instruction = self._gm_instruction_edit.toPlainText()
+    def _apply_gm_command(self) -> None:
+        command = self._gm_instruction_edit.toPlainText().strip()
         controller = get_sandbox_dialogue_controller()
-        if controller.active:
-            controller.update_gm_instruction(instruction)
-
-        settings = services().get_optional(SettingsService)
-        if settings is not None:
-            settings.set("GM_SMALL_PROMPT", instruction)
+        if not command:
+            self._show_error("Enter a GameMaster command.")
+            return
+        if not controller.submit_game_master_command(command):
+            self._show_error(
+                "Command was not sent: no active sandbox or the previous turn is still running."
+            )
+            return
+        self._gm_instruction_edit.clear()
+        self._clear_error()
 
     def _stop_session(self) -> None:
         get_sandbox_dialogue_controller().stop_session()
@@ -684,11 +673,7 @@ class DialogueRuntimeInspector(QWidget):
             configuration_enabled and is_per_participant
         )
         self._gm_instruction_edit.setEnabled(not unity_active)
-        if sandbox_active and not self._gm_instruction_edit.hasFocus():
-            with QSignalBlocker(self._gm_instruction_edit):
-                self._gm_instruction_edit.setPlainText(
-                    get_sandbox_dialogue_controller().gm_instruction
-                )
+        self._gm_apply_button.setEnabled(sandbox_active and not ui_state.busy)
         if unity_active:
             self._sync_unity_gm_controls()
             self._gm_check.setEnabled(True)

@@ -30,6 +30,7 @@ from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
 from schemas.game_master_response import GameMasterResponse
 from services.game_master_action_executor import GameMasterActionExecutor
 from services.game_master_services import ensure_game_master_services
+from domain.game_master import game_master_source_for_event
 
 
 class StructuredJsonStreamFilter:
@@ -336,7 +337,18 @@ class ChatController:
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
-            eff_policy = RequestPolicy.from_dict(policy) if isinstance(policy, dict) else resolve_policy(model_event_type=effective_event_type)
+            normalized_event_type = effective_event_type.strip().lower()
+            if normalized_event_type in {"game_master_observe", "game_master_command"}:
+                # The event type owns the control-plane boundary. Do not let a
+                # caller-supplied visible policy turn a hidden GM task into a
+                # chat bubble, history entry, stream, or voice request.
+                eff_policy = resolve_policy(model_event_type=normalized_event_type)
+            else:
+                eff_policy = (
+                    RequestPolicy.from_dict(policy)
+                    if isinstance(policy, dict)
+                    else resolve_policy(model_event_type=effective_event_type)
+                )
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -547,13 +559,9 @@ class ChatController:
                         conversation_id=dialogue.conversation_id,
                         participants=dialogue.participants,
                         turn_index=dialogue.turn_index,
-                        source=(
-                            "user_director"
-                            if gm_instruction_override or str(self.settings.get("GM_SMALL_PROMPT", "") or "").strip()
-                            else "auto_corrector"
-                        ),
-                        allow_routing=True,
-                        allow_narration=True,
+                        source=game_master_source_for_event(effective_event_type),
+                        allow_routing=bool(self.settings.get("GM_ALLOW_ROUTING", True)),
+                        allow_narration=bool(self.settings.get("GM_ALLOW_NARRATION", False)),
                     )
                     structured_data = dict(structured_data or {})
                     structured_data["game_master_execution"] = gm_execution.__dict__ if hasattr(gm_execution, "__dict__") else {
@@ -568,7 +576,23 @@ class ChatController:
                     }
                 target = "Player"
                 targets = []
-                response_text = " "
+                response_text = ""
+                if (
+                    gm_execution is not None
+                    and gm_execution.narration
+                    and bool(self.settings.get("GM_SHOW_NARRATION", False))
+                    and bool(self.settings.get("GM_ALLOW_NARRATION", False))
+                ):
+                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+                        "role": "system",
+                        "response": gm_execution.narration,
+                        "message_kind": "game_master_narration",
+                        "is_initial": False,
+                        "emotion": "",
+                        "character_id": "GameMaster",
+                        "character_name": "GameMaster",
+                        "speaker_name": "GameMaster",
+                    }, delivery=EventDelivery.ORDERED)
             # Python owns the control-plane route. The model contributes only
             # the current reply and semantic GM intents; Unity executes one
             # exact route after live scene validation.
@@ -607,7 +631,13 @@ class ChatController:
                 )
             transport_route = route_to_transport(route)
             transport_next_turns = [transport_route] if transport_route else []
-            if not response_text:
+            hidden_game_master_success = (
+                is_game_master_response
+                and isinstance(structured_data, dict)
+                and structured_parse_level != "invalid_gm_plan"
+                and not getattr(result, "error", "")
+            )
+            if not response_text and not hidden_game_master_success:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)
                 if task_uid:

@@ -572,7 +572,6 @@ class SandboxDialogueConfig:
     max_consecutive_continues: int = 3
     game_master_enabled: bool = False
     gm_repeat: int = 2
-    gm_instruction: str = ""
     delay_ms: int = 0
     manual_step_mode: bool = False
 

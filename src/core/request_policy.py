@@ -76,6 +76,18 @@ def _parse_react_level(value: Any) -> int:
 def resolve_policy(*, model_event_type: str, react_level: Any = None) -> RequestPolicy:
     et = str(model_event_type or "").strip().lower()
 
+    if et in {"game_master_observe", "game_master_command"}:
+        return RequestPolicy(
+            template_name_override=None,
+            use_history_in_prompt=False,
+            write_to_history=False,
+            allow_voiceover=False,
+            allow_streaming=False,
+            echo_to_ui=False,
+            system_input_role="system",
+            react_level=None,
+        )
+
     if et == "react":
         lvl = _parse_react_level(react_level)
 

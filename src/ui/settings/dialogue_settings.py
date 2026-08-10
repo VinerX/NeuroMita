@@ -115,10 +115,37 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             ),
         },
         {
-            "label": _("Задача GameMaster", "GameMaster prompt"),
-            "key": "GM_SMALL_PROMPT",
-            "type": "textarea",
-            "default": "Заставь мит мяукать",
+            "label": _("GameMaster may choose the next Mita", "GameMaster may choose the next Mita"),
+            "key": "GM_ALLOW_ROUTING",
+            "type": "checkbutton",
+            "default_checkbutton": True,
+            "depends_on": "GM_ON",
+            "tooltip": _(
+                "Allow GameMaster to emit routing actions; Python still validates the route.",
+                "Allow GameMaster to emit routing actions; Python still validates the route.",
+            ),
+        },
+        {
+            "label": _("GameMaster may add narration", "GameMaster may add narration"),
+            "key": "GM_ALLOW_NARRATION",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+            "depends_on": "GM_ON",
+            "tooltip": _(
+                "Allow GameMaster to create separate narration events.",
+                "Allow GameMaster to create separate narration events.",
+            ),
+        },
+        {
+            "label": _("Show GameMaster narration in chat", "Show GameMaster narration in chat"),
+            "key": "GM_SHOW_NARRATION",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+            "depends_on": "GM_ALLOW_NARRATION",
+            "tooltip": _(
+                "Show allowed narration as a separate system event, never as a Mita reply.",
+                "Show allowed narration as a separate system event, never as a Mita reply.",
+            ),
         },
     ]
 

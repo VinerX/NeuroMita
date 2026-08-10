@@ -5,6 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 
+GM_TRIGGER_PERIODIC = "periodic"
+GM_TRIGGER_MANUAL_COMMAND = "manual_command"
+
+
+def game_master_source_for_event(event_type: str) -> str:
+    """Map an explicit GameMaster trigger to its directive ownership class."""
+    if str(event_type or "").strip().lower() == "game_master_command":
+        return "user_director"
+    return "auto_corrector"
+
+
 @dataclass(frozen=True, slots=True)
 class GameMasterDirective:
     directive_id: str

@@ -63,27 +63,16 @@ class SandboxDialogueControllerTests(unittest.TestCase):
         self.assertEqual(config.auto_turn_count_mode, "per_participant")
         self.assertEqual(config.auto_turns_per_participant, 1)
 
-    def test_active_session_can_update_gm_instruction(self) -> None:
-        self.assertTrue(
-            self.controller.update_gm_instruction("Prioritize the player vote.")
-        )
-        self.assertEqual(
-            self.controller._config.gm_instruction,
-            "Prioritize the player vote.",
-        )
-
-    def test_settings_instruction_updates_active_sandbox_session(self) -> None:
-        self.controller._on_gm_instruction_setting_changed(
-            SimpleNamespace(
-                key="GM_SMALL_PROMPT",
-                value="Ask everyone to meow.",
-            )
-        )
-
-        self.assertEqual(
-            self.controller.gm_instruction,
-            "Ask everyone to meow.",
-        )
+    def test_manual_game_master_command_is_one_shot_and_keeps_turn_counters(self) -> None:
+        with patch.object(self.controller, "_emit_request", return_value=True) as emit:
+            self.assertTrue(self.controller.submit_game_master_command("Make Mita meow."))
+        emit.assert_called_once()
+        kwargs = emit.call_args.kwargs
+        self.assertEqual(kwargs["event_type"], "game_master_command")
+        self.assertEqual(kwargs["character_id"], "GameMaster")
+        self.assertEqual(kwargs["gm_instruction_override"], "Make Mita meow.")
+        self.assertEqual(self.controller._turn_index, 0)
+        self.assertEqual(self.controller._auto_turns_used, 0)
 
     def test_valid_route_advances_exactly_one_turn(self) -> None:
         with patch.object(self.controller, "_emit_request", return_value=True):
@@ -131,7 +120,7 @@ class SandboxDialogueControllerTests(unittest.TestCase):
             )
 
         self.assertEqual(self.controller._auto_turns_used, 1)
-        self.assertEqual(self.controller._turn_index, 1)
+        self.assertEqual(self.controller._turn_index, 0)
         self.assertEqual(self.controller._spoken_actor_ids, [])
 
     def test_participant_budget_uses_selected_mitas(self) -> None:

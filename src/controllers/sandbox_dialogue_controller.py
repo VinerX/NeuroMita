@@ -11,10 +11,8 @@ from services.contracts import (
     CharacterRegistry,
     DialogueParticipant,
     DialogueRuntimeSource,
-    DialogueTurnContext,
     SandboxDialogueConfig,
     SandboxDialogueUiState,
-    SettingsService,
     TaskService,
 )
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
@@ -65,7 +63,6 @@ class SandboxDialogueController:
         self._active = False
         self._ui_status_code = "inactive"
         self._ui_status_detail = ""
-        self._settings_subscription = None
         self._bus.subscribe(Events.Task.TASK_STATUS_CHANGED, self._on_task_status, weak=False)
 
     @property
@@ -77,11 +74,6 @@ class SandboxDialogueController:
     def session_id(self) -> str:
         with self._lock:
             return self._session_id
-
-    @property
-    def gm_instruction(self) -> str:
-        with self._lock:
-            return self._config.gm_instruction if self._active else ""
 
     def ui_state(self) -> SandboxDialogueUiState:
         """Return a stable snapshot for UI consumers without exposing internals."""
@@ -149,7 +141,6 @@ class SandboxDialogueController:
             DialogueRuntimeSource.SANDBOX,
             game_master_enabled=self._config.game_master_enabled,
         )
-        self._ensure_gm_instruction_subscription()
         return True
 
     def stop_session(self) -> None:
@@ -176,31 +167,22 @@ class SandboxDialogueController:
     def reset_session(self) -> None:
         self.stop_session()
 
-    def _ensure_gm_instruction_subscription(self) -> None:
-        if self._settings_subscription is not None:
-            return
-        settings = services().get_optional(SettingsService)
-        if settings is not None:
-            self._settings_subscription = settings.subscribe(
-                self._on_gm_instruction_setting_changed,
-                keys={"GM_SMALL_PROMPT"},
-            )
-
-    def _on_gm_instruction_setting_changed(self, change) -> None:
-        if getattr(change, "key", "") != "GM_SMALL_PROMPT":
-            return
-        self.update_gm_instruction(str(getattr(change, "value", "") or ""))
-
-    def update_gm_instruction(self, instruction: str) -> bool:
-        """Apply a session-local GameMaster task to future moderator turns."""
+    def submit_game_master_command(self, instruction: str) -> bool:
+        """Run one manual GameMaster command without spending a Mita turn."""
+        command = str(instruction or "").strip()
         with self._lock:
-            if not self._active:
+            if not self._active or not command or self._pending_task_uid:
                 return False
-            self._config = replace(
-                self._config,
-                gm_instruction=str(instruction or "").strip(),
-            )
-            return True
+            context = self._build_context()
+        return self._emit_request(
+            user_input="",
+            character_id="GameMaster",
+            sender="Player",
+            context=context,
+            image_data=[],
+            event_type="game_master_command",
+            gm_instruction_override=command,
+        )
 
     def send_player_message(self, text: str, image_data: list[bytes] | None = None) -> bool:
         message = str(text or "").strip()
@@ -241,6 +223,7 @@ class SandboxDialogueController:
         context: dict[str, Any],
         image_data: list[bytes],
         event_type: str,
+        gm_instruction_override: str | None = None,
     ) -> bool:
         task_service = services().get_optional(TaskService)
         if task_service is None:
@@ -274,8 +257,8 @@ class SandboxDialogueController:
                 "dialogue_source": DialogueRuntimeSource.SANDBOX.value,
                 "_dialogue_router": router,
                 "gm_instruction_override": (
-                    self._config.gm_instruction
-                    if character_id.casefold() == "gamemaster"
+                    gm_instruction_override
+                    if event_type == "game_master_command"
                     else None
                 ),
             },
@@ -445,8 +428,8 @@ class SandboxDialogueController:
             previous_spoken_count = len(self._spoken_actor_ids)
             previous_pending_route = self._pending_route
             self._pending_route = None
-            self._turn_index += 1
             if not is_game_master_route:
+                self._turn_index += 1
                 self._auto_turns_used += 1
                 self._spoken_actor_ids.append(target_actor)
             self._speaker_actor_id = source_actor

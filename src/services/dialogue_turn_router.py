@@ -53,8 +53,6 @@ class RoutedDialogueRoute:
 @dataclass(slots=True)
 class _ConversationRouterState:
     epoch: int = 0
-    mita_responses_since_gm: int = 0
-    gm_checks_since_player: int = 0
     consecutive_continues: int = 0
     resume_after_actor_id: str = ""
     latest_speaker_actor_id: str = ""
@@ -69,8 +67,6 @@ class DialogueTurnRouter:
     Unity are treated as diagnostics only.  The authoritative values come
     from ``SettingsService``.
     """
-
-    _MAX_GAME_MASTER_CHECKS_PER_PLAYER_TURN = 8
 
     _GM_TARGET_RE = re.compile(
         r"(?:^|[,\s])speaker\s*[,=:]\s*([A-Za-z][A-Za-z0-9_]*)",
@@ -555,8 +551,6 @@ class DialogueTurnRouter:
             state.latest_speaker_actor_id = context.responder_actor_id or context.speaker_actor_id
             requested_continue, continue_instruction = self._requests_continue(structured or {})
             if context.speaker_actor_id.casefold() == "player":
-                state.mita_responses_since_gm = 0
-                state.gm_checks_since_player = 0
                 self._gm_scheduler.reset_conversation(context.conversation_id)
                 if not requested_continue:
                     state.consecutive_continues = 0
@@ -612,22 +606,13 @@ class DialogueTurnRouter:
 
             settings = self._server_settings()
             if not settings["gm_on"]:
-                state.mita_responses_since_gm = 0
+                self._gm_scheduler.reset_conversation(context.conversation_id)
             else:
                 should_check = self._gm_scheduler.note_mita_reply(
                     context.conversation_id,
                     interval=settings["gm_repeat"],
                 )
-                state.mita_responses_since_gm = 0 if should_check else state.mita_responses_since_gm + 1
                 if should_check:
-                    state.mita_responses_since_gm = 0
-                    if (
-                        state.gm_checks_since_player
-                        >= self._MAX_GAME_MASTER_CHECKS_PER_PLAYER_TURN
-                    ):
-                        return self._select_from_context(context)
-
-                    state.gm_checks_since_player += 1
                     state.resume_after_actor_id = context.responder_actor_id
                     state.latest_speaker_actor_id = context.responder_actor_id
                     return RoutedDialogueRoute(

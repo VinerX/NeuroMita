@@ -25,7 +25,13 @@ class GameMasterDirectiveRegistry:
 
     def upsert(self, conversation_id: str, directive: GameMasterDirective) -> GameMasterDirective | None:
         conversation_id = str(conversation_id or "").strip()
-        if not conversation_id or not directive.instruction.strip() or not directive.key.strip():
+        target = str(directive.target_scope or directive.target_character_id or "").strip()
+        if (
+            not conversation_id
+            or not directive.instruction.strip()
+            or not directive.key.strip()
+            or not target
+        ):
             return None
         with self._lock:
             bucket = self._items.setdefault(conversation_id, {})
@@ -37,10 +43,15 @@ class GameMasterDirectiveRegistry:
                 > self._SOURCE_PRIORITY.get(directive.source, 0)
             ):
                 return None
-            if not directive.directive_id:
+            # Upsert identity is the target/key slot, never a model-provided ID.
+            # This prevents an automatic action from reusing a protected user ID
+            # while changing the target or key.
+            if existing is not None:
+                directive = replace(directive, directive_id=existing.directive_id)
+            elif directive.directive_id and directive.directive_id in bucket:
                 directive = replace(directive, directive_id=uuid.uuid4().hex)
-            if existing is not None and existing.directive_id != directive.directive_id:
-                bucket.pop(existing.directive_id, None)
+            else:
+                directive = replace(directive, directive_id=directive.directive_id or uuid.uuid4().hex)
             bucket[directive.directive_id] = directive
             return directive
 
@@ -57,11 +68,18 @@ class GameMasterDirectiveRegistry:
         wanted = str(character_id or "").strip().casefold()
         with self._lock:
             bucket = self._items.get(str(conversation_id or "").strip(), {})
-            clear_all = wanted in {"", "*"}
+            clear_all = wanted == "*"
             ids = [
                 item.directive_id
                 for item in bucket.values()
-                if (clear_all or item.target_scope == "*" or item.target_character_id.casefold() == wanted)
+                if (
+                    clear_all
+                    or (
+                        wanted
+                        and item.target_scope != "*"
+                        and item.target_character_id.strip().casefold() == wanted
+                    )
+                )
                 and (source is None or item.source == source)
             ]
             for directive_id in ids:

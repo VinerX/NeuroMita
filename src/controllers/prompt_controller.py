@@ -307,19 +307,6 @@ class PromptController(PromptBuilderService):
             None if caps.connected is None else not caps.structured_segment_exclude_fields,
         )
 
-        if getattr(character, "char_id", "") == "GameMaster":
-            configured_instruction = (
-                gm_instruction_override
-                if gm_instruction_override is not None
-                else self._get_setting("GM_SMALL_PROMPT", None)
-            )
-            instruction = (
-                "Заставь мит мяукать"
-                if configured_instruction is None
-                else str(configured_instruction)
-            )
-            character.set_variable("GM_INSTRUCTION", instruction)
-
     def _build_system_messages(
         self,
         character,
@@ -727,16 +714,16 @@ class PromptController(PromptBuilderService):
         }
     def _build_game_master_prompt(self, request: PromptBuildRequest) -> PromptBuildResult:
         """Build only the hidden GM control-plane prompt."""
-        # The route transport text is only a periodic review trigger. A
-        # director task is included here only when explicitly configured or
-        # supplied by the sandbox override.
-        configured_task = (
-            request.gm_instruction_override
-            if request.gm_instruction_override is not None
-            else self._get_setting("GM_SMALL_PROMPT", None)
+        # Periodic checks review the scene without inheriting a persistent task.
+        # Only an explicit manual command may add a director task.
+        task = ""
+        if str(request.event_type or "").strip().lower() == "game_master_command":
+            task = str(request.gm_instruction_override or request.user_input or "").strip()
+        messages = self._game_master_context.build_messages(
+            dialogue=request.dialogue,
+            task=task,
+            capabilities=request.capabilities,
         )
-        task = ("Заставь мит мяукать" if configured_task is None else str(configured_task)).strip()
-        messages = self._game_master_context.build_messages(dialogue=request.dialogue, task=task)
         return PromptBuildResult(
             messages=messages,
             history_messages=[],
@@ -964,13 +951,6 @@ class PromptController(PromptBuilderService):
             messages.append(dialogue_context_message)
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
-
-        if char_id == "GameMaster":
-            game_master_task = self._build_game_master_task_message(
-                character.get_variable("GM_INSTRUCTION", "")
-            )
-            if game_master_task is not None:
-                messages.append(game_master_task)
 
         if system_input:
             role = "system"

@@ -42,7 +42,9 @@ class GetTaskStatusAction:
             gm_repeat = max(1, min(gm_repeat, 100))
 
             response["GM_ON"] = gm_enabled
-            response["GM_READ"] = gm_enabled
+            # GameMaster is a hidden Python control-plane task; legacy clients
+            # must never interpret its status as a visible response to read.
+            response["GM_READ"] = False
             response["GM_VOICE"] = bool(gm_enabled and settings.get("GM_VOICE", False))
             response["GM_REPEAT"] = gm_repeat
             response["GM_CHECK_INTERVAL"] = gm_repeat
