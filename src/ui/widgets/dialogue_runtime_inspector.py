@@ -463,10 +463,11 @@ class DialogueRuntimeInspector(QWidget):
 
     @classmethod
     def _global_gm_instruction(cls) -> str:
-        return cls._global_dialogue_setting(
-            "GM_SMALL_PROMPT",
-            "??????? ??? ???????",
-        )
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return "Заставь мит мяукать"
+        value = settings.get("GM_SMALL_PROMPT", None)
+        return "Заставь мит мяукать" if value is None else str(value)
 
     def _refresh_auto_turn_budget_hint(self, *_args) -> None:
         participant_count = sum(
@@ -567,6 +568,7 @@ class DialogueRuntimeInspector(QWidget):
         if settings is None:
             return
         settings.set("GM_ON", self._gm_check.isChecked())
+        settings.set("GM_CHECK_INTERVAL", self._gm_repeat_spin.value())
         settings.set("GM_REPEAT", self._gm_repeat_spin.value())
 
     def _sync_unity_gm_controls(self) -> None:
@@ -574,7 +576,7 @@ class DialogueRuntimeInspector(QWidget):
         if settings is None:
             return
         try:
-            repeat = max(1, min(100, int(settings.get("GM_REPEAT", 2) or 2)))
+            repeat = max(1, min(100, int(settings.get("GM_CHECK_INTERVAL", settings.get("GM_REPEAT", 2)) or 2)))
         except (TypeError, ValueError):
             repeat = 2
 

@@ -10,8 +10,10 @@ from main_logger import logger
 
 
 class ConversationEventWriter:
-    def __init__(self, character_ref_resolver: Callable[[str], Any]):
+    def __init__(self, character_ref_resolver: Callable[[str], Any], transcript_service: Any = None, directive_registry: Any = None):
         self._get_character_ref = character_ref_resolver
+        self._transcript = transcript_service
+        self._directive_registry = directive_registry
 
     def normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
@@ -250,22 +252,78 @@ class ConversationEventWriter:
             logger.warning(f"[ConversationEventWriter] Failed to save easel drawing: {e}")
 
     @staticmethod
-    def _dialogue_metadata(dialogue: Any) -> dict:
+    def _dialogue_value(dialogue: Any, key: str, default: Any = None) -> Any:
+        return dialogue.get(key, default) if isinstance(dialogue, dict) else getattr(dialogue, key, default)
+
+    @classmethod
+    def _dialogue_metadata(cls, dialogue: Any) -> dict:
         if dialogue is None:
             return {}
-        participants = getattr(dialogue, "participants", []) or []
+        participants = cls._dialogue_value(dialogue, "participants", []) or []
         return {
-            "conversation_id": str(getattr(dialogue, "conversation_id", "") or ""),
-            "conversation_epoch": int(getattr(dialogue, "epoch", 0) or 0),
-            "turn_index": int(getattr(dialogue, "turn_index", 0) or 0),
-            "speaker_actor_id": str(getattr(dialogue, "speaker_actor_id", "") or ""),
-            "responder_actor_id": str(getattr(dialogue, "responder_actor_id", "") or ""),
+            "conversation_id": str(cls._dialogue_value(dialogue, "conversation_id", "") or ""),
+            "conversation_epoch": int(cls._dialogue_value(dialogue, "epoch", 0) or 0),
+            "turn_index": int(cls._dialogue_value(dialogue, "turn_index", 0) or 0),
+            "speaker_actor_id": str(cls._dialogue_value(dialogue, "speaker_actor_id", "") or ""),
+            "responder_actor_id": str(cls._dialogue_value(dialogue, "responder_actor_id", "") or ""),
             "participant_actor_ids": [
-                str(getattr(item, "actor_id", "") or "")
+                str(cls._dialogue_value(item, "actor_id", "") or "")
                 for item in participants
-                if str(getattr(item, "actor_id", "") or "")
+                if str(cls._dialogue_value(item, "actor_id", "") or "")
             ],
         }
+
+    def record_dialogue_turn(
+        self,
+        *,
+        dialogue: Any,
+        sender: str,
+        responder: str,
+        user_input: str,
+        assistant_text: str,
+        event_type: str,
+    ) -> None:
+        """Record successful dialogue state even when history persistence is off."""
+        if str(sender).casefold() == "player" and str(user_input or "").strip():
+            self._record_transcript(
+                dialogue,
+                sender=sender,
+                responder="",
+                text=user_input,
+                event_type="player_message",
+            )
+        if str(responder).casefold() != "gamemaster" and str(assistant_text or "").strip():
+            self._record_transcript(
+                dialogue,
+                sender="",
+                responder=responder,
+                text=assistant_text,
+                event_type=event_type,
+            )
+            if self._directive_registry is not None:
+                conversation_id = str(self._dialogue_value(dialogue, "conversation_id", "") or "").strip()
+                if conversation_id:
+                    actor_id = str(self._dialogue_value(dialogue, "responder_actor_id", "") or "").strip()
+                    self._directive_registry.consume_after_reply(conversation_id, responder)
+
+    def _record_transcript(self, dialogue: Any, *, sender: str, responder: str, text: str, event_type: str) -> None:
+        if self._transcript is None or not dialogue:
+            return
+        conversation_id = str(self._dialogue_value(dialogue, "conversation_id", "") or "").strip()
+        if not conversation_id:
+            return
+        turn_index = int(self._dialogue_value(dialogue, "turn_index", 0) or 0)
+        if str(sender or "").strip().casefold() == "player" and str(text or "").strip():
+            self._transcript.record_player_message(conversation_id, turn_index=turn_index, text=str(text))
+        if str(responder or "").strip().casefold() != "gamemaster" and str(text or "").strip():
+            actor_id = str(self._dialogue_value(dialogue, "responder_actor_id", "") or "")
+            self._transcript.record_mita_reply(
+                conversation_id,
+                turn_index=turn_index,
+                character_id=responder,
+                actor_id=actor_id,
+                text=str(text),
+            )
 
     def write_turn(
         self,
@@ -339,7 +397,7 @@ class ConversationEventWriter:
             if isinstance(user_event, dict):
                 user_metadata = dict(dialogue_metadata)
                 user_metadata["speaker_actor_id"] = str(
-                    getattr(dialogue, "speaker_actor_id", "") or ""
+                    self._dialogue_value(dialogue, "speaker_actor_id", "") or ""
                 )
                 user_event.update(user_metadata)
 
@@ -348,12 +406,20 @@ class ConversationEventWriter:
             # source of the turn from the actor whose text was persisted.
             assistant_metadata = dict(dialogue_metadata)
             assistant_metadata["source_actor_id"] = str(
-                getattr(dialogue, "speaker_actor_id", "") or ""
+                self._dialogue_value(dialogue, "speaker_actor_id", "") or ""
             )
             assistant_metadata["speaker_actor_id"] = str(
-                getattr(dialogue, "responder_actor_id", "") or ""
+                self._dialogue_value(dialogue, "responder_actor_id", "") or ""
             )
             assistant_event.update(assistant_metadata)
 
+        self.record_dialogue_turn(
+            dialogue=dialogue,
+            sender=sender,
+            responder=responder_character_id,
+            user_input=user_input,
+            assistant_text=assistant_text,
+            event_type=event_type,
+        )
         self._fanout_turn(user_event, assistant_event, pts)
         return str(assistant_event.get("message_id") or "")

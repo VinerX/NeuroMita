@@ -20,6 +20,8 @@ from services.contracts import (
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
 from services.runtime_capabilities import runtime_capabilities
+from services.game_master_context_builder import GameMasterContextBuilder
+from services.game_master_services import ensure_game_master_services
 from domain.world_character_relations import get_world_character_context
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
@@ -48,6 +50,8 @@ class PromptController(PromptBuilderService):
     """Сборка промпта. Чистая функция над персонажем и историей — шина не нужна."""
 
     def __init__(self):
+        registry, transcript, _scheduler = ensure_game_master_services()
+        self._game_master_context = GameMasterContextBuilder(registry, transcript)
         services().register(PromptBuilderService, self, replace=True)
 
     def _get_setting(self, key: str, default=None):
@@ -304,12 +308,17 @@ class PromptController(PromptBuilderService):
         )
 
         if getattr(character, "char_id", "") == "GameMaster":
-            instruction = (
+            configured_instruction = (
                 gm_instruction_override
                 if gm_instruction_override is not None
-                else self._get_setting("GM_SMALL_PROMPT", "??????? ??? ???????")
+                else self._get_setting("GM_SMALL_PROMPT", None)
             )
-            character.set_variable("GM_INSTRUCTION", instruction or "")
+            instruction = (
+                "Заставь мит мяукать"
+                if configured_instruction is None
+                else str(configured_instruction)
+            )
+            character.set_variable("GM_INSTRUCTION", instruction)
 
     def _build_system_messages(
         self,
@@ -716,7 +725,29 @@ class PromptController(PromptBuilderService):
                 "[/GAME_MASTER_TASK]"
             ),
         }
+    def _build_game_master_prompt(self, request: PromptBuildRequest) -> PromptBuildResult:
+        """Build only the hidden GM control-plane prompt."""
+        # The route transport text is only a periodic review trigger. A
+        # director task is included here only when explicitly configured or
+        # supplied by the sandbox override.
+        configured_task = (
+            request.gm_instruction_override
+            if request.gm_instruction_override is not None
+            else self._get_setting("GM_SMALL_PROMPT", None)
+        )
+        task = ("Заставь мит мяукать" if configured_task is None else str(configured_task)).strip()
+        messages = self._game_master_context.build_messages(dialogue=request.dialogue, task=task)
+        return PromptBuildResult(
+            messages=messages,
+            history_messages=[],
+            user_message=messages[-1] if messages and messages[-1].get("role") == "user" else None,
+            support_intents=False,
+        )
+
     def build(self, request: PromptBuildRequest) -> PromptBuildResult:
+        if request.is_game_master:
+            return self._build_game_master_prompt(request)
+
         character = request.character
         char_id = str(getattr(character, "char_id", "") or "")
         if not char_id:
@@ -871,6 +902,12 @@ class PromptController(PromptBuilderService):
             }
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
+
+        if dialogue:
+            conversation_id = dialogue.get("conversation_id", "") if isinstance(dialogue, dict) else getattr(dialogue, "conversation_id", "")
+            scene_directives = self._game_master_context.scene_directives(conversation_id, char_id)
+            if scene_directives:
+                messages.append({"role": "system", "content": scene_directives})
 
         non_player_participants = [p for p in participants if p and p != "Player"]
         if dialogue is None and len(non_player_participants) >= 2:

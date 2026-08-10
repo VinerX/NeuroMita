@@ -85,6 +85,12 @@ def parse_structured_response_with_meta(
 
     response, schema_coerced = _validate_with_coerce(data, model_cls=model_cls)
 
+    # Control-plane schemas such as GameMasterResponse intentionally do not
+    # contain character reply segments. They still use this parser so the
+    # direct/repair trust metadata remains identical to Mita responses.
+    if not hasattr(response, "segments"):
+        return StructuredParseOutcome(response, parse_level, schema_coerced, extraction_kind=extraction_kind)
+
     if not response.segments:
         if response.tool_call:
             response.segments = [ResponseSegment(text="")]

@@ -32,6 +32,7 @@ class _SandboxRouterSettings:
             "DIALOGUE_AUTO_TURNS_PER_PARTICIPANT": int(config.auto_turns_per_participant),
             "DIALOGUE_MAX_CONTINUES": int(config.max_consecutive_continues),
             "GM_ON": bool(config.game_master_enabled),
+            "GM_CHECK_INTERVAL": int(config.gm_repeat),
             "GM_REPEAT": int(config.gm_repeat),
         }
         self.revision = 1
@@ -165,6 +166,11 @@ class SandboxDialogueController:
             self._router = None
         if router is not None and conversation_id:
             router.reset_conversation(conversation_id)
+        from services.game_master_services import ensure_game_master_services
+        registry, transcript, scheduler = ensure_game_master_services()
+        registry.clear_conversation(conversation_id)
+        transcript.clear_conversation(conversation_id)
+        scheduler.reset_conversation(conversation_id)
         self._runtime_state.reset(DialogueRuntimeSource.SANDBOX)
 
     def reset_session(self) -> None:

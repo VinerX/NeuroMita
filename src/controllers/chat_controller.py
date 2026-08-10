@@ -27,6 +27,9 @@ from services.dialogue_turn_router import DialogueTurnRouter, get_dialogue_turn_
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
 from services.stream_presentation import TextDeltaCoalescer
 from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
+from schemas.game_master_response import GameMasterResponse
+from services.game_master_action_executor import GameMasterActionExecutor
+from services.game_master_services import ensure_game_master_services
 
 
 class StructuredJsonStreamFilter:
@@ -525,109 +528,47 @@ class ChatController:
             structured_parse_level = getattr(result, "structured_parse_level", "") or ""
             control_plane_trusted = bool(getattr(result, "control_plane_trusted", False))
 
-            # GameMaster may comment on a dialogue, but never participates in the
-            # Mita-to-Mita turn queue. Do not expose model-produced routing hints
-            # from a moderator response to Unity or to the sandbox renderer.
-            if str(effective_character_id or "").strip() == "GameMaster":
-                raw_system_input = str(system_input or "").strip()
-                configured_task = str(
-                    gm_instruction_override
-                    if gm_instruction_override is not None
-                    else self.settings.get("GM_SMALL_PROMPT", "")
-                ).strip()
-                has_explicit_test_task = "[INSTRUCTION]" in raw_system_input
-                if (
-                    not isinstance(structured_data, dict)
-                    and (configured_task or has_explicit_test_task)
-                ):
-                    structured_data = {"segments": []}
-                    control_plane_trusted = True
-
-                # A hidden moderator may legitimately emit only a structured
-                # broadcast intent. Keep a whitespace transport placeholder so
-                # the intent reaches Unity instead of being rejected as an
-                # empty natural-language response.
-                if not response_text and isinstance(structured_data, dict):
-                    response_text = " "
+            is_game_master_response = str(effective_character_id or "").strip().casefold() == "gamemaster"
+            gm_execution = None
+            if is_game_master_response:
+                # A GameMaster response is an action document, never a normal
+                # Mita segment. Invalid/empty plans are inert: in particular,
+                # the original command is never broadcast to every participant.
+                try:
+                    gm_plan = GameMasterResponse.model_validate(structured_data or {})
+                except Exception as exc:
+                    logger.warning("[ChatController] Invalid GameMaster action plan: %s", exc)
+                    gm_plan = GameMasterResponse(actions=[])
+                    control_plane_trusted = False
+                if dialogue is not None and dialogue.conversation_id and control_plane_trusted:
+                    registry, _transcript, _scheduler = ensure_game_master_services()
+                    gm_execution = GameMasterActionExecutor(registry).apply(
+                        gm_plan,
+                        conversation_id=dialogue.conversation_id,
+                        participants=dialogue.participants,
+                        turn_index=dialogue.turn_index,
+                        source=(
+                            "user_director"
+                            if gm_instruction_override or str(self.settings.get("GM_SMALL_PROMPT", "") or "").strip()
+                            else "auto_corrector"
+                        ),
+                        allow_routing=True,
+                        allow_narration=True,
+                    )
+                    structured_data = dict(structured_data or {})
+                    structured_data["game_master_execution"] = gm_execution.__dict__ if hasattr(gm_execution, "__dict__") else {
+                        "actions": list(gm_execution.actions),
+                        "applied_rule_ids": list(gm_execution.applied_rule_ids),
+                        "removed_rule_ids": list(gm_execution.removed_rule_ids),
+                        "route_target_actor_id": gm_execution.route_target_actor_id,
+                        "route_target_character_id": gm_execution.route_target_character_id,
+                        "route_instruction": gm_execution.route_instruction,
+                        "narration": gm_execution.narration,
+                        "had_action": gm_execution.had_action,
+                    }
                 target = "Player"
                 targets = []
-                if isinstance(structured_data, dict):
-                    structured_data = dict(structured_data)
-                    # A task configured by the user is trusted control-plane input.
-                    # Prefer an explicit test instruction, otherwise use the live GM task.
-                    raw_system_input = str(system_input or "").strip()
-                    if "[INSTRUCTION]" in raw_system_input:
-                        explicit_instruction = raw_system_input.replace(
-                            "[INSTRUCTION]",
-                            "",
-                        ).replace(
-                            "[/INSTRUCTION]",
-                            "",
-                        ).strip()
-                    else:
-                        explicit_instruction = str(
-                            gm_instruction_override
-                            if gm_instruction_override is not None
-                            else self.settings.get("GM_SMALL_PROMPT", "")
-                        ).strip()
-                    has_actionable_directive = False
-                    segments = structured_data.get("segments", [])
-                    if not isinstance(segments, list):
-                        segments = []
-                        structured_data["segments"] = segments
-                    if explicit_instruction and not control_plane_trusted:
-                        segments = []
-                        structured_data["segments"] = segments
-                    for segment in segments:
-                        if not isinstance(segment, dict):
-                            continue
-                        intents = segment.get("intents", [])
-                        if not isinstance(intents, list):
-                            intents = []
-                        valid_intents = []
-                        for intent in intents:
-                            if not isinstance(intent, dict):
-                                continue
-                            intent_type = str(intent.get("type") or "").strip()
-                            payload = intent.get("payload")
-                            payload = dict(payload) if isinstance(payload, dict) else {}
-                            if intent_type == "dialogue.send_system_message":
-                                # Gemini occasionally emits an empty personal intent.
-                                # It is not executable and must not poison an otherwise
-                                # valid GameMaster turn.
-                                if not str(payload.get("character") or "").strip() or not str(payload.get("message") or "").strip():
-                                    continue
-                                has_actionable_directive = True
-                            if intent_type == "dialogue.broadcast_system_message":
-                                if explicit_instruction and not str(payload.get("message") or "").strip():
-                                    payload["message"] = explicit_instruction
-                                has_actionable_directive = (
-                                    has_actionable_directive
-                                    or bool(str(payload.get("message") or "").strip())
-                                )
-                            valid_intents.append({**intent, "type": intent_type, "payload": payload})
-                        segment["intents"] = valid_intents
-                    if explicit_instruction and not has_actionable_directive:
-                        # Explicit tester/GM instructions are authoritative. The
-                        # model may omit the action despite selecting narration;
-                        # preserve the scene directive as a deterministic fallback.
-                        carrier = next((item for item in segments if isinstance(item, dict)), None)
-                        if carrier is None:
-                            carrier = {"text": " ", "target": "Player", "intents": []}
-                            segments.append(carrier)
-                        carrier.setdefault("intents", []).append({
-                            "type": "dialogue.broadcast_system_message",
-                            "payload": {"message": explicit_instruction},
-                        })
-                    structured_data["segments"] = [
-                        {
-                            **segment,
-                            "target": "Player",
-                        }
-                        if isinstance(segment, dict) else segment
-                        for segment in structured_data.get("segments", [])
-                    ]
-
+                response_text = " "
             # Python owns the control-plane route. The model contributes only
             # the current reply and semantic GM intents; Unity executes one
             # exact route after live scene validation.
@@ -637,13 +578,24 @@ class ChatController:
                 and isinstance(dialogue_router, DialogueTurnRouter)
             ):
                 effective_router = dialogue_router
-            route = effective_router.route_after_response(
-                dialogue,
-                structured=structured_data,
-                control_plane_trusted=control_plane_trusted,
-                character_id=str(effective_character_id or ""),
-                event_type=effective_event_type,
-            )
+            if is_game_master_response and gm_execution is not None and control_plane_trusted:
+                if gm_execution.route_target_actor_id and gm_execution.route_target_character_id:
+                    route = effective_router.route_from_game_master_action(
+                        dialogue,
+                        target_actor_id=gm_execution.route_target_actor_id,
+                        target_character_id=gm_execution.route_target_character_id,
+                        instruction=gm_execution.route_instruction,
+                    )
+                else:
+                    route = effective_router.resume_after_game_master(dialogue)
+            else:
+                route = effective_router.route_after_response(
+                    dialogue,
+                    structured=structured_data,
+                    control_plane_trusted=control_plane_trusted,
+                    character_id=str(effective_character_id or ""),
+                    event_type=effective_event_type,
+                )
             if dialogue is not None and dialogue.conversation_id:
                 self.dialogue_runtime_state.set_pending_route(
                     route,

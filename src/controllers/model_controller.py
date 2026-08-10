@@ -40,6 +40,7 @@ from managers.model_pricing_manager import ModelPricingManager, known_model_cont
 from core.request_policy import RequestPolicy, resolve_policy
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
+from services.game_master_services import ensure_game_master_services
 from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
     parse_structured_response_with_meta,
@@ -136,7 +137,12 @@ class ModelController(GenerationService, ModelStateService):
         self._temporary_system_infos: dict[str, list[dict]] = {}
         self._temporary_system_infos_lock = threading.Lock()
 
-        self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
+        _gm_registry, _gm_transcript, _gm_scheduler = ensure_game_master_services()
+        self.event_writer = ConversationEventWriter(
+            character_ref_resolver=self._get_character_ref,
+            transcript_service=_gm_transcript,
+            directive_registry=_gm_registry,
+        )
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
 
         from handlers.image_description_handler import ImageDescriptionHandler
@@ -1308,21 +1314,24 @@ class ModelController(GenerationService, ModelStateService):
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
 
+        is_game_master = char_id.casefold() == "gamemaster"
+
         rag_context = ""
-        if bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
+        if not is_game_master and bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
             prompt_set_path = getattr(char, "base_data_path", None)
             rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
         # they fire on precise player input, independent of RAG availability or
         # embedding similarity of a two-digit message.
-        try:
-            from managers.core_memory_triggers import core_memory_context
-            _core_ctx = core_memory_context(user_input, character_id=char_id)
-            if _core_ctx:
-                rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
-        except Exception as _core_err:
-            logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+        if not is_game_master:
+            try:
+                from managers.core_memory_triggers import core_memory_context
+                _core_ctx = core_memory_context(user_input, character_id=char_id)
+                if _core_ctx:
+                    rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+            except Exception as _core_err:
+                logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
 
         game_state = (
             copy.deepcopy(request.game_state)
@@ -1370,7 +1379,6 @@ class ModelController(GenerationService, ModelStateService):
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
-        is_game_master = (char_id == "GameMaster")
 
         # Пресет резолвим ДО capabilities. Раньше capabilities брались у текущего
         # пресета, а запрос уходил в пресет персонажа — structured_output мог не
@@ -1394,7 +1402,11 @@ class ModelController(GenerationService, ModelStateService):
         if remote_only_segment_fields:
             effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
-        _tools_on = bool(self.settings.get("TOOLS_ON", True))
+        # The moderator is a control-plane actor. Tools, memory search and
+        # character-side effects are never available to it.
+        if is_game_master:
+            effective_capabilities["structured_output"] = True
+        _tools_on = bool(self.settings.get("TOOLS_ON", True)) and not is_game_master
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False
@@ -1597,12 +1609,16 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls = None
         if is_structured_output:
             try:
-                from schemas.structured_response import StructuredResponse as _SR
-                try:
-                    from schemas.structured_response import build_structured_response_model  # type: ignore
-                    structured_model_cls = build_structured_response_model(_custom_params or [])
-                except Exception:
-                    structured_model_cls = _SR
+                if is_game_master:
+                    from schemas.game_master_response import GameMasterResponse
+                    structured_model_cls = GameMasterResponse
+                else:
+                    from schemas.structured_response import StructuredResponse as _SR
+                    try:
+                        from schemas.structured_response import build_structured_response_model  # type: ignore
+                        structured_model_cls = build_structured_response_model(_custom_params or [])
+                    except Exception:
+                        structured_model_cls = _SR
             except Exception:
                 structured_model_cls = None
 
@@ -1768,6 +1784,15 @@ class ModelController(GenerationService, ModelStateService):
                     llm_usage=usage_snapshot,
                     sample_id=sample_id,
                     dialogue=request.dialogue,
+                )
+            elif request.dialogue is not None:
+                self.event_writer.record_dialogue_turn(
+                    dialogue=request.dialogue,
+                    sender=sender,
+                    responder=char_id,
+                    user_input=visible_user_input,
+                    assistant_text=final_text,
+                    event_type=event_type,
                 )
 
             self._store_last_usage(
@@ -1941,6 +1966,43 @@ class ModelController(GenerationService, ModelStateService):
     # Structured Output processing
     # ---------------------------------------------------------------------
 
+    def _process_game_master_output(
+        self,
+        *,
+        structured,
+        visible_raw: str,
+        think_text: str,
+        usage: Optional[LLMUsage],
+        response_model: str,
+        response_provider: str,
+        pricing_info,
+        char_id: str,
+        sample_id: str | None,
+        control_plane_trusted: bool,
+    ) -> ChatGenerationResult:
+        """Return a hidden control-plane result without character side effects."""
+        data = structured.model_dump(exclude_none=True)
+        data["_raw_json"] = visible_raw
+        usage_cost = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+        self._store_last_usage(
+            usage,
+            model=response_model,
+            provider=response_provider,
+            cost_fallback=usage_cost,
+            cost_fallback_currency=getattr(pricing_info, "currency", None),
+            cost_fallback_source=getattr(pricing_info, "source", None),
+        )
+        self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+        return ChatGenerationResult(
+            text=" ",
+            character_id=char_id,
+            target="Player",
+            structured=data,
+            think=think_text or None,
+            sample_id=sample_id or "",
+            structured_parse_level="direct",
+            control_plane_trusted=bool(control_plane_trusted),
+        )
     def _process_structured_output(
         self,
         visible_raw: str,
@@ -1976,7 +2038,30 @@ class ModelController(GenerationService, ModelStateService):
         try:
             parse_outcome = parse_structured_response_with_meta(visible_raw, model_cls=structured_model_cls)
             structured = parse_outcome.response
+            if char_id.casefold() == "gamemaster":
+                return self._process_game_master_output(
+                    structured=structured,
+                    visible_raw=visible_raw,
+                    think_text=think_text,
+                    usage=usage,
+                    response_model=response_model,
+                    response_provider=response_provider,
+                    pricing_info=pricing_info,
+                    char_id=char_id,
+                    sample_id=sample_id,
+                    control_plane_trusted=parse_outcome.control_plane_trusted,
+                )
         except StructuredResponseParseError as e:
+            if char_id.casefold() == "gamemaster":
+                logger.warning("[ModelController] Invalid GameMaster action document; ignoring it: %s", e)
+                self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+                return ChatGenerationResult(
+                    text=" ",
+                    character_id=char_id,
+                    structured={"actions": []},
+                    structured_parse_level="invalid_gm_plan",
+                    control_plane_trusted=False,
+                )
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
                 f"Falling back to legacy processing."
@@ -2166,6 +2251,15 @@ class ModelController(GenerationService, ModelStateService):
                 llm_usage=usage_snapshot,
                 sample_id=sample_id,
                 dialogue=dialogue,
+            )
+        elif dialogue is not None:
+            self.event_writer.record_dialogue_turn(
+                dialogue=dialogue,
+                sender=sender,
+                responder=char_id,
+                user_input=user_input,
+                assistant_text=final_text,
+                event_type=event_type,
             )
 
         self._store_last_usage(

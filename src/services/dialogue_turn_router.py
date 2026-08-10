@@ -82,6 +82,8 @@ class DialogueTurnRouter:
         self._lock = threading.RLock()
         self._states: dict[str, _ConversationRouterState] = {}
         self._max_states = 256
+        from services.game_master_services import ensure_game_master_services
+        self._gm_scheduler = ensure_game_master_services()[2]
 
     def _get_setting(self, key: str, default: Any = None) -> Any:
         settings = self._settings
@@ -116,7 +118,16 @@ class DialogueTurnRouter:
             6,
         )
         max_auto = max(0, min(24, max_auto))
-        gm_repeat = max(1, min(100, self._as_int(self._get_setting("GM_REPEAT", 2), 2)))
+        gm_repeat = max(
+            1,
+            min(
+                100,
+                self._as_int(
+                    self._get_setting("GM_CHECK_INTERVAL", self._get_setting("GM_REPEAT", 2)),
+                    2,
+                ),
+            ),
+        )
         continue_limit = self._as_int(
             self._get_setting(
                 "DIALOGUE_MAX_CONTINUES",
@@ -546,6 +557,7 @@ class DialogueTurnRouter:
             if context.speaker_actor_id.casefold() == "player":
                 state.mita_responses_since_gm = 0
                 state.gm_checks_since_player = 0
+                self._gm_scheduler.reset_conversation(context.conversation_id)
                 if not requested_continue:
                     state.consecutive_continues = 0
             elif event != "continue" and not requested_continue:
@@ -602,8 +614,12 @@ class DialogueTurnRouter:
             if not settings["gm_on"]:
                 state.mita_responses_since_gm = 0
             else:
-                state.mita_responses_since_gm += 1
-                if state.mita_responses_since_gm >= settings["gm_repeat"]:
+                should_check = self._gm_scheduler.note_mita_reply(
+                    context.conversation_id,
+                    interval=settings["gm_repeat"],
+                )
+                state.mita_responses_since_gm = 0 if should_check else state.mita_responses_since_gm + 1
+                if should_check:
                     state.mita_responses_since_gm = 0
                     if (
                         state.gm_checks_since_player
@@ -693,9 +709,67 @@ class DialogueTurnRouter:
             state.reserved_continues -= 1
             return True
 
-    def reset_conversation(self, conversation_id: str) -> None:
+    def resume_after_game_master(
+        self,
+        dialogue: DialogueTurnContext | dict[str, Any] | None,
+    ) -> Optional[RoutedDialogueRoute]:
+        context = self.authoritative_context(dialogue)
+        if context is None:
+            return None
         with self._lock:
-            self._states.pop(str(conversation_id or ""), None)
+            state = self._state_for(context.conversation_id, int(context.epoch))
+            resume_actor_id = state.resume_after_actor_id or context.responder_actor_id
+        if not resume_actor_id:
+            return None
+        return self._select_from_context(
+            replace(
+                context,
+                speaker_actor_id="GameMaster",
+                responder_actor_id=resume_actor_id,
+            ),
+            reason="python_round_robin_after_game_master",
+            input_text="Continue the current conversation after the GameMaster directive.",
+        )
+
+    def route_from_game_master_action(
+        self,
+        dialogue: DialogueTurnContext | dict[str, Any] | None,
+        *,
+        target_actor_id: str,
+        target_character_id: str,
+        instruction: str,
+    ) -> Optional[RoutedDialogueRoute]:
+        """Create one validated Mita route from a GameMaster action."""
+        context = self.authoritative_context(dialogue)
+        actor = str(target_actor_id or "").strip()
+        character = normalize_character_id(target_character_id)
+        if context is None or not actor or not character or not instruction.strip():
+            return None
+        if dialogue_auto_turns_remaining(context) <= 0:
+            return None
+        participant = next((item for item in context.participants if item.actor_id == actor), None)
+        if participant is None or not participant.is_active or not participant.can_speak:
+            return None
+        if normalize_character_id(participant.character_id).casefold() != character.casefold():
+            return None
+        return RoutedDialogueRoute(
+            route_kind=ROUTE_GAME_MASTER_DIRECTIVE,
+            event_type="answer",
+            target_actor_id=actor,
+            target_character_id=participant.character_id,
+            input_text=instruction.strip(),
+            reason="game_master_action_route",
+            conversation_id=context.conversation_id,
+            epoch=max(0, int(context.epoch)),
+            source_turn_index=max(0, int(context.turn_index)),
+            route_id=uuid.uuid4().hex,
+        )
+
+    def reset_conversation(self, conversation_id: str) -> None:
+        key = str(conversation_id or "")
+        with self._lock:
+            self._states.pop(key, None)
+        self._gm_scheduler.reset_conversation(key)
 
 
 def route_to_transport(route: RoutedDialogueRoute | None) -> dict[str, Any] | None:

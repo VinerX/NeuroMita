@@ -104,7 +104,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         },
         {
             "label": _("Ответы Мит между проверками (1–100)", "Mita replies between GameMaster checks (1–100)"),
-            "key": "GM_REPEAT",
+            "key": "GM_CHECK_INTERVAL",
             "type": "spinbox",
             "default": 2,
             "minimum": 1,
@@ -118,7 +118,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "label": _("Задача GameMaster", "GameMaster prompt"),
             "key": "GM_SMALL_PROMPT",
             "type": "textarea",
-            "default": "??????? ??? ???????",
+            "default": "Заставь мит мяукать",
         },
     ]
 
