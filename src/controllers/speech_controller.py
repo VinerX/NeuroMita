@@ -10,7 +10,7 @@ import sounddevice as sd
 from handlers.asr_handler import SpeechRecognition
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
-from core.performance_trace import perf_mark_once, performance_traces
+from core.performance_trace import perf_mark, perf_mark_once, performance_traces
 from core.services import services, use
 from core.task_supervisor import task_supervisor
 from services.contracts import (
