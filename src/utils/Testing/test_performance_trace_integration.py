@@ -14,6 +14,7 @@ if str(PROJECT_SRC) not in sys.path:
 from controllers.audio_controller import AudioController
 from controllers.chat_controller import ChatController
 from controllers.gui.chat_controller import ChatController as GuiChatController
+from controllers.gui.app_shell_controller import AppShellController
 from controllers.model_controller import ModelController
 from ui.windows.app_window_base import AppWindowBase
 from controllers.speech_controller import SpeechController
@@ -35,7 +36,12 @@ from services.contracts import (
     GameLinkService,
     GenerationService,
     LocalVoiceService,
+    LoopService,
+    SettingsService,
 )
+
+
+_MISSING_SERVICE = object()
 
 
 class _Settings:
@@ -212,11 +218,19 @@ def _preset(name):
 
 class PerformanceTraceIntegrationTests(unittest.TestCase):
     def setUp(self):
+        self._previous_services = {
+            contract: services().get_optional(contract, _MISSING_SERVICE)
+            for contract in (CharacterRegistry, GenerationService)
+        }
         performance_traces().clear()
         services().register(CharacterRegistry, _Registry(), replace=True)
 
     def tearDown(self):
         performance_traces().clear()
+        for contract, previous in self._previous_services.items():
+            services().unregister(contract)
+            if previous is not _MISSING_SERVICE:
+                services().register(contract, previous, replace=True)
 
     def _chat_controller(self, settings, bus):
         with patch("controllers.chat_controller.get_event_bus", return_value=bus):
@@ -295,20 +309,26 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
                 return _VoiceService()
             if contract is GameLinkService:
                 return _GameLink()
+            if contract is LoopService:
+                class _ImmediateLoop(LoopService):
+                    def loop(self):
+                        return asyncio.get_running_loop()
+
+                    def is_running(self):
+                        return True
+
+                    def run(self, coro):
+                        asyncio.run(coro)
+                        return None
+
+                return _ImmediateLoop()
             raise AssertionError("unexpected service")
 
         with patch("controllers.audio_controller.use", side_effect=resolve_service), patch(
             "controllers.audio_controller.AudioHandler.handle_voice_file", new=AsyncMock()
         ):
-            asyncio.run(
-                audio._await_local_voiceover_and_postprocess(
-                    "spoken response",
-                    "spoken response",
-                    None,
-                    character_id="Crazy",
-                    voice_profile=voice_event["voice_profile"],
-                    trace_id=trace.trace_id,
-                )
+            audio._on_voiceover_requested(
+                Event(Events.Audio.VOICEOVER_REQUESTED, voice_event)
             )
 
         snapshot = performance_traces().snapshot(trace.trace_id)
@@ -381,15 +401,13 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
         self.assertNotIn("trace_id", game_payload)
         self.assertEqual(performance_traces().snapshot(game_trace.trace_id)["status"], "sent_to_game")
 
-    def test_tool_followup_has_two_llm_spans_and_tool_span(self):
+    def test_tool_followup_adds_llm_and_tool_spans(self):
         trace = performance_traces().start("structured-chat")
         harness = _ModelHarness()
         structured = StructuredResponse(
             segments=[ResponseSegment(text="Checking")],
             tool_call=ToolCall(name="calculator", args={"value": 41}),
         )
-        with trace.span("llm.total", phase="initial"):
-            pass
         result = ModelController._handle_tool_call(
             harness,
             structured=structured,
@@ -422,7 +440,8 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
         self.assertEqual(result.text, "done")
         snapshot = performance_traces().finish(trace.trace_id)
         llm_spans = [span for span in snapshot["spans"] if span["name"] == "llm.total"]
-        self.assertEqual(len(llm_spans), 2)
+        self.assertEqual(len(llm_spans), 1)
+        self.assertEqual(llm_spans[0]["attributes"]["phase"], "tool_followup")
         self.assertAlmostEqual(
             snapshot["metrics"]["llm_total_ms"],
             sum(span["duration_ms"] for span in llm_spans),
@@ -444,17 +463,69 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
         window.show_send_error = lambda _message: None
 
         AppWindowBase.send_message(window, "", None, "typed", True)
+        AppWindowBase.send_message(window, "", None, "voice", False, "trace-123")
 
         self.assertEqual(
             window._shell_actions.calls,
-            [{
-                "system_input": "",
-                "image_data": None,
-                "user_input": "typed",
-                "trace_id": None,
-                "merge_input_from_entry": True,
-            }],
+            [
+                {
+                    "system_input": "",
+                    "image_data": None,
+                    "user_input": "typed",
+                    "trace_id": None,
+                    "merge_input_from_entry": True,
+                },
+                {
+                    "system_input": "",
+                    "image_data": None,
+                    "user_input": "voice",
+                    "trace_id": "trace-123",
+                    "merge_input_from_entry": False,
+                },
+            ],
         )
+
+    def test_app_shell_preserves_trace_id_in_chat_event(self):
+        class _View:
+            def user_input_text(self):
+                return ""
+
+            def staged_images_snapshot(self):
+                return []
+
+            def render_outgoing_message(self, **_kwargs):
+                return None
+
+            def show_thinking_now(self):
+                return None
+
+            def clear_staged_images_view(self):
+                return None
+
+            def show_send_error(self, _message):
+                raise AssertionError("send should not fail")
+
+        shell = object.__new__(AppShellController)
+        shell._view = _View()
+        shell._event_bus = _Bus()
+        shell._main_controller = object()
+        shell._backend_error = ""
+        shell._closed = False
+        shell._close_pages = None
+
+        def resolve_service(contract):
+            if contract is SettingsService:
+                return _Settings({"AUTO_ATTACH_IMAGES": False, "ENABLE_CAMERA_CAPTURE": False})
+            if contract is CharacterRegistry:
+                return _Registry()
+            raise AssertionError("unexpected service")
+
+        with patch("controllers.gui.app_shell_controller.use", side_effect=resolve_service):
+            self.assertTrue(shell.send_message(user_input="voice", trace_id="trace-123"))
+
+        event_name, payload = shell._event_bus.events[-1]
+        self.assertEqual(event_name, Events.Chat.SEND_MESSAGE)
+        self.assertEqual(payload["trace_id"], "trace-123")
     def test_fallback_attempt_is_success_with_fallback_attribute(self):
         class _Provider:
             def generate(self, request):
