@@ -265,7 +265,7 @@ class LLMRequestRunner:
                     model=getattr(req, "model", ""),
                 )
                 if response and response.text:
-                    finish_attempt(result="fallback" if chain_pos > 1 else "success")
+                    finish_attempt(result="success", fallback=chain_pos > 1)
                     self.last_error = None
                     return response
 

@@ -202,7 +202,7 @@ class _Speech:
         self.ctrl.asr_settings = _AsrSettings()
         self.ctrl.events_bus = self.bus = _Bus()
         self.desktop = []
-        self.ctrl._route_to_desktop = lambda text, autosend, delay: self.desktop.append(text)
+        self.ctrl._route_to_desktop = lambda text, autosend, delay, trace_id=None: self.desktop.append(text)
         self.ctrl._is_asr_duplicate = lambda text, now: False
         self.ctrl._instant_send_policy = lambda: (True, 0.0)
         self.ctrl._player_turn_owner = lambda: turn_owner
