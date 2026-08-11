@@ -25,8 +25,8 @@ class DialoguePresentationTests(unittest.TestCase):
 
     def test_title_lists_multi_mita_participants_and_hides_gm(self) -> None:
         snapshot = DialogueRuntimeSnapshot(
-            source=DialogueRuntimeSource.SANDBOX,
-            conversation_id="sandbox:one",
+            source=DialogueRuntimeSource.UNITY,
+            conversation_id="unity:one",
             participants=(
                 DialogueParticipantView("a", "A", "Alpha"),
                 DialogueParticipantView("b", "B", "Beta"),
@@ -34,7 +34,7 @@ class DialoguePresentationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(format_conversation_title(snapshot), "Conversation: Alpha, Beta")
-        self.assertEqual(format_runtime_source(snapshot), "Sandbox")
+        self.assertEqual(format_runtime_source(snapshot), "Game")
 
     def test_title_collapses_large_sessions(self) -> None:
         participants = tuple(

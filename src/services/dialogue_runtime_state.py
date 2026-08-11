@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from threading import RLock
 from typing import Any
 
@@ -42,11 +41,6 @@ class DialogueRuntimeStateService:
         if normalized is None or not normalized.conversation_id:
             return self.snapshot()
         with self._lock:
-            if (
-                source_value is DialogueRuntimeSource.SANDBOX
-                and self._snapshot.source is DialogueRuntimeSource.UNITY
-            ):
-                return self._snapshot
             participants = tuple(
                 self._participant_view(item) for item in normalized.participants
             )
@@ -70,81 +64,6 @@ class DialogueRuntimeStateService:
             snapshot = self._snapshot
         self._publish(snapshot)
         return snapshot
-
-    def set_pending_route(
-        self,
-        route: Any,
-        *,
-        source: DialogueRuntimeSource | str | None = None,
-        conversation_id: str = "",
-        epoch: int | None = None,
-        source_turn_index: int | None = None,
-        control_plane_trusted: bool = False,
-    ) -> DialogueRuntimeSnapshot:
-        with self._lock:
-            if not self._scope_matches_locked(
-                source=source,
-                conversation_id=conversation_id,
-                epoch=epoch,
-                source_turn_index=source_turn_index,
-            ):
-                return self._snapshot
-            if route is None:
-                self._snapshot = replace(
-                    self._snapshot,
-                    pending_route_kind="",
-                    pending_route_target_actor_id="",
-                    pending_route_id="",
-                    pending_route_source_turn_index=0,
-                    control_plane_trusted=bool(control_plane_trusted),
-                )
-            else:
-                get = route.get if isinstance(route, dict) else lambda key, default=None: getattr(route, key, default)
-                self._snapshot = replace(
-                    self._snapshot,
-                    pending_route_kind=str(get("route_kind", "") or ""),
-                    pending_route_target_actor_id=str(get("target_actor_id", "") or ""),
-                    pending_route_id=str(get("route_id", "") or ""),
-                    pending_route_source_turn_index=int(get("source_turn_index", 0) or 0),
-                    control_plane_trusted=bool(control_plane_trusted),
-                )
-            snapshot = self._snapshot
-        self._publish(snapshot)
-        return snapshot
-
-    def clear_pending_route(
-        self,
-        *,
-        source: DialogueRuntimeSource | str | None = None,
-        conversation_id: str = "",
-        epoch: int | None = None,
-        source_turn_index: int | None = None,
-    ) -> DialogueRuntimeSnapshot:
-        return self.set_pending_route(
-            None,
-            source=source,
-            conversation_id=conversation_id,
-            epoch=epoch,
-            source_turn_index=source_turn_index,
-        )
-
-    def _scope_matches_locked(
-        self,
-        *,
-        source: DialogueRuntimeSource | str | None,
-        conversation_id: str,
-        epoch: int | None,
-        source_turn_index: int | None,
-    ) -> bool:
-        if source is not None and self._snapshot.source is not self._source(source):
-            return False
-        if conversation_id and self._snapshot.conversation_id != str(conversation_id):
-            return False
-        if epoch is not None and int(self._snapshot.epoch) != int(epoch):
-            return False
-        if source_turn_index is not None and int(self._snapshot.turn_index) != int(source_turn_index):
-            return False
-        return True
 
     def reset(self, source: DialogueRuntimeSource | str | None = None) -> DialogueRuntimeSnapshot:
         source_value = self._source(source) if source is not None else None

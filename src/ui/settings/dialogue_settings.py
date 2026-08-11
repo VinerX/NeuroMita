@@ -25,8 +25,8 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "default_checkbutton": True,
             "widget_name": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Разрешать роутеру назначать следующие ходы после ответа Миты.",
-                "Allow the router to schedule follow-up turns after a Mita reply.",
+                "Разрешать Unity планировать следующие ходы после ответа Миты.",
+                "Allow Unity to schedule follow-up turns after a Mita reply.",
             ),
         },
         {

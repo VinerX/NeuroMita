@@ -861,7 +861,7 @@ class PromptController(PromptBuilderService):
 
             lines = [
                 "[Current Group Conversation]",
-                "Reply naturally to the current turn. Python owns the decision about who speaks next.",
+                "Reply naturally to the current turn. Unity owns the speaker order and all follow-up scheduling.",
             ]
             if participant_names:
                 lines.append("Present: " + ", ".join(participant_names))

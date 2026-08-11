@@ -485,8 +485,7 @@ class DialogueTurnContext:
 
     participants: List[DialogueParticipant] = field(default_factory=list)
 
-    # Client values are diagnostic mirrors only. Python routing uses the
-    # authoritative SettingsService values.
+    # Client values are diagnostic mirrors of the Unity-owned turn state.
     client_auto_dialogue_enabled: Optional[bool] = None
     client_auto_turn_limit: Optional[int] = None
     client_settings_revision: Optional[int] = None
@@ -498,7 +497,6 @@ class DialogueRuntimeSource(str, Enum):
     """Origin of the dialogue snapshot shown by the Python UI."""
 
     NONE = "none"
-    SANDBOX = "sandbox"
     UNITY = "unity"
 
 
@@ -528,12 +526,7 @@ class DialogueRuntimeSnapshot:
     speaker_actor_id: str = ""
     responder_actor_id: str = ""
     participants: tuple[DialogueParticipantView, ...] = ()
-    pending_route_kind: str = ""
-    pending_route_target_actor_id: str = ""
-    pending_route_id: str = ""
-    pending_route_source_turn_index: int = 0
     game_master_enabled: bool = False
-    control_plane_trusted: bool = False
 
     @property
     def is_active(self) -> bool:
@@ -542,56 +535,6 @@ class DialogueRuntimeSnapshot:
     @property
     def auto_turns_remaining(self) -> int:
         return max(0, int(self.auto_turns_max) - int(self.auto_turns_used))
-
-
-@dataclass(frozen=True, slots=True)
-class SandboxDialogueUiState:
-    """Read-only controller state intended for UI consumers."""
-
-    active: bool = False
-    session_id: str = ""
-    busy: bool = False
-    manual_step_mode: bool = False
-    auto_dialogue_enabled: bool = False
-    has_pending_route: bool = False
-    pending_route_kind: str = ""
-    pending_target_actor_id: str = ""
-    status_code: str = "inactive"
-    status_detail: str = ""
-
-@dataclass(frozen=True, slots=True)
-class SandboxDialogueConfig:
-    """Session-local multi-Mita settings; never persisted to game settings."""
-
-    participant_character_ids: tuple[str, ...] = ()
-    initial_character_id: str = ""
-    auto_dialogue_enabled: bool = True
-    max_auto_turns: int = 6
-    auto_turn_count_mode: str = "per_participant"
-    auto_turns_per_participant: int = 1
-    max_consecutive_continues: int = 3
-    game_master_enabled: bool = False
-    gm_repeat: int = 2
-    gm_instruction: str = ""
-    delay_ms: int = 0
-    manual_step_mode: bool = False
-
-
-def dialogue_auto_turns_remaining(dialogue: Optional[DialogueTurnContext]) -> int:
-    """Return the exact number of automatic NPC turns still available."""
-    if dialogue is None or not dialogue.auto_dialogue_enabled:
-        return 0
-    try:
-        limit = max(0, int(dialogue.max_auto_turns))
-        used = max(0, int(dialogue.auto_turns_since_player))
-    except (TypeError, ValueError):
-        return 0
-    return max(0, limit - used)
-
-
-def dialogue_has_auto_turn_budget(dialogue: Optional[DialogueTurnContext]) -> bool:
-    """Return whether Python may emit another automatic NPC follow-up."""
-    return dialogue_auto_turns_remaining(dialogue) > 0
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -769,8 +712,6 @@ class ChatGenerationResult:
     context_snapshot_id: str = ""
     error: str = ""
     error_details: Optional[Dict[str, Any]] = None
-    # Кому Python предлагает слово после этой реплики (протокол ответа v3).
-    next_turns: List[Dict[str, Any]] = field(default_factory=list)
     # Repaired structured output remains displayable but cannot authorize routing.
     structured_parse_level: str = ""
     control_plane_trusted: bool = False

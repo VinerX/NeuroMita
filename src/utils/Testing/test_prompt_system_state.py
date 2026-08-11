@@ -13,7 +13,7 @@ from controllers.prompt_controller import PromptController
 from handlers.llm_providers.message_preprocessor import _convert_event_content_to_user
 from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
-from services.contracts import parse_dialogue_turn_context, PromptBuildRequest, dialogue_has_auto_turn_budget, dialogue_auto_turns_remaining
+from services.contracts import parse_dialogue_turn_context, PromptBuildRequest
 
 
 class PromptSystemStateTests(unittest.TestCase):
@@ -69,11 +69,11 @@ class PromptSystemStateTests(unittest.TestCase):
         ))
         return next(message["content"] for message in result.messages if "[Current Group Conversation]" in message.get("content", ""))
 
-    def test_dialogue_context_delegates_auto_routing_to_python(self):
+    def test_dialogue_context_declares_unity_routing_authority(self):
         content = self._build_dialogue_prompt(True)
         self.assertNotIn("Automatic group dialogue is enabled", content)
         self.assertNotIn("Automatic group dialogue is disabled", content)
-        self.assertIn("Python owns the decision about who speaks next", content)
+        self.assertIn("Unity owns the speaker order and all follow-up scheduling", content)
 
         self.assertNotIn("conversation_id=", content)
         self.assertNotIn("next_turns", content)
@@ -85,22 +85,6 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertNotIn("Automatic group dialogue is disabled", content)
         self.assertNotIn("Automatic group dialogue is enabled", content)
         self.assertNotIn("next_turns", content)
-
-    def test_auto_turn_budget_is_enforced_at_python_boundary(self):
-        exhausted = parse_dialogue_turn_context({
-            "auto_dialogue_enabled": True,
-            "auto_turns_since_player": 6,
-            "max_auto_turns": 6,
-        })
-        available = parse_dialogue_turn_context({
-            "auto_dialogue_enabled": True,
-            "auto_turns_since_player": 5,
-            "max_auto_turns": 6,
-        })
-        self.assertFalse(dialogue_has_auto_turn_budget(exhausted))
-        self.assertTrue(dialogue_has_auto_turn_budget(available))
-        self.assertEqual(dialogue_auto_turns_remaining(available), 1)
-        self.assertEqual(dialogue_auto_turns_remaining(exhausted), 0)
 
     def test_relevant_memories_follow_active_memory(self):
         class _Character:

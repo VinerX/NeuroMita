@@ -36,6 +36,4 @@ def format_runtime_source(snapshot: DialogueRuntimeSnapshot | None) -> str:
         return ""
     if snapshot.source is DialogueRuntimeSource.UNITY:
         return "Game"
-    if snapshot.source is DialogueRuntimeSource.SANDBOX:
-        return "Sandbox"
     return ""

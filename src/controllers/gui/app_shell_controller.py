@@ -254,37 +254,6 @@ class AppShellController:
                     label = _("<\u0418\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u044d\u043a\u0440\u0430\u043d\u0430>", "<Screen Image>")
                 image_content.insert(0, {"type": "text", "content": label + "\n"})
 
-        # Multi-Mita Sandbox owns only explicitly activated sandbox sessions.
-        # The default single-character path below remains unchanged.
-        from controllers.sandbox_dialogue_controller import get_sandbox_dialogue_controller
-        from services.contracts import DialogueRuntimeSource
-        from services.dialogue_runtime_state import get_dialogue_runtime_state_service
-        sandbox = get_sandbox_dialogue_controller()
-        runtime_snapshot = get_dialogue_runtime_state_service().snapshot()
-        if (
-            sandbox.active
-            and runtime_snapshot.source is DialogueRuntimeSource.SANDBOX
-            and not system_input
-        ):
-            if not user_input:
-                self._view.show_send_error("Sandbox requires a text prompt.")
-                return
-            accepted = sandbox.send_player_message(user_input, all_image_data)
-            if not accepted:
-                self._view.show_send_error("Sandbox session is busy or unavailable.")
-                return
-            self._view.render_outgoing_message(
-                user_input=user_input,
-                image_content=image_content,
-                message_id=user_message_id,
-                clear_entry=bool(from_entry or clear_entry_after_send),
-            )
-            self._view.show_thinking_now()
-            if staged_image_data:
-                self._event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
-                self._view.clear_staged_images_view()
-            return
-
         self._view.render_outgoing_message(
             user_input=user_input,
             image_content=image_content,

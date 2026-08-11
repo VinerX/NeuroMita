@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 from core.events import Events
 from core.services import use
 from services.contracts import CharacterRegistry, SettingsService, TaskService
-from services.dialogue_turn_router import get_dialogue_turn_router
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -315,26 +314,9 @@ class CreateTaskAction:
             game_state=game_state_payload,
         )
 
-        # `continue` is a regular model turn with a Python-owned reservation.
-        # It intentionally does not flush Unity runtime events or use a local
-        # counter: the same conversation router owns its central limit.
+        # Unity owns continuation admission and the shared dialogue budget.
+        # Python processes the already-authorized turn like any other request.
         if event_type == "continue":
-            router = get_dialogue_turn_router(use(SettingsService))
-            route_reserved = bool(data.get("continue_route_reserved", False))
-            authorized = (
-                router.consume_continue_reservation(dialogue_payload, character_id=character_id)
-                if route_reserved
-                else router.authorize_continue(dialogue_payload, character_id=character_id)
-            )
-            if not authorized:
-                await server._send_aborted_update(
-                    ctx.client_id,
-                    event_type,
-                    character_id,
-                    reason="Continue rejected by the Python dialogue router",
-                    req_id=req_id,
-                )
-                return
             instruction = str(
                 data.get("message")
                 or data.get("instruction")
