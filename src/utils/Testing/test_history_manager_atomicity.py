@@ -25,7 +25,11 @@ class _FakeExecutor:
 
 
 class _FakeRag:
-    def update_history_embedding(self, *_args, **_kwargs) -> None:
+    def __init__(self) -> None:
+        self.batch_calls = []
+
+    def update_history_embeddings(self, items, *, priority="bulk") -> None:
+        self.batch_calls.append((list(items), priority))
         return None
 
 
@@ -270,7 +274,8 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         self.assertEqual(cursor.fetchone(), (0, 1))
 
     def test_embeddings_are_scheduled_only_after_successful_commit(self) -> None:
-        self.hm.rag = _FakeRag()
+        rag = _FakeRag()
+        self.hm.rag = rag
         executor = _FakeExecutor()
 
         with patch.object(HistoryManager, "_get_embed_executor", return_value=executor):
@@ -282,6 +287,26 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
             )
 
         self.assertEqual(len(executor.jobs), 1)
+
+    def test_add_messages_schedules_one_embedding_batch_for_complete_turn(self) -> None:
+        rag = _FakeRag()
+        self.hm.rag = rag
+        executor = _FakeExecutor()
+        messages = [
+            {"role": "user", "content": "question", "time": "01.01.2026 12:00:00"},
+            {"role": "assistant", "content": "answer", "time": "01.01.2026 12:00:01"},
+        ]
+
+        with patch.object(HistoryManager, "_get_embed_executor", return_value=executor):
+            row_ids = self.hm.add_messages(messages)
+
+        self.assertEqual(len(row_ids), 2)
+        self.assertEqual(len(executor.jobs), 1)
+        job, args, kwargs = executor.jobs[0]
+        self.assertEqual(args, ())
+        self.assertEqual(kwargs, {})
+        job()
+        self.assertEqual(rag.batch_calls, [(list(zip(row_ids, ["question", "answer"])), "bulk")])
 
     def test_add_messages_commits_completed_turn_in_one_transaction(self) -> None:
         turn_id = "turn:test-1"

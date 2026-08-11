@@ -190,6 +190,38 @@ class HistoryManager(CharacterScopedService):
                 cls._EMBED_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag-embed")
             return cls._EMBED_EXECUTOR
 
+    def _schedule_history_embeddings(self, items: list[tuple[int, str]]) -> None:
+        """Schedule one RAG batch instead of individual provider requests."""
+        if not items or not self.rag:
+            return
+
+        normalized: list[tuple[int, str]] = []
+        for row_id, text in items:
+            clean_text = str(text or "").strip()
+            if row_id and clean_text:
+                normalized.append((int(row_id), clean_text))
+        if not normalized:
+            return
+
+        rag = self.rag
+
+        def _bulk_embed_job():
+            try:
+                rag.update_history_embeddings(normalized, priority="bulk")
+            except Exception as e:
+                logger.warning(
+                    f"RAG failed to update history embeddings batch (ignored): {e}",
+                    exc_info=True,
+                )
+
+        try:
+            self._get_embed_executor().submit(_bulk_embed_job)
+        except Exception as e:
+            logger.warning(
+                f"[HistoryManager] Failed to schedule embeddings batch (ignored): {e}",
+                exc_info=True,
+            )
+
     # ---------------------------------------------------------------------
     # Schema helpers
     # ---------------------------------------------------------------------
@@ -1160,23 +1192,7 @@ class HistoryManager(CharacterScopedService):
                 except Exception:
                     pass
 
-        if not pending_embeddings or not self.rag:
-            return
-
-        rag = self.rag
-        items = list(pending_embeddings)
-
-        def _bulk_embed_job():
-            for row_id, text in items:
-                try:
-                    rag.update_history_embedding(int(row_id), str(text))
-                except Exception as e:
-                    logger.warning(f"RAG failed to update history embedding (ignored): {e}", exc_info=True)
-
-        try:
-            self._get_embed_executor().submit(_bulk_embed_job)
-        except Exception as e:
-            logger.warning(f"[HistoryManager] Failed to schedule embeddings job (ignored): {e}", exc_info=True)
+        self._schedule_history_embeddings(pending_embeddings)
 
     def save_history_separate(self) -> str:
         """Экспортирует текущую активную историю в JSON-файл (бекап/снапшот).
@@ -1201,33 +1217,14 @@ class HistoryManager(CharacterScopedService):
             return ""
 
     def _schedule_message_embedding(self, row_id: int | None, message: dict) -> None:
-        if not row_id or not self.rag:
+        if not row_id:
             return
 
         content_text = self._extract_text_for_embedding(message.get("content"))
         if not content_text:
             return
 
-        rag = self.rag
-        rid = int(row_id)
-        txt = str(content_text)
-
-        def _embed_job():
-            try:
-                rag.update_history_embedding(rid, txt)
-            except Exception as e:
-                logger.warning(
-                    f"RAG failed to update embedding for new message (ignored): {e}",
-                    exc_info=True,
-                )
-
-        try:
-            self._get_embed_executor().submit(_embed_job)
-        except Exception as e:
-            logger.warning(
-                f"[HistoryManager] Failed to schedule embedding for message (ignored): {e}",
-                exc_info=True,
-            )
+        self._schedule_history_embeddings([(int(row_id), str(content_text))])
 
     def add_messages(self, messages: list[dict]) -> list[int]:
         valid_messages = [msg for msg in messages or [] if isinstance(msg, dict)]
@@ -1267,8 +1264,12 @@ class HistoryManager(CharacterScopedService):
                 except Exception:
                     pass
 
+        pending_embeddings: list[tuple[int, str]] = []
         for row_id, msg in committed:
-            self._schedule_message_embedding(row_id, msg)
+            content_text = self._extract_text_for_embedding(msg.get("content"))
+            if content_text:
+                pending_embeddings.append((row_id, str(content_text)))
+        self._schedule_history_embeddings(pending_embeddings)
         return [row_id for row_id, _msg in committed]
 
     def add_message(self, message: dict):
