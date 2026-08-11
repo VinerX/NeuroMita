@@ -206,13 +206,22 @@ def resolve_character_avatar(character_id: str, size: int = 32, role: str = "ass
     return _placeholder_avatar(size, ROLE_COLORS.get(role, "#A78BFA"), char_id)
 
 class BubbleFrame(QFrame):
-    def __init__(self, role: str, tail_side: str | None = "left", parent=None):
+    def __init__(
+        self,
+        role: str,
+        tail_side: str | None = "left",
+        parent=None,
+        *,
+        tail_gutter_side: str | None = None,
+    ):
         super().__init__(parent)
         self._bg = CARD_BG.get(role, QColor(30, 30, 35, 240))
         self._border = CARD_BORDER.get(role, QColor(255, 255, 255, 15))
         self._tail_side = tail_side
-        left_margin = TAIL_W if tail_side == "left" else 0
-        right_margin = TAIL_W if tail_side == "right" else 0
+        self._tail_gutter_side = tail_gutter_side
+        effective_side = tail_side or tail_gutter_side
+        left_margin = TAIL_W if effective_side == "left" else 0
+        right_margin = TAIL_W if effective_side == "right" else 0
         self.setContentsMargins(left_margin + 12, 8, right_margin + 12, 8)
         self.setMinimumHeight(AVATAR_SIZE)
 
@@ -233,8 +242,9 @@ class BubbleFrame(QFrame):
         w, h = self.width(), self.height()
         r, tw, th = BUBBLE_RADIUS, TAIL_W, TAIL_H
 
-        if self._tail_side == "left": bx, by, bw, bh = tw, 0, w - tw, h
-        elif self._tail_side == "right": bx, by, bw, bh = 0, 0, w - tw, h
+        effective_side = self._tail_side or self._tail_gutter_side
+        if effective_side == "left": bx, by, bw, bh = tw, 0, w - tw, h
+        elif effective_side == "right": bx, by, bw, bh = 0, 0, w - tw, h
         else: bx, by, bw, bh = 0, 0, w, h
 
         path = QPainterPath()
@@ -407,7 +417,8 @@ class MessageWidget(QWidget):
 
     def __init__(self, role="assistant", speaker_name="", content_text="", show_avatar=True, font_size=12,
                  message_time="", show_timestamp=True, max_bubble_width=600, sample_id=None, message_id=None,
-                 context_snapshot_id=None, show_rating_controls=False, rating_callback=None, parent=None):
+                 context_snapshot_id=None, show_rating_controls=False, rating_callback=None, parent=None,
+                 show_tail=True):
         super().__init__(parent)
         self._role = role
         self._speaker_name = speaker_name
@@ -433,9 +444,11 @@ class MessageWidget(QWidget):
         outer.setSpacing(8)
         outer.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
-        tail_side = None
+        bubble_side = None
         if role not in ("system", "event", "think", "structured"):
-            tail_side = "right" if is_user else "left"
+            bubble_side = "right" if is_user else "left"
+        tail_side = bubble_side if show_tail else None
+        tail_gutter_side = bubble_side if bubble_side and not show_tail else None
 
         self._avatar_label = None
         if show_avatar and role not in ("system", "event", "think", "structured"):
@@ -456,7 +469,12 @@ class MessageWidget(QWidget):
 
         if is_user or role in ("system", "event"): outer.addStretch()
 
-        self._card = BubbleFrame(role, tail_side, self)
+        self._card = BubbleFrame(
+            role,
+            tail_side,
+            self,
+            tail_gutter_side=tail_gutter_side,
+        )
         if max_bubble_width > 0: self._card.setMaximumWidth(max_bubble_width)
         self._card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 

@@ -432,17 +432,23 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 role=role, speaker_name=display_name, content_text=group_text,
                 show_avatar=show_av, font_size=font_size, message_time=message_time if is_last else "",
                 show_timestamp=show_ts and is_last, max_bubble_width=max_bw,
-                sample_id=_ft_sample_id if is_last else None,
-                context_snapshot_id=context_snapshot_id if is_last else None,
+                sample_id=_ft_sample_id,
+                context_snapshot_id=context_snapshot_id,
                 message_id=message_id if is_last else None,
                 show_rating_controls=_show_rating_controls if is_last else False,
                 rating_callback=lambda sample_id, rating: gui.chat_message_actions.dispatch(
                     RateChatSample(str(sample_id), int(rating))
                 ),
-                parent=chat_parent
+                parent=chat_parent,
+                show_tail=is_last,
             )
-            if is_last and (message_id or context_snapshot_id or _ft_sample_id):
-                _connect_widget_signals(gui, w, message_id or "", character_id or "")
+            if message_id or context_snapshot_id or _ft_sample_id:
+                _connect_widget_signals(
+                    gui,
+                    w,
+                    message_id if is_last else "",
+                    character_id or "",
+                )
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
@@ -532,6 +538,7 @@ def _stream_state(gui, stream_id: str, *, create: bool = False) -> dict | None:
             "first_chunk": True,
             "speaker_name": "",
             "message": None,
+            "message_parts": [],
             "think_block": None,
             "think_wrapper": None,
         }
@@ -610,6 +617,7 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         parent=chat_parent,
     )
     state["message"] = message
+    state["message_parts"] = [message]
     gui.chat_window.add_message_widget(message)
 
 
@@ -688,6 +696,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
 
     if len(target_groups) > 1:
         gui.chat_window.remove_widget(message)
+        message_parts = []
         for index, (target, texts) in enumerate(target_groups):
             group_text = " ".join(text.strip() for text in texts).strip()
             if hide_tags:
@@ -724,12 +733,15 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
                     RateChatSample(str(sample_id), int(rating))
                 ),
                 parent=chat_parent,
+                show_tail=is_last,
             )
+            message_parts.append(widget)
             if is_last:
                 widget.set_structured_ref(panel)
                 # Пузырь заменили — дальше меню и id вешаются на этот, последний.
                 state["message"] = widget
             gui.chat_window.add_message_widget(widget)
+        state["message_parts"] = message_parts
     elif len(target_groups) == 1:
         target, _ = target_groups[0]
         if (
@@ -764,13 +776,24 @@ def finish_stream_slot(gui, stream_id="default", message_id="", character_id="",
         # Надёжный id приходит в payload (из ChatGenerationResult); pop из
         # коллектора — только запасной путь, если id не дотянули явно.
         sample_id = str(sample_id or "") or _pop_sample_id_if_collecting(gui)
-        if sample_id:
-            message.set_sample_id(sample_id)
-        if context_snapshot_id:
-            message.set_context_snapshot_id(context_snapshot_id)
-        if message_id:
-            message.set_message_id(message_id)
-        if message_id or context_snapshot_id or sample_id:
-            _connect_widget_signals(gui, message, message_id or "", character_id or "")
+        message_parts = [
+            part
+            for part in (state.get("message_parts") or [message])
+            if isinstance(part, MessageWidget)
+        ]
+        for part in message_parts:
+            if sample_id:
+                part.set_sample_id(sample_id)
+            if context_snapshot_id:
+                part.set_context_snapshot_id(context_snapshot_id)
+            if part is message and message_id:
+                part.set_message_id(message_id)
+            if message_id or context_snapshot_id or sample_id:
+                _connect_widget_signals(
+                    gui,
+                    part,
+                    message_id if part is message else "",
+                    character_id or "",
+                )
 
     states.pop(key, None)

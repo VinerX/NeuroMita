@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from main_logger import logger
@@ -62,6 +62,7 @@ class _ConversationRouterState:
     latest_speaker_actor_id: str = ""
     last_used_at: float = 0.0
     reserved_continues: int = 0
+    pending_explicit_actor_ids: list[str] = field(default_factory=list)
 
 
 class DialogueTurnRouter:
@@ -353,32 +354,35 @@ class DialogueTurnRouter:
         self,
         dialogue: DialogueTurnContext,
         structured: dict[str, Any],
+        state: _ConversationRouterState,
     ) -> Optional[RoutedDialogueRoute]:
-        """Route to the last valid segment target instead of round-robin."""
+        """Append segment targets in mention order and consume one FIFO entry."""
         if dialogue_auto_turns_remaining(dialogue) <= 0:
-            return None
-
-        target_value = ""
-        for segment in structured.get("segments", []) or []:
-            if isinstance(segment, dict) and str(segment.get("target") or "").strip():
-                target_value = str(segment["target"]).strip()
-        if not target_value:
             return None
 
         eligible = self._eligible_participants(dialogue)
         candidates = dialogue_target_candidates(eligible)
-        resolved = resolve_dialogue_target(target_value, candidates)
-        if resolved is None:
-            return None
+        by_actor = {participant.actor_id: participant for participant in eligible}
+        queued_actor_ids = set(state.pending_explicit_actor_ids)
 
-        target = next(
-            (
-                participant
-                for participant in eligible
-                if participant.actor_id == resolved.actor_id
-            ),
-            None,
-        )
+        for segment in structured.get("segments", []) or []:
+            if not isinstance(segment, dict):
+                continue
+            target_value = str(segment.get("target") or "").strip()
+            if not target_value:
+                continue
+            resolved = resolve_dialogue_target(target_value, candidates)
+            if resolved is None or resolved.actor_id in queued_actor_ids:
+                continue
+            if resolved.actor_id not in by_actor:
+                continue
+            state.pending_explicit_actor_ids.append(resolved.actor_id)
+            queued_actor_ids.add(resolved.actor_id)
+
+        target = None
+        while state.pending_explicit_actor_ids and target is None:
+            actor_id = state.pending_explicit_actor_ids.pop(0)
+            target = by_actor.get(actor_id)
         if target is None:
             return None
 
@@ -609,6 +613,7 @@ class DialogueTurnRouter:
             requested_continue, continue_instruction = self._requests_continue(structured or {})
             if context.speaker_actor_id.casefold() == "player":
                 self._gm_scheduler.reset_conversation(context.conversation_id)
+                state.pending_explicit_actor_ids.clear()
                 if not requested_continue:
                     state.consecutive_continues = 0
             elif event != "continue" and not requested_continue:
@@ -658,17 +663,28 @@ class DialogueTurnRouter:
 
             if event not in {"answer", "chat", "continue"}:
                 return None
-            if event == "continue":
-                return None
 
             settings = self._server_settings()
+            if event == "continue":
+                if settings["target_routing"]:
+                    return self._route_to_explicit_target(
+                        context,
+                        structured or {},
+                        state,
+                    )
+                state.pending_explicit_actor_ids.clear()
+                return None
+
             if settings["target_routing"]:
                 target_route = self._route_to_explicit_target(
                     context,
                     structured or {},
+                    state,
                 )
                 if target_route is not None:
                     return target_route
+            else:
+                state.pending_explicit_actor_ids.clear()
             if not settings["gm_on"]:
                 self._gm_scheduler.reset_conversation(context.conversation_id)
             else:

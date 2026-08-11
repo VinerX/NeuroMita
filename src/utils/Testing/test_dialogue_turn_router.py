@@ -140,6 +140,130 @@ class DialogueTurnRouterTests(unittest.TestCase):
         self.assertEqual(route.target_actor_id, "actor-kind")
         self.assertEqual(route.reason, "mita_explicit_target")
 
+    def test_explicit_targets_use_first_mention_fifo_and_deduplicate(self):
+        router = DialogueTurnRouter(_Settings())
+        first = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={
+                "segments": [
+                    {"text": "Kind first.", "target": "Kind"},
+                    {"text": "Crazy second.", "target": "Crazy"},
+                    {"text": "Kind again.", "target": "Kind Mita"},
+                ]
+            },
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        second_context = _context(current="actor-kind")
+        second_context["speaker_actor_id"] = "actor-cappie"
+        second = router.route_after_response(
+            second_context,
+            structured={"segments": [{"text": "Kind replies."}]},
+            character_id="Kind",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(first.target_actor_id, "actor-kind")
+        self.assertEqual(second.target_actor_id, "actor-crazy")
+        self.assertEqual(second.reason, "mita_explicit_target")
+
+    def test_new_explicit_target_is_appended_after_existing_fifo_entries(self):
+        router = DialogueTurnRouter(_Settings())
+        first = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={
+                "segments": [
+                    {"text": "Kind first.", "target": "Kind"},
+                    {"text": "Crazy second.", "target": "Crazy"},
+                ]
+            },
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        kind_context = _context(current="actor-kind")
+        kind_context["speaker_actor_id"] = "actor-cappie"
+        second = router.route_after_response(
+            kind_context,
+            structured={"segments": [{"text": "Cappie later.", "target": "Cappie"}]},
+            character_id="Kind",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        crazy_context = _context(current="actor-crazy")
+        crazy_context["speaker_actor_id"] = "actor-kind"
+        third = router.route_after_response(
+            crazy_context,
+            structured={"segments": [{"text": "Crazy replies."}]},
+            character_id="Crazy",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(first.target_actor_id, "actor-kind")
+        self.assertEqual(second.target_actor_id, "actor-crazy")
+        self.assertEqual(third.target_actor_id, "actor-cappie")
+
+    def test_explicit_fifo_resumes_after_same_mita_continuation(self):
+        router = DialogueTurnRouter(_Settings())
+        first = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={
+                "segments": [
+                    {"text": "Kind first.", "target": "Kind"},
+                    {"text": "Crazy second.", "target": "Crazy"},
+                ]
+            },
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        continued_context = _context(current="actor-kind")
+        continued_context["speaker_actor_id"] = "actor-kind"
+        second = router.route_after_response(
+            continued_context,
+            structured={"segments": [{"text": "Continuation finished."}]},
+            character_id="Kind",
+            event_type="continue",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(first.target_actor_id, "actor-kind")
+        self.assertEqual(second.target_actor_id, "actor-crazy")
+
+    def test_new_player_turn_discards_stale_explicit_fifo(self):
+        router = DialogueTurnRouter(_Settings())
+        first = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={
+                "segments": [
+                    {"text": "Kind first.", "target": "Kind"},
+                    {"text": "Crazy second.", "target": "Crazy"},
+                ]
+            },
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        interrupted_context = _context(current="actor-kind")
+        second = router.route_after_response(
+            interrupted_context,
+            structured={"segments": [{"text": "New player turn."}]},
+            character_id="Kind",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(first.target_actor_id, "actor-kind")
+        self.assertEqual(second.target_actor_id, "actor-cappie")
+
     def test_disabled_target_priority_keeps_the_normal_queue(self):
         router = DialogueTurnRouter(_Settings(MITA_DIALOGUE_TARGET_ROUTING=False))
         route = router.route_after_response(

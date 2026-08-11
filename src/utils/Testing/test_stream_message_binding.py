@@ -20,6 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from ui.chat import message_renderer
+from ui.chat.message_actions_presentation import ViewChatSampleContext
 from ui.chat.message_widget import MessageWidget
 
 _app = QApplication.instance() or QApplication([])
@@ -43,9 +44,10 @@ class _Actions:
 class _ChatWindow:
     def __init__(self):
         self.removed = []
+        self.added = []
 
     def add_message_widget(self, widget, at_start=False):
-        pass
+        self.added.append(widget)
 
     def remove_widget(self, widget):
         self.removed.append(widget)
@@ -124,6 +126,39 @@ class FinishStreamBindingTests(unittest.TestCase):
 
         self.assertNotIn("default", gui._stream_render_states)
 
+    def test_finish_binds_context_to_every_split_part(self):
+        first = MessageWidget(
+            role="assistant",
+            speaker_name="Crazy Mita",
+            content_text="First",
+            show_tail=False,
+        )
+        last = MessageWidget(
+            role="assistant",
+            speaker_name="Crazy Mita",
+            content_text="Last",
+        )
+        gui = self._stream_with(last)
+        gui._stream_render_states["default"]["message_parts"] = [first, last]
+
+        message_renderer.finish_stream_slot(
+            gui,
+            "default",
+            message_id="msg-1",
+            character_id="Crazy",
+            context_snapshot_id="ctx-1",
+        )
+
+        self.assertEqual(first._context_snapshot_id, "ctx-1")
+        self.assertEqual(last._context_snapshot_id, "ctx-1")
+        self.assertIsNone(first._message_id)
+        self.assertEqual(last._message_id, "msg-1")
+
+        first.view_context_requested.emit(first._context_snapshot_id)
+        intent = gui.chat_message_actions.dispatched[-1]
+        self.assertIsInstance(intent, ViewChatSampleContext)
+        self.assertEqual(intent.sample_id, "ctx-1")
+
 
 class MessageWidgetSetterTests(unittest.TestCase):
     def test_setters_normalize_empty_to_none(self):
@@ -132,6 +167,53 @@ class MessageWidgetSetterTests(unittest.TestCase):
         widget.set_sample_id("")
         self.assertIsNone(widget._message_id)
         self.assertIsNone(widget._sample_id)
+
+    def test_split_part_hides_tail_but_keeps_tail_alignment(self):
+        widget = MessageWidget(
+            role="assistant",
+            speaker_name="Mita",
+            content_text="Part",
+            show_tail=False,
+        )
+
+        self.assertIsNone(widget._card._tail_side)
+        self.assertEqual(widget._card._tail_gutter_side, "left")
+
+
+class SplitMessageRenderingTests(unittest.TestCase):
+    def test_loaded_split_parts_share_context_and_only_last_has_tail(self):
+        gui = _Gui()
+
+        message_renderer.insert_message(
+            gui,
+            "assistant",
+            [
+                {"type": "meta", "speaker": "Crazy Mita"},
+                {"type": "text", "text": "Full response"},
+            ],
+            structured_data={
+                "segments": [
+                    {"text": "To Kind", "target": "Kind"},
+                    {"text": "To Mila", "target": "Mila"},
+                ]
+            },
+            message_id="msg-2",
+            character_id="Crazy",
+            context_snapshot_id="ctx-2",
+        )
+
+        parts = [item for item in gui.chat_window.added if isinstance(item, MessageWidget)]
+        self.assertEqual(len(parts), 2)
+        first, last = parts
+        self.assertIsNone(first._card._tail_side)
+        self.assertEqual(last._card._tail_side, "left")
+        self.assertEqual(first._context_snapshot_id, "ctx-2")
+        self.assertEqual(last._context_snapshot_id, "ctx-2")
+
+        first.view_context_requested.emit(first._context_snapshot_id)
+        intent = gui.chat_message_actions.dispatched[-1]
+        self.assertIsInstance(intent, ViewChatSampleContext)
+        self.assertEqual(intent.sample_id, "ctx-2")
 
 
 if __name__ == "__main__":
