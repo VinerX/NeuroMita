@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from typing import Any
+
 from PyQt6.QtCore import QSignalBlocker, QTimer, Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -53,10 +56,18 @@ class DialogueRuntimeInspector(QWidget):
         "no_next_route": "No additional turn requested",
     }
 
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        parent=None,
+        *,
+        settings_snapshot: Mapping[str, Any] | None = None,
+        update_setting: Callable[[str, Any], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogueRuntimeInspector")
         self.setMinimumWidth(0)
+        self._settings_snapshot = dict(settings_snapshot or {})
+        self._setting_updater = update_setting
         self._character_ids: tuple[str, ...] = ()
         self._character_checks: dict[str, QCheckBox] = {}
         self._character_names: dict[str, str] = {}
@@ -83,6 +94,12 @@ class DialogueRuntimeInspector(QWidget):
         self._dialogue_enabled_check = QCheckBox(
             _("Диалоги Мит автоматически", "Mitas's dialogues automatically")
         )
+        self._target_routing_check = QCheckBox(
+            _(
+                "Адресат реплики задаёт следующий ход",
+                "Reply target chooses the next Mita",
+            )
+        )
         self._gm_instruction_edit = QPlainTextEdit()
         self._gm_apply_button = QPushButton("Apply now")
         self._start_button = QPushButton(_("Start session", "Start session"))
@@ -90,6 +107,7 @@ class DialogueRuntimeInspector(QWidget):
         self._step_button = QPushButton(_("Run next turn", "Run next turn"))
         self._character_host = QWidget()
         self._build_ui()
+        self.sync_global_settings(self._settings_snapshot)
         self._populate_characters()
         self._set_dialogue_mode("automatic")
         self._timer = QTimer(self)
@@ -116,6 +134,20 @@ class DialogueRuntimeInspector(QWidget):
             self._update_global_dialogue_enabled
         )
         layout.addWidget(self._dialogue_enabled_check)
+
+        self._target_routing_check.setObjectName(
+            "DialogueGlobalTargetRoutingCheck"
+        )
+        self._target_routing_check.setToolTip(
+            _(
+                "Дублирует настройку обращений: segments[].target ставит адресата следующей Митой.",
+                "Mirrors target routing: segments[].target schedules the addressed Mita next.",
+            )
+        )
+        self._target_routing_check.stateChanged.connect(
+            self._update_global_target_routing
+        )
+        layout.addWidget(self._target_routing_check)
 
         intro = QLabel(
             _(
@@ -471,29 +503,54 @@ class DialogueRuntimeInspector(QWidget):
             self._initial_combo.blockSignals(False)
         self._refresh_selection_controls()
 
-    @staticmethod
-    def _global_dialogue_setting(key: str, default: str = "") -> str:
+    def _dialogue_setting(self, key: str, default: Any = None) -> Any:
+        if key in self._settings_snapshot:
+            return self._settings_snapshot[key]
         settings = services().get_optional(SettingsService)
         if settings is None:
             return default
-        return str(settings.get(key, default) or default)
+        return settings.get(key, default)
+
+    def _global_dialogue_setting(self, key: str, default: str = "") -> str:
+        return str(self._dialogue_setting(key, default) or default)
+
+    def _set_dialogue_setting(self, key: str, value: Any) -> None:
+        if self._dialogue_setting(key, None) == value:
+            return
+        self._settings_snapshot[key] = value
+        if self._setting_updater is not None:
+            self._setting_updater(key, value)
+            return
+        settings = services().get_optional(SettingsService)
+        if settings is not None:
+            settings.update(key, value)
 
     def _update_global_dialogue_enabled(self, _state: int = 0) -> None:
-        settings = services().get_optional(SettingsService)
-        if settings is None:
-            return
         enabled = self._dialogue_enabled_check.isChecked()
-        if bool(settings.get("MITA_DIALOGUE_AUTO", False)) != enabled:
-            settings.update("MITA_DIALOGUE_AUTO", enabled)
+        self._set_dialogue_setting("MITA_DIALOGUE_AUTO", enabled)
+        self._target_routing_check.setEnabled(enabled)
 
-    def _sync_global_dialogue_enabled(self) -> None:
-        settings = services().get_optional(SettingsService)
-        if settings is None:
-            return
-        with QSignalBlocker(self._dialogue_enabled_check):
+    def _update_global_target_routing(self, _state: int = 0) -> None:
+        enabled = self._target_routing_check.isChecked()
+        self._set_dialogue_setting("MITA_DIALOGUE_TARGET_ROUTING", enabled)
+
+    def sync_global_settings(self, snapshot: Mapping[str, Any]) -> None:
+        self._settings_snapshot = dict(snapshot or {})
+        auto_enabled = bool(
+            self._dialogue_setting("MITA_DIALOGUE_AUTO", False)
+        )
+        target_routing_enabled = bool(
+            self._dialogue_setting("MITA_DIALOGUE_TARGET_ROUTING", True)
+        )
+        with (
+            QSignalBlocker(self._dialogue_enabled_check),
+            QSignalBlocker(self._target_routing_check),
+        ):
             self._dialogue_enabled_check.setChecked(
-                bool(settings.get("MITA_DIALOGUE_AUTO", False))
+                auto_enabled
             )
+            self._target_routing_check.setChecked(target_routing_enabled)
+        self._target_routing_check.setEnabled(auto_enabled)
 
     def _refresh_auto_turn_budget_hint(self, *_args) -> None:
         participant_count = sum(
@@ -706,7 +763,6 @@ class DialogueRuntimeInspector(QWidget):
         self._auto_turns_per_participant_spin.setEnabled(
             configuration_enabled and is_per_participant
         )
-        self._sync_global_dialogue_enabled()
         self._gm_instruction_edit.setEnabled(not unity_active)
         self._gm_apply_button.setEnabled(sandbox_active and not ui_state.busy)
         if unity_active:

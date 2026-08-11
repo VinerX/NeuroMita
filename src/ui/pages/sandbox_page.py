@@ -555,6 +555,7 @@ class SandboxPage(QWidget):
         self._inspector_layout = None
         self._inspector_collapse_btn = None
         self._inspector_tab_buttons = {}
+        self._dialogue_runtime_inspector = None
         # Collapsed-state rail (activity-bar): expand btn + tab icons.
         self._inspector_rail = None
         self._rail_tab_buttons = {}
@@ -639,6 +640,8 @@ class SandboxPage(QWidget):
             self._refresh_status_values()
         if settings_changed:
             self._sync_toggles_from_settings()
+            if self._dialogue_runtime_inspector is not None:
+                self._dialogue_runtime_inspector.sync_global_settings(state.settings)
         if status_changed:
             self._render_status_indicators(state)
         if changed("memory"):
@@ -2218,7 +2221,12 @@ class SandboxPage(QWidget):
 
     def _build_inspector_dialogue_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
-        layout.addWidget(DialogueRuntimeInspector(page), 1)
+        self._dialogue_runtime_inspector = DialogueRuntimeInspector(
+            page,
+            settings_snapshot=self._settings_snapshot,
+            update_setting=self.set,
+        )
+        layout.addWidget(self._dialogue_runtime_inspector, 1)
         return self._wrap_in_scroll(page)
 
     def _build_inspector(self) -> QWidget:
