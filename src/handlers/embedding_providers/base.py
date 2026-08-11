@@ -15,6 +15,7 @@ class EmbeddingRequest:
     api_key: Optional[str] = None
     api_url: Optional[str] = None          # full endpoint URL or local HF id / path
     reserve_keys: List[str] = field(default_factory=list)
+    reserve_keys_distribute: bool = False
     headers: Dict[str, str] = field(default_factory=dict)
     query_prefix: str = ""
     dimensions: int = 0                    # hint only; real dim taken from response
