@@ -59,6 +59,7 @@ _ACTOR_PALETTE = [
 # Разбор in-band префиксов из HistoryController._apply_llm_prefix:
 # [Собеседник: X], [Собеседник: X -> Y], [To: Y]
 _RE_ACTOR_PREFIX = re.compile(r"^\s*\[(?:Собеседник|Interlocutor):\s*(.+?)\s*\]", re.IGNORECASE)
+_RE_SPEAKER_PREFIX = re.compile(r"^\s*\[\s*SPEAKER\s*:?\s*(.+?)\s*\]", re.IGNORECASE)
 _RE_TO_PREFIX = re.compile(r"^\s*\[To:\s*(.+?)\s*\]", re.IGNORECASE)
 _DIALOG_STYLE = """
 QDialog { background-color: #1A1A24; color: #EAEAEA; }
@@ -1256,6 +1257,19 @@ class ContextViewerDialog(QDialog):
         return str(content or "")
 
     # ── Actor / говорящий ─────────────────────────────────────────────────────
+    def _display_actor_name(self, actor: str) -> str:
+        actor = str(actor or "").strip()
+        owner_id = str(self._data.get("character_id") or "").strip()
+        owner_name = str(self._data.get("character_name") or "").strip()
+        owner_aliases = {owner_id.casefold(), owner_name.casefold()}
+        owner_name_folded = owner_name.casefold()
+        for suffix in (" mita", " мита"):
+            if owner_name_folded.endswith(suffix):
+                owner_aliases.add(owner_name_folded[:-len(suffix)].strip())
+        if actor and owner_name and actor.casefold() in owner_aliases:
+            return owner_name
+        return actor
+
     def _resolve_actor(self, msg: dict, idx: int) -> tuple[str, str | None]:
         """(speaker, target): message_meta → msg speaker/sender → in-band префикс → роль."""
         meta = self._message_meta.get(idx) or {}
@@ -1266,11 +1280,12 @@ class ContextViewerDialog(QDialog):
 
         if not speaker or not target:
             content = self._content_plain(msg.get("content"))
-            m = _RE_ACTOR_PREFIX.match(content)
+            m = _RE_ACTOR_PREFIX.match(content) or _RE_SPEAKER_PREFIX.match(content)
             if m:
                 inner = m.group(1) or ""
-                if "->" in inner:
-                    sp, _sep, tg = inner.partition("->")
+                separator = "->" if "->" in inner else ("→" if "→" in inner else "")
+                if separator:
+                    sp, _sep, tg = inner.partition(separator)
                     speaker = speaker or sp.strip()
                     target = target or tg.strip()
                 else:
@@ -1292,6 +1307,8 @@ class ContextViewerDialog(QDialog):
             else:
                 speaker = role.capitalize() or "Unknown"
 
+        speaker = self._display_actor_name(speaker)
+        target = self._display_actor_name(target)
         return speaker, (target or None)
 
     def _actor_color(self, actor: str, role: str = "") -> str:
@@ -1368,6 +1385,13 @@ class ContextViewerDialog(QDialog):
                 "GAME_MASTER_DIRECTIVE"
             )
             return f"{s_icon} {s_label}", s_color
+
+        if idx is not None and role in ("user", "assistant", "event"):
+            if _RE_SPEAKER_PREFIX.match(first):
+                speaker, target = self._resolve_actor(msg, idx)
+                arrow = f" → {target}" if target else ""
+                icon = _ROLE_ICONS.get(role, "•")
+                return f"{icon} {speaker}{arrow}", self._actor_color(speaker, role)
 
         m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if m:
