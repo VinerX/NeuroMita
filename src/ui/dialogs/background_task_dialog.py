@@ -260,6 +260,14 @@ class BackgroundTaskDialog(QDialog):
         self._bar.setRange(0, 0)
         self._bar.setTextVisible(False)
 
+    def status_text(self) -> str:
+        """Return the latest task status for compact external UI."""
+        return self._status_label.text()
+
+    def detail_text(self) -> str:
+        """Return the latest task detail for compact external UI."""
+        return self._detail_label.text()
+
     # --- управление жизненным циклом --------------------------------------
 
     def _on_stop(self) -> None:
