@@ -40,6 +40,7 @@ class UserEmbedPreset:
     url: str = ""                       # API endpoint URL (empty for local)
     key: str = ""
     reserve_keys: List[str] = field(default_factory=list)
+    reserve_keys_distribute: bool = False
     query_prefix: str = ""
     dimensions: int = 0
     headers: Dict[str, Any] = field(default_factory=dict)
@@ -133,6 +134,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             url=str(raw.get("url") or ""),
             key=str(raw.get("key") or ""),
             reserve_keys=[str(k) for k in rk if str(k).strip()],
+            reserve_keys_distribute=bool(raw.get("reserve_keys_distribute", False)),
             query_prefix=str(raw.get("query_prefix") or ""),
             dimensions=int(raw.get("dimensions") or 0),
             headers=dict(raw.get("headers") or {}),
@@ -204,6 +206,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
         url = str(override.get("url") or url)
         query_prefix = str(override.get("query_prefix") or "")
         reserve_keys = list(override.get("reserve_keys") or [])
+        reserve_keys_distribute = bool(override.get("reserve_keys_distribute", False))
         api_key = override.get("key") or None
         dimensions = int(override.get("dimensions") or bp.get("default_dimensions") or 0)
         headers = dict(bp.get("default_headers") or {})
@@ -224,6 +227,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             "api_url": url if provider != "local" else resolved_model,
             "api_key": api_key,
             "reserve_keys": reserve_keys,
+            "reserve_keys_distribute": reserve_keys_distribute,
             "headers": headers,
             "query_prefix": query_prefix,
             "dimensions": dimensions,
@@ -260,6 +264,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             "api_url": url if provider != "local" else resolved_model,
             "api_key": up.key or None,
             "reserve_keys": list(up.reserve_keys),
+            "reserve_keys_distribute": bool(up.reserve_keys_distribute),
             "headers": headers,
             "query_prefix": up.query_prefix,
             "dimensions": up.dimensions,
@@ -339,6 +344,8 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             if "reserve_keys" in data:
                 rk = data.get("reserve_keys") or []
                 ov["reserve_keys"] = [str(k) for k in rk if str(k).strip()]
+            if "reserve_keys_distribute" in data:
+                ov["reserve_keys_distribute"] = bool(data.get("reserve_keys_distribute"))
             self.builtin_overrides[pid] = ov
             if not self._save():
                 return None
@@ -371,6 +378,8 @@ class EmbeddingPresetsController(EmbeddingPresetService):
         if "reserve_keys" in data:
             rk = data["reserve_keys"] or []
             up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+        if "reserve_keys_distribute" in data:
+            up.reserve_keys_distribute = bool(data.get("reserve_keys_distribute"))
         if "query_prefix" in data:
             up.query_prefix = str(data["query_prefix"] or "")
         if "dimensions" in data:

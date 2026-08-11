@@ -460,6 +460,17 @@ class RAGManager:
             priority=priority,
         )
 
+    def _get_reindex_batch_size(self) -> int:
+        """Use the active embedding preset batch size during bulk indexing."""
+        try:
+            from handlers.embedding_presets import resolve_full_config
+
+            configured = (resolve_full_config().get("extra") or {}).get("batch_size")
+            batch_size = int(configured or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
+        except Exception:
+            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
+        return batch_size if batch_size > 0 else 16
+
     # ------------------------------------------------------------------ #
     #  Sentence-level indexing helpers                                    #
     # ------------------------------------------------------------------ #
@@ -1130,9 +1141,7 @@ class RAGManager:
             if total == 0:
                 return 0
 
-            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
-            if batch_size <= 0:
-                batch_size = 16
+            batch_size = self._get_reindex_batch_size()
 
             processed = 0
             updated_count = 0
@@ -1281,9 +1290,7 @@ class RAGManager:
             if total == 0:
                 return 0
 
-            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
-            if batch_size <= 0:
-                batch_size = 16
+            batch_size = self._get_reindex_batch_size()
 
             processed = 0
             updated_count = 0

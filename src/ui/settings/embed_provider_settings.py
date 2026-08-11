@@ -202,8 +202,28 @@ class _EmbedProviderWidget(QWidget):
         self._reserve_edit.setFixedHeight(48)
         self._reserve_masked = True
         self._reserve_original = ""
+        self._reserve_edit.setReadOnly(True)
+        tr_set(
+            self._reserve_edit,
+            "Нажмите значок глаза, чтобы показать и изменить резервные ключи.",
+            "Click the eye icon to show and edit reserve keys.",
+            "setToolTip",
+        )
         self._reserve_edit.textChanged.connect(self._on_reserve_text_changed)
         rv.addWidget(self._reserve_edit)
+        self._reserve_distribute_check = tr_set(
+            QCheckBox(),
+            "Равномерно распределять по ключам",
+            "Always distribute across keys",
+        )
+        tr_set(
+            self._reserve_distribute_check,
+            "Чередовать основной и резервные ключи для каждого запроса, а не только при ошибке.",
+            "Use the main and reserve keys in round-robin for every request, not only after an error.",
+            "setToolTip",
+        )
+        self._reserve_distribute_check.toggled.connect(self._mark_dirty)
+        rv.addWidget(self._reserve_distribute_check)
         root.addWidget(self._reserve_widget)
 
         # HF token + download (local only)
@@ -392,6 +412,9 @@ class _EmbedProviderWidget(QWidget):
             self._reserve_edit.blockSignals(False)
             if self._reserve_masked:
                 self._apply_masking()
+            self._reserve_distribute_check.setChecked(
+                bool(cfg.get("reserve_keys_distribute", False))
+            )
             self._prefix_edit.setText(cfg.get("query_prefix") or "")
             extra = dict(cfg.get("extra") or {})
             self._batch_edit.setText(str(extra["batch_size"]) if "batch_size" in extra else "")
@@ -476,6 +499,7 @@ class _EmbedProviderWidget(QWidget):
         if not self._reserve_masked:
             self._reserve_original = current
         self._reserve_masked = not checked
+        self._reserve_edit.setReadOnly(not checked)
         self._reserve_edit.blockSignals(True)
         if self._reserve_masked:
             self._apply_masking()
@@ -548,6 +572,7 @@ class _EmbedProviderWidget(QWidget):
             "url": url,
             "key": key,
             "reserve_keys": reserve_keys,
+            "reserve_keys_distribute": bool(self._reserve_distribute_check.isChecked()),
             "query_prefix": prefix,
             "extra": extra,
         }

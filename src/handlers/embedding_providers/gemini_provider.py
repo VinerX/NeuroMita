@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from threading import Lock
 from typing import List, Optional
 
 import numpy as np
@@ -44,14 +45,18 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
     # Keep REST payloads bounded; RagEmbedder may chunk before this provider too.
     _BATCH_LIMIT = 100
 
+    def __init__(self) -> None:
+        self._key_distribution_lock = Lock()
+        self._next_key_index = 0
+
     def is_applicable(self, req: EmbeddingRequest) -> bool:
         return bool(req.api_key or req.reserve_keys)
 
     def embed(self, req: EmbeddingRequest) -> List[Optional[np.ndarray]]:
         import requests as _req
 
-        all_keys = [req.api_key or ""] + [k for k in (req.reserve_keys or []) if k]
-        all_keys = [k for k in all_keys if k]  # drop blanks
+        supplied_keys = [req.api_key or ""] + [k for k in (req.reserve_keys or []) if k]
+        all_keys = list(dict.fromkeys(k for k in supplied_keys if k))
         if not all_keys:
             logger.error("GeminiEmbeddingProvider: no API key provided")
             return [None] * len(req.texts)
@@ -73,14 +78,40 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         for batch_start in range(0, len(texts), self._BATCH_LIMIT):
             batch_texts = texts[batch_start: batch_start + self._BATCH_LIMIT]
             batch_result = self._embed_batch(
-                _req, all_keys, base_url, model, task_type, batch_texts, req
+                _req,
+                all_keys,
+                base_url,
+                model,
+                task_type,
+                batch_texts,
+                req,
+                initial_key_index=self._initial_key_index(all_keys, req.reserve_keys_distribute),
             )
             for j, vec in enumerate(batch_result):
                 results[batch_start + j] = vec
 
         return results
 
-    def _embed_batch(self, requests_lib, all_keys, base_url, model, task_type, texts, req: EmbeddingRequest):
+    def _initial_key_index(self, all_keys, distribute: bool) -> int:
+        if not distribute or len(all_keys) <= 1:
+            return 0
+        with self._key_distribution_lock:
+            index = self._next_key_index % len(all_keys)
+            self._next_key_index += 1
+            return index
+
+    def _embed_batch(
+        self,
+        requests_lib,
+        all_keys,
+        base_url,
+        model,
+        task_type,
+        texts,
+        req: EmbeddingRequest,
+        *,
+        initial_key_index: int = 0,
+    ):
         timeout_sec = float((req.extra or {}).get("timeout_sec") or 60.0)
         backoff_sec = float((req.extra or {}).get("retry_backoff_sec") or 0.5)
         max_retries_cfg = int((req.extra or {}).get("max_retries") or 3)
@@ -93,7 +124,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
 
         last_exc: Optional[Exception] = None
         for attempt in range(max_attempts):
-            key_index = attempt % len(all_keys)
+            key_index = (initial_key_index + attempt) % len(all_keys)
             key = all_keys[key_index]
             # Keep credentials out of URLs because HTTPError strings include response URLs.
             url = f"{base_url}/models/{model}:batchEmbedContents"
