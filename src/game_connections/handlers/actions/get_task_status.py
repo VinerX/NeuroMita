@@ -42,7 +42,9 @@ class GetTaskStatusAction:
             gm_repeat = max(1, min(gm_repeat, 100))
 
             response["GM_ON"] = gm_enabled
-            response["GM_READ"] = gm_enabled
+            # Hidden moderator plans are executed by Unity as intents, never
+            # rendered as a visible GameMaster chat reply.
+            response["GM_READ"] = False
             response["GM_VOICE"] = bool(gm_enabled and settings.get("GM_VOICE", False))
             response["GM_REPEAT"] = gm_repeat
         await ctx.server.send_json(ctx.writer, response)

@@ -35,6 +35,47 @@ class ConversationEventWriter:
             seen.add(s)
         return out
 
+    @staticmethod
+    def _dialogue_value(value: Any, key: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
+
+    def _history_recipient_ids(
+        self,
+        participants: list[str],
+        *,
+        dialogue: Any,
+        responder_character_id: str,
+    ) -> list[str]:
+        """Resolve history owners from Unity's actor roster, not transport aliases."""
+        roster_ids = [
+            str(self._dialogue_value(participant, "character_id", "") or "").strip()
+            for participant in self._dialogue_value(dialogue, "participants", []) or []
+        ]
+        source_ids = [character_id for character_id in roster_ids if character_id]
+        if not source_ids:
+            source_ids = list(participants)
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for participant_id in [*source_ids, responder_character_id]:
+            character_id = str(participant_id or "").strip()
+            if not character_id or character_id.casefold() in {"player", "gamemaster"}:
+                continue
+
+            character = self._get_character_ref(character_id)
+            if character is None:
+                continue
+
+            canonical_id = str(getattr(character, "char_id", "") or character_id).strip()
+            key = canonical_id.casefold()
+            if not canonical_id or key in seen:
+                continue
+            seen.add(key)
+            resolved.append(canonical_id)
+        return resolved
+
     def _make_message_id(self, prefix: str, base: str | None = None) -> str:
         base_s = str(base or "").strip()
         if base_s:
@@ -303,6 +344,11 @@ class ConversationEventWriter:
         pts = self.normalize_participants(participants)
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
+        history_recipients = self._history_recipient_ids(
+            pts,
+            dialogue=dialogue,
+            responder_character_id=responder_character_id,
+        )
 
         turn_id = self._make_message_id("turn", task_uid or req_id)
 
@@ -355,5 +401,5 @@ class ConversationEventWriter:
             )
             assistant_event.update(assistant_metadata)
 
-        self._fanout_turn(user_event, assistant_event, pts)
+        self._fanout_turn(user_event, assistant_event, history_recipients)
         return str(assistant_event.get("message_id") or "")

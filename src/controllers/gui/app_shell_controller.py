@@ -217,7 +217,7 @@ class AppShellController:
         camera_frames: list[Any],
         staged_image_data: list[Any],
         character_id: str,
-        trace_id: str | None,
+        trace_id: str | None = None,
         from_entry: bool,
         clear_entry_after_send: bool,
     ) -> None:

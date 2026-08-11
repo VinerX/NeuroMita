@@ -1307,13 +1307,22 @@ class ModelController(GenerationService, ModelStateService):
         origin_message_id = request.origin_message_id or None
         trace_id = request.trace_id or None
 
-        policy = request.policy or resolve_policy(model_event_type=str(event_type))
+        normalized_event_type = str(event_type or "").strip().lower()
+        if normalized_event_type in {"game_master_observe", "game_master_command"}:
+            policy = resolve_policy(model_event_type=normalized_event_type)
+        else:
+            policy = request.policy or resolve_policy(model_event_type=str(event_type))
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
+        is_game_master = char_id.casefold() == "gamemaster"
 
         rag_context = ""
-        if bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
+        if (
+            not is_game_master
+            and bool(self.settings.get("RAG_ENABLED", False))
+            and policy.react_level != 1
+        ):
             prompt_set_path = getattr(char, "base_data_path", None)
             with perf_span(trace_id, "generation.rag"):
                 rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
@@ -1321,13 +1330,14 @@ class ModelController(GenerationService, ModelStateService):
         # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
         # they fire on precise player input, independent of RAG availability or
         # embedding similarity of a two-digit message.
-        try:
-            from managers.core_memory_triggers import core_memory_context
-            _core_ctx = core_memory_context(user_input, character_id=char_id)
-            if _core_ctx:
-                rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
-        except Exception as _core_err:
-            logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+        if not is_game_master:
+            try:
+                from managers.core_memory_triggers import core_memory_context
+                _core_ctx = core_memory_context(user_input, character_id=char_id)
+                if _core_ctx:
+                    rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+            except Exception as _core_err:
+                logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
 
         game_state = (
             copy.deepcopy(request.game_state)
@@ -1375,7 +1385,6 @@ class ModelController(GenerationService, ModelStateService):
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
-        is_game_master = (char_id == "GameMaster")
 
         # Пресет резолвим ДО capabilities. Раньше capabilities брались у текущего
         # пресета, а запрос уходил в пресет персонажа — structured_output мог не
@@ -1399,7 +1408,10 @@ class ModelController(GenerationService, ModelStateService):
         if remote_only_segment_fields:
             effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
-        _tools_on = bool(self.settings.get("TOOLS_ON", True))
+        if is_game_master:
+            effective_capabilities["structured_output"] = True
+
+        _tools_on = bool(self.settings.get("TOOLS_ON", True)) and not is_game_master
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False

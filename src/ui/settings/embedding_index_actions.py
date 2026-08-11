@@ -3,17 +3,23 @@ from __future__ import annotations
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from core.gui_task_supervisor import gui_task_supervisor
 from utils import getTranslationVariant as _
 
 
 class EmbeddingIndexActionsWidget(QWidget):
     """RAG index controls with a persistent entry point to a hidden task dialog."""
 
-    def __init__(self, gui, refresh_status) -> None:
+    def __init__(
+        self,
+        gui,
+        refresh_status,
+        start_reindex,
+        active_dialog,
+    ) -> None:
         super().__init__(gui)
-        self._gui = gui
         self._refresh_status_callback = refresh_status
+        self._start_reindex_callback = start_reindex
+        self._active_dialog_callback = active_dialog
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -49,9 +55,10 @@ class EmbeddingIndexActionsWidget(QWidget):
         self._refresh_task_state()
 
     def _running_dialog(self):
-        if gui_task_supervisor().running("reindex_all") is None:
+        try:
+            return self._active_dialog_callback()
+        except Exception:
             return None
-        return getattr(self._gui, "_reindex_all_dialog", None)
 
     def _refresh_task_state(self) -> None:
         dialog = self._running_dialog()
@@ -81,7 +88,5 @@ class EmbeddingIndexActionsWidget(QWidget):
             self._show_progress()
             return
 
-        from controllers.gui.character_settings_logic import run_reindexing_all
-
-        run_reindexing_all(self._gui)
+        self._start_reindex_callback()
         QTimer.singleShot(0, self._refresh_task_state)

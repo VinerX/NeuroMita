@@ -1,6 +1,7 @@
 # File: src/ui/settings/character_settings/logic.py
 
 import os
+import weakref
 
 from PyQt6.QtWidgets import QMessageBox, QDialog
 from PyQt6.QtCore import QUrl, Qt, QTimer
@@ -91,6 +92,7 @@ class ReindexAllCharactersWorker(TaskWorker):
     """
 
     def __init__(self, character_ids: list[str]):
+        self._progress_dialog_ref = None
         character_ids = [str(c or "").strip() for c in (character_ids or []) if str(c or "").strip()]
         worker_ref = self  # capture for status emissions
 
@@ -170,6 +172,12 @@ class ReindexAllCharactersWorker(TaskWorker):
             task_key="reindex_all",
             exclusive_resources={RAG_INDEX_RESOURCE},
         )
+
+    def attach_progress_dialog(self, dialog) -> None:
+        self._progress_dialog_ref = weakref.ref(dialog) if dialog is not None else None
+
+    def progress_dialog(self):
+        return self._progress_dialog_ref() if self._progress_dialog_ref is not None else None
 
 
 class FullReindexAllCharactersWorker(TaskWorker):
@@ -1601,12 +1609,18 @@ def _reindexing_all_busy(gui, *, own_key: str) -> bool:
     """
     if gui_task_supervisor().running(own_key) is None:
         return False
-    dlg = getattr(gui, "_reindex_all_dialog", None)
+    dlg = active_reindex_all_dialog()
     if dlg is not None:
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
     return True
+
+
+def active_reindex_all_dialog():
+    worker = gui_task_supervisor().running("reindex_all")
+    getter = getattr(worker, "progress_dialog", None)
+    return getter() if callable(getter) else None
 
 
 def run_reindexing_all(gui):
@@ -1647,7 +1661,8 @@ def run_reindexing_all(gui):
             "The \"Index new (all)\" button reopens it.",
         ),
     )
-    gui._reindex_all_dialog = progress
+    progress.setObjectName("ReindexAllCharactersDialog")
+    worker.attach_progress_dialog(progress)
 
     def on_progress(curr, total):
         try:
@@ -1662,7 +1677,8 @@ def run_reindexing_all(gui):
             pass
 
     def _cleanup():
-        gui._reindex_all_dialog = None
+        worker.attach_progress_dialog(None)
+        progress.deleteLater()
 
     def on_finished(count):
         if cancelled:

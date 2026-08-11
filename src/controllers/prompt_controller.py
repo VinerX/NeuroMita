@@ -304,11 +304,10 @@ class PromptController(PromptBuilderService):
         )
 
         if getattr(character, "char_id", "") == "GameMaster":
-            instruction = (
-                gm_instruction_override
-                if gm_instruction_override is not None
-                else self._get_setting("GM_SMALL_PROMPT", "??????? ??? ???????")
-            )
+            normalized_event_type = str(event_type or "").strip().lower()
+            instruction = gm_instruction_override
+            if instruction is None and normalized_event_type != "game_master_observe":
+                instruction = self._get_setting("GM_SMALL_PROMPT", "")
             character.set_variable("GM_INSTRUCTION", instruction or "")
 
     def _build_system_messages(

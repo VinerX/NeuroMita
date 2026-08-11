@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from controllers.chat_controller import ChatController
 from controllers.server_controller import ServerController
+from core.request_policy import resolve_policy
 from schemas.structured_response import ResponseSegment
 from ui.pages.settings.section_registry import get_settings_section_specs
 
@@ -168,6 +169,41 @@ def test_game_master_semantic_intent_survives_without_python_routing() -> None:
 
     assert result["segments"][0]["intents"] == [intent]
     assert not {"target", "targets", "next_turns"}.intersection(result)
+
+
+def test_game_master_requests_are_hidden_control_plane_work() -> None:
+    for event_type in ("game_master_observe", "game_master_command"):
+        policy = resolve_policy(model_event_type=event_type)
+        assert policy.use_history_in_prompt is False
+        assert policy.write_to_history is False
+        assert policy.allow_voiceover is False
+        assert policy.allow_streaming is False
+        assert policy.echo_to_ui is False
+
+    create_task = (
+        SRC_ROOT / "game_connections" / "handlers" / "actions" / "create_task.py"
+    ).read_text(encoding="utf-8")
+    assert 'model_event_type=event_type' in create_task
+    assert 'character_id="GameMaster"' in create_task
+    assert "get_dialogue_turn_router" not in create_task
+
+
+def test_unity_dispatches_game_master_observation_as_an_explicit_task() -> None:
+    routing = (
+        UNITY_SCRIPTS
+        / "Dialogue"
+        / "Application"
+        / "DialogueMessageRoutingService.cs"
+    ).read_text(encoding="utf-8")
+    observation_dispatch = routing.split(
+        "private static void ProcessPendingGameMasterObservation()", 1
+    )[1]
+
+    assert 'eventType: "game_master_observe"' in observation_dispatch
+    assert "characterToSend: CharacterType.GameMaster" in observation_dispatch
+    assert "DialogueSpeakerOrder.GetCharactersToAnswer(false)" in observation_dispatch
+    assert "CharacterMessages.sendSystemMessage" not in observation_dispatch
+    assert "ProcessQueuedSystemMessageAsync" not in observation_dispatch
 
 
 def test_dialogue_prompt_defines_per_segment_addressing_contract() -> None:

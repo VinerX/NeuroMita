@@ -172,6 +172,7 @@ async def _dispatch_task(
     dialogue: Optional[dict] = None,
     game_state: Optional[dict] = None,
     image_source: str = "",
+    gm_instruction_override: str | None = None,
     extra_task_data: Optional[dict] = None,
     abort_reason: str = "Failed to create task",
 ) -> Any:
@@ -195,13 +196,15 @@ async def _dispatch_task(
     }
     if extra_task_data:
         task_data.update(extra_task_data)
+    if gm_instruction_override is not None:
+        task_data["gm_instruction_override"] = gm_instruction_override
 
     task = use(TaskService).create_task(task_type, task_data)
 
     if task:
         server.client_tasks[ctx.client_id].add(task.uid)
         await server.send_task_update(ctx.client_id, task)
-        event_bus.emit(Events.Chat.SEND_MESSAGE, {
+        chat_event = {
             "user_input": user_input,
             "system_input": system_input,
             "image_data": images,
@@ -216,7 +219,10 @@ async def _dispatch_task(
             "policy": policy_dict,
             "game_state": dict(game_state or {}),
             "dialogue": dict(dialogue or {}),
-        })
+        }
+        if gm_instruction_override is not None:
+            chat_event["gm_instruction_override"] = gm_instruction_override
+        event_bus.emit(Events.Chat.SEND_MESSAGE, chat_event)
     else:
         await server._send_aborted_update(
             ctx.client_id, event_type, character_id,
@@ -464,21 +470,50 @@ class CreateTaskAction:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
         # ── game_master_observe ───────────────────────────────────────────────
-        if event_type == "game_master_observe":
-            policy = resolve_policy(model_event_type="chat")
-            observation = str(data.get("message") or "").strip()
-            if not observation:
-                observation = "Review the active conversation and issue a mandatory scene directive when needed."
+        if event_type in {"game_master_observe", "game_master_command"}:
+            command = str(
+                data.get("command")
+                or data.get("instruction")
+                or data.get("message")
+                or ""
+            ).strip()
+            if event_type == "game_master_command" and not command:
+                await server._send_aborted_update(
+                    ctx.client_id,
+                    event_type,
+                    "GameMaster",
+                    reason="GameMaster command is empty",
+                    req_id=req_id,
+                )
+                return
+            policy = resolve_policy(model_event_type=event_type)
+            gm_shared = dict(_shared)
+            gm_shared.update(
+                character_id="GameMaster",
+                character_stats=_get_character_stats("GameMaster"),
+                sender="GameMaster",
+            )
             await _dispatch_task(
-                **_shared,
+                **gm_shared,
                 task_type="chat",
-                model_event_type="chat",
+                model_event_type=event_type,
                 policy_dict=policy.to_dict(),
                 user_input="",
-                system_input=observation,
+                system_input=(
+                    command
+                    or "Review the active conversation and emit only the structured "
+                    "GameMaster intents needed to correct or guide it."
+                ),
                 images=[],
                 image_source="",
-                abort_reason="Failed to create GameMaster observation",
+                gm_instruction_override=(
+                    command if event_type == "game_master_command" else None
+                ),
+                abort_reason=(
+                    "Failed to create GameMaster command"
+                    if event_type == "game_master_command"
+                    else "Failed to create GameMaster observation"
+                ),
             )
             return
 

@@ -333,7 +333,15 @@ class ChatController:
         self._enter_generation()
         try:
             effective_event_type = str(event_type or "chat")
-            eff_policy = RequestPolicy.from_dict(policy) if isinstance(policy, dict) else resolve_policy(model_event_type=effective_event_type)
+            normalized_event_type = effective_event_type.strip().lower()
+            if normalized_event_type in {"game_master_observe", "game_master_command"}:
+                eff_policy = resolve_policy(model_event_type=normalized_event_type)
+            else:
+                eff_policy = (
+                    RequestPolicy.from_dict(policy)
+                    if isinstance(policy, dict)
+                    else resolve_policy(model_event_type=effective_event_type)
+                )
 
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {

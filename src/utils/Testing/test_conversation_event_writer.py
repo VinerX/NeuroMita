@@ -80,3 +80,43 @@ def test_write_turn_separates_source_and_responder_actor_metadata() -> None:
     assert user_event["speaker_actor_id"] == "actor-crazy"
     assert assistant_event["speaker_actor_id"] == "actor-kind"
     assert assistant_event["source_actor_id"] == "actor-crazy"
+
+
+def test_write_turn_uses_unity_roster_to_fan_out_group_history() -> None:
+    kind = _Character("Kind")
+    crazy = _Character("Crazy")
+    characters = {"Kind": kind, "Crazy": crazy}
+    writer = ConversationEventWriter(
+        character_ref_resolver=lambda character_id: characters.get(character_id)
+    )
+    dialogue = SimpleNamespace(
+        conversation_id="conv-dance-battle",
+        epoch=2,
+        turn_index=4,
+        speaker_actor_id="Player",
+        responder_actor_id="kind-actor",
+        participants=[
+            SimpleNamespace(actor_id="kind-actor", character_id="Kind"),
+            SimpleNamespace(actor_id="crazy-actor", character_id="Crazy"),
+        ],
+    )
+
+    writer.write_turn(
+        responder_character_id="Kind",
+        sender="Player",
+        participants=["kind_transport_alias", "crazy_transport_alias"],
+        user_input="Could you have a dance battle?",
+        image_data=[],
+        req_id="request-dance-battle",
+        origin_message_id=None,
+        assistant_text="I will not dance for her.",
+        assistant_target="Player",
+        event_type="chat",
+        task_uid="task-dance-battle",
+        dialogue=dialogue,
+    )
+
+    assert len(kind.batches) == 1
+    assert len(crazy.batches) == 1
+    assert [message["role"] for message in kind.batches[0]] == ["user", "assistant"]
+    assert [message["role"] for message in crazy.batches[0]] == ["user", "user"]
