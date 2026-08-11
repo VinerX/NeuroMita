@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 from main_logger import logger
 from core.events import Events
 from core.executors import PoolSaturated, Pools, executors
+from core.performance_trace import get_trace, perf_mark
 from handlers.llm_providers.errors import (
     LLMProviderError,
     build_configuration_error,
@@ -82,6 +83,7 @@ class LLMRequestRunner:
         retry_delay: float,
         request_timeout: float,
         suppress_failure_events: bool = False,
+        trace_id: str | None = None,
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
@@ -121,6 +123,7 @@ class LLMRequestRunner:
                 chain_pos=chain_idx,
                 chain_total=total_presets,
                 stream_channel_holder=stream_channel_holder,
+                trace_id=trace_id,
             )
             last_response = response
             if response and response.text:
@@ -167,6 +170,7 @@ class LLMRequestRunner:
         chain_pos: int,
         chain_total: int,
         stream_channel_holder: list[Optional[StreamEventChannel]],
+        trace_id: str | None = None,
     ) -> LLMResponse:
         preset_tag = f"[{chain_pos}/{chain_total} {base_preset.preset_name}]"
 
@@ -231,6 +235,22 @@ class LLMRequestRunner:
                 )
                 break
 
+            attempt_trace = get_trace(trace_id)
+            attempt_token = attempt_trace.start_span(
+                "llm.attempt",
+                preset=base_preset.preset_name,
+                provider=getattr(req, "provider_name", "unknown"),
+                model=getattr(req, "model", ""),
+                attempt=attempt,
+                attempt_id=f"{chain_pos}:{attempt}",
+                fallback=chain_pos > 1,
+            ) if attempt_trace is not None else -1
+
+            def finish_attempt(**attrs):
+                if attempt_trace is not None:
+                    attempt_trace.finish_span(attempt_token, **attrs)
+
+            attempt_error_type = ""
             try:
                 response = self._call_with_timeout(
                     pm.generate,
@@ -238,8 +258,14 @@ class LLMRequestRunner:
                     timeout=request_timeout,
                     cancellation=cancellation,
                     stream_policy=(StreamDeadlinePolicy.for_request(req) if req.stream else None),
+                    trace_id=trace_id,
+                    attempt=attempt,
+                    attempt_id=f"{chain_pos}:{attempt}",
+                    provider=getattr(req, "provider_name", "unknown"),
+                    model=getattr(req, "model", ""),
                 )
                 if response and response.text:
+                    finish_attempt(result="success", fallback=chain_pos > 1)
                     self.last_error = None
                     return response
 
@@ -274,6 +300,7 @@ class LLMRequestRunner:
                         attempt,
                     )
             except concurrent.futures.TimeoutError:
+                attempt_error_type = "TimeoutError"
                 last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
                 retryable_before_response = bool(
                     (req.stream and not cancellation.response_body_started)
@@ -300,6 +327,7 @@ class LLMRequestRunner:
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
+                attempt_error_type = type(e).__name__
                 last_error_message = f"Error during generation attempt {attempt}: {e}"
                 self.last_error = coerce_provider_error(
                     getattr(req, "provider_name", "unknown"),
@@ -323,6 +351,11 @@ class LLMRequestRunner:
                 )
             )
             if should_retry:
+                finish_attempt(
+                    result="retry",
+                    error_type=attempt_error_type
+                    or (type(self.last_error).__name__ if self.last_error is not None else ""),
+                )
                 logger.warning(
                     "%s Generation attempt %s/%s failed; retrying: %s",
                     preset_tag,
@@ -342,11 +375,21 @@ class LLMRequestRunner:
                     self._abort_chain = True
                     break
             elif attempt < max_attempts and self.last_error is not None:
+                finish_attempt(
+                    result="error",
+                    error_type=attempt_error_type or type(self.last_error).__name__,
+                )
                 logger.debug(
                     f"{preset_tag} Stopping retries after non-retryable failure: "
                     f"{self.last_error.to_console_summary()}"
                 )
                 break
+            else:
+                finish_attempt(
+                    result="error",
+                    error_type=attempt_error_type
+                    or (type(self.last_error).__name__ if self.last_error is not None else ""),
+                )
 
         logger.debug("%s Preset attempts exhausted: %s", preset_tag, last_error_message or "unknown failure")
         return LLMResponse(
@@ -369,6 +412,11 @@ class LLMRequestRunner:
         timeout: float = 30.0,
         cancellation: RequestCancellation | None = None,
         stream_policy: StreamDeadlinePolicy | None = None,
+        trace_id: str | None = None,
+        attempt: int | None = None,
+        attempt_id: str | None = None,
+        provider: str = "",
+        model: str = "",
     ):
         """Вызвать func с ограничением по времени.
 
@@ -380,8 +428,28 @@ class LLMRequestRunner:
         if kwargs is None:
             kwargs = {}
         pool = executors().pool(Pools.LLM_HTTP)
+        perf_mark(
+            trace_id,
+            "llm.http_enqueued",
+            attempt=attempt,
+            attempt_id=attempt_id,
+            provider=provider,
+            model=model,
+        )
+
+        def provider_call():
+            perf_mark(
+                trace_id,
+                "llm.http_started",
+                attempt=attempt,
+                attempt_id=attempt_id,
+                provider=provider,
+                model=model,
+            )
+            return func(*args, **kwargs)
+
         try:
-            future = pool.try_submit(func, *args, **kwargs)
+            future = pool.try_submit(provider_call)
         except PoolSaturated as exc:
             raise RuntimeError(
                 "LLM HTTP pool is saturated by unfinished provider requests"

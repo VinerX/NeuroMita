@@ -14,6 +14,7 @@ from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from managers.task_manager import TaskStatus
 from core.request_policy import RequestPolicy, resolve_policy
+from core.performance_trace import get_trace, perf_mark, perf_mark_once, performance_traces
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
@@ -307,6 +308,7 @@ class ChatController:
         dialogue_source: DialogueRuntimeSource | str | None = None,
         dialogue_router: DialogueTurnRouter | None = None,
         gm_instruction_override: str | None = None,
+        trace_id: str | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -328,6 +330,11 @@ class ChatController:
                 runtime_source = DialogueRuntimeSource.NONE
         if dialogue is not None and dialogue.conversation_id:
             self.dialogue_runtime_state.update_from_context(dialogue, runtime_source)
+        trace_status = "ok"
+        trace_error_stage = ""
+        trace_error_type = ""
+        voiceover_pending = False
+        perf_mark(trace_id, "generation.worker_started")
         stream_id = str(task_uid or req_id or f"stream:{uuid.uuid4().hex}")
         stream_started = False
         stream_finished = False
@@ -401,6 +408,7 @@ class ChatController:
                 nonlocal stream_current_role, stream_started
                 if not text:
                     return
+                perf_mark_once(trace_id, "response.first_visible_text")
                 if stream_coalescer is None:
                     return
                 if stream_current_role != "assistant":
@@ -433,6 +441,7 @@ class ChatController:
                         _emit_visible_assistant(piece)
 
             def stream_event_handler(event: LLMStreamEvent):
+                perf_mark_once(trace_id, "response.first_stream_event", kind=str(getattr(event, "type", "unknown")))
                 if not eff_policy.echo_to_ui:
                     return
                 if event.type is LLMStreamEventType.REASONING_DELTA:
@@ -511,6 +520,7 @@ class ChatController:
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     task_uid=task_uid,
+                    trace_id=trace_id,
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
                     dialogue=parse_dialogue_turn_context(dialogue),
@@ -519,6 +529,8 @@ class ChatController:
             )
 
             if result is None:
+                trace_status = "error"
+                trace_error_stage = "generation"
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
@@ -539,6 +551,10 @@ class ChatController:
             context_snapshot_id = getattr(result, "context_snapshot_id", "") or ""
             structured_parse_level = getattr(result, "structured_parse_level", "") or ""
             control_plane_trusted = bool(getattr(result, "control_plane_trusted", False))
+            perf_mark(trace_id, "response.generated", chars=len(response_text or ""))
+            trace = get_trace(trace_id)
+            if trace is not None:
+                trace.set_attribute("response_chars", len(response_text or ""))
 
             is_game_master_response = str(effective_character_id or "").strip().casefold() == "gamemaster"
             gm_execution = None
@@ -648,6 +664,8 @@ class ChatController:
                         "result": task_result,
                         "error": generation_error,
                     })
+                trace_status = "error"
+                trace_error_stage = "generation.empty_response"
                 if eff_policy.echo_to_ui and not getattr(result, "error", ""):
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
                 return None
@@ -681,6 +699,7 @@ class ChatController:
                         if self.settings.get("AUDIO_BOT") == "@CrazyMitaAIbot":
                             speaker = voice_profile.get("miku_tts_name", "Player")
 
+                        perf_mark(trace_id, "tts.requested")
                         self.event_bus.emit(Events.Audio.VOICEOVER_REQUESTED, {
                             "text": response_text,
                             "speaker": speaker,
@@ -689,7 +708,9 @@ class ChatController:
                             "voice_profile": voice_profile,
                             "target": target,
                             "message_id": assistant_message_id,
+                            "trace_id": trace_id,
                         })
+                        voiceover_pending = True
                     else:
                         if task_uid:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -729,11 +750,13 @@ class ChatController:
                 }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
+                perf_mark(trace_id, "response.ui_complete")
                 self.event_bus.emit(Events.GUI.FINISH_STREAM_UI, finish_payload, delivery=EventDelivery.ORDERED)
                 stream_finished = True
                 # При стриминге весь текст (think и assistant) уже выведен
                 # в UI в реальном времени. Повторный UPDATE_CHAT_UI не нужен.
             elif (not is_streaming) and eff_policy.echo_to_ui:
+                perf_mark_once(trace_id, "response.first_visible_text")
                 # Для не-стриминга отправляем think перед основным ответом
                 if show_think_in_gui and think_text:
                     self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
@@ -763,6 +786,7 @@ class ChatController:
                     "sample_id": sample_id or "",
                     "context_snapshot_id": context_snapshot_id or "",
                 }, delivery=EventDelivery.ORDERED)
+                perf_mark(trace_id, "response.ui_complete")
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
@@ -770,6 +794,9 @@ class ChatController:
             return response_text
 
         except Exception as e:
+            trace_status = "error"
+            trace_error_stage = "generation"
+            trace_error_type = type(e).__name__
             logger.error(f"Ошибка в обработке запроса: {e}", exc_info=True)
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -793,13 +820,23 @@ class ChatController:
                 except Exception:
                     pass
             self._exit_generation()
+            if trace_id and not voiceover_pending:
+                performance_traces().finish(
+                    trace_id,
+                    trace_status,
+                    error_stage=trace_error_stage,
+                    error_type=trace_error_type,
+                )
 
     def _submit_request(self, **kwargs) -> None:
         """Ставит запрос в пул генераций. Переполнение — явный отказ, а не рост очереди."""
         task_uid = kwargs.get("task_uid")
+        trace_id = kwargs.get("trace_id")
+        perf_mark(trace_id, "generation.enqueued")
         try:
             executors().try_submit(Pools.GENERATION, self._run_request, **kwargs)
         except PoolSaturated:
+            performance_traces().finish(trace_id, "rejected", error_stage="generation.pool", error_type="PoolSaturated")
             logger.warning("Очередь генераций переполнена — запрос отклонён.")
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
@@ -811,9 +848,40 @@ class ChatController:
                 "error": "Слишком много запросов одновременно. Подождите ответа."
             })
 
+    def _ensure_perf_trace(self, data: dict) -> str:
+        trace_id = str(data.get("trace_id") or "").strip() or None
+        if trace_id and get_trace(trace_id) is not None:
+            return trace_id
+        trace = performance_traces().start(
+            source=self._resolve_perf_source(data),
+            trace_id=trace_id,
+            attributes={
+                "event_type": str(data.get("event_type") or "chat"),
+                "character_id": str(self._normalize_character_id(data) or ""),
+                "req_id": str(data.get("req_id") or ""),
+                "task_uid": str(data.get("task_uid") or ""),
+                "streaming": bool(self.settings.get("ENABLE_STREAMING", False)),
+                "voice_method": str(self.settings.get("VOICEOVER_METHOD", "") or ""),
+                "input_chars": len(str(data.get("user_input") or "")),
+                "image_count": len(data.get("image_data") or []) if isinstance(data.get("image_data"), list) else 0,
+            },
+        )
+        return trace.trace_id
+
+    @staticmethod
+    def _resolve_perf_source(data: dict) -> str:
+        event_type = str(data.get("event_type") or "chat")
+        if event_type in {"idle", "periodic", "camera", "camera_snapshot_result"}:
+            return event_type
+        image_source = str(data.get("image_source") or "").strip().lower()
+        if image_source == "mita_camera":
+            return "camera"
+        return "desktop"
+
     def _on_send_message(self, event: Event):
         data = event.data or {}
         image_data = data.get("image_data", [])
+        trace_id = self._ensure_perf_trace(data)
 
         # Запоминаем ручную отправку пользователя (без task_uid — это не игровой/
         # телеграм-ход), чтобы кнопка «отправить снова» на упавшем пузыре могла
@@ -843,6 +911,7 @@ class ChatController:
             dialogue_source=data.get("dialogue_source"),
             dialogue_router=data.get("_dialogue_router"),
             gm_instruction_override=data.get("gm_instruction_override"),
+            trace_id=trace_id,
         )
 
     @staticmethod
@@ -890,6 +959,7 @@ class ChatController:
 
     def _on_send_periodic_image_request(self, event: Event):
         data = event.data or {}
+        trace_id = self._ensure_perf_trace(data)
 
         if data.get("image_data"):
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -907,6 +977,7 @@ class ChatController:
             policy=data.get("policy"),
             game_state=data.get("game_state"),
             dialogue=data.get("dialogue"),
+            trace_id=trace_id,
         )
 
     def _on_clear_chat(self, event: Event):

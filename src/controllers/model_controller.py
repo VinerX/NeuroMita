@@ -38,6 +38,7 @@ from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
 from managers.model_pricing_manager import ModelPricingManager, known_model_context_length
 from core.request_policy import RequestPolicy, resolve_policy
+from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
 from services.game_master_services import ensure_game_master_services
@@ -1286,7 +1287,9 @@ class ModelController(GenerationService, ModelStateService):
 
         # Полные генерации одной Миты идут последовательно, но этот gate не блокирует
         # короткие state-lock секции фонового summary/переменных во время сетевого I/O.
+        perf_mark(request.trace_id, "generation.character_lock_wait_started")
         with character_generation_lock(getattr(char, "char_id", "") or ""):
+            perf_mark(request.trace_id, "generation.character_lock_acquired")
             return self._generate_chat_serialized(request, char)
 
     def _generate_chat_serialized(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
@@ -1308,6 +1311,7 @@ class ModelController(GenerationService, ModelStateService):
         req_id = request.req_id or None
         task_uid = request.task_uid or None
         origin_message_id = request.origin_message_id or None
+        trace_id = request.trace_id or None
 
         normalized_event_type = str(event_type or "").strip().lower()
         if normalized_event_type in {"game_master_observe", "game_master_command"}:
@@ -1325,7 +1329,8 @@ class ModelController(GenerationService, ModelStateService):
         rag_context = ""
         if not is_game_master and bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
             prompt_set_path = getattr(char, "base_data_path", None)
-            rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+            with perf_span(trace_id, "generation.rag"):
+                rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
 
         # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
         # they fire on precise player input, independent of RAG availability or
@@ -1521,13 +1526,15 @@ class ModelController(GenerationService, ModelStateService):
 
             try:
                 if len(image_data) > 1:
-                    seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
+                    with perf_span(trace_id, "generation.image_description", mode="sequence"):
+                        seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
                     if seq_desc and not seq_desc.startswith("["):
                         hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_seq}\n[Scene: {seq_desc}]"
                         image_descriptions = {_detail: seq_desc}
                         logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
                 else:
-                    descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
+                    with perf_span(trace_id, "generation.image_description", mode="single"):
+                        descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
                     if descriptions:
                         desc_text = "\n".join(
                             f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
@@ -1573,8 +1580,9 @@ class ModelController(GenerationService, ModelStateService):
         )
 
         try:
-            with character_lock(char_id):
-                prompt_data = use(PromptBuilderService).build(prompt_request)
+            with perf_span(trace_id, "generation.prompt_build"):
+                with character_lock(char_id):
+                    prompt_data = use(PromptBuilderService).build(prompt_request)
         except Exception as e:
             logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
@@ -1633,17 +1641,19 @@ class ModelController(GenerationService, ModelStateService):
 
         try:
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            llm_response = self.model.generate(
-                combined_messages,
-                stream_callback=use_stream_cb,
-                stream_event_callback=(stream_event_callback if policy.allow_streaming else None),
-                preset_id=preset_id,
-                request_id=str(task_uid or req_id or origin_message_id or ""),
-                capabilities_override=effective_capabilities,
-                structured_model=structured_model_cls,
-                context_character_id=char_id,
-                context_character_name=char_name,
-            )
+            with perf_span(trace_id, "llm.total", streaming=bool(policy.allow_streaming)):
+                llm_response = self.model.generate(
+                    combined_messages,
+                    stream_callback=use_stream_cb,
+                    stream_event_callback=(stream_event_callback if policy.allow_streaming else None),
+                    preset_id=preset_id,
+                    request_id=str(task_uid or req_id or origin_message_id or ""),
+                    capabilities_override=effective_capabilities,
+                    request_options_override={"trace_id": trace_id} if trace_id else None,
+                    structured_model=structured_model_cls,
+                    context_character_id=char_id,
+                    context_character_name=char_name,
+                )
 
             if not llm_response or not llm_response.text:
                 error_message = getattr(llm_response, "error_message", None) or _(
@@ -1671,6 +1681,11 @@ class ModelController(GenerationService, ModelStateService):
                 )
 
             raw_text = llm_response.text
+            trace = get_trace(trace_id)
+            if trace is not None:
+                trace.set_attribute("provider", llm_response.provider_name or "")
+                trace.set_attribute("model", llm_response.model or "")
+                trace.set_attribute("response_chars", len(raw_text or ""))
             visible_raw, think_text = self._split_response_thinking(llm_response)
 
             if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
@@ -1706,6 +1721,7 @@ class ModelController(GenerationService, ModelStateService):
                     image_source=image_source,
                     req_id=req_id,
                     task_uid=task_uid,
+                    trace_id=trace_id,
                     event_type=event_type,
                     combined_messages=combined_messages,
                     preset_id=preset_id,
@@ -1733,10 +1749,11 @@ class ModelController(GenerationService, ModelStateService):
                 visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
             with character_lock(char_id):
-                processed = char.process_response_nlp_commands(
-                    visible_raw,
-                    self.settings.get("SAVE_MISSED_MEMORY", False),
-                )
+                with perf_span(trace_id, "generation.nlp_postprocess"):
+                    processed = char.process_response_nlp_commands(
+                        visible_raw,
+                        self.settings.get("SAVE_MISSED_MEMORY", False),
+                    )
                 targets: list[str] = []
                 if hasattr(char, "consume_pending_targets"):
                     try:
@@ -1775,25 +1792,26 @@ class ModelController(GenerationService, ModelStateService):
 
             assistant_message_id = ""
             if policy.write_to_history:
-                assistant_message_id = self.event_writer.write_turn(
-                    responder_character_id=char_id,
-                    sender=sender,
-                    participants=participants,
-                    user_input=visible_user_input,
-                    image_data=original_image_data,
-                    image_source=image_source,
-                    image_descriptions=image_descriptions,
-                    req_id=req_id,
-                    origin_message_id=origin_message_id,
-                    assistant_text=final_text,
-                    assistant_target=target,
-                    event_type=event_type,
-                    task_uid=task_uid,
-                    thinking=think_text or None,
-                    llm_usage=usage_snapshot,
-                    sample_id=sample_id,
-                    dialogue=request.dialogue,
-                )
+                with perf_span(trace_id, "generation.history_write"):
+                    assistant_message_id = self.event_writer.write_turn(
+                        responder_character_id=char_id,
+                        sender=sender,
+                        participants=participants,
+                        user_input=visible_user_input,
+                        image_data=original_image_data,
+                        image_source=image_source,
+                        image_descriptions=image_descriptions,
+                        req_id=req_id,
+                        origin_message_id=origin_message_id,
+                        assistant_text=final_text,
+                        assistant_target=target,
+                        event_type=event_type,
+                        task_uid=task_uid,
+                        thinking=think_text or None,
+                        llm_usage=usage_snapshot,
+                        sample_id=sample_id,
+                        dialogue=request.dialogue,
+                    )
             elif request.dialogue is not None:
                 self.event_writer.record_dialogue_turn(
                     dialogue=request.dialogue,
@@ -2035,6 +2053,7 @@ class ModelController(GenerationService, ModelStateService):
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
+        trace_id: str | None = None,
         combined_messages: list | None = None,
         preset_id: int | None = None,
         tools_on: bool = False,
@@ -2046,8 +2065,9 @@ class ModelController(GenerationService, ModelStateService):
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
         try:
-            parse_outcome = parse_structured_response_with_meta(visible_raw, model_cls=structured_model_cls)
-            structured = parse_outcome.response
+            with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
+                parse_outcome = parse_structured_response_with_meta(visible_raw, model_cls=structured_model_cls)
+                structured = parse_outcome.response
             if char_id.casefold() == "gamemaster":
                 return self._process_game_master_output(
                     structured=structured,
@@ -2079,9 +2099,10 @@ class ModelController(GenerationService, ModelStateService):
             )
             # Fallback to legacy tag-based processing
             with character_lock(char_id):
-                processed = char.process_response_nlp_commands(
-                    visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
-                )
+                with perf_span(trace_id, "generation.nlp_postprocess"):
+                    processed = char.process_response_nlp_commands(
+                        visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
+                    )
                 fallback_targets: list[str] = []
                 if hasattr(char, "consume_pending_targets"):
                     try:
@@ -2183,6 +2204,7 @@ class ModelController(GenerationService, ModelStateService):
                 image_source=image_source,
                 req_id=req_id,
                 task_uid=task_uid,
+                trace_id=trace_id,
                 event_type=event_type,
                 combined_messages=combined_messages or [],
                 preset_id=preset_id,
@@ -2206,7 +2228,8 @@ class ModelController(GenerationService, ModelStateService):
                     think_text = schema_reasoning
 
         # Build the result dict with segments
-        result_dict = structured_response_to_result_dict(structured)
+        with perf_span(trace_id, "generation.structured_postprocess", stage="result"):
+            result_dict = structured_response_to_result_dict(structured)
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
         # Attach raw LLM JSON for the debug panel (not saved to history)
@@ -2243,26 +2266,27 @@ class ModelController(GenerationService, ModelStateService):
         if policy.write_to_history:
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
-            assistant_message_id = self.event_writer.write_turn(
-                responder_character_id=char_id,
-                sender=sender,
-                participants=participants,
-                user_input=user_input,
-                image_data=image_data,
-                image_source=image_source,
-                image_descriptions=_structured_image_descriptions,
-                req_id=req_id,
-                origin_message_id=origin_message_id,
-                assistant_text=final_text,
-                assistant_target=target,
-                event_type=event_type,
-                task_uid=task_uid,
-                structured_data=history_dict,
-                thinking=think_text or None,
-                llm_usage=usage_snapshot,
-                sample_id=sample_id,
-                dialogue=dialogue,
-            )
+            with perf_span(trace_id, "generation.history_write"):
+                assistant_message_id = self.event_writer.write_turn(
+                    responder_character_id=char_id,
+                    sender=sender,
+                    participants=participants,
+                    user_input=user_input,
+                    image_data=image_data,
+                    image_source=image_source,
+                    image_descriptions=_structured_image_descriptions,
+                    req_id=req_id,
+                    origin_message_id=origin_message_id,
+                    assistant_text=final_text,
+                    assistant_target=target,
+                    event_type=event_type,
+                    task_uid=task_uid,
+                    structured_data=history_dict,
+                    thinking=think_text or None,
+                    llm_usage=usage_snapshot,
+                    sample_id=sample_id,
+                    dialogue=dialogue,
+                )
         elif dialogue is not None:
             self.event_writer.record_dialogue_turn(
                 dialogue=dialogue,
@@ -2355,6 +2379,7 @@ class ModelController(GenerationService, ModelStateService):
         preset_id: int | None,
         enabled_tools: list,
         tool_depth: int,
+        trace_id: str | None = None,
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
@@ -2443,7 +2468,7 @@ class ModelController(GenerationService, ModelStateService):
         logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
         self.model.tool_manager.set_char_context(char_id)
         try:
-            tool_result = self.model.tool_manager.run(tool_name, tool_args)
+            tool_result = self.model.tool_manager.run(tool_name, tool_args, trace_id=trace_id)
         except Exception as e:
             tool_result = f"[Tool error: {e}]"
             logger.error(f"[ModelController] Tool '{tool_name}' failed: {e}", exc_info=True)
@@ -2495,14 +2520,16 @@ class ModelController(GenerationService, ModelStateService):
             "character_name": char_name or char_id or "Мита",
         })
 
-        llm_response_2 = self.model.generate(
-            combined_messages_v2,
-            preset_id=preset_id,
-            capabilities_override=(capabilities or None),
-            structured_model=structured_model_cls,
-            context_character_id=char_id,
-            context_character_name=char_name,
-        )
+        with perf_span(trace_id, "llm.total", phase="tool_followup"):
+            llm_response_2 = self.model.generate(
+                combined_messages_v2,
+                preset_id=preset_id,
+                capabilities_override=(capabilities or None),
+                request_options_override={"trace_id": trace_id} if trace_id else None,
+                structured_model=structured_model_cls,
+                context_character_id=char_id,
+                context_character_name=char_name,
+            )
 
         if not llm_response_2 or not llm_response_2.text:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
@@ -2560,6 +2587,7 @@ class ModelController(GenerationService, ModelStateService):
             image_source=image_source,
             req_id=req_id,
             task_uid=task_uid,
+            trace_id=trace_id,
             event_type=event_type,
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
