@@ -862,27 +862,89 @@ class PromptController(PromptBuilderService):
         messages.extend(history_limited)
 
         dialogue_context_message = None
+        dialogue_transcript_messages: list[dict[str, str]] = []
         dialogue = request.dialogue
         if dialogue:
+            target_routing_enabled = str(
+                self._get_setting("MITA_DIALOGUE_TARGET_ROUTING", True)
+            ).strip().casefold() not in {"0", "false", "no", "off"}
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
             participant_names = []
+            participant_display_names: dict[str, str] = {}
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
+                character_id = str(getter("character_id", "") or "").strip()
                 display_name = str(
                     getter("display_name", "")
-                    or getter("character_id", "")
+                    or character_id
                     or ""
                 ).strip()
                 if display_name:
                     participant_names.append(display_name)
+                    participant_display_names[display_name.casefold()] = display_name
+                    if character_id:
+                        participant_display_names[character_id.casefold()] = display_name
 
             lines = [
                 "[Current Group Conversation]",
-                "Reply naturally to the current turn. Python owns the decision about who speaks next.",
+                (
+                    "Reply naturally to the current turn. Python validates and executes "
+                    "the decision about who speaks next."
+                    if target_routing_enabled
+                    else "Reply naturally to the current turn. Python owns the decision about who speaks next."
+                ),
             ]
             if participant_names:
                 lines.append("Present: " + ", ".join(participant_names))
+                if target_routing_enabled:
+                    lines.extend(
+                        (
+                            "When addressing a present Mita, set that segment's target "
+                            "to her exact display name from Present.",
+                            "Omit target when addressing Player. The last non-empty target "
+                            "is the validated priority for the next Mita reply.",
+                        )
+                    )
+            conversation_id = str(get_value("conversation_id", "") or "").strip()
+            recent_group_turns = self._game_master_context.transcript.recent(
+                conversation_id,
+                max_entries=12,
+                max_chars=6000,
+            )
+            if recent_group_turns:
+                lines.extend(
+                    (
+                        "Recent group dialogue follows as ordinary character messages.",
+                        "Speaker and addressee metadata identify who said each segment to whom.",
+                    )
+                )
+                for entry in recent_group_turns:
+                    speaker_id = str(entry.speaker_character_id or "").strip()
+                    target_id = str(entry.target_character_id or "").strip()
+                    speaker = participant_display_names.get(
+                        speaker_id.casefold(), speaker_id
+                    )
+                    target = participant_display_names.get(
+                        target_id.casefold(), target_id
+                    )
+                    is_owner = speaker_id.casefold() == char_id.casefold()
+                    role = "assistant" if is_owner else "user"
+                    content = str(entry.text or "")
+                    if is_owner and target_id and target_id.casefold() != "player":
+                        content = f"[To: {target}] {content}"
+                    elif not is_owner and speaker_id.casefold() != "player":
+                        addressee = f" -> {target}" if target else ""
+                        content = f"[Собеседник: {speaker}{addressee}] {content}"
+                    transcript_message = {
+                        "role": role,
+                        "content": content,
+                        "speaker": speaker,
+                        "sender": speaker,
+                    }
+                    if target:
+                        transcript_message["target"] = target
+                    dialogue_transcript_messages.append(transcript_message)
             dialogue_context_message = {
                 "role": "system",
                 "content": "\n".join(lines),
@@ -949,6 +1011,7 @@ class PromptController(PromptBuilderService):
         messages.append(self._build_system_state_message())
         if dialogue_context_message is not None:
             messages.append(dialogue_context_message)
+        messages.extend(dialogue_transcript_messages)
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
 

@@ -63,6 +63,9 @@ class GameMasterContextBuilder:
             "Do not write a normal character reply. Do not use tools, memory, RAG, or character history.",
             f"Routing actions are {'allowed' if allow_routing else 'disabled'}; do not emit route actions when disabled.",
             f"Narration actions are {'allowed' if allow_narration else 'disabled'}; do not emit narrate actions when disabled.",
+            "For every action.target, copy the exact target= value from [PRESENT_PARTICIPANTS].",
+            "The name= value is display-only. Never translate a target and never use a localized display name as action.target.",
+            "actor= and character= are shown only for diagnostics; target= is the preferred routing token.",
             "[/GAME_MASTER_CONTROL_PLANE]",
         ]
         if participants:
@@ -72,7 +75,8 @@ class GameMasterContextBuilder:
                 character = str(self._value(item, "character_id", "") or "").strip()
                 name = str(self._value(item, "display_name", "") or character).strip()
                 if character.casefold() != "gamemaster":
-                    lines.append(f"- actor={actor}; character={character}; name={name}")
+                    canonical_target = actor or character
+                    lines.append(f"- target={canonical_target}; actor={actor}; character={character}; name={name}")
             lines.append("[/PRESENT_PARTICIPANTS]")
             lines.append("[CHARACTER_ANCHORS]")
             for item in participants:
@@ -102,7 +106,12 @@ class GameMasterContextBuilder:
             recent = self.transcript.recent(conversation_id)
             if recent:
                 lines.append("[RECENT_GROUP_TRANSCRIPT]")
-                lines.extend(f"- turn {entry.turn_index} {entry.speaker_character_id}: {entry.text}" for entry in recent)
+                lines.extend(
+                    f"- turn {entry.turn_index} {entry.speaker_character_id}"
+                    f"{f' -> {entry.target_character_id}' if entry.target_character_id else ''}: "
+                    f"{entry.text}"
+                    for entry in recent
+                )
                 lines.append("[/RECENT_GROUP_TRANSCRIPT]")
         if task.strip():
             lines.extend(("[DIRECTOR_TASK]", task.strip(), "[/DIRECTOR_TASK]"))

@@ -15,6 +15,7 @@ class DialogueTranscriptEntry:
     speaker_actor_id: str
     text: str
     event_type: str
+    target_character_id: str = ""
 
 
 class DialogueTranscriptService:
@@ -32,6 +33,7 @@ class DialogueTranscriptService:
         speaker_actor_id: str = "",
         text: str,
         event_type: str,
+        target_character_id: str = "",
     ) -> None:
         conversation_id = str(conversation_id or "").strip()
         text = str(text or "").strip()
@@ -47,6 +49,7 @@ class DialogueTranscriptService:
             speaker_actor_id=str(speaker_actor_id or "").strip(),
             text=text,
             event_type=str(event_type or "dialogue").strip(),
+            target_character_id=str(target_character_id or "").strip(),
         )
         with self._lock:
             bucket = self._items.setdefault(conversation_id, deque(maxlen=self._max_entries))
@@ -61,7 +64,16 @@ class DialogueTranscriptService:
             event_type="player_message",
         )
 
-    def record_mita_reply(self, conversation_id: str, *, turn_index: int, character_id: str, actor_id: str, text: str) -> None:
+    def record_mita_reply(
+        self,
+        conversation_id: str,
+        *,
+        turn_index: int,
+        character_id: str,
+        actor_id: str,
+        text: str,
+        target_character_id: str = "",
+    ) -> None:
         self.record(
             conversation_id,
             turn_index=turn_index,
@@ -69,6 +81,7 @@ class DialogueTranscriptService:
             speaker_actor_id=actor_id,
             text=text,
             event_type="mita_reply",
+            target_character_id=target_character_id,
         )
 
     def recent(self, conversation_id: str, *, max_entries: int = 12, max_chars: int = 12000) -> tuple[DialogueTranscriptEntry, ...]:

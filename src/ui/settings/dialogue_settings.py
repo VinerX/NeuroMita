@@ -30,6 +30,20 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             ),
         },
         {
+            "label": _(
+                "Адресат реплики задаёт следующий ход",
+                "Reply target chooses the next Mita",
+            ),
+            "key": "MITA_DIALOGUE_TARGET_ROUTING",
+            "type": "checkbutton",
+            "default_checkbutton": True,
+            "depends_on": "MITA_DIALOGUE_AUTO",
+            "tooltip": _(
+                "Если Мита укажет активную Миту в segments[].target, Python поставит её следующей. Неизвестный или неоднозначный target оставляет обычную очередь.",
+                "When a Mita targets an active Mita in segments[].target, Python schedules her next. Unknown or ambiguous targets keep the normal order.",
+            ),
+        },
+        {
             "label": _("Как считать автоходы", "How to count automatic turns"),
             "key": "DIALOGUE_AUTO_TURN_COUNT_MODE",
             "type": "combobox",

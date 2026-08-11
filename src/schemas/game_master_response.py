@@ -13,7 +13,13 @@ class GameMasterAction(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     type: Literal["upsert_rule", "remove_rule", "clear_rules", "route", "narrate", "no_action"]
-    target: str = ""
+    target: str = Field(
+        default="",
+        description=(
+            "Exact participant target from [PRESENT_PARTICIPANTS]. Copy target= verbatim; "
+            "do not translate it and do not use the display-only name= value."
+        ),
+    )
     rule_id: str = ""
     key: str = ""
     instruction: str = ""

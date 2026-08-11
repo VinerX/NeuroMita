@@ -80,6 +80,9 @@ class DialogueRuntimeInspector(QWidget):
         self._auto_turns_per_participant_spin = QSpinBox()
         self._max_continue_spin = QSpinBox()
         self._gm_repeat_spin = QSpinBox()
+        self._dialogue_enabled_check = QCheckBox(
+            _("Диалоги Мит автоматически", "Mitas's dialogues automatically")
+        )
         self._gm_instruction_edit = QPlainTextEdit()
         self._gm_apply_button = QPushButton("Apply now")
         self._start_button = QPushButton(_("Start session", "Start session"))
@@ -99,6 +102,20 @@ class DialogueRuntimeInspector(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
+
+        # Global switch: this is the same MITA_DIALOGUE_AUTO setting as on
+        # the Settings page, not a sandbox-session option.
+        self._dialogue_enabled_check.setObjectName("DialogueGlobalAutoCheck")
+        self._dialogue_enabled_check.setToolTip(
+            _(
+                "Дублирует настройку «Диалоги Мит автоматически» и действует глобально.",
+                "Mirrors the global 'Mitas dialogues automatically' setting.",
+            )
+        )
+        self._dialogue_enabled_check.stateChanged.connect(
+            self._update_global_dialogue_enabled
+        )
+        layout.addWidget(self._dialogue_enabled_check)
 
         intro = QLabel(
             _(
@@ -461,6 +478,23 @@ class DialogueRuntimeInspector(QWidget):
             return default
         return str(settings.get(key, default) or default)
 
+    def _update_global_dialogue_enabled(self, _state: int = 0) -> None:
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return
+        enabled = self._dialogue_enabled_check.isChecked()
+        if bool(settings.get("MITA_DIALOGUE_AUTO", False)) != enabled:
+            settings.update("MITA_DIALOGUE_AUTO", enabled)
+
+    def _sync_global_dialogue_enabled(self) -> None:
+        settings = services().get_optional(SettingsService)
+        if settings is None:
+            return
+        with QSignalBlocker(self._dialogue_enabled_check):
+            self._dialogue_enabled_check.setChecked(
+                bool(settings.get("MITA_DIALOGUE_AUTO", False))
+            )
+
     def _refresh_auto_turn_budget_hint(self, *_args) -> None:
         participant_count = sum(
             1
@@ -672,6 +706,7 @@ class DialogueRuntimeInspector(QWidget):
         self._auto_turns_per_participant_spin.setEnabled(
             configuration_enabled and is_per_participant
         )
+        self._sync_global_dialogue_enabled()
         self._gm_instruction_edit.setEnabled(not unity_active)
         self._gm_apply_button.setEnabled(sandbox_active and not ui_state.busy)
         if unity_active:

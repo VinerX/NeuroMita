@@ -42,6 +42,10 @@ from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
 from services.game_master_services import ensure_game_master_services
+from services.dialogue_target_resolver import (
+    dialogue_target_candidates,
+    resolve_dialogue_target,
+)
 from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
     parse_structured_response_with_meta,
@@ -296,6 +300,37 @@ class ModelController(GenerationService, ModelStateService):
                     continue
                 current = getattr(segment, field_name, None)
                 setattr(segment, field_name, [] if isinstance(current, list) else None)
+
+    @staticmethod
+    def _dialogue_target_candidates(dialogue: Any, participants: list):
+        participant_values = getattr(dialogue, "participants", ()) or participants
+        return tuple(
+            candidate
+            for candidate in dialogue_target_candidates(participant_values)
+            if candidate.is_active
+            and candidate.character_id.casefold() != "gamemaster"
+            and candidate.canonical_display_name
+        )
+
+    @classmethod
+    def _canonicalize_structured_targets(
+        cls,
+        structured,
+        *,
+        dialogue: Any,
+        participants: list,
+    ) -> None:
+        """Canonicalize every structured segment target before it is displayed."""
+        candidates = cls._dialogue_target_candidates(dialogue, participants)
+        if not candidates:
+            return
+        for segment in getattr(structured, "segments", ()) or ():
+            raw_target = getattr(segment, "target", None)
+            if raw_target is None or not str(raw_target).strip():
+                continue
+            resolved = resolve_dialogue_target(raw_target, candidates)
+            if resolved is not None:
+                segment.target = resolved.canonical_display_name
 
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
@@ -2143,6 +2178,11 @@ class ModelController(GenerationService, ModelStateService):
             )
 
         self._sanitize_structured_segment_fields(structured, capabilities)
+        self._canonicalize_structured_targets(
+            structured,
+            dialogue=dialogue,
+            participants=participants,
+        )
 
         # Apply and snapshot character state in a short critical section. Tool
         # execution and any follow-up provider request happen after this lock.
@@ -2263,9 +2303,9 @@ class ModelController(GenerationService, ModelStateService):
             logger.debug(f"[ModelController][{char_id}] Structured image_description captured ({_detail}).")
 
         assistant_message_id = ""
+        history_dict = {k: v for k, v in result_dict.items()
+                        if not k.startswith("_") or k == "_raw_json"}
         if policy.write_to_history:
-            history_dict = {k: v for k, v in result_dict.items()
-                            if not k.startswith("_") or k == "_raw_json"}
             with perf_span(trace_id, "generation.history_write"):
                 assistant_message_id = self.event_writer.write_turn(
                     responder_character_id=char_id,
@@ -2294,7 +2334,9 @@ class ModelController(GenerationService, ModelStateService):
                 responder=char_id,
                 user_input=user_input,
                 assistant_text=final_text,
+                assistant_target=target,
                 event_type=event_type,
+                structured_data=history_dict,
             )
 
         self._store_last_usage(

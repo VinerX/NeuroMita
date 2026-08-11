@@ -8,6 +8,11 @@ from typing import Any
 from domain.game_master import GameMasterDirective
 from schemas.game_master_response import GameMasterResponse
 from services.game_master_directive_registry import GameMasterDirectiveRegistry
+from services.dialogue_target_resolver import (
+    DialogueTargetCandidate,
+    dialogue_target_candidates,
+    resolve_dialogue_target,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,21 +32,16 @@ class GameMasterActionExecutor:
         self.registry = registry
 
     @staticmethod
-    def _get(item: Any, key: str, default: Any = None) -> Any:
-        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
-
-    def _targets(self, participants: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        by_actor: dict[str, Any] = {}
-        by_character: dict[str, Any] = {}
-        for item in participants or ():
-            actor = str(self._get(item, "actor_id", "") or "").strip()
-            character = str(self._get(item, "character_id", "") or "").strip()
-            if not actor or not character or character.casefold() == "gamemaster":
-                continue
-            if bool(self._get(item, "is_active", True)) and bool(self._get(item, "can_speak", True)):
-                by_actor[actor.casefold()] = item
-                by_character[character.casefold()] = item
-        return by_actor, by_character
+    def _targets(participants: Any) -> tuple[DialogueTargetCandidate, ...]:
+        return tuple(
+            candidate
+            for candidate in dialogue_target_candidates(participants)
+            if candidate.actor_id
+            and candidate.character_id
+            and candidate.character_id.casefold() != "gamemaster"
+            and candidate.is_active
+            and candidate.can_speak
+        )
 
     def apply(
         self,
@@ -54,7 +54,7 @@ class GameMasterActionExecutor:
         allow_routing: bool = True,
         allow_narration: bool = True,
     ) -> GameMasterExecutionResult:
-        by_actor, by_character = self._targets(participants)
+        targets = self._targets(participants)
         applied: list[str] = []
         removed: list[str] = []
         actions: list[dict[str, Any]] = []
@@ -64,7 +64,11 @@ class GameMasterActionExecutor:
             if action.type == "no_action":
                 continue
             target = str(action.target or "").strip()
-            target_item = None if target in {"", "*"} else (by_actor.get(target.casefold()) or by_character.get(target.casefold()))
+            target_item = (
+                None
+                if target in {"", "*"}
+                else resolve_dialogue_target(target, targets)
+            )
             if target and target != "*" and target_item is None:
                 continue
             if action.type == "upsert_rule":
@@ -80,7 +84,7 @@ class GameMasterActionExecutor:
                 remaining = 1 if lifetime == "next_reply" else replies if lifetime == "replies" else None
                 if lifetime == "replies" and remaining <= 0:
                     continue
-                character = str(self._get(target_item, "character_id", "") or "") if target_item else ""
+                character = target_item.character_id if target_item else ""
                 rule = GameMasterDirective(
                     directive_id="",
                     key=str(action.key or "instruction").strip() or "instruction",
@@ -110,14 +114,14 @@ class GameMasterActionExecutor:
             elif action.type == "clear_rules":
                 if not target:
                     continue
-                target_character = str(self._get(target_item, "character_id", "") or "") if target_item else target
+                target_character = target_item.character_id if target_item else target
                 count = self.registry.clear_target(conversation_id, target_character or "*", source=None if source == "user_director" else source)
                 if count:
                     actions.append(action.model_dump())
                     had_action = True
             elif action.type == "route" and allow_routing and target_item is not None:
-                route_actor = str(self._get(target_item, "actor_id", "") or "")
-                route_character = str(self._get(target_item, "character_id", "") or "")
+                route_actor = target_item.actor_id
+                route_character = target_item.character_id
                 route_instruction = str(action.instruction or "Continue while following the active scene directive.").strip()
                 actions.append(action.model_dump())
                 had_action = True

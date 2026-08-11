@@ -256,7 +256,14 @@ class ResponseSegment(BaseModel):
 
     start_game: Optional[str] = Field(default=None, description="Game ID to start")
     end_game: Optional[str] = Field(default=None, description="Game ID to end")
-    target: Optional[str] = Field(default=None, description="Target character name for this segment")
+    target: Optional[str] = Field(
+        default=None,
+        description=(
+            "Exact display name of the participant addressed by this segment. "
+            "In a group dialogue, the final explicit target is Python's validated "
+            "priority for the next Mita reply."
+        ),
+    )
     hint: Optional[str] = Field(default=None, description="Hint text to display")
     allow_sleep: Optional[bool] = Field(default=None, description="Whether to allow sleep")
 

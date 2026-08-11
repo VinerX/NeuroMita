@@ -22,6 +22,10 @@ from services.contracts import (
     dialogue_auto_turns_remaining,
     parse_dialogue_turn_context,
 )
+from services.dialogue_target_resolver import (
+    dialogue_target_candidates,
+    resolve_dialogue_target,
+)
 from domain.world_character_relations import normalize_character_id
 
 
@@ -159,6 +163,10 @@ class DialogueTurnRouter:
             revision = self._as_int(getattr(registry, "revision", 0), 0)
         return {
             "auto": self._as_bool(self._get_setting("MITA_DIALOGUE_AUTO", True), True),
+            "target_routing": self._as_bool(
+                self._get_setting("MITA_DIALOGUE_TARGET_ROUTING", True),
+                True,
+            ),
             "max_auto": max_auto,
             "auto_turn_count_mode": auto_turn_count_mode,
             "auto_turns_per_participant": auto_turns_per_participant,
@@ -335,6 +343,55 @@ class DialogueTurnRouter:
             target_character_id=selected.character_id,
             input_text=input_text,
             reason=reason,
+            conversation_id=dialogue.conversation_id,
+            epoch=max(0, int(dialogue.epoch)),
+            source_turn_index=max(0, int(dialogue.turn_index)),
+            route_id=uuid.uuid4().hex,
+        )
+
+    def _route_to_explicit_target(
+        self,
+        dialogue: DialogueTurnContext,
+        structured: dict[str, Any],
+    ) -> Optional[RoutedDialogueRoute]:
+        """Route to the last valid segment target instead of round-robin."""
+        if dialogue_auto_turns_remaining(dialogue) <= 0:
+            return None
+
+        target_value = ""
+        for segment in structured.get("segments", []) or []:
+            if isinstance(segment, dict) and str(segment.get("target") or "").strip():
+                target_value = str(segment["target"]).strip()
+        if not target_value:
+            return None
+
+        eligible = self._eligible_participants(dialogue)
+        candidates = dialogue_target_candidates(eligible)
+        resolved = resolve_dialogue_target(target_value, candidates)
+        if resolved is None:
+            return None
+
+        target = next(
+            (
+                participant
+                for participant in eligible
+                if participant.actor_id == resolved.actor_id
+            ),
+            None,
+        )
+        if target is None:
+            return None
+
+        return RoutedDialogueRoute(
+            route_kind=ROUTE_MITA_FOLLOW_UP,
+            event_type="answer",
+            target_actor_id=target.actor_id,
+            target_character_id=target.character_id,
+            input_text=(
+                "Respond naturally to the Mita who addressed you in the preceding "
+                "group dialogue."
+            ),
+            reason="mita_explicit_target",
             conversation_id=dialogue.conversation_id,
             epoch=max(0, int(dialogue.epoch)),
             source_turn_index=max(0, int(dialogue.turn_index)),
@@ -605,6 +662,13 @@ class DialogueTurnRouter:
                 return None
 
             settings = self._server_settings()
+            if settings["target_routing"]:
+                target_route = self._route_to_explicit_target(
+                    context,
+                    structured or {},
+                )
+                if target_route is not None:
+                    return target_route
             if not settings["gm_on"]:
                 self._gm_scheduler.reset_conversation(context.conversation_id)
             else:

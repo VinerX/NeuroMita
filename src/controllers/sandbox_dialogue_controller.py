@@ -13,6 +13,7 @@ from services.contracts import (
     DialogueRuntimeSource,
     SandboxDialogueConfig,
     SandboxDialogueUiState,
+    SettingsService,
     TaskService,
 )
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
@@ -22,7 +23,7 @@ from services.dialogue_turn_router import DialogueTurnRouter
 class _SandboxRouterSettings:
     """Settings adapter owned by one sandbox session."""
 
-    def __init__(self, config: SandboxDialogueConfig) -> None:
+    def __init__(self, config: SandboxDialogueConfig, settings: SettingsService | Any | None = None) -> None:
         self._values = {
             "MITA_DIALOGUE_AUTO": bool(config.auto_dialogue_enabled),
             "DIALOGUE_MAX_AUTO_TURNS": int(config.max_auto_turns),
@@ -33,9 +34,15 @@ class _SandboxRouterSettings:
             "GM_CHECK_INTERVAL": int(config.gm_repeat),
             "GM_REPEAT": int(config.gm_repeat),
         }
+        self._settings = settings
         self.revision = 1
 
     def get(self, key: str, default: Any = None) -> Any:
+        if key == "MITA_DIALOGUE_TARGET_ROUTING" and self._settings is not None:
+            try:
+                return self._settings.get(key, default)
+            except Exception:
+                pass
         return self._values.get(key, default)
 
 
@@ -113,7 +120,12 @@ class SandboxDialogueController:
             self.stop_session()
             self._session_id = uuid.uuid4().hex
             self._config = replace(selected, participant_character_ids=character_ids)
-            self._router = DialogueTurnRouter(_SandboxRouterSettings(self._config))
+            self._router = DialogueTurnRouter(
+                _SandboxRouterSettings(
+                    self._config,
+                    services().get_optional(SettingsService),
+                )
+            )
             self._participants = tuple(
                 DialogueParticipant(
                     actor_id=f"sandbox:{character_id}:0",

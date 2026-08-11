@@ -37,6 +37,41 @@ class ConversationEventWriter:
             seen.add(s)
         return out
 
+    def _history_recipient_ids(
+        self,
+        participants: list[str],
+        *,
+        dialogue: Any,
+        responder_character_id: str,
+    ) -> list[str]:
+        """Use the authoritative Unity roster when writing participant histories."""
+        roster_ids = [
+            str(self._dialogue_value(participant, "character_id", "") or "").strip()
+            for participant in self._dialogue_value(dialogue, "participants", []) or []
+        ]
+        source_ids = [character_id for character_id in roster_ids if character_id]
+        if not source_ids:
+            source_ids = list(participants)
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+        for participant_id in [*source_ids, responder_character_id]:
+            character_id = str(participant_id or "").strip()
+            if not character_id or character_id.casefold() in {"player", "gamemaster"}:
+                continue
+
+            character = self._get_character_ref(character_id)
+            if character is None:
+                continue
+
+            canonical_id = str(getattr(character, "char_id", "") or character_id).strip()
+            key = canonical_id.casefold()
+            if not canonical_id or key in seen:
+                continue
+            seen.add(key)
+            resolved.append(canonical_id)
+        return resolved
+
     def _make_message_id(self, prefix: str, base: str | None = None) -> str:
         base_s = str(base or "").strip()
         if base_s:
@@ -281,7 +316,9 @@ class ConversationEventWriter:
         responder: str,
         user_input: str,
         assistant_text: str,
+        assistant_target: str = "",
         event_type: str,
+        structured_data: dict | None = None,
     ) -> None:
         """Record successful dialogue state even when history persistence is off."""
         if str(sender).casefold() == "player" and str(user_input or "").strip():
@@ -293,20 +330,48 @@ class ConversationEventWriter:
                 event_type="player_message",
             )
         if str(responder).casefold() != "gamemaster" and str(assistant_text or "").strip():
-            self._record_transcript(
-                dialogue,
-                sender="",
-                responder=responder,
-                text=assistant_text,
-                event_type=event_type,
-            )
+            segments = structured_data.get("segments", []) if isinstance(structured_data, dict) else []
+            recorded_segment = False
+            for segment in segments if isinstance(segments, list) else []:
+                if not isinstance(segment, dict):
+                    continue
+                segment_text = str(segment.get("text") or "").strip()
+                if not segment_text:
+                    continue
+                self._record_transcript(
+                    dialogue,
+                    sender="",
+                    responder=responder,
+                    target=str(segment.get("target") or "").strip(),
+                    text=segment_text,
+                    event_type=event_type,
+                )
+                recorded_segment = True
+            if not recorded_segment:
+                self._record_transcript(
+                    dialogue,
+                    sender="",
+                    responder=responder,
+                    target=assistant_target,
+                    text=assistant_text,
+                    event_type=event_type,
+                )
             if self._directive_registry is not None:
                 conversation_id = str(self._dialogue_value(dialogue, "conversation_id", "") or "").strip()
                 if conversation_id:
                     actor_id = str(self._dialogue_value(dialogue, "responder_actor_id", "") or "").strip()
                     self._directive_registry.consume_after_reply(conversation_id, responder)
 
-    def _record_transcript(self, dialogue: Any, *, sender: str, responder: str, text: str, event_type: str) -> None:
+    def _record_transcript(
+        self,
+        dialogue: Any,
+        *,
+        sender: str,
+        responder: str,
+        target: str = "",
+        text: str,
+        event_type: str,
+    ) -> None:
         if self._transcript is None or not dialogue:
             return
         conversation_id = str(self._dialogue_value(dialogue, "conversation_id", "") or "").strip()
@@ -322,6 +387,7 @@ class ConversationEventWriter:
                 turn_index=turn_index,
                 character_id=responder,
                 actor_id=actor_id,
+                target_character_id=target,
                 text=str(text),
             )
 
@@ -361,6 +427,11 @@ class ConversationEventWriter:
         pts = self.normalize_participants(participants)
         if responder_character_id and responder_character_id not in pts:
             pts.append(responder_character_id)
+        history_recipients = self._history_recipient_ids(
+            pts,
+            dialogue=dialogue,
+            responder_character_id=responder_character_id,
+        )
 
         turn_id = self._make_message_id("turn", task_uid or req_id)
 
@@ -419,7 +490,9 @@ class ConversationEventWriter:
             responder=responder_character_id,
             user_input=user_input,
             assistant_text=assistant_text,
+            assistant_target=assistant_target,
             event_type=event_type,
+            structured_data=structured_data,
         )
-        self._fanout_turn(user_event, assistant_event, pts)
+        self._fanout_turn(user_event, assistant_event, history_recipients)
         return str(assistant_event.get("message_id") or "")

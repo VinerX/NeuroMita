@@ -26,6 +26,7 @@ class _Settings:
     def __init__(self, **values):
         self.values = {
             "MITA_DIALOGUE_AUTO": True,
+            "MITA_DIALOGUE_TARGET_ROUTING": True,
             "DIALOGUE_MAX_AUTO_TURNS": 6,
             "GM_ON": False,
             "GM_REPEAT": 2,
@@ -39,10 +40,10 @@ class _Settings:
 
 def _context(*, current="actor-crazy", spoken=None, client=None, epoch=1):
     participants = [
-        {"actor_id": "actor-crazy", "character_id": "Crazy", "can_speak": True, "can_hear_speaker": True},
-        {"actor_id": "actor-kind", "character_id": "Kind", "can_speak": True, "can_hear_speaker": True},
-        {"actor_id": "actor-cappie", "character_id": "Cappie", "can_speak": True, "can_hear_speaker": True},
-        {"actor_id": "actor-gm", "character_id": "GameMaster", "can_speak": True, "can_hear_speaker": True},
+        {"actor_id": "actor-crazy", "character_id": "Crazy", "display_name": "Безумная Мита", "can_speak": True, "can_hear_speaker": True},
+        {"actor_id": "actor-kind", "character_id": "Kind", "display_name": "Добрая Мита", "can_speak": True, "can_hear_speaker": True},
+        {"actor_id": "actor-cappie", "character_id": "Cappie", "display_name": "Кэппи", "can_speak": True, "can_hear_speaker": True},
+        {"actor_id": "actor-gm", "character_id": "GameMaster", "display_name": "GameMaster", "can_speak": True, "can_hear_speaker": True},
     ]
     payload = {
         "conversation_id": "conv-router",
@@ -118,6 +119,49 @@ class DialogueTurnRouterTests(unittest.TestCase):
     def test_router_selects_next_actor_in_stable_order(self):
         router = DialogueTurnRouter(_Settings())
         route = router.select_next_turn(_context(current="actor-crazy", spoken=["actor-crazy"]))
+        self.assertEqual(route.route_kind, ROUTE_MITA_FOLLOW_UP)
+        self.assertEqual(route.target_actor_id, "actor-kind")
+
+    def test_explicit_mita_target_overrides_the_normal_queue(self):
+        router = DialogueTurnRouter(_Settings())
+        route = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={
+                "segments": [
+                    {"text": "First sentence.", "target": "добрая___мита"},
+                    {"text": "Second sentence for Player."},
+                ]
+            },
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(route.target_actor_id, "actor-kind")
+        self.assertEqual(route.reason, "mita_explicit_target")
+
+    def test_disabled_target_priority_keeps_the_normal_queue(self):
+        router = DialogueTurnRouter(_Settings(MITA_DIALOGUE_TARGET_ROUTING=False))
+        route = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={"segments": [{"text": "One.", "target": "Добрая Мита"}]},
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
+        self.assertEqual(route.target_actor_id, "actor-crazy")
+
+    def test_explicit_target_has_priority_over_game_master_cadence(self):
+        router = DialogueTurnRouter(_Settings(GM_ON=True, GM_REPEAT=1))
+        route = router.route_after_response(
+            _context(current="actor-cappie"),
+            structured={"segments": [{"text": "One.", "target": "Добрая Мита"}]},
+            character_id="Cappie",
+            event_type="answer",
+            control_plane_trusted=True,
+        )
+
         self.assertEqual(route.route_kind, ROUTE_MITA_FOLLOW_UP)
         self.assertEqual(route.target_actor_id, "actor-kind")
 
