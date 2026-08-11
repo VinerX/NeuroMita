@@ -40,6 +40,34 @@ def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
     return event_type in ("answer", "react")
 
 
+def _resolve_dialogue_sender(sender: Any, dialogue: Dict[str, Any]) -> str:
+    """Resolve an automated dialogue speaker from its authoritative actor id."""
+    declared_sender = str(sender or "Player").strip() or "Player"
+    if not isinstance(dialogue, dict):
+        return declared_sender
+
+    speaker_actor_id = str(dialogue.get("speaker_actor_id") or "").strip()
+    if not speaker_actor_id or speaker_actor_id.casefold() == "player":
+        return declared_sender
+
+    participants = dialogue.get("participants")
+    if not isinstance(participants, list):
+        return declared_sender
+
+    for participant in participants:
+        if not isinstance(participant, dict):
+            continue
+        actor_id = str(participant.get("actor_id") or "").strip()
+        if actor_id != speaker_actor_id:
+            continue
+        character_id = str(participant.get("character_id") or "").strip()
+        if character_id:
+            return character_id
+        break
+
+    return declared_sender
+
+
 def _normalise_reaction_events(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw_events = data.get("reaction_events")
     if not isinstance(raw_events, (list, tuple)):
@@ -209,7 +237,10 @@ class CreateTaskAction:
         req_id = request.get("req_id", None)
         dialogue_payload = context.get("dialogue") if isinstance(context.get("dialogue"), dict) else {}
 
-        sender = str(request.get("sender") or data.get("sender") or "Player")
+        sender = _resolve_dialogue_sender(
+            request.get("sender") or data.get("sender") or "Player",
+            dialogue_payload,
+        )
         origin_message_id = request.get("origin_message_id") or data.get("origin_message_id")
 
         participants = request.get("participants")

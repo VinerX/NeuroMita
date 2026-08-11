@@ -26,6 +26,7 @@ class DatabaseManager:
     _BUSY_TIMEOUT_MS: int = 5000
     _MIGRATION_TIMESTAMP_NORMALIZATION = "history_timestamp_iso_v1"
     _MIGRATION_MESSAGE_ID_UNIQUE = "history_message_id_unique_v1"
+    _MIGRATION_DIALOGUE_SENDER_IDENTITY = "history_dialogue_sender_identity_v1"
 
     # Single source of truth: extra columns to ensure in history table.
     # (column_name -> SQL type). Base columns (id, character_id, role, content,
@@ -468,6 +469,91 @@ class DatabaseManager:
             (name,),
         )
 
+    @staticmethod
+    def _repair_dialogue_sender_identity(cursor: sqlite3.Cursor) -> int:
+        """Restore Mita senders that were persisted as Player in dialogue turns."""
+        cursor.execute(
+            """
+            SELECT id, role, speaker, sender, target, participants, meta_data
+            FROM history
+            WHERE meta_data IS NOT NULL AND TRIM(meta_data) != ''
+            ORDER BY id ASC
+            """
+        )
+        rows = cursor.fetchall()
+        parsed_rows: list[tuple[tuple, dict]] = []
+        actor_characters: dict[tuple[str, str], str] = {}
+
+        def normalize_actor(value) -> str:
+            return str(value or "").strip()
+
+        def normalize_character(value) -> str:
+            character = str(value or "").strip()
+            return "" if character.casefold() == "player" else character
+
+        def remember(conversation_id: str, actor_id: str, character_id: str) -> None:
+            actor = normalize_actor(actor_id)
+            character = normalize_character(character_id)
+            if actor and actor.casefold() != "player" and character:
+                actor_characters.setdefault((conversation_id, actor), character)
+
+        for row in rows:
+            try:
+                meta = json.loads(row[6])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            parsed_rows.append((row, meta))
+
+            conversation_id = normalize_actor(meta.get("conversation_id"))
+            role = str(row[1] or "").strip().casefold()
+            speaker = normalize_character(row[2] or row[3])
+            if role == "assistant" and speaker:
+                remember(conversation_id, meta.get("speaker_actor_id"), speaker)
+                remember(conversation_id, meta.get("responder_actor_id"), speaker)
+
+            remember(conversation_id, meta.get("responder_actor_id"), row[4])
+
+            actor_ids = meta.get("participant_actor_ids")
+            try:
+                characters = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                characters = None
+            if (
+                isinstance(actor_ids, list)
+                and isinstance(characters, list)
+                and len(actor_ids) == len(characters)
+            ):
+                for actor_id, character_id in zip(actor_ids, characters):
+                    remember(conversation_id, actor_id, character_id)
+
+        repaired = 0
+        for row, meta in parsed_rows:
+            role = str(row[1] or "").strip().casefold()
+            speaker = str(row[2] or "").strip()
+            sender = str(row[3] or "").strip()
+            if role != "user" or not (
+                speaker.casefold() == "player" or sender.casefold() == "player"
+            ):
+                continue
+
+            actor_id = normalize_actor(meta.get("speaker_actor_id"))
+            if not actor_id or actor_id.casefold() == "player":
+                continue
+            conversation_id = normalize_actor(meta.get("conversation_id"))
+            character_id = actor_characters.get((conversation_id, actor_id), "")
+            if not character_id:
+                continue
+
+            cursor.execute(
+                "UPDATE history SET speaker = ?, sender = ? WHERE id = ?",
+                (character_id, character_id, int(row[0])),
+            )
+            repaired += max(0, int(cursor.rowcount or 0))
+
+        return repaired
+
     def rebuild_fts_indexes(self) -> bool:
         """
         Manual full rebuild for both FTS tables (safe no-op if FTS5 is unavailable).
@@ -774,6 +860,26 @@ class DatabaseManager:
                     logging.info("DB upgrade: ensured message-id UNIQUE index")
                 except Exception as e:
                     logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {e}")
+
+            if {"speaker", "sender", "target", "participants", "meta_data"}.issubset(hist_cols):
+                try:
+                    if not self._migration_applied(
+                        cursor,
+                        self._MIGRATION_DIALOGUE_SENDER_IDENTITY,
+                    ):
+                        repaired = self._repair_dialogue_sender_identity(cursor)
+                        self._mark_migration(
+                            cursor,
+                            self._MIGRATION_DIALOGUE_SENDER_IDENTITY,
+                        )
+                        logging.info(
+                            "DB upgrade: repaired %d dialogue sender identities",
+                            repaired,
+                        )
+                except Exception as e:
+                    logging.warning(
+                        f"DB upgrade: failed to repair dialogue sender identities (ignored): {e}"
+                    )
 
             # --- Performance indexes for common queries ---
             for idx_sql in [
