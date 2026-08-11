@@ -1035,12 +1035,13 @@ def _build_embed_config(self, embed_provider_view_model, rag_install_view_model)
             ),
         },
 
-        {'type': 'button_group', 'buttons': [
-            {'label': _('Индекс нового', 'Index new'),
-             'command': lambda: _reindex_embeddings(self)},
-            {'label': _('Обновить статус', 'Refresh status'),
-             'command': lambda: _refresh_rag_install_status(rag_install_view_model)},
-        ]},
+        {
+            'type': 'widget',
+            'factory': lambda gui: _build_embedding_index_actions(
+                gui,
+                rag_install_view_model,
+            ),
+        },
 
         {'type': 'end'},
     ]
@@ -1049,6 +1050,15 @@ def _build_embed_config(self, embed_provider_view_model, rag_install_view_model)
 def _build_embed_provider_widget(gui, view_model):
     from ui.settings.embed_provider_settings import build_embed_provider_widget
     return build_embed_provider_widget(gui, view_model)
+
+
+def _build_embedding_index_actions(gui, rag_install_view_model):
+    from ui.settings.embedding_index_actions import EmbeddingIndexActionsWidget
+
+    return EmbeddingIndexActionsWidget(
+        gui,
+        lambda: _refresh_rag_install_status(rag_install_view_model),
+    )
 
 
 def _build_graph_config(self, hc_provider_names) -> list:
