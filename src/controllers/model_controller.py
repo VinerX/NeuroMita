@@ -1712,12 +1712,6 @@ class ModelController(GenerationService, ModelStateService):
                     visible_raw,
                     self.settings.get("SAVE_MISSED_MEMORY", False),
                 )
-                targets: list[str] = []
-                if hasattr(char, "consume_pending_targets"):
-                    try:
-                        targets = char.consume_pending_targets()
-                    except Exception:
-                        targets = []
                 if hasattr(char, "flush_variables"):
                     char.flush_variables()
                 created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
@@ -1727,8 +1721,6 @@ class ModelController(GenerationService, ModelStateService):
                         voice_profile = char.to_voice_profile()
                     except Exception:
                         voice_profile = None
-            target = targets[-1] if targets else "Player"
-
             final_text = processed
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
@@ -1761,7 +1753,7 @@ class ModelController(GenerationService, ModelStateService):
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     assistant_text=final_text,
-                    assistant_target=target,
+                    assistant_target="Player",
                     event_type=event_type,
                     task_uid=task_uid,
                     thinking=think_text or None,
@@ -1796,8 +1788,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=final_text,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=target,
-                targets=targets,
                 think=think_text or None,
                 message_id=assistant_message_id,
                 sample_id=sample_id or "",
@@ -1986,12 +1976,6 @@ class ModelController(GenerationService, ModelStateService):
                 processed = char.process_response_nlp_commands(
                     visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
                 )
-                fallback_targets: list[str] = []
-                if hasattr(char, "consume_pending_targets"):
-                    try:
-                        fallback_targets = char.consume_pending_targets()
-                    except Exception:
-                        fallback_targets = []
                 if hasattr(char, "flush_variables"):
                     char.flush_variables()
                 voice_profile = None
@@ -2000,8 +1984,6 @@ class ModelController(GenerationService, ModelStateService):
                         voice_profile = char.to_voice_profile()
                     except Exception:
                         voice_profile = None
-            fallback_target = fallback_targets[-1] if fallback_targets else "Player"
-
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
             self._store_last_usage(
                 usage,
@@ -2017,8 +1999,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=processed,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=fallback_target,
-                targets=fallback_targets,
                 think=think_text or None,
                 sample_id=sample_id or "",
                 structured_parse_level="legacy_fallback",
@@ -2034,12 +2014,6 @@ class ModelController(GenerationService, ModelStateService):
                 structured,
                 save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
             )
-            targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    targets = char.consume_pending_targets()
-                except Exception:
-                    targets = []
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
             created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
@@ -2049,8 +2023,6 @@ class ModelController(GenerationService, ModelStateService):
                     voice_profile = char.to_voice_profile()
                 except Exception:
                     voice_profile = None
-        target = targets[-1] if targets else "Player"
-
         # --- Tool call path ---
         _active_tools = enabled_tools or []
         _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
@@ -2095,7 +2067,6 @@ class ModelController(GenerationService, ModelStateService):
                 structured_model_cls=structured_model_cls,
                 sample_id=sample_id,
                 image_descriptions=image_descriptions,
-                targets=targets,
                 voice_profile=voice_profile,
                 dialogue=dialogue,
             )
@@ -2158,7 +2129,7 @@ class ModelController(GenerationService, ModelStateService):
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=final_text,
-                assistant_target=target,
+                assistant_target="Player",
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=history_dict,
@@ -2209,8 +2180,6 @@ class ModelController(GenerationService, ModelStateService):
             text=final_text,
             character_id=char_id,
             voice_profile=voice_profile,
-            target=target,
-            targets=targets,
             think=think_text or None,
             structured=result_dict,
             message_id=assistant_message_id,
@@ -2253,7 +2222,6 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
-        targets: list[str] | None = None,
         voice_profile=None,
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
@@ -2274,9 +2242,6 @@ class ModelController(GenerationService, ModelStateService):
         result_dict.pop("reasoning", None)
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
-
-        targets = list(targets or [])
-        target = targets[-1] if targets else "Player"
 
         # Write first turn to history
         usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
@@ -2302,7 +2267,7 @@ class ModelController(GenerationService, ModelStateService):
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=first_text,
-                assistant_target=target,
+                assistant_target="Player",
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=result_dict,
@@ -2322,8 +2287,6 @@ class ModelController(GenerationService, ModelStateService):
             "character_id": char_id or "",
             "character_name": char_name or "",
             "speaker_name": char_name or "",
-            "target": target,
-            "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
         }, delivery=EventDelivery.ORDERED)
@@ -2413,8 +2376,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=first_text,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=target,
-                targets=targets,
                 think=think_text or None,
                 structured=result_dict,
                 message_id=first_assistant_message_id,

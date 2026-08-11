@@ -508,8 +508,6 @@ class ChatController:
             response_text = result.text
             voice_profile = result.voice_profile
             effective_character_id = result.character_id or character_id
-            target = result.target
-            targets: list[str] = result.targets
             think_text = result.think
             structured_data = result.structured
             assistant_message_id = result.message_id
@@ -541,8 +539,6 @@ class ChatController:
                 # empty natural-language response.
                 if not response_text and isinstance(structured_data, dict):
                     response_text = " "
-                target = "Player"
-                targets = []
                 if isinstance(structured_data, dict):
                     structured_data = dict(structured_data)
                     # A task configured by the user is trusted control-plane input.
@@ -605,21 +601,12 @@ class ChatController:
                         # preserve the scene directive as a deterministic fallback.
                         carrier = next((item for item in segments if isinstance(item, dict)), None)
                         if carrier is None:
-                            carrier = {"text": " ", "target": "Player", "intents": []}
+                            carrier = {"text": " ", "intents": []}
                             segments.append(carrier)
                         carrier.setdefault("intents", []).append({
                             "type": "dialogue.broadcast_system_message",
                             "payload": {"message": explicit_instruction},
                         })
-                    structured_data["segments"] = [
-                        {
-                            **segment,
-                            "target": "Player",
-                        }
-                        if isinstance(segment, dict) else segment
-                        for segment in structured_data.get("segments", [])
-                    ]
-
             if not response_text:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)
@@ -657,7 +644,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -670,7 +657,6 @@ class ChatController:
                             "task_uid": task_uid,
                             "character_id": effective_character_id,
                             "voice_profile": voice_profile,
-                            "target": target,
                             "message_id": assistant_message_id,
                         })
                     else:
@@ -678,21 +664,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": self._build_task_result(response_text, target, structured_data, targets, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                            "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": self._build_task_result(response_text, target, structured_data, targets, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                        "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -739,8 +725,6 @@ class ChatController:
                     "character_id": effective_character_id or "",
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
-                    "target": target,
-                    "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
                     "sample_id": sample_id or "",
@@ -830,27 +814,15 @@ class ChatController:
     @staticmethod
     def _build_task_result(
         response_text: str,
-        target: str,
         structured_data: dict | None = None,
-        targets: list[str] | None = None,
         *,
         structured_parse_level: str = "",
         control_plane_trusted: bool = False,
     ) -> dict:
-        """Build one model response; Unity owns all subsequent turn routing."""
-        segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
-        has_v3_payload = isinstance(segments, list) and bool(segments)
-        has_legacy_targets = bool(targets) or bool(
-            isinstance(structured_data, dict) and (
-                structured_data.get("target") or structured_data.get("targets")
-            )
-        )
-        protocol_version = RESPONSE_PROTOCOL_VERSION if has_v3_payload else (2 if has_legacy_targets else 1)
+        """Build the response contract; addressees live only on individual segments."""
         result = {
-            "response_protocol_version": protocol_version,
+            "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
             "response": response_text,
-            "target": target,
-            "targets": targets or [],
         }
         if structured_data:
             result["segments"] = structured_data.get("segments", [])

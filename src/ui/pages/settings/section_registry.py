@@ -73,18 +73,6 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
         builder_ref="ui.settings.character_settings:setup_mita_controls",
     ),
     SettingsSectionSpec(
-        key="dialogue",
-        icon_name="fa6s.comments",
-        nav_label=("Диалоги", "Dialogue"),
-        title=("Диалоги", "Dialogue"),
-        subtitle=(
-            "Автоматические разговоры персонажей, продолжения и GameMaster.",
-            "Automatic character conversations, continuations and GameMaster.",
-        ),
-        min_mode="advanced",
-        builder_ref="ui.settings.dialogue_settings:setup_dialogue_settings_controls",
-    ),
-    SettingsSectionSpec(
         key="voice",
         icon_name="fa6s.volume-high",
         nav_label=("Озвучка", "Voice"),

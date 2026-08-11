@@ -46,14 +46,14 @@ STRIP_EMBEDDED_UV = env.get("BUILD_STRIP_EMBEDDED_UV", "1") == "1"
 EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
 
 # Папки для full-режима: поддержка абсолютных путей
-_copy_dirs_raw = env.get("BUILD_COPY_DIRS", "Prompts")
+_copy_dirs_raw = env.get("BUILD_COPY_DIRS", "extra/Prompts")
 DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _copy_dirs_raw.split(",") if d.strip()
 ]
 
 # Папки для fast-режима
-_fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "Prompts")
+_fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "extra/Prompts")
 FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _fast_dirs_raw.split(",") if d.strip()

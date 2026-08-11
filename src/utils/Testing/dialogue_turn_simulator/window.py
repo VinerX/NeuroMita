@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt
+from typing import Any
+
+from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -13,6 +15,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -24,25 +27,39 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .core import DialogueSimulation, MitaMode, SimulationError, TurnResult, create_default_simulation
+from ui.widgets.number_stepper import NumberStepper
+
+from .core import DialogueSimulation, MitaMode, SimulationError, create_default_simulation
+from .protocol import UnityClientEndpoint, UnityProtocolClient
+from .session import SessionEvent, UnityLikeDialogueSession
+
+
+class _ProtocolBridge(QObject):
+    message_received = pyqtSignal(object)
+    state_changed = pyqtSignal(bool, str)
 
 
 class DialogueTurnSimulatorWindow(QMainWindow):
     def __init__(self, simulation: DialogueSimulation | None = None) -> None:
         super().__init__()
         self.simulation = simulation or create_default_simulation()
-        self._running = False
         self._row_by_id: dict[str, int] = {}
-        self._timer = QTimer(self)
-        self._timer.setInterval(650)
-        self._timer.timeout.connect(self._run_one_automatic_turn)
-        self.setWindowTitle("Unity Dialogue Turn Simulator")
-        self.resize(1180, 760)
-        self.setMinimumSize(920, 620)
+        self._client: UnityProtocolClient | None = None
+        self._session: UnityLikeDialogueSession | None = None
+        self._connected = False
+        self._connection_message = "Отключено"
+        self._bridge = _ProtocolBridge(self)
+        self._bridge.message_received.connect(self._handle_server_message)
+        self._bridge.state_changed.connect(self._handle_connection_state)
+        self.setWindowTitle("NeuroMita Headless Unity Dialogue Client")
+        self.resize(1360, 820)
+        self.setMinimumSize(1080, 680)
         self._build_ui()
         self._apply_style()
         self._populate_table()
+        self._sync_policy_widgets()
         self._refresh()
+        QTimer.singleShot(0, self._connect_client)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -52,41 +69,70 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         layout.setContentsMargins(18, 16, 18, 18)
         layout.setSpacing(12)
 
-        title = QLabel("Симулятор очереди диалога Unity")
+        title = QLabel("Headless Unity-клиент диалогов NeuroMita")
         title.setObjectName("Title")
         subtitle = QLabel(
-            "Активность и дистанция формируют roster; очки определяют следующую Миту; "
-            "режим меняет имитацию ответа."
+            "Работает по настоящему TCP-протоколу Unity: handshake, settings, create_task и push task_update. "
+            "Состав, доступность, очередь, лимиты, продолжения и GameMaster остаются на стороне этого клиента."
         )
         subtitle.setObjectName("Subtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        settings = QFrame()
-        settings.setObjectName("Card")
-        settings_layout = QGridLayout(settings)
-        settings_layout.setContentsMargins(14, 12, 14, 12)
-        settings_layout.setHorizontalSpacing(12)
-        settings_layout.setVerticalSpacing(8)
-        self.auto_check = QCheckBox("Автоматические ответы")
-        self.auto_check.setChecked(self.simulation.auto_dialogue_enabled)
-        self.auto_check.toggled.connect(self._sync_global_settings)
-        self.limit_spin = QSpinBox()
-        self.limit_spin.setRange(0, 500)
-        self.limit_spin.setSuffix(" %")
-        self.limit_spin.setValue(round(self.simulation.limit_modifier_percent))
-        self.limit_spin.valueChanged.connect(self._sync_global_settings)
-        self.seed_spin = QSpinBox()
-        self.seed_spin.setRange(0, 999999)
-        self.seed_spin.setValue(self.simulation.seed)
-        settings_layout.addWidget(self.auto_check, 0, 0, 1, 2)
-        settings_layout.addWidget(QLabel("Модификатор лимита"), 0, 2)
-        settings_layout.addWidget(self.limit_spin, 0, 3)
-        settings_layout.addWidget(QLabel("Seed сброса очереди"), 0, 4)
-        settings_layout.addWidget(self.seed_spin, 0, 5)
-        settings_layout.setColumnStretch(1, 1)
-        layout.addWidget(settings)
+        connection = QFrame()
+        connection.setObjectName("Card")
+        connection_layout = QGridLayout(connection)
+        connection_layout.setContentsMargins(14, 12, 14, 12)
+        connection_layout.setHorizontalSpacing(10)
+        self.host_edit = QLineEdit("127.0.0.1")
+        self.host_edit.setMaximumWidth(180)
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(12345)
+        self.connect_button = QPushButton("Подключиться")
+        self.connect_button.setObjectName("Primary")
+        self.connect_button.clicked.connect(self._toggle_connection)
+        self.connection_label = QLabel("Отключено")
+        self.connection_label.setObjectName("ConnectionStatus")
+        connection_layout.addWidget(QLabel("Host"), 0, 0)
+        connection_layout.addWidget(self.host_edit, 0, 1)
+        connection_layout.addWidget(QLabel("Port"), 0, 2)
+        connection_layout.addWidget(self.port_spin, 0, 3)
+        connection_layout.addWidget(self.connect_button, 0, 4)
+        connection_layout.addWidget(self.connection_label, 0, 5)
+        connection_layout.setColumnStretch(5, 1)
+        layout.addWidget(connection)
+
+        policy = QFrame()
+        policy.setObjectName("Card")
+        policy_layout = QGridLayout(policy)
+        policy_layout.setContentsMargins(14, 10, 14, 10)
+        policy_layout.setHorizontalSpacing(10)
+        self.auto_check = QCheckBox("Автодиалог")
+        self.auto_check.toggled.connect(self._read_policy_widgets)
+        self.turn_limit_spin = NumberStepper()
+        self.turn_limit_spin.setRange(1, 24)
+        self.turn_limit_spin.valueChanged.connect(self._read_policy_widgets)
+        self.continue_spin = NumberStepper()
+        self.continue_spin.setRange(0, 12)
+        self.continue_spin.valueChanged.connect(self._read_policy_widgets)
+        self.gm_check = QCheckBox("GameMaster")
+        self.gm_check.toggled.connect(self._read_policy_widgets)
+        self.gm_repeat_spin = NumberStepper()
+        self.gm_repeat_spin.setRange(1, 100)
+        self.gm_repeat_spin.valueChanged.connect(self._read_policy_widgets)
+        policy_layout.addWidget(self.auto_check, 0, 0)
+        self.turn_limit_label = QLabel("Максимум ходов в цепочке")
+        policy_layout.addWidget(self.turn_limit_label, 0, 1)
+        policy_layout.addWidget(self.turn_limit_spin, 0, 2)
+        policy_layout.addWidget(QLabel("Продолжений"), 0, 3)
+        policy_layout.addWidget(self.continue_spin, 0, 4)
+        policy_layout.addWidget(self.gm_check, 0, 5)
+        policy_layout.addWidget(QLabel("Проверка через"), 0, 6)
+        policy_layout.addWidget(self.gm_repeat_spin, 0, 7)
+        policy_layout.setColumnStretch(8, 1)
+        layout.addWidget(policy)
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -97,13 +143,11 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(12, 12, 12, 12)
         left_layout.setSpacing(8)
-        left_title = QLabel("Состояние Мит")
+        left_title = QLabel("Unity-side состояние персонажей")
         left_title.setObjectName("SectionTitle")
         left_layout.addWidget(left_title)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
-            ("Вкл.", "Персонаж", "Режим", "Дистанция", "Очки", "Приоритет")
-        )
+        self.table.setHorizontalHeaderLabels(("Вкл.", "Персонаж", "Режим", "Дистанция", "Очки", "Приоритет"))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -111,10 +155,8 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        for column in range(2, 6):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         left_layout.addWidget(self.table, 1)
         body.addWidget(left, 7)
 
@@ -123,7 +165,7 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(12, 12, 12, 12)
         right_layout.setSpacing(8)
-        right_title = QLabel("Ход симуляции")
+        right_title = QLabel("Живой диалог")
         right_title.setObjectName("SectionTitle")
         right_layout.addWidget(right_title)
         self.status_label = QLabel()
@@ -134,38 +176,26 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         self.order_label.setWordWrap(True)
         right_layout.addWidget(self.status_label)
         right_layout.addWidget(self.order_label)
-
         self.player_input = QPlainTextEdit()
         self.player_input.setPlaceholderText("Введите реплику игрока…")
         self.player_input.setFixedHeight(92)
         self.player_input.setPlainText("Как вы думаете, чем нам заняться сегодня?")
         right_layout.addWidget(self.player_input)
-
-        player_buttons = QHBoxLayout()
-        self.send_button = QPushButton("Отправить игроком")
+        buttons = QHBoxLayout()
+        self.send_button = QPushButton("Отправить как Unity")
         self.send_button.setObjectName("Primary")
-        self.send_button.clicked.connect(self._begin_player_turn)
-        self.step_button = QPushButton("Следующий ход")
-        self.step_button.clicked.connect(self._step)
-        player_buttons.addWidget(self.send_button, 1)
-        player_buttons.addWidget(self.step_button)
-        right_layout.addLayout(player_buttons)
-
-        chain_buttons = QHBoxLayout()
-        self.run_button = QPushButton("Запустить цепочку")
-        self.run_button.clicked.connect(self._toggle_run)
-        self.reset_button = QPushButton("Сбросить")
+        self.send_button.clicked.connect(self._submit_player_message)
+        self.reset_button = QPushButton("Новый диалог")
         self.reset_button.clicked.connect(self._reset)
-        chain_buttons.addWidget(self.run_button, 1)
-        chain_buttons.addWidget(self.reset_button)
-        right_layout.addLayout(chain_buttons)
-
-        log_title = QLabel("Лента ответов")
+        buttons.addWidget(self.send_button, 1)
+        buttons.addWidget(self.reset_button)
+        right_layout.addLayout(buttons)
+        log_title = QLabel("Wire/runtime журнал")
         log_title.setObjectName("SectionTitle")
         right_layout.addWidget(log_title)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setPlaceholderText("Ответы симулятора появятся здесь")
+        self.log.setPlaceholderText("Здесь появятся реальные ответы NeuroMita")
         right_layout.addWidget(self.log, 1)
         body.addWidget(right, 5)
 
@@ -183,11 +213,9 @@ class DialogueTurnSimulatorWindow(QMainWindow):
             enabled_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             enabled_layout.addWidget(enabled)
             self.table.setCellWidget(row, 0, enabled_host)
-
             name_item = QTableWidgetItem(mita.display_name)
             name_item.setData(Qt.ItemDataRole.UserRole, mita.character_id)
             self.table.setItem(row, 1, name_item)
-
             mode = QComboBox()
             mode.addItem("Обычный", MitaMode.NORMAL.value)
             mode.addItem("Охота", MitaMode.HUNT.value)
@@ -197,7 +225,6 @@ class DialogueTurnSimulatorWindow(QMainWindow):
                 lambda _index, combo=mode, cid=mita.character_id: self._set_mode(cid, combo.currentData())
             )
             self.table.setCellWidget(row, 2, mode)
-
             distance = QDoubleSpinBox()
             distance.setRange(0.0, 100.0)
             distance.setDecimals(1)
@@ -205,17 +232,87 @@ class DialogueTurnSimulatorWindow(QMainWindow):
             distance.setValue(mita.distance)
             distance.valueChanged.connect(lambda value, cid=mita.character_id: self._set_distance(cid, value))
             self.table.setCellWidget(row, 3, distance)
-
             points = QSpinBox()
             points.setRange(-999, 999)
             points.setValue(mita.order_points)
             points.valueChanged.connect(lambda value, cid=mita.character_id: self._set_points(cid, value))
             self.table.setCellWidget(row, 4, points)
-
             priority = QPushButton("Следующая")
             priority.clicked.connect(lambda _checked=False, cid=mita.character_id: self._prioritize(cid))
             self.table.setCellWidget(row, 5, priority)
             self.table.setRowHeight(row, 42)
+
+    def _connect_client(self) -> None:
+        self._disconnect_client()
+        endpoint = UnityClientEndpoint(host=self.host_edit.text().strip() or "127.0.0.1", port=self.port_spin.value())
+        self._client = UnityProtocolClient(
+            endpoint,
+            on_message=lambda message: self._bridge.message_received.emit(message),
+            on_state=lambda connected, text: self._bridge.state_changed.emit(connected, text),
+        )
+        self._session = UnityLikeDialogueSession(self.simulation, self._client, on_event=self._handle_session_event)
+        self._connection_message = f"Подключение к {endpoint.host}:{endpoint.port}…"
+        self._client.start()
+        self._refresh()
+
+    def _disconnect_client(self) -> None:
+        client = self._client
+        self._client = None
+        self._session = None
+        if client is not None:
+            client.stop()
+        self._connected = False
+
+    def _toggle_connection(self) -> None:
+        if self._client is not None:
+            self._disconnect_client()
+            self._connection_message = "Отключено"
+            self._refresh()
+            return
+        self._connect_client()
+
+    def _handle_connection_state(self, connected: bool, message: str) -> None:
+        was_connected = self._connected
+        self._connected = connected
+        self._connection_message = message
+        if was_connected and not connected and self._session is not None:
+            self._session.handle_connection_lost()
+        self._refresh()
+
+    def _handle_server_message(self, message: object) -> None:
+        if not isinstance(message, dict) or self._session is None:
+            return
+        self._session.handle_server_message(message)
+        self._sync_policy_widgets()
+        self._sync_point_widgets()
+        self._refresh()
+
+    def _handle_session_event(self, event: SessionEvent) -> None:
+        if event.kind == "turn" and event.turn is not None:
+            turn = event.turn
+            kind = "AUTO" if turn.automatic else "PLAYER"
+            self.log.appendPlainText(
+                f"#{turn.turn_index:02d} [{kind}] {turn.speaker_name} ({turn.mode.value}):\n"
+                f"{turn.response or '[только structured intents]'}\n"
+            )
+        elif event.kind in {"error", "warning", "directive", "protocol"}:
+            self.log.appendPlainText(f"[{event.kind.upper()}] {event.message}\n")
+        elif event.kind == "asr" and event.message:
+            self.player_input.setPlainText(event.message)
+        self._sync_point_widgets()
+        self._refresh()
+
+    def _submit_player_message(self) -> None:
+        session = self._session
+        if session is None:
+            self._show_error("Клиент не запущен")
+            return
+        try:
+            session.submit_player_message(self.player_input.toPlainText())
+        except (SimulationError, ConnectionError, OSError) as exc:
+            self._show_error(str(exc))
+        self._sync_point_widgets()
+        self._refresh()
 
     def _set_enabled(self, character_id: str, enabled: bool) -> None:
         self.simulation.get_mita(character_id).enabled = enabled
@@ -241,73 +338,46 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         self._sync_point_widgets()
         self._refresh()
 
-    def _sync_global_settings(self) -> None:
-        self.simulation.auto_dialogue_enabled = self.auto_check.isChecked()
-        self.simulation.limit_modifier_percent = float(self.limit_spin.value())
+    def _read_policy_widgets(self) -> None:
+        policy = self.simulation.policy
+        policy.auto_dialogue_enabled = self.auto_check.isChecked()
+        policy.max_chain_turns = self.turn_limit_spin.value()
+        policy.max_continues = self.continue_spin.value()
+        policy.game_master_enabled = self.gm_check.isChecked()
+        policy.game_master_repeat = self.gm_repeat_spin.value()
+        self._sync_policy_dependencies()
         self._refresh()
 
-    def _begin_player_turn(self) -> None:
-        self._stop_timer()
-        try:
-            result = self.simulation.begin_player_turn(self.player_input.toPlainText())
-        except SimulationError as exc:
-            self._show_error(str(exc))
-            return
-        self._append_turn(result)
-        self._sync_point_widgets()
-        self._refresh()
+    def _sync_policy_widgets(self) -> None:
+        policy = self.simulation.policy
+        widgets = (self.auto_check, self.turn_limit_spin, self.continue_spin, self.gm_check, self.gm_repeat_spin)
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.auto_check.setChecked(policy.auto_dialogue_enabled)
+        self.turn_limit_spin.setValue(policy.max_chain_turns)
+        self.continue_spin.setValue(policy.max_continues)
+        self.gm_check.setChecked(policy.game_master_enabled)
+        self.gm_repeat_spin.setValue(policy.game_master_repeat)
+        for widget in widgets:
+            widget.blockSignals(False)
+        self._sync_policy_dependencies()
 
-    def _step(self) -> None:
-        self._stop_timer()
-        self._perform_step()
-
-    def _perform_step(self) -> bool:
-        try:
-            result = self.simulation.step()
-        except SimulationError as exc:
-            self._show_error(str(exc))
-            self._refresh()
-            return False
-        self._append_turn(result)
-        self._sync_point_widgets()
-        self._refresh()
-        return True
-
-    def _toggle_run(self) -> None:
-        if self._running:
-            self._stop_timer()
-            return
-        if not self.simulation.pending_speaker_id:
-            self._show_error("Сначала отправьте реплику игрока или создайте следующий ход")
-            return
-        self._running = True
-        self.run_button.setText("Пауза")
-        self._timer.start()
-        self._refresh()
-
-    def _run_one_automatic_turn(self) -> None:
-        if not self.simulation.pending_speaker_id or not self._perform_step():
-            self._stop_timer()
-
-    def _stop_timer(self) -> None:
-        self._timer.stop()
-        self._running = False
-        self.run_button.setText("Запустить цепочку")
+    def _sync_policy_dependencies(self) -> None:
+        enabled = self.auto_check.isChecked()
+        self.turn_limit_label.setEnabled(enabled)
+        self.turn_limit_spin.setEnabled(enabled)
 
     def _reset(self) -> None:
-        self._stop_timer()
-        self.simulation.seed = self.seed_spin.value()
-        self.simulation.reset()
+        if self._session is not None and self._session.busy:
+            self._show_error("Дождитесь завершения текущей задачи")
+            return
+        if self._session is not None:
+            self._session.reset()
+        else:
+            self.simulation.reset()
         self.log.clear()
         self._sync_point_widgets()
         self._refresh()
-
-    def _append_turn(self, result: TurnResult) -> None:
-        kind = "AUTO" if result.automatic else "PLAYER"
-        self.log.appendPlainText(
-            f"#{result.turn_index:02d} [{kind}] {result.speaker_name} "
-            f"({result.mode.value}):\n{result.response}\n"
-        )
 
     def _sync_point_widgets(self) -> None:
         for mita in self.simulation.mitas:
@@ -323,14 +393,21 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         active_ids = {item.character_id for item in active}
         order_text = " → ".join(item.display_name for item in active) or "—"
         self.order_label.setText(f"Текущая очередь: {order_text}")
+        busy = bool(self._session and self._session.busy)
         self.status_label.setText(
             f"{self.simulation.stop_reason}\n"
-            f"Счётчик Unity: {self.simulation.auto_turn_counter}; "
-            f"активных персонажей: {len(active)}"
+            f"Ходов в цепочке: {self.simulation.chain_turn_count}; активных Мит: {len(active)}; "
+            f"settings revision: {self.simulation.policy.settings_revision}"
         )
-        self.step_button.setEnabled(bool(self.simulation.pending_speaker_id) and not self._running)
-        self.send_button.setEnabled(bool(active) and not self._running)
-        self.reset_button.setEnabled(not self._running)
+        self.connection_label.setText(self._connection_message)
+        self.connection_label.setProperty("connected", self._connected)
+        self.connection_label.style().unpolish(self.connection_label)
+        self.connection_label.style().polish(self.connection_label)
+        self.connect_button.setText("Отключиться" if self._client is not None else "Подключиться")
+        self.host_edit.setEnabled(self._client is None)
+        self.port_spin.setEnabled(self._client is None)
+        self.send_button.setEnabled(self._connected and bool(active) and not busy)
+        self.reset_button.setEnabled(not busy)
         for mita in self.simulation.mitas:
             row = self._row_by_id.get(mita.character_id)
             if row is None:
@@ -343,7 +420,11 @@ class DialogueTurnSimulatorWindow(QMainWindow):
                 name_item.setToolTip(reason)
 
     def _show_error(self, message: str) -> None:
-        QMessageBox.warning(self, "Симулятор диалога", message)
+        QMessageBox.warning(self, "Headless Unity-клиент", message)
+
+    def closeEvent(self, event: Any) -> None:
+        self._disconnect_client()
+        super().closeEvent(event)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -353,15 +434,24 @@ class DialogueTurnSimulatorWindow(QMainWindow):
             QLabel#Subtitle, QLabel#Muted { color: #9ca3ba; }
             QLabel#SectionTitle { font-size: 15px; font-weight: 700; color: #ffffff; }
             QLabel#Status { background: #111827; border: 1px solid #26314b; border-radius: 8px; padding: 9px; color: #cbd5ff; }
+            QLabel#ConnectionStatus { color: #e39b64; font-weight: 600; }
+            QLabel#ConnectionStatus[connected="true"] { color: #75d99b; }
             QFrame#Card { background: #11131f; border: 1px solid #25293a; border-radius: 10px; }
-            QTableWidget, QPlainTextEdit { background: #0d101a; border: 1px solid #292e42; border-radius: 7px; color: #eef0f8; selection-background-color: #3c4778; }
+            QTableWidget, QPlainTextEdit, QLineEdit { background: #0d101a; border: 1px solid #292e42; border-radius: 7px; color: #eef0f8; selection-background-color: #3c4778; }
             QHeaderView::section { background: #171a28; color: #b9bfd4; border: 0; border-bottom: 1px solid #30354b; padding: 7px; }
             QPushButton { background: #24283a; border: 1px solid #353b54; border-radius: 7px; padding: 7px 11px; color: #f4f5fb; }
             QPushButton:hover { background: #30364d; }
             QPushButton:disabled { color: #656b7e; background: #181b28; }
             QPushButton#Primary { background: #6757d9; border-color: #8072ef; font-weight: 700; }
             QPushButton#Primary:hover { background: #7565e7; }
-            QComboBox, QSpinBox, QDoubleSpinBox { background: #171a28; border: 1px solid #30364b; border-radius: 6px; padding: 5px; color: #f2f3fa; }
+            QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background: #171a28; border: 1px solid #30364b; border-radius: 6px; padding: 5px; color: #f2f3fa; }
+            QWidget#NumberStepper { background: #171a28; border: 1px solid #30364b; border-radius: 8px; }
+            QSpinBox#NumberStepperValue { background: transparent; border: 0; border-radius: 0; padding: 0 6px; font-weight: 700; }
+            QToolButton#NumberStepperDecrease, QToolButton#NumberStepperIncrease { min-width: 34px; max-width: 34px; min-height: 38px; max-height: 38px; background: #1c2030; border: 0; color: #aeb5cc; font-size: 16px; }
+            QToolButton#NumberStepperDecrease { border-right: 1px solid #30364b; border-top-left-radius: 7px; border-bottom-left-radius: 7px; }
+            QToolButton#NumberStepperIncrease { border-left: 1px solid #30364b; border-top-right-radius: 7px; border-bottom-right-radius: 7px; }
+            QToolButton#NumberStepperDecrease:hover, QToolButton#NumberStepperIncrease:hover { background: #34305a; color: #ffffff; }
+            QWidget#NumberStepper:disabled, QSpinBox#NumberStepperValue:disabled, QToolButton#NumberStepperDecrease:disabled, QToolButton#NumberStepperIncrease:disabled { color: #656b7e; background: #181b28; }
             QCheckBox { color: #eef0f8; spacing: 7px; }
             """
         )

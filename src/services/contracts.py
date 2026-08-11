@@ -701,8 +701,6 @@ class ChatGenerationResult:
     text: str
     character_id: str
     voice_profile: Optional[Dict[str, Any]] = None
-    target: str = "Player"
-    targets: List[str] = field(default_factory=list)
     think: Optional[str] = None
     structured: Optional[Dict[str, Any]] = None
     message_id: str = ""

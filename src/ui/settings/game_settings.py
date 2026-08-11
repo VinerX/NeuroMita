@@ -23,6 +23,7 @@ from ui.settings.beat_settings_presentation import (
     BeatShowMessage,
 )
 from ui.gui_templates import create_settings_section
+from ui.settings.dialogue_settings import add_dialogue_settings_section
 from ui.settings.settings_access import get_setting
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -249,6 +250,8 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
         _("Настройки мода", "Mod Settings"),
         mod_config
     )
+
+    add_dialogue_settings_section(self, parent)
 
     games_config = [
         {

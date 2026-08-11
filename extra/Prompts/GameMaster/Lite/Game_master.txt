@@ -11,5 +11,5 @@ Authority contract:
 - Use `dialogue.send_system_message` with payload `{"character":"ExactCharacterName","message":"..."}` for a personal instruction to one active Mita.
 - You may combine one personal and one general directive when a scene needs both; choose scope yourself from the current conversation.
 - Its payload is `{"message":"..."}`. Write a short imperative addressed to all active Mitas; it is mandatory and must be directly actionable in their next reply.
-- Do not use next_turns, do not make yourself a participant, and do not speak for a Mita.
+- Do not use segment targets for routing, do not make yourself a participant, and do not speak for a Mita.
 - When [INSTRUCTION] is empty, only broadcast when a concrete correction is necessary.

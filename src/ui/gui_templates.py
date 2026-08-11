@@ -479,8 +479,13 @@ def create_setting_widget(
         layout.addLayout(title_col, 1)
         layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-    elif widget_type == 'spinbox':
-        widget = QSpinBox()
+    elif widget_type in ('spinbox', 'number_stepper'):
+        if widget_type == 'number_stepper':
+            from ui.widgets.number_stepper import NumberStepper
+
+            widget = NumberStepper()
+        else:
+            widget = QSpinBox()
         try:
             spin_default = int(default)
         except (TypeError, ValueError):

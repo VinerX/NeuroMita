@@ -380,6 +380,60 @@ QWidget#SettingsPageRoot QComboBox::drop-down {
     width: 26px;
 }
 
+QWidget#SettingsPageRoot QWidget#NumberStepper {
+    background-color: rgba(9, 10, 22, 0.88);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+}
+
+QWidget#SettingsPageRoot QSpinBox#NumberStepperValue {
+    min-width: 54px;
+    min-height: 36px;
+    padding: 0 8px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: {text};
+    font-weight: 700;
+}
+
+QWidget#SettingsPageRoot QToolButton#NumberStepperDecrease,
+QWidget#SettingsPageRoot QToolButton#NumberStepperIncrease {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 38px;
+    max-height: 38px;
+    padding: 0;
+    background: rgba(255,255,255,0.035);
+    border: none;
+    color: {muted};
+    font-size: 13pt;
+    font-weight: 500;
+}
+
+QWidget#SettingsPageRoot QToolButton#NumberStepperDecrease {
+    border-right: 1px solid rgba(255,255,255,0.08);
+    border-top-left-radius: 9px;
+    border-bottom-left-radius: 9px;
+}
+
+QWidget#SettingsPageRoot QToolButton#NumberStepperIncrease {
+    border-left: 1px solid rgba(255,255,255,0.08);
+    border-top-right-radius: 9px;
+    border-bottom-right-radius: 9px;
+}
+
+QWidget#SettingsPageRoot QToolButton#NumberStepperDecrease:hover,
+QWidget#SettingsPageRoot QToolButton#NumberStepperIncrease:hover {
+    background: rgba({accent_rgb}, 0.16);
+    color: {text};
+}
+
+QWidget#SettingsPageRoot QToolButton#NumberStepperDecrease:pressed,
+QWidget#SettingsPageRoot QToolButton#NumberStepperIncrease:pressed {
+    background: rgba({accent_rgb}, 0.28);
+}
+
 QWidget#SettingsPageRoot QCheckBox {
     background: transparent;
     border: none;

@@ -256,7 +256,14 @@ class ResponseSegment(BaseModel):
 
     start_game: Optional[str] = Field(default=None, description="Game ID to start")
     end_game: Optional[str] = Field(default=None, description="Game ID to end")
-    target: Optional[str] = Field(default=None, description="Target character name for this segment")
+    target: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional addressee of this segment's spoken text. Use the exact active character "
+            "identifier from the Multi-Character Environment; omit it when speaking to the Player. "
+            "This is not a Unity object target or an action command."
+        ),
+    )
     hint: Optional[str] = Field(default=None, description="Hint text to display")
     allow_sleep: Optional[bool] = Field(default=None, description="Whether to allow sleep")
 
