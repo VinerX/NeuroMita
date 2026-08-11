@@ -671,6 +671,96 @@ class RAGManager:
             except Exception:
                 pass
 
+    def update_history_embeddings(
+        self,
+        items: List[Tuple[int, str]],
+        *,
+        priority: str = "bulk",
+    ) -> int:
+        """Generate and persist history embeddings in a single batch."""
+        normalized: List[Tuple[int, str]] = []
+        for msg_id, text in items or []:
+            clean_text = str(text or "").strip()
+            if msg_id and clean_text:
+                normalized.append((int(msg_id), clean_text))
+        if not normalized:
+            return 0
+
+        try:
+            vectors = list(
+                self._get_embeddings(
+                    [text for _msg_id, text in normalized],
+                    priority=priority,
+                )
+                or []
+            )
+        except Exception as e:
+            logger.warning(
+                f"RAGManager: batch embedding generation failed (history) - ignored: {e}",
+                exc_info=True,
+            )
+            return 0
+
+        if len(vectors) != len(normalized):
+            logger.warning(
+                "RAGManager: history batch embedding count mismatch: texts=%s, vectors=%s",
+                len(normalized),
+                len(vectors),
+            )
+            vectors = (vectors + [None] * len(normalized))[:len(normalized)]
+
+        model = self._current_model_name()
+        configured_dims = self._current_dimensions()
+        sentence_level = bool(SettingsManager.get("RAG_SENTENCE_LEVEL", False))
+        min_len = int(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20) or 20)
+        conn = None
+        stored = 0
+        try:
+            conn = self.db.get_connection()
+            for (msg_id, text), vector in zip(normalized, vectors):
+                if vector is None:
+                    continue
+                blob = self._array_to_blob(vector)
+                dims = configured_dims or int(vector.shape[0])
+                conn.execute(
+                    "UPDATE history SET embedding = ? WHERE id = ?",
+                    (blob, msg_id),
+                )
+                conn.execute(
+                    """INSERT OR REPLACE INTO embeddings
+                       (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                       VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                    (msg_id, self.character_id, model, dims, blob),
+                )
+                if sentence_level:
+                    self._index_sentences(
+                        conn,
+                        "history",
+                        msg_id,
+                        text,
+                        model=model,
+                        min_len=min_len,
+                    )
+                stored += 1
+            conn.commit()
+            return stored
+        except sqlite3.OperationalError as e:
+            logger.warning(
+                f"RAGManager: sqlite operational error while updating history embeddings (ignored): {e}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"RAGManager: failed to update history embeddings (ignored): {e}",
+                exc_info=True,
+            )
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        return 0
+
     def update_history_embedding(self, msg_id: int, text: str):
         """Создает и сохраняет эмбеддинг для сообщения истории (без падений, RAG опционален)."""
         try:

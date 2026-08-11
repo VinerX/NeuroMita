@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import List, Optional
 
@@ -10,6 +11,22 @@ from main_logger import logger
 
 _RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_SECRET_QUERY_RE = re.compile(
+    r"([?&](?:key|api[_-]?key|apikey|token|access_token)=)[^&\s]+",
+    re.IGNORECASE,
+)
+
+
+def _safe_error_text(exc: BaseException | None, secrets) -> str:
+    """Return an exception string safe for logs."""
+    if exc is None:
+        return "unknown error"
+    text = str(exc)
+    for secret in secrets or ():
+        secret_text = str(secret or "")
+        if secret_text:
+            text = text.replace(secret_text, "<redacted>")
+    return _SECRET_QUERY_RE.sub(r"\1<redacted>", text)
 
 
 def _l2_normalize(vec: np.ndarray) -> np.ndarray:
@@ -24,7 +41,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
     Reserve keys rotated on 429/5xx.
     """
     name = "gemini"
-    # Gemini API limit: 100 texts per batchEmbedContents call
+    # Keep REST payloads bounded; RagEmbedder may chunk before this provider too.
     _BATCH_LIMIT = 100
 
     def is_applicable(self, req: EmbeddingRequest) -> bool:
@@ -76,15 +93,19 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
 
         last_exc: Optional[Exception] = None
         for attempt in range(max_attempts):
-            key = all_keys[attempt % len(all_keys)]
-            url = f"{base_url}/models/{model}:batchEmbedContents?key={key}"
-            headers = {"Content-Type": "application/json"}
+            key_index = attempt % len(all_keys)
+            key = all_keys[key_index]
+            # Keep credentials out of URLs because HTTPError strings include response URLs.
+            url = f"{base_url}/models/{model}:batchEmbedContents"
+            headers = dict(req.headers or {})
+            headers["Content-Type"] = "application/json"
+            headers["x-goog-api-key"] = key
             try:
                 resp = requests_lib.post(url, json=payload, headers=headers, timeout=timeout_sec)
 
                 if resp.status_code in _RETRY_STATUS and attempt < max_attempts - 1:
                     logger.warning(
-                        f"[EmbedAPI][gemini] HTTP {resp.status_code} key #{attempt+1}, retrying"
+                        f"[EmbedAPI][gemini] HTTP {resp.status_code} key #{key_index + 1}/{len(all_keys)}, retrying"
                     )
                     retry_after = resp.headers.get("Retry-After") if "resp" in locals() else None
                     try:
@@ -112,10 +133,10 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
 
             except Exception as e:
                 last_exc = e
-                logger.warning(f"[EmbedAPI][gemini] attempt {attempt+1} failed: {e}")
+                logger.warning(f"[EmbedAPI][gemini] attempt {attempt+1} failed: {_safe_error_text(e, all_keys)}")
                 if attempt < max_attempts - 1:
                     time.sleep(backoff_sec * (2 ** attempt))
                     continue
 
-        logger.error(f"[EmbedAPI][gemini] all attempts failed. Last: {last_exc}", exc_info=True)
+        logger.error(f"[EmbedAPI][gemini] all attempts failed. Last: {_safe_error_text(last_exc, all_keys)}")
         return [None] * len(texts)
