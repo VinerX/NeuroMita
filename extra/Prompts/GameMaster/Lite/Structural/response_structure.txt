@@ -14,12 +14,11 @@ Schema:
         }
       ]
     }
-  ],
-  "next_turns": []
+  ]
 }
 
 Rules:
 - `text` is optional narration only; never write dialogue on a Mita's behalf.
 - Use at most one broadcast intent.
 - For a non-empty [INSTRUCTION], the broadcast intent is required.
-- `next_turns` must always be an empty array.
+- Do not use segment `target` for routing. Use the explicit GameMaster intents or Speaker command defined in the GameMaster prompt.

@@ -4,9 +4,6 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -14,11 +11,6 @@ if str(PROJECT_SRC) not in sys.path:
 
 from PyQt6.QtWidgets import QApplication, QWidget
 from ui.settings.embedding_index_actions import EmbeddingIndexActionsWidget
-
-
-class _Supervisor:
-    def running(self, key):
-        return object() if key == "reindex_all" else None
 
 
 class _Dialog:
@@ -51,12 +43,15 @@ class EmbeddingIndexActionsTests(unittest.TestCase):
     def test_running_index_has_visible_status_and_reopen_button(self) -> None:
         parent = QWidget()
         dialog = _Dialog()
-        parent._reindex_all_dialog = dialog
 
-        with patch("ui.settings.embedding_index_actions.gui_task_supervisor", return_value=_Supervisor()):
-            widget = EmbeddingIndexActionsWidget(parent, lambda: None)
-            widget._refresh_task_state()
-            widget._show_progress()
+        widget = EmbeddingIndexActionsWidget(
+            parent,
+            lambda: None,
+            lambda: None,
+            lambda: dialog,
+        )
+        widget._refresh_task_state()
+        widget._show_progress()
 
         self.assertFalse(widget._active_widget.isHidden())
         self.assertIn("12 / 50", widget._active_label.text())

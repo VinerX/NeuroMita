@@ -1053,11 +1053,17 @@ def _build_embed_provider_widget(gui, view_model):
 
 
 def _build_embedding_index_actions(gui, rag_install_view_model):
+    from controllers.gui.character_settings_logic import (
+        active_reindex_all_dialog,
+        run_reindexing_all,
+    )
     from ui.settings.embedding_index_actions import EmbeddingIndexActionsWidget
 
     return EmbeddingIndexActionsWidget(
         gui,
         lambda: _refresh_rag_install_status(rag_install_view_model),
+        lambda: run_reindexing_all(gui),
+        active_reindex_all_dialog,
     )
 
 

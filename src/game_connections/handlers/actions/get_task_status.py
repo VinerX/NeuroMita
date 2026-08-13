@@ -34,7 +34,7 @@ class GetTaskStatusAction:
             settings = use(SettingsService)
             gm_enabled = bool(settings.get("GM_ON", False))
             try:
-                gm_repeat = int(settings.get("GM_CHECK_INTERVAL", settings.get("GM_REPEAT", 2)) or 2)
+                gm_repeat = int(settings.get("GM_REPEAT", 2) or 2)
             except (TypeError, ValueError):
                 gm_repeat = 2
             # The legacy Unity controller treats this as a number of NPC turns.
@@ -42,10 +42,9 @@ class GetTaskStatusAction:
             gm_repeat = max(1, min(gm_repeat, 100))
 
             response["GM_ON"] = gm_enabled
-            # GameMaster is a hidden Python control-plane task; legacy clients
-            # must never interpret its status as a visible response to read.
+            # Hidden moderator plans are executed by Unity as intents, never
+            # rendered as a visible GameMaster chat reply.
             response["GM_READ"] = False
             response["GM_VOICE"] = bool(gm_enabled and settings.get("GM_VOICE", False))
             response["GM_REPEAT"] = gm_repeat
-            response["GM_CHECK_INTERVAL"] = gm_repeat
         await ctx.server.send_json(ctx.writer, response)

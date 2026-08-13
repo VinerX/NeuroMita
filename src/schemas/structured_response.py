@@ -259,9 +259,9 @@ class ResponseSegment(BaseModel):
     target: Optional[str] = Field(
         default=None,
         description=(
-            "Exact display name of the participant addressed by this segment. "
-            "In a group dialogue, the final explicit target is Python's validated "
-            "priority for the next Mita reply."
+            "Optional addressee of this segment's spoken text. Use the exact active character "
+            "identifier from the Multi-Character Environment; omit it when speaking to the Player. "
+            "This is not a Unity object target or an action command."
         ),
     )
     hint: Optional[str] = Field(default=None, description="Hint text to display")

@@ -20,8 +20,6 @@ from services.contracts import (
 from utils.prompt_builder import build_system_prompts
 from core.request_policy import RequestPolicy
 from services.runtime_capabilities import runtime_capabilities
-from services.game_master_context_builder import GameMasterContextBuilder
-from services.game_master_services import ensure_game_master_services
 from domain.world_character_relations import get_world_character_context
 
 _TYPE_MAP = {"float": "number", "double": "number", "int": "integer",
@@ -50,8 +48,6 @@ class PromptController(PromptBuilderService):
     """Сборка промпта. Чистая функция над персонажем и историей — шина не нужна."""
 
     def __init__(self):
-        registry, transcript, _scheduler = ensure_game_master_services()
-        self._game_master_context = GameMasterContextBuilder(registry, transcript)
         services().register(PromptBuilderService, self, replace=True)
 
     def _get_setting(self, key: str, default=None):
@@ -306,6 +302,13 @@ class PromptController(PromptBuilderService):
             "UNITY_EFFECTS_AVAILABLE",
             None if caps.connected is None else not caps.structured_segment_exclude_fields,
         )
+
+        if getattr(character, "char_id", "") == "GameMaster":
+            normalized_event_type = str(event_type or "").strip().lower()
+            instruction = gm_instruction_override
+            if instruction is None and normalized_event_type != "game_master_observe":
+                instruction = self._get_setting("GM_SMALL_PROMPT", "")
+            character.set_variable("GM_INSTRUCTION", instruction or "")
 
     def _build_system_messages(
         self,
@@ -712,29 +715,7 @@ class PromptController(PromptBuilderService):
                 "[/GAME_MASTER_TASK]"
             ),
         }
-    def _build_game_master_prompt(self, request: PromptBuildRequest) -> PromptBuildResult:
-        """Build only the hidden GM control-plane prompt."""
-        # Periodic checks review the scene without inheriting a persistent task.
-        # Only an explicit manual command may add a director task.
-        task = ""
-        if str(request.event_type or "").strip().lower() == "game_master_command":
-            task = str(request.gm_instruction_override or request.user_input or "").strip()
-        messages = self._game_master_context.build_messages(
-            dialogue=request.dialogue,
-            task=task,
-            capabilities=request.capabilities,
-        )
-        return PromptBuildResult(
-            messages=messages,
-            history_messages=[],
-            user_message=messages[-1] if messages and messages[-1].get("role") == "user" else None,
-            support_intents=False,
-        )
-
     def build(self, request: PromptBuildRequest) -> PromptBuildResult:
-        if request.is_game_master:
-            return self._build_game_master_prompt(request)
-
         character = request.character
         char_id = str(getattr(character, "char_id", "") or "")
         if not char_id:
@@ -862,101 +843,33 @@ class PromptController(PromptBuilderService):
         messages.extend(history_limited)
 
         dialogue_context_message = None
-        dialogue_transcript_messages: list[dict[str, str]] = []
         dialogue = request.dialogue
         if dialogue:
-            target_routing_enabled = str(
-                self._get_setting("MITA_DIALOGUE_TARGET_ROUTING", True)
-            ).strip().casefold() not in {"0", "false", "no", "off"}
             get_value = dialogue.get if isinstance(dialogue, dict) else lambda key, default=None: getattr(dialogue, key, default)
             snapshot = get_value("participants", []) or []
             participant_names = []
-            participant_display_names: dict[str, str] = {}
             for participant in snapshot:
                 getter = participant.get if isinstance(participant, dict) else lambda key, default=None: getattr(participant, key, default)
-                character_id = str(getter("character_id", "") or "").strip()
                 display_name = str(
                     getter("display_name", "")
-                    or character_id
+                    or getter("character_id", "")
                     or ""
                 ).strip()
                 if display_name:
                     participant_names.append(display_name)
-                    participant_display_names[display_name.casefold()] = display_name
-                    if character_id:
-                        participant_display_names[character_id.casefold()] = display_name
 
             lines = [
                 "[Current Group Conversation]",
-                (
-                    "Reply naturally to the current turn. Python validates and executes "
-                    "the decision about who speaks next."
-                    if target_routing_enabled
-                    else "Reply naturally to the current turn. Python owns the decision about who speaks next."
-                ),
+                "Reply naturally to the current turn. Unity owns the speaker order and all follow-up scheduling.",
             ]
             if participant_names:
                 lines.append("Present: " + ", ".join(participant_names))
-                if target_routing_enabled:
-                    lines.extend(
-                        (
-                            "When addressing a present Mita, set that segment's target "
-                            "to her exact display name from Present.",
-                            "Omit target when addressing Player. The last non-empty target "
-                            "is the validated priority for the next Mita reply.",
-                        )
-                    )
-            conversation_id = str(get_value("conversation_id", "") or "").strip()
-            recent_group_turns = self._game_master_context.transcript.recent(
-                conversation_id,
-                max_entries=12,
-                max_chars=6000,
-            )
-            if recent_group_turns:
-                lines.extend(
-                    (
-                        "Recent group dialogue follows as ordinary character messages.",
-                        "Speaker and addressee metadata identify who said each segment to whom.",
-                    )
-                )
-                for entry in recent_group_turns:
-                    speaker_id = str(entry.speaker_character_id or "").strip()
-                    target_id = str(entry.target_character_id or "").strip()
-                    speaker = participant_display_names.get(
-                        speaker_id.casefold(), speaker_id
-                    )
-                    target = participant_display_names.get(
-                        target_id.casefold(), target_id
-                    )
-                    is_owner = speaker_id.casefold() == char_id.casefold()
-                    role = "assistant" if is_owner else "user"
-                    content = str(entry.text or "")
-                    if is_owner and target_id and target_id.casefold() != "player":
-                        content = f"[To: {target}] {content}"
-                    elif not is_owner and speaker_id.casefold() != "player":
-                        addressee = f" -> {target}" if target else ""
-                        content = f"[Собеседник: {speaker}{addressee}] {content}"
-                    transcript_message = {
-                        "role": role,
-                        "content": content,
-                        "speaker": speaker,
-                        "sender": speaker,
-                    }
-                    if target:
-                        transcript_message["target"] = target
-                    dialogue_transcript_messages.append(transcript_message)
             dialogue_context_message = {
                 "role": "system",
                 "content": "\n".join(lines),
             }
         if game_state_prompt_content:
             messages.append({"role": "system", "content": game_state_prompt_content})
-
-        if dialogue:
-            conversation_id = dialogue.get("conversation_id", "") if isinstance(dialogue, dict) else getattr(dialogue, "conversation_id", "")
-            scene_directives = self._game_master_context.scene_directives(conversation_id, char_id)
-            if scene_directives:
-                messages.append({"role": "system", "content": scene_directives})
 
         non_player_participants = [p for p in participants if p and p != "Player"]
         if dialogue is None and len(non_player_participants) >= 2:
@@ -1011,9 +924,15 @@ class PromptController(PromptBuilderService):
         messages.append(self._build_system_state_message())
         if dialogue_context_message is not None:
             messages.append(dialogue_context_message)
-        messages.extend(dialogue_transcript_messages)
 
         event_types_as_event_role = {"idle_timeout", "idle", "timer", "reminder"}
+
+        if char_id == "GameMaster":
+            game_master_task = self._build_game_master_task_message(
+                character.get_variable("GM_INSTRUCTION", "")
+            )
+            if game_master_task is not None:
+                messages.append(game_master_task)
 
         if system_input:
             role = "system"

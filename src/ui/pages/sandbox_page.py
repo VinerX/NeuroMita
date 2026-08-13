@@ -40,7 +40,6 @@ from ui.pages.sandbox_presentation import (
 )
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.character_state_panel import CharacterStatePanel
-from ui.widgets.dialogue_runtime_inspector import DialogueRuntimeInspector
 from ui.widgets.tr_combobox import TRQComboBox
 from utils import _
 from localization.live import register_if_tr, tr_set
@@ -555,7 +554,6 @@ class SandboxPage(QWidget):
         self._inspector_layout = None
         self._inspector_collapse_btn = None
         self._inspector_tab_buttons = {}
-        self._dialogue_runtime_inspector = None
         # Collapsed-state rail (activity-bar): expand btn + tab icons.
         self._inspector_rail = None
         self._rail_tab_buttons = {}
@@ -640,8 +638,6 @@ class SandboxPage(QWidget):
             self._refresh_status_values()
         if settings_changed:
             self._sync_toggles_from_settings()
-            if self._dialogue_runtime_inspector is not None:
-                self._dialogue_runtime_inspector.sync_global_settings(state.settings)
         if status_changed:
             self._render_status_indicators(state)
         if changed("memory"):
@@ -2219,16 +2215,6 @@ class SandboxPage(QWidget):
         layout.addStretch(1)
         return self._wrap_in_scroll(page)
 
-    def _build_inspector_dialogue_tab(self) -> QWidget:
-        page, layout = self._make_tab_page()
-        self._dialogue_runtime_inspector = DialogueRuntimeInspector(
-            page,
-            settings_snapshot=self._settings_snapshot,
-            update_setting=self.set,
-        )
-        layout.addWidget(self._dialogue_runtime_inspector, 1)
-        return self._wrap_in_scroll(page)
-
     def _build_inspector(self) -> QWidget:
         inspector = QFrame()
         inspector.setObjectName("SandboxInspector")
@@ -2258,14 +2244,12 @@ class SandboxPage(QWidget):
         session_page = self._build_inspector_session_tab()
         state_page = self._build_inspector_state_tab()
         debug_page = self._build_inspector_debug_tab()
-        dialogue_page = self._build_inspector_dialogue_tab()
 
         self._inspector_tab_buttons = {}
         for key, label in (
             ("session", _("Сессия", "Session")),
             ("state", _("Состояние", "State")),
             ("debug", _("Отладка", "Debug")),
-            ("dialogue", _("Multi-Mita", "Multi-Mita")),
         ):
             tab_host_layout.addWidget(self._make_inspector_tab_button(key, label))
         tab_host_layout.addStretch(1)
@@ -2288,7 +2272,6 @@ class SandboxPage(QWidget):
             "session": stack.addWidget(session_page),
             "state": stack.addWidget(state_page),
             "debug": stack.addWidget(debug_page),
-            "dialogue": stack.addWidget(dialogue_page),
         }
         layout.addWidget(stack, 1)
         self._inspector_stack = stack
@@ -2334,7 +2317,6 @@ class SandboxPage(QWidget):
             ("session", "fa6s.id-badge", _("Сессия", "Session")),
             ("state", "fa6s.heart-pulse", _("Состояние", "State")),
             ("debug", "fa6s.bug", _("Отладка", "Debug")),
-            ("dialogue", "fa6s.people-group", _("Multi-Mita", "Multi-Mita")),
         ):
             btn = QPushButton()
             btn.setObjectName("SandboxRailTabButton")

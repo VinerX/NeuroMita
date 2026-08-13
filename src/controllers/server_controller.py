@@ -126,17 +126,34 @@ class ServerController:
         self._destroyed = False
 
         self.settings_to_send = [
-            'ACTION_MENU', 'MITAS_MENU', 'IGNORE_GAME_REQUESTS', 'GAME_BLOCK_LEVEL', 'MITA_DIALOGUE_AUTO', 'MITA_DIALOGUE_TARGET_ROUTING', 'DIALOGUE_MAX_AUTO_TURNS', 'DIALOGUE_AUTO_TURN_COUNT_MODE', 'DIALOGUE_AUTO_TURNS_PER_PARTICIPANT', 'DIALOGUE_MAX_CONTINUES', 'GM_ON', 'GM_CHECK_INTERVAL', 'GM_REPEAT', 'GM_ALLOW_ROUTING', 'GM_ALLOW_NARRATION', 'GM_SHOW_NARRATION',
-            'CHARACTER', 'WORLD_HIERARCHY_TREE',
-            'BEAT_SYNC_ENABLED', 'BEAT_SYNC_STREAMING', 'BEAT_SYNC_CHUNK_SECONDS',
-            'BEAT_SYNC_MIN_CONFIDENCE', 'BEAT_SYNC_AUTO_INSTALL',
-            'BEAT_SYNC_USE_FILE_TRANSFER',
+            "ACTION_MENU",
+            "MITAS_MENU",
+            "IGNORE_GAME_REQUESTS",
+            "GAME_BLOCK_LEVEL",
+            "MITA_DIALOGUE_AUTO",
+            "DIALOGUE_MAX_CHAIN_TURNS",
+            "DIALOGUE_MAX_CONTINUES",
+            "GM_ON",
+            "GM_REPEAT",
+            "CHARACTER",
+            "WORLD_HIERARCHY_TREE",
+            "BEAT_SYNC_ENABLED",
+            "BEAT_SYNC_STREAMING",
+            "BEAT_SYNC_CHUNK_SECONDS",
+            "BEAT_SYNC_MIN_CONFIDENCE",
+            "BEAT_SYNC_AUTO_INSTALL",
+            "BEAT_SYNC_USE_FILE_TRANSFER",
             # Mita head-camera (FrameRecorder)
-            'MITA_CAMERA_ENABLED', 'MITA_CAMERA_CONTINUOUS', 'MITA_CAMERA_ON_DEMAND',
-            'MITA_CAMERA_INTERVAL', 'MITA_CAMERA_MAX_FRAMES', 'MITA_CAMERA_FRAMES_TO_SEND',
-            'MITA_CAMERA_JPEG_QUALITY', 'MITA_CAMERA_USE_FILE_TRANSFER',
+            "MITA_CAMERA_ENABLED",
+            "MITA_CAMERA_CONTINUOUS",
+            "MITA_CAMERA_ON_DEMAND",
+            "MITA_CAMERA_INTERVAL",
+            "MITA_CAMERA_MAX_FRAMES",
+            "MITA_CAMERA_FRAMES_TO_SEND",
+            "MITA_CAMERA_JPEG_QUALITY",
+            "MITA_CAMERA_USE_FILE_TRANSFER",
             # Image transport: "shared_files" | "socket" | "auto"
-            'IMAGE_TRANSPORT_MODE',
+            "IMAGE_TRANSPORT_MODE",
         ]
 
         self.echo_suppressor = ServerEchoSuppressor()
@@ -436,7 +453,8 @@ class ServerController:
             if setting == 'BEAT_SYNC_AUTO_INSTALL':
                 settings[str(setting)] = False
                 continue
-            settings[str(setting)] = self._get_setting(setting)
+            default = True if setting == "MITA_DIALOGUE_AUTO" else None
+            settings[str(setting)] = self._get_setting(setting, default)
 
         characters_stats = self._collect_characters_stats()
 
@@ -458,7 +476,6 @@ class ServerController:
         except Exception as e:
             logger.warning(f"Failed to describe shared image transfer settings: {e}")
 
-        settings["MITA_DIALOGUE_AUTO_LIMIT"] = settings.get("DIALOGUE_MAX_AUTO_TURNS", 6)
         body = {"settings": settings, "characters_stats": characters_stats, "settings_revision": int(getattr(self.settings, "revision", 0) or 0)}
         if shared_transfer:
             body["shared_image_transfer"] = shared_transfer

@@ -41,11 +41,6 @@ from core.request_policy import RequestPolicy, resolve_policy
 from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
-from services.game_master_services import ensure_game_master_services
-from services.dialogue_target_resolver import (
-    dialogue_target_candidates,
-    resolve_dialogue_target,
-)
 from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
     parse_structured_response_with_meta,
@@ -142,12 +137,7 @@ class ModelController(GenerationService, ModelStateService):
         self._temporary_system_infos: dict[str, list[dict]] = {}
         self._temporary_system_infos_lock = threading.Lock()
 
-        _gm_registry, _gm_transcript, _gm_scheduler = ensure_game_master_services()
-        self.event_writer = ConversationEventWriter(
-            character_ref_resolver=self._get_character_ref,
-            transcript_service=_gm_transcript,
-            directive_registry=_gm_registry,
-        )
+        self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
 
         from handlers.image_description_handler import ImageDescriptionHandler
@@ -300,37 +290,6 @@ class ModelController(GenerationService, ModelStateService):
                     continue
                 current = getattr(segment, field_name, None)
                 setattr(segment, field_name, [] if isinstance(current, list) else None)
-
-    @staticmethod
-    def _dialogue_target_candidates(dialogue: Any, participants: list):
-        participant_values = getattr(dialogue, "participants", ()) or participants
-        return tuple(
-            candidate
-            for candidate in dialogue_target_candidates(participant_values)
-            if candidate.is_active
-            and candidate.character_id.casefold() != "gamemaster"
-            and candidate.canonical_display_name
-        )
-
-    @classmethod
-    def _canonicalize_structured_targets(
-        cls,
-        structured,
-        *,
-        dialogue: Any,
-        participants: list,
-    ) -> None:
-        """Canonicalize every structured segment target before it is displayed."""
-        candidates = cls._dialogue_target_candidates(dialogue, participants)
-        if not candidates:
-            return
-        for segment in getattr(structured, "segments", ()) or ():
-            raw_target = getattr(segment, "target", None)
-            if raw_target is None or not str(raw_target).strip():
-                continue
-            resolved = resolve_dialogue_target(raw_target, candidates)
-            if resolved is not None:
-                segment.target = resolved.canonical_display_name
 
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
@@ -1350,19 +1309,20 @@ class ModelController(GenerationService, ModelStateService):
 
         normalized_event_type = str(event_type or "").strip().lower()
         if normalized_event_type in {"game_master_observe", "game_master_command"}:
-            # GameMaster requests are always hidden, even when a lower layer
-            # supplied a stale or caller-crafted visible policy.
             policy = resolve_policy(model_event_type=normalized_event_type)
         else:
             policy = request.policy or resolve_policy(model_event_type=str(event_type))
 
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
-
         is_game_master = char_id.casefold() == "gamemaster"
 
         rag_context = ""
-        if not is_game_master and bool(self.settings.get("RAG_ENABLED", False)) and policy.react_level != 1:
+        if (
+            not is_game_master
+            and bool(self.settings.get("RAG_ENABLED", False))
+            and policy.react_level != 1
+        ):
             prompt_set_path = getattr(char, "base_data_path", None)
             with perf_span(trace_id, "generation.rag"):
                 rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
@@ -1448,13 +1408,9 @@ class ModelController(GenerationService, ModelStateService):
         if remote_only_segment_fields:
             effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
 
-        # The moderator is a control-plane actor. Tools, memory search and
-        # character-side effects are never available to it.
         if is_game_master:
             effective_capabilities["structured_output"] = True
-            effective_capabilities["gm_allow_routing"] = bool(self.settings.get("GM_ALLOW_ROUTING", True))
-            effective_capabilities["gm_allow_narration"] = bool(self.settings.get("GM_ALLOW_NARRATION", False))
-            effective_capabilities["gm_show_narration"] = bool(self.settings.get("GM_SHOW_NARRATION", False))
+
         _tools_on = bool(self.settings.get("TOOLS_ON", True)) and not is_game_master
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
@@ -1661,16 +1617,12 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls = None
         if is_structured_output:
             try:
-                if is_game_master:
-                    from schemas.game_master_response import GameMasterResponse
-                    structured_model_cls = GameMasterResponse
-                else:
-                    from schemas.structured_response import StructuredResponse as _SR
-                    try:
-                        from schemas.structured_response import build_structured_response_model  # type: ignore
-                        structured_model_cls = build_structured_response_model(_custom_params or [])
-                    except Exception:
-                        structured_model_cls = _SR
+                from schemas.structured_response import StructuredResponse as _SR
+                try:
+                    from schemas.structured_response import build_structured_response_model  # type: ignore
+                    structured_model_cls = build_structured_response_model(_custom_params or [])
+                except Exception:
+                    structured_model_cls = _SR
             except Exception:
                 structured_model_cls = None
 
@@ -1789,12 +1741,6 @@ class ModelController(GenerationService, ModelStateService):
                         visible_raw,
                         self.settings.get("SAVE_MISSED_MEMORY", False),
                     )
-                targets: list[str] = []
-                if hasattr(char, "consume_pending_targets"):
-                    try:
-                        targets = char.consume_pending_targets()
-                    except Exception:
-                        targets = []
                 if hasattr(char, "flush_variables"):
                     char.flush_variables()
                 created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
@@ -1804,8 +1750,6 @@ class ModelController(GenerationService, ModelStateService):
                         voice_profile = char.to_voice_profile()
                     except Exception:
                         voice_profile = None
-            target = targets[-1] if targets else "Player"
-
             final_text = processed
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
@@ -1839,7 +1783,7 @@ class ModelController(GenerationService, ModelStateService):
                         req_id=req_id,
                         origin_message_id=origin_message_id,
                         assistant_text=final_text,
-                        assistant_target=target,
+                        assistant_target="Player",
                         event_type=event_type,
                         task_uid=task_uid,
                         thinking=think_text or None,
@@ -1847,15 +1791,6 @@ class ModelController(GenerationService, ModelStateService):
                         sample_id=sample_id,
                         dialogue=request.dialogue,
                     )
-            elif request.dialogue is not None:
-                self.event_writer.record_dialogue_turn(
-                    dialogue=request.dialogue,
-                    sender=sender,
-                    responder=char_id,
-                    user_input=visible_user_input,
-                    assistant_text=final_text,
-                    event_type=event_type,
-                )
 
             self._store_last_usage(
                 llm_response.usage,
@@ -1883,8 +1818,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=final_text,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=target,
-                targets=targets,
                 think=think_text or None,
                 message_id=assistant_message_id,
                 sample_id=sample_id or "",
@@ -2028,44 +1961,6 @@ class ModelController(GenerationService, ModelStateService):
     # Structured Output processing
     # ---------------------------------------------------------------------
 
-    def _process_game_master_output(
-        self,
-        *,
-        structured,
-        visible_raw: str,
-        think_text: str,
-        usage: Optional[LLMUsage],
-        response_model: str,
-        response_provider: str,
-        pricing_info,
-        char_id: str,
-        sample_id: str | None,
-        control_plane_trusted: bool,
-        structured_parse_level: str = "direct",
-    ) -> ChatGenerationResult:
-        """Return a hidden control-plane result without character side effects."""
-        data = structured.model_dump(exclude_none=True)
-        data["_raw_json"] = visible_raw
-        usage_cost = pricing_info.estimate_usage_cost(usage) if pricing_info else None
-        self._store_last_usage(
-            usage,
-            model=response_model,
-            provider=response_provider,
-            cost_fallback=usage_cost,
-            cost_fallback_currency=getattr(pricing_info, "currency", None),
-            cost_fallback_source=getattr(pricing_info, "source", None),
-        )
-        self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-        return ChatGenerationResult(
-            text="",
-            character_id=char_id,
-            target="Player",
-            structured=data,
-            think=think_text or None,
-            sample_id=sample_id or "",
-            structured_parse_level=structured_parse_level,
-            control_plane_trusted=bool(control_plane_trusted),
-        )
     def _process_structured_output(
         self,
         visible_raw: str,
@@ -2101,33 +1996,12 @@ class ModelController(GenerationService, ModelStateService):
     ) -> Optional[ChatGenerationResult]:
         try:
             with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
-                parse_outcome = parse_structured_response_with_meta(visible_raw, model_cls=structured_model_cls)
+                parse_outcome = parse_structured_response_with_meta(
+                    visible_raw,
+                    model_cls=structured_model_cls,
+                )
                 structured = parse_outcome.response
-            if char_id.casefold() == "gamemaster":
-                return self._process_game_master_output(
-                    structured=structured,
-                    visible_raw=visible_raw,
-                    think_text=think_text,
-                    usage=usage,
-                    response_model=response_model,
-                    response_provider=response_provider,
-                    pricing_info=pricing_info,
-                    char_id=char_id,
-                    sample_id=sample_id,
-                    control_plane_trusted=parse_outcome.control_plane_trusted,
-                    structured_parse_level=parse_outcome.parse_level,
-                )
         except StructuredResponseParseError as e:
-            if char_id.casefold() == "gamemaster":
-                logger.warning("[ModelController] Invalid GameMaster action document; ignoring it: %s", e)
-                self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-                return ChatGenerationResult(
-                    text="",
-                    character_id=char_id,
-                    structured={"actions": []},
-                    structured_parse_level="invalid_gm_plan",
-                    control_plane_trusted=False,
-                )
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
                 f"Falling back to legacy processing."
@@ -2138,12 +2012,6 @@ class ModelController(GenerationService, ModelStateService):
                     processed = char.process_response_nlp_commands(
                         visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
                     )
-                fallback_targets: list[str] = []
-                if hasattr(char, "consume_pending_targets"):
-                    try:
-                        fallback_targets = char.consume_pending_targets()
-                    except Exception:
-                        fallback_targets = []
                 if hasattr(char, "flush_variables"):
                     char.flush_variables()
                 voice_profile = None
@@ -2152,8 +2020,6 @@ class ModelController(GenerationService, ModelStateService):
                         voice_profile = char.to_voice_profile()
                     except Exception:
                         voice_profile = None
-            fallback_target = fallback_targets[-1] if fallback_targets else "Player"
-
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
             self._store_last_usage(
                 usage,
@@ -2169,8 +2035,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=processed,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=fallback_target,
-                targets=fallback_targets,
                 think=think_text or None,
                 sample_id=sample_id or "",
                 structured_parse_level="legacy_fallback",
@@ -2178,11 +2042,6 @@ class ModelController(GenerationService, ModelStateService):
             )
 
         self._sanitize_structured_segment_fields(structured, capabilities)
-        self._canonicalize_structured_targets(
-            structured,
-            dialogue=dialogue,
-            participants=participants,
-        )
 
         # Apply and snapshot character state in a short critical section. Tool
         # execution and any follow-up provider request happen after this lock.
@@ -2191,12 +2050,6 @@ class ModelController(GenerationService, ModelStateService):
                 structured,
                 save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
             )
-            targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    targets = char.consume_pending_targets()
-                except Exception:
-                    targets = []
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
             created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
@@ -2206,8 +2059,6 @@ class ModelController(GenerationService, ModelStateService):
                     voice_profile = char.to_voice_profile()
                 except Exception:
                     voice_profile = None
-        target = targets[-1] if targets else "Player"
-
         # --- Tool call path ---
         _active_tools = enabled_tools or []
         _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
@@ -2253,7 +2104,6 @@ class ModelController(GenerationService, ModelStateService):
                 structured_model_cls=structured_model_cls,
                 sample_id=sample_id,
                 image_descriptions=image_descriptions,
-                targets=targets,
                 voice_profile=voice_profile,
                 dialogue=dialogue,
             )
@@ -2303,9 +2153,9 @@ class ModelController(GenerationService, ModelStateService):
             logger.debug(f"[ModelController][{char_id}] Structured image_description captured ({_detail}).")
 
         assistant_message_id = ""
-        history_dict = {k: v for k, v in result_dict.items()
-                        if not k.startswith("_") or k == "_raw_json"}
         if policy.write_to_history:
+            history_dict = {k: v for k, v in result_dict.items()
+                            if not k.startswith("_") or k == "_raw_json"}
             with perf_span(trace_id, "generation.history_write"):
                 assistant_message_id = self.event_writer.write_turn(
                     responder_character_id=char_id,
@@ -2318,7 +2168,7 @@ class ModelController(GenerationService, ModelStateService):
                     req_id=req_id,
                     origin_message_id=origin_message_id,
                     assistant_text=final_text,
-                    assistant_target=target,
+                    assistant_target="Player",
                     event_type=event_type,
                     task_uid=task_uid,
                     structured_data=history_dict,
@@ -2327,17 +2177,6 @@ class ModelController(GenerationService, ModelStateService):
                     sample_id=sample_id,
                     dialogue=dialogue,
                 )
-        elif dialogue is not None:
-            self.event_writer.record_dialogue_turn(
-                dialogue=dialogue,
-                sender=sender,
-                responder=char_id,
-                user_input=user_input,
-                assistant_text=final_text,
-                assistant_target=target,
-                event_type=event_type,
-                structured_data=history_dict,
-            )
 
         self._store_last_usage(
             usage,
@@ -2380,8 +2219,6 @@ class ModelController(GenerationService, ModelStateService):
             text=final_text,
             character_id=char_id,
             voice_profile=voice_profile,
-            target=target,
-            targets=targets,
             think=think_text or None,
             structured=result_dict,
             message_id=assistant_message_id,
@@ -2425,7 +2262,6 @@ class ModelController(GenerationService, ModelStateService):
         structured_model_cls=None,
         sample_id: str | None = None,
         image_descriptions: dict[str, str] | None = None,
-        targets: list[str] | None = None,
         voice_profile=None,
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
@@ -2446,9 +2282,6 @@ class ModelController(GenerationService, ModelStateService):
         result_dict.pop("reasoning", None)
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
-
-        targets = list(targets or [])
-        target = targets[-1] if targets else "Player"
 
         # Write first turn to history
         usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
@@ -2474,7 +2307,7 @@ class ModelController(GenerationService, ModelStateService):
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=first_text,
-                assistant_target=target,
+                assistant_target="Player",
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=result_dict,
@@ -2494,8 +2327,6 @@ class ModelController(GenerationService, ModelStateService):
             "character_id": char_id or "",
             "character_name": char_name or "",
             "speaker_name": char_name or "",
-            "target": target,
-            "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
         }, delivery=EventDelivery.ORDERED)
@@ -2587,8 +2418,6 @@ class ModelController(GenerationService, ModelStateService):
                 text=first_text,
                 character_id=char_id,
                 voice_profile=voice_profile,
-                target=target,
-                targets=targets,
                 think=think_text or None,
                 structured=result_dict,
                 message_id=first_assistant_message_id,

@@ -150,7 +150,6 @@ class Character:
             ),
         )
 
-        self._pending_targets: list[str] = []
         self._resource_manager = None
         self._runtime_loaded = False
         self._runtime_load_lock = threading.RLock()
@@ -282,23 +281,6 @@ class Character:
         if to_flush:
             self.history_manager.update_variables_batch(to_flush)
         self._dirty_vars.clear()
-
-    def consume_pending_targets(self) -> list[str]:
-        targets = getattr(self, "_pending_targets", [])
-        self._pending_targets = []
-        return targets
-
-    def _extract_to_tag(self, response: str) -> tuple[str, str | None]:
-        if not isinstance(response, str) or not response:
-            return response, None
-
-        m = re.search(r"<To>\s*([^<]+?)\s*</To>", response, flags=re.IGNORECASE)
-        target = m.group(1).strip() if m else None
-
-        if m:
-            response = re.sub(r"<To>\s*([^<]+?)\s*</To>", "", response, flags=re.IGNORECASE).strip()
-
-        return response, target
 
     def _get_prompt_set_setting_key(self) -> str:
         return f"PROMPT_SET_{self.char_id}"
@@ -456,9 +438,6 @@ class Character:
                 f"[{self.char_id}] Error during game tag processing: {e}", exc_info=True
             )
 
-        response, target = self._extract_to_tag(response)
-        self._pending_targets = [target] if target else []
-
         final_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response
         )
@@ -531,15 +510,6 @@ class Character:
                 f"[{self.char_id}] Error processing game tags from structured response: {e}",
                 exc_info=True,
             )
-
-        # Collect all unique targets from all segments (preserving order)
-        seen: set[str] = set()
-        targets: list[str] = []
-        for seg in structured.segments:
-            if seg.target and seg.target not in seen:
-                seen.add(seg.target)
-                targets.append(seg.target)
-        self._pending_targets = targets
 
         # 1. Apply text PostDSL rules (Remove Asterisks etc.) to each segment
         try:

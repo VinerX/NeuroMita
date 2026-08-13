@@ -13,7 +13,7 @@ from controllers.prompt_controller import PromptController
 from handlers.llm_providers.message_preprocessor import _convert_event_content_to_user
 from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
-from services.contracts import parse_dialogue_turn_context, PromptBuildRequest, dialogue_has_auto_turn_budget, dialogue_auto_turns_remaining
+from services.contracts import parse_dialogue_turn_context, PromptBuildRequest
 
 
 class PromptSystemStateTests(unittest.TestCase):
@@ -43,13 +43,10 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertEqual(context.spoken_actor_ids, ["actor-kind"])
         self.assertEqual(context.participants[0].actor_id, "actor-crazy")
 
-    def _build_dialogue_prompt(self, enabled, target_routing=True):
+    def _build_dialogue_prompt(self, enabled):
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
         controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
-        controller._get_setting = lambda key, default=None: (
-            target_routing if key == "MITA_DIALOGUE_TARGET_ROUTING" else default
-        )
         result = controller.build(PromptBuildRequest(
             character=self._DialogueCharacter(),
             event_type="chat",
@@ -72,14 +69,11 @@ class PromptSystemStateTests(unittest.TestCase):
         ))
         return next(message["content"] for message in result.messages if "[Current Group Conversation]" in message.get("content", ""))
 
-    def test_dialogue_context_delegates_auto_routing_to_python(self):
+    def test_dialogue_context_declares_unity_routing_authority(self):
         content = self._build_dialogue_prompt(True)
         self.assertNotIn("Automatic group dialogue is enabled", content)
         self.assertNotIn("Automatic group dialogue is disabled", content)
-        self.assertIn(
-            "Python validates and executes the decision about who speaks next",
-            content,
-        )
+        self.assertIn("Unity owns the speaker order and all follow-up scheduling", content)
 
         self.assertNotIn("conversation_id=", content)
         self.assertNotIn("next_turns", content)
@@ -91,109 +85,6 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertNotIn("Automatic group dialogue is disabled", content)
         self.assertNotIn("Automatic group dialogue is enabled", content)
         self.assertNotIn("next_turns", content)
-
-    def test_dialogue_context_explains_target_priority_when_enabled(self):
-        content = self._build_dialogue_prompt(True, target_routing=True)
-
-        self.assertIn("Present: Kind, Crazy", content)
-        self.assertIn("segment's target", content)
-        self.assertIn("last non-empty target", content)
-
-    def test_dialogue_context_hides_target_priority_when_disabled(self):
-        content = self._build_dialogue_prompt(True, target_routing=False)
-
-        self.assertNotIn("segment's target", content)
-        self.assertNotIn("last non-empty target", content)
-
-    def test_target_prompt_includes_player_request_and_addressed_segment(self):
-        controller = PromptController()
-        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
-        controller._build_system_state_message = lambda: {
-            "role": "system",
-            "content": "[system state]",
-        }
-        controller._get_setting = lambda _key, default=None: default
-        conversation_id = "conv-target-transcript-test"
-        transcript = controller._game_master_context.transcript
-        transcript.clear_conversation(conversation_id)
-        transcript.record_player_message(
-            conversation_id,
-            turn_index=1,
-            text="Can you talk to each other?",
-        )
-        transcript.record_mita_reply(
-            conversation_id,
-            turn_index=1,
-            character_id="Crazy",
-            actor_id="crazy-actor",
-            target_character_id="Mila",
-            text="Mila, answer me.",
-        )
-        try:
-            result = controller.build(PromptBuildRequest(
-                character=self._DialogueCharacter(),
-                event_type="auto_chain",
-                policy=RequestPolicy(use_history_in_prompt=False),
-                system_input="Respond to the Mita who addressed you.",
-                sender="crazy_mita",
-                dialogue={
-                    "conversation_id": conversation_id,
-                    "participants": [
-                        {
-                            "actor_id": "crazy-actor",
-                            "character_id": "Crazy",
-                            "display_name": "Crazy Mita",
-                        },
-                        {
-                            "actor_id": "mila-actor",
-                            "character_id": "Mila",
-                            "display_name": "Mila",
-                        },
-                    ],
-                },
-            ))
-        finally:
-            transcript.clear_conversation(conversation_id)
-
-        group_context = next(
-            message["content"]
-            for message in result.messages
-            if "[Current Group Conversation]" in message.get("content", "")
-        )
-        transcript_messages = [
-            message
-            for message in result.messages
-            if message.get("speaker") in {"Player", "Crazy Mita"}
-        ]
-        self.assertIn("Speaker and addressee metadata identify", group_context)
-        self.assertEqual(
-            [message["content"] for message in transcript_messages],
-            [
-                "Can you talk to each other?",
-                "[Собеседник: Crazy Mita -> Mila] Mila, answer me.",
-            ],
-        )
-        self.assertEqual([message["role"] for message in transcript_messages], ["user", "user"])
-        self.assertEqual(
-            [(message.get("speaker"), message.get("target")) for message in transcript_messages],
-            [("Player", None), ("Crazy Mita", "Mila")],
-        )
-
-    def test_auto_turn_budget_is_enforced_at_python_boundary(self):
-        exhausted = parse_dialogue_turn_context({
-            "auto_dialogue_enabled": True,
-            "auto_turns_since_player": 6,
-            "max_auto_turns": 6,
-        })
-        available = parse_dialogue_turn_context({
-            "auto_dialogue_enabled": True,
-            "auto_turns_since_player": 5,
-            "max_auto_turns": 6,
-        })
-        self.assertFalse(dialogue_has_auto_turn_budget(exhausted))
-        self.assertTrue(dialogue_has_auto_turn_budget(available))
-        self.assertEqual(dialogue_auto_turns_remaining(available), 1)
-        self.assertEqual(dialogue_auto_turns_remaining(exhausted), 0)
 
     def test_relevant_memories_follow_active_memory(self):
         class _Character:

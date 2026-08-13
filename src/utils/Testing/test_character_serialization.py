@@ -1,7 +1,7 @@
 """Регрессия на гонку состояния персонажа.
 
 Пул GENERATION многопоточный, поэтому два запроса к ОДНОЙ Мите (реплика игрока и
-idle-событие из игры) могли украсть друг у друга consume_pending_targets() и
+idle-событие из игры) могли перемешать временное состояние и
 перемешать инкременты attitude. Разные персонажи должны идти параллельно.
 """
 from __future__ import annotations
@@ -25,14 +25,14 @@ class _Character:
     def __init__(self, char_id: str):
         self.char_id = char_id
         self.attitude = 0
-        self._pending_targets: list[str] = []
+        self._pending_markers: list[str] = []
 
-    def queue_target(self, target: str):
-        self._pending_targets.append(target)
+    def queue_marker(self, marker: str):
+        self._pending_markers.append(marker)
 
-    def consume_pending_targets(self) -> list[str]:
-        taken = list(self._pending_targets)
-        self._pending_targets.clear()
+    def consume_pending_markers(self) -> list[str]:
+        taken = list(self._pending_markers)
+        self._pending_markers.clear()
         return taken
 
     def bump_attitude(self, delta: int):
@@ -42,13 +42,13 @@ class _Character:
         self.attitude = current + delta
 
 
-def _generation(character: _Character, target: str, results: list, errors: list):
+def _generation(character: _Character, marker: str, results: list, errors: list):
     try:
         with character_generation_lock(character.char_id):
             time.sleep(0.005)
             with character_lock(character.char_id):
-                character.queue_target(target)
-                taken = character.consume_pending_targets()
+                character.queue_marker(marker)
+                taken = character.consume_pending_markers()
                 character.bump_attitude(1)
                 results.append(taken)
     except Exception as exc:  # pragma: no cover
@@ -56,7 +56,7 @@ def _generation(character: _Character, target: str, results: list, errors: list)
 
 
 class CharacterSerializationTests(unittest.TestCase):
-    def test_same_character_requests_do_not_steal_targets(self):
+    def test_same_character_requests_do_not_mix_temporary_state(self):
         char = _Character("Crazy")
         results: list = []
         errors: list = []
@@ -74,7 +74,7 @@ class CharacterSerializationTests(unittest.TestCase):
         # Каждый запрос забрал ровно свой target — никто ничего не украл и не потерял.
         self.assertEqual(len(results), 8)
         for taken in results:
-            self.assertEqual(len(taken), 1, f"targets перемешались: {results}")
+            self.assertEqual(len(taken), 1, f"temporary state was mixed: {results}")
         self.assertEqual(sorted(t[0] for t in results), [f"t{i}" for i in range(8)])
         # Инкременты attitude не потерялись.
         self.assertEqual(char.attitude, 8)

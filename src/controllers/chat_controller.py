@@ -24,14 +24,9 @@ from services.contracts import (
     DialogueRuntimeSource,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
-from services.dialogue_turn_router import DialogueTurnRouter, get_dialogue_turn_router, route_to_transport
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
 from services.stream_presentation import TextDeltaCoalescer
 from schemas.structured_response import RESPONSE_PROTOCOL_VERSION
-from schemas.game_master_response import GameMasterResponse
-from services.game_master_action_executor import GameMasterActionExecutor
-from services.game_master_services import ensure_game_master_services
-from domain.game_master import game_master_source_for_event
 
 
 class StructuredJsonStreamFilter:
@@ -203,7 +198,6 @@ class StructuredJsonStreamFilter:
 class ChatController:
     def __init__(self, settings):
         self.settings = settings
-        self.dialogue_router = get_dialogue_turn_router(settings)
         self.event_bus = get_event_bus()
         self.dialogue_runtime_state = get_dialogue_runtime_state_service()
 
@@ -306,7 +300,6 @@ class ChatController:
         game_state: dict | None = None,
         dialogue: Any = None,
         dialogue_source: DialogueRuntimeSource | str | None = None,
-        dialogue_router: DialogueTurnRouter | None = None,
         gm_instruction_override: str | None = None,
         trace_id: str | None = None,
     ):
@@ -318,11 +311,7 @@ class ChatController:
         """
         eff_policy = None
         dialogue = parse_dialogue_turn_context(dialogue)
-        runtime_source = dialogue_source or (
-            DialogueRuntimeSource.SANDBOX
-            if dialogue is not None and str(dialogue.conversation_id).startswith("sandbox:")
-            else DialogueRuntimeSource.UNITY
-        )
+        runtime_source = dialogue_source or DialogueRuntimeSource.UNITY
         if not isinstance(runtime_source, DialogueRuntimeSource):
             try:
                 runtime_source = DialogueRuntimeSource(str(runtime_source).strip().lower())
@@ -346,9 +335,6 @@ class ChatController:
             effective_event_type = str(event_type or "chat")
             normalized_event_type = effective_event_type.strip().lower()
             if normalized_event_type in {"game_master_observe", "game_master_command"}:
-                # The event type owns the control-plane boundary. Do not let a
-                # caller-supplied visible policy turn a hidden GM task into a
-                # chat bubble, history entry, stream, or voice request.
                 eff_policy = resolve_policy(model_event_type=normalized_event_type)
             else:
                 eff_policy = (
@@ -542,8 +528,6 @@ class ChatController:
             response_text = result.text
             voice_profile = result.voice_profile
             effective_character_id = result.character_id or character_id
-            target = result.target
-            targets: list[str] = result.targets
             think_text = result.think
             structured_data = result.structured
             assistant_message_id = result.message_id
@@ -556,104 +540,98 @@ class ChatController:
             if trace is not None:
                 trace.set_attribute("response_chars", len(response_text or ""))
 
-            is_game_master_response = str(effective_character_id or "").strip().casefold() == "gamemaster"
-            gm_execution = None
-            if is_game_master_response:
-                # A GameMaster response is an action document, never a normal
-                # Mita segment. Invalid/empty plans are inert: in particular,
-                # the original command is never broadcast to every participant.
-                try:
-                    gm_plan = GameMasterResponse.model_validate(structured_data or {})
-                except Exception as exc:
-                    logger.warning("[ChatController] Invalid GameMaster action plan: %s", exc)
-                    gm_plan = GameMasterResponse(actions=[])
-                    control_plane_trusted = False
-                if dialogue is not None and dialogue.conversation_id and control_plane_trusted:
-                    registry, _transcript, _scheduler = ensure_game_master_services()
-                    gm_execution = GameMasterActionExecutor(registry).apply(
-                        gm_plan,
-                        conversation_id=dialogue.conversation_id,
-                        participants=dialogue.participants,
-                        turn_index=dialogue.turn_index,
-                        source=game_master_source_for_event(effective_event_type),
-                        allow_routing=bool(self.settings.get("GM_ALLOW_ROUTING", True)),
-                        allow_narration=bool(self.settings.get("GM_ALLOW_NARRATION", False)),
-                    )
-                    structured_data = dict(structured_data or {})
-                    structured_data["game_master_execution"] = gm_execution.__dict__ if hasattr(gm_execution, "__dict__") else {
-                        "actions": list(gm_execution.actions),
-                        "applied_rule_ids": list(gm_execution.applied_rule_ids),
-                        "removed_rule_ids": list(gm_execution.removed_rule_ids),
-                        "route_target_actor_id": gm_execution.route_target_actor_id,
-                        "route_target_character_id": gm_execution.route_target_character_id,
-                        "route_instruction": gm_execution.route_instruction,
-                        "narration": gm_execution.narration,
-                        "had_action": gm_execution.had_action,
-                    }
-                target = "Player"
-                targets = []
-                response_text = ""
+            # GameMaster may comment on a dialogue, but never participates in the
+            # Mita-to-Mita turn queue. Unity consumes only the semantic GM intents.
+            if str(effective_character_id or "").strip() == "GameMaster":
+                raw_system_input = str(system_input or "").strip()
+                configured_task = str(
+                    gm_instruction_override
+                    if gm_instruction_override is not None
+                    else self.settings.get("GM_SMALL_PROMPT", "")
+                ).strip()
+                has_explicit_test_task = "[INSTRUCTION]" in raw_system_input
                 if (
-                    gm_execution is not None
-                    and gm_execution.narration
-                    and bool(self.settings.get("GM_SHOW_NARRATION", False))
-                    and bool(self.settings.get("GM_ALLOW_NARRATION", False))
+                    not isinstance(structured_data, dict)
+                    and (configured_task or has_explicit_test_task)
                 ):
-                    self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-                        "role": "system",
-                        "response": gm_execution.narration,
-                        "message_kind": "game_master_narration",
-                        "is_initial": False,
-                        "emotion": "",
-                        "character_id": "GameMaster",
-                        "character_name": "GameMaster",
-                        "speaker_name": "GameMaster",
-                    }, delivery=EventDelivery.ORDERED)
-            # Python owns the control-plane route. The model contributes only
-            # the current reply and semantic GM intents; Unity executes one
-            # exact route after live scene validation.
-            effective_router = self.dialogue_router
-            if (
-                runtime_source is DialogueRuntimeSource.SANDBOX
-                and isinstance(dialogue_router, DialogueTurnRouter)
-            ):
-                effective_router = dialogue_router
-            if is_game_master_response and gm_execution is not None and control_plane_trusted:
-                if gm_execution.route_target_actor_id and gm_execution.route_target_character_id:
-                    route = effective_router.route_from_game_master_action(
-                        dialogue,
-                        target_actor_id=gm_execution.route_target_actor_id,
-                        target_character_id=gm_execution.route_target_character_id,
-                        instruction=gm_execution.route_instruction,
-                    )
-                else:
-                    route = effective_router.resume_after_game_master(dialogue)
-            else:
-                route = effective_router.route_after_response(
-                    dialogue,
-                    structured=structured_data,
-                    control_plane_trusted=control_plane_trusted,
-                    character_id=str(effective_character_id or ""),
-                    event_type=effective_event_type,
-                )
-            if dialogue is not None and dialogue.conversation_id:
-                self.dialogue_runtime_state.set_pending_route(
-                    route,
-                    source=runtime_source,
-                    conversation_id=dialogue.conversation_id,
-                    epoch=dialogue.epoch,
-                    source_turn_index=dialogue.turn_index,
-                    control_plane_trusted=control_plane_trusted,
-                )
-            transport_route = route_to_transport(route)
-            transport_next_turns = [transport_route] if transport_route else []
-            hidden_game_master_success = (
-                is_game_master_response
-                and isinstance(structured_data, dict)
-                and structured_parse_level != "invalid_gm_plan"
-                and not getattr(result, "error", "")
-            )
-            if not response_text and not hidden_game_master_success:
+                    structured_data = {"segments": []}
+                    control_plane_trusted = True
+
+                # A hidden moderator may legitimately emit only a structured
+                # broadcast intent. Keep a whitespace transport placeholder so
+                # the intent reaches Unity instead of being rejected as an
+                # empty natural-language response.
+                if not response_text and isinstance(structured_data, dict):
+                    response_text = " "
+                if isinstance(structured_data, dict):
+                    structured_data = dict(structured_data)
+                    # A task configured by the user is trusted control-plane input.
+                    # Prefer an explicit test instruction, otherwise use the live GM task.
+                    raw_system_input = str(system_input or "").strip()
+                    if "[INSTRUCTION]" in raw_system_input:
+                        explicit_instruction = raw_system_input.replace(
+                            "[INSTRUCTION]",
+                            "",
+                        ).replace(
+                            "[/INSTRUCTION]",
+                            "",
+                        ).strip()
+                    else:
+                        explicit_instruction = str(
+                            gm_instruction_override
+                            if gm_instruction_override is not None
+                            else self.settings.get("GM_SMALL_PROMPT", "")
+                        ).strip()
+                    has_actionable_directive = False
+                    segments = structured_data.get("segments", [])
+                    if not isinstance(segments, list):
+                        segments = []
+                        structured_data["segments"] = segments
+                    if explicit_instruction and not control_plane_trusted:
+                        segments = []
+                        structured_data["segments"] = segments
+                    for segment in segments:
+                        if not isinstance(segment, dict):
+                            continue
+                        intents = segment.get("intents", [])
+                        if not isinstance(intents, list):
+                            intents = []
+                        valid_intents = []
+                        for intent in intents:
+                            if not isinstance(intent, dict):
+                                continue
+                            intent_type = str(intent.get("type") or "").strip()
+                            payload = intent.get("payload")
+                            payload = dict(payload) if isinstance(payload, dict) else {}
+                            if intent_type == "dialogue.send_system_message":
+                                # Gemini occasionally emits an empty personal intent.
+                                # It is not executable and must not poison an otherwise
+                                # valid GameMaster turn.
+                                if not str(payload.get("character") or "").strip() or not str(payload.get("message") or "").strip():
+                                    continue
+                                has_actionable_directive = True
+                            if intent_type == "dialogue.broadcast_system_message":
+                                if explicit_instruction and not str(payload.get("message") or "").strip():
+                                    payload["message"] = explicit_instruction
+                                has_actionable_directive = (
+                                    has_actionable_directive
+                                    or bool(str(payload.get("message") or "").strip())
+                                )
+                            valid_intents.append({**intent, "type": intent_type, "payload": payload})
+                        segment["intents"] = valid_intents
+                    if explicit_instruction and not has_actionable_directive:
+                        # Explicit tester/GM instructions are authoritative. The
+                        # model may omit the action despite selecting narration;
+                        # preserve the scene directive as a deterministic fallback.
+                        carrier = next((item for item in segments if isinstance(item, dict)), None)
+                        if carrier is None:
+                            carrier = {"text": " ", "intents": []}
+                            segments.append(carrier)
+                        carrier.setdefault("intents", []).append({
+                            "type": "dialogue.broadcast_system_message",
+                            "payload": {"message": explicit_instruction},
+                        })
+            if not response_text:
                 generation_error = str(getattr(result, "error", "") or "Empty response")
                 error_details = getattr(result, "error_details", None)
                 if task_uid:
@@ -692,7 +670,7 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.VOICING,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
 
                         speaker = voice_profile.get("silero_command", "")
@@ -706,7 +684,6 @@ class ChatController:
                             "task_uid": task_uid,
                             "character_id": effective_character_id,
                             "voice_profile": voice_profile,
-                            "target": target,
                             "message_id": assistant_message_id,
                             "trace_id": trace_id,
                         })
@@ -716,21 +693,21 @@ class ChatController:
                             self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                                 "uid": task_uid,
                                 "status": TaskStatus.SUCCESS,
-                                "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                                "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                             })
                 else:
                     if task_uid:
                         self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                             "uid": task_uid,
                             "status": TaskStatus.SUCCESS,
-                            "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                            "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                         })
             else:
                 if task_uid:
                     self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                         "uid": task_uid,
                         "status": TaskStatus.SUCCESS,
-                        "result": self._build_task_result(response_text, target, structured_data, targets, transport_next_turns=transport_next_turns, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
+                        "result": self._build_task_result(response_text, structured_data, structured_parse_level=structured_parse_level, control_plane_trusted=control_plane_trusted)
                     })
 
             if is_streaming and eff_policy.echo_to_ui:
@@ -779,8 +756,6 @@ class ChatController:
                     "character_id": effective_character_id or "",
                     "character_name": effective_character_name or "",
                     "speaker_name": effective_character_name or "",
-                    "target": target,
-                    "targets": targets,
                     "structured_data": structured_data,
                     "message_id": assistant_message_id,
                     "sample_id": sample_id or "",
@@ -909,7 +884,6 @@ class ChatController:
             game_state=data.get("game_state"),
             dialogue=data.get("dialogue"),
             dialogue_source=data.get("dialogue_source"),
-            dialogue_router=data.get("_dialogue_router"),
             gm_instruction_override=data.get("gm_instruction_override"),
             trace_id=trace_id,
         )
@@ -917,28 +891,15 @@ class ChatController:
     @staticmethod
     def _build_task_result(
         response_text: str,
-        target: str,
         structured_data: dict | None = None,
-        targets: list[str] | None = None,
         *,
-        transport_next_turns: list[dict] | None = None,
         structured_parse_level: str = "",
         control_plane_trusted: bool = False,
     ) -> dict:
-        """Build a task result with Python-owned transport routing."""
-        segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
-        has_v3_payload = isinstance(segments, list) and bool(segments)
-        has_legacy_targets = bool(targets) or bool(
-            isinstance(structured_data, dict) and (
-                structured_data.get("target") or structured_data.get("targets")
-            )
-        )
-        protocol_version = RESPONSE_PROTOCOL_VERSION if has_v3_payload else (2 if has_legacy_targets else 1)
+        """Build the response contract; addressees live only on individual segments."""
         result = {
-            "response_protocol_version": protocol_version,
+            "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
             "response": response_text,
-            "target": target,
-            "targets": targets or [],
         }
         if structured_data:
             result["segments"] = structured_data.get("segments", [])
@@ -949,7 +910,6 @@ class ChatController:
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
             result["memory_merge"] = structured_data.get("memory_merge", [])
-            result["next_turns"] = list(transport_next_turns or [])
             result["structured_parse_level"] = structured_parse_level
             result["control_plane_trusted"] = bool(control_plane_trusted)
         return result

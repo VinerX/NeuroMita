@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 from core.events import Events
 from core.services import use
 from services.contracts import CharacterRegistry, SettingsService, TaskService
-from services.dialogue_turn_router import get_dialogue_turn_router
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -173,8 +172,8 @@ async def _dispatch_task(
     dialogue: Optional[dict] = None,
     game_state: Optional[dict] = None,
     image_source: str = "",
+    gm_instruction_override: str | None = None,
     extra_task_data: Optional[dict] = None,
-    gm_instruction_override: Optional[str] = None,
     abort_reason: str = "Failed to create task",
 ) -> Any:
     """
@@ -195,17 +194,17 @@ async def _dispatch_task(
         "policy": policy_dict,
         "dialogue": dict(dialogue or {}),
     }
-    if gm_instruction_override is not None:
-        task_data["gm_instruction_override"] = str(gm_instruction_override or "")
     if extra_task_data:
         task_data.update(extra_task_data)
+    if gm_instruction_override is not None:
+        task_data["gm_instruction_override"] = gm_instruction_override
 
     task = use(TaskService).create_task(task_type, task_data)
 
     if task:
         server.client_tasks[ctx.client_id].add(task.uid)
         await server.send_task_update(ctx.client_id, task)
-        event_bus.emit(Events.Chat.SEND_MESSAGE, {
+        chat_event = {
             "user_input": user_input,
             "system_input": system_input,
             "image_data": images,
@@ -220,8 +219,10 @@ async def _dispatch_task(
             "policy": policy_dict,
             "game_state": dict(game_state or {}),
             "dialogue": dict(dialogue or {}),
-            **({"gm_instruction_override": str(gm_instruction_override or "")} if gm_instruction_override is not None else {}),
-        })
+        }
+        if gm_instruction_override is not None:
+            chat_event["gm_instruction_override"] = gm_instruction_override
+        event_bus.emit(Events.Chat.SEND_MESSAGE, chat_event)
     else:
         await server._send_aborted_update(
             ctx.client_id, event_type, character_id,
@@ -350,26 +351,9 @@ class CreateTaskAction:
             game_state=game_state_payload,
         )
 
-        # `continue` is a regular model turn with a Python-owned reservation.
-        # It intentionally does not flush Unity runtime events or use a local
-        # counter: the same conversation router owns its central limit.
+        # Unity owns continuation admission and the shared dialogue budget.
+        # Python processes the already-authorized turn like any other request.
         if event_type == "continue":
-            router = get_dialogue_turn_router(use(SettingsService))
-            route_reserved = bool(data.get("continue_route_reserved", False))
-            authorized = (
-                router.consume_continue_reservation(dialogue_payload, character_id=character_id)
-                if route_reserved
-                else router.authorize_continue(dialogue_payload, character_id=character_id)
-            )
-            if not authorized:
-                await server._send_aborted_update(
-                    ctx.client_id,
-                    event_type,
-                    character_id,
-                    reason="Continue rejected by the Python dialogue router",
-                    req_id=req_id,
-                )
-                return
             instruction = str(
                 data.get("message")
                 or data.get("instruction")
@@ -485,7 +469,7 @@ class CreateTaskAction:
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
-        # GameMaster control-plane events use a hidden policy and explicit trigger.
+        # ── game_master_observe ───────────────────────────────────────────────
         if event_type in {"game_master_observe", "game_master_command"}:
             command = str(
                 data.get("command")
@@ -504,8 +488,11 @@ class CreateTaskAction:
                 return
             policy = resolve_policy(model_event_type=event_type)
             gm_shared = dict(_shared)
-            gm_shared["character_id"] = "GameMaster"
-            gm_shared["character_stats"] = _get_character_stats("GameMaster")
+            gm_shared.update(
+                character_id="GameMaster",
+                character_stats=_get_character_stats("GameMaster"),
+                sender="GameMaster",
+            )
             await _dispatch_task(
                 **gm_shared,
                 task_type="chat",
@@ -513,13 +500,15 @@ class CreateTaskAction:
                 policy_dict=policy.to_dict(),
                 user_input="",
                 system_input=(
-                    "Review the active conversation and issue a Python-validated "
-                    "GameMaster directive when intervention is needed."
-                    if event_type == "game_master_observe" else ""
+                    command
+                    or "Review the active conversation and emit only the structured "
+                    "GameMaster intents needed to correct or guide it."
                 ),
                 images=[],
                 image_source="",
-                gm_instruction_override=command if event_type == "game_master_command" else None,
+                gm_instruction_override=(
+                    command if event_type == "game_master_command" else None
+                ),
                 abort_reason=(
                     "Failed to create GameMaster command"
                     if event_type == "game_master_command"
@@ -528,6 +517,7 @@ class CreateTaskAction:
             )
             return
 
+        # ── system_info_flush ─────────────────────────────────────────────────
         if event_type == "system_info_flush":
             policy = resolve_policy(model_event_type="chat")
             runtime_events = context.get("runtime_events", [])

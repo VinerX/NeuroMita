@@ -3,7 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from managers.conversation_event_writer import ConversationEventWriter
-from services.dialogue_transcript_service import DialogueTranscriptService
 
 
 class _Character:
@@ -83,7 +82,7 @@ def test_write_turn_separates_source_and_responder_actor_metadata() -> None:
     assert assistant_event["source_actor_id"] == "actor-crazy"
 
 
-def test_write_turn_fans_out_group_history_when_participants_are_actor_ids() -> None:
+def test_write_turn_uses_unity_roster_to_fan_out_group_history() -> None:
     kind = _Character("Kind")
     crazy = _Character("Crazy")
     characters = {"Kind": kind, "Crazy": crazy}
@@ -95,31 +94,23 @@ def test_write_turn_fans_out_group_history_when_participants_are_actor_ids() -> 
         epoch=2,
         turn_index=4,
         speaker_actor_id="Player",
-        responder_actor_id="kind_mita_60b98a9a4fa7417c8f1021ba87cce926",
+        responder_actor_id="kind-actor",
         participants=[
-            SimpleNamespace(
-                actor_id="kind_mita_60b98a9a4fa7417c8f1021ba87cce926",
-                character_id="Kind",
-                display_name="Kind Mita",
-            ),
-            SimpleNamespace(
-                actor_id="crazy_mita_61fde7b594c34231935ee9a4e526fd21",
-                character_id="Crazy",
-                display_name="Crazy Mita",
-            ),
+            SimpleNamespace(actor_id="kind-actor", character_id="Kind"),
+            SimpleNamespace(actor_id="crazy-actor", character_id="Crazy"),
         ],
     )
 
     writer.write_turn(
         responder_character_id="Kind",
         sender="Player",
-        participants=["kind_mita", "crazy_mita"],
+        participants=["kind_transport_alias", "crazy_transport_alias"],
         user_input="Could you have a dance battle?",
         image_data=[],
         req_id="request-dance-battle",
         origin_message_id=None,
         assistant_text="I will not dance for her.",
-        assistant_target="Crazy",
+        assistant_target="Player",
         event_type="chat",
         task_uid="task-dance-battle",
         dialogue=dialogue,
@@ -129,63 +120,3 @@ def test_write_turn_fans_out_group_history_when_participants_are_actor_ids() -> 
     assert len(crazy.batches) == 1
     assert [message["role"] for message in kind.batches[0]] == ["user", "assistant"]
     assert [message["role"] for message in crazy.batches[0]] == ["user", "user"]
-    assert [message["content"] for message in crazy.batches[0]] == [
-        [{"type": "text", "text": "Could you have a dance battle?"}],
-        "I will not dance for her.",
-    ]
-
-
-def test_write_turn_records_player_and_segment_addressee_in_group_transcript() -> None:
-    crazy = _Character("Crazy")
-    mila = _Character("Mila")
-    characters = {"Crazy": crazy, "Mila": mila}
-    transcript = DialogueTranscriptService()
-    writer = ConversationEventWriter(
-        character_ref_resolver=lambda character_id: characters.get(character_id),
-        transcript_service=transcript,
-    )
-    dialogue = SimpleNamespace(
-        conversation_id="conv-target-context",
-        epoch=1,
-        turn_index=1,
-        speaker_actor_id="Player",
-        responder_actor_id="crazy_mita_actor",
-        participants=[
-            SimpleNamespace(actor_id="crazy_mita_actor", character_id="Crazy"),
-            SimpleNamespace(actor_id="mila_actor", character_id="Mila"),
-        ],
-    )
-
-    writer.write_turn(
-        responder_character_id="Crazy",
-        sender="Player",
-        participants=["crazy_mita", "mila"],
-        user_input="Can you talk to each other?",
-        image_data=[],
-        req_id="request-target-context",
-        origin_message_id=None,
-        assistant_text="Mila, answer me. Player, watch us.",
-        assistant_target="Mila",
-        event_type="chat",
-        task_uid="task-target-context",
-        structured_data={
-            "segments": [
-                {"text": "Mila, answer me.", "target": "Mila"},
-                {"text": "Player, watch us."},
-            ],
-        },
-        dialogue=dialogue,
-    )
-
-    entries = transcript.recent("conv-target-context")
-    assert [entry.speaker_character_id for entry in entries] == [
-        "Player",
-        "Crazy",
-        "Crazy",
-    ]
-    assert [entry.target_character_id for entry in entries] == ["", "Mila", ""]
-    assert [entry.text for entry in entries] == [
-        "Can you talk to each other?",
-        "Mila, answer me.",
-        "Player, watch us.",
-    ]

@@ -126,6 +126,14 @@ class ContextBudgetTests(unittest.TestCase):
         # block duplicated into the assembly would.
         self.assertLess(toks, 6000, f"static Crazy blocks unexpectedly large: {toks} tokens")
 
+    def test_every_active_mita_template_includes_common_dialogue_contract(self):
+        templates = list(PROMPTS.rglob("main_template.txt"))
+        mita_templates = [path for path in templates if "GameMaster" not in path.parts]
+        self.assertTrue(mita_templates)
+        for path in mita_templates:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("Common/Dialogue.txt", text, str(path))
+
     def test_personality_opener_lives_in_exactly_one_block(self):
         """Личность не должна расползаться по нескольким статическим блокам.
 

@@ -4,8 +4,8 @@ from ui.gui_templates import create_settings_section
 from utils import _
 
 
-def setup_dialogue_settings_controls(self, parent) -> None:
-    """Build persistent dialogue policy settings in their own settings section."""
+def add_dialogue_settings_section(self, parent) -> None:
+    """Add dialogue policy controls to the Game settings page."""
     config = [
         {
             "type": "text",
@@ -25,62 +25,21 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             "default_checkbutton": True,
             "widget_name": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Разрешать роутеру назначать следующие ходы после ответа Миты.",
-                "Allow the router to schedule follow-up turns after a Mita reply.",
+                "Разрешать Unity планировать следующие ходы после ответа Миты.",
+                "Allow Unity to schedule follow-up turns after a Mita reply.",
             ),
         },
         {
-            "label": _(
-                "Адресат реплики задаёт следующий ход",
-                "Reply target chooses the next Mita",
-            ),
-            "key": "MITA_DIALOGUE_TARGET_ROUTING",
-            "type": "checkbutton",
-            "default_checkbutton": True,
-            "depends_on": "MITA_DIALOGUE_AUTO",
-            "tooltip": _(
-                "Если Мита укажет активную Миту в segments[].target, Python поставит её следующей. Неизвестный или неоднозначный target оставляет обычную очередь.",
-                "When a Mita targets an active Mita in segments[].target, Python schedules her next. Unknown or ambiguous targets keep the normal order.",
-            ),
-        },
-        {
-            "label": _("Как считать автоходы", "How to count automatic turns"),
-            "key": "DIALOGUE_AUTO_TURN_COUNT_MODE",
-            "type": "combobox",
-            "options": [
-                (_("Фиксированный лимит", "Fixed limit"), "fixed"),
-                (_("По одному на каждую Миту", "One per active Mita"), "per_participant"),
-            ],
-            "default": "per_participant",
-            "depends_on": "MITA_DIALOGUE_AUTO",
-            "tooltip": _(
-                "Фиксированный режим использует число ниже. Второй режим игнорирует его и даёт один ход на каждую активную говорящую Миту.",
-                "Fixed mode uses the number below. The other mode ignores it and gives one turn to each active Mita that can speak.",
-            ),
-        },
-        {
-            "label": _("Автоходов на одну Миту (1–24)", "Automatic turns per active Mita (1–24)"),
-            "key": "DIALOGUE_AUTO_TURNS_PER_PARTICIPANT",
-            "type": "spinbox",
-            "default": 1,
+            "label": _("Максимум ходов в цепочке (1–24)", "Maximum turns in chain (1–24)"),
+            "key": "DIALOGUE_MAX_CHAIN_TURNS",
+            "type": "number_stepper",
+            "default": 3,
             "minimum": 1,
             "maximum": 24,
+            "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Итоговый лимит — число активных говорящих Мит, умноженное на это число.",
-                "Used only in One per active Mita mode. The total limit is the active speaking Mitas multiplied by this number.",
-            ),
-        },
-        {
-            "label": _("Фиксированный лимит автоходов (0–24)", "Fixed automatic-turn limit (0–24)"),
-            "key": "DIALOGUE_MAX_AUTO_TURNS",
-            "type": "spinbox",
-            "default": 6,
-            "minimum": 0,
-            "maximum": 24,
-            "special_value_text": _("Откл.", "Off"),
-            "tooltip": _(
-                "0 отключает автоматические ходы.",
-                "Used only in Fixed limit mode. 0 disables automatic turns.",
+                "Максимальное число ответов Мит, включая первый ответ на сообщение игрока.",
+                "Maximum number of Mita replies, including the first response to the player's message.",
             ),
         },
         {"type": "end"},
@@ -91,7 +50,7 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         {
             "label": _("Максимум продолжений одной Миты (0–12)", "Maximum continuations by one Mita (0–12)"),
             "key": "DIALOGUE_MAX_CONTINUES",
-            "type": "spinbox",
+            "type": "number_stepper",
             "default": 3,
             "minimum": 0,
             "maximum": 12,
@@ -118,8 +77,8 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         },
         {
             "label": _("Ответы Мит между проверками (1–100)", "Mita replies between GameMaster checks (1–100)"),
-            "key": "GM_CHECK_INTERVAL",
-            "type": "spinbox",
+            "key": "GM_REPEAT",
+            "type": "number_stepper",
             "default": 2,
             "minimum": 1,
             "maximum": 100,
@@ -129,37 +88,10 @@ def setup_dialogue_settings_controls(self, parent) -> None:
             ),
         },
         {
-            "label": _("GameMaster may choose the next Mita", "GameMaster may choose the next Mita"),
-            "key": "GM_ALLOW_ROUTING",
-            "type": "checkbutton",
-            "default_checkbutton": True,
-            "depends_on": "GM_ON",
-            "tooltip": _(
-                "Allow GameMaster to emit routing actions; Python still validates the route.",
-                "Allow GameMaster to emit routing actions; Python still validates the route.",
-            ),
-        },
-        {
-            "label": _("GameMaster may add narration", "GameMaster may add narration"),
-            "key": "GM_ALLOW_NARRATION",
-            "type": "checkbutton",
-            "default_checkbutton": False,
-            "depends_on": "GM_ON",
-            "tooltip": _(
-                "Allow GameMaster to create separate narration events.",
-                "Allow GameMaster to create separate narration events.",
-            ),
-        },
-        {
-            "label": _("Show GameMaster narration in chat", "Show GameMaster narration in chat"),
-            "key": "GM_SHOW_NARRATION",
-            "type": "checkbutton",
-            "default_checkbutton": False,
-            "depends_on": "GM_ALLOW_NARRATION",
-            "tooltip": _(
-                "Show allowed narration as a separate system event, never as a Mita reply.",
-                "Show allowed narration as a separate system event, never as a Mita reply.",
-            ),
+            "label": _("Задача GameMaster", "GameMaster prompt"),
+            "key": "GM_SMALL_PROMPT",
+            "type": "textarea",
+            "default": "??????? ??? ???????",
         },
     ]
 
@@ -170,18 +102,3 @@ def setup_dialogue_settings_controls(self, parent) -> None:
         config,
         icon_name="fa6s.comments",
     )
-
-    auto_enabled = self.MITA_DIALOGUE_AUTO
-    count_mode = self.DIALOGUE_AUTO_TURN_COUNT_MODE
-    fixed_limit_frame = self.DIALOGUE_MAX_AUTO_TURNS_frame
-    per_mita_frame = self.DIALOGUE_AUTO_TURNS_PER_PARTICIPANT_frame
-
-    def sync_budget_controls(*_args) -> None:
-        enabled = bool(auto_enabled.isChecked())
-        mode = str(count_mode.currentData() or "per_participant")
-        fixed_limit_frame.setVisible(enabled and mode == "fixed")
-        per_mita_frame.setVisible(enabled and mode == "per_participant")
-
-    auto_enabled.stateChanged.connect(sync_budget_controls)
-    count_mode.currentIndexChanged.connect(sync_budget_controls)
-    sync_budget_controls()
