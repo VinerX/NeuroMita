@@ -64,7 +64,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
 Мод в плане генерации текста можно запустить в нескольких форматах. Говорится о форматах, которые в той или иной мере тестировались.  
 #### Основные
 
-   - Бесплатные API:  
+   - Бесплатные API с ограничениями:  
      - Mistral AI https://admin.mistral.ai/organization/api-keys - надо прожать галочку "Через Request".
      - gpt4free https://g4f.dev/members.html - Лимиты: 300к токенов и 100 запросов в час, 1млн токенов в день (Возможны утечки данных, нестабилен)
      - Openrouter https://openrouter.ai/settings/keys. У аккаунтов опенроутера есть лимиты (В среднем - 50 запросов в день).
@@ -79,17 +79,15 @@ Translation (DeepSeek) [English readme](README_EN.md)
    - Платные API для РФ:  
      - оплачивая ключ здесь https://console.proxyapi.ru/billing. Стабильно, но учитывайте расход. Промокод NeuroMita26 даёт единоразовую скидку в 25%.  
 
-   - Локально:
-     - технически пробовалось через [LM Studio](https://lmstudio.ai), но имейте ввиду - нужно очень мощное железо, и скорее всего оно будет слабее доступных нейронок на сотни миллиадров параметров. Гайда не будет, так как всё рассчитано на опытных пользователей.  
+   - Локально (без ограничений от сторонних сервисов):
+     - технически пробовалось через [LM Studio](https://lmstudio.ai), но имейте ввиду - нужно очень мощное железо, и, скорее всего, оно будет слабее доступных нейронок на сотни миллиадров параметров. Гайда не будет, так как всё рассчитано на опытных пользователей.  
 
    Чаще всего модели Gemini лучше справляются с передачей эмоций, так что обычно интересней играть с ними. DeepSeek чуть хуже (но умнее обрабатывает команды).
 
-### Модели для генерации (на 22.07.2026)
+### Модели для генерации (на 14.08.2026)
 
    Внимание, в мире нейронных сетей все очень быстро меняется, и к моменту вашего прочтения какие-то могут устареть, а какие-то не успеть войти в список.
    Следите за новостями в дискорд сервере.
-	
-   - появились две новые модели: gemini-3.5-flash-lite и gemini-3.6-flash
 	
 Сейчас пойдут настройки, которые нужно прописать в запущенном моде (чат боте)  
 
@@ -130,7 +128,7 @@ Translation (DeepSeek) [English readme](README_EN.md)
  - Список моделей:  
   meta/llama-3.3-70b-instruct  
   meta/llama-3.2-90b-vision-instruct  
-  qwen/qwen3-next-80b-a3b-instruct
+  qwen/qwen3-next-80b-a3b-instruct  
 
  - https://g4f.space/api/gemini-v1beta:  
   models/gemini-3.1-flash-lite-preview  
@@ -156,9 +154,8 @@ Translation (DeepSeek) [English readme](README_EN.md)
 API ссылка - https://openrouter.ai/api/v1  
 [Отсюда получаем ключ](https://openrouter.ai/settings/keys)   
 
-  - Модели:    
+  - Модель:    
      nvidia/nemotron-3-super-120b-a12b:free  
-     deepseek/deepseek-v4-flash:free  
 	 
   - Лимит: В среднем 50 запросов в день (до 1000, если один раз пополнить аккаунт опенроутера на 10 долларов).  
 
@@ -175,7 +172,7 @@ API ссылка - https://openrouter.ai/api/v1
 Ссылка https://api.intelligence.io.solutions/api/v1/
     - Список моделей:  
 	 meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8  
-	 deepseek-ai/DeepSeek-V4-Flash (Новая модель)  
+	 deepseek-ai/DeepSeek-V4-Flash  
 	 Qwen/Qwen3-Next-80B-A3B-Instruct  
 	 google/gemma-4-26b-a4b-it  
 	 openai/gpt-oss-20b  
@@ -202,9 +199,11 @@ API ссылка - https://openrouter.ai/api/v1
    gemini-2.5-flash-lite  
    gemini-robotics-er-1.5-preview  
    gemini-robotics-er-1.6-preview  
+   gemini-robotics-er-2-preview  
    gemini-3-flash-preview (долго думает)  
    gemini-3.5-flash  
    gemini-3.6-flash  
+   gemini-3.7-flash  
  
  - Модели по 500 запросов в день:  
    gemini-3.1-flash-lite  
