@@ -1,10 +1,9 @@
-"""Управляемый перезапуск приложения (Python-часть).
+"""Supervised restart support for the Python application.
 
-Спавнит отдельный detached-процесс run.py из NEUROMITA_BASE_DIR и завершает
-текущий. Если detached-запуск недоступен — падаем на код выхода 42, который
-run.bat/run.py трактуют как «перезапустить».
-
-Используется после установки Python-обновления и при смене языка.
+An ordinary restart returns exit code 42 to the existing run.py process. This
+keeps the same process chain and console as a run.bat launch. A detached process
+is reserved for update recovery when an older released Launcher.exe is still
+locking its installed image.
 """
 from __future__ import annotations
 
@@ -54,29 +53,18 @@ def spawn_detached_run() -> bool:
 
 
 def restart_app() -> bool:
-    """Перезапустить приложение.
+    """Restart the application through the existing run.py supervisor.
 
-    Сначала пытается спавнить detached run.py и мягко закрыть текущее
-    QApplication (чтобы освободить файлы), иначе — exit(42)/os._exit(42).
+    Exit code 42 asks the parent run.py process to restart the pyz in its
+    existing loop, preserving the original process chain and console.
 
     Returns:
-        True — перезапуск инициирован (процесс скоро завершится).
+        True when restart shutdown has been initiated.
     """
-    from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication
 
     app = QApplication.instance()
-
-    if spawn_detached_run():
-        if app is not None:
-            QTimer.singleShot(100, app.quit)
-            QTimer.singleShot(400, lambda: os._exit(0))
-        else:
-            os._exit(0)
-        return True
-
-    # Fallback: код 42 — run.bat/run.py перезапускают по нему.
-    logger.info("[app_restart] Falling back to exit code 42 for restart")
+    logger.info("[app_restart] Requesting supervised restart with exit code 42")
     if app is not None:
         app.exit(42)
         return True

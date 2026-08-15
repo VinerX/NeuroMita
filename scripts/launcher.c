@@ -29,16 +29,14 @@ static int fail(const wchar_t *message) {
 
 int wmain(void) {
     wchar_t launcher_dir[MAX_PATH];
-    wchar_t python[MAX_PATH];
-    wchar_t script[MAX_PATH];
-    wchar_t command_line[MAX_PATH * 2 + 8];
+    wchar_t batch_file[MAX_PATH];
+    wchar_t cmd_exe[MAX_PATH];
+    wchar_t command_line[MAX_PATH * 3 + 32];
     wchar_t *last_separator;
     DWORD launcher_path_length;
+    UINT system_dir_length;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
-    DWORD wait_result;
-    DWORD exit_code = 1;
-    LONG signed_exit_code;
 
     ZeroMemory(&startup_info, sizeof(startup_info));
     ZeroMemory(&process_info, sizeof(process_info));
@@ -57,64 +55,44 @@ int wmain(void) {
     }
     *last_separator = L'\0';
 
-    if (_snwprintf_s(python, ARRAYSIZE(python), _TRUNCATE,
-                     L"%ls\\libs\\python\\python.exe", launcher_dir) < 0 ||
-        _snwprintf_s(script, ARRAYSIZE(script), _TRUNCATE,
-                     L"%ls\\run.py", launcher_dir) < 0) {
-        return fail(L"ERROR: Путь к файлам запуска слишком длинный.");
+    if (_snwprintf_s(batch_file, ARRAYSIZE(batch_file), _TRUNCATE,
+                     L"%ls\\run.bat", launcher_dir) < 0) {
+        return fail(L"ERROR: Путь к run.bat слишком длинный.");
+    }
+    if (GetFileAttributesW(batch_file) == INVALID_FILE_ATTRIBUTES) {
+        return fail(L"ERROR: Не найден run.bat рядом с Launcher.exe.");
     }
 
-    if (GetFileAttributesW(python) == INVALID_FILE_ATTRIBUTES) {
-        return fail(L"ERROR: Не найден libs\\python\\python.exe.\n"
-                    L"Извлеките ZIP-архив полностью и повторите запуск.");
+    system_dir_length = GetSystemDirectoryW(cmd_exe, ARRAYSIZE(cmd_exe));
+    if (system_dir_length == 0 || system_dir_length >= ARRAYSIZE(cmd_exe)) {
+        return fail(L"ERROR: Не удалось определить системную папку Windows.");
     }
-    if (GetFileAttributesW(script) == INVALID_FILE_ATTRIBUTES) {
-        return fail(L"ERROR: Не найден run.py рядом с Launcher.exe.");
+    if (_snwprintf_s(cmd_exe + system_dir_length,
+                     ARRAYSIZE(cmd_exe) - system_dir_length,
+                     _TRUNCATE, L"\\cmd.exe") < 0) {
+        return fail(L"ERROR: Путь к cmd.exe слишком длинный.");
     }
 
+    /*
+     * Delegate to the exact same batch entry point used by the fallback
+     * shortcut. Launcher.exe exits as soon as cmd.exe has inherited the
+     * console, so Windows does not keep the installed launcher image locked
+     * while NeuroMita is running or applying an update.
+     */
     if (_snwprintf_s(command_line, ARRAYSIZE(command_line), _TRUNCATE,
-                     L"\"%ls\" \"%ls\"", python, script) < 0) {
+                     L"\"%ls\" /D /S /C call \"%ls\"", cmd_exe, batch_file) < 0) {
         return fail(L"ERROR: Команда запуска слишком длинная.");
     }
 
-    if (!CreateProcessW(python, command_line, NULL, NULL, TRUE, 0, NULL,
+    if (!CreateProcessW(cmd_exe, command_line, NULL, NULL, TRUE, 0, NULL,
                         launcher_dir, &startup_info, &process_info)) {
-        fwprintf(stderr, L"ERROR: Не удалось запустить Python (код Win32: %lu).\n",
+        fwprintf(stderr, L"ERROR: Не удалось запустить run.bat (код Win32: %lu).\n",
                  GetLastError());
         wait_for_key();
         return 1;
     }
 
-    wait_result = WaitForSingleObject(process_info.hProcess, INFINITE);
-    if (wait_result == WAIT_FAILED) {
-        fwprintf(stderr, L"ERROR: Не удалось дождаться завершения NeuroMita (код Win32: %lu).\n",
-                 GetLastError());
-        CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
-        wait_for_key();
-        return 1;
-    }
-    if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
-        fwprintf(stderr, L"ERROR: Не удалось получить код завершения NeuroMita (код Win32: %lu).\n",
-                 GetLastError());
-        CloseHandle(process_info.hThread);
-        CloseHandle(process_info.hProcess);
-        wait_for_key();
-        return 1;
-    }
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
-
-    signed_exit_code = (LONG)exit_code;
-    if (exit_code != 0) {
-        if (signed_exit_code < 0) {
-            fwprintf(stderr,
-                     L"\nNeuroMita завершилась аварийно с кодом %ld (0x%08lX).\n",
-                     signed_exit_code, exit_code);
-        } else {
-            fwprintf(stderr, L"\nNeuroMita завершилась с кодом %lu.\n", exit_code);
-        }
-        wait_for_key();
-    }
-    return signed_exit_code < 0 ? 1 : (int)signed_exit_code;
+    return 0;
 }
