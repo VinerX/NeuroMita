@@ -230,9 +230,9 @@ def setup_model_interaction_controls(
              'system — system role only (may be ignored by Gemini).\n'
              'user — user role only with [SYSTEM INFO] tag.')},
 
-        {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
+        {'label': _('GOOGLE API KEY', 'GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',
+        {'label': _('GOOGLE CSE ID', 'GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
 
         {'type': 'end'},

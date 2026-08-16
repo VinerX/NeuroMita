@@ -89,11 +89,11 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
         {'label': _('Настройки Telegram API', 'Telegram API Settings'), 'type': 'text'},
 
-        {'label': _('Telegram ID'), 'key': 'NM_TELEGRAM_API_ID', 'type': 'entry',
+        {'label': _('Telegram ID', 'Telegram ID'), 'key': 'NM_TELEGRAM_API_ID', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('Telegram Hash'), 'key': 'NM_TELEGRAM_API_HASH', 'type': 'entry',
+        {'label': _('Telegram Hash', 'Telegram Hash'), 'key': 'NM_TELEGRAM_API_HASH', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('Telegram Phone'), 'key': 'NM_TELEGRAM_PHONE', 'type': 'entry',
+        {'label': _('Telegram Phone', 'Telegram Phone'), 'key': 'NM_TELEGRAM_PHONE', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
     ]
 

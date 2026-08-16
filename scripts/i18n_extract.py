@@ -226,7 +226,9 @@ def main() -> int:
     total_calls = stats["calls"]
     dynamic_calls = stats["dynamic"]
 
-    # en.json: сохраняем ручные правки, добавляем новые ключи из инлайна.
+    # en.json: preserve manual edits for active source keys only.  Retaining
+    # removed keys makes the translation helper create stale batches and hides
+    # the real coverage gap against the current source tree.
     en_path = out_dir / "en.json"
     existing_en: dict[str, str] = {}
     if en_path.is_file():
@@ -235,7 +237,11 @@ def main() -> int:
         except Exception:
             existing_en = {}
     merged_en = dict(en_seed)
-    merged_en.update(existing_en)  # ручные правки в файле приоритетнее инлайна
+    merged_en.update({
+        key: value
+        for key, value in existing_en.items()
+        if key in all_keys
+    })
 
     en_path.write_text(
         json.dumps(dict(sorted(merged_en.items())), ensure_ascii=False, indent=2) + "\n",
