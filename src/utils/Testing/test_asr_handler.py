@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import os
 import sys
 import types
 import unittest
@@ -20,6 +21,7 @@ from handlers.asr_audio_capture import (
 )
 from handlers.asr_handler import SpeechRecognition
 from handlers.asr_models.google_recognizer import GoogleRecognizer
+from utils.native_paths import path_for_native_loader
 
 
 class _FakeFuture:
@@ -157,6 +159,22 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         self.assertIs(loaded, vad_model)
         self.assertNotIn("handlers.embedding_handler", imported)
         self.assertNotIn("transformers", imported)
+
+    def test_native_loader_path_keeps_ascii_paths_unchanged(self):
+        path = r"C:\NeuroMita\silero_vad.jit"
+
+        self.assertEqual(path_for_native_loader(path), path)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native path compatibility is Windows-specific")
+    def test_native_loader_path_uses_short_path_for_non_ascii_paths(self):
+        path = r"C:\NeuroMita\СепарированныйТест\silero_vad.jit"
+        short_path = r"C:\NEUROM~1\31C7~1\silero_vad.jit"
+
+        with patch(
+            "utils.native_paths._get_short_path",
+            return_value=short_path,
+        ):
+            self.assertEqual(path_for_native_loader(path), short_path)
 
     def test_managed_asr_start_fails_before_ready_when_microphone_cannot_open(self):
         events = []

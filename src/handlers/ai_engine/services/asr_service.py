@@ -297,10 +297,10 @@ class ASRService:
             import torch  # noqa: F401
 
             try:
-                from silero_vad import load_silero_vad
+                from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
             except Exception as e:
                 raise RuntimeError(f"silero_vad not available: {e}") from None
-            return load_silero_vad()
+            return load_silero_vad_compatible()
 
         self._vad_model = await asyncio.to_thread(load)
         return self._vad_model

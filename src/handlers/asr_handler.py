@@ -383,11 +383,11 @@ class SpeechRecognition:
 
                     retry = 0
                     if SpeechRecognition._recognizer_type == "google":
-                        from silero_vad import load_silero_vad
+                        from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
                         import numpy as np
                         import torch
 
-                        vad_model = await asyncio.to_thread(load_silero_vad)
+                        vad_model = await asyncio.to_thread(load_silero_vad_compatible)
 
                         def speech_probability(audio: np.ndarray, sample_rate: int) -> float:
                             tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))

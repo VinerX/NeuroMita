@@ -4,6 +4,8 @@ import torch
 from sentencepiece import SentencePieceProcessor
 from torch import Tensor
 
+from utils.native_paths import path_for_native_loader
+
 from .decoder import CTCHead, RNNTHead
 
 
@@ -19,7 +21,7 @@ class Tokenizer:
             self.vocab = vocab
         else:
             self.model = SentencePieceProcessor()
-            self.model.load(model_path)
+            self.model.load(path_for_native_loader(model_path))
 
     def decode(self, tokens: List[int]) -> str:
         """
