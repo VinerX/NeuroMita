@@ -80,7 +80,7 @@ The mod supports multiple text-generation methods (tested options listed below).
 #### **G4F (No API Keys)**  
 Good for testing, but weaker models. Enable the checkbox in the settings. If base model does not work, use button and reload.
 
-![img_1.png](assets/img_1.png)
+![img_1.png](../assets/img_1.png)
 
 Supported models (selectable via version input + restart):  
 - `gemini-1.5-flash` (Most stable in 0.4.7.7)  
@@ -93,7 +93,7 @@ Full list: https://github.com/xtekky/gpt4free/blob/main/docs/providers-and-model
 #### **OpenRouter (Free/Paid Keys)**  
 Get keys here: https://openrouter.ai/settings/keys  
 
-![img_2.png](assets/img_2.png)
+![img_2.png](../assets/img_2.png)
 
 Recommended free models:  
 - `google/gemini-2.0-pro-exp-02-05:free`  
@@ -170,7 +170,7 @@ Requires the `Models` folder and `features.env` (included in releases).
 
 For model installation details, see [here](https://github.com/VinerX/NeuroMita/blob/main/docs/LocalVoiceInstallationEn.md)
 
-![img_5.png](assets/img_5.png)
+![img_5.png](../assets/img_5.png)
 ---
 
 ### **Credits**  

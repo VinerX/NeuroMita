@@ -97,7 +97,7 @@ ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
 # Части пути, исключаемые из pyz
 EXCLUDED_PARTS = {
     "include", "Prompts", "PromptsCatalogue", "ReadmeFiles",
-    "MitaAiC#", "__pycache__", "Testing",
+    "MitaAiC#", "archive", "__pycache__", "Testing",
 }
 
 
