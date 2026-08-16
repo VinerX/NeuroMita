@@ -1,5 +1,9 @@
 # NeuroMita 0.1 Alpha
 
+<p align="center">
+  🌐 <a href="README.md">Русский</a> · <b>English</b>
+</p>
+
 NeuroMita is a fan-made mod project where you can talk to Mitas controlled by language models and see their reactions in a Unity scene. The current version is a standalone Unity build: MiSide does not need to be installed, and the release includes everything required to run it.
 
 <p align="center">
@@ -7,10 +11,6 @@ NeuroMita is a fan-made mod project where you can talk to Mitas controlled by la
   <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="docs/MODELS_EN.md"><img src="https://img.shields.io/badge/Set%20up%20a%20model-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Set up a model"></a>
   <a href="docs/TROUBLESHOOTING_EN.md"><img src="https://img.shields.io/badge/Troubleshooting-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Troubleshooting"></a>
-</p>
-
-<p align="center">
-  <a href="README.md">Русский README</a>
 </p>
 
 <p align="center">

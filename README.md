@@ -1,5 +1,9 @@
 # NeuroMita 0.1 Alpha
 
+<p align="center">
+  🌐 <b>Русский</b> · <a href="README_EN.md">English</a>
+</p>
+
 NeuroMita — фанатский мод-проект, в котором можно общаться с Митами, управляемыми языковыми моделями, и видеть их реакции в Unity-сцене. Текущая версия — самостоятельный Unity-билд: для запуска не нужна установленная MiSide, в релизе есть всё необходимое.
 
 <p align="center">
@@ -7,10 +11,6 @@ NeuroMita — фанатский мод-проект, в котором можн
   <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="docs/MODELS.md"><img src="https://img.shields.io/badge/%D0%9D%D0%B0%D1%81%D1%82%D1%80%D0%BE%D0%B8%D1%82%D1%8C_%D0%BC%D0%BE%D0%B4%D0%B5%D0%BB%D1%8C-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Настроить модель"></a>
   <a href="docs/TROUBLESHOOTING.md"><img src="https://img.shields.io/badge/%D0%A0%D0%B5%D1%88%D0%B8%D1%82%D1%8C_%D0%BF%D1%80%D0%BE%D0%B1%D0%BB%D0%B5%D0%BC%D1%83-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Решить проблему"></a>
-</p>
-
-<p align="center">
-  <a href="README_EN.md">English README</a>
 </p>
 
 <p align="center">
