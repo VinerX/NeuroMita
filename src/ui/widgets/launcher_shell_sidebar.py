@@ -160,7 +160,7 @@ class LauncherSidebarWidget(QFrame):
         icon_label = QLabel()
         icon_label.setFixedSize(44, 44)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_path = resolve_launcher_asset("icon.png") or ("Icon.png" if Path("Icon.png").exists() else None)
+        logo_path = resolve_launcher_asset("logo_try.png") or ("Icon.png" if Path("Icon.png").exists() else None)
         if logo_path:
             pixmap = QPixmap(logo_path).scaled(
                 44,
