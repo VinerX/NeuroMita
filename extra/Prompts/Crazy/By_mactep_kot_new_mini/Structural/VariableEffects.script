@@ -1,7 +1,9 @@
 // ===== ОБРАБОТКА ОТНОШЕНИЙ =====
 SET LOCAL relation_text = ""
 
-SET relation_text = relation_text + "Применяй поведение согласно текущему уровню отношений."
+SET relation_text = relation_text + "Применяй поведение согласно текущему уровню отношений: "
+SET LOCAL attitude_str = str(attitude)
+SET relation_text = relation_text + attitude_str
 SET relation_text = relation_text + "\n\n"
 
 IF attitude <= 20 THEN
@@ -15,7 +17,9 @@ ENDIF
 SET relation_text = relation_text + "\n\n"
 
 // ===== ОБРАБОТКА СКУКИ =====
-SET relation_text = relation_text + "Применяй поведение согласно текущему уровню скуки."
+SET relation_text = relation_text + "Применяй поведение согласно текущему уровню скуки: "
+SET LOCAL boredom_str = str(boredom)
+SET relation_text = relation_text + boredom_str
 SET relation_text = relation_text + "\n\n"
 
 IF boredom <= 40 THEN
@@ -29,7 +33,9 @@ ENDIF
 SET relation_text = relation_text + "\n\n"
 
 // ===== ОБРАБОТКА СТРЕССА =====
-SET relation_text = relation_text + "Применяй поведение согласно текущему уровню стресса."
+SET relation_text = relation_text + "Применяй поведение согласно текущему уровню стресса: "
+SET LOCAL stress_str = str(stress)
+SET relation_text = relation_text + stress_str
 SET relation_text = relation_text + "\n\n"
 
 IF stress <= 40 THEN
@@ -47,7 +53,9 @@ IF Love == None THEN
     SET Love = 1
     SET relation_text = relation_text + "Love: Not yet determined\n"
 ELSE
-    SET relation_text = relation_text + "Применяй привязанность к игроку согласно текущему уровню Love lvl."
+    SET relation_text = relation_text + "Применяй привязанность к игроку согласно текущему уровню Love. Текущий уровень Love: "
+    SET LOCAL love_str = str(Love)
+    SET relation_text = relation_text + love_str
     SET relation_text = relation_text + "\n\n"
     
     IF Love <= 30 THEN

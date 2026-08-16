@@ -1,14 +1,7 @@
-
 IF secretExposed THEN
-    LOG "secretExposed"
-    IF secretExposedFirst == False THEN
-        LOG "secretExposedFirst"
-        SET secretExposedFirst = True
-        ADD_SYSTEM_INFO LOAD "Events/SecretExposed.txt"
-    ENDIF
+    LOG "secretExposed = True, loading mainCrazy.txt"
     RETURN LOAD "Main/mainCrazy.txt"
-ELSEIF PlayingFirst THEN
-    RETURN LOAD "Main/mainPlaying.txt"
 ELSE
-    RETURN LOAD "Main/main.txt"
+    LOG "secretExposed = False, loading mainPlaying.txt"
+    RETURN LOAD "Main/mainPlaying.txt"
 ENDIF

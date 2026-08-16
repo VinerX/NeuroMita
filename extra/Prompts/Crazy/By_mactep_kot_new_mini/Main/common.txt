@@ -1,1 +1,0 @@
-This file is retained only as an inactive compatibility stub. The active modernized prompt uses Main/common_behavior.txt; the original historical variant is stored under Prompts/Legacy/Crazy_By_mactep_kot_new_mini_original/.
