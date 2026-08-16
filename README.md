@@ -4,7 +4,7 @@ NeuroMita — фанатский мод-проект, в котором можн
 
 [Скачать](https://github.com/VinerX/NeuroMita/releases) · [Discord](https://discord.gg/Tu5MPFxM4P) · [Настроить модель](docs/MODELS.md) · [Решить проблему](docs/TROUBLESHOOTING.md)
 
-![Логотип NeuroMita](https://github.com/user-attachments/assets/aea3ec44-c203-4d4a-a405-a09191188464)
+![NeuroMita](https://github.com/user-attachments/assets/4d134e73-3d3f-41b7-a4c0-09a4c5590439)
 
 > **Alpha.** Проект активно развивается: интерфейс, механики и форматы данных могут меняться. Перед крупным обновлением полезно сохранить папки `Settings` и `Histories`.
 
