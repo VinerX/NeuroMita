@@ -10,6 +10,10 @@ NeuroMita — фанатский мод-проект, в котором можн
 </p>
 
 <p align="center">
+  <a href="README_EN.md">English README</a>
+</p>
+
+<p align="center">
   <img src="https://github.com/user-attachments/assets/4d134e73-3d3f-41b7-a4c0-09a4c5590439" alt="NeuroMita" width="820">
 </p>
 
