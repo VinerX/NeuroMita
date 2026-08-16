@@ -24,14 +24,194 @@ from updater import (
     _archive_meta_path,
     _download,
     _install_unity_asset,
+    _legacy_python_download_dir,
+    _legacy_python_journal_path,
+    _legacy_python_staging_path,
+    _begin_python_operation,
+    _python_download_dir,
     _python_journal_path,
     _python_stage_marker,
     _python_staging_path,
+    _python_installation_id,
+    _python_workspace,
     note_locked_restart_attempt,
     resume_pending_python_update,
 )
 from utils.archive_utils import extract_archive
 from utils.release_assets import ReleaseAsset
+
+
+@pytest.fixture(autouse=True)
+def _isolated_python_update_cache(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NEUROMITA_UPDATE_CACHE_DIR", str(tmp_path / "update-cache"))
+
+
+def test_python_update_workspace_stays_outside_install_parent(tmp_path: Path) -> None:
+    base = tmp_path / "Desktop" / "NeuroMitaBuild"
+    other = tmp_path / "Desktop" / "OtherNeuroMitaBuild"
+    base.mkdir(parents=True)
+    other.mkdir(parents=True)
+
+    workspace = _python_workspace(base)
+    assert workspace != _python_workspace(other)
+    assert workspace.is_relative_to(tmp_path / "update-cache")
+    assert not workspace.is_relative_to(base.parent)
+    assert _python_installation_id(base) != _python_installation_id(other)
+
+
+def test_new_python_operation_records_cache_paths(tmp_path: Path) -> None:
+    base = tmp_path / "Desktop" / "NeuroMitaBuild"
+    base.mkdir(parents=True)
+    asset = ReleaseAsset(
+        name="PythonBuild-v2.zip",
+        url="https://example/PythonBuild-v2.zip",
+        size=123,
+        digest="sha256:" + "a" * 64,
+    )
+
+    state = _begin_python_operation(
+        base,
+        version="v2",
+        asset=asset,
+        mode="diff",
+        preserve_prompts=True,
+        is_patch=False,
+    )
+
+    assert Path(state["archive_path"]).parent == _python_download_dir(base)
+    assert Path(state["staging"]) == _python_staging_path(base)
+    assert Path(state["archive_path"]).is_relative_to(tmp_path / "update-cache")
+    assert not list(base.parent.glob(f".{base.name}.*"))
+
+
+def test_legacy_python_recovery_uses_original_reserve_and_cleans_it(tmp_path: Path) -> None:
+    base = tmp_path / "Desktop" / "NeuroMitaBuild"
+    base.mkdir(parents=True)
+    (base / "payload.txt").write_text("old", encoding="utf-8")
+    staging = _legacy_python_staging_path(base)
+    staging.mkdir()
+    (staging / "payload.txt").write_text("new", encoding="utf-8")
+    archive_hash = "d" * 64
+    manifest = build_install_manifest(
+        staging,
+        component="python",
+        version="v2",
+        archive_sha256=archive_hash,
+    )
+    write_install_manifest(staging, manifest)
+    atomic_write_json(
+        _python_stage_marker(staging),
+        {"schema": 1, "archive_sha256": archive_hash},
+    )
+    archive = _legacy_python_download_dir(base) / "PythonBuild-v2.zip"
+    atomic_write_json(
+        _legacy_python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "applying",
+            "authorized": True,
+            "version": "v2",
+            "archive_name": archive.name,
+            "archive_url": "https://example/PythonBuild-v2.zip",
+            "archive_path": str(archive),
+            "archive_size": 0,
+            "archive_digest": "",
+            "archive_sha256": archive_hash,
+            "staging": str(staging),
+            "mode": "diff",
+            "preserve_prompts": True,
+        },
+    )
+
+    result = resume_pending_python_update(base_dir=str(base))
+
+    assert result.ok and result.changed and result.recovered
+    assert (base / "payload.txt").read_text(encoding="utf-8") == "new"
+    assert not _legacy_python_staging_path(base).exists()
+    assert not _legacy_python_download_dir(base).exists()
+    assert not _legacy_python_journal_path(base).exists()
+    assert not list(base.parent.glob(f".{base.name}.*"))
+
+
+def test_waiting_for_credentials_keeps_new_cache_for_retry(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMitaBuild"
+    base.mkdir()
+    archive = _python_download_dir(base) / "PythonBuild-v2.zip"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"encrypted")
+    staging = _python_staging_path(base)
+    staging.mkdir()
+    atomic_write_json(
+        _python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "waiting_for_credentials",
+            "authorized": True,
+            "version": "v2",
+            "archive_name": archive.name,
+            "archive_url": "https://example/PythonBuild-v2.zip",
+            "archive_path": str(archive),
+            "archive_sha256": "e" * 64,
+            "staging": str(staging),
+        },
+    )
+
+    result = resume_pending_python_update(base_dir=str(base))
+
+    assert result.status == "waiting_for_credentials"
+    assert archive.exists()
+    assert _python_journal_path(base).exists()
+
+
+def test_successful_recovery_survives_cleanup_failure(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMitaBuild"
+    base.mkdir()
+    (base / "payload.txt").write_text("old", encoding="utf-8")
+    staging = _python_staging_path(base)
+    staging.mkdir(parents=True)
+    (staging / "payload.txt").write_text("new", encoding="utf-8")
+    archive_hash = "f" * 64
+    write_install_manifest(
+        staging,
+        build_install_manifest(
+            staging,
+            component="python",
+            version="v2",
+            archive_sha256=archive_hash,
+        ),
+    )
+    atomic_write_json(
+        _python_stage_marker(staging),
+        {"schema": 1, "archive_sha256": archive_hash},
+    )
+    archive = _python_download_dir(base) / "PythonBuild-v2.zip"
+    atomic_write_json(
+        _python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "applying",
+            "version": "v2",
+            "archive_name": archive.name,
+            "archive_url": "https://example/PythonBuild-v2.zip",
+            "archive_path": str(archive),
+            "archive_sha256": archive_hash,
+            "staging": str(staging),
+            "mode": "diff",
+        },
+    )
+
+    with patch("updater.shutil.rmtree", side_effect=OSError("locked")):
+        result = resume_pending_python_update(base_dir=str(base))
+
+    assert result.ok and result.changed
+    assert read_json(_python_journal_path(base))["phase"] == "completed"
+    assert staging.exists()
 
 
 def _make_verified_tree(root: Path, text: str, version: str = "v1") -> None:
@@ -284,7 +464,7 @@ def test_python_apply_resumes_from_verified_stage_without_redownload(tmp_path: P
     base.mkdir()
     (base / "payload.txt").write_text("old", encoding="utf-8")
     staging = _python_staging_path(base)
-    staging.mkdir()
+    staging.mkdir(parents=True)
     (staging / "payload.txt").write_text("new", encoding="utf-8")
     archive_hash = "b" * 64
     manifest = build_install_manifest(
@@ -325,7 +505,8 @@ def test_python_apply_resumes_from_verified_stage_without_redownload(tmp_path: P
     assert (base / "payload.txt").read_text(encoding="utf-8") == "new"
     assert not staging.exists()
     assert not _python_stage_marker(staging).exists()
-    assert read_json(_python_journal_path(base))["phase"] == "completed"
+    assert not _python_journal_path(base).exists()
+    assert not _python_workspace(base).exists()
 
 
 def test_locked_python_update_waits_for_explicit_detached_handoff(
@@ -336,7 +517,7 @@ def test_locked_python_update_waits_for_explicit_detached_handoff(
     base.mkdir()
     (base / "Launcher.exe").write_bytes(b"old")
     staging = _python_staging_path(base)
-    staging.mkdir()
+    staging.mkdir(parents=True)
     (staging / "Launcher.exe").write_bytes(b"new")
     archive_hash = "c" * 64
     manifest = build_install_manifest(

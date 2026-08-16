@@ -13,6 +13,7 @@ Exit code 42 signals launch.py / run.bat to restart after Python update.
 from __future__ import annotations
 
 import filecmp
+import hashlib
 import json
 import os
 import re
@@ -659,24 +660,100 @@ def _fetch_latest_unity_release_asset(
     return find_latest_unity_asset(releases, channel)
 
 
+def _normalized_install_path(base_path: Path) -> str:
+    resolved = str(base_path.resolve(strict=False))
+    return os.path.normcase(resolved) if os.name == "nt" else resolved
+
+
+def _python_installation_id(base_path: Path) -> str:
+    return hashlib.sha256(
+        _normalized_install_path(base_path).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _updater_cache_root() -> Path:
+    override = os.environ.get("NEUROMITA_UPDATE_CACHE_DIR")
+    if override:
+        return Path(override)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "NeuroMita" / "Updater"
+    return Path(tempfile.gettempdir()) / "NeuroMita" / "Updater"
+
+
+def _python_workspace(base_path: Path) -> Path:
+    return _updater_cache_root() / _python_installation_id(base_path) / "python"
+
+
 def _python_journal_path(base_path: Path) -> Path:
-    return base_path.parent / f".{base_path.name}.update-state" / "python" / "operation.json"
+    return _python_workspace(base_path) / "operation.json"
 
 
 def _python_staging_path(base_path: Path) -> Path:
-    return base_path.parent / f".{base_path.name}.python-update-stage"
+    return _python_workspace(base_path) / "stage"
 
 
 def _python_stage_marker(staging: Path) -> Path:
+    if staging.name == "stage" and staging.parent.name == "python":
+        return staging.parent / ".stage.ready.json"
     return staging.parent / f".{staging.name}.ready.json"
 
 
 def _python_download_dir(base_path: Path) -> Path:
+    return _python_workspace(base_path) / "download"
+
+
+def _legacy_python_journal_path(base_path: Path) -> Path:
+    return base_path.parent / f".{base_path.name}.update-state" / "python" / "operation.json"
+
+
+def _legacy_python_staging_path(base_path: Path) -> Path:
+    return base_path.parent / f".{base_path.name}.python-update-stage"
+
+
+def _legacy_python_download_dir(base_path: Path) -> Path:
     return base_path.parent / f".{base_path.name}.update-download"
 
 
-def _set_python_operation_phase(base_path: Path, phase: str, **changes) -> dict:
-    journal = _python_journal_path(base_path)
+def _python_state_matches_target(state: dict, base_path: Path) -> bool:
+    target = str(state.get("target") or "")
+    if not target:
+        return False
+    return _normalized_install_path(Path(target)) == _normalized_install_path(base_path)
+
+
+def _python_state_is_resumable(state: dict) -> bool:
+    if not state:
+        return False
+    phase = str(state.get("phase") or "")
+    if phase in {"", "completed", "cancelled"}:
+        return False
+    if phase == "failed":
+        return "Could not apply" in str(state.get("error") or "")
+    return True
+
+
+def _python_active_journal_path(base_path: Path) -> Path:
+    current = _python_journal_path(base_path)
+    if current.is_file():
+        return current
+    legacy = _legacy_python_journal_path(base_path)
+    legacy_state = read_json(legacy)
+    if _python_state_is_resumable(legacy_state) and _python_state_matches_target(
+        legacy_state, base_path
+    ):
+        return legacy
+    return current
+
+
+def _set_python_operation_phase(
+    base_path: Path,
+    phase: str,
+    *,
+    journal_path: Optional[Path] = None,
+    **changes,
+) -> dict:
+    journal = journal_path or _python_journal_path(base_path)
     state = read_json(journal)
     state.update(changes)
     state.update(
@@ -749,12 +826,138 @@ def _python_stage_is_reusable(staging: Path, archive_sha256: str) -> bool:
         return False
 
 
-def _cleanup_python_reserve(base_path: Path, archive: Path) -> None:
-    staging = _python_staging_path(base_path)
-    shutil.rmtree(staging, ignore_errors=True)
-    _python_stage_marker(staging).unlink(missing_ok=True)
-    archive.unlink(missing_ok=True)
-    _archive_meta_path(archive).unlink(missing_ok=True)
+def _cleanup_python_reserve(
+    *,
+    journal: Path,
+    archive: Optional[Path],
+    staging: Path,
+    logger=None,
+) -> None:
+    """Best-effort cleanup after a terminally completed Python update."""
+    log = make_logger(logger, _LOG_PREFIX)
+    files = [_python_stage_marker(staging)]
+    if archive is not None:
+        files.extend(
+            [
+                archive,
+                _archive_meta_path(archive),
+                archive.with_suffix(archive.suffix + ".part"),
+                _archive_meta_path(archive.with_suffix(archive.suffix + ".part")),
+            ]
+        )
+    cleanup_failed = False
+
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+    except OSError as error:
+        cleanup_failed = True
+        log(f"Could not remove updater staging directory {staging}: {error}", "warning")
+    if staging.exists():
+        cleanup_failed = True
+
+    for path in files:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            cleanup_failed = True
+            log(f"Could not remove updater artifact {path}: {error}", "warning")
+        if path.exists():
+            cleanup_failed = True
+
+    if not cleanup_failed:
+        try:
+            journal.unlink(missing_ok=True)
+        except OSError as error:
+            cleanup_failed = True
+            log(f"Could not remove updater journal {journal}: {error}", "warning")
+        if journal.exists():
+            cleanup_failed = True
+    else:
+        log(
+            "Keeping the completed updater journal because cleanup left artifacts behind.",
+            "warning",
+        )
+
+    cleanup_dirs = []
+    if archive is not None:
+        cleanup_dirs.append(archive.parent)
+    cleanup_dirs.append(journal.parent)
+    if staging.parent == journal.parent:
+        cleanup_dirs.extend([journal.parent.parent, journal.parent.parent.parent])
+    else:
+        cleanup_dirs.append(journal.parent.parent)
+    seen: set[Path] = set()
+    for directory in cleanup_dirs:
+        directory = directory.resolve(strict=False)
+        if directory in seen:
+            continue
+        seen.add(directory)
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def _python_state_archive_path_for_journal(
+    base_path: Path,
+    state: dict,
+    journal: Path,
+) -> Optional[Path]:
+    value = str(state.get("archive_path") or "")
+    if value:
+        return Path(value)
+    name = str(state.get("archive_name") or "")
+    if not name:
+        return None
+    download_dir = (
+        _legacy_python_download_dir(base_path)
+        if journal == _legacy_python_journal_path(base_path)
+        else _python_download_dir(base_path)
+    )
+    return download_dir / name
+
+
+def _python_state_staging_path_for_journal(
+    base_path: Path,
+    state: dict,
+    journal: Path,
+) -> Path:
+    value = str(state.get("staging") or "")
+    if value:
+        return Path(value)
+    if journal == _legacy_python_journal_path(base_path):
+        return _legacy_python_staging_path(base_path)
+    return _python_staging_path(base_path)
+
+
+def _cleanup_completed_python_operation(
+    base_path: Path,
+    journal: Path,
+    state: dict,
+    logger=None,
+) -> None:
+    _cleanup_python_reserve(
+        journal=journal,
+        archive=_python_state_archive_path_for_journal(base_path, state, journal),
+        staging=_python_state_staging_path_for_journal(base_path, state, journal),
+        logger=logger,
+    )
+
+
+def _cleanup_terminal_legacy_python_reserve(base_path: Path, logger=None) -> None:
+    journal = _legacy_python_journal_path(base_path)
+    state = read_json(journal)
+    if not state or not _python_state_matches_target(state, base_path):
+        return
+    if str(state.get("phase") or "") != "completed":
+        return
+    cleanup_state = dict(state)
+    cleanup_state.setdefault("staging", str(_legacy_python_staging_path(base_path)))
+    if not cleanup_state.get("archive_path") and cleanup_state.get("archive_name"):
+        cleanup_state["archive_path"] = str(
+            _legacy_python_download_dir(base_path) / str(cleanup_state["archive_name"])
+        )
+    _cleanup_completed_python_operation(base_path, journal, cleanup_state, logger=logger)
 
 
 # Максимум detached-перезапусков подряд для одной залоченной установки. Обычная
@@ -778,7 +981,8 @@ def note_locked_restart_attempt(
     и цикл detached-перезапусков останавливается (вместо вечного спавна).
     """
     base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
-    state = read_json(_python_journal_path(base_path))
+    journal = _python_active_journal_path(base_path)
+    state = read_json(journal)
     attempts = int(state.get("restart_attempts") or 0) + 1
     limit = max(1, int(limit))
     exhausted = attempts >= limit
@@ -786,6 +990,7 @@ def note_locked_restart_attempt(
         _set_python_operation_phase(
             base_path,
             "failed",
+            journal_path=journal,
             restart_attempts=attempts,
             error=(
                 "Update aborted: launcher files stayed locked after "
@@ -796,6 +1001,7 @@ def note_locked_restart_attempt(
         _set_python_operation_phase(
             base_path,
             str(state.get("phase") or "waiting_for_restart"),
+            journal_path=journal,
             restart_attempts=attempts,
         )
     return attempts, exhausted
@@ -979,6 +1185,24 @@ def check_for_updates(
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
     base_path = Path(base_dir)
+    legacy_state = read_json(_legacy_python_journal_path(base_path))
+    if _python_state_is_resumable(legacy_state) and _python_state_matches_target(
+        legacy_state, base_path
+    ):
+        pending_phase = str(legacy_state.get("phase") or "waiting_for_restart")
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status=(
+                pending_phase
+                if pending_phase in {"waiting_for_credentials", "waiting_for_restart"}
+                else "pending"
+            ),
+            restart_required=pending_phase == "waiting_for_restart",
+            version=str(legacy_state.get("version") or ""),
+            error=str(legacy_state.get("error") or "A previous update is pending recovery"),
+        )
+    _cleanup_terminal_legacy_python_reserve(base_path, logger=logger)
     dl_dir = _python_download_dir(base_path)
     dl_dir.mkdir(parents=True, exist_ok=True)
     temp_archive = dl_dir / python_asset.name
@@ -1111,7 +1335,18 @@ def check_for_updates(
             completed_at=int(time.time()),
             archive_sha256=archive_hash,
         )
-        _cleanup_python_reserve(base_path, active_archive)
+        try:
+            _cleanup_python_reserve(
+                journal=_python_journal_path(base_path),
+                archive=active_archive,
+                staging=staging,
+                logger=logger,
+            )
+        except Exception as cleanup_error:
+            log(
+                f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
+                "warning",
+            )
         _emit_stage(on_stage, "Completed", 4, 4, False)
 
         if restart_on_success:
@@ -1196,12 +1431,20 @@ def resume_pending_python_update(
 ) -> UpdateResult:
     """Finish a previously authorized Python install from its durable reserve."""
     base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
-    state = read_json(_python_journal_path(base_path))
+    journal = _python_active_journal_path(base_path)
+    state = read_json(journal)
     phase = str(state.get("phase") or "")
+    if phase == "completed":
+        _cleanup_completed_python_operation(base_path, journal, state, logger=logger)
+        _cleanup_terminal_legacy_python_reserve(base_path, logger=logger)
+        return UpdateResult(component="python", ok=True, status="no_pending_operation")
+    if not state:
+        _cleanup_terminal_legacy_python_reserve(base_path, logger=logger)
+        return UpdateResult(component="python", ok=True, status="no_pending_operation")
     failed_from_locked_file = phase == "failed" and "Could not apply" in str(
         state.get("error") or ""
     )
-    if not state or phase in {"", "completed", "cancelled"} or (
+    if phase in {"", "cancelled"} or (
         phase == "failed" and not failed_from_locked_file
     ):
         return UpdateResult(component="python", ok=True, status="no_pending_operation")
@@ -1245,8 +1488,10 @@ def resume_pending_python_update(
             error="Pending Python update journal is incomplete",
         )
 
-    archive = Path(str(state.get("archive_path") or _python_download_dir(base_path) / asset.name))
-    staging = _python_staging_path(base_path)
+    archive = Path(
+        str(state.get("archive_path") or (_python_download_dir(base_path) / asset.name))
+    )
+    staging = Path(str(state.get("staging") or _python_staging_path(base_path)))
     archive_hash = str(state.get("archive_sha256") or "")
     log = make_logger(logger, _LOG_PREFIX)
 
@@ -1254,6 +1499,7 @@ def resume_pending_python_update(
         _set_python_operation_phase(
             base_path,
             "stage_ready",
+            journal_path=journal,
             archive_sha256=archive_hash,
             archive_path=str(archive),
         )
@@ -1262,6 +1508,7 @@ def resume_pending_python_update(
         _set_python_operation_phase(
             base_path,
             "applying",
+            journal_path=journal,
             archive_sha256=archive_hash,
             archive_path=str(archive),
         )
@@ -1269,7 +1516,7 @@ def resume_pending_python_update(
 
     try:
         if not _python_stage_is_reusable(staging, archive_hash):
-            _set_python_operation_phase(base_path, "downloading")
+            _set_python_operation_phase(base_path, "downloading", journal_path=journal)
             _emit_stage(on_stage, "Downloading", 1, 4, True)
             archive_hash = _download(
                 asset.url,
@@ -1282,10 +1529,11 @@ def resume_pending_python_update(
             _set_python_operation_phase(
                 base_path,
                 "archive_verified",
+                journal_path=journal,
                 archive_sha256=archive_hash,
                 archive_path=str(archive),
             )
-        _set_python_operation_phase(base_path, "extracting")
+        _set_python_operation_phase(base_path, "extracting", journal_path=journal)
         _emit_stage(on_stage, "Extracting", 2, 4, True)
         _install_full_archive(
             archive,
@@ -1306,10 +1554,22 @@ def resume_pending_python_update(
         _set_python_operation_phase(
             base_path,
             "completed",
+            journal_path=journal,
             completed_at=int(time.time()),
             archive_sha256=archive_hash,
         )
-        _cleanup_python_reserve(base_path, archive)
+        try:
+            _cleanup_python_reserve(
+                journal=journal,
+                archive=archive,
+                staging=staging,
+                logger=logger,
+            )
+        except Exception as cleanup_error:
+            log(
+                f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
+                "warning",
+            )
         _emit_stage(on_stage, "Completed", 4, 4, False)
         log(f"Recovered Python update {version}; restart required.", "success")
         return UpdateResult(
@@ -1323,7 +1583,12 @@ def resume_pending_python_update(
             recovered=True,
         )
     except UpdateFilesLocked as error:
-        _set_python_operation_phase(base_path, "waiting_for_restart", error=str(error))
+        _set_python_operation_phase(
+            base_path,
+            "waiting_for_restart",
+            journal_path=journal,
+            error=str(error),
+        )
         return UpdateResult(
             component="python",
             ok=False,
@@ -1335,7 +1600,12 @@ def resume_pending_python_update(
             recovered=True,
         )
     except (UpdateCancelled, ArchiveCancelled) as error:
-        _set_python_operation_phase(base_path, "cancelled", error=str(error))
+        _set_python_operation_phase(
+            base_path,
+            "cancelled",
+            journal_path=journal,
+            error=str(error),
+        )
         return UpdateResult(
             component="python",
             ok=False,
@@ -1347,7 +1617,12 @@ def resume_pending_python_update(
             recovered=True,
         )
     except PasswordError as error:
-        _set_python_operation_phase(base_path, "waiting_for_credentials", error=str(error))
+        _set_python_operation_phase(
+            base_path,
+            "waiting_for_credentials",
+            journal_path=journal,
+            error=str(error),
+        )
         return UpdateResult(
             component="python",
             ok=False,
@@ -1358,7 +1633,12 @@ def resume_pending_python_update(
             recovered=True,
         )
     except Exception as error:
-        _set_python_operation_phase(base_path, "failed", error=str(error))
+        _set_python_operation_phase(
+            base_path,
+            "failed",
+            journal_path=journal,
+            error=str(error),
+        )
         log(f"Python update recovery failed: {error}", "error")
         return UpdateResult(
             component="python",
