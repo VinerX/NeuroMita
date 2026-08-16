@@ -38,6 +38,28 @@ def _to_bool(v: Any, default: bool) -> bool:
         return bool(default)
 
 
+def _to_optional_bool(v: Any, default: Optional[bool] = None) -> Optional[bool]:
+    """Convert a tri-state setting to None/False/True."""
+    if v is None:
+        return default
+
+    if isinstance(v, str):
+        value = v.strip().lower()
+        if value in ("", "none", "null", "undefined", "auto", "default", "не определять", "do not specify"):
+            return default
+        if value in ("false", "0", "no", "off", "нет"):
+            return False
+        if value in ("true", "1", "yes", "on", "да"):
+            return True
+        return default
+
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
+
+
 @dataclass
 class ModelRuntimeConfig:
     # generation params
@@ -102,7 +124,7 @@ class ModelRuntimeConfig:
             elif key == "MODEL_THOUGHT_PROCESS" or key == "MODEL_THINKING_BUDGET":
                 self.thinking_budget = _to_float(value, self.thinking_budget)
             elif key == "ENABLE_THINKING":
-                self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
+                self.enable_thinking = _to_optional_bool(value)
             elif key == "MODEL_REASONING_EFFORT":
                 self.reasoning_effort = str(value).strip().lower() or None if value else None
             elif key == "GEMINI_THINKING_BUDGET":
@@ -159,7 +181,7 @@ class ModelConfigLoader:
             top_p=_to_float(s.get("MODEL_TOP_P"), None),
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
-            enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
+            enable_thinking=_to_optional_bool(s.get("ENABLE_THINKING")),
             reasoning_effort=(str(s.get("MODEL_REASONING_EFFORT")).strip().lower() or None) if s.get("MODEL_REASONING_EFFORT") else None,
             gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 

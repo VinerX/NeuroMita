@@ -676,13 +676,18 @@ def create_setting_widget(
                 if hasattr(controller, "isChecked"):
                     active = controller.isChecked()
                 elif isinstance(controller, QComboBox):
+                    controller_value = (
+                        controller.current_value()
+                        if callable(getattr(controller, "current_value", None))
+                        else controller.currentText()
+                    )
                     if depends_on_value is not None:
                         if isinstance(depends_on_value, (list, tuple, set)):
-                            active = controller.currentText() in depends_on_value
+                            active = controller_value in depends_on_value
                         else:
-                            active = (controller.currentText() == depends_on_value)
+                            active = (controller_value == depends_on_value)
                     else:
-                        active = bool(controller.currentText())
+                        active = bool(controller_value)
                 elif hasattr(controller, "currentText"):
                     active = bool(controller.currentText())
 

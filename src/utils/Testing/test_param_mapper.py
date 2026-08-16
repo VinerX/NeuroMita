@@ -145,6 +145,28 @@ class PresetReasoningOverrideTests(unittest.TestCase):
         self.assertEqual(cfg.reasoning_effort, "low")
 
 
+class TriStateThinkingSettingTests(unittest.TestCase):
+    def test_missing_thinking_setting_is_not_sent(self):
+        from managers.model_config_loader import ModelConfigLoader
+
+        cfg = ModelConfigLoader(_Settings()).load()
+        self.assertIsNone(cfg.enable_thinking)
+        self.assertNotIn("enable_thinking", _params(enable_thinking=cfg.enable_thinking))
+
+    def test_empty_thinking_setting_is_not_sent(self):
+        from managers.model_config_loader import ModelConfigLoader
+
+        cfg = ModelConfigLoader(_Settings({"ENABLE_THINKING": ""})).load()
+        self.assertIsNone(cfg.enable_thinking)
+        self.assertNotIn("enable_thinking", _params(enable_thinking=cfg.enable_thinking))
+
+    def test_explicit_thinking_values_are_preserved(self):
+        from managers.model_config_loader import ModelConfigLoader
+
+        self.assertFalse(ModelConfigLoader(_Settings({"ENABLE_THINKING": False})).load().enable_thinking)
+        self.assertTrue(ModelConfigLoader(_Settings({"ENABLE_THINKING": True})).load().enable_thinking)
+
+
 def _params(**kwargs):
     base = dict(
         settings=_Settings(),
