@@ -2,7 +2,12 @@
 
 NeuroMita — фанатский мод-проект, в котором можно общаться с Митами, управляемыми языковыми моделями, и видеть их реакции в Unity-сцене. Текущая версия — самостоятельный Unity-билд: для запуска не нужна установленная MiSide, в релизе есть всё необходимое.
 
-[Скачать](https://github.com/VinerX/NeuroMita/releases) · [Discord](https://discord.gg/Tu5MPFxM4P) · [Настроить модель](docs/MODELS.md) · [Решить проблему](docs/TROUBLESHOOTING.md)
+<p align="center">
+  <a href="https://github.com/VinerX/NeuroMita/releases"><img src="https://img.shields.io/badge/%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C-0.1%20Alpha-6f42c1?style=for-the-badge&logo=github&logoColor=white" alt="Скачать NeuroMita"></a>
+  <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="docs/MODELS.md"><img src="https://img.shields.io/badge/%D0%9D%D0%B0%D1%81%D1%82%D1%80%D0%BE%D0%B8%D1%82%D1%8C_%D0%BC%D0%BE%D0%B4%D0%B5%D0%BB%D1%8C-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Настроить модель"></a>
+  <a href="docs/TROUBLESHOOTING.md"><img src="https://img.shields.io/badge/%D0%A0%D0%B5%D1%88%D0%B8%D1%82%D1%8C_%D0%BF%D1%80%D0%BE%D0%B1%D0%BB%D0%B5%D0%BC%D1%83-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Решить проблему"></a>
+</p>
 
 ![NeuroMita](https://github.com/user-attachments/assets/4d134e73-3d3f-41b7-a4c0-09a4c5590439)
 
