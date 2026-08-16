@@ -226,6 +226,16 @@ class _SettingsSectionsController:
         if key == "updates":
             self.build_updates(gui, parent)
             return
+        if key == "data_collection":
+            from ui.settings.data_settings import setup_data_settings_controls
+
+            owner = self._section_owner(gui, parent)
+            view_model = self._own_view_model(
+                self._presentation.view_models.finetune_data(gui),
+                owner,
+            )
+            setup_data_settings_controls(gui, parent, view_model=view_model)
+            return
         raise KeyError(f"Unknown settings section: {category}")
 
     @staticmethod

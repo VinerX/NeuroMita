@@ -4,8 +4,7 @@ from ui.pages.settings.section_registry import get_settings_section_specs
 
 
 ALWAYS_ON_SECTIONS = frozenset({"general", "language"})
-_EXTRA_SECTION_DEFAULTS = {"developer": False}
-_EXTRA_SECTION_LABELS = {"developer": ("Дев", "Dev")}
+_LEGACY_SECTION_KEYS = {"data_collection": "developer"}
 
 
 def _build_section_defaults() -> dict[str, bool]:
@@ -14,15 +13,11 @@ def _build_section_defaults() -> dict[str, bool]:
         if spec.key in ALWAYS_ON_SECTIONS:
             continue
         defaults[spec.key] = spec.min_mode == "basic" or spec.key == "updates"
-    for key, value in _EXTRA_SECTION_DEFAULTS.items():
-        defaults.setdefault(key, value)
     return defaults
 
 
 def _build_section_labels() -> dict[str, tuple[str, str]]:
-    labels = {spec.key: spec.nav_label for spec in get_settings_section_specs()}
-    labels.update(_EXTRA_SECTION_LABELS)
-    return labels
+    return {spec.key: spec.nav_label for spec in get_settings_section_specs()}
 
 
 SECTION_DEFAULTS: dict[str, bool] = _build_section_defaults()
@@ -32,6 +27,28 @@ TOGGLEABLE_SECTIONS: tuple[str, ...] = tuple(SECTION_DEFAULTS)
 
 def _section_key(category: str) -> str:
     return f"SECTION_{category.upper()}_ENABLED"
+
+
+def migrate_legacy_section_settings(settings) -> None:
+    """Keep saved section visibility when a section receives a new key."""
+    getter = getattr(settings, "get", None)
+    setter = getattr(settings, "set", None)
+    if not callable(getter) or not callable(setter):
+        return
+
+    missing = object()
+    for category, legacy_category in _LEGACY_SECTION_KEYS.items():
+        try:
+            current = getter(_section_key(category), missing)
+            legacy = getter(_section_key(legacy_category), missing)
+        except Exception:
+            continue
+        if current is not missing or legacy is missing:
+            continue
+        try:
+            setter(_section_key(category), bool(legacy))
+        except Exception:
+            continue
 
 
 def is_section_enabled(category: str, settings) -> bool:
@@ -54,6 +71,7 @@ __all__ = [
     "SECTION_LABELS",
     "TOGGLEABLE_SECTIONS",
     "_section_key",
+    "migrate_legacy_section_settings",
     "is_section_enabled",
     "set_section_enabled",
 ]

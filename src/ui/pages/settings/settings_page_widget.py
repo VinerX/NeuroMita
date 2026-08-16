@@ -18,7 +18,10 @@ from ui.pages.settings.section_registry import (
     SettingsSectionSpec,
     get_settings_section_specs,
 )
-from ui.pages.settings.section_access import is_section_enabled
+from ui.pages.settings.section_access import (
+    is_section_enabled,
+    migrate_legacy_section_settings,
+)
 from ui.pages.settings.settings_presentation import (
     PrepareSettingsSection,
     SettingsSectionFailed,
@@ -146,6 +149,8 @@ class SettingsPage(QWidget):
         self._page_actions = page_actions
         self._settings = settings
         self.setObjectName("SettingsPageRoot")
+
+        migrate_legacy_section_settings(settings)
 
         self.settings_buttons = {}
         self._category_modes = {}

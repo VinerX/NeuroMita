@@ -259,6 +259,7 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
                         "models",
                         "screen",
                         "updates",
+                        "data_collection",
                     ):
                         host = QWidget()
                         hosts.append(host)

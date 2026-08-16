@@ -29,7 +29,6 @@ MAIN_PAGE_SPECS: tuple[MainPageSpec, ...] = (
     MainPageSpec("news", "ui.pages.news_page", "build_news_page"),
     MainPageSpec("sandbox", "ui.pages.sandbox_page", "build_sandbox_page"),
     MainPageSpec("settings", "ui.pages.settings_page", "build_settings_page"),
-    MainPageSpec("developer", "ui.pages.developer_page", "build_developer_page"),
     MainPageSpec("wiki", "ui.pages.wiki_page", "build_wiki_page"),
     MainPageSpec("logs", "ui.pages.logs_page", "build_logs_page"),
 )

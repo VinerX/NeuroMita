@@ -51,7 +51,6 @@ DEFAULT_SIDEBAR_SECTIONS: tuple[SidebarSection, ...] = (
     SidebarSection("settings", "Настройки", "Settings", "fa6s.gear", "Системные параметры", "System controls"),
     SidebarSection("sandbox", "Песочница", "Sandbox", "fa6s.flask", "Быстрый вход в чат", "Quick chat access"),
     SidebarSection("news", "Релизы", "Releases", "fa6s.rectangle-list", "Лента релизов проекта", "Project release feed"),
-    SidebarSection("developer", "Дев", "Dev", "fa6s.bug", "Отладка и дообучение", "Debug & fine-tuning", min_mode="full"),
     SidebarSection("wiki", "Вики", "Wiki", "fa6s.book-open", "Полная база знаний по приложению", "Full in-app knowledge base"),
     SidebarSection("logs", "Логи", "Logs", "fa6s.list", "События и диагностика", "Events and diagnostics"),
 )
@@ -417,8 +416,8 @@ class LauncherSidebarWidget(QFrame):
 
     def apply_section_visibility(self, is_enabled_fn) -> None:
         """Show/hide nav buttons via the per-section toggles. Sections whose
-        spec defaults to "basic" stay always visible; gated sections (e.g.
-        "developer") follow their SECTION_<KEY>_ENABLED toggle."""
+        spec defaults to "basic" stay always visible; gated sections follow
+        their SECTION_<KEY>_ENABLED toggle."""
         for section in self._sections:
             button = self._nav_buttons.get(section.key)
             if button is None:

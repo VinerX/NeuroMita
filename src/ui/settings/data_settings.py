@@ -29,15 +29,13 @@ from localization.live import tr_set, register_if_tr
 
 
 def setup_data_settings_controls(self, parent, *, view_model):
-    self._finetune_data_view_model = view_model
-
     def _handle_effect(effect) -> None:
         if isinstance(effect, FineTuneDataMessage):
             method = QMessageBox.critical if effect.error else QMessageBox.information
             method(self, effect.title, effect.message)
 
     view_model.effect_emitted.connect(_handle_effect)
-    create_section_header(parent, _("Данные для дообучения", "Finetune Data"))
+    create_section_header(parent, _("Сбор данных", "Data Collection"))
 
     # ── Explanatory info block ────────────────────────────────────────────────
     info_widget = SettingsBodyWidget()
@@ -49,14 +47,14 @@ def setup_data_settings_controls(self, parent, *, view_model):
         "При включённом сборе каждый диалог с моделью сохраняется локально "
         "вместе с метаданными (модель, провайдер, температура, персонаж). "
         "Накопленные данные можно выгрузить и использовать для дообучения "
-        "через Unsloth или другие инструменты.\n\n"
+        "через Unsloth или другие инструменты.\r\n\r\n"
         "⚠ Файлы могут занять значительное место: каждый запрос включает "
         "полный системный промт и историю (~20 сообщений).",
 
         "When collection is enabled, every model dialogue is saved locally "
         "with metadata (model, provider, temperature, character). "
         "Collected data can be exported and used for fine-tuning "
-        "via Unsloth or other tools.\n\n"
+        "via Unsloth or other tools.\r\n\r\n"
         "⚠ Files can take significant space: each request includes "
         "the full system prompt and history (~20 messages)."
     )
@@ -94,14 +92,14 @@ def setup_data_settings_controls(self, parent, *, view_model):
         "When enabled, every model request and response is saved "
         "to FineTuneData/ for later fine-tuning.", "setToolTip")
     try:
-        chk.setChecked(bool(self.settings.get("FINETUNE_COLLECTION_ENABLED", True)))
+        chk.setChecked(bool(get_setting(self, "FINETUNE_COLLECTION_ENABLED", True)))
     except Exception:
         pass
 
     def _on_toggle(state):
         val = state == Qt.CheckState.Checked.value
         try:
-            self._save_setting("FINETUNE_COLLECTION_ENABLED", val)
+            set_setting(self, "FINETUNE_COLLECTION_ENABLED", val)
         except Exception:
             pass
 
@@ -113,14 +111,14 @@ def setup_data_settings_controls(self, parent, *, view_model):
     tr_set(rating_chk, "Показывать кнопки оценки на пузырьках ответов ассистента. Работает только при включённом сборе данных.",
         "Show rating buttons on assistant message bubbles. Works only when data collection is enabled.", "setToolTip")
     try:
-        rating_chk.setChecked(bool(self.settings.get("SHOW_MESSAGE_RATING_CONTROLS", False)))
+        rating_chk.setChecked(bool(get_setting(self, "SHOW_MESSAGE_RATING_CONTROLS", False)))
     except Exception:
         pass
 
     def _on_rating_toggle(state):
         val = state == Qt.CheckState.Checked.value
         try:
-            self._save_setting("SHOW_MESSAGE_RATING_CONTROLS", val)
+            set_setting(self, "SHOW_MESSAGE_RATING_CONTROLS", val)
         except Exception:
             pass
 
@@ -144,7 +142,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
     limit_spin.setRange(1, 1_000_000)
     limit_spin.setFixedWidth(110)
     try:
-        limit_spin.setValue(int(self.settings.get("FINETUNE_MAX_RECORDS", 50) or 50))
+        limit_spin.setValue(int(get_setting(self, "FINETUNE_MAX_RECORDS", 50) or 50))
     except Exception:
         limit_spin.setValue(50)
     limit_spin.setSuffix(_(" записей", " records"))
@@ -161,7 +159,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
     tr_set(unlimited_chk, "Хранить все записи без ограничения. Может занять много места.",
         "Keep all records with no cap. May use a lot of disk space.", "setToolTip")
     try:
-        unlimited_chk.setChecked(bool(self.settings.get("FINETUNE_UNLIMITED", False)))
+        unlimited_chk.setChecked(bool(get_setting(self, "FINETUNE_UNLIMITED", False)))
     except Exception:
         pass
     limit_row.addWidget(unlimited_chk)
@@ -172,7 +170,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
 
     def _on_limit_changed(value):
         try:
-            self._save_setting("FINETUNE_MAX_RECORDS", int(value))
+            set_setting(self, "FINETUNE_MAX_RECORDS", int(value))
         except Exception:
             pass
         if not unlimited_chk.isChecked():
@@ -181,7 +179,7 @@ def setup_data_settings_controls(self, parent, *, view_model):
     def _on_unlimited_toggled(state):
         val = state == Qt.CheckState.Checked.value
         try:
-            self._save_setting("FINETUNE_UNLIMITED", val)
+            set_setting(self, "FINETUNE_UNLIMITED", val)
         except Exception:
             pass
         limit_spin.setDisabled(val)
@@ -411,8 +409,8 @@ def _clear_all_data(gui, view_model):
             None,
             _("Подтверждение", "Confirmation"),
             _(
-                "Удалить все файлы данных дообучения?\nЭто действие необратимо.",
-                "Delete all fine-tuning data files?\nThis action is irreversible."
+                "Удалить все файлы данных дообучения?\r\nЭто действие необратимо.",
+                "Delete all fine-tuning data files?\r\nThis action is irreversible."
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

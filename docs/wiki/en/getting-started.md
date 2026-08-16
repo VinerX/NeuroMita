@@ -22,7 +22,7 @@ You don't need any prior experience with AI providers or APIs — follow these i
 - [Settings](app:settings): full configuration.
 - [Sandbox](app:sandbox): live status, quick toggles, diagnostics.
 - [Logs](app:logs): real-time log tail.
-- [Developer](app:developer): advanced tools and contributor workflows.
+- [Data Collection](app:settings/data_collection): collect, rate, and export samples for fine-tuning workflows.
 
 ## Core Usage Loop
 

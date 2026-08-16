@@ -23,7 +23,7 @@ class MainWindowCoordinator:
             raise RuntimeError("Main window coordinator is already closed")
         view = self._view
         view.page_map = {}
-        view._deferred_main_pages = {"sandbox", "news", "developer", "wiki", "logs"}
+        view._deferred_main_pages = {"sandbox", "news", "wiki", "logs"}
         view._page_building = set()
         view._page_placeholders = {}
         view._pending_page_actions = {}
@@ -202,15 +202,6 @@ class MainWindowCoordinator:
             view.SETTINGS_PANEL_WIDTH = page.SETTINGS_PANEL_WIDTH
             view.SETTINGS_SIDEBAR_WIDTH = page.SETTINGS_SIDEBAR_WIDTH
             view.settings_resize_handle = page.settings_resize_handle
-            return page
-        if page_key == "developer":
-            page = factory(
-                view,
-                view_models.finetune_data(view),
-                view._page_actions,
-                getattr(view, "settings_binding", None),
-            )
-            view.developer_page = page
             return page
         if page_key == "logs":
             page = factory(view, view_models.logs_page(view), view._page_actions)

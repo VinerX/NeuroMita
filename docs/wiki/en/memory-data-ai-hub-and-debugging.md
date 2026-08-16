@@ -40,6 +40,8 @@ This area covers:
 - exporting collected data
 - rating assistant replies
 
+Open it from [Settings > Data Collection](app:settings/data_collection).
+
 ## AI Hub and Local Components
 
 The `AI Hub` is the maintenance surface for installable local AI assets and dependencies. From a user perspective, this is where you manage model downloads, removals, and related component state.
@@ -64,10 +66,6 @@ Use the context viewer when you need to answer questions like:
 - what RAG snippets were injected
 - which provider and model were used
 - whether a response was cleaned or transformed
-
-## Developer-Oriented Pages
-
-The `Developer` page is for advanced maintenance and contributor workflows. Regular users usually do not need it for everyday chatting, but it is valuable when verifying install state, diagnostics, or internal tooling.
 
 ## Related Pages
 
