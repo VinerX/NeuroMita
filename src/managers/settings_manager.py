@@ -13,6 +13,7 @@ from core.app_paths import settings_path
 from core.settings_registry import SettingChange, SettingsRegistry, SettingsSubscription
 from core.task_supervisor import task_supervisor
 from main_logger import logger
+from services.update_contour import migrate_update_contour, target_for_contour
 
 
 class SettingsManager:
@@ -38,6 +39,7 @@ class SettingsManager:
         self._stopped = False
 
         loaded = self._read_settings_file()
+        contour_migration = migrate_update_contour(loaded, config_path=self.config_path)
         self.registry = SettingsRegistry(loaded, on_mutated=self._schedule_save)
         self.settings = self.registry
         SettingsManager.instance = self
@@ -46,6 +48,16 @@ class SettingsManager:
             self,
             "settings-saver",
             self._save_worker,
+        )
+        if contour_migration.changed:
+            self._schedule_save()
+        target = target_for_contour(loaded.get("UPDATE_CONTOUR"))
+        logger.info(
+            "Update contour: %s (%s, %s); source=%s",
+            target.contour,
+            target.repo,
+            target.channel,
+            contour_migration.reason,
         )
         atexit.register(self._stop_writer)
 
@@ -149,7 +161,11 @@ class SettingsManager:
             logger.error(f"Не удалось сохранить резервную копию настроек: {exc}")
 
     def load_settings(self) -> None:
-        self.registry.replace_all(self._read_settings_file(), notify=False)
+        loaded = self._read_settings_file()
+        migration = migrate_update_contour(loaded, config_path=self.config_path)
+        self.registry.replace_all(loaded, notify=False)
+        if migration.changed:
+            self._schedule_save()
 
     def _snapshot(self) -> dict[str, Any]:
         return self.registry.snapshot()

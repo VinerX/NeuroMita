@@ -9,7 +9,6 @@ from typing import Callable
 from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -24,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from main_logger import logger
+from services.update_contour import target_for_contour
 from ui.gui_templates import create_section_header
 from ui.widgets.tr_combobox import TRQComboBox
 from utils import getTranslationVariant as _
@@ -65,6 +65,9 @@ def setup_updates_settings_controls(
             setter(key, value)
         except Exception:
             logger.error(f"[updates_ui] Failed to persist setting {key!r}", exc_info=True)
+
+    def _current_update_target():
+        return target_for_contour(self.settings.get("UPDATE_CONTOUR", "release"))
 
     def _current_unity_dir() -> Path:
         base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
@@ -229,12 +232,14 @@ def setup_updates_settings_controls(
         try:
             from updater import get_python_update_info, get_unity_update_info
 
-            channel = self.settings.get("UPDATE_CHANNEL", "stable")
+            target = _current_update_target()
+            channel = target.channel
             base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
             unity_dir = self.settings.get("UNITY_INSTALL_DIR") or None
 
             logger.info(
-                f"[updates_ui] Check-only params: channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}"
+                f"[updates_ui] Check-only params: contour={target.contour}, repo={target.repo}, "
+                f"channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}"
             )
 
             py_info = get_python_update_info(base_dir=base_dir, channel=channel)
@@ -294,13 +299,15 @@ def setup_updates_settings_controls(
                 get_unity_update_info,
             )
 
-            channel = self.settings.get("UPDATE_CHANNEL", "stable")
+            target = _current_update_target()
+            channel = target.channel
             tester_code = self.settings.get("TESTER_CODE") or None
             base_dir = os.environ.get("NEUROMITA_BASE_DIR") or None
             unity_dir = self.settings.get("UNITY_INSTALL_DIR") or None
 
             logger.info(
-                f"[updates_ui] Install params: channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}, "
+                f"[updates_ui] Install params: contour={target.contour}, repo={target.repo}, "
+                f"channel={channel}, base_dir={base_dir}, unity_dir={unity_dir}, "
                 f"tester_code={'set' if tester_code else 'empty'}"
             )
 
@@ -408,6 +415,8 @@ def setup_updates_settings_controls(
             _set_status_level(f"{_('Ошибка запуска Unity', 'Unity launch error')}: {e}", "error")
 
     def _ensure_tester_code() -> bool:
+        if _current_update_target().contour != "test":
+            return True
         current = tester_entry.text().strip()
         if current:
             return True
@@ -486,46 +495,58 @@ def setup_updates_settings_controls(
         except Exception:
             pass
 
-    # Channel
-    channel_row = QWidget()
-    channel_row.setObjectName("UpdatesChannelRow")
-    channel_row.setStyleSheet("QWidget#UpdatesChannelRow { background: transparent; }")
-    channel_layout = QHBoxLayout(channel_row)
-    channel_layout.setContentsMargins(0, 4, 0, 0)
-    channel_layout.setSpacing(8)
-
-    channel_lbl = tr_set(QLabel(), "Канал обновлений:", "Update channel:")
-    channel_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
-    channel_layout.addWidget(channel_lbl)
-
-    channel_combo = QComboBox()
-    channel_combo.setStyleSheet(
+    # Update contour (read-only; the contour is the single source of truth)
+    target = _current_update_target()
+    readonly_value_style = (
+        "QLabel { background-color: rgba(16,13,25,0.76); "
+        "border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
+        "color: #f3edf6; padding: 7px 10px; }"
+    )
+    combo_style = (
         "QComboBox { background-color: rgba(16,13,25,0.76); border: 1px solid rgba(255,255,255,0.05); border-radius: 10px; "
         "color: #f3edf6; padding: 7px 10px; }"
         "QComboBox:focus { border: 1px solid rgba(183, 75, 125,0.24); }"
         "QComboBox::drop-down { border: none; width: 26px; }"
         "QComboBox QAbstractItemView { background-color: rgba(15,16,31,0.96); border: 1px solid rgba(183, 75, 125,0.24); color: #f3edf6; selection-background-color: rgba(183, 75, 125,0.30); }"
     )
-    channel_combo.addItems(["stable", "beta"])
-    current_channel = self.settings.get("UPDATE_CHANNEL", "stable")
-    idx = channel_combo.findText(current_channel)
-    if idx >= 0:
-        channel_combo.setCurrentIndex(idx)
-    tr_set(channel_combo, "stable - официальные релизы.\n"
-            "beta - включая пре-релизы.",
-            "stable - official releases.\n"
-            "beta - including pre-releases.", "setToolTip")
 
-    def _save_channel(text: str):
-        if text == self.settings.get("UPDATE_CHANNEL", "stable"):
-            return
-        logger.info(f"[updates_ui] UPDATE_CHANNEL -> {text}")
-        _persist_setting("UPDATE_CHANNEL", text)
+    contour_row = QWidget()
+    contour_row.setObjectName("UpdatesContourRow")
+    contour_row.setStyleSheet("QWidget#UpdatesContourRow { background: transparent; }")
+    contour_layout = QHBoxLayout(contour_row)
+    contour_layout.setContentsMargins(0, 4, 0, 0)
+    contour_layout.setSpacing(8)
+    contour_lbl = tr_set(QLabel(), "Контур обновлений:", "Update contour:")
+    contour_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
+    contour_lbl.setFixedWidth(120)
+    contour_layout.addWidget(contour_lbl)
+    contour_value = tr_set(
+        QLabel(),
+        "Тестовый" if target.contour == "test" else "Стабильный",
+        "Test" if target.contour == "test" else "Stable",
+    )
+    contour_value.setStyleSheet(readonly_value_style)
+    contour_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    contour_layout.addWidget(contour_value)
+    contour_layout.addStretch()
+    parent.addWidget(contour_row)
 
-    channel_combo.activated.connect(lambda _index: QTimer.singleShot(0, lambda: _save_channel(channel_combo.currentText())))
-    channel_layout.addWidget(channel_combo)
-    channel_layout.addStretch()
-    parent.addWidget(channel_row)
+    repo_row = QWidget()
+    repo_row.setObjectName("UpdatesRepoRow")
+    repo_row.setStyleSheet("QWidget#UpdatesRepoRow { background: transparent; }")
+    repo_layout = QHBoxLayout(repo_row)
+    repo_layout.setContentsMargins(0, 4, 0, 0)
+    repo_layout.setSpacing(8)
+    repo_lbl = tr_set(QLabel(), "Репозиторий:", "Repository:")
+    repo_lbl.setStyleSheet("QLabel { color: #bca9bb; font-size: 12px; }")
+    repo_lbl.setFixedWidth(120)
+    repo_layout.addWidget(repo_lbl)
+    repo_value = QLabel(target.repo)
+    repo_value.setStyleSheet(readonly_value_style)
+    repo_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    repo_layout.addWidget(repo_value)
+    repo_layout.addStretch()
+    parent.addWidget(repo_row)
 
     # Update mode (diff / full)
     mode_row = QWidget()
@@ -540,7 +561,7 @@ def setup_updates_settings_controls(
     mode_layout.addWidget(mode_lbl)
 
     mode_combo = TRQComboBox()
-    mode_combo.setStyleSheet(channel_combo.styleSheet())
+    mode_combo.setStyleSheet(combo_style)
     # data: "diff"/"full"; подписи переводятся вживую.
     mode_combo.add_tr_item("Дифф (только изменённые файлы)", "Diff (changed files only)", value="diff")
     mode_combo.add_tr_item("Полная перезапись", "Full replace", value="full")
@@ -655,6 +676,7 @@ def setup_updates_settings_controls(
 
     tester_entry.editingFinished.connect(_save_tester)
     tester_layout.addWidget(tester_entry)
+    tester_row.setVisible(target.contour == "test")
     parent.addWidget(tester_row)
 
     self._tester_code_entry = tester_entry

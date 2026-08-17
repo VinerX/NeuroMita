@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from services.update_contour import target_for_contour
 from startup.startup_profiler import startup_trace
 
 
@@ -384,7 +385,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                 check_for_updates(
                     base_dir=base_dir,
                     logger=logger,
-                    channel=settings.get("UPDATE_CHANNEL", "stable"),
+                    channel=target_for_contour(settings.get("UPDATE_CONTOUR", "release")).channel,
                     tester_code=settings.get("TESTER_CODE") or None,
                     auto_update=apply_update,
                     restart_on_success=apply_update,
@@ -415,7 +416,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                     base_dir=base_dir,
                     logger=logger,
                     unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
-                    channel=settings.get("UPDATE_CHANNEL", "stable"),
+                    channel=target_for_contour(settings.get("UPDATE_CONTOUR", "release")).channel,
                     tester_code=settings.get("TESTER_CODE") or None,
                     auto_update=apply_update,
                 )

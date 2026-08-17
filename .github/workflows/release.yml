@@ -231,6 +231,19 @@ jobs:
         env:
           PYTHONUTF8: '1'
 
+      - name: Stamp test distribution metadata
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: >
+          python scripts/stamp_distribution_metadata.py
+          --archive "PythonBuild-v${{ steps.ver.outputs.version }}.zip"
+          --contour test
+          --source-repo "${{ github.repository }}"
+          --source-tag "v${{ steps.ver.outputs.version }}"
+          --source-commit "${{ github.sha }}"
+        env:
+          PYTHONUTF8: '1'
+
       - name: Validate release contract
         if: steps.release_meta.outputs.should_release == 'true'
         shell: bash

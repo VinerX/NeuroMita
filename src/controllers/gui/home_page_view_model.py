@@ -10,6 +10,7 @@ from PyQt6.QtCore import QTimer
 from controllers.gui.intent_view_model import IntentViewModel
 from core.events import Events, get_event_bus
 from main_logger import logger
+from services.update_contour import target_for_contour
 from ui.pages.home_presentation import (
     HomeActivated,
     HomeApplyUpdatesRequested,
@@ -197,7 +198,9 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             )
         self.update_state(update_checking=True, error=None)
 
-        channel = str(self._settings.get("UPDATE_CHANNEL", "stable") or "stable")
+        channel = target_for_contour(
+            self._settings.get("UPDATE_CONTOUR", "release")
+        ).channel
         unity_dir = self._settings.get("UNITY_INSTALL_DIR") or None
 
         def worker() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -408,7 +411,11 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             "unavailable": "mdi.unity",
         }
         icon = icons[action]
-        if action == "apply" and not self._tester_code():
+        if (
+            action == "apply"
+            and target_for_contour(self._settings.get("UPDATE_CONTOUR", "release")).contour == "test"
+            and not self._tester_code()
+        ):
             icon = "fa6s.lock"
         changes = {
             "primary_action": action,
@@ -487,8 +494,9 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             )
             self._schedule_hide_progress()
             return
+        target = target_for_contour(self._settings.get("UPDATE_CONTOUR", "release"))
         code = self._tester_code()
-        if not code:
+        if target.contour == "test" and not code:
             self._pending_continuation = "apply-updates"
             self.emit_effect(HomePromptTesterCode("apply-updates"))
             return
@@ -557,7 +565,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 self._home.apply_updates(
                     update_python=update_python,
                     update_unity=update_unity,
-                    channel=str(settings.get("UPDATE_CHANNEL") or "stable"),
+                    channel=target_for_contour(settings.get("UPDATE_CONTOUR", "release")).channel,
                     tester_code=tester_code,
                     unity_dir=settings.get("UNITY_INSTALL_DIR") or None,
                     update_mode=str(settings.get("UPDATE_MODE") or "diff"),

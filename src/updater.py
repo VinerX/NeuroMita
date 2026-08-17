@@ -3,8 +3,10 @@
 Controlled via features.env or Settings/settings.json:
   AUTO_UPDATE=0|1          — notify only / auto-apply Python part (default 0)
   AUTO_UPDATE_UNITY=0|1    — same for Unity part (default 0)
-  UPDATE_REPO              — release repository (default Atm4x/NeuroMita)
-  UPDATE_CHANNEL           — stable|beta (default stable)
+  UPDATE_CONTOUR           — test|release; persisted in Settings/settings.json
+                            fresh installs bootstrap from Settings/distribution.json
+                            test -> Atm4x/NeuroMita releases
+                            release -> VinerX/NeuroMita releases
   TESTER_CODE              — password for encrypted test archives
 
 Exit code 42 signals launch.py / run.bat to restart after Python update.
@@ -45,6 +47,12 @@ from utils.archive_utils import (
     format_bytes,
     make_logger,
     wipe_dir,
+)
+from services.update_contour import (
+    UpdateTarget,
+    infer_initial_contour,
+    normalize_contour,
+    target_for_contour,
 )
 from utils.release_assets import (
     Release,
@@ -363,8 +371,46 @@ def _install_full_archive(
 
 # ── Repo / version helpers ────────────────────────────────────────────────────
 
+def _get_update_target() -> UpdateTarget:
+    # Lazy imports avoid coupling the updater module to GUI/settings startup.
+    # Before SettingsManager is initialized we still honor legacy tester hints
+    # once, so the transitional build does not jump testers to VinerX early.
+    try:
+        from core.app_paths import settings_path
+        from managers.settings_manager import SettingsManager
+
+        contour = normalize_contour(SettingsManager.get("UPDATE_CONTOUR", None))
+        if contour is None:
+            legacy = {
+                "UPDATE_REPO": SettingsManager.get("UPDATE_REPO", os.environ.get("UPDATE_REPO", "")),
+                "UPDATE_CHANNEL": SettingsManager.get(
+                    "UPDATE_CHANNEL", os.environ.get("UPDATE_CHANNEL", "")
+                ),
+                "TESTER_CODE": SettingsManager.get("TESTER_CODE", os.environ.get("TESTER_CODE", "")),
+            }
+            contour, _reason = infer_initial_contour(
+                legacy,
+                config_path=str(settings_path("settings.json")),
+            )
+    except Exception:
+        contour = "release"
+    return target_for_contour(contour)
+
+
+def get_update_target() -> dict[str, str]:
+    """Public read-only description used by the settings UI and diagnostics."""
+    target = _get_update_target()
+    return {
+        "contour": target.contour,
+        "repo": target.repo,
+        "channel": target.channel,
+    }
+
+
 def _get_repo() -> str:
-    return os.environ.get("UPDATE_REPO", "Atm4x/NeuroMita")
+    # Compatibility helper for old internal callers. Repository is no longer
+    # independently configurable: UPDATE_CONTOUR is the single source of truth.
+    return _get_update_target().repo
 
 
 def _get_current_version() -> str:
@@ -1014,9 +1060,10 @@ def get_python_update_info(
     channel: str = "stable",
 ) -> dict:
     """Return current/latest Python update information without installing."""
-    repo = _get_repo()
+    target = _get_update_target()
+    repo = target.repo
     local_version = _get_current_version()
-    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+    channel = target.channel
 
     release = _select_python_release(repo, channel)
     if release is None:
@@ -1056,8 +1103,9 @@ def get_unity_update_info(
     channel: str = "stable",
 ) -> dict:
     """Return current/latest Unity update information without installing."""
-    repo = _get_repo()
-    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+    target = _get_update_target()
+    repo = target.repo
+    channel = target.channel
 
     if base_dir is None:
         base_dir = str(Path(sys.argv[0]).parent)
@@ -1123,17 +1171,19 @@ def check_for_updates(
     """
     log = make_logger(logger, _LOG_PREFIX)
 
-    repo = _get_repo()
+    target = _get_update_target()
+    repo = target.repo
     local_version = _get_current_version()
     if auto_update is None:
         auto_update = os.environ.get("AUTO_UPDATE", "0") == "1"
-    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+    channel = target.channel
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
     update_mode = (update_mode or os.environ.get("UPDATE_MODE", "diff")).lower()
     if update_mode not in ("diff", "full"):
         update_mode = "diff"
     preserve_prompts = preserve_prompts or os.environ.get("UPDATE_PRESERVE_PROMPTS", "0") == "1"
 
+    log(f"Update contour: {target.contour} ({repo}, {channel})")
     log(f"Checking for updates ({repo}, channel={channel}, mode={update_mode}) ...")
 
     release = _select_python_release(repo, channel)
@@ -1939,10 +1989,11 @@ def check_for_unity_updates(
     stop_event=None,
 ) -> UpdateResult:
     log = make_logger(logger, _LOG_PREFIX)
-    repo = _get_repo()
+    target = _get_update_target()
+    repo = target.repo
     if auto_update is None:
         auto_update = os.environ.get("AUTO_UPDATE_UNITY", "0") == "1"
-    channel = (channel or os.environ.get("UPDATE_CHANNEL", "stable")).lower()
+    channel = target.channel
     tester_code = tester_code or os.environ.get("TESTER_CODE") or None
     base_path = Path(base_dir) if base_dir else Path(sys.argv[0]).parent
     unity_path = Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
@@ -1950,6 +2001,7 @@ def check_for_unity_updates(
     install_complete = _find_unity_executable(unity_path) is not None
     local_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "0.0.0.0"
 
+    log(f"Update contour: {target.contour} ({repo}, {channel})")
     log(f"Checking Unity updates ({repo}, channel={channel}) ...")
     release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
     if release is None or unity_asset is None:
