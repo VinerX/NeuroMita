@@ -17,6 +17,11 @@ class AIHubSettingsState:
     saving: bool = False
     dirty: bool = False
     status_text: str = ""
+    compile_available: bool = False
+    compile_cache_exists: bool = False
+    compile_cache_size_bytes: int = 0
+    compile_busy: bool = False
+    compile_revision: int = 0
     components_revision: int = 0
     form_revision: int = 0
     errors_revision: int = 0
@@ -45,6 +50,16 @@ class SaveAIHubSettings(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class ResetAIHubSettings(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class CompileAIHubModel(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteAIHubModelCompilation(UiIntent):
     pass
 
 

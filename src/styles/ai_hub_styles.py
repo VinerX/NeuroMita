@@ -607,6 +607,27 @@ QLabel#AIHubSettingsEmpty {
     color: {muted};
     font-size: 12px;
 }
+QFrame#AIHubSettingsCompileCard {
+    background: rgba({accent_rgb}, 0.055);
+    border: 1px solid {accent_border};
+    border-radius: 11px;
+}
+QLabel#AIHubSettingsCompileTitle {
+    color: {text};
+    font-size: 12px;
+    font-weight: 700;
+}
+QPushButton#AIHubDanger {
+    background: transparent;
+    color: {warn_text};
+    border: 1px solid rgba(255, 123, 123, 0.35);
+    border-radius: 10px;
+    padding: 9px 16px;
+    font-weight: 600;
+    font-size: 12px;
+}
+QPushButton#AIHubDanger:hover { background: rgba(255, 123, 123, 0.09); }
+QPushButton#AIHubDanger:disabled { color: {btn_disabled_fg}; border-color: {outline}; }
 
 QScrollArea#AIHubSettingsScroll {
     background: transparent;

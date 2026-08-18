@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Any, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal, Qt, QEvent
+from PyQt6.QtCore import QCoreApplication, QEvent, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QWidget
 
 from main_logger import logger
@@ -106,9 +106,25 @@ class WindowManager(QObject):
         return holder
 
     def close_dialog(self, window_id: str, *, destroy: bool = False) -> None:
+        if QThread.currentThread() == self.thread():
+            self._on_request_close(window_id, destroy)
+            if destroy:
+                QCoreApplication.sendPostedEvents(
+                    None,
+                    QEvent.Type.DeferredDelete,
+                )
+            return
         self._request_close.emit(window_id, destroy)
 
     def close_all(self, *, destroy: bool = False) -> None:
+        if QThread.currentThread() == self.thread():
+            self._on_request_close_all(destroy)
+            if destroy:
+                QCoreApplication.sendPostedEvents(
+                    None,
+                    QEvent.Type.DeferredDelete,
+                )
+            return
         self._request_close_all.emit(destroy)
 
     def get_dialog(self, window_id: str) -> Optional[QDialog]:

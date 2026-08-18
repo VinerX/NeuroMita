@@ -65,10 +65,8 @@ ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (PROJECT_DIR / "docs" / "wiki", OUTPUT_DIR / "docs" / "wiki"),
 ]
 
-# Файлы, нужные в рантайме в ЛЮБОМ режиме сборки. init.py запускается шагом
-# инициализации Triton/Fish Speech (subprocess из корня билда) — без него
-# fast/промптерский билд падал с "can't open file init.py".
-_always_files_raw = env.get("BUILD_ALWAYS_COPY_FILES", "extra/init.py")
+# Дополнительные файлы, нужные в рантайме в любом режиме сборки.
+_always_files_raw = env.get("BUILD_ALWAYS_COPY_FILES", "")
 ALWAYS_FILES_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _always_files_raw.split(",") if f.strip()
@@ -87,7 +85,7 @@ FILES_TO_COPY: List[Tuple[Path, Path]] = [
 # remains in run.py, and both user entry points share the same batch contract.
 _root_scripts_raw = env.get(
     "BUILD_ROOT_SCRIPTS",
-    "scripts/Launcher.exe,scripts/run.bat,scripts/run.py,scripts/init_triton.bat",
+    "scripts/Launcher.exe,scripts/run.bat,scripts/run.py",
 )
 ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
     (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)

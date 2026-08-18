@@ -469,6 +469,7 @@ class _ViewModelFactory:
 
         return AIHubSettingsViewModel(
             catalog=self._presentation.installables,
+            application=self._presentation.app,
             parent=parent,
         )
 
@@ -806,6 +807,14 @@ class _VoiceController:
         service = self.local_voice()
         return dict(service.triton_status(refresh=refresh) or {}) if service is not None else {}
 
+    def compile_status(self) -> dict[str, Any]:
+        service = self.voice_models()
+        return dict(service.compile_status() or {}) if service is not None else {}
+
+    def enable_long_paths(self) -> bool:
+        service = self.voice_models()
+        return bool(service and service.enable_long_paths())
+
     def open_documentation(self, path: str) -> None:
         get_event_bus().emit("open_voice_model_doc", str(path))
 
@@ -836,6 +845,17 @@ class _InstallableController:
 
     def save_settings(self, component_id: str, values: dict[str, Any]):
         return self._catalog.save_component_settings(str(component_id), dict(values))
+
+    def compile_status(self) -> dict[str, Any]:
+        service = services().get_optional(VoiceModelService)
+        return dict(service.compile_status() or {}) if service is not None else {}
+
+    def compile_model(self, component_id: str, *, clear_only: bool = False) -> bool:
+        service = services().get_optional(VoiceModelService)
+        if service is None:
+            return False
+        model_id = str(component_id or "").split(":", 1)[-1]
+        return bool(service.start_compile(model_id, clear_only=clear_only, with_ui=True))
 
     def admit(self, action: str, payload: dict[str, Any]):
         operations = services().get(InstallableOperationsService)

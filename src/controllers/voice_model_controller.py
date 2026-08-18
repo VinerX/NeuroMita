@@ -19,6 +19,7 @@ from services.contracts import (
     InstallableCatalogService,
     InstallableOperationsService,
     LocalVoiceService,
+    RuntimeFeatureService,
     VoiceModelService,
 )
 
@@ -219,7 +220,7 @@ class VoiceModelController(VoiceModelService):
     def _task_op(self, data: dict) -> str:
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         op = str(meta.get("op") or "").strip().lower()
-        if op in ("install", "uninstall"):
+        if op in ("install", "uninstall", "initialize"):
             return op
         tid = str(data.get("task_id") or "")
         if "uninstall" in tid:
@@ -244,6 +245,16 @@ class VoiceModelController(VoiceModelService):
 
     def dependencies_status(self) -> dict[str, Any]:
         return dict(self._handle_get_dependencies_status(Event(Events.VoiceModel.GET_DEPENDENCIES_STATUS)) or {})
+
+    def compile_status(self) -> dict[str, Any]:
+        from core.torch_compile_runtime import compile_cache_status
+
+        return dict(compile_cache_status())
+
+    def enable_long_paths(self) -> bool:
+        from core.torch_compile_runtime import enable_long_paths
+
+        return bool(enable_long_paths())
 
     def _handle_get_dependencies_status(self, event: Event):
         with self._lock:
@@ -719,6 +730,67 @@ class VoiceModelController(VoiceModelService):
         )
         return bool(admission.accepted)
 
+    def start_compile(
+        self,
+        model_id: str,
+        *,
+        clear_only: bool = False,
+        with_ui: bool = True,
+        timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC,
+    ) -> bool:
+        mid = str(model_id or "").strip()
+        if mid not in ("medium+", "medium+low"):
+            logger.error(f"Compilation is not supported for voice model '{mid}'")
+            return False
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            runtime = services().get_optional(RuntimeFeatureService)
+            feature_state: Any = None
+            if runtime is not None:
+                try:
+                    feature_state = runtime.snapshot().get("installables")
+                except Exception as exc:
+                    feature_state = {
+                        "snapshot_error": f"{type(exc).__name__}: {exc}",
+                    }
+            logger.error(
+                "Cannot start Fish Speech+ compilation: "
+                "InstallableOperationsService is not registered; "
+                f"RuntimeFeatureService registered={runtime is not None}; "
+                f"installables feature={feature_state!r}. "
+                "The caller must complete ensure_feature_async('installables') "
+                "before requesting compilation."
+            )
+            return False
+        self.event_bus.emit(
+            Events.VoiceModel.MODEL_COMPILE_STARTED,
+            {"model_id": mid, "clear_only": bool(clear_only)},
+        )
+        admission = operations.initialize(
+            {
+                "component_id": f"tts:{mid}",
+                "kind": "voice",
+                "item_id": mid,
+                "task_id": f"voice:initialize:{'clear' if clear_only else 'compile'}:{mid}",
+                "title": (
+                    _("Удаление компиляции Fish Speech+", "Deleting Fish Speech+ compilation")
+                    if clear_only
+                    else _("Компиляция Fish Speech+", "Compiling Fish Speech+")
+                ),
+                "initial_status": _("Подготовка...", "Preparing..."),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
+                "with_ui": bool(with_ui),
+                "initialize_mode": "clear_cache" if clear_only else "compile",
+                "meta": {"kind": "voice", "item_id": mid, "op": "initialize"},
+            }
+        )
+        if not admission.accepted:
+            logger.error(
+                f"Fish Speech+ compilation request rejected for '{mid}': "
+                f"{admission.error or 'unknown admission error'}"
+            )
+        return bool(admission.accepted)
+
     def _schedule_install_state_refresh(
         self,
         *,
@@ -744,6 +816,11 @@ class VoiceModelController(VoiceModelService):
             if operation == "uninstall":
                 self.event_bus.emit(
                     Events.VoiceModel.MODEL_UNINSTALL_FINISHED,
+                    payload,
+                )
+            elif operation == "initialize":
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_COMPILE_FINISHED,
                     payload,
                 )
             else:

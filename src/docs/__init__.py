@@ -57,9 +57,8 @@ _INSTALLATION_GUIDE_HTML = """
 <body>
     <h1>Установка компонентов для локальной озвучки</h1>
     
-    <div class="warning">
-        <p><strong>Внимание:</strong> Компоненты, описанные ниже (особенно CUDA и Visual Studio), требуются <strong>в первую очередь</strong> для моделей <strong>Fish Speech+ (medium+)</strong> и <strong>Fish Speech+ + RVC (medium+low)</strong>.</p>
-        <p>Модели <strong>Edge-TTS + RVC (low)</strong>, <strong>Silero + RVC (low+)</strong> и <strong>Fish Speech (medium)</strong> должны функционировать без установки данных дополнительных компонентов.</p>
+    <div class="note">
+        <p><strong>Коротко:</strong> для Fish Speech+ приложение устанавливает <code>triton-windows</code> и настраивает его само. LLVM, полный CUDA Toolkit и Visual Studio Build Tools вручную обычно не нужны.</p>
     </div>
     
     <div class="model-info">
@@ -68,30 +67,20 @@ _INSTALLATION_GUIDE_HTML = """
             <li><strong>Edge-TTS + RVC (low):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Silero + RVC (low+):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов.</li>
             <li><strong>Fish Speech (medium):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов. <strong>Требуется NVIDIA GPU.</strong></li>
-            <li><strong>Fish Speech+ (medium+):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong> (RTX 30xx, 40xx, 50xx и сопоставимые профессиональные модели).</li>
-            <li><strong>Fish Speech+RVC (medium+low):</strong> Для компиляции Triton нужны только Microsoft VC++ Build Tools. TinyCC уже входит в triton-windows; Windows SDK и CUDA Toolkit отдельно не требуются. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong> (RTX 30xx, 40xx, 50xx и сопоставимые профессиональные модели).</li>
+            <li><strong>Fish Speech+ (medium+):</strong> использует torch.compile/Triton. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong>.</li>
+            <li><strong>Fish Speech+RVC (medium+low):</strong> те же требования к компиляции, плюс зависимости RVC.</li>
         </ul>
     </div>
     
-    <h2>Необходимые компоненты</h2>
-    
+    <h2 id="fish_compile">Компиляция Fish Speech+</h2>
     <div class="requirement">
-        <h3>1. LLVM (Компилятор)</h3>
-        <p>Необходим для компиляции кода Triton.</p>
-        <ol>
-            <li>Загрузите и установите компилятор LLVM (рекомендуется версия 17.x):
-                <ul>
-                    <li><a href="https://huggingface.co/fishaudio/fish-speech-1/resolve/main/LLVM-17.0.6-win64.exe?download=true" target="_blank" rel="noopener noreferrer">LLVM-17.0.6 (HF)</a></li>
-                    <li><a href="https://github.com/llvm/llvm-project/releases" target="_blank" rel="noopener noreferrer">LLVM Releases (Официальный сайт)</a> - выберите "Windows (64-bit)" для требуемой версии.</li>
-                </ul>
-            </li>
-            <li><strong>Важно:</strong> В процессе установки необходимо выбрать опцию <code>Add LLVM to the system PATH for current user</code> или <code>...for all users</code> для добавления LLVM в системную переменную окружения PATH.</li>
-            <li>Завершите установку.</li>
-        </ol>
+        <p>При первой озвучке модель может компилироваться несколько минут. Чтобы сделать это заранее, откройте <strong>AI Hub → локальные модели → Fish Speech+ → настройки</strong> и нажмите <strong>«Компилировать»</strong>.</p>
+        <p>После создания кеша там же доступны <strong>«Перекомпилировать»</strong> и <strong>«Удалить компиляцию»</strong>. Приложение хранит один общий кеш в управляемой папке <code>Lib/environment/cache</code>; новые папки-поколения не создаются.</p>
+        <p><a href="https://github.com/woct0rdho/triton-windows" target="_blank" rel="noopener noreferrer">Документация Triton Windows</a></p>
     </div>
-    
-    <div class="requirement">
-        <h3>2. Microsoft Visual C++ Redistributable</h3>
+
+    <div class="optional-component" id="vc_redist">
+        <h3>VC++ Redistributable — только при DLL-ошибке</h3>
         <p>Предоставляет библиотеки времени выполнения C++, необходимые для запуска приложений, скомпилированных с помощью Visual Studio. Устраняет ошибки, связанные с отсутствием DLL-файлов (например, <code>VCRUNTIME140_1.dll</code>).</p>
         <ul>
             <li><a href="https://aka.ms/vs/17/release/vc_redist.x64.exe" target="_blank" rel="noopener noreferrer">Загрузить Microsoft Visual C++ Redistributable (x64)</a> (Обычно последняя версия является подходящей).</li>
@@ -99,39 +88,9 @@ _INSTALLATION_GUIDE_HTML = """
         <p>Установите загруженный пакет.</p>
     </div>
 
-    <div class="optional-component"> <!-- Изменен стиль на optional-component -->
-        <h3>3. Microsoft VC++ Build Tools</h3>
-        <p>Для Fish Speech+ / Fish Speech+RVC Triton использует MSVC. TinyCC уже входит в пакет triton-windows; Windows SDK и CUDA Toolkit для этой операции отдельно не нужны.</p>
-        <p><strong>Установите Build Tools</strong>, если окно проверки Triton сообщает, что MSVC не найден. Если после этого компиляция всё ещё не проходит, попробуйте ручную инициализацию и приложите лог ошибки.</p>
-        <p>При необходимости установки:</p>
-        <ul>
-            <li><a href="https://visualstudio.microsoft.com/ru/downloads/" target="_blank" rel="noopener noreferrer">Загрузить Visual Studio</a> (Редакция Community бесплатна).</li>
-            <li>При установке выберите рабочую нагрузку: <strong>"Разработка классических приложений на C++"</strong> (Desktop development with C++).</li>
-            <li>Выберите компонент MSVC из набора C++ Build Tools. Windows SDK выбирать специально не требуется.</li>
-        </ul>
-    </div>
-    
-    <div class="optional-component"> <!-- Изменен стиль на optional-component -->
-        <h3>4. CUDA Toolkit - <i>Установка может не потребоваться</i></h3>
-        <p>Требуется для вычислений на GPU NVIDIA. Используется Triton для ускорения.</p>
-        <p><strong>Рекомендация:</strong> Проверьте работоспособность моделей medium+/medium+low после установки LLVM, VC++ Redistributable и перезагрузки. Установка полного CUDA Toolkit требуется только в случае, если инициализация Triton явно указывает на его отсутствие или возникают ошибки, связанные с CUDA, и у вас установлен совместимый GPU NVIDIA.</p>
-         <p>При необходимости установки:</p>
-         <ul>
-            <li>Убедитесь, что версия драйвера NVIDIA совместима с выбранной версией CUDA Toolkit.</li>
-            <li><a href="https://developer.nvidia.com/cuda-toolkit-archive" target="_blank" rel="noopener noreferrer">Архив загрузок CUDA Toolkit</a> (Рекомендуются версии 12.4, но скоро будет 12.6).</li>
-            <li>Загрузите и установите выбранную версию.</li>
-        </ul>
-    </div>
-                
     <div class="note">
-        <p><strong>Контрольные шаги после установки:</strong></p>
-        <ol>
-            <li><strong>Перезагрузите компьютер</strong> после установки всех необходимых компонентов (особенно LLVM, Visual Studio, CUDA).</li>
-            <li>Запустите приложение повторно.</li>
-            <li>В случае возникновения ошибок при инициализации, изучите вывод в консоли для получения детальной информации об ошибках.</li>
-            <li>В случае, если при инициализации модели выдаёт ошибку, попробуйте запустить файл <strong>init_triton.bat</strong> в корневой папке с приложением мода.</li>
-            <li>Если ошибка продолжает попадаться, сообщите об этой ошибке в <a href="https://github.com/VinerX/NeuroMita/issues"  target="_blank" rel="noopener noreferrer">Issues</a> или в <a href="https://discord.gg/Tu5MPFxM4P">официальном Discord сообществе.</a></li>
-        </ol>
+        <p><strong>Длинные пути Windows:</strong> если Triton сообщает о превышении длины пути, включите поддержку длинных путей кнопкой в окне компиляции и перезапустите Windows. <a href="https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation" target="_blank" rel="noopener noreferrer">Документация Microsoft</a>.</p>
+        <p>При повторной ошибке сохраните лог окна компиляции и приложите его к обращению в <a href="https://github.com/VinerX/NeuroMita/issues" target="_blank" rel="noopener noreferrer">Issues</a>.</p>
     </div>
 </body>
 </html>
@@ -165,10 +124,6 @@ class DocsManager:
         """
         doc_path = self._get_doc_path(doc_name)
         
-        if os.path.exists(doc_path):
-            return True # Файл уже существует
-            
-        # Файла нет, пытаемся создать
         if doc_name in self.doc_contents:
             html_content = self.doc_contents[doc_name]
             try:
@@ -178,14 +133,15 @@ class DocsManager:
                 # Записываем HTML контент в файл
                 with open(doc_path, "w", encoding="utf-8") as f:
                     f.write(html_content)
-                print(f"Файл документации '{doc_path}' успешно создан.")
+                print(f"Документация '{doc_path}' обновлена.")
                 return True
             except Exception as e:
                 print(f"Ошибка при создании файла документации '{doc_path}': {e}")
                 return False
-        else:
-            print(f"Ошибка: Контент для документа '{doc_name}' не найден в DocsManager.")
-            return False
+        if os.path.exists(doc_path):
+            return True
+        print(f"Ошибка: Контент для документа '{doc_name}' не найден в DocsManager.")
+        return False
 
     def open_doc(self, doc_name: str):
         """
@@ -193,10 +149,13 @@ class DocsManager:
         Если файл не существует, пытается его создать.
         """
         print(f"Запрос на открытие документации: {doc_name}")
-        if self._ensure_doc_exists(doc_name):
-            doc_path = self._get_doc_path(doc_name)
+        file_name, separator, anchor = str(doc_name).partition("#")
+        if self._ensure_doc_exists(file_name):
+            doc_path = self._get_doc_path(file_name)
             try:
-                file_uri = 'file:///' + os.path.realpath(doc_path).replace('\\', '/') 
+                file_uri = 'file:///' + os.path.realpath(doc_path).replace('\\', '/')
+                if separator and anchor:
+                    file_uri += "#" + anchor
                 print(f"Открытие файла: {file_uri}")
                 webbrowser.open(file_uri)
             except Exception as e:

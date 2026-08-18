@@ -41,8 +41,6 @@ def test_validate_local_release_accepts_full_python_archive():
                 "run.py",
                 "run.bat",
                 "Launcher.exe",
-                "init.py",
-                "init_triton.bat",
                 "libs/python/python.exe",
                 "Prompts/default.txt",
                 "assets/icon.png",
@@ -66,7 +64,6 @@ def test_validate_local_release_reports_missing_required_file():
                 "requirements.txt",
                 "run.py",
                 "run.bat",
-                "init.py",
                 "Prompts/default.txt",
                 "assets/icon.png",
                 "libs/site-packages/dummy.txt",
@@ -76,7 +73,7 @@ def test_validate_local_release_reports_missing_required_file():
 
     assert not result.ok
     messages = [issue.message for issue in result.assets[0].issues]
-    assert any("init_triton.bat" in message for message in messages)
+    assert any("Launcher.exe" in message for message in messages)
     assert any("libs/python/python.exe" in message for message in messages)
 
 

@@ -247,6 +247,15 @@ def _run_gui(runtime, startup_mode: str) -> int:
     backend_loader.request_shutdown()
     if not backend_loader.wait(timeout=5.0):
         logger.warning("GUI backend startup thread did not stop within 5 seconds")
+    try:
+        from PyQt6.QtCore import QCoreApplication, QEvent
+
+        gui_root.close()
+        main_window.deleteLater()
+        backend_loader.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    except Exception as exc:
+        logger.error(f"Failed to finalize GUI objects: {exc}", exc_info=True)
     if result < 0:
         logger.critical(
             "Qt event loop terminated with an invalid negative exit code: %d",
@@ -271,6 +280,12 @@ def _run_headless(runtime, options: StartupOptions) -> int:
 
 def main() -> int:
     mp.freeze_support()
+    if len(sys.argv) > 1 and sys.argv[1] == "--internal-compile-fish-speech":
+        sys.argv = ["compile_fish_speech", *sys.argv[2:]]
+        from handlers.voice_models.compile_fish_speech import main as compile_fish_speech
+
+        compile_fish_speech()
+        return 0
     options = _consume_startup_options(sys.argv)
     startup_trace.configure(mode=options.mode)
     startup_trace.mark("entry.options_parsed", mode=options.mode)

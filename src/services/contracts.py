@@ -898,6 +898,22 @@ class VoiceModelService(ABC):
     @abstractmethod
     def dependencies_status(self) -> Dict[str, Any]: ...
 
+    @abstractmethod
+    def compile_status(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def enable_long_paths(self) -> bool: ...
+
+    @abstractmethod
+    def start_compile(
+        self,
+        model_id: str,
+        *,
+        clear_only: bool = False,
+        with_ui: bool = True,
+        timeout_sec: float | None = None,
+    ) -> bool: ...
+
 
 class SpeechService(ABC):
     @abstractmethod

@@ -113,7 +113,8 @@ class WindowCompositionController:
         deps = payload.get("dependencies_status") or payload.get("deps") or {}
         return TritonDependenciesDialog(
             open_documentation=self._presentation.voice.open_documentation,
-            refresh_status=lambda: self._presentation.voice.triton_status(refresh=True),
+            refresh_status=self._presentation.voice.compile_status,
+            enable_long_paths=self._presentation.voice.enable_long_paths,
             parent=parent,
             dependencies_status=deps,
         )

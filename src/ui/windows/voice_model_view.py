@@ -912,39 +912,7 @@ class VoiceModelSettingsView(QWidget):
             layout.addWidget(info)
             return
 
-        if st.get("show_triton_checks", False):
-            row = QHBoxLayout()
-            row.setSpacing(16)
-            for text, ok in [
-                (_("MSVC:", "MSVC:"), st.get("msvc_found", False))
-            ]:
-                sub = QHBoxLayout()
-                sub.setSpacing(6)
-                lab = QLabel(text)
-                val = QLabel(_("Найден", "Found") if ok else _("Не найден", "Not Found"))
-                val.setStyleSheet(f"color: {'#7fe38c' if ok else '#FF6A6A'};")
-                sub.addWidget(lab)
-                sub.addWidget(val)
-                row.addLayout(sub)
-            row.addStretch()
-            layout.addLayout(row)
-
-            if not st.get("msvc_found"):
-                warn = QHBoxLayout()
-                wlab = QLabel(_("⚠️ Для Fish Speech+ / +RVC нужен MSVC (VC++ Build Tools).",
-                                "⚠️ Fish Speech+ / +RVC requires MSVC (VC++ Build Tools)."))
-                wlab.setStyleSheet("color: orange; font-weight: bold;")
-                warn.addWidget(wlab)
-                link = QLabel(_("[Документация]", "[Documentation]"))
-                link.setObjectName("Link")
-                link.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                link.mousePressEvent = lambda e: self.view_model.dispatch(
-                    OpenVoiceDocumentation("installation_guide.html")
-                )
-                warn.addWidget(link)
-                warn.addStretch()
-                layout.addLayout(warn)
-        elif not st.get("triton_installed", False):
+        if not st.get("triton_installed", False):
             warn = QLabel(_("Triton не установлен (нужен для Fish Speech+ / +RVC).",
                             "Triton not installed (required for Fish Speech+ / +RVC)."))
             warn.setStyleSheet("color: orange;")
