@@ -1089,7 +1089,7 @@ class TritonDependenciesDialog(QDialog):
         layout.addWidget(later_link)
 
         links = QLabel(
-            '<a href="https://github.com/woct0rdho/triton-windows">Triton Windows</a> · '
+            '<a href="https://github.com/triton-lang/triton-windows">Triton Windows</a> · '
             '<a href="https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation">Windows: long paths</a>'
         )
         links.setOpenExternalLinks(True)

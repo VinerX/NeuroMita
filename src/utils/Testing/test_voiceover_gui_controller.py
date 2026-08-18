@@ -172,6 +172,20 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
+    def test_startup_preload_checks_status_without_autoload_setting(self):
+        controller, _bus = self._make_controller()
+        controller._startup_preload_done = False
+        controller._ui = lambda callback: callback()
+        controller._get_setting = lambda key, default=None: (
+            False if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        calls = []
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller.preload_global_status_on_startup()
+
+        self.assertEqual(calls, [{"allow_autoload": False}])
+
     def _autoload_probe(self, method: str):
         """Готовит контроллер к автозагрузке: всё сходится, кроме метода."""
         controller, _bus = self._make_controller()
@@ -196,6 +210,23 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
 
     def test_local_voiceover_still_autoloads(self):
         self.assertEqual(self._autoload_probe("Local"), ["high", "high"])
+
+    def test_disabled_voiceover_does_not_load_local_model(self):
+        controller, _bus = self._make_controller()
+        controller._effective_use_voice = lambda: False
+        controller._effective_method = lambda: "Local"
+        controller.main_controller = SimpleNamespace(backend_enabled=True)
+        controller._get_setting = lambda key, default=None: (
+            True if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        started = []
+        controller._begin_model_loading = lambda *_args, **_kwargs: started.append(True)
+
+        controller._maybe_autoload_local_model_from_snapshot(
+            {"current_model_id": "high", "installed": True, "initialized": False}
+        )
+
+        self.assertEqual(started, [])
 
 
 if __name__ == "__main__":

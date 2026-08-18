@@ -2,6 +2,7 @@ from PyQt6.QtCore import QCoreApplication, QThread, QTimer
 from main_logger import logger
 from core.events import get_event_bus
 from core.services import use
+from core.settings_values import as_bool as _as_bool
 from core.task_supervisor import task_supervisor
 from controllers.gui.qt_dispatch import dispatch_to_qt
 from services.contracts import GuiInteractionService, SettingsService
@@ -81,8 +82,12 @@ class GuiController(GuiInteractionService):
 
         if bool(getattr(self.main_controller, "backend_enabled", True)):
             settings = getattr(self.main_controller, "settings", None)
-            voice_enabled = bool(settings and settings.get("USE_VOICEOVER", False))
-            mic_enabled = bool(settings and settings.get("MIC_ACTIVE", False))
+            voice_enabled = bool(
+                settings and _as_bool(settings.get("USE_VOICEOVER", False))
+            )
+            mic_enabled = bool(
+                settings and _as_bool(settings.get("MIC_ACTIVE", False))
+            )
             if voice_enabled or mic_enabled:
                 QTimer.singleShot(100, self.system_controller.check_and_install_ffmpeg)
 
@@ -130,11 +135,11 @@ class GuiController(GuiInteractionService):
     def _on_setting_changed(self, change) -> None:
         key = str(getattr(change, "key", ""))
         value = getattr(change, "value", None)
-        if key == "USE_VOICEOVER" and bool(value):
+        if key == "USE_VOICEOVER" and _as_bool(value):
             self._dispatch_ui(lambda: self._activate_optional_gui("voice", needs_ffmpeg=True))
-        elif key == "MIC_ACTIVE" and bool(value):
+        elif key == "MIC_ACTIVE" and _as_bool(value):
             self._dispatch_ui(lambda: self._activate_optional_gui("speech", needs_ffmpeg=True))
-        elif key == "VOICEOVER_METHOD" and bool(
+        elif key == "VOICEOVER_METHOD" and _as_bool(
             self._settings_service.get("USE_VOICEOVER", False)
         ):
             self._dispatch_ui(lambda: self._activate_optional_gui("voice", needs_ffmpeg=True))
@@ -174,13 +179,10 @@ class GuiController(GuiInteractionService):
                 self.voice_model_gui_controller,
             )
 
-            settings = getattr(self.main_controller, "settings", None)
-            autoload = bool(settings and settings.get("LOCAL_VOICE_LOAD_LAST", False))
-            local_method = str(
-                settings.get("VOICEOVER_METHOD", "Local") if settings else "Local"
-            ).strip().lower() == "local"
-            if autoload and local_method:
-                QTimer.singleShot(0, self.voiceover_controller.autoload_last_model_on_startup)
+            QTimer.singleShot(
+                0,
+                self.voiceover_controller.preload_global_status_on_startup,
+            )
 
         elif normalized == "speech":
             from .gui.asr_events_controller import AsrEventsController

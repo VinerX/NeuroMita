@@ -64,5 +64,10 @@ class DeleteAIHubModelCompilation(UiIntent):
 
 
 @dataclass(frozen=True, slots=True)
+class OpenAIHubCompilationDocumentation(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class AIHubSettingsWarning(UiEffect):
     message: str

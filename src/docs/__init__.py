@@ -76,7 +76,8 @@ _INSTALLATION_GUIDE_HTML = """
     <div class="requirement">
         <p>При первой озвучке модель может компилироваться несколько минут. Чтобы сделать это заранее, откройте <strong>AI Hub → локальные модели → Fish Speech+ → настройки</strong> и нажмите <strong>«Компилировать»</strong>.</p>
         <p>После создания кеша там же доступны <strong>«Перекомпилировать»</strong> и <strong>«Удалить компиляцию»</strong>. Приложение хранит один общий кеш в управляемой папке <code>Lib/environment/cache</code>; новые папки-поколения не создаются.</p>
-        <p><a href="https://github.com/woct0rdho/triton-windows" target="_blank" rel="noopener noreferrer">Документация Triton Windows</a></p>
+        <p>Без переменной <code>CC</code> и заранее активированного окружения Visual Studio Triton Windows использует встроенный TinyCC. Опытный пользователь может переопределить компилятор через <code>CC</code>; для MSVC также требуется окружение Visual Studio с путями SDK.</p>
+        <p><a href="https://github.com/triton-lang/triton-windows" target="_blank" rel="noopener noreferrer">Документация Triton Windows</a></p>
     </div>
 
     <div class="optional-component" id="vc_redist">

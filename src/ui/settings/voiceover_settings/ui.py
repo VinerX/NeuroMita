@@ -141,12 +141,21 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     label_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
 
     self.local_voice_combobox = QComboBox()
-    self.local_voice_empty_status = tr_set(
-        QLabel(),
-        "Нет установленных моделей",
-        "No installed models",
+    self.local_voice_empty_status = QLabel(
+        _(
+            'Нет установленных моделей. <a href="install">Установить</a>',
+            'No installed models. <a href="install">Install</a>',
+        )
     )
     self.local_voice_empty_status.setObjectName("SeparatorLabel")
+    self.local_voice_empty_status.setTextFormat(Qt.TextFormat.RichText)
+    self.local_voice_empty_status.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextBrowserInteraction
+    )
+    self.local_voice_empty_status.setOpenExternalLinks(False)
+    self.local_voice_empty_status.linkActivated.connect(
+        lambda _href: actions.dispatch(OpenAIEngineSettings())
+    )
     self.local_voice_empty_status.setVisible(False)
 
     # Шестерёнка справа от модели → настройки конкретной модели (AI Hub, раздел TTS).

@@ -30,6 +30,7 @@ from ui.windows.ai_hub.settings_presentation import (
     ApplyAIHubSettingsRows,
     CompileAIHubModel,
     DeleteAIHubModelCompilation,
+    OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
     SelectAIHubSettingsComponent,
@@ -130,6 +131,13 @@ class SettingsPanel(QWidget):
         self._compile_hint.setWordWrap(True)
         compile_layout.addWidget(self._compile_hint)
         compile_actions = QHBoxLayout()
+        self._btn_compile_docs = QPushButton(_("Документация", "Documentation"))
+        self._btn_compile_docs.setObjectName("AIHubSecondary")
+        self._btn_compile_docs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_compile_docs.clicked.connect(
+            lambda: self._view_model.dispatch(OpenAIHubCompilationDocumentation())
+        )
+        compile_actions.addWidget(self._btn_compile_docs)
         compile_actions.addStretch(1)
         self._btn_delete_compile = QPushButton(_("Удалить компиляцию", "Delete compilation"))
         self._btn_delete_compile.setObjectName("AIHubDanger")
@@ -214,6 +222,7 @@ class SettingsPanel(QWidget):
         self._btn_reset.setText(_("Сбросить", "Reset"))
         self._btn_save.setText(_("Сохранить", "Save"))
         self._btn_delete_compile.setText(_("Удалить компиляцию", "Delete compilation"))
+        self._btn_compile_docs.setText(_("Документация", "Documentation"))
         if not self._current_id:
             self._title.setText(_("Нет установленных моделей", "No installed models"))
             self._empty.setText(

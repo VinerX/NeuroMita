@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from controllers.gui.intent_view_model import IntentViewModel
 from core.events import Event, Events, get_event_bus
@@ -13,6 +13,7 @@ from ui.windows.ai_hub.settings_presentation import (
     ApplyAIHubSettingsRows,
     CompileAIHubModel,
     DeleteAIHubModelCompilation,
+    OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
     SelectAIHubSettingsComponent,
@@ -21,10 +22,18 @@ from utils import getTranslationVariant as _
 
 
 class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
-    def __init__(self, *, catalog, application, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        catalog,
+        application,
+        open_documentation: Callable[[str], None],
+        parent=None,
+    ) -> None:
         super().__init__(AIHubSettingsState(), parent)
         self._catalog = catalog
         self._application = application
+        self._open_documentation = open_documentation
         self._category: str | None = None
         bus = get_event_bus()
         self.track_subscription(
@@ -63,6 +72,9 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             return
         if isinstance(intent, DeleteAIHubModelCompilation):
             self._start_compile(clear_only=True)
+            return
+        if isinstance(intent, OpenAIHubCompilationDocumentation):
+            self._open_documentation("installation_guide.html#fish_compile")
 
     def apply_rows(self, rows_payload: Any, category: str | None) -> None:
         rows = list(mutable_payload(rows_payload) or [])

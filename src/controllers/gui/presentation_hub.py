@@ -470,6 +470,7 @@ class _ViewModelFactory:
         return AIHubSettingsViewModel(
             catalog=self._presentation.installables,
             application=self._presentation.app,
+            open_documentation=self._presentation.voice.open_documentation,
             parent=parent,
         )
 
