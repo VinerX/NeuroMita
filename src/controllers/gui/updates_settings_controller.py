@@ -22,6 +22,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from core.unity_installation import (
+    find_unity_executable as find_installed_unity_executable,
+    unity_install_dir,
+)
 from main_logger import logger
 from services.update_contour import target_for_contour
 from ui.gui_templates import create_section_header
@@ -70,12 +74,8 @@ def setup_updates_settings_controls(
         return target_for_contour(self.settings.get("UPDATE_CONTOUR", "release"))
 
     def _current_unity_dir() -> Path:
-        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
-        unity_path = Path(base_dir) / "NeuroMita-Unity"
-        unity_dir_setting = self.settings.get("UNITY_INSTALL_DIR", "")
-        if unity_dir_setting:
-            unity_path = Path(unity_dir_setting)
-        return unity_path
+        configured = str(self.settings.get("UNITY_INSTALL_DIR", "") or "").strip() or None
+        return unity_install_dir(configured)
 
     def _current_unity_version() -> str:
         try:
@@ -102,30 +102,7 @@ def setup_updates_settings_controls(
                 logger.warning("[updates_ui] Failed to refresh sidebar version label", exc_info=True)
 
     def _find_unity_executable(unity_dir: Path) -> Path | None:
-        if not unity_dir.exists() or not unity_dir.is_dir():
-            return None
-
-        exe_files = list(unity_dir.glob("*.exe"))
-        if not exe_files:
-            return None
-
-        preferred_names = (
-            "NeuroMita.exe",
-            "NeuroMita-Unity.exe",
-            "Unity.exe",
-        )
-        lower_map = {path.name.lower(): path for path in exe_files}
-        for name in preferred_names:
-            found = lower_map.get(name.lower())
-            if found is not None:
-                return found
-
-        for path in exe_files:
-            low = path.name.lower()
-            if "neuromita" in low or "unity" in low:
-                return path
-
-        return exe_files[0]
+        return find_installed_unity_executable(unity_dir)
 
     def _refresh_version_labels():
         py_ver = _pending_python_restart_version()
@@ -360,7 +337,7 @@ def setup_updates_settings_controls(
                 if not python_result.ok:
                     raise RuntimeError(python_result.error or "Python update failed")
                 py_applied = bool(python_result)
-                python_pending_restart = python_result.status == "waiting_for_restart"
+                python_pending_restart = bool(python_result.restart_required)
 
             if bool(unity_info.get("available")) and not python_pending_restart:
                 _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))

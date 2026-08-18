@@ -176,6 +176,10 @@ class MainPageActionsAdapter(_BoundActions):
         if self._target is not None:
             self._target.build_settings_section(category, layout)
 
+    def preload_settings_sections(self, preloads) -> None:
+        if self._target is not None:
+            self._target.preload_settings_sections(preloads)
+
     def sync_settings_mode_widgets(self, mode_value) -> None:
         if self._target is not None:
             self._target.sync_settings_mode_widgets(mode_value)

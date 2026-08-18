@@ -183,6 +183,15 @@ class SettingsPage(QWidget):
         # разделах» показываются все вкладки, включая отключённые.
         self.apply_section_visibility()
 
+    def preload_registered_sections(self) -> None:
+        preloads = tuple(
+            (spec.key, spec.preload_key)
+            for spec in get_settings_section_specs()
+            if spec.preload_key
+        )
+        if preloads:
+            self._page_actions.preload_settings_sections(preloads)
+
     def _set_current_category(self, category):
         self.current_settings_category = category
 

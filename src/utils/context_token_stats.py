@@ -10,7 +10,8 @@ _SECTION_MARKERS = (
     ("[Available Tools]", "tools"),
     ("[Current Group Conversation]", "group conversation"),
     ("[GAME_MASTER_DIRECTIVE]", "game master directive"),
-    ("[MiSide World State]", "MiSide World State"),
+    ("[NeuroMita World State]", "NeuroMita World State"),
+    ("[MiSide World State]", "NeuroMita World State"),
     ("[Character World Context]", "Character World Context"),
     ("[System State]", "System State"),
     ("[Behavior State]", "System State"),
@@ -58,7 +59,7 @@ def classify_message_section(msg: Dict[str, Any], is_last_user: bool,
     Модель областей:
       • «Активный контекст» — ТОЛЬКО блоки, которые мы сами намеренно
         инжектим как контекст хода (память, состояние, [Current/System State],
-        MiSide World State, контракты/возможности Unity, RAG). У них есть наши
+        NeuroMita World State, контракты/возможности Unity, RAG). У них есть наши
         маркеры-заголовки.
       • «История» — поток разговора: саммари, реплики диалога и прочие
         уже отработанные (отвеченные) реплики/события прошлых ходов, которые

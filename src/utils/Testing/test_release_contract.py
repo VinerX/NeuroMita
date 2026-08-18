@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 import sys
+import zipfile
 from unittest.mock import patch
 
 
@@ -32,24 +34,23 @@ def _raw_release(
 
 def test_validate_local_release_accepts_full_python_archive():
     with patch("pathlib.Path.exists", return_value=True):
-        with patch.object(
-            release_contract,
-            "_list_archive_files",
-            return_value=[
-                "NeuroMita.pyz",
-                "requirements.txt",
-                "run.py",
-                "run.bat",
-                "Launcher.exe",
-                "init.py",
-                "init_triton.bat",
-                "libs/python/python.exe",
-                "Prompts/default.txt",
-                "assets/icon.png",
-                "libs/site-packages/dummy.txt",
-            ],
-        ):
-            result = release_contract.validate_local_release("v1.2.3", [Path("PythonBuild-v1.2.3.zip")])
+        with patch.object(release_contract, "_validate_embedded_zipapp"):
+            with patch.object(
+                release_contract,
+                "_list_archive_files",
+                return_value=[
+                    "NeuroMita.pyz",
+                    "requirements.txt",
+                    "run.py",
+                    "run.bat",
+                    "Launcher.exe",
+                    "libs/python/python.exe",
+                    "Prompts/default.txt",
+                    "assets/icon.png",
+                    "libs/site-packages/dummy.txt",
+                ],
+            ):
+                result = release_contract.validate_local_release("v1.2.3", [Path("PythonBuild-v1.2.3.zip")])
 
     assert result.ok
     assert len(result.assets) == 1
@@ -58,25 +59,25 @@ def test_validate_local_release_accepts_full_python_archive():
 
 def test_validate_local_release_reports_missing_required_file():
     with patch("pathlib.Path.exists", return_value=True):
-        with patch.object(
-            release_contract,
-            "_list_archive_files",
-            return_value=[
-                "NeuroMita.pyz",
-                "requirements.txt",
-                "run.py",
-                "run.bat",
-                "init.py",
-                "Prompts/default.txt",
-                "assets/icon.png",
-                "libs/site-packages/dummy.txt",
-            ],
-        ):
-            result = release_contract.validate_local_release("v1.2.3", [Path("PythonBuild-v1.2.3.zip")])
+        with patch.object(release_contract, "_validate_embedded_zipapp"):
+            with patch.object(
+                release_contract,
+                "_list_archive_files",
+                return_value=[
+                    "NeuroMita.pyz",
+                    "requirements.txt",
+                    "run.py",
+                    "run.bat",
+                    "Prompts/default.txt",
+                    "assets/icon.png",
+                    "libs/site-packages/dummy.txt",
+                ],
+            ):
+                result = release_contract.validate_local_release("v1.2.3", [Path("PythonBuild-v1.2.3.zip")])
 
     assert not result.ok
     messages = [issue.message for issue in result.assets[0].issues]
-    assert any("init_triton.bat" in message for message in messages)
+    assert any("Launcher.exe" in message for message in messages)
     assert any("libs/python/python.exe" in message for message in messages)
 
 
@@ -101,6 +102,48 @@ def test_validate_archive_contract_requires_unity_exe():
 
     assert not result.ok
     assert any(".exe" in issue.message for issue in result.issues)
+
+
+def _python_release_zip(path: Path, zipapp_payload: bytes) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("NeuroMita.pyz", zipapp_payload)
+        archive.writestr("requirements.txt", "example-package\n")
+        archive.writestr("run.py", "print('run')\n")
+        archive.writestr("run.bat", "@echo off\n")
+        archive.writestr("Launcher.exe", b"launcher")
+        archive.writestr("libs/python/python.exe", b"python")
+        archive.writestr("Prompts/default.txt", "prompt")
+        archive.writestr("assets/icon.png", b"icon")
+        archive.writestr("libs/site-packages/dummy.txt", "dummy")
+
+
+def test_release_contract_opens_and_tests_embedded_zipapp(tmp_path: Path):
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as zipapp:
+        zipapp.writestr("__main__.py", "print('ok')\n")
+        zipapp.writestr("package/data.txt", "ok")
+    release = tmp_path / "PythonBuild-v1.2.3.zip"
+    _python_release_zip(release, payload.getvalue())
+
+    result = release_contract.validate_archive_contract(
+        release,
+        release_contract.PYTHON_FULL_KIND,
+    )
+
+    assert result.ok
+
+
+def test_release_contract_rejects_corrupt_embedded_zipapp(tmp_path: Path):
+    release = tmp_path / "PythonBuild-v1.2.3.zip"
+    _python_release_zip(release, b"not-a-zip")
+
+    result = release_contract.validate_archive_contract(
+        release,
+        release_contract.PYTHON_FULL_KIND,
+    )
+
+    assert not result.ok
+    assert any("valid ZIP application" in issue.message for issue in result.issues)
 
 
 def test_explain_release_fallbacks_reports_previous_python_and_unity_assets():

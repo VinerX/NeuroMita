@@ -62,6 +62,28 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True, slots=True)
+class CharacterEnvironmentSnapshot:
+    unity_installed: bool = False
+    python_update_available: bool | None = None
+    python_update_version: str = ""
+    voice_enabled: bool = False
+    voice_method: str = "Local"
+    voice_model_id: str = ""
+    voice_model_name: str = ""
+    voice_model_installed: bool = False
+    voice_model_initialized: bool = False
+    voice_pipeline_ready: bool | None = None
+
+
+class CharacterEnvironmentContextService(ABC):
+    @abstractmethod
+    def snapshot(self) -> CharacterEnvironmentSnapshot: ...
+
+    @abstractmethod
+    def publish_python_update(self, *, available: bool, version: str = "") -> None: ...
+
+
 class ASRSettingsService(ABC):
     """Single owner of the selected ASR engine and per-engine settings."""
 
@@ -500,6 +522,31 @@ class DialogueRuntimeSource(str, Enum):
     UNITY = "unity"
 
 
+class PlayerMessageSource(str, Enum):
+    """Transport from which the Player authored the current turn."""
+
+    NONE = "none"
+    APPLICATION = "application"
+    GAME = "game"
+
+
+def parse_player_message_source(raw: object) -> PlayerMessageSource:
+    if isinstance(raw, PlayerMessageSource):
+        return raw
+    value = str(raw or "").strip().lower()
+    aliases = {
+        "": PlayerMessageSource.NONE,
+        "none": PlayerMessageSource.NONE,
+        "python": PlayerMessageSource.APPLICATION,
+        "python_app": PlayerMessageSource.APPLICATION,
+        "app": PlayerMessageSource.APPLICATION,
+        "application": PlayerMessageSource.APPLICATION,
+        "unity": PlayerMessageSource.GAME,
+        "game": PlayerMessageSource.GAME,
+    }
+    return aliases.get(value, PlayerMessageSource.NONE)
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueParticipantView:
     """UI-safe participant projection; never used to authorize a route."""
@@ -652,6 +699,8 @@ class PromptBuildRequest:
     participants: List[str] = field(default_factory=list)
     capabilities: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
+    previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
 
 
@@ -693,6 +742,8 @@ class ChatGenerationRequest:
     disable_history_compression: bool = False
     game_state: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
+    previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
     trace_id: Optional[str] = None
 
@@ -897,6 +948,22 @@ class VoiceModelService(ABC):
 
     @abstractmethod
     def dependencies_status(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def compile_status(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def enable_long_paths(self) -> bool: ...
+
+    @abstractmethod
+    def start_compile(
+        self,
+        model_id: str,
+        *,
+        clear_only: bool = False,
+        with_ui: bool = True,
+        timeout_sec: float | None = None,
+    ) -> bool: ...
 
 
 class SpeechService(ABC):

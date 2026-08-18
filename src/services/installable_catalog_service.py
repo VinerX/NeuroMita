@@ -460,6 +460,7 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             "cancel_event",
             "pip_installer",
             "callbacks",
+            "initialize_mode",
         }
         for key, value in dict(execution_ctx or {}).items():
             if key in trusted_execution_keys:

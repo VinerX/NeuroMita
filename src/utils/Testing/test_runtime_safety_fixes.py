@@ -16,6 +16,7 @@ if str(PROJECT_SRC) not in sys.path:
 from handlers.voice_models.install_plan_helpers import installer_python_version
 from managers.database_manager import DatabaseManager
 from managers.history_manager import HistoryManager
+from startup import runtime_bootstrap
 from utils.prompt_downloader import PromptDownloader
 
 
@@ -158,3 +159,32 @@ def test_task_supervisor_submit_has_no_import_order_dependency() -> None:
         assert future.result(timeout=2.0) == 42
     finally:
         supervisor.shutdown()
+
+
+def test_native_faulthandler_is_not_installed_by_default_on_windows(tmp_path: Path) -> None:
+    with patch.object(runtime_bootstrap.sys, "platform", "win32"), patch.dict(
+        os.environ,
+        {},
+        clear=False,
+    ), patch.object(runtime_bootstrap.faulthandler, "enable") as enable:
+        os.environ.pop("NEUROMITA_ENABLE_NATIVE_FAULTHANDLER", None)
+        handle = runtime_bootstrap._configure_crash_logging(str(tmp_path))
+
+    assert handle is None
+    enable.assert_not_called()
+    assert not (tmp_path / "NeuroMitaCrash.log").exists()
+
+
+def test_native_faulthandler_can_be_enabled_explicitly_on_windows(tmp_path: Path) -> None:
+    with patch.object(runtime_bootstrap.sys, "platform", "win32"), patch.dict(
+        os.environ,
+        {"NEUROMITA_ENABLE_NATIVE_FAULTHANDLER": "1"},
+    ), patch.object(runtime_bootstrap.faulthandler, "enable") as enable:
+        handle = runtime_bootstrap._configure_crash_logging(str(tmp_path))
+
+    try:
+        assert handle is not None
+        enable.assert_called_once_with(file=handle, all_threads=True)
+    finally:
+        if handle is not None:
+            handle.close()

@@ -28,6 +28,9 @@ from ui.windows.ai_hub.settings_presentation import (
     AIHubSettingsState,
     AIHubSettingsWarning,
     ApplyAIHubSettingsRows,
+    CompileAIHubModel,
+    DeleteAIHubModelCompilation,
+    OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
     SelectAIHubSettingsComponent,
@@ -115,6 +118,41 @@ class SettingsPanel(QWidget):
         scroll.setWidget(self._form)
         rl.addWidget(scroll, 1)
 
+        self._compile_card = QFrame()
+        self._compile_card.setObjectName("AIHubSettingsCompileCard")
+        compile_layout = QVBoxLayout(self._compile_card)
+        compile_layout.setContentsMargins(14, 12, 14, 12)
+        compile_layout.setSpacing(7)
+        compile_title = QLabel(_("Компиляция Fish Speech+", "Fish Speech+ compilation"))
+        compile_title.setObjectName("AIHubSettingsCompileTitle")
+        compile_layout.addWidget(compile_title)
+        self._compile_hint = QLabel("")
+        self._compile_hint.setObjectName("AIHubSettingsSubtitle")
+        self._compile_hint.setWordWrap(True)
+        compile_layout.addWidget(self._compile_hint)
+        compile_actions = QHBoxLayout()
+        self._btn_compile_docs = QPushButton(_("Документация", "Documentation"))
+        self._btn_compile_docs.setObjectName("AIHubSecondary")
+        self._btn_compile_docs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_compile_docs.clicked.connect(
+            lambda: self._view_model.dispatch(OpenAIHubCompilationDocumentation())
+        )
+        compile_actions.addWidget(self._btn_compile_docs)
+        compile_actions.addStretch(1)
+        self._btn_delete_compile = QPushButton(_("Удалить компиляцию", "Delete compilation"))
+        self._btn_delete_compile.setObjectName("AIHubDanger")
+        self._btn_delete_compile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_delete_compile.clicked.connect(self._on_delete_compilation)
+        compile_actions.addWidget(self._btn_delete_compile)
+        self._btn_compile = QPushButton(_("Компилировать", "Compile"))
+        self._btn_compile.setObjectName("AIHubPrimary")
+        self._btn_compile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_compile.clicked.connect(lambda: self._view_model.dispatch(CompileAIHubModel()))
+        compile_actions.addWidget(self._btn_compile)
+        compile_layout.addLayout(compile_actions)
+        self._compile_card.setVisible(False)
+        rl.addWidget(self._compile_card)
+
         # placeholder shown when no model is installed in the current category
         self._empty = QLabel(
             _(
@@ -183,6 +221,8 @@ class SettingsPanel(QWidget):
         self._header.setText(_("Установленные модели", "Installed models"))
         self._btn_reset.setText(_("Сбросить", "Reset"))
         self._btn_save.setText(_("Сохранить", "Save"))
+        self._btn_delete_compile.setText(_("Удалить компиляцию", "Delete compilation"))
+        self._btn_compile_docs.setText(_("Документация", "Documentation"))
         if not self._current_id:
             self._title.setText(_("Нет установленных моделей", "No installed models"))
             self._empty.setText(
@@ -255,6 +295,20 @@ class SettingsPanel(QWidget):
     def _on_reset(self) -> None:
         self._view_model.dispatch(ResetAIHubSettings())
 
+    def _on_delete_compilation(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            _("Удалить компиляцию?", "Delete compilation?"),
+            _(
+                "Будет удалён общий кеш Fish Speech+ и Fish Speech+ + RVC. При следующем запуске он будет создан заново.",
+                "The shared Fish Speech+ and Fish Speech+ + RVC cache will be deleted and rebuilt on next use.",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._view_model.dispatch(DeleteAIHubModelCompilation())
+
     def _on_form_changed(self) -> None:
         if not self._rendering:
             self._view_model.dispatch(AIHubSettingsChanged())
@@ -311,6 +365,25 @@ class SettingsPanel(QWidget):
             self._list.setEnabled(not state.saving)
             enabled = bool(state.schema) and not state.loading and not state.saving
             self._set_actions_enabled(enabled)
+            self._compile_card.setVisible(bool(state.compile_available))
+            if state.compile_available:
+                cache_exists = bool(state.compile_cache_exists)
+                size_mb = int(state.compile_cache_size_bytes or 0) / (1024 * 1024)
+                self._compile_hint.setText(
+                    _(
+                        f"Общий кеш Fish Speech+ готов: {size_mb:.0f} МБ. Используется обеими моделями."
+                        if cache_exists else "Общий кеш ещё не создан. Он будет использоваться Fish Speech+ и Fish Speech+ + RVC.",
+                        f"Shared Fish Speech+ cache is ready: {size_mb:.0f} MB. Both models use it."
+                        if cache_exists else "The shared cache has not been created yet. Fish Speech+ and Fish Speech+ + RVC will both use it.",
+                    )
+                )
+                self._btn_compile.setText(
+                    _("Перекомпилировать", "Recompile")
+                    if cache_exists else _("Компилировать", "Compile")
+                )
+                self._btn_delete_compile.setVisible(cache_exists)
+                self._btn_compile.setEnabled(not state.compile_busy)
+                self._btn_delete_compile.setEnabled(not state.compile_busy)
         finally:
             self._rendering = False
 

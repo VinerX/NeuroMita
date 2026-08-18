@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import io
 import json
 from pathlib import Path
 import re
@@ -23,8 +24,6 @@ PYTHON_FULL_REQUIRED_FILES = (
     "run.py",
     "run.bat",
     "Launcher.exe",
-    "init.py",
-    "init_triton.bat",
     "libs/python/python.exe",
 )
 PYTHON_FULL_REQUIRED_PREFIXES = (
@@ -114,6 +113,57 @@ def _list_archive_files(path: Path) -> list[str]:
         with py7zr.SevenZipFile(path, mode="r") as zf:
             return _normalize_archive_members(zf.getnames())
     raise ValueError(f"Unsupported archive type: {path.suffix}")
+
+
+def _archive_member_bytes(path: Path, normalized_name: str) -> bytes:
+    target = str(normalized_name).replace("\\", "/").strip("/")
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            names = [info.filename for info in archive.infolist() if not info.is_dir()]
+            exact = [name for name in names if name.replace("\\", "/").strip("/") == target]
+            matches = exact or [
+                name
+                for name in names
+                if name.replace("\\", "/").strip("/").endswith("/" + target)
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(f"Could not uniquely locate {target} inside {path.name}")
+            return archive.read(matches[0])
+    if suffix == ".7z":
+        try:
+            import py7zr  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("py7zr is not installed; cannot inspect .7z archives") from exc
+        with py7zr.SevenZipFile(path, mode="r") as archive:
+            names = [str(name) for name in archive.getnames()]
+            exact = [name for name in names if name.replace("\\", "/").strip("/") == target]
+            matches = exact or [
+                name
+                for name in names
+                if name.replace("\\", "/").strip("/").endswith("/" + target)
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(f"Could not uniquely locate {target} inside {path.name}")
+            with tempfile.TemporaryDirectory(prefix="neuromita-release-contract-") as temp:
+                archive.extract(path=temp, targets=[matches[0]])
+                extracted = Path(temp) / Path(matches[0])
+                return extracted.read_bytes()
+    raise ValueError(f"Unsupported archive type: {path.suffix}")
+
+
+def _validate_embedded_zipapp(path: Path, result: AssetValidationResult) -> None:
+    try:
+        payload = _archive_member_bytes(path, "NeuroMita.pyz")
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as zipapp:
+            if "__main__.py" not in set(zipapp.namelist()):
+                result.add_error("NeuroMita.pyz does not contain __main__.py.")
+                return
+            broken = zipapp.testzip()
+            if broken is not None:
+                result.add_error(f"NeuroMita.pyz contains a corrupt member: {broken}")
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
+        result.add_error(f"NeuroMita.pyz is not a valid ZIP application: {exc}")
 
 
 def classify_asset_name(name: str, tag: str) -> str:
@@ -211,6 +261,8 @@ def validate_archive_contract(path: Path, kind: str) -> AssetValidationResult:
             preview = ", ".join(files[:10])
             if preview:
                 result.add_info(f"Archive preview: {preview}")
+        if "NeuroMita.pyz" in file_set:
+            _validate_embedded_zipapp(path, result)
     elif kind == PYTHON_PATCH_KIND:
         if not any(
             name == "NeuroMita.pyz"
@@ -224,6 +276,8 @@ def validate_archive_contract(path: Path, kind: str) -> AssetValidationResult:
                 "Patch archive does not contain obvious runtime payload "
                 "(no .pyz, .py, assets/, Prompts/). Verify this is intentional."
             )
+        if "NeuroMita.pyz" in file_set:
+            _validate_embedded_zipapp(path, result)
     elif kind == UNITY_KIND:
         if not any(name.lower().endswith(".exe") for name in files):
             result.add_error("Unity archive does not contain any .exe file.")

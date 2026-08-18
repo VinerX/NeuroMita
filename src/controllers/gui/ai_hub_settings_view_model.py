@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from controllers.gui.intent_view_model import IntentViewModel
+from core.events import Event, Events, get_event_bus
 from ui.mvvm import immutable_payload, mutable_payload
 from ui.windows.ai_hub.helpers import meta_from_row, status_from_row
 from ui.windows.ai_hub.settings_presentation import (
@@ -10,6 +11,9 @@ from ui.windows.ai_hub.settings_presentation import (
     AIHubSettingsState,
     AIHubSettingsWarning,
     ApplyAIHubSettingsRows,
+    CompileAIHubModel,
+    DeleteAIHubModelCompilation,
+    OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
     SelectAIHubSettingsComponent,
@@ -18,10 +22,26 @@ from utils import getTranslationVariant as _
 
 
 class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
-    def __init__(self, *, catalog, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        catalog,
+        application,
+        open_documentation: Callable[[str], None],
+        parent=None,
+    ) -> None:
         super().__init__(AIHubSettingsState(), parent)
         self._catalog = catalog
+        self._application = application
+        self._open_documentation = open_documentation
         self._category: str | None = None
+        bus = get_event_bus()
+        self.track_subscription(
+            bus.subscribe(Events.VoiceModel.MODEL_COMPILE_STARTED, self._on_compile_started, weak=False)
+        )
+        self.track_subscription(
+            bus.subscribe(Events.VoiceModel.MODEL_COMPILE_FINISHED, self._on_compile_finished, weak=False)
+        )
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, ApplyAIHubSettingsRows):
@@ -46,6 +66,15 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         if isinstance(intent, ResetAIHubSettings):
             if self.state.selected_component_id:
                 self.select_component(self.state.selected_component_id)
+            return
+        if isinstance(intent, CompileAIHubModel):
+            self._start_compile(clear_only=False)
+            return
+        if isinstance(intent, DeleteAIHubModelCompilation):
+            self._start_compile(clear_only=True)
+            return
+        if isinstance(intent, OpenAIHubCompilationDocumentation):
+            self._open_documentation("installation_guide.html#fish_compile")
 
     def apply_rows(self, rows_payload: Any, category: str | None) -> None:
         rows = list(mutable_payload(rows_payload) or [])
@@ -90,6 +119,11 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 field_errors=(),
                 loading=False,
                 form_revision=self.state.form_revision + 1,
+                compile_available=False,
+                compile_cache_exists=False,
+                compile_cache_size_bytes=0,
+                compile_busy=False,
+                compile_revision=self.state.compile_revision + 1,
             )
 
     def select_component(self, component_id: str) -> None:
@@ -115,14 +149,18 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         )
 
         def worker() -> dict[str, Any]:
-            return {
+            payload = {
                 "schema": list(self._catalog.settings_schema(component_id) or []),
                 "values": dict(self._catalog.load_settings(component_id) or {}),
             }
+            if self._is_fish_compile_component(component_id):
+                payload["compile_status"] = dict(self._catalog.compile_status() or {})
+            return payload
 
         def applied(payload: dict[str, Any]) -> None:
             schema = list(payload.get("schema") or [])
             values = dict(payload.get("values") or {})
+            compile_status = dict(payload.get("compile_status") or {})
             self.update_state(
                 schema=immutable_payload(schema),
                 values=immutable_payload(values),
@@ -133,6 +171,10 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                     "This model has no settings.",
                 ),
                 form_revision=self.state.form_revision + 1,
+                compile_available=self._is_fish_compile_component(component_id),
+                compile_cache_exists=bool(compile_status.get("cache_exists")),
+                compile_cache_size_bytes=int(compile_status.get("cache_size_bytes") or 0),
+                compile_revision=self.state.compile_revision + 1,
             )
 
         self.run_latest(
@@ -143,6 +185,113 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 loading=False,
                 status_text=str(error),
             ),
+        )
+
+    @staticmethod
+    def _is_fish_compile_component(component_id: str) -> bool:
+        return str(component_id or "") in {"tts:medium+", "tts:medium+low"}
+
+    def _selected_model_id(self) -> str:
+        component_id = str(self.state.selected_component_id or "")
+        return component_id.split(":", 1)[1] if ":" in component_id else component_id
+
+    def _start_compile(self, *, clear_only: bool) -> None:
+        component_id = self.state.selected_component_id
+        if not self._is_fish_compile_component(component_id) or self.state.compile_busy:
+            return
+
+        self.update_state(
+            compile_busy=True,
+            status_text=_("Подготовка backend...", "Preparing backend..."),
+        )
+
+        def prepare_backend() -> None:
+            future = self._application.ensure_feature_async("installables")
+            future.result(timeout=60)
+
+        def start_operation(_result: None) -> None:
+            self._application.ensure_optional_gui("install")
+            accepted = bool(
+                self._catalog.compile_model(component_id, clear_only=clear_only)
+            )
+            if accepted:
+                return
+            self.update_state(
+                compile_busy=False,
+                status_text=_(
+                    "Backend подготовлен, но операция была отклонена. Подробности записаны в лог.",
+                    "Backend is ready, but the operation was rejected. See the log for details.",
+                ),
+            )
+
+        def preparation_failed(error: Exception) -> None:
+            details = f"{type(error).__name__}: {error}"
+            self.update_state(
+                compile_busy=False,
+                status_text=_(
+                    "Не удалось подготовить backend: {details}",
+                    "Failed to prepare backend: {details}",
+                ).format(details=details),
+            )
+
+        started = self.run_exclusive(
+            f"ai-hub-compile-prepare:{component_id}",
+            prepare_backend,
+            start_operation,
+            preparation_failed,
+        )
+        if not started:
+            self.update_state(
+                compile_busy=False,
+                status_text=_(
+                    "Подготовка backend уже выполняется",
+                    "Backend preparation is already running",
+                ),
+            )
+
+    def _on_compile_started(self, event: Event) -> None:
+        payload = event.data if isinstance(event.data, dict) else {}
+        if str(payload.get("model_id") or "") != self._selected_model_id():
+            return
+        self.update_state(
+            compile_busy=True,
+            status_text=(
+                _("Удаление кеша компиляции...", "Deleting compilation cache...")
+                if payload.get("clear_only")
+                else _("Компиляция запущена...", "Compilation started...")
+            ),
+        )
+
+    def _on_compile_finished(self, event: Event) -> None:
+        payload = event.data if isinstance(event.data, dict) else {}
+        if str(payload.get("model_id") or "") != self._selected_model_id():
+            return
+        success = bool(payload.get("success"))
+        self.update_state(
+            compile_busy=False,
+            status_text=(
+                _("Операция завершена", "Operation completed")
+                if success else str(payload.get("error") or _("Ошибка операции", "Operation failed"))
+            ),
+        )
+        self._refresh_compile_status()
+
+    def _refresh_compile_status(self) -> None:
+        if not self.state.compile_available:
+            return
+
+        def applied(payload: dict[str, Any]) -> None:
+            self.update_state(
+                compile_cache_exists=bool(payload.get("cache_exists")),
+                compile_cache_size_bytes=int(payload.get("cache_size_bytes") or 0),
+                compile_revision=self.state.compile_revision + 1,
+            )
+
+        self.run_latest(
+            "ai-hub-compile-status",
+            lambda: dict(self._catalog.compile_status() or {}),
+            applied,
+            lambda _error: None,
         )
 
     def save(self, values_payload: Any) -> None:

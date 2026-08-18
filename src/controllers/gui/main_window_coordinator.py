@@ -40,16 +40,6 @@ class MainWindowCoordinator:
             prebuild_settings = False
         if prebuild_settings:
             QTimer.singleShot(450, self.prebuild_settings_page)
-        self.prefetch_release_feed()
-
-    def prefetch_release_feed(self) -> None:
-        try:
-            self._presentation.news.load_async(
-                self._view,
-                lambda _releases: None,
-            )
-        except Exception as exc:
-            logger.debug("Release feed prefetch failed: %s", exc)
 
     def prebuild_settings_page(self) -> None:
         try:
@@ -202,6 +192,7 @@ class MainWindowCoordinator:
             view.SETTINGS_PANEL_WIDTH = page.SETTINGS_PANEL_WIDTH
             view.SETTINGS_SIDEBAR_WIDTH = page.SETTINGS_SIDEBAR_WIDTH
             view.settings_resize_handle = page.settings_resize_handle
+            page.preload_registered_sections()
             return page
         if page_key == "logs":
             page = factory(view, view_models.logs_page(view), view._page_actions)
@@ -354,6 +345,9 @@ class MainWindowCoordinator:
             layout,
         )
 
+    def preload_settings_sections(self, preloads) -> None:
+        self._presentation.settings_sections.preload_sections(preloads)
+
     def sync_settings_mode_widgets(self, mode_value) -> None:
         from PyQt6.QtCore import Qt
         from ui.pages.settings.settings_presentation import get_mode_label
@@ -462,6 +456,10 @@ class MainWindowCoordinator:
             return
         self._closed = True
         view = self._view
+
+        from core.task_supervisor import task_supervisor
+
+        task_supervisor().cancel_owner(view, timeout=0.25)
 
         # Page widgets outlive this coordinator until Qt destroys the main
         # window. Close their presentation models explicitly before the global

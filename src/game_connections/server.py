@@ -478,7 +478,23 @@ class ChatServerNew:
     def _clients_snapshot(self) -> list[tuple[str, str]]:
         """Пары (сессия, роль) в порядке подключения — согласованный срез."""
         with self._clients_lock:
-            return [(cid, self.client_roles.get(cid, "")) for cid in self.active_connections]
+            return [
+                (cid, self.client_roles.get(cid, ""))
+                for cid, writer in self.active_connections.items()
+                if self._writer_is_live(writer)
+            ]
+
+    @staticmethod
+    def _writer_is_live(writer: asyncio.StreamWriter | None) -> bool:
+        if writer is None:
+            return False
+        is_closing = getattr(writer, "is_closing", None)
+        if not callable(is_closing):
+            return True
+        try:
+            return not bool(is_closing())
+        except Exception:
+            return False
 
     def declare_client_role(self, client_id: str, role: Any) -> str:
         """Зафиксировать роль подключения. Возвращает действующую роль.
@@ -500,6 +516,7 @@ class ChatServerNew:
                 return current
             self.client_roles[client_id] = value
         logger.info(f"Клиент {client_id} объявил роль {value!r}")
+        self._notify_connection_changed(True, client_id)
         return value
 
     @classmethod
@@ -529,6 +546,10 @@ class ChatServerNew:
         реплика игрока должна породить ровно один ход — иначе broadcast создаст
         по задаче на каждого."""
         return self._player_input_owner(self._clients_snapshot())
+
+    def has_game_connection(self) -> bool:
+        """Whether a live connection can currently represent the game runtime."""
+        return bool(self.primary_client_id())
 
     def schedule_send_asr_text(
         self,

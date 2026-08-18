@@ -5,6 +5,8 @@ import threading
 import time
 import unittest
 from concurrent.futures import Future
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class GuiThreadAffinityTests(unittest.TestCase):
@@ -351,6 +353,72 @@ class GuiThreadAffinityTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertIsInstance(errors[0], RuntimeError)
         self.assertIn("constructed on the Qt GUI thread", str(errors[0]))
+
+    def test_global_voice_status_controller_exists_before_voice_section(self) -> None:
+        import controllers.gui_controller as gui_module
+
+        scheduled = []
+
+        class _Subscription:
+            def close(self):
+                return None
+
+        class _Settings:
+            def get(self, _key, default=None):
+                return default
+
+            def subscribe(self, *_args, **_kwargs):
+                return _Subscription()
+
+        class _Controller:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        class _VoiceController(_Controller):
+            def __init__(self, *_args, **_kwargs):
+                self.preload_calls = 0
+
+            def preload_global_status_on_startup(self):
+                self.preload_calls += 1
+
+        class _Timer:
+            @staticmethod
+            def singleShot(_delay, callback):
+                scheduled.append(callback)
+
+        replacements = {
+            "StatusController": _Controller,
+            "ChatController": _Controller,
+            "SystemController": _Controller,
+            "SettingsSidebarController": _Controller,
+            "VoiceoverGuiController": _VoiceController,
+            "DialogController": _Controller,
+            "SettingsController": _Controller,
+            "ModelEventController": _Controller,
+            "ViewEventController": _Controller,
+            "WindowManagerController": _Controller,
+            "ProtocolPipelineGuiController": _Controller,
+            "QTimer": _Timer,
+        }
+
+        with patch.multiple(gui_module, **replacements), patch.object(
+            gui_module,
+            "use",
+            return_value=_Settings(),
+        ):
+            controller = gui_module.GuiController(
+                SimpleNamespace(backend_enabled=False),
+                SimpleNamespace(),
+            )
+
+        self.assertIsInstance(controller.voiceover_controller, _VoiceController)
+        self.assertEqual({}, controller._optional_gui_features)
+        self.assertEqual(1, len(scheduled))
+        scheduled[0]()
+        self.assertEqual(1, controller.voiceover_controller.preload_calls)
 
     def test_optional_gui_guard_rejects_worker_thread_creation(self) -> None:
         from controllers.gui_controller import GuiController

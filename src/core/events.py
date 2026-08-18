@@ -568,6 +568,7 @@ class Events:
         CLOSE_WINDOW = "close_window"
         CLOSE_ALL_WINDOWS = "close_all_windows"
         SET_SETTINGS_ICON_INDICATOR = "set_settings_icon_indicator"
+        PRELOAD_SETTINGS_SECTIONS = "preload_settings_sections"
 
         VOICEOVER_UI_READY = "voiceover_ui_ready"
         VOICEOVER_REFRESH = "voiceover_refresh"
@@ -762,6 +763,8 @@ class Events:
         MODEL_INSTALL_FINISHED = "voice_model_install_finished"
         MODEL_UNINSTALL_STARTED = "voice_model_uninstall_started"
         MODEL_UNINSTALL_FINISHED = "voice_model_uninstall_finished"
+        MODEL_COMPILE_STARTED = "voice_model_compile_started"
+        MODEL_COMPILE_FINISHED = "voice_model_compile_finished"
         REFRESH_MODEL_PANELS = "refresh_voice_model_panels"
         REFRESH_SETTINGS_DISPLAY = "refresh_voice_settings_display"
 

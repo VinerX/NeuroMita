@@ -20,7 +20,9 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    PlayerMessageSource,
     parse_dialogue_turn_context,
+    parse_player_message_source,
     DialogueRuntimeSource,
 )
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
@@ -205,6 +207,8 @@ class ChatController:
         # а не bool: одиночный флаг гасил статус после первой завершившейся.
         self._inflight_lock = threading.Lock()
         self._inflight = 0
+        self._player_message_source_lock = threading.Lock()
+        self._last_player_message_source = PlayerMessageSource.NONE
 
         self.staged_images = []
         self._owned_staged_images = set()
@@ -253,6 +257,28 @@ class ChatController:
             return "Player"
         return str(data.get("sender") or data.get("from") or "Player")
 
+    def _resolve_player_message_source_transition(
+        self,
+        raw_source: object,
+    ) -> tuple[PlayerMessageSource, PlayerMessageSource]:
+        """Return (current, previous-if-changed) for an explicit Player turn.
+
+        Background events do not carry a source and therefore cannot move the
+        transport state. The first explicit source establishes the baseline
+        without producing a synthetic "changed" marker.
+        """
+        current = parse_player_message_source(raw_source)
+        if current is PlayerMessageSource.NONE:
+            return current, PlayerMessageSource.NONE
+
+        with self._player_message_source_lock:
+            previous = self._last_player_message_source
+            self._last_player_message_source = current
+
+        if previous is PlayerMessageSource.NONE or previous is current:
+            return current, PlayerMessageSource.NONE
+        return current, previous
+
     def _normalize_participants(self, value: Any) -> list[str]:
         if not value:
             return []
@@ -300,6 +326,8 @@ class ChatController:
         game_state: dict | None = None,
         dialogue: Any = None,
         dialogue_source: DialogueRuntimeSource | str | None = None,
+        player_message_source: PlayerMessageSource | str | None = None,
+        previous_player_message_source: PlayerMessageSource | str | None = None,
         gm_instruction_override: str | None = None,
         trace_id: str | None = None,
     ):
@@ -311,6 +339,8 @@ class ChatController:
         """
         eff_policy = None
         dialogue = parse_dialogue_turn_context(dialogue)
+        player_message_source = parse_player_message_source(player_message_source)
+        previous_player_message_source = parse_player_message_source(previous_player_message_source)
         runtime_source = dialogue_source or DialogueRuntimeSource.UNITY
         if not isinstance(runtime_source, DialogueRuntimeSource):
             try:
@@ -510,6 +540,8 @@ class ChatController:
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
                     dialogue=parse_dialogue_turn_context(dialogue),
+                    player_message_source=player_message_source,
+                    previous_player_message_source=previous_player_message_source,
                     gm_instruction_override=gm_instruction_override,
                 )
             )
@@ -857,6 +889,11 @@ class ChatController:
         data = event.data or {}
         image_data = data.get("image_data", [])
         trace_id = self._ensure_perf_trace(data)
+        player_message_source, previous_player_message_source = (
+            self._resolve_player_message_source_transition(
+                data.get("player_message_source")
+            )
+        )
 
         # Запоминаем ручную отправку пользователя (без task_uid — это не игровой/
         # телеграм-ход), чтобы кнопка «отправить снова» на упавшем пузыре могла
@@ -884,6 +921,8 @@ class ChatController:
             game_state=data.get("game_state"),
             dialogue=data.get("dialogue"),
             dialogue_source=data.get("dialogue_source"),
+            player_message_source=player_message_source,
+            previous_player_message_source=previous_player_message_source,
             gm_instruction_override=data.get("gm_instruction_override"),
             trace_id=trace_id,
         )

@@ -31,7 +31,7 @@ class VoiceoverGuiController(BaseController):
         self._last_selected_model_id: str | None = None
         self._model_id_to_name: dict[str, str] = {}
 
-        self._autoload_done = False
+        self._startup_preload_done = False
 
         self._tg_connected: bool | None = None
         self._tg_last_attempt_ts: float = 0.0
@@ -124,11 +124,19 @@ class VoiceoverGuiController(BaseController):
             )
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
-    def autoload_last_model_on_startup(self):
-        if self._autoload_done:
+    def preload_global_status_on_startup(self):
+        if self._startup_preload_done:
             return
-        self._autoload_done = True
-        self._ui(lambda: self._sync_everything(allow_autoload=True))
+        self._startup_preload_done = True
+        allow_autoload = bool(
+            self._effective_use_voice()
+            and self._effective_method() == "Local"
+            and _as_bool(self._get_setting("LOCAL_VOICE_LOAD_LAST", False))
+        )
+        self._ui(lambda: self._sync_everything(allow_autoload=allow_autoload))
+
+    def autoload_last_model_on_startup(self):
+        self.preload_global_status_on_startup()
 
     def _on_refresh(self, _event: Event):
         self._ui(lambda: self._sync_everything(allow_autoload=False))
@@ -652,6 +660,8 @@ class VoiceoverGuiController(BaseController):
 
     def _maybe_autoload_local_model_from_snapshot(self, state: dict):
         if not self._backend_enabled():
+            return
+        if not self._effective_use_voice():
             return
         # При озвучке через Telegram локальная модель не нужна — грузить её
         # (несколько ГБ и минуты) только потому, что включили озвучку, нельзя.

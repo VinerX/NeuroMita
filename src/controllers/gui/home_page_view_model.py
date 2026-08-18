@@ -324,6 +324,12 @@ class HomePageViewModel(IntentViewModel[HomeState]):
     ) -> None:
         py_available = bool((py_info or {}).get("available")) and not self._pending_restart()
         unity_available = bool((unity_info or {}).get("available"))
+        publish_update = getattr(self._app, "publish_python_update", None)
+        if callable(publish_update):
+            publish_update(
+                available=bool((py_info or {}).get("available")),
+                version=str((py_info or {}).get("latest_version") or ""),
+            )
         previous_py = self.state.python_update
         previous_unity = self.state.unity_update
         self.update_state(

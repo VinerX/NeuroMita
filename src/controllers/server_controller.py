@@ -320,9 +320,9 @@ class ServerController:
         if self._destroyed or not self.event_bus:
             return
 
-        connections = getattr(self.server, "active_connections", None) if self.server else None
-        if isinstance(connections, dict):
-            self.ConnectedToGame = bool(connections)
+        has_game_connection = getattr(self.server, "has_game_connection", None) if self.server else None
+        if callable(has_game_connection):
+            self.ConnectedToGame = bool(has_game_connection())
         else:
             self.ConnectedToGame = bool(client_connected)
         self.game_link.set_connected(self.ConnectedToGame)
@@ -346,9 +346,9 @@ class ServerController:
         if self._destroyed:
             return None
         srv = self.server
-        conns = getattr(srv, "active_connections", None) if srv else None
-        if isinstance(conns, dict):
-            return bool(conns)
+        has_game_connection = getattr(srv, "has_game_connection", None) if srv else None
+        if callable(has_game_connection):
+            return bool(has_game_connection())
         return None
 
     def _player_turn_owner(self) -> str:

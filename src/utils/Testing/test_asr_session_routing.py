@@ -178,6 +178,27 @@ def test_no_owner_when_only_diagnostic_clients_are_connected():
         assert srv.primary_client_id() == ""
 
 
+def test_game_connection_status_ignores_diagnostic_client():
+    with _Loop() as loop:
+        srv = _server(loop, {"tool#1": _FakeWriter()})
+        _declare_role(srv, loop, "tool#1", "diagnostic")
+
+        assert srv.has_game_connection() is False
+
+
+def test_game_connection_status_ignores_closing_writer():
+    class _ClosingWriter(_FakeWriter):
+        @staticmethod
+        def is_closing():
+            return True
+
+    with _Loop() as loop:
+        srv = _server(loop, {"game#1": _ClosingWriter()})
+        srv.client_roles["game#1"] = "game"
+
+        assert srv.has_game_connection() is False
+
+
 def test_partially_written_message_is_not_reported_as_delivered():
     """Оборванная на drain() запись — это «не доставлено», а не успех.
 

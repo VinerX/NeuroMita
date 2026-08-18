@@ -1557,6 +1557,8 @@ class ModelController(GenerationService, ModelStateService):
             participants=participants,
             capabilities=effective_capabilities,
             dialogue=request.dialogue,
+            player_message_source=request.player_message_source,
+            previous_player_message_source=request.previous_player_message_source,
             gm_instruction_override=request.gm_instruction_override,
         )
         self._capture_generation_input(

@@ -5,6 +5,8 @@ import threading
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
@@ -14,6 +16,7 @@ if str(PROJECT_SRC) not in sys.path:
 from controllers.capture_controller import CaptureController
 from controllers.ai_engine_controller import _Worker
 from controllers.loop_controller import LoopController
+from ui.windows.app_window_base import AppWindowBase
 
 
 class _FakeQueue:
@@ -67,6 +70,50 @@ class _FakeThread:
 
 
 class ShutdownPathTests(unittest.TestCase):
+    def test_window_close_defers_backend_shutdown_outside_native_close_event(self):
+        scheduled = []
+        event = SimpleNamespace(
+            ignored=0,
+            accepted=0,
+            ignore=lambda: setattr(event, "ignored", event.ignored + 1),
+            accept=lambda: setattr(event, "accepted", event.accepted + 1),
+        )
+        window = SimpleNamespace(
+            _close_requested=False,
+            _close_finalizing=False,
+            enabled=True,
+            setEnabled=lambda value: setattr(window, "enabled", value),
+            _finish_deferred_close=lambda: None,
+        )
+
+        with patch(
+            "ui.windows.app_window_base.QTimer.singleShot",
+            side_effect=lambda _delay, callback: scheduled.append(callback),
+        ):
+            AppWindowBase.closeEvent(window, event)
+
+        self.assertEqual(event.ignored, 1)
+        self.assertEqual(event.accepted, 0)
+        self.assertTrue(window._close_requested)
+        self.assertFalse(window.enabled)
+        self.assertEqual(scheduled, [window._finish_deferred_close])
+
+    def test_deferred_window_shutdown_closes_backend_before_final_window_close(self):
+        calls = []
+        window = SimpleNamespace(
+            _shell_actions=SimpleNamespace(
+                close_application=lambda: calls.append("backend")
+            ),
+            _window_actions=SimpleNamespace(close=lambda: calls.append("dialogs")),
+            _close_finalizing=False,
+            close=lambda: calls.append("window"),
+        )
+
+        AppWindowBase._finish_deferred_close(window)
+
+        self.assertEqual(calls, ["backend", "dialogs", "window"])
+        self.assertTrue(window._close_finalizing)
+
     def test_capture_controller_shutdown_stops_timer_and_waits_thread(self):
         capture_controller = CaptureController.__new__(CaptureController)
         capture_controller._shutdown_event = threading.Event()

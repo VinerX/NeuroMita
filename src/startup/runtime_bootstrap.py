@@ -226,14 +226,30 @@ def _schedule_runtime_cleanup(logger: Any) -> None:
     )
 
 
+def _native_faulthandler_enabled() -> bool:
+    override = os.environ.get("NEUROMITA_ENABLE_NATIVE_FAULTHANDLER")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    return sys.platform != "win32"
+
+
 def _configure_crash_logging(base_dir: str):
-    crash_log = None
+    if not _native_faulthandler_enabled():
+        return None
+
     try:
         crash_path = os.path.join(base_dir, "NeuroMitaCrash.log")
         crash_log = open(crash_path, "a", buffering=1, encoding="utf-8")
+    except OSError:
+        faulthandler.enable()
+        return None
+
+    try:
         faulthandler.enable(file=crash_log, all_threads=True)
     except Exception:
+        crash_log.close()
         faulthandler.enable()
+        return None
     return crash_log
 
 
@@ -329,6 +345,20 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
             if python_recovery.changed:
                 logger.info("Recovered an interrupted Python installation; restarting.")
                 raise SystemExit(42)
+            if python_recovery.status == "waiting_for_activation":
+                from services.update_activation import UPDATE_RESTART_EXIT_CODE
+                from utils.app_restart import spawn_launcher_after_exit
+
+                logger.info(
+                    "A verified NeuroMita.pyz is pending post-exit activation; "
+                    "handing control to Launcher.exe."
+                )
+                if spawn_launcher_after_exit():
+                    raise SystemExit(UPDATE_RESTART_EXIT_CODE)
+                logger.error(
+                    "Pending Python activation could not be handed to Launcher.exe. "
+                    "Keeping the current runtime unchanged."
+                )
             if python_recovery.status == "waiting_for_restart":
                 from updater import note_locked_restart_attempt
 

@@ -12,7 +12,8 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.gui.voiceover_controller import VoiceoverGuiController
-from core.events import Events
+from controllers.gui.settings_sidebar_controller import SettingsSidebarController
+from core.events import Event, Events
 
 
 class _EventBusStub:
@@ -49,6 +50,14 @@ class _ComboStub:
 
     def setCurrentIndex(self, index):
         self.current_index = index
+
+
+class _IndicatorButtonStub:
+    def __init__(self):
+        self.calls = []
+
+    def set_indicator_state(self, state, tooltip_text=None):
+        self.calls.append((state, tooltip_text))
 
 
 class VoiceoverGuiControllerTests(unittest.TestCase):
@@ -172,6 +181,20 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
 
         self.assertEqual(calls, [{"allow_autoload": False}])
 
+    def test_startup_preload_checks_status_without_autoload_setting(self):
+        controller, _bus = self._make_controller()
+        controller._startup_preload_done = False
+        controller._ui = lambda callback: callback()
+        controller._get_setting = lambda key, default=None: (
+            False if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        calls = []
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller.preload_global_status_on_startup()
+
+        self.assertEqual(calls, [{"allow_autoload": False}])
+
     def _autoload_probe(self, method: str):
         """Готовит контроллер к автозагрузке: всё сходится, кроме метода."""
         controller, _bus = self._make_controller()
@@ -196,6 +219,53 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
 
     def test_local_voiceover_still_autoloads(self):
         self.assertEqual(self._autoload_probe("Local"), ["high", "high"])
+
+    def test_disabled_voiceover_does_not_load_local_model(self):
+        controller, _bus = self._make_controller()
+        controller._effective_use_voice = lambda: False
+        controller._effective_method = lambda: "Local"
+        controller.main_controller = SimpleNamespace(backend_enabled=True)
+        controller._get_setting = lambda key, default=None: (
+            True if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        started = []
+        controller._begin_model_loading = lambda *_args, **_kwargs: started.append(True)
+
+        controller._maybe_autoload_local_model_from_snapshot(
+            {"current_model_id": "high", "installed": True, "initialized": False}
+        )
+
+        self.assertEqual(started, [])
+
+
+class SettingsSectionPreloadTests(unittest.TestCase):
+    def test_voice_indicator_is_replayed_before_section_content_is_built(self):
+        bus = _EventBusStub()
+        view = SimpleNamespace(settings_buttons={})
+        controller = SettingsSidebarController.__new__(SettingsSidebarController)
+        controller.event_bus = bus
+        controller.view = view
+        controller._indicator_states = {}
+        controller._ui = lambda callback: callback()
+
+        controller._on_set_icon_indicator(
+            Event(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": "warn", "tooltip": "not loaded"},
+            )
+        )
+
+        button = _IndicatorButtonStub()
+        view.settings_buttons["voice"] = button
+        controller._on_preload_sections(
+            Event(
+                Events.GUI.PRELOAD_SETTINGS_SECTIONS,
+                {"sections": (("voice", "voice_status"),)},
+            )
+        )
+
+        self.assertEqual(button.calls, [("warn", "not loaded")])
+        self.assertIn((Events.GUI.VOICEOVER_REFRESH, None), bus.emitted)
 
 
 if __name__ == "__main__":

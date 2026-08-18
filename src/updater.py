@@ -9,7 +9,8 @@ Controlled via features.env or Settings/settings.json:
                             release -> VinerX/NeuroMita releases
   TESTER_CODE              — password for encrypted test archives
 
-Exit code 42 signals launch.py / run.bat to restart after Python update.
+Exit code 42 is the ordinary run.py restart. Self-updates that stage a new
+NeuroMita.pyz use the Launcher.exe post-exit activation handoff instead.
 """
 
 from __future__ import annotations
@@ -39,6 +40,13 @@ from services.update_transaction import (
     read_json,
     verify_install_manifest,
     write_install_manifest,
+)
+from services.update_activation import (
+    active_zipapp_matches,
+    discard_activation_artifacts,
+    pending_activation_exists,
+    pending_zipapp_path,
+    stage_zipapp_for_activation,
 )
 from utils.archive_utils import (
     ArchiveCancelled,
@@ -142,6 +150,7 @@ def _overlay_dir(
     preserve_prompts: bool = False,
     *,
     locked_retry_seconds: float = 0.0,
+    deferred_files: set[str] | None = None,
 ) -> None:
     """Наложить содержимое staging поверх base_path как diff.
 
@@ -159,7 +168,11 @@ def _overlay_dir(
     папки Prompts (правки пользователя выигрывают), но новые промпты из релиза
     всё равно добавляются.
     """
-    copied = skipped = preserved = 0
+    deferred = {
+        str(Path(item)).replace("\\", "/").casefold()
+        for item in (deferred_files or set())
+    }
+    copied = skipped = preserved = deferred_count = 0
     failed: list[Path] = []
     for root, _dirs, files in os.walk(staging):
         rel = Path(root).relative_to(staging)
@@ -167,6 +180,11 @@ def _overlay_dir(
         dst_root.mkdir(parents=True, exist_ok=True)
         for name in files:
             if not rel.parts and name == install_manifest_name():
+                continue
+            relative_path = rel / name
+            relative_key = str(relative_path).replace("\\", "/").casefold()
+            if relative_key in deferred:
+                deferred_count += 1
                 continue
             src = Path(root) / name
             dst = dst_root / name
@@ -198,6 +216,8 @@ def _overlay_dir(
     msg = f"Overlay update into {base_path}: {copied} written, {skipped} unchanged"
     if preserve_prompts:
         msg += f", {preserved} prompts kept"
+    if deferred_count:
+        msg += f", {deferred_count} runtime file(s) deferred until restart"
     log(msg + ".")
 
 
@@ -250,14 +270,20 @@ def _verify_python_application(
     base_path: Path,
     *,
     preserve_prompts: bool,
+    deferred_targets: dict[str, Path] | None = None,
 ) -> None:
+    deferred = {
+        str(Path(relative)).replace("\\", "/").casefold(): Path(target)
+        for relative, target in (deferred_targets or {}).items()
+    }
     manifest = verify_install_manifest(staging)
     files = manifest.get("files") or {}
     for relative, record in files.items():
         relative_path = Path(str(relative))
         if preserve_prompts and relative_path.parts and relative_path.parts[0].casefold() == "prompts":
             continue
-        target = base_path / relative_path
+        relative_key = str(relative_path).replace("\\", "/").casefold()
+        target = deferred.get(relative_key, base_path / relative_path)
         if not target.is_file():
             raise UpdateTransactionError(f"Applied Python file is missing: {relative}")
         expected_size = int(record.get("size") or 0)
@@ -283,7 +309,7 @@ def _install_full_archive(
     on_apply_started: Optional[Callable[[], None]] = None,
     locked_retry_seconds: float = 0.0,
     stop_event=None,
-) -> None:
+) -> dict[str, str]:
     """Установка обновления. Распаковка идёт в чистую временную папку (там
     надёжно срабатывает выравнивание единственного корневого каталога — иначе
     из-за логов в base_path обновление разворачивалось во вложенную папку), а
@@ -292,7 +318,9 @@ def _install_full_archive(
       mode="diff" (по умолчанию) — наложение поверх существующей папки: пишутся
         только изменившиеся файлы, ничего не удаляется. libs/python с
         зависимостями, .req_hash и локальные файлы переживают апдейт.
-      mode="full" — полная перезапись (wipe + перенос релиза), как раньше.
+      mode="full" — для запущенного self-hosted Python runtime безопасно
+        понижается до diff. Полный wipe работающей установки принципиально
+        нельзя выполнять из неё самой.
 
     preserve_prompts — сохранять локальные промпты (см. _overlay_dir/_full_replace).
     """
@@ -314,6 +342,7 @@ def _install_full_archive(
             shutil.rmtree(staging, ignore_errors=True)
         marker.unlink(missing_ok=True)
         staging.mkdir(parents=True, exist_ok=True)
+    deferred_targets: dict[str, Path] = {}
     try:
         if not reusable:
             extract_archive(
@@ -347,23 +376,48 @@ def _install_full_archive(
         if on_apply_started is not None:
             on_apply_started()
         base_path.mkdir(parents=True, exist_ok=True)
-        if mode == "full":
-            _full_replace(staging, base_path, log, preserve_prompts)
-        else:
-            _overlay_dir(
-                staging,
+        zipapp_candidate = staging / "NeuroMita.pyz"
+        if zipapp_candidate.is_file():
+            staged_zipapp = stage_zipapp_for_activation(
+                zipapp_candidate,
                 base_path,
-                log,
-                preserve_prompts,
-                locked_retry_seconds=locked_retry_seconds,
+                archive_sha256=archive_sha256,
             )
+            deferred_targets["NeuroMita.pyz"] = staged_zipapp.path
+            log(
+                "Staged NeuroMita.pyz for post-exit activation; the running zipapp "
+                "was left untouched."
+            )
+
+        effective_mode = str(mode or "diff").casefold()
+        if effective_mode == "full":
+            log(
+                "Python UPDATE_MODE=full cannot wipe a running self-hosted runtime; "
+                "applying the verified full archive as a safe overlay instead.",
+                "warning",
+            )
+        _overlay_dir(
+            staging,
+            base_path,
+            log,
+            preserve_prompts,
+            locked_retry_seconds=locked_retry_seconds,
+            deferred_files=set(deferred_targets),
+        )
         _verify_python_application(
             staging,
             base_path,
             preserve_prompts=preserve_prompts,
+            deferred_targets=deferred_targets,
         )
         log(f"Installed update contents into {base_path}")
+        return {
+            relative: str(target)
+            for relative, target in deferred_targets.items()
+        }
     except Exception:
+        if deferred_targets:
+            discard_activation_artifacts(base_path)
         if not marker.exists():
             shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -436,26 +490,9 @@ def _is_newer(remote_tag: str, local_version: str) -> bool:
 
 
 def _find_unity_executable(unity_dir: Path) -> Optional[Path]:
-    if not unity_dir.exists() or not unity_dir.is_dir():
-        return None
+    from core.unity_installation import find_unity_executable
 
-    # Ищем в корне и на один уровень вглубь (например UnityBuild/).
-    exe_files = list(unity_dir.glob("*.exe")) + list(unity_dir.glob("*/*.exe"))
-    if not exe_files:
-        return None
-
-    preferred_names = ("NeuroMita.exe", "NeuroMita-Unity.exe", "Unity.exe")
-    lower_map = {path.name.lower(): path for path in exe_files}
-    for name in preferred_names:
-        found = lower_map.get(name.lower())
-        if found is not None:
-            return found
-
-    for path in exe_files:
-        low = path.name.lower()
-        if "neuromita" in low or "unity" in low:
-            return path
-    return exe_files[0]
+    return find_unity_executable(unity_dir)
 
 
 # ── GitHub API ────────────────────────────────────────────────────────────────
@@ -1245,10 +1282,17 @@ def check_for_updates(
             ok=False,
             status=(
                 pending_phase
-                if pending_phase in {"waiting_for_credentials", "waiting_for_restart"}
+                if pending_phase in {
+                    "waiting_for_credentials",
+                    "waiting_for_restart",
+                    "waiting_for_activation",
+                }
                 else "pending"
             ),
-            restart_required=pending_phase == "waiting_for_restart",
+            restart_required=pending_phase in {
+                "waiting_for_restart",
+                "waiting_for_activation",
+            },
             version=str(legacy_state.get("version") or ""),
             error=str(legacy_state.get("error") or "A previous update is pending recovery"),
         )
@@ -1308,7 +1352,7 @@ def check_for_updates(
         if is_patch:
             try:
                 _set_python_operation_phase(base_path, "extracting")
-                _install_full_archive(
+                deferred_activation = _install_full_archive(
                     temp_archive, base_path, tester_code, log,
                     mode="diff", preserve_prompts=preserve_prompts,
                     staging=staging,
@@ -1355,7 +1399,7 @@ def check_for_updates(
                     archive_path=str(full_archive),
                 )
                 _set_python_operation_phase(base_path, "extracting")
-                _install_full_archive(
+                deferred_activation = _install_full_archive(
                     full_archive, base_path, tester_code, log,
                     mode=update_mode, preserve_prompts=preserve_prompts,
                     staging=staging,
@@ -1368,7 +1412,7 @@ def check_for_updates(
                 )
         else:
             _set_python_operation_phase(base_path, "extracting")
-            _install_full_archive(
+            deferred_activation = _install_full_archive(
                 temp_archive, base_path, tester_code, log,
                 mode=update_mode, preserve_prompts=preserve_prompts,
                 staging=staging,
@@ -1379,25 +1423,63 @@ def check_for_updates(
                 on_apply_started=apply_started,
                 stop_event=stop_event,
             )
-        _set_python_operation_phase(
-            base_path,
-            "completed",
-            completed_at=int(time.time()),
-            archive_sha256=archive_hash,
-        )
-        try:
-            _cleanup_python_reserve(
-                journal=_python_journal_path(base_path),
-                archive=active_archive,
-                staging=staging,
-                logger=logger,
+        pending_zipapp = deferred_activation.get("NeuroMita.pyz")
+        if pending_zipapp:
+            pending_path = Path(pending_zipapp)
+            pending_hash = file_sha256(pending_path)
+            _set_python_operation_phase(
+                base_path,
+                "waiting_for_activation",
+                archive_sha256=archive_hash,
+                pending_zipapp=str(pending_path),
+                pending_zipapp_sha256=pending_hash,
             )
-        except Exception as cleanup_error:
-            log(
-                f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
-                "warning",
+        else:
+            _set_python_operation_phase(
+                base_path,
+                "completed",
+                completed_at=int(time.time()),
+                archive_sha256=archive_hash,
             )
+            try:
+                _cleanup_python_reserve(
+                    journal=_python_journal_path(base_path),
+                    archive=active_archive,
+                    staging=staging,
+                    logger=logger,
+                )
+            except Exception as cleanup_error:
+                log(
+                    f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
+                    "warning",
+                )
         _emit_stage(on_stage, "Completed", 4, 4, False)
+
+        if pending_zipapp:
+            log(
+                f"Update {remote_tag} is verified and staged. NeuroMita.pyz will be "
+                "activated only after the current process exits.",
+                "success",
+            )
+            result = UpdateResult(
+                component="python",
+                ok=True,
+                status="waiting_for_activation",
+                changed=True,
+                restart_required=True,
+                version=remote_tag,
+                archive_sha256=archive_hash,
+            )
+            if restart_on_success:
+                from utils.app_restart import restart_app
+
+                if not restart_app():
+                    log(
+                        "Automatic update restart could not be handed to Launcher.exe; "
+                        "the verified update remains pending.",
+                        "warning",
+                    )
+            return result
 
         if restart_on_success:
             log(f"Update {remote_tag} installed successfully. Restarting ...", "success")
@@ -1491,6 +1573,64 @@ def resume_pending_python_update(
     if not state:
         _cleanup_terminal_legacy_python_reserve(base_path, logger=logger)
         return UpdateResult(component="python", ok=True, status="no_pending_operation")
+    if phase == "waiting_for_activation":
+        expected_hash = str(state.get("pending_zipapp_sha256") or "").strip().lower()
+        version = str(state.get("version") or "")
+        archive_hash = str(state.get("archive_sha256") or "")
+        if pending_activation_exists(base_path):
+            return UpdateResult(
+                component="python",
+                ok=True,
+                status="waiting_for_activation",
+                restart_required=True,
+                version=version,
+                archive_sha256=archive_hash,
+                recovered=True,
+            )
+        if active_zipapp_matches(base_path, expected_hash):
+            _set_python_operation_phase(
+                base_path,
+                "completed",
+                journal_path=journal,
+                completed_at=int(time.time()),
+            )
+            completed_state = read_json(journal)
+            discard_activation_artifacts(base_path)
+            _cleanup_completed_python_operation(
+                base_path,
+                journal,
+                completed_state,
+                logger=logger,
+            )
+            return UpdateResult(
+                component="python",
+                ok=True,
+                status="activated",
+                changed=False,
+                restart_required=False,
+                version=version,
+                archive_sha256=archive_hash,
+                recovered=True,
+            )
+        error = (
+            "Pending NeuroMita.pyz disappeared before activation and the active "
+            "zipapp does not match the verified staged hash."
+        )
+        _set_python_operation_phase(
+            base_path,
+            "failed",
+            journal_path=journal,
+            error=error,
+        )
+        return UpdateResult(
+            component="python",
+            ok=False,
+            status="failed",
+            version=version,
+            error=error,
+            archive_sha256=archive_hash,
+            recovered=True,
+        )
     failed_from_locked_file = phase == "failed" and "Could not apply" in str(
         state.get("error") or ""
     )

@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 
+from core.unity_installation import find_unity_executable, unity_install_dir
 from main_logger import logger
 from services.update_transaction import atomic_write_json, read_json
 
@@ -159,34 +160,10 @@ class HomePageController(QObject):
         return os.environ.get("NEUROMITA_BASE_DIR") or None
 
     def unity_install_dir(self, configured: str | None = None) -> Path:
-        if configured:
-            return Path(str(configured))
-        base_dir = os.environ.get("NEUROMITA_BASE_DIR", "")
-        if base_dir:
-            return Path(base_dir) / "NeuroMita-Unity"
-        return Path(sys.argv[0]).resolve().parent / "NeuroMita-Unity"
+        return unity_install_dir(configured)
 
     def find_unity_executable(self, configured: str | None = None) -> Path | None:
-        root = self.unity_install_dir(configured)
-        if not root.exists() or not root.is_dir():
-            return None
-
-        executable_files = list(root.glob("*.exe")) + list(root.glob("*/*.exe"))
-        if not executable_files:
-            return None
-
-        preferred = ("NeuroMita.exe", "NeuroMita-Unity.exe", "Unity.exe")
-        by_name = {path.name.lower(): path for path in executable_files}
-        for name in preferred:
-            hit = by_name.get(name.lower())
-            if hit is not None:
-                return hit
-
-        for path in executable_files:
-            name = path.name.lower()
-            if "neuromita" in name or "unity" in name:
-                return path
-        return executable_files[0]
+        return find_unity_executable(self.unity_install_dir(configured))
 
     def open_unity_folder(self, configured: str | None = None) -> None:
         directory = self.unity_install_dir(configured)
@@ -351,7 +328,7 @@ class HomePageController(QObject):
                 stop_event=stop_event,
             )
             results["python"] = python_result.as_dict()
-            python_pending_restart = python_result.status == "waiting_for_restart"
+            python_pending_restart = bool(python_result.restart_required)
         if update_unity and not stop_event.is_set() and not python_pending_restart:
             unity_result = check_for_unity_updates(
                 base_dir=base_dir,

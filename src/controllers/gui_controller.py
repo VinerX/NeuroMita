@@ -2,6 +2,7 @@ from PyQt6.QtCore import QCoreApplication, QThread, QTimer
 from main_logger import logger
 from core.events import get_event_bus
 from core.services import use
+from core.settings_values import as_bool as _as_bool
 from core.task_supervisor import task_supervisor
 from controllers.gui.qt_dispatch import dispatch_to_qt
 from services.contracts import GuiInteractionService, SettingsService
@@ -15,6 +16,7 @@ from .gui.model_event_controller import ModelEventController
 from .gui.view_event_controller import ViewEventController
 from .gui.window_manager_controller import WindowManagerController
 from .gui.protocol_pipeline_gui_controller import ProtocolPipelineGuiController
+from .gui.voiceover_controller import VoiceoverGuiController
 
 from .gui.settings_sidebar_controller import SettingsSidebarController
 
@@ -54,7 +56,10 @@ class GuiController(GuiInteractionService):
 
         self.settings_sidebar_controller = SettingsSidebarController(main_controller, view)
 
-        self.voiceover_controller = None
+        # Voiceover state is application-wide: its indicator and optional
+        # startup autoload must exist before the settings section is opened.
+        # Only widget-specific voice controllers remain lazy.
+        self.voiceover_controller = VoiceoverGuiController(main_controller, view)
         self.audio_model_controller = None
         self.voice_model_gui_controller = None
         self.microphone_settings_controller = None
@@ -79,10 +84,19 @@ class GuiController(GuiInteractionService):
         self._connect_view_signals()
         logger.info("GuiController подписался на события")
 
+        QTimer.singleShot(
+            0,
+            self.voiceover_controller.preload_global_status_on_startup,
+        )
+
         if bool(getattr(self.main_controller, "backend_enabled", True)):
             settings = getattr(self.main_controller, "settings", None)
-            voice_enabled = bool(settings and settings.get("USE_VOICEOVER", False))
-            mic_enabled = bool(settings and settings.get("MIC_ACTIVE", False))
+            voice_enabled = bool(
+                settings and _as_bool(settings.get("USE_VOICEOVER", False))
+            )
+            mic_enabled = bool(
+                settings and _as_bool(settings.get("MIC_ACTIVE", False))
+            )
             if voice_enabled or mic_enabled:
                 QTimer.singleShot(100, self.system_controller.check_and_install_ffmpeg)
 
@@ -130,11 +144,11 @@ class GuiController(GuiInteractionService):
     def _on_setting_changed(self, change) -> None:
         key = str(getattr(change, "key", ""))
         value = getattr(change, "value", None)
-        if key == "USE_VOICEOVER" and bool(value):
+        if key == "USE_VOICEOVER" and _as_bool(value):
             self._dispatch_ui(lambda: self._activate_optional_gui("voice", needs_ffmpeg=True))
-        elif key == "MIC_ACTIVE" and bool(value):
+        elif key == "MIC_ACTIVE" and _as_bool(value):
             self._dispatch_ui(lambda: self._activate_optional_gui("speech", needs_ffmpeg=True))
-        elif key == "VOICEOVER_METHOD" and bool(
+        elif key == "VOICEOVER_METHOD" and _as_bool(
             self._settings_service.get("USE_VOICEOVER", False)
         ):
             self._dispatch_ui(lambda: self._activate_optional_gui("voice", needs_ffmpeg=True))
@@ -163,24 +177,13 @@ class GuiController(GuiInteractionService):
         if normalized == "voice":
             from .gui.audio_model_controller import AudioModelController
             from .gui.voice_model_controller import VoiceModelGuiController
-            from .gui.voiceover_controller import VoiceoverGuiController
 
-            self.voiceover_controller = VoiceoverGuiController(self.main_controller, self.view)
             self.audio_model_controller = AudioModelController(self.main_controller, self.view)
             self.voice_model_gui_controller = VoiceModelGuiController(self.main_controller, self.view)
             created = (
-                self.voiceover_controller,
                 self.audio_model_controller,
                 self.voice_model_gui_controller,
             )
-
-            settings = getattr(self.main_controller, "settings", None)
-            autoload = bool(settings and settings.get("LOCAL_VOICE_LOAD_LAST", False))
-            local_method = str(
-                settings.get("VOICEOVER_METHOD", "Local") if settings else "Local"
-            ).strip().lower() == "local"
-            if autoload and local_method:
-                QTimer.singleShot(0, self.voiceover_controller.autoload_last_model_on_startup)
 
         elif normalized == "speech":
             from .gui.asr_events_controller import AsrEventsController
@@ -236,6 +239,7 @@ class GuiController(GuiInteractionService):
                 self.chat_controller,
                 self.system_controller,
                 self.settings_sidebar_controller,
+                self.voiceover_controller,
                 self.dialog_controller,
                 self.settings_controller,
                 self.model_event_controller,

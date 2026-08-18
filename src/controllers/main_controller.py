@@ -20,6 +20,7 @@ from services.contracts import (
     ApiPresetService,
     AppVarsService,
     CharacterRegistry,
+    CharacterEnvironmentContextService,
     EmbeddingPresetService,
     EmbeddingService,
     GameLinkService,
@@ -48,6 +49,7 @@ from services.telegram_service import UnavailableTelegramService
 from services.settings_service import DefaultAppVarsService
 from services.runtime_features import FeatureSpec, RuntimeFeatureManager
 from services.runtime_capabilities import DefaultRuntimeCapabilitiesService
+from services.character_environment_context import DefaultCharacterEnvironmentContextService
 
 if TYPE_CHECKING:
     from controllers.settings_controller import SettingsController
@@ -125,6 +127,11 @@ class MainController:
         )
         services().register(
             AppVarsService, DefaultAppVarsService(settings_service, self.game_link), replace=True
+        )
+        services().register(
+            CharacterEnvironmentContextService,
+            DefaultCharacterEnvironmentContextService(settings_service),
+            replace=True,
         )
         # The early server may receive a client before the full character runtime
         # is materialized. Keep a settings-backed registry available until

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from core.events import Events
 from core.services import use
-from services.contracts import CharacterRegistry, SettingsService, TaskService
+from services.contracts import CharacterRegistry, PlayerMessageSource, SettingsService, TaskService
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -172,6 +172,7 @@ async def _dispatch_task(
     dialogue: Optional[dict] = None,
     game_state: Optional[dict] = None,
     image_source: str = "",
+    player_message_source: str = "",
     gm_instruction_override: str | None = None,
     extra_task_data: Optional[dict] = None,
     abort_reason: str = "Failed to create task",
@@ -194,6 +195,8 @@ async def _dispatch_task(
         "policy": policy_dict,
         "dialogue": dict(dialogue or {}),
     }
+    if player_message_source:
+        task_data["player_message_source"] = str(player_message_source)
     if extra_task_data:
         task_data.update(extra_task_data)
     if gm_instruction_override is not None:
@@ -220,6 +223,8 @@ async def _dispatch_task(
             "game_state": dict(game_state or {}),
             "dialogue": dict(dialogue or {}),
         }
+        if player_message_source:
+            chat_event["player_message_source"] = str(player_message_source)
         if gm_instruction_override is not None:
             chat_event["gm_instruction_override"] = gm_instruction_override
         event_bus.emit(Events.Chat.SEND_MESSAGE, chat_event)
@@ -410,6 +415,11 @@ class CreateTaskAction:
                 system_input=system_input,
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source=effective_image_source,
+                player_message_source=(
+                    PlayerMessageSource.GAME.value
+                    if user_input and sender == "Player"
+                    else ""
+                ),
                 abort_reason="Failed to create task",
             )
             return
