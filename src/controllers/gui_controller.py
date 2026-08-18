@@ -16,6 +16,7 @@ from .gui.model_event_controller import ModelEventController
 from .gui.view_event_controller import ViewEventController
 from .gui.window_manager_controller import WindowManagerController
 from .gui.protocol_pipeline_gui_controller import ProtocolPipelineGuiController
+from .gui.voiceover_controller import VoiceoverGuiController
 
 from .gui.settings_sidebar_controller import SettingsSidebarController
 
@@ -55,7 +56,10 @@ class GuiController(GuiInteractionService):
 
         self.settings_sidebar_controller = SettingsSidebarController(main_controller, view)
 
-        self.voiceover_controller = None
+        # Voiceover state is application-wide: its indicator and optional
+        # startup autoload must exist before the settings section is opened.
+        # Only widget-specific voice controllers remain lazy.
+        self.voiceover_controller = VoiceoverGuiController(main_controller, view)
         self.audio_model_controller = None
         self.voice_model_gui_controller = None
         self.microphone_settings_controller = None
@@ -79,6 +83,11 @@ class GuiController(GuiInteractionService):
 
         self._connect_view_signals()
         logger.info("GuiController подписался на события")
+
+        QTimer.singleShot(
+            0,
+            self.voiceover_controller.preload_global_status_on_startup,
+        )
 
         if bool(getattr(self.main_controller, "backend_enabled", True)):
             settings = getattr(self.main_controller, "settings", None)
@@ -168,20 +177,12 @@ class GuiController(GuiInteractionService):
         if normalized == "voice":
             from .gui.audio_model_controller import AudioModelController
             from .gui.voice_model_controller import VoiceModelGuiController
-            from .gui.voiceover_controller import VoiceoverGuiController
 
-            self.voiceover_controller = VoiceoverGuiController(self.main_controller, self.view)
             self.audio_model_controller = AudioModelController(self.main_controller, self.view)
             self.voice_model_gui_controller = VoiceModelGuiController(self.main_controller, self.view)
             created = (
-                self.voiceover_controller,
                 self.audio_model_controller,
                 self.voice_model_gui_controller,
-            )
-
-            QTimer.singleShot(
-                0,
-                self.voiceover_controller.preload_global_status_on_startup,
             )
 
         elif normalized == "speech":
@@ -238,6 +239,7 @@ class GuiController(GuiInteractionService):
                 self.chat_controller,
                 self.system_controller,
                 self.settings_sidebar_controller,
+                self.voiceover_controller,
                 self.dialog_controller,
                 self.settings_controller,
                 self.model_event_controller,
