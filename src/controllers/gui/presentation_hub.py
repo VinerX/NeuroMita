@@ -5,7 +5,7 @@ from functools import cached_property
 import weakref
 from typing import Any, Callable
 
-from core.events import Event, get_event_bus
+from core.events import Event, Events, get_event_bus
 from core.services import services, use
 from services.contracts import (
     ApiPresetService,
@@ -95,6 +95,13 @@ class _ProviderOptionsController:
 class _SettingsSectionsController:
     def __init__(self, presentation: "UiPresentationHub") -> None:
         self._presentation = presentation
+
+    @staticmethod
+    def preload_sections(preloads) -> None:
+        get_event_bus().emit(
+            Events.GUI.PRELOAD_SETTINGS_SECTIONS,
+            {"sections": tuple(preloads or ())},
+        )
 
     def build_section(self, gui: Any, category: str, parent: Any) -> None:
         key = str(category or "").strip().lower()

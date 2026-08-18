@@ -568,6 +568,7 @@ class Events:
         CLOSE_WINDOW = "close_window"
         CLOSE_ALL_WINDOWS = "close_all_windows"
         SET_SETTINGS_ICON_INDICATOR = "set_settings_icon_indicator"
+        PRELOAD_SETTINGS_SECTIONS = "preload_settings_sections"
 
         VOICEOVER_UI_READY = "voiceover_ui_ready"
         VOICEOVER_REFRESH = "voiceover_refresh"

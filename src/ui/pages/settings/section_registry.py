@@ -21,6 +21,7 @@ class SettingsSectionSpec:
     subtitle: TextPair
     min_mode: str
     builder_ref: str | SectionBuilder
+    preload_key: str | None = None
 
 
 SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
@@ -83,6 +84,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
         ),
         min_mode="advanced",
         builder_ref="ui.settings.voiceover_settings:setup_voiceover_controls",
+        preload_key="voice_status",
     ),
     SettingsSectionSpec(
         key="microphone",

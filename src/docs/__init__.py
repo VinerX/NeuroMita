@@ -78,6 +78,19 @@ _INSTALLATION_GUIDE_HTML = """
         <p>После создания кеша там же доступны <strong>«Перекомпилировать»</strong> и <strong>«Удалить компиляцию»</strong>. Приложение хранит один общий кеш в управляемой папке <code>Lib/environment/cache</code>; новые папки-поколения не создаются.</p>
         <p>Без переменной <code>CC</code> и заранее активированного окружения Visual Studio Triton Windows использует встроенный TinyCC. Опытный пользователь может переопределить компилятор через <code>CC</code>; для MSVC также требуется окружение Visual Studio с путями SDK.</p>
         <p><a href="https://github.com/triton-lang/triton-windows" target="_blank" rel="noopener noreferrer">Документация Triton Windows</a></p>
+
+        <h3 id="triton_msvc_fallback">Если встроенный TinyCC не работает</h3>
+        <p>Переход на MSVC имеет смысл, если в полном логе компиляции упоминается <code>tcc.exe</code>, не удаётся собрать <code>__triton_launcher.pyd</code> либо TinyCC сообщает об ошибке компиляции или линковки. VC++ Redistributable для этого недостаточно: нужен именно компилятор и Windows SDK.</p>
+        <ol>
+            <li>Установите <a href="https://visualstudio.microsoft.com/visual-cpp-build-tools/" target="_blank" rel="noopener noreferrer">Visual Studio Build Tools</a>. В установщике выберите MSVC v143 для x64/x86 и актуальный Windows 10/11 SDK.</li>
+            <li>Откройте <strong>x64 Native Tools Command Prompt for VS 2022</strong> и из него запустите <code>Launcher.exe</code>. Это добавит в процесс не только <code>cl.exe</code>, но и обязательные пути <code>INCLUDE</code>/<code>LIB</code> для SDK.</li>
+            <li>В AI Hub откройте настройки Fish Speech+, удалите неудачную компиляцию и нажмите <strong>«Компилировать»</strong> повторно.</li>
+        </ol>
+        <p>Эквивалент для обычного <code>cmd.exe</code> (путь зависит от редакции Visual Studio):</p>
+        <pre><code>call "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat" -arch=amd64
+Launcher.exe</code></pre>
+        <p>Если переменная <code>CC</code> уже задана вручную и указывает на TinyCC, после активации Visual Studio environment выполните <code>set CC=cl</code>. Не задавайте только путь к <code>cl.exe</code> без окружения SDK — такая проверка выглядит успешной, но сборка обычно падает на заголовках или библиотеках.</p>
+        <p><a href="https://github.com/triton-lang/triton-windows?tab=readme-ov-file#5-c-compiler" target="_blank" rel="noopener noreferrer">Подробнее о выборе C-компилятора в Triton Windows</a></p>
     </div>
 
     <div class="optional-component" id="vc_redist">

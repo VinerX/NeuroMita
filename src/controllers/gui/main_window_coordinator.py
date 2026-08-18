@@ -202,6 +202,7 @@ class MainWindowCoordinator:
             view.SETTINGS_PANEL_WIDTH = page.SETTINGS_PANEL_WIDTH
             view.SETTINGS_SIDEBAR_WIDTH = page.SETTINGS_SIDEBAR_WIDTH
             view.settings_resize_handle = page.settings_resize_handle
+            page.preload_registered_sections()
             return page
         if page_key == "logs":
             page = factory(view, view_models.logs_page(view), view._page_actions)
@@ -353,6 +354,9 @@ class MainWindowCoordinator:
             str(category),
             layout,
         )
+
+    def preload_settings_sections(self, preloads) -> None:
+        self._presentation.settings_sections.preload_sections(preloads)
 
     def sync_settings_mode_widgets(self, mode_value) -> None:
         from PyQt6.QtCore import Qt

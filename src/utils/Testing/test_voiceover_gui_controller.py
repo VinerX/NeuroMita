@@ -12,7 +12,8 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.gui.voiceover_controller import VoiceoverGuiController
-from core.events import Events
+from controllers.gui.settings_sidebar_controller import SettingsSidebarController
+from core.events import Event, Events
 
 
 class _EventBusStub:
@@ -49,6 +50,14 @@ class _ComboStub:
 
     def setCurrentIndex(self, index):
         self.current_index = index
+
+
+class _IndicatorButtonStub:
+    def __init__(self):
+        self.calls = []
+
+    def set_indicator_state(self, state, tooltip_text=None):
+        self.calls.append((state, tooltip_text))
 
 
 class VoiceoverGuiControllerTests(unittest.TestCase):
@@ -227,6 +236,36 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         )
 
         self.assertEqual(started, [])
+
+
+class SettingsSectionPreloadTests(unittest.TestCase):
+    def test_voice_indicator_is_replayed_before_section_content_is_built(self):
+        bus = _EventBusStub()
+        view = SimpleNamespace(settings_buttons={})
+        controller = SettingsSidebarController.__new__(SettingsSidebarController)
+        controller.event_bus = bus
+        controller.view = view
+        controller._indicator_states = {}
+        controller._ui = lambda callback: callback()
+
+        controller._on_set_icon_indicator(
+            Event(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": "warn", "tooltip": "not loaded"},
+            )
+        )
+
+        button = _IndicatorButtonStub()
+        view.settings_buttons["voice"] = button
+        controller._on_preload_sections(
+            Event(
+                Events.GUI.PRELOAD_SETTINGS_SECTIONS,
+                {"sections": (("voice", "voice_status"),)},
+            )
+        )
+
+        self.assertEqual(button.calls, [("warn", "not loaded")])
+        self.assertIn((Events.GUI.VOICEOVER_REFRESH, None), bus.emitted)
 
 
 if __name__ == "__main__":
