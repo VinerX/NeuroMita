@@ -522,6 +522,31 @@ class DialogueRuntimeSource(str, Enum):
     UNITY = "unity"
 
 
+class PlayerMessageSource(str, Enum):
+    """Transport from which the Player authored the current turn."""
+
+    NONE = "none"
+    APPLICATION = "application"
+    GAME = "game"
+
+
+def parse_player_message_source(raw: object) -> PlayerMessageSource:
+    if isinstance(raw, PlayerMessageSource):
+        return raw
+    value = str(raw or "").strip().lower()
+    aliases = {
+        "": PlayerMessageSource.NONE,
+        "none": PlayerMessageSource.NONE,
+        "python": PlayerMessageSource.APPLICATION,
+        "python_app": PlayerMessageSource.APPLICATION,
+        "app": PlayerMessageSource.APPLICATION,
+        "application": PlayerMessageSource.APPLICATION,
+        "unity": PlayerMessageSource.GAME,
+        "game": PlayerMessageSource.GAME,
+    }
+    return aliases.get(value, PlayerMessageSource.NONE)
+
+
 @dataclass(frozen=True, slots=True)
 class DialogueParticipantView:
     """UI-safe participant projection; never used to authorize a route."""
@@ -674,6 +699,8 @@ class PromptBuildRequest:
     participants: List[str] = field(default_factory=list)
     capabilities: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
+    previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
 
 
@@ -715,6 +742,8 @@ class ChatGenerationRequest:
     disable_history_compression: bool = False
     game_state: Dict[str, Any] = field(default_factory=dict)
     dialogue: Optional[DialogueTurnContext] = None
+    player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
+    previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
     trace_id: Optional[str] = None
 

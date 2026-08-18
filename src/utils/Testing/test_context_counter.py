@@ -49,8 +49,8 @@ class UnityRuntimeSectionTests(unittest.TestCase):
         self.assertEqual(_classify_message_section(events, is_last_user=False, seen_dialogue=True), "Unity runtime")
 
     def test_converted_world_state_keeps_its_section(self):
-        ws = {"role": "user", "content": "[RUNTIME EVENT] [MiSide World State]\nkitchen"}
-        self.assertEqual(_classify_message_section(ws, is_last_user=False), "MiSide World State")
+        ws = {"role": "user", "content": "[RUNTIME EVENT] [NeuroMita World State]\nkitchen"}
+        self.assertEqual(_classify_message_section(ws, is_last_user=False), "NeuroMita World State")
 
     def test_real_dialogue_still_history_and_input(self):
         self.assertEqual(_classify_message_section({"role": "user", "content": "hi"}, is_last_user=False), "history")
@@ -73,7 +73,7 @@ class UnityRuntimeSectionTests(unittest.TestCase):
             ("<memory_islands>\n[Relationship] N:1 friends</memory_islands>", "memories"),
             ("[System State]\noffline", "System State"),
             ("[Current State]\nDate", "System State"),
-            ("[MiSide World State]\nkitchen", "MiSide World State"),
+            ("[NeuroMita World State]\nkitchen", "NeuroMita World State"),
             ("[Character World Context]\nyour home", "Character World Context"),
         ]:
             self.assertEqual(
@@ -205,7 +205,7 @@ class ComputeUsageWithoutTokenizerTests(unittest.TestCase):
         messages = [
             {"role": "system", "content": "You are Crazy Mita, playful and controlling."},
             {"role": "system", "content": "<active_memory>\nN:1 player likes cats</active_memory>"},
-            {"role": "system", "content": "[MiSide World State]\nThe player is in the kitchen."},
+            {"role": "system", "content": "[NeuroMita World State]\nThe player is in the kitchen."},
             {"role": "user", "content": "earlier"},
             {"role": "assistant", "content": "reply"},
             {"role": "user", "content": [{"type": "text", "text": "what is your name?"}]},
@@ -218,7 +218,7 @@ class ComputeUsageWithoutTokenizerTests(unittest.TestCase):
         self.assertEqual(len(usage["per_message"]), len(messages))
         self.assertEqual(usage["estimated_total"], sum(usage["estimated_by_section"].values()))
         self.assertEqual(usage["estimated_total"], sum(m["estimated_tokens"] for m in usage["per_message"]))
-        for expected in ["character prompts", "memories", "MiSide World State", "history", "user input"]:
+        for expected in ["character prompts", "memories", "NeuroMita World State", "history", "user input"]:
             self.assertIn(expected, usage["estimated_by_section"])
 
 

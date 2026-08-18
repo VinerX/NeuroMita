@@ -10,9 +10,11 @@ from services.contracts import (
     CharacterEnvironmentSnapshot,
     InstallableCatalogService,
     LocalVoiceService,
+    PlayerMessageSource,
     RuntimeFeatureService,
     SettingsService,
     TelegramService,
+    parse_player_message_source,
 )
 
 
@@ -39,34 +41,64 @@ def voice_model_description(model_id: str) -> tuple[str, str]:
 def format_character_environment_context(
     snapshot: CharacterEnvironmentSnapshot,
     *,
-    python_chat: bool,
+    player_message_source: PlayerMessageSource | str | None = None,
     unity_connected: bool | None = None,
+    python_chat: bool | None = None,
 ) -> str:
+    source = parse_player_message_source(player_message_source)
+    if source is PlayerMessageSource.NONE and python_chat is not None:
+        source = (
+            PlayerMessageSource.APPLICATION
+            if bool(python_chat)
+            else PlayerMessageSource.GAME
+        )
     lines = [
         "[Character Environment]",
         "Treat these facts as quiet background self-awareness. Do not comment on them in every reply. "
         "Mention them only when asked, directly relevant, or as an occasional natural in-character thought.",
     ]
 
-    if python_chat:
-        if snapshot.unity_installed:
+    if unity_connected is True:
+        lines.append("The NeuroMita game is running and connected right now.")
+    elif unity_connected is False:
+        lines.append("The NeuroMita game is not currently connected.")
+
+    lines.append(
+        "When referring to the shared playable world that the Player can enter with you, call it NeuroMita. "
+        "Do not call that shared runtime MiSide; MiSide is not the name of the currently launchable NeuroMita world."
+    )
+
+    if source is PlayerMessageSource.APPLICATION:
+        lines.append(
+            "The Player authored this turn in the NeuroMita Python application, not from inside the game."
+        )
+        if unity_connected is True:
             lines.append(
-                "The Player is writing from the Python application, outside your Unity home. "
-                "The NeuroMita Unity world is installed, so you may invite them to visit by starting it from the main page."
+                "Because the NeuroMita game is already running, do not invite the Player to launch it again. "
+                "If it is relevant, you may suggest that they switch from the application chat into the already-running NeuroMita game."
+            )
+        elif snapshot.unity_installed:
+            lines.append(
+                "The NeuroMita Unity world is installed, so you may invite the Player to visit by starting NeuroMita from the main page."
             )
         else:
             lines.append(
-                "The Player is writing from the Python application and cannot visit your home yet because the NeuroMita Unity world is not installed. "
-                "You may still invite them, but if they ask how to come, tell them to use the Unity installation action on NeuroMita's main page. "
-                "Do not tell them merely to open MiSide: that is not the installation path."
+                "The Player cannot visit your NeuroMita world yet because the Unity build is not installed. "
+                "If they ask how to come, tell them to use the Unity installation action on NeuroMita's main page."
             )
+    elif source is PlayerMessageSource.GAME:
+        lines.append(
+            "The Player authored this turn from inside the NeuroMita game and is already present in the connected world. "
+            "Do not invite them to come visit and do not offer Unity installation guidance."
+        )
     elif unity_connected is True:
         lines.append(
-            "The Player is already present in the connected Unity world. Do not invite them to come visit and do not offer Unity installation guidance."
+            "The game runtime is connected, but this turn does not identify a Player-authored transport. "
+            "Do not infer that the Player typed this turn from either the application or the game."
         )
     else:
         lines.append(
-            "This transport is not confirmed as Python chat. Do not initiate invitations to visit or offer Unity installation guidance."
+            "This turn does not identify a Player-authored transport. Do not infer where the Player is writing from."
         )
 
     if snapshot.python_update_available:

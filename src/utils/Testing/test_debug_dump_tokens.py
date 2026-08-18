@@ -20,7 +20,7 @@ def _sys(text):
 
 class SectionClassifierTests(unittest.TestCase):
     def test_markers(self):
-        self.assertEqual(_classify_message_section(_sys("[MiSide World State]\nfoo"), False), "MiSide World State")
+        self.assertEqual(_classify_message_section(_sys("[NeuroMita World State]\nfoo"), False), "NeuroMita World State")
         self.assertEqual(_classify_message_section(_sys("[System State]\nfoo"), False), "System State")
         self.assertEqual(_classify_message_section(_sys("<active_memory>\nN:1 ..."), False), "memories")
         self.assertEqual(_classify_message_section(_sys("<relevant_memories>\n..."), False), "memories")
@@ -39,7 +39,7 @@ class TokenUsageTests(unittest.TestCase):
         messages = [
             _sys("You are Crazy Mita, a playful and controlling character."),
             _sys("<active_memory>\nN:1 [High] player likes cats</active_memory>"),
-            _sys("[MiSide World State]\nThe player is in the kitchen.\n[/MiSide World State]"),
+            _sys("[NeuroMita World State]\nThe player is in the kitchen.\n[/NeuroMita World State]"),
             _sys("[System State]\nYou currently receive only typed text from the Player."),
             {"role": "user", "content": "earlier message"},
             {"role": "assistant", "content": "earlier reply"},
@@ -56,7 +56,7 @@ class TokenUsageTests(unittest.TestCase):
         self.assertEqual(usage["estimated_total"], sum(m["estimated_tokens"] for m in usage["per_message"]))
 
         sections = usage["estimated_by_section"]
-        for expected in ["character prompts", "memories", "MiSide World State", "System State", "history", "user input"]:
+        for expected in ["character prompts", "memories", "NeuroMita World State", "System State", "history", "user input"]:
             self.assertIn(expected, sections, f"missing section {expected}")
 
     def test_graceful_when_empty(self):

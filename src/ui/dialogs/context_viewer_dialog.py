@@ -139,7 +139,7 @@ _SECTION_STYLE = {
     "behavior":    ("📊", "#F472B6"),  # состояние поведения
     "participant": ("👥", "#FBBF24"),  # участники диалога
     "unity":       ("🕹", "#8B5CF6"),  # Unity runtime: rules / capabilities / intent / events
-    "world":       ("🏠", "#4ADE80"),  # [MiSide World State]
+    "world":       ("🏠", "#4ADE80"),  # [NeuroMita World State]
     "game":        ("🎮", "#4ADE80"),  # состояние мини-игры
     "default":     ("🏷", "#9CA3AF"),  # прочие теги/заголовки
 }
@@ -167,7 +167,8 @@ _SECTION_TO_GROUP = {
     "history": "history",
     "user input": "input",
     "system input": "context",
-    "MiSide World State": "context",
+    "NeuroMita World State": "context",
+    "MiSide World State": "context",  # legacy saved contexts
     "Character World Context": "context",
     "Unity runtime": "context",
     "group conversation": "context",
@@ -1341,7 +1342,7 @@ class ContextViewerDialog(QDialog):
         elif "participant" in key:
             cat = "participant"
         # Unity/MiSide-блоки распознаём до generic "state"/"game": и
-        # "MiSide World State", и "System State" содержат "state".
+        # "NeuroMita World State", и "System State" содержат "state".
         elif "game master directive" in key:
             cat = "game"
         elif "world" in key or "miside" in key:

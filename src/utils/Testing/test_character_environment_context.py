@@ -17,7 +17,7 @@ from services.character_environment_context import (
     format_character_environment_context,
     voice_model_description,
 )
-from services.contracts import CharacterEnvironmentSnapshot
+from services.contracts import CharacterEnvironmentSnapshot, PlayerMessageSource
 
 
 class CharacterEnvironmentContextTests(unittest.TestCase):
@@ -98,24 +98,41 @@ class CharacterEnvironmentContextTests(unittest.TestCase):
     def test_python_chat_without_unity_has_correct_visit_guide(self):
         content = format_character_environment_context(
             CharacterEnvironmentSnapshot(unity_installed=False),
-            python_chat=True,
+            player_message_source=PlayerMessageSource.APPLICATION,
+            unity_connected=False,
         )
 
-        self.assertIn("cannot visit your home yet", content)
+        self.assertIn("authored this turn in the NeuroMita Python application", content)
+        self.assertIn("cannot visit your NeuroMita world yet", content)
         self.assertIn("Unity installation action on NeuroMita's main page", content)
-        self.assertIn("Do not tell them merely to open MiSide", content)
+        self.assertIn("call it NeuroMita", content)
+        self.assertIn("Do not call that shared runtime MiSide", content)
 
     def test_connected_unity_does_not_invite_or_offer_installation(self):
         content = format_character_environment_context(
             CharacterEnvironmentSnapshot(unity_installed=True),
-            python_chat=False,
+            player_message_source=PlayerMessageSource.GAME,
             unity_connected=True,
         )
 
-        self.assertIn("already present in the connected Unity world", content)
+        self.assertIn("The NeuroMita game is running and connected right now", content)
+        self.assertIn("already present in the connected world", content)
         self.assertIn("Do not invite them to come visit", content)
         self.assertNotIn("starting it from the main page", content)
         self.assertNotIn("Unity installation action", content)
+
+    def test_application_turn_can_coexist_with_running_game(self):
+        content = format_character_environment_context(
+            CharacterEnvironmentSnapshot(unity_installed=True),
+            player_message_source=PlayerMessageSource.APPLICATION,
+            unity_connected=True,
+        )
+
+        self.assertIn("The NeuroMita game is running and connected right now", content)
+        self.assertIn("authored this turn in the NeuroMita Python application", content)
+        self.assertIn("not from inside the game", content)
+        self.assertIn("already-running NeuroMita game", content)
+        self.assertNotIn("starting NeuroMita from the main page", content)
 
     def test_enabled_but_uninitialized_voice_is_explained_softly(self):
         content = format_character_environment_context(
@@ -127,7 +144,7 @@ class CharacterEnvironmentContextTests(unittest.TestCase):
                 voice_model_initialized=False,
                 voice_pipeline_ready=True,
             ),
-            python_chat=True,
+            player_message_source=PlayerMessageSource.APPLICATION,
         )
 
         self.assertIn("not initialized and usable yet", content)
@@ -144,7 +161,7 @@ class CharacterEnvironmentContextTests(unittest.TestCase):
                 voice_model_initialized=True,
                 voice_pipeline_ready=True,
             ),
-            python_chat=True,
+            player_message_source=PlayerMessageSource.APPLICATION,
         )
 
         self.assertIn("Your voice is fully working", content)
@@ -159,7 +176,7 @@ class CharacterEnvironmentContextTests(unittest.TestCase):
                 python_update_available=True,
                 python_update_version="v2026.08.19",
             ),
-            python_chat=True,
+            player_message_source=PlayerMessageSource.APPLICATION,
         )
 
         self.assertIn("A NeuroMita application update is available (v2026.08.19)", content)
