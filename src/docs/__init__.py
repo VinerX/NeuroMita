@@ -69,6 +69,8 @@ _INSTALLATION_GUIDE_HTML = """
             <li><strong>Fish Speech (medium):</strong> Базовая модель, <em>не требует</em> установки дополнительных компонентов. <strong>Требуется NVIDIA GPU.</strong></li>
             <li><strong>Fish Speech+ (medium+):</strong> использует torch.compile/Triton. Рекомендуется NVIDIA с compute capability <strong>SM 8.0+</strong>.</li>
             <li><strong>Fish Speech+RVC (medium+low):</strong> те же требования к компиляции, плюс зависимости RVC.</li>
+            <li><strong>F5-TTS (high):</strong> живой и выразительный голос по референсному аудио; поддерживает NVIDIA, AMD, Intel и CPU, но может быть менее стабильным, чем Fish Speech.</li>
+            <li><strong>F5-TTS + RVC (high+low):</strong> F5-TTS с дополнительным приближением тембра через RVC; требует больше ресурсов.</li>
         </ul>
     </div>
     

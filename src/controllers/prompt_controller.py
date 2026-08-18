@@ -9,6 +9,7 @@ from core.services import services, use
 from main_logger import logger
 from services.contracts import (
     AppVarsService,
+    CharacterEnvironmentContextService,
     HistoryService,
     PromptBuildRequest,
     PromptBuildResult,
@@ -109,8 +110,8 @@ class PromptController(PromptBuilderService):
             )
             lines.append(
                 "You are currently communicating with the Player online through the NeuroMita computer program. "
-                "The Player is not physically with you right now, but they may come to your home later. "
-                "If you want to see them, do not hesitate to invite them."
+                "The Player is outside the connected Unity world. Use [Character Environment] to know whether a visit is currently possible "
+                "and how to explain it; never assume that merely opening MiSide is enough."
                 + unavailable
                 + " The commands field may still be used for program-level commands when genuinely needed."
             )
@@ -124,7 +125,10 @@ class PromptController(PromptBuilderService):
 
         if voice_enabled:
             method = voice_method.strip() or "configured method"
-            lines.append(f"Your voice (TTS): enabled; method: {method}. This is your voice.")
+            lines.append(
+                f"Your voice output setting (TTS): enabled; method: {method}. "
+                "Actual installation and initialization readiness is described in [Character Environment]."
+            )
         else:
             lines.append("Your voice (TTS): disabled. The Player can only receive your written replies.")
 
@@ -225,6 +229,29 @@ class PromptController(PromptBuilderService):
             vision_state=self._resolve_vision_state(),
             unavailable_effect_fields=tuple(caps.structured_segment_exclude_fields),
         )
+
+    @staticmethod
+    def _build_character_environment_message() -> Dict[str, str] | None:
+        provider = services().get_optional(CharacterEnvironmentContextService)
+        if provider is None:
+            return None
+        try:
+            from services.character_environment_context import (
+                format_character_environment_context,
+            )
+
+            capabilities = runtime_capabilities()
+            return {
+                "role": "system",
+                "content": format_character_environment_context(
+                    provider.snapshot(),
+                    python_chat=capabilities.remote_only is True,
+                    unity_connected=capabilities.connected,
+                ),
+            }
+        except Exception as exc:
+            logger.debug("Character environment context is unavailable: %s", exc)
+            return None
 
     # Reply-length / segmentation defaults. The common prompt sets these; a
     # character, mode or custom prompt may override any of them by setting the
@@ -922,6 +949,9 @@ class PromptController(PromptBuilderService):
         })
 
         messages.append(self._build_system_state_message())
+        character_environment_message = self._build_character_environment_message()
+        if character_environment_message is not None:
+            messages.append(character_environment_message)
         if dialogue_context_message is not None:
             messages.append(dialogue_context_message)
 

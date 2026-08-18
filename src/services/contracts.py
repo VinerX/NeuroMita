@@ -62,6 +62,28 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True, slots=True)
+class CharacterEnvironmentSnapshot:
+    unity_installed: bool = False
+    python_update_available: bool | None = None
+    python_update_version: str = ""
+    voice_enabled: bool = False
+    voice_method: str = "Local"
+    voice_model_id: str = ""
+    voice_model_name: str = ""
+    voice_model_installed: bool = False
+    voice_model_initialized: bool = False
+    voice_pipeline_ready: bool | None = None
+
+
+class CharacterEnvironmentContextService(ABC):
+    @abstractmethod
+    def snapshot(self) -> CharacterEnvironmentSnapshot: ...
+
+    @abstractmethod
+    def publish_python_update(self, *, available: bool, version: str = "") -> None: ...
+
+
 class ASRSettingsService(ABC):
     """Single owner of the selected ASR engine and per-engine settings."""
 

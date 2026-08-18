@@ -902,6 +902,8 @@ class _ApplicationController:
     # на окне (_pending_python_restart_version) и читалось тремя слоями.
     _pending_restart_version: str = ""
     _last_update_check_ts: float = 0.0
+    _python_update_available: bool | None = None
+    _python_update_version: str = ""
 
     @property
     def main_controller(self):
@@ -921,6 +923,23 @@ class _ApplicationController:
     def mark_update_check(self, timestamp: float) -> None:
         self._last_update_check_ts = float(timestamp)
 
+    def publish_python_update(self, *, available: bool, version: str = "") -> None:
+        self._python_update_available = bool(available)
+        self._python_update_version = str(version or "").strip()
+        self._publish_cached_python_update()
+
+    def _publish_cached_python_update(self) -> None:
+        if self._python_update_available is None:
+            return
+        from services.contracts import CharacterEnvironmentContextService
+
+        provider = services().get_optional(CharacterEnvironmentContextService)
+        if provider is not None:
+            provider.publish_python_update(
+                available=self._python_update_available,
+                version=self._python_update_version,
+            )
+
     @property
     def backend_ready(self) -> bool:
         return self._main_controller is not None and not bool(
@@ -934,6 +953,7 @@ class _ApplicationController:
     def attach_backend(self, controller: Any) -> None:
         self._main_controller = controller
         self._startup_error = ""
+        self._publish_cached_python_update()
 
     def detach_backend(self) -> None:
         self._main_controller = None

@@ -116,6 +116,30 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(contents.index("[active memory]"), contents.index("[relevant memories]"))
         self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
 
+    def test_character_environment_is_common_dynamic_context_before_input(self):
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
+        controller._build_system_state_message = lambda: {
+            "role": "system",
+            "content": "[system state]",
+        }
+        controller._build_character_environment_message = lambda: {
+            "role": "system",
+            "content": "[Character Environment]",
+        }
+
+        result = controller.build(PromptBuildRequest(
+            character=self._DialogueCharacter(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Привет",
+        ))
+        contents = [message.get("content") for message in result.messages]
+
+        self.assertLess(contents.index("[system state]"), contents.index("[Character Environment]"))
+        self.assertEqual("[Character Environment]", contents[-2])
+        self.assertEqual("Привет", result.messages[-1]["content"][0]["text"])
+
     def test_unity_static_before_history_dynamic_before_state(self):
         """Статический Unity (Rules/Intent) — в статике промпта до истории;
         динамический (Capabilities/World State/Events) — после, вплотную перед
@@ -295,8 +319,9 @@ class PromptSystemStateTests(unittest.TestCase):
         content = message["content"]
         self.assertEqual(message["role"], "system")
         self.assertIn("communicating with the Player online through the NeuroMita computer program", content)
-        self.assertIn("they may come to your home later", content)
-        self.assertIn("Your voice (TTS): enabled; method: Local. This is your voice.", content)
+        self.assertIn("Use [Character Environment] to know whether a visit is currently possible", content)
+        self.assertIn("never assume that merely opening MiSide is enough", content)
+        self.assertIn("Your voice output setting (TTS): enabled; method: Local.", content)
         self.assertIn("You currently receive only typed text from the Player.", content)
         self.assertIn("Your sight (image recognition): unavailable.", content)
         # Unavailable in-world effects are listed from the shared capability table.

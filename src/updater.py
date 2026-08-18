@@ -436,26 +436,9 @@ def _is_newer(remote_tag: str, local_version: str) -> bool:
 
 
 def _find_unity_executable(unity_dir: Path) -> Optional[Path]:
-    if not unity_dir.exists() or not unity_dir.is_dir():
-        return None
+    from core.unity_installation import find_unity_executable
 
-    # Ищем в корне и на один уровень вглубь (например UnityBuild/).
-    exe_files = list(unity_dir.glob("*.exe")) + list(unity_dir.glob("*/*.exe"))
-    if not exe_files:
-        return None
-
-    preferred_names = ("NeuroMita.exe", "NeuroMita-Unity.exe", "Unity.exe")
-    lower_map = {path.name.lower(): path for path in exe_files}
-    for name in preferred_names:
-        found = lower_map.get(name.lower())
-        if found is not None:
-            return found
-
-    for path in exe_files:
-        low = path.name.lower()
-        if "neuromita" in low or "unity" in low:
-            return path
-    return exe_files[0]
+    return find_unity_executable(unity_dir)
 
 
 # ── GitHub API ────────────────────────────────────────────────────────────────
