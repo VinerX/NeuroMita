@@ -467,6 +467,10 @@ class MainWindowCoordinator:
         self._closed = True
         view = self._view
 
+        from core.task_supervisor import task_supervisor
+
+        task_supervisor().cancel_owner(view, timeout=0.25)
+
         # Page widgets outlive this coordinator until Qt destroys the main
         # window. Close their presentation models explicitly before the global
         # TaskSupervisor is shut down; otherwise queued refreshes can race with

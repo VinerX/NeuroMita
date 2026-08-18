@@ -115,6 +115,8 @@ class AppWindowBase(QMainWindow):
         self._chat_message_actions = chat_message_actions
         self._shell_actions = shell_actions
         self._window_actions = window_actions
+        self._close_requested = False
+        self._close_finalizing = False
         self.settings_view_model = None
         self.settings_binding = None
 
@@ -930,7 +932,27 @@ class AppWindowBase(QMainWindow):
             pass
         return str(self._get_setting("CHARACTER_NAME", "Assistant") or "Assistant")
 
+    @property
+    def is_closed(self) -> bool:
+        return self._close_requested
+
     def closeEvent(self, event):
+        if self._close_finalizing:
+            logger.info("Закрываемся")
+            event.accept()
+            return
+
+        event.ignore()
+        if self._close_requested:
+            return
+
+        self._close_requested = True
+        self.setEnabled(False)
+        logger.info("Закрытие запланировано вне нативного closeEvent")
+        QTimer.singleShot(0, self._finish_deferred_close)
+
+    def _finish_deferred_close(self):
+        logger.info("Начинаем отложенное завершение backend и GUI")
         try:
             self._shell_actions.close_application()
         except Exception as exc:
@@ -941,8 +963,9 @@ class AppWindowBase(QMainWindow):
         except Exception:
             pass
 
-        logger.info("Закрываемся")
-        event.accept()
+        self._close_finalizing = True
+        logger.info("Отложенное завершение выполнено; закрываем главное окно")
+        self.close()
 
     def close_app(self):
         logger.info("Завершение программы...")
