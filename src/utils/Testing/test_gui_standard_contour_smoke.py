@@ -22,7 +22,6 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
             self.skipTest(f"PyQt6 is unavailable: {exc}")
 
         from controllers.gui.composition_root import GuiCompositionRoot
-        from controllers.gui.main_window_coordinator import MainWindowCoordinator
         from controllers.gui.settings_data_prefetch import (
             API_PROVIDER_NAMES,
             CHARACTER_SETTINGS_SNAPSHOT,
@@ -209,11 +208,7 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
         )
         try:
             with tempfile.TemporaryDirectory() as base_dir:
-                with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": base_dir}), patch.object(
-                    MainWindowCoordinator,
-                    "prefetch_release_feed",
-                    lambda _self: None,
-                ):
+                with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": base_dir}):
                     root = GuiCompositionRoot(None)
                     root.page_coordinator.ensure_page("logs")
                     for _ in range(20):

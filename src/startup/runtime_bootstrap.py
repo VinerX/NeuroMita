@@ -226,14 +226,30 @@ def _schedule_runtime_cleanup(logger: Any) -> None:
     )
 
 
+def _native_faulthandler_enabled() -> bool:
+    override = os.environ.get("NEUROMITA_ENABLE_NATIVE_FAULTHANDLER")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    return sys.platform != "win32"
+
+
 def _configure_crash_logging(base_dir: str):
-    crash_log = None
+    if not _native_faulthandler_enabled():
+        return None
+
     try:
         crash_path = os.path.join(base_dir, "NeuroMitaCrash.log")
         crash_log = open(crash_path, "a", buffering=1, encoding="utf-8")
+    except OSError:
+        faulthandler.enable()
+        return None
+
+    try:
         faulthandler.enable(file=crash_log, all_threads=True)
     except Exception:
+        crash_log.close()
         faulthandler.enable()
+        return None
     return crash_log
 
 

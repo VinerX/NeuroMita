@@ -40,16 +40,6 @@ class MainWindowCoordinator:
             prebuild_settings = False
         if prebuild_settings:
             QTimer.singleShot(450, self.prebuild_settings_page)
-        self.prefetch_release_feed()
-
-    def prefetch_release_feed(self) -> None:
-        try:
-            self._presentation.news.load_async(
-                self._view,
-                lambda _releases: None,
-            )
-        except Exception as exc:
-            logger.debug("Release feed prefetch failed: %s", exc)
 
     def prebuild_settings_page(self) -> None:
         try:
