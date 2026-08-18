@@ -345,6 +345,20 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
             if python_recovery.changed:
                 logger.info("Recovered an interrupted Python installation; restarting.")
                 raise SystemExit(42)
+            if python_recovery.status == "waiting_for_activation":
+                from services.update_activation import UPDATE_RESTART_EXIT_CODE
+                from utils.app_restart import spawn_launcher_after_exit
+
+                logger.info(
+                    "A verified NeuroMita.pyz is pending post-exit activation; "
+                    "handing control to Launcher.exe."
+                )
+                if spawn_launcher_after_exit():
+                    raise SystemExit(UPDATE_RESTART_EXIT_CODE)
+                logger.error(
+                    "Pending Python activation could not be handed to Launcher.exe. "
+                    "Keeping the current runtime unchanged."
+                )
             if python_recovery.status == "waiting_for_restart":
                 from updater import note_locked_restart_attempt
 

@@ -328,7 +328,7 @@ class HomePageController(QObject):
                 stop_event=stop_event,
             )
             results["python"] = python_result.as_dict()
-            python_pending_restart = python_result.status == "waiting_for_restart"
+            python_pending_restart = bool(python_result.restart_required)
         if update_unity and not stop_event.is_set() and not python_pending_restart:
             unity_result = check_for_unity_updates(
                 base_dir=base_dir,

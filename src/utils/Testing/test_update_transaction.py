@@ -34,8 +34,13 @@ from updater import (
     _python_staging_path,
     _python_installation_id,
     _python_workspace,
+    _install_full_archive,
     note_locked_restart_attempt,
     resume_pending_python_update,
+)
+from services.update_activation import (
+    activation_marker_path,
+    pending_zipapp_path,
 )
 from utils.archive_utils import extract_archive
 from utils.release_assets import ReleaseAsset
@@ -507,6 +512,153 @@ def test_python_apply_resumes_from_verified_stage_without_redownload(tmp_path: P
     assert not _python_stage_marker(staging).exists()
     assert not _python_journal_path(base).exists()
     assert not _python_workspace(base).exists()
+
+
+def _write_zipapp(path: Path, marker: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as output:
+        output.writestr("__main__.py", f"MARKER = {marker!r}\n")
+        output.writestr("package/data.txt", marker)
+
+
+def test_python_zipapp_is_staged_without_overwriting_running_archive(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    active = base / "NeuroMita.pyz"
+    _write_zipapp(active, "old")
+    old_bytes = active.read_bytes()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_zipapp(source / "NeuroMita.pyz", "new")
+    (source / "payload.txt").write_text("new-payload", encoding="utf-8")
+    archive = tmp_path / "PythonBuild-v2.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        for file in source.rglob("*"):
+            if file.is_file():
+                output.write(file, file.relative_to(source).as_posix())
+
+    deferred = _install_full_archive(
+        archive,
+        base,
+        None,
+        lambda *_args: None,
+        mode="diff",
+        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+    )
+
+    assert active.read_bytes() == old_bytes
+    assert (base / "payload.txt").read_text(encoding="utf-8") == "new-payload"
+    assert deferred["NeuroMita.pyz"] == str(pending_zipapp_path(base))
+    assert pending_zipapp_path(base).is_file()
+    assert activation_marker_path(base).is_file()
+    with zipfile.ZipFile(pending_zipapp_path(base)) as staged:
+        assert "new" in staged.read("__main__.py").decode("utf-8")
+
+
+def test_pending_zipapp_activation_is_confirmed_after_launcher_promotion(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    active = base / "NeuroMita.pyz"
+    pending = pending_zipapp_path(base)
+    _write_zipapp(active, "old")
+    _write_zipapp(pending, "new")
+    pending_hash = hashlib.sha256(pending.read_bytes()).hexdigest()
+    activation_marker_path(base).parent.mkdir(parents=True, exist_ok=True)
+    activation_marker_path(base).write_text("{}", encoding="utf-8")
+
+    atomic_write_json(
+        _python_journal_path(base),
+        {
+            "schema": 1,
+            "component": "python",
+            "target": str(base),
+            "phase": "waiting_for_activation",
+            "version": "v2",
+            "archive_name": "PythonBuild-v2.zip",
+            "archive_url": "https://example/PythonBuild-v2.zip",
+            "archive_sha256": "a" * 64,
+            "pending_zipapp": str(pending),
+            "pending_zipapp_sha256": pending_hash,
+            "staging": str(_python_staging_path(base)),
+        },
+    )
+
+    waiting = resume_pending_python_update(base_dir=str(base))
+    assert waiting.ok
+    assert waiting.status == "waiting_for_activation"
+    assert waiting.restart_required
+
+    os.replace(pending, active)
+    activation_marker_path(base).unlink(missing_ok=True)
+
+    activated = resume_pending_python_update(base_dir=str(base))
+    assert activated.ok and activated.recovered
+    assert activated.status == "activated"
+    assert not activated.changed
+    assert not _python_journal_path(base).exists()
+    with zipfile.ZipFile(active) as archive:
+        assert "new" in archive.read("__main__.py").decode("utf-8")
+
+
+def test_corrupt_zipapp_is_rejected_before_active_archive_is_touched(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    active = base / "NeuroMita.pyz"
+    _write_zipapp(active, "old")
+    old_bytes = active.read_bytes()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "NeuroMita.pyz").write_bytes(b"not-a-zipapp")
+    archive = tmp_path / "PythonBuild-v2.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.write(source / "NeuroMita.pyz", "NeuroMita.pyz")
+
+    with pytest.raises(RuntimeError, match="valid ZIP application"):
+        _install_full_archive(
+            archive,
+            base,
+            None,
+            lambda *_args: None,
+            mode="diff",
+            archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        )
+
+    assert active.read_bytes() == old_bytes
+    assert not pending_zipapp_path(base).exists()
+
+
+def test_failed_overlay_discards_staged_zipapp_activation(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    active = base / "NeuroMita.pyz"
+    _write_zipapp(active, "old")
+    old_bytes = active.read_bytes()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_zipapp(source / "NeuroMita.pyz", "new")
+    (source / "payload.txt").write_text("new payload", encoding="utf-8")
+    archive = tmp_path / "PythonBuild-v2.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.write(source / "NeuroMita.pyz", "NeuroMita.pyz")
+        output.write(source / "payload.txt", "payload.txt")
+
+    with patch("updater._overlay_dir", side_effect=RuntimeError("overlay failed")):
+        with pytest.raises(RuntimeError, match="overlay failed"):
+            _install_full_archive(
+                archive,
+                base,
+                None,
+                lambda *_args: None,
+                mode="diff",
+                archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+            )
+
+    assert active.read_bytes() == old_bytes
+    assert not pending_zipapp_path(base).exists()
+    assert not activation_marker_path(base).exists()
 
 
 def test_locked_python_update_waits_for_explicit_detached_handoff(

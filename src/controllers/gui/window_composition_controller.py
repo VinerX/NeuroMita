@@ -35,6 +35,7 @@ class WindowCompositionController:
             "ai_hub": (self._factory_ai_hub, True, True, False, self._on_ai_hub_ready),
             "voice_models": (self._factory_voice_models, True, True, False, None),
             "asr_glossary": (self._factory_asr_glossary, True, True, False, None),
+            "guide": (self._factory_guide, True, True, False, self._on_guide_ready),
             "vc_redist_dialog": (self._factory_vc_redist, False, False, True, None),
             "triton_deps_dialog": (self._factory_triton, False, False, True, None),
         }
@@ -98,6 +99,23 @@ class WindowCompositionController:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         return dialog
+
+    def _factory_guide(self, parent, payload: dict):
+        from ui.windows.guide_dialog import GuideDialog
+
+        dialog = GuideDialog(
+            getattr(self._view, "settings_binding", None) or self._view.settings,
+            parent=parent,
+        )
+        dialog.apply_payload(payload)
+        return dialog
+
+    @staticmethod
+    def _on_guide_ready(dialog, payload: dict) -> None:
+        if hasattr(dialog, "apply_payload"):
+            dialog.apply_payload(payload if isinstance(payload, dict) else {})
+        if hasattr(dialog, "prepare_for_show"):
+            dialog.prepare_for_show()
 
     def _factory_vc_redist(self, parent, _payload: dict):
         from ui.windows.voice_action_windows import VCRedistWarningDialog

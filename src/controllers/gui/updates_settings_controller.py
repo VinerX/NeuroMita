@@ -337,7 +337,7 @@ def setup_updates_settings_controls(
                 if not python_result.ok:
                     raise RuntimeError(python_result.error or "Python update failed")
                 py_applied = bool(python_result)
-                python_pending_restart = python_result.status == "waiting_for_restart"
+                python_pending_restart = bool(python_result.restart_required)
 
             if bool(unity_info.get("available")) and not python_pending_restart:
                 _set_status(_("Устанавливаю Unity-обновление...", "Installing Unity update..."))
