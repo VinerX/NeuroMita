@@ -209,7 +209,7 @@ jobs:
               f"BUILD_OUTPUT_DIR={output}",
               f"BUILD_COPY_DIRS=extra\\Prompts,assets,libs",
               f"BUILD_FAST_COPY_DIRS=extra\\Prompts",
-              f"BUILD_COPY_FILES=extra\\Icon.png",
+              f"BUILD_COPY_FILES=NM_Logo.ico,assets\\launcher_ui\\NM_Logo.png",
               f"BUILD_ROOT_SCRIPTS=scripts\\Launcher.exe,scripts\\run.bat,scripts\\run.py",
               f"BUILD_EXCLUDE_DOT_DIRS=1",
               f"BUILD_EXCLUDE_CHECKPOINTS=1",

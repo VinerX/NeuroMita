@@ -20,7 +20,14 @@ from pathlib import Path
 from main_logger import logger
 
 # Приоритет: .ico (родной формат иконок Windows) → .png (то, что реально есть).
-_ICON_CANDIDATES = ("Icon.ico", "Icon.png")
+_ICON_CANDIDATES = (
+    "assets/launcher_ui/NM_Logo.ico",
+    "assets/launcher_ui/NM_Logo.png",
+    "NM_Logo.ico",
+    "NM_Logo.png",
+    "Icon.ico",
+    "Icon.png",
+)
 _APP_USER_MODEL_ID = "NeuroMita.App"
 
 
@@ -44,7 +51,7 @@ def app_icon_path() -> str | None:
         candidate = base / name
         if candidate.is_file():
             return str(candidate)
-    return str(base / "Icon.png")
+    return str(base / "assets" / "launcher_ui" / "NM_Logo.png")
 
 
 def application_icon():

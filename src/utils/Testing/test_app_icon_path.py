@@ -24,7 +24,7 @@ class AppIconPathTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     Path(app_icon_path()).resolve(),
-                    (PROJECT_SRC.parent / "Icon.png").resolve(),
+                    (PROJECT_SRC.parent / "assets" / "launcher_ui" / "NM_Logo.ico").resolve(),
                 )
             finally:
                 os.chdir(original_cwd)

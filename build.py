@@ -73,7 +73,10 @@ ALWAYS_FILES_TO_COPY: List[Tuple[Path, Path]] = [
 ]
 
 # Файлы только для full-режима: поддержка абсолютных путей
-_copy_files_raw = env.get("BUILD_COPY_FILES", "extra/Icon.png")
+_copy_files_raw = env.get(
+    "BUILD_COPY_FILES",
+    "assets/launcher_ui/NM_Logo.ico,assets/launcher_ui/NM_Logo.png",
+)
 FILES_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _copy_files_raw.split(",") if f.strip()
