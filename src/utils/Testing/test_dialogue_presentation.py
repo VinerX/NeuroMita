@@ -49,6 +49,22 @@ class DialoguePresentationTests(unittest.TestCase):
         panel.close()
         app.processEvents()
 
+    def test_structured_panel_shows_intents_in_brief_mode(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        panel = StructuredOutputPanel({
+            "segments": [{
+                "text": "Move.",
+                "intents": [{
+                    "type": "actor.set_movement_mode",
+                    "payload": {},
+                }],
+            }],
+        })
+        labels = [label.text() for label in panel.findChildren(QLabel)]
+        self.assertIn("🧠 intent: actor.set_movement_mode {}", labels)
+        panel.close()
+        app.processEvents()
+
     def test_title_keeps_single_character_fallback(self) -> None:
         self.assertEqual(
             format_conversation_title(None, "Crazy"),
