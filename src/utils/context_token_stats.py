@@ -13,6 +13,7 @@ _SECTION_MARKERS = (
     ("[NeuroMita World State]", "NeuroMita World State"),
     ("[MiSide World State]", "NeuroMita World State"),
     ("[Character World Context]", "Character World Context"),
+    ("[Character Environment]", "Character Environment"),
     ("[System State]", "System State"),
     ("[Behavior State]", "System State"),
     ("[Current State]", "System State"),

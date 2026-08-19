@@ -140,6 +140,7 @@ _SECTION_STYLE = {
     "participant": ("👥", "#FBBF24"),  # участники диалога
     "unity":       ("🕹", "#8B5CF6"),  # Unity runtime: rules / capabilities / intent / events
     "world":       ("🏠", "#4ADE80"),  # [NeuroMita World State]
+    "environment": ("🌿", "#2DD4BF"),  # [Character Environment] — live character context
     "game":        ("🎮", "#4ADE80"),  # состояние мини-игры
     "default":     ("🏷", "#9CA3AF"),  # прочие теги/заголовки
 }
@@ -170,6 +171,7 @@ _SECTION_TO_GROUP = {
     "NeuroMita World State": "context",
     "MiSide World State": "context",  # legacy saved contexts
     "Character World Context": "context",
+    "Character Environment": "context",
     "Unity runtime": "context",
     "group conversation": "context",
     "game master directive": "context",
@@ -1347,6 +1349,8 @@ class ContextViewerDialog(QDialog):
             cat = "game"
         elif "world" in key or "miside" in key:
             cat = "world"
+        elif "character environment" in key:
+            cat = "environment"
         elif "unity" in key or "runtime" in key or "intent" in key or "capabilit" in key:
             cat = "unity"
         elif "system state" in key:

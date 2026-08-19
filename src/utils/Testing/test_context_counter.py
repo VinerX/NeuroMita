@@ -75,6 +75,7 @@ class UnityRuntimeSectionTests(unittest.TestCase):
             ("[Current State]\nDate", "System State"),
             ("[NeuroMita World State]\nkitchen", "NeuroMita World State"),
             ("[Character World Context]\nyour home", "Character World Context"),
+            ("[Character Environment]\nready", "Character Environment"),
         ]:
             self.assertEqual(
                 _classify_message_section({"role": "system", "content": content}, is_last_user=False, seen_dialogue=True),
