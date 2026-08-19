@@ -296,7 +296,17 @@ class ResponseSegment(BaseModel):
                 logger.warning("[StructuredResponse] Dropping intent with invalid type: %r", item)
                 continue
             payload = item.get("payload")
-            if not isinstance(payload, dict):
+            if isinstance(payload, str):
+                try:
+                    decoded = _json.loads(payload)
+                    payload = decoded if isinstance(decoded, dict) else {}
+                except Exception:
+                    logger.warning(
+                        "[StructuredResponse] Intent '%s' payload is not valid JSON, defaulting to {}",
+                        itype,
+                    )
+                    payload = {}
+            elif not isinstance(payload, dict):
                 if payload is not None:
                     logger.warning(
                         "[StructuredResponse] Intent '%s' payload is not an object, defaulting to {}",
@@ -505,6 +515,24 @@ class StructuredResponse(BaseModel):
             tc_props["args"] = {
                 "type": "string",
                 "description": 'JSON-encoded tool arguments, e.g. {"query": "search term"}',
+            }
+        except (KeyError, TypeError):
+            pass
+        # Gemini cannot express free-form object properties after
+        # additionalProperties is removed. Encode arbitrary intent payloads as
+        # JSON strings for the provider, then decode them in _sanitize_intents.
+        try:
+            intent_props = (
+                schema["properties"]["segments"]["items"]
+                ["properties"]["intents"]["items"]["properties"]
+            )
+            intent_props["payload"] = {
+                "type": "string",
+                "description": (
+                    "JSON-encoded intent payload object. Its keys and values "
+                    "MUST exactly follow [Unity Intent Contract]. Use {} only "
+                    "when that contract explicitly allows an empty payload."
+                ),
             }
         except (KeyError, TypeError):
             pass

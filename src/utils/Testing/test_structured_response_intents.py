@@ -97,6 +97,22 @@ class IntentsPassthroughTests(unittest.TestCase):
         self.assertEqual(intents[0].payload, {})
         self.assertTrue(any("intent" in m.lower() for m in captured.output))
 
+    def test_json_string_payload_is_decoded(self) -> None:
+        payload = {
+            "segments": [{
+                "text": "move",
+                "intents": [{
+                    "type": "actor.move_relative_to_player",
+                    "payload": '{"slot":"behind","distance":0.8}',
+                }],
+            }],
+        }
+        response = parse_structured_response(json.dumps(payload))
+        self.assertEqual(
+            response.segments[0].intents[0].payload,
+            {"slot": "behind", "distance": 0.8},
+        )
+
     def test_unknown_intent_type_not_blocked(self) -> None:
         payload = {
             "segments": [
@@ -169,6 +185,9 @@ class SchemaVisibilityTests(unittest.TestCase):
             exclude_segment_fields=seg_excl or None
         )
         self.assertIn("intents", _gemini_segment_props(gemini))
+
+        intent_props = _gemini_segment_props(gemini)["intents"]["items"]["properties"]
+        self.assertEqual(intent_props["payload"]["type"], "string")
 
     def test_reasoning_hidden_from_native_schema_when_disabled(self) -> None:
         # provider adds "reasoning" to exclude_fields when schema_reasoning is off
