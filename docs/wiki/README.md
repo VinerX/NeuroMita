@@ -5,7 +5,8 @@ This folder contains the user-facing application wiki in a translation-ready lay
 ## Structure
 
 - `en/` - English source pages
-- future locale folders such as `ru/`, `de/`, `fr/`, `ja/` can mirror the same slugs
+- `ru/` - Russian translation
+- future locale folders such as `de/`, `fr/`, `ja/` can mirror the same slugs
 
 ## Rules
 
@@ -14,4 +15,4 @@ This folder contains the user-facing application wiki in a translation-ready lay
 - Prefer user-facing explanations over implementation details.
 - When a feature exists in multiple places in the UI, describe the primary user path first.
 
-Start here: [English index](./en/index.md)
+Start here: [Russian index](./ru/index.md) or [English index](./en/index.md)

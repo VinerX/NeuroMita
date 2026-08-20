@@ -32,9 +32,10 @@ from PyQt6.QtWidgets import (
 from ui.widgets.launcher_shell_theme import apply_launcher_shell_theme
 from ui.settings.settings_access import get_setting
 from utils import _
-from localization.live import register_if_tr
+from localization.live import language_changed_signal, register_if_tr
 
 _DEFAULT_DOC_LANGUAGE = "en"
+_DEFAULT_UI_LANGUAGE = _DEFAULT_DOC_LANGUAGE
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _HTML_HEADING_RE = re.compile(r"<h([1-6])([^>]*)>", re.IGNORECASE)
 
@@ -238,6 +239,7 @@ class WikiPage(QWidget):
         self._root_layout.setSpacing(0)
 
         self._build_ui()
+        language_changed_signal().connect(self._on_language_changed)
         self.open_target("index.md", push_history=True)
 
     # ── UI Construction ──────────────────────────────────────────────
@@ -761,12 +763,16 @@ class WikiPage(QWidget):
 
     def _get_requested_language(self) -> str:
         try:
-            return str(
-                get_setting(self._settings, "LANGUAGE", _DEFAULT_DOC_LANGUAGE)
-                or _DEFAULT_DOC_LANGUAGE
-            ).strip().lower()
+            # Use the process-wide source of truth first. The Qt binding can
+            # retain an older snapshot while live language switching is in flight.
+            from managers.settings_manager import SettingsManager
+
+            value = SettingsManager.get("LANGUAGE", None)
+            if value is None:
+                value = get_setting(self._settings, "LANGUAGE", _DEFAULT_UI_LANGUAGE)
+            return str(value or _DEFAULT_UI_LANGUAGE).strip().lower()
         except Exception:
-            return _DEFAULT_DOC_LANGUAGE
+            return _DEFAULT_UI_LANGUAGE
 
     def _locale_root(self, code: str) -> Path:
         return _WIKI_ROOT / code
@@ -814,6 +820,22 @@ class WikiPage(QWidget):
         return candidate
 
     # ── Lifecycle ────────────────────────────────────────────────────
+
+    def _on_language_changed(self, code: str = "") -> None:
+        requested_language = str(code or "").strip().lower()
+        if not requested_language:
+            requested_language = self._get_requested_language()
+        current_relative = self._relative_doc_path(self._current_location.path) if self._current_location else "index.md"
+        self._requested_language = requested_language
+        if self._current_location is None:
+            self.open_home()
+            return
+
+        self.open_target(
+            current_relative,
+            anchor=self._current_location.anchor,
+            push_history=False,
+        )
 
     def on_activated(self) -> None:
         requested_language = self._get_requested_language()
