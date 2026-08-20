@@ -16,6 +16,7 @@ def test_native_launcher_owns_post_exit_zipapp_activation_then_delegates() -> No
 
     assert 'L"%ls\\\\run.bat"' in source
     assert "CreateProcessW(cmd_exe" in source
+    assert "CREATE_NEW_CONSOLE" in source
     assert "WaitForSingleObject" in source
     assert "MoveFileExW" in source
     assert "MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH" in source

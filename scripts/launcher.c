@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <wchar.h>
 
+#pragma comment(lib, "user32.lib")
+
 static void configure_console(void) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
@@ -260,7 +262,8 @@ int wmain(int argc, wchar_t **argv) {
         return fail(L"ERROR: Команда запуска слишком длинная.");
     }
 
-    if (!CreateProcessW(cmd_exe, command_line, NULL, NULL, TRUE, 0, NULL,
+    /* Show startup progress in the inherited console until the GUI is ready. */
+    if (!CreateProcessW(cmd_exe, command_line, NULL, NULL, TRUE, CREATE_NEW_CONSOLE, NULL,
                         launcher_dir, &startup_info, &process_info)) {
         fwprintf(stderr, L"ERROR: Не удалось запустить run.bat (код Win32: %lu).\n",
                  GetLastError());

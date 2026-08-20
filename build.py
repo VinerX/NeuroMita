@@ -3,6 +3,7 @@ import zipfile
 import os
 import shutil
 import stat
+import subprocess
 import time
 from pathlib import Path
 from typing import List, Tuple
@@ -40,6 +41,7 @@ for _k, _v in os.environ.items():
 
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
+REBUILD_NATIVE_LAUNCHER = env.get("BUILD_REBUILD_LAUNCHER", "1") == "1"
 STRIP_EMBEDDED_UV = env.get("BUILD_STRIP_EMBEDDED_UV", "1") == "1"
 
 # Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
@@ -94,6 +96,46 @@ ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
     (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)
     for s in _root_scripts_raw.split(",") if s.strip()
 ]
+
+
+def rebuild_native_launcher() -> None:
+    """Compile the native launcher before copying it into a full build."""
+    source = PROJECT_DIR / "scripts" / "launcher.c"
+    resource = PROJECT_DIR / "scripts" / "launcher.rc"
+    output = PROJECT_DIR / "scripts" / "Launcher.exe"
+    if not source.exists() or not resource.exists():
+        raise FileNotFoundError("Native launcher sources are missing.")
+
+    vswhere = Path(os.environ.get(
+        "VSWHERE_PATH",
+        r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+    ))
+    if not vswhere.exists():
+        raise RuntimeError("Visual Studio vswhere.exe was not found; cannot rebuild Launcher.exe.")
+
+    installation = subprocess.check_output(
+        [str(vswhere), "-latest", "-products", "*",
+         "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+         "-property", "installationPath"],
+        text=True,
+        encoding="utf-8",
+    ).strip()
+    if not installation:
+        raise RuntimeError("No Visual Studio C++ toolchain was found; cannot rebuild Launcher.exe.")
+
+    vcvars = Path(installation) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+    if not vcvars.exists():
+        raise RuntimeError(f"Visual Studio environment script is missing: {vcvars}")
+
+    print("\nRebuilding native Launcher.exe...")
+    resource_object = PROJECT_DIR / "scripts" / "launcher.res"
+    command = (
+        f'call "{vcvars}" && '
+        f'rc.exe /nologo /fo "{resource_object}" "{resource}" && '
+        f'cl.exe /nologo /W4 /O2 /utf-8 /Fe:"{output}" "{source}" '
+        f'"{resource_object}"'
+    )
+    subprocess.run(command, cwd=PROJECT_DIR, check=True, shell=True)
 
 # Части пути, исключаемые из pyz
 EXCLUDED_PARTS = {
@@ -338,7 +380,10 @@ if __name__ == "__main__":
 
     if CLEAN_OUTPUT:
         clean_output_dir()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+if BUILD_MODE == "full" and REBUILD_NATIVE_LAUNCHER:
+    rebuild_native_launcher()
 
     pyz_filename = "NeuroMita.pyz"
     pyz_temp = PROJECT_DIR / pyz_filename

@@ -14,6 +14,47 @@ os.environ.setdefault("QT_API", "pyqt6")
 os.environ.setdefault("UV_LINK_MODE", "copy")
 
 
+def _configure_startup_console() -> None:
+    """Brand the temporary Windows console used during GUI startup."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from pathlib import Path
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        window = kernel32.GetConsoleWindow()
+        if not window:
+            return
+        user32.SetWindowTextW(window, "NeuroMita — запуск")
+        base_dir = Path(os.environ.get("NEUROMITA_BASE_DIR", Path.cwd()))
+        icon_path = base_dir / "assets" / "launcher_ui" / "NM_Logo.ico"
+        if icon_path.is_file():
+            icon = user32.LoadImageW(None, str(icon_path), 1, 32, 32, 0x10 | 0x40)
+            if icon:
+                user32.SendMessageW(window, 0x0080, 1, icon)
+                user32.SendMessageW(window, 0x0080, 0, icon)
+    except Exception:
+        pass
+
+
+def _hide_startup_console() -> None:
+    """Hide the startup console after the main GUI has been shown."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        console_window = ctypes.windll.kernel32.GetConsoleWindow()
+        if console_window:
+            ctypes.windll.user32.ShowWindow(console_window, 0)
+    except Exception:
+        pass
+
+
+_configure_startup_console()
+
+
 @dataclass(frozen=True)
 class StartupOptions:
     mode: str = "full"
@@ -177,6 +218,13 @@ def _run_gui(runtime, startup_mode: str) -> int:
     logger.info("GUI composition root создан")
 
     main_window.show()
+    _hide_startup_console()
+    try:
+        from utils.win_titlebar import apply_dark_titlebar
+
+        apply_dark_titlebar(main_window)
+    except Exception:
+        pass
     startup_trace.mark("gui.window_shown")
     app.processEvents()
     startup_trace.mark("gui.first_paint")
