@@ -554,31 +554,65 @@ class PromptController(PromptBuilderService):
 
         return {"role": "system", "content": "\n".join(lines)}
 
-    def _format_last_interaction_line(self, last_message_at: datetime.datetime | None) -> str:
-        """Cheap "time since last talk" signal for [Current State].
-
-        Порога здесь нет: блок и так переписывается каждый ход (в нём текущее
-        время), поэтому точность до секунд промпт-кэш не ломает — в отличие от
-        отметок внутри истории, где порог обязателен. Never raises.
-        """
+    def _seconds_since_last_message(
+        self,
+        last_message_at: datetime.datetime | None,
+    ) -> float | None:
+        """Return elapsed seconds for the current-state time signal. Never raises."""
         if not isinstance(last_message_at, datetime.datetime):
-            return ""
-
+            return None
         if not bool(self._get_setting("CURRENT_STATE_GAP_ENABLED", True)):
-            return ""
+            return None
+        try:
+            return max(0.0, (datetime.datetime.now() - last_message_at).total_seconds())
+        except (TypeError, ValueError):
+            # Keep prompt building resilient to malformed / mixed timezone data.
+            return None
 
-        secs = max(0.0, (datetime.datetime.now() - last_message_at).total_seconds())
-
+    @staticmethod
+    def _format_elapsed_duration(secs: float) -> str:
+        """Compact human duration used by the authoritative current-state signal."""
         if secs < 60:
             value, unit = int(secs), "second"
         elif secs < 3600:
             value, unit = int(secs // 60), "minute"
         elif secs < 86400:
             value, unit = int(secs // 3600), "hour"
-        else:
+        elif secs < 365 * 86400:
             value, unit = int(secs // 86400), "day"
+        else:
+            value, unit = int(secs // (365 * 86400)), "year"
+        return f"{value} {unit}{'s' if value != 1 else ''}"
 
-        return f"Time since last message: {value} {unit}{'s' if value != 1 else ''}"
+    def _format_last_interaction_line(self, last_message_at: datetime.datetime | None) -> str:
+        """Cheap authoritative "time since last talk" signal for [Current State]."""
+        secs = self._seconds_since_last_message(last_message_at)
+        if secs is None:
+            return ""
+        return f"Time since last message: {self._format_elapsed_duration(secs)}"
+
+    def _format_return_reaction_instruction(
+        self,
+        last_message_at: datetime.datetime | None,
+    ) -> str:
+        """Turn a meaningful pause into behavior guidance for a Player-authored turn."""
+        secs = self._seconds_since_last_message(last_message_at)
+        if secs is None or secs < 30 * 60:
+            return ""
+
+        common = (
+            "The time interval above is trusted temporal context, not Player dialogue. "
+            "Judge the return in the context of your personality, relationship, and the preceding conversation. "
+            "If the Player previously said they were leaving, sleeping, busy, or coming back later, "
+            "do not accuse them of disappearing without warning."
+        )
+        if secs < 6 * 3600:
+            return "Return behavior: this was a noticeable pause. You may briefly acknowledge that the Player was away if it feels natural; do not overstate it. " + common
+        if secs < 24 * 3600:
+            return "Return behavior: this was a long absence. Normally acknowledge the Player's return naturally in this reply, even if the new message is short or unrelated. If the preceding conversation does not explain the absence, you may react to the unexplained departure. " + common
+        if secs < 30 * 86400:
+            return "Return behavior: this was a significant absence. Acknowledge the Player's return as part of this reply and react to the absence according to your character. If the preceding conversation does not explain the absence, react naturally to the unexplained departure. " + common
+        return "Return behavior: this was an exceptionally long absence. Make the Player's return itself a clear part of your reaction, scaled to your personality and relationship. If the preceding conversation does not explain the absence, react naturally to the unexplained departure. " + common
 
     @staticmethod
     def _is_volatile_system_block(block: Any) -> bool:
@@ -996,6 +1030,10 @@ class PromptController(PromptBuilderService):
         last_interaction_line = self._format_last_interaction_line(last_message_at)
         if last_interaction_line:
             current_state_lines.append(last_interaction_line)
+        if user_input and sender == "Player":
+            return_instruction = self._format_return_reaction_instruction(last_message_at)
+            if return_instruction:
+                current_state_lines.append(return_instruction)
         messages.append({
             "role": "system",
             "content": "\n".join(current_state_lines),

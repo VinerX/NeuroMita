@@ -4,6 +4,7 @@ behavior_state=custom
 [<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<../../Common/Dialogue.txt>]
+[<../../Common/TimeAwareness.txt>]
 [<../../Common/Security.txt>]
 [<../../Common/ProjectInfo.txt>]
 [<Main/common.txt>]
