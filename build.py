@@ -382,8 +382,11 @@ if __name__ == "__main__":
         clean_output_dir()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-if BUILD_MODE == "full" and REBUILD_NATIVE_LAUNCHER:
-    rebuild_native_launcher()
+if BUILD_MODE in ("full", "fast"):
+    # Rebuilding the native launcher is optional and must not disable the rest
+    # of the build when the existing Launcher.exe is intentionally reused.
+    if REBUILD_NATIVE_LAUNCHER:
+        rebuild_native_launcher()
 
     pyz_filename = "NeuroMita.pyz"
     pyz_temp = PROJECT_DIR / pyz_filename
