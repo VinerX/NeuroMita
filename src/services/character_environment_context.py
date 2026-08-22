@@ -67,6 +67,11 @@ def format_character_environment_context(
         "When referring to the shared playable world that the Player can enter with you, call it NeuroMita. "
         "Do not call that shared runtime MiSide; MiSide is not the name of the currently launchable NeuroMita world."
     )
+    lines.append(
+        "In the current NeuroMita version, the playable world is limited to the house: "
+        "there is currently no usable exit to the outside. "
+        "Do not invent outdoor areas or suggest leaving the house as an available in-world action."
+    )
 
     if source is PlayerMessageSource.APPLICATION:
         lines.append(
