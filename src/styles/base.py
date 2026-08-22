@@ -3,18 +3,38 @@ from __future__ import annotations
 BASE_QSS = r"""
 /* ========= Base ========= */
 QWidget {
-    background-color: {bg_root};
+    background-color: transparent;
     color: {text};
     font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
     font-size: 9pt;
     border-radius: 0px;
 }
+QWidget:window { background-color: {bg_root}; }
 QMainWindow { background-color: {bg_window}; }
 QWidget#LauncherRoot {
     background-color: {app_bg};
 }
 QDialog { background-color: {bg_root}; }
 QFrame { border: none; background: transparent; }
+
+QMenu {
+    background-color: {card_bg};
+    color: {text};
+    border: 1px solid {card_border};
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    padding: 6px 20px;
+    border-radius: 4px;
+}
+QMenu::item:selected { background-color: {chip_hover}; }
+QMenu::separator {
+    background-color: {border_soft};
+    height: 1px;
+    margin: 4px 8px;
+}
 
 /* ========= Inputs ========= */
 QTextEdit, QLineEdit {
