@@ -51,6 +51,60 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
         self.assertIn("edge-tts>=6.1.9,<8.0.0", cuda_specs)
         self.assertIn("edge-tts>=6.1.9,<8.0.0", onnx_specs)
 
+    def test_runtime_assets_are_backend_specific(self):
+        with tempfile.TemporaryDirectory() as base_dir, patch.dict(
+            os.environ,
+            {"NEUROMITA_BASE_DIR": base_dir},
+            clear=False,
+        ):
+            cuda_files = {
+                Path(req.path_fn({})).name
+                for req in EdgeTTSRVCCudaModel.requirements(EDGE_TTS_RVC_CUDA_ID, {})
+                if req.kind == "file"
+            }
+            onnx_files = {
+                Path(req.path_fn({})).name
+                for req in EdgeTTSRVCOnnxModel.requirements(EDGE_TTS_RVC_ONNX_ID, {})
+                if req.kind == "file"
+            }
+
+        self.assertEqual(cuda_files, {"hubert_base.pt", "rmvpe.pt"})
+        self.assertEqual(onnx_files, {"vec-768-layer-12.onnx", "rmvpe.onnx"})
+
+    def test_install_plan_downloads_runtime_assets_into_application_root(self):
+        with tempfile.TemporaryDirectory() as base_dir, patch.dict(
+            os.environ,
+            {"NEUROMITA_BASE_DIR": base_dir},
+            clear=False,
+        ), patch.object(
+            EdgeTTSRVCCudaModel,
+            "is_model_installed",
+            return_value=False,
+        ), patch.object(
+            EdgeTTSRVCOnnxModel,
+            "is_model_installed",
+            return_value=False,
+        ):
+            cuda_plan = EdgeTTSRVCCudaModel.build_install_plan_for_model(
+                EDGE_TTS_RVC_CUDA_ID, {"gpu_vendor": "NVIDIA"}
+            )
+            onnx_plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+                EDGE_TTS_RVC_ONNX_ID, {"gpu_vendor": "AMD"}
+            )
+
+        cuda_download = next(action for action in cuda_plan.actions if action.type == "download_http")
+        onnx_download = next(action for action in onnx_plan.actions if action.type == "download_http")
+        self.assertEqual(
+            {Path(item["dest"]) for item in cuda_download.files},
+            {Path(base_dir) / "hubert_base.pt", Path(base_dir) / "rmvpe.pt"},
+        )
+        self.assertEqual(
+            {Path(item["dest"]) for item in onnx_download.files},
+            {Path(base_dir) / "vec-768-layer-12.onnx", Path(base_dir) / "rmvpe.onnx"},
+        )
+        self.assertTrue(all("huggingface.co" in item["url"] for item in cuda_download.files))
+        self.assertTrue(all("huggingface.co" in item["url"] for item in onnx_download.files))
+
     def test_cuda_settings_keep_full_f0_method_catalog(self):
         config = EdgeTTSRVCCudaModel._find_model_config(EDGE_TTS_RVC_CUDA_ID)
         f0_setting = next(item for item in config["settings"] if item["key"] == "f0method")

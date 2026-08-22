@@ -32,6 +32,11 @@ def _write_dist(root: Path, name: str, version: str) -> None:
     )
 
 
+def _write_onnx_rvc_assets(root: Path) -> None:
+    (root / "vec-768-layer-12.onnx").write_bytes(b"onnx")
+    (root / "rmvpe.onnx").write_bytes(b"onnx")
+
+
 def test_requirement_checker_reads_python_module_from_explicit_target(tmp_path: Path) -> None:
     package = tmp_path / "target_only_package"
     package.mkdir()
@@ -147,17 +152,23 @@ def test_edge_onnx_final_check_succeeds_from_target_without_restart(tmp_path: Pa
     _write_dist(tmp_path, "omegaconf", "2.3.0")
     _write_dist(tmp_path, "tts-with-rvc-onnx", "0.1.0")
     _write_dist(tmp_path, "edge-tts", "6.1.9")
+    _write_onnx_rvc_assets(tmp_path)
 
-    plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
-        EDGE_TTS_RVC_ONNX_ID,
-        {"libs_dir": str(tmp_path), "gpu_vendor": "INTEL"},
-    )
-    verify = plan.actions[-1].fn
-    backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
+    with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": str(tmp_path)}, clear=False):
+        plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+            EDGE_TTS_RVC_ONNX_ID,
+            {"libs_dir": str(tmp_path), "gpu_vendor": "INTEL"},
+        )
+        verify = plan.actions[-1].fn
+        backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
 
-    with patch("core.install_requirements.get_backend_service") as backend:
-        backend.return_value.get_status.return_value = backend_status
-        assert verify(callbacks=SimpleNamespace(log=lambda _line: None), ctx={"libs_dir": str(tmp_path)}) is True
+    with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": str(tmp_path)}, clear=False):
+        with patch("core.install_requirements.get_backend_service") as backend:
+            backend.return_value.get_status.return_value = backend_status
+            assert verify(
+                callbacks=SimpleNamespace(log=lambda _line: None),
+                ctx={"libs_dir": str(tmp_path)},
+            ) is True
 
 
 def test_edge_final_check_prefers_runtime_install_target_over_plan_snapshot(tmp_path: Path) -> None:
@@ -171,20 +182,23 @@ def test_edge_final_check_prefers_runtime_install_target_over_plan_snapshot(tmp_
     _write_dist(runtime_target, "omegaconf", "2.3.0")
     _write_dist(runtime_target, "tts-with-rvc-onnx", "0.1.0")
     _write_dist(runtime_target, "edge-tts", "6.1.9")
+    _write_onnx_rvc_assets(tmp_path)
 
-    plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
-        EDGE_TTS_RVC_ONNX_ID,
-        {"libs_dir": str(stale_target), "gpu_vendor": "INTEL"},
-    )
-    verify = plan.actions[-1].fn
-    backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
+    with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": str(tmp_path)}, clear=False):
+        plan = EdgeTTSRVCOnnxModel.build_install_plan_for_model(
+            EDGE_TTS_RVC_ONNX_ID,
+            {"libs_dir": str(stale_target), "gpu_vendor": "INTEL"},
+        )
+        verify = plan.actions[-1].fn
+        backend_status = SimpleNamespace(ok=True, as_dict=lambda: {"reason": "ready"})
 
-    with patch("core.install_requirements.get_backend_service") as backend:
-        backend.return_value.get_status.return_value = backend_status
-        assert verify(
-            callbacks=SimpleNamespace(log=lambda _line: None),
-            ctx={"libs_dir": str(runtime_target)},
-        ) is True
+    with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": str(tmp_path)}, clear=False):
+        with patch("core.install_requirements.get_backend_service") as backend:
+            backend.return_value.get_status.return_value = backend_status
+            assert verify(
+                callbacks=SimpleNamespace(log=lambda _line: None),
+                ctx={"libs_dir": str(runtime_target)},
+            ) is True
 
 
 def test_pip_installer_uses_private_uv_executable(tmp_path: Path) -> None:

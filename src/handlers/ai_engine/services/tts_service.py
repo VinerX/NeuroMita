@@ -107,17 +107,7 @@ class TTSService:
             self.emit_event("log", f"[tts:init] runtime initialized for model_id={model_id}")
 
             if do_warmup and self._warmup_status.get(model_id) != "ready":
-                try:
-                    warm = await asyncio.wait_for(
-                        self._warmup_model(lv, model_id),
-                        timeout=120.0,
-                    )
-                except asyncio.TimeoutError:
-                    warm = False
-                    self.emit_event(
-                        "log",
-                        f"[tts:init] warmup timed out for model_id={model_id}",
-                    )
+                warm = await self._warmup_model(lv, model_id)
                 self._warmup_status[model_id] = "ready" if warm else "failed"
                 if not warm:
                     self.emit_event(
