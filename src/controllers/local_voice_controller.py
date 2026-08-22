@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
+from core.settings_values import as_bool
 from services.contracts import (
     CharacterRegistry,
     InstallableCatalogService,
@@ -35,13 +36,6 @@ class LocalVoiceController(LocalVoiceService):
 
         self._subscribe_to_events()
         logger.notify("LocalVoiceController успешно инициализирован (engine-proxy).")
-
-        try:
-            eng = self._get_engine()
-            if eng:
-                eng.call("tts", "ping", {})
-        except Exception:
-            pass
 
     def _get_engine(self):
         if self._engine is not None:
@@ -128,8 +122,15 @@ class LocalVoiceController(LocalVoiceService):
     def is_installed(self, model_id: str) -> bool:
         return bool(self._on_check_model_installed(Event(Events.Audio.CHECK_MODEL_INSTALLED, {"model_id": model_id})))
 
-    def check_initialized(self, model_id: str, *, strict: bool = False) -> bool:
-        return bool(self._on_check_model_initialized(Event(Events.Audio.CHECK_MODEL_INITIALIZED, {"model_id": model_id, "strict": strict})))
+    def check_initialized(self, model_id: str, *, probe_worker: bool = False) -> bool:
+        return bool(
+            self._on_check_model_initialized(
+                Event(
+                    Events.Audio.CHECK_MODEL_INITIALIZED,
+                    {"model_id": model_id, "probe_worker": probe_worker},
+                )
+            )
+        )
 
     def select_model(self, model_id: str) -> bool:
         return bool(self._on_select_voice_model(Event(Events.Audio.SELECT_VOICE_MODEL, {"model_id": model_id})))
@@ -192,42 +193,24 @@ class LocalVoiceController(LocalVoiceService):
         if not model_id:
             return False
 
-        strict = bool((event.data or {}).get("strict", False))
+        probe_worker = bool((event.data or {}).get("probe_worker", False))
 
         cached = self._initialized_cache.get(model_id)
-        if cached is not None and not strict:
+        if not probe_worker:
             return bool(cached)
 
         eng = self._get_engine()
         if not eng:
-            return False if strict else (bool(cached) if cached is not None else False)
-
-        if strict:
-            try:
-                f = eng.call("tts", "check_initialized", {"model_id": model_id})
-                ok = bool(f.result(timeout=1.0))
-                self._initialized_cache[model_id] = ok
-                return ok
-            except Exception:
-                self._initialized_cache[model_id] = False
-                return False
+            return False
 
         try:
-            cfut = eng.call("tts", "check_initialized", {"model_id": model_id})
-
-            def _done(f):
-                try:
-                    ok = bool(f.result())
-                    self._initialized_cache[model_id] = ok
-                    self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
-                except Exception:
-                    self._initialized_cache.setdefault(model_id, False)
-
-            cfut.add_done_callback(_done)
+            future = eng.call("tts", "check_initialized", {"model_id": model_id})
+            initialized = bool(future.result(timeout=1.0))
+            self._initialized_cache[model_id] = initialized
+            return initialized
         except Exception:
-            pass
-
-        return bool(cached) if cached is not None else False
+            self._initialized_cache[model_id] = False
+            return False
 
     # -------------------- select/init/lang --------------------
 
@@ -404,6 +387,19 @@ class LocalVoiceController(LocalVoiceService):
         character_id: Optional[str] = None,
         voice_profile: Optional[Dict[str, Any]] = None,
     ) -> str:
+        model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
+        initialized = bool(self._initialized_cache.get(model_id, False))
+        allow_auto_initialize = as_bool(
+            self._get_setting("LOCAL_VOICE_LOAD_LAST", False)
+        )
+        if not initialized and not allow_auto_initialize:
+            raise RuntimeError(
+                _(
+                    "Локальная модель озвучки не инициализирована. Инициализируйте её вручную или включите автозагрузку последней модели.",
+                    "The local voice model is not initialized. Initialize it manually or enable loading the last model automatically.",
+                )
+            )
+
         resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
         registry = use(CharacterRegistry)
 
@@ -417,14 +413,10 @@ class LocalVoiceController(LocalVoiceService):
         output_file = f"MitaVoices/output_{uuid.uuid4()}.wav"
         absolute_audio_path = os.path.abspath(output_file)
         os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
-        model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
 
-        initialize = not bool(self._initialized_cache.get(model_id, False))
+        initialize = not initialized
         await self._ensure_model_environment(model_id, initialize=initialize)
         if initialize:
-            # Модель инициализировалась попутно, первым запросом озвучки. Без
-            # уведомления UI плашка голоса навсегда оставалась «Требуется
-            # инициализация» при уже работающем синтезе.
             self._initialized_cache[model_id] = True
             self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
         result_path = await self._engine_call_async(

@@ -150,10 +150,26 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
         )
         self.assertEqual(combo.itemData(combo.currentIndex()), "edge_tts_rvc_onnx")
 
-    def test_enabling_tts_allows_autoload(self):
+    def test_enabling_tts_does_not_autoload_when_setting_is_disabled(self):
         controller, _bus = self._make_controller()
         calls = []
         controller._ui = lambda callback: callback()
+        controller._get_setting = lambda key, default=None: (
+            False if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
+        controller._sync_everything = lambda **kwargs: calls.append(kwargs)
+
+        controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=True))
+
+        self.assertEqual(calls, [{"allow_autoload": False}])
+
+    def test_enabling_tts_allows_autoload_when_setting_is_enabled(self):
+        controller, _bus = self._make_controller()
+        calls = []
+        controller._ui = lambda callback: callback()
+        controller._get_setting = lambda key, default=None: (
+            True if key == "LOCAL_VOICE_LOAD_LAST" else default
+        )
         controller._sync_everything = lambda **kwargs: calls.append(kwargs)
 
         controller._on_setting_changed(SimpleNamespace(key="USE_VOICEOVER", value=True))

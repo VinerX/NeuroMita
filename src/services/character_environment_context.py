@@ -194,7 +194,7 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 initialized = False
             model_name = "Telegram voice"
-        elif installed:
+        elif voice_enabled and installed:
             local_voice = services().get_optional(LocalVoiceService)
             try:
                 initialized = bool(local_voice and local_voice.check_initialized(model_id))

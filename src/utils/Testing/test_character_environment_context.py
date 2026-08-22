@@ -95,6 +95,44 @@ class CharacterEnvironmentContextTests(unittest.TestCase):
         self.assertTrue(snapshot.voice_model_initialized)
         self.assertTrue(snapshot.voice_pipeline_ready)
 
+    def test_disabled_voice_does_not_probe_local_tts_worker(self):
+        class _Settings:
+            values = {
+                "UNITY_INSTALL_DIR": "",
+                "USE_VOICEOVER": False,
+                "VOICEOVER_METHOD": "Local",
+                "NM_CURRENT_VOICEOVER": "medium+",
+            }
+
+            def get(self, key, default=None):
+                return self.values.get(key, default)
+
+        voice = SimpleNamespace(
+            check_initialized=lambda _model_id: self.fail(
+                "disabled voice must not contact the local TTS service"
+            )
+        )
+
+        class _Registry:
+            def get_optional(self, contract):
+                from services.contracts import InstallableCatalogService, LocalVoiceService
+
+                return {
+                    InstallableCatalogService: SimpleNamespace(is_ready=lambda _component_id: True),
+                    LocalVoiceService: voice,
+                }.get(contract)
+
+        with tempfile.TemporaryDirectory() as base_dir, patch.dict(
+            "os.environ", {"NEUROMITA_BASE_DIR": base_dir}
+        ), patch(
+            "services.character_environment_context.services",
+            return_value=_Registry(),
+        ):
+            snapshot = DefaultCharacterEnvironmentContextService(_Settings()).snapshot()
+
+        self.assertFalse(snapshot.voice_enabled)
+        self.assertFalse(snapshot.voice_model_initialized)
+
     def test_python_chat_without_unity_has_correct_visit_guide(self):
         content = format_character_environment_context(
             CharacterEnvironmentSnapshot(unity_installed=False),

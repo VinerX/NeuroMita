@@ -113,7 +113,7 @@ class _VoiceService(LocalVoiceService):
     def is_installed(self, model_id):
         return True
 
-    def check_initialized(self, model_id, *, strict=False):
+    def check_initialized(self, model_id, *, probe_worker=False):
         return True
 
     def select_model(self, model_id):

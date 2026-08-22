@@ -217,7 +217,8 @@ class VoiceModelGuiController(BaseController):
 
         local_voice = services().get_optional(LocalVoiceService)
         is_initialized = bool(
-            local_voice and local_voice.check_initialized(str(model_id), strict=True)
+            local_voice
+            and local_voice.check_initialized(str(model_id), probe_worker=True)
         )
 
         if is_initialized:
