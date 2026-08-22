@@ -13,7 +13,7 @@ class TTSService:
     """
     Универсальный TTS service поверх LocalVoice.
     Не знает про конкретные модели (Fish/F5/Edge).
-    Инициализация завершается только после успешного первого синтеза для модели.
+    Локальная инициализация и необязательный end-to-end warmup — разные операции.
     """
 
     def __init__(self, *, emit_event: Callable[[str, Any], None]):

@@ -55,6 +55,21 @@ class TTSServiceTests(unittest.TestCase):
         joined = "\n".join(logs)
         self.assertIn("[tts:warmup] runtime error for model_id=high+low: hubert timeout", joined)
 
+    def test_init_without_warmup_only_initializes_local_runtime(self):
+        service = TTSService(emit_event=lambda _event, _payload: None)
+        service._local_voice = _FakeLocalVoice(
+            init_ok=True,
+            voiceover_result=RuntimeError("remote service is offline"),
+        )
+
+        ok = asyncio.run(service.handle(
+            "init_model",
+            {"model_id": "edge_tts_rvc_cuda", "warmup": False},
+        ))
+
+        self.assertTrue(ok)
+        self.assertEqual(service._local_voice.voiceover_calls, 0)
+
     def test_edge_model_init_warms_up_once(self):
         logs: list[str] = []
         service = TTSService(emit_event=lambda event, payload: logs.append(str(payload)) if event == "log" else None)

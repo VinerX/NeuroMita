@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from queue import Full
 from concurrent.futures import CancelledError, Future, InvalidStateError
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence
@@ -78,6 +79,15 @@ class _WorkerUnavailable(RuntimeError):
     Отдельный тип нужен, чтобы отличить «рантайм как раз пересобирают» от
     настоящей ошибки вызова: первое можно переждать, второе — нет.
     """
+
+
+@dataclass(frozen=True)
+class _WorkerRuntimeValidationResult:
+    process_ready: bool
+    failed_services: frozenset[str] = frozenset()
+
+    def __bool__(self) -> bool:
+        return self.process_ready and not self.failed_services
 
 
 class _RuntimeSwitchGate:
@@ -1054,14 +1064,15 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
         *,
         ready_timeout: float,
         validations: Sequence[tuple[str, str, dict[str, Any], float]] = (),
-    ) -> bool:
+    ) -> _WorkerRuntimeValidationResult:
         if not self._wait_all_ready(worker, ready_timeout):
             detail = worker.last_error or getattr(worker, "last_status", "") or (
                 f"exitcode={getattr(worker.proc, 'exitcode', None)}"
             )
             logger.error(f"Candidate AI runtime did not become ready: {detail}")
-            return False
+            return _WorkerRuntimeValidationResult(process_ready=False)
 
+        failed_services: set[str] = set()
         for service_name, method, payload, method_timeout in validations:
             if not worker.supports(service_name):
                 continue
@@ -1079,12 +1090,22 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     )
             except Exception as exc:
                 detail = str(exc)
-                logger.error(
+                message = (
                     f"Candidate AI runtime validation failed for "
                     f"{service_name}.{method}: {detail}"
                 )
-                return False
-        return True
+                logger.error(message)
+                failed_services.add(service_name)
+                proc = worker.proc
+                if proc is None or not proc.is_alive():
+                    return _WorkerRuntimeValidationResult(
+                        process_ready=False,
+                        failed_services=frozenset(failed_services),
+                    )
+        return _WorkerRuntimeValidationResult(
+            process_ready=True,
+            failed_services=frozenset(failed_services),
+        )
 
     def _switch_to_composition(
         self,
@@ -1238,19 +1259,28 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         )
                         return False
 
-                    if previous_validations and not self._validate_worker_runtime(
-                        rollback,
-                        ready_timeout=bootstrap_timeout,
-                        validations=previous_validations,
-                    ):
-                        logger.error(
-                            "Previous shared AI runtime was restored, but one or more "
-                            "service models could not be reinitialized"
+                    if previous_validations:
+                        validation_result = self._validate_worker_runtime(
+                            rollback,
+                            ready_timeout=bootstrap_timeout,
+                            validations=previous_validations,
                         )
-                        self._notify_models_lost(
-                            (item[0] for item in previous_validations),
-                            "runtime rollback could not reinitialize service models",
-                        )
+                        if not validation_result.process_ready:
+                            rollback.stop(timeout=1.0)
+                            self._notify_models_lost(
+                                previous_services,
+                                "runtime rollback worker stopped during model restoration",
+                            )
+                            return False
+                        if validation_result.failed_services:
+                            logger.error(
+                                "Previous shared AI runtime was restored, but one or more "
+                                "service models could not be reinitialized"
+                            )
+                            self._notify_models_lost(
+                                validation_result.failed_services,
+                                "runtime rollback could not reinitialize service models",
+                            )
 
                     rollback.on_crash = self._on_worker_crash
                     with self._lock:
@@ -1482,11 +1512,12 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     for item in self._validation_sequence()
                     if item[0] in candidate.service_names
                 )
-                if self._validate_worker_runtime(
+                validation_result = self._validate_worker_runtime(
                     candidate,
                     ready_timeout=_bootstrap_timeout(20.0),
                     validations=validations,
-                ):
+                )
+                if validation_result.process_ready:
                     with self._lock:
                         if self._workers.get(worker_key) is not crashed:
                             candidate.stop(timeout=1.0)
@@ -1500,6 +1531,13 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         f"AI worker '{worker_key}' recovered after crash "
                         f"(exitcode={exit_code}, attempt={attempt})"
                     )
+                    if validation_result.failed_services:
+                        failed_list = ", ".join(sorted(validation_result.failed_services))
+                        self._notify_models_lost(
+                            validation_result.failed_services,
+                            f"AI worker recovered, but these services could not "
+                            f"restore their models: {failed_list}",
+                        )
                     return
                 candidate.stop(timeout=1.0)
                 self._restart_attempts[worker_key] = attempt

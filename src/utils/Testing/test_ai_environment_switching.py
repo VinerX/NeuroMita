@@ -652,3 +652,51 @@ def test_exhausted_worker_restart_reports_lost_models() -> None:
     reported = controller.event_bus.restarted_services()
     assert {item["service"] for item in reported} == {"tts", "asr", "rag", "beats"}
     assert all(item["ok"] is False and item["requested"] is False for item in reported)
+
+
+def test_recovery_keeps_shared_worker_when_model_restore_fails() -> None:
+    crashed = _current_worker(("X:/overlay", "X:/cuda-backend"))
+    crashed.proc.alive = False
+    registry = _EnvironmentRegistry(crashed.python_paths)
+    controller = _controller(crashed, registry)
+    controller._runtime_validations = {
+        "tts": (
+            "tts",
+            "init_model",
+            {"model_id": "edge_tts_rvc_cuda", "warmup": False},
+            1.0,
+        ),
+    }
+    _Worker.created.clear()
+    _Worker.ready_sequence.clear()
+    _Worker.candidate_ready = True
+    _Worker.validation_result = False
+
+    try:
+        with patch("controllers.ai_engine_controller._Worker", _Worker), patch.dict(
+            "os.environ",
+            {
+                "NEUROMITA_AI_RESTART_LIMIT": "1",
+                "NEUROMITA_AI_RESTART_BACKOFF": "0.01",
+            },
+            clear=False,
+        ):
+            controller._recover_worker(crashed, exit_code=1)
+    finally:
+        _Worker.validation_result = True
+
+    recovered = controller._workers["shared"]
+    assert recovered is not crashed
+    assert recovered.proc.is_alive()
+    assert recovered.stopped is False
+    assert recovered.calls == [
+        (
+            "tts",
+            "init_model",
+            {"model_id": "edge_tts_rvc_cuda", "warmup": False},
+        )
+    ]
+    reported = controller.event_bus.restarted_services()
+    assert [item["service"] for item in reported] == ["tts"]
+    assert reported[0]["ok"] is False
+    assert reported[0]["requested"] is False

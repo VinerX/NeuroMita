@@ -97,7 +97,7 @@ class LocalVoiceController(LocalVoiceService):
             raise RuntimeError("AI engine does not support managed runtime environments")
         validation_method = "init_model" if initialize else None
         validation_payload = (
-            {"model_id": str(model_id), "warmup": True}
+            {"model_id": str(model_id), "warmup": False}
             if initialize
             else None
         )
