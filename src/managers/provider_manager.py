@@ -7,7 +7,7 @@ from main_logger import logger
 from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse
 from handlers.llm_providers.message_preprocessor import preprocess_messages_for_provider
 from handlers.llm_providers.message_transforms import apply_transforms
-from handlers.llm_providers.http_transport import LLMHttpTransport
+from handlers.llm_providers.http_transport import LLMHttpClient
 
 
 _PROVIDER_TYPES = (
@@ -22,7 +22,7 @@ class ProviderManager:
     def __init__(self):
         self._providers: List[BaseProvider] = []
         self._unavailable: dict[str, str] = {}
-        self.http_transport = LLMHttpTransport(enable_http2=True)
+        self.http_transport = LLMHttpClient(enable_http2=True)
         self._register_providers()
 
     def _register_providers(self):

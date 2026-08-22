@@ -1,10 +1,17 @@
-import requests
-import zipfile
 import os
 import shutil
-from pathlib import Path
 import sys
+import zipfile
+from pathlib import Path
+
+from core.networking import NetworkRequestError, shared_http_client_registry
 from main_logger import logger
+
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "ffmpeg-installer",
+    client_options={"follow_redirects": True},
+)
+
 
 def install_ffmpeg(target_directory=".",
                    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
@@ -59,16 +66,14 @@ def install_ffmpeg(target_directory=".",
     _emit(f"Downloading FFmpeg from {url}...")
     try:
         # Use stream=True for potentially large files and add a timeout
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
-
-        with open(zip_filepath, 'wb') as f:
-            # Download in chunks
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        with _HTTP_CLIENT.stream("GET", url, timeout=60) as response:
+            _HTTP_CLIENT.raise_for_status(response)
+            with open(zip_filepath, 'wb') as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
         logger.info(f"Download complete: '{zip_filepath}'")
 
-    except requests.exceptions.RequestException as e:
+    except NetworkRequestError as e:
         _emit(f"Error downloading file: {e}")
         # Clean up potentially incomplete download
         if zip_filepath.exists():

@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from core.networking import ManagedHttpClient, shared_http_client_registry
 from .base import BaseEmbeddingProvider, EmbeddingRequest
 from main_logger import logger
 
@@ -15,6 +16,10 @@ _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _SECRET_QUERY_RE = re.compile(
     r"([?&](?:key|api[_-]?key|apikey|token|access_token)=)[^&\s]+",
     re.IGNORECASE,
+)
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "rag-gemini",
+    client_options={"follow_redirects": True},
 )
 
 
@@ -45,16 +50,15 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
     # Keep REST payloads bounded; RagEmbedder may chunk before this provider too.
     _BATCH_LIMIT = 100
 
-    def __init__(self) -> None:
+    def __init__(self, http_client: ManagedHttpClient | None = None) -> None:
         self._key_distribution_lock = Lock()
         self._next_key_index = 0
+        self._http_client = http_client or _HTTP_CLIENT
 
     def is_applicable(self, req: EmbeddingRequest) -> bool:
         return bool(req.api_key or req.reserve_keys)
 
     def embed(self, req: EmbeddingRequest) -> List[Optional[np.ndarray]]:
-        import requests as _req
-
         supplied_keys = [req.api_key or ""] + [k for k in (req.reserve_keys or []) if k]
         all_keys = list(dict.fromkeys(k for k in supplied_keys if k))
         if not all_keys:
@@ -78,7 +82,6 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
         for batch_start in range(0, len(texts), self._BATCH_LIMIT):
             batch_texts = texts[batch_start: batch_start + self._BATCH_LIMIT]
             batch_result = self._embed_batch(
-                _req,
                 all_keys,
                 base_url,
                 model,
@@ -102,7 +105,6 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
 
     def _embed_batch(
         self,
-        requests_lib,
         all_keys,
         base_url,
         model,
@@ -132,7 +134,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
             headers["Content-Type"] = "application/json"
             headers["x-goog-api-key"] = key
             try:
-                resp = requests_lib.post(url, json=payload, headers=headers, timeout=timeout_sec)
+                resp = self._http_client.post(url, json=payload, headers=headers, timeout=timeout_sec)
 
                 if resp.status_code in _RETRY_STATUS and attempt < max_attempts - 1:
                     logger.warning(
@@ -146,7 +148,7 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
                     time.sleep(delay)
                     continue
 
-                resp.raise_for_status()
+                self._http_client.raise_for_status(resp)
                 data = resp.json()
                 embeddings = data.get("embeddings") or []
                 batch_results = []

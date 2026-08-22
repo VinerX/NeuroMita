@@ -32,6 +32,16 @@ def prompts_dir() -> Path:
     return (base_dir() / "Prompts").resolve()
 
 
+def checkpoints_dir() -> Path:
+    configured = str(os.environ.get("NEUROMITA_CHECKPOINTS_DIR", "") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = base_dir() / path
+        return path.resolve()
+    return (base_dir() / "checkpoints").resolve()
+
+
 def prompt_path(configured: str | os.PathLike[str]) -> Path:
     """Резолвит путь к файлу промпта, заданный настройкой.
 

@@ -71,7 +71,7 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
         self.assertEqual(cuda_files, {"hubert_base.pt", "rmvpe.pt"})
         self.assertEqual(onnx_files, {"vec-768-layer-12.onnx", "rmvpe.onnx"})
 
-    def test_install_plan_downloads_runtime_assets_into_application_root(self):
+    def test_install_plan_downloads_runtime_assets_into_application_base_dir(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
             {"NEUROMITA_BASE_DIR": base_dir},
@@ -309,9 +309,13 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
                 return {}
 
         model = EdgeTTSRVCCudaModel(_Parent(), EDGE_TTS_RVC_CUDA_ID)
-        with patch("os.getcwd", return_value=r"C:\RuntimeRoot"), patch.dict(
+        with patch.dict(
             "os.environ",
-            {"NEUROMITA_MODELS_DIR": r"C:\RuntimeRoot\Models", "NEUROMITA_LIB_DIR": r"C:\RuntimeRoot\Lib"},
+            {
+                "NEUROMITA_BASE_DIR": r"C:\RuntimeRoot",
+                "NEUROMITA_MODELS_DIR": r"C:\RuntimeRoot\Models",
+                "NEUROMITA_LIB_DIR": r"C:\RuntimeRoot\Lib",
+            },
             clear=False,
         ):
             candidates = model._hubert_candidate_paths()

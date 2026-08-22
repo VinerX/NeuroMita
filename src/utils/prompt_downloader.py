@@ -10,10 +10,16 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-import requests
+import httpx
 
 from core.app_paths import prompts_dir
+from core.networking import ManagedHttpClient, shared_http_client_registry
 from main_logger import logger
+
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "prompt-downloader",
+    client_options={"follow_redirects": True},
+)
 
 
 class PromptDownloader:
@@ -24,9 +30,10 @@ class PromptDownloader:
     _MAX_ARCHIVE_FILES = 10_000
     _CHUNK_SIZE = 256 * 1024
 
-    def __init__(self) -> None:
+    def __init__(self, http_client: ManagedHttpClient | None = None) -> None:
         self.repo_url = "https://github.com/VinerX/NeuroMita"
         self.branch = "main"
+        self._http_client = http_client or _HTTP_CLIENT
 
         self.base_path = prompts_dir()
         self.backup_path = self.base_path.with_name(f"{self.base_path.name}_backup")
@@ -81,13 +88,19 @@ class PromptDownloader:
         archive = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")
         downloaded = 0
         try:
-            with requests.get(
+            timeout = httpx.Timeout(
+                connect=self._CONNECT_TIMEOUT_SECONDS,
+                read=self._READ_TIMEOUT_SECONDS,
+                write=self._READ_TIMEOUT_SECONDS,
+                pool=self._CONNECT_TIMEOUT_SECONDS,
+            )
+            with self._http_client.stream(
+                "GET",
                 zip_url,
-                stream=True,
-                timeout=(self._CONNECT_TIMEOUT_SECONDS, self._READ_TIMEOUT_SECONDS),
+                timeout=timeout,
                 headers={"User-Agent": "NeuroMita-PromptUpdater/1"},
             ) as response:
-                response.raise_for_status()
+                self._http_client.raise_for_status(response)
 
                 raw_length = str(response.headers.get("Content-Length", "") or "").strip()
                 if raw_length:
@@ -100,7 +113,7 @@ class PromptDownloader:
                             f"Prompt archive is too large: {content_length} bytes"
                         )
 
-                for chunk in response.iter_content(chunk_size=self._CHUNK_SIZE):
+                for chunk in response.iter_bytes(chunk_size=self._CHUNK_SIZE):
                     self._raise_if_cancelled(cancel_event)
                     if not chunk:
                         continue

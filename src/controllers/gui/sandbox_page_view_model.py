@@ -373,7 +373,13 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
 
     def _on_model_failed(self, event: Any) -> None:
         data = getattr(event, "data", None) or {}
-        self._finish_model_request(False, str(data.get("error") or ""))
+        provider_error = data.get("provider_error")
+        message = (
+            provider_error.get("message")
+            if isinstance(provider_error, dict)
+            else None
+        ) or data.get("error") or ""
+        self._finish_model_request(False, str(message))
 
     def _finish_model_request(self, ok: bool, error: str) -> None:
         started = self._request_started_at

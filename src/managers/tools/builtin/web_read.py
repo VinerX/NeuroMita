@@ -1,9 +1,19 @@
 
-import re, requests, bs4
+import re
+
+import bs4
+
+from core.networking import shared_http_client_registry
 from managers.tools.base import Tool
+
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "web-reader",
+    client_options={"follow_redirects": True},
+)
 
 _CLEAN_TAGS = ["script", "style", "noscript", "iframe", "header",
                "footer", "nav", "aside", "form"]
+
 
 class WebPageReaderTool(Tool):
     name = "web_reader"
@@ -29,10 +39,8 @@ class WebPageReaderTool(Tool):
         reader_url = f"https://r.jina.ai/{url}"
 
         try:
-            resp = requests.get(reader_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            if not resp.encoding or resp.encoding.lower() == 'iso-8859-1':
-                resp.encoding = resp.apparent_encoding
+            resp = _HTTP_CLIENT.get(reader_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            _HTTP_CLIENT.raise_for_status(resp)
         except Exception as e:
             return f"[web_reader] Ошибка при загрузке: {e}"
 

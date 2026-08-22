@@ -62,8 +62,8 @@ class VoiceModelController(VoiceModelService):
         self.event_bus = get_event_bus()
         self._last_voiceover_refresh_reload_ts: float = 0.0
 
-        self.reload()
         self._subscribe_to_events()
+        self.reload()
 
     def _subscribe_to_events(self):
         eb = self.event_bus
@@ -71,8 +71,39 @@ class VoiceModelController(VoiceModelService):
 
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_failed, weak=False)
+        eb.subscribe(Events.Install.COMPONENT_STATUS, self._on_component_status, weak=False)
 
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_voiceover_refresh, weak=False)
+
+    def _on_component_status(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        component_id = str(data.get("component_id") or "").strip()
+        if not component_id.startswith("tts:"):
+            return
+
+        status = data.get("status") if isinstance(data.get("status"), dict) else {}
+        if not status or str(status.get("probe_state") or "").strip():
+            return
+
+        model_id = component_id.split(":", 1)[1].strip()
+        if not model_id:
+            return
+
+        ready = bool(status.get("ready"))
+        with self._lock:
+            if ready:
+                self.installed_models.add(model_id)
+            else:
+                self.installed_models.discard(model_id)
+
+        self.event_bus.emit(
+            Events.VoiceModel.REFRESH_MODEL_PANELS,
+            {
+                "component_id": component_id,
+                "model_id": model_id,
+                "ready": ready,
+            },
+        )
 
     def _on_voiceover_refresh(self, _event: Event):
         with self._lock:
@@ -661,13 +692,30 @@ class VoiceModelController(VoiceModelService):
     def refresh_installed_models(self):
         try:
             catalog = services().get(InstallableCatalogService)
-            installed = set(catalog.ready_item_ids("tts"))
+            rows = catalog.list_rows(
+                include_status=True,
+                category="tts",
+                status_category="tts",
+            )
         except Exception as exc:
             logger.error(f"Failed to read canonical TTS readiness: {exc}", exc_info=True)
-            installed = set()
+            return
 
         with self._lock:
-            self.installed_models = installed
+            for row in rows or ():
+                metadata = row.get("metadata") if isinstance(row, dict) else None
+                status = row.get("status") if isinstance(row, dict) else None
+                if not isinstance(metadata, dict) or not isinstance(status, dict):
+                    continue
+                if str(status.get("probe_state") or "").strip():
+                    continue
+                model_id = str(metadata.get("item_id") or "").strip()
+                if not model_id:
+                    continue
+                if bool(status.get("ready")):
+                    self.installed_models.add(model_id)
+                else:
+                    self.installed_models.discard(model_id)
 
     def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()

@@ -22,7 +22,7 @@ import httpx
 
 from handlers.llm_providers.base import LLMRequest, StreamChannel
 from handlers.llm_providers.common_provider import CommonProvider
-from handlers.llm_providers.http_transport import LLMHttpTransport
+from handlers.llm_providers.http_transport import LLMHttpClient
 from handlers.llm_providers.streaming import StreamAccumulator
 
 
@@ -49,7 +49,7 @@ class StreamChannelSplitTests(unittest.TestCase):
                 text=_sse(*deltas),
             )
 
-        transport = LLMHttpTransport(
+        transport = LLMHttpClient(
             enable_http2=False,
             client_factory=lambda _p, _h: httpx.Client(transport=httpx.MockTransport(handler)),
         )

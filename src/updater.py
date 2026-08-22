@@ -26,9 +26,12 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import httpx
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+
+from core.networking import shared_http_client_registry
 
 from services.update_transaction import (
     DirectoryInstallTransaction,
@@ -70,6 +73,11 @@ from utils.release_assets import (
     parse_release,
     pick_from_release,
     raw_release_has_python_assets,
+)
+
+_UPDATE_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "application-updater",
+    client_options={"follow_redirects": True},
 )
 
 _USER_AGENT = "NeuroMita-Updater/2.0"
@@ -602,8 +610,6 @@ def _download(
     expected_sha256: str = "",
 ) -> str:
     """Resume a streamed download and atomically publish a verified archive."""
-    import requests
-
     expected_size = max(0, int(expected_size or 0))
     expected_sha256 = _expected_sha256(expected_sha256)
     cached_hash = _validate_cached_archive(
@@ -645,9 +651,15 @@ def _download(
                 if validator:
                     headers["If-Range"] = validator
 
-            with requests.get(url, stream=True, timeout=30, headers=headers) as response:
+            timeout = httpx.Timeout(connect=30.0, read=30.0, write=30.0, pool=10.0)
+            with _UPDATE_HTTP_CLIENT.stream(
+                "GET",
+                url,
+                timeout=timeout,
+                headers=headers,
+            ) as response:
                 if response.status_code != 416:
-                    response.raise_for_status()
+                    _UPDATE_HTTP_CLIENT.raise_for_status(response)
                     resumed = response.status_code == 206 and offset > 0
                     if not resumed:
                         offset = 0
@@ -675,7 +687,7 @@ def _download(
                     downloaded = offset
                     last_report = time.monotonic()
                     with partial.open("ab" if resumed else "wb") as output:
-                        for piece in response.iter_content(chunk_size=chunk_size):
+                        for piece in response.iter_bytes(chunk_size=chunk_size):
                             if stop_event is not None and stop_event.is_set():
                                 raise UpdateCancelled("Download cancelled")
                             if not piece:
@@ -689,7 +701,7 @@ def _download(
                     if on_progress is not None:
                         on_progress(downloaded, total or downloaded)
                 elif not (expected_size > 0 and offset == expected_size):
-                    response.raise_for_status()
+                    _UPDATE_HTTP_CLIENT.raise_for_status(response)
 
             actual_size = partial.stat().st_size if partial.exists() else 0
             if expected_size > 0 and actual_size != expected_size:

@@ -11,6 +11,7 @@ from typing import Optional, Any, List, Dict
 from .base_model import IVoiceModel
 from main_logger import logger
 
+from core.app_paths import base_dir, checkpoints_dir
 from core.services import services
 from services.contracts import AIEngineAdministrationService, GuiInteractionService
 from utils import getTranslationVariant as _, get_character_voice_paths
@@ -29,7 +30,6 @@ from handlers.voice_models.install_plan_helpers import (
 )
 from handlers.voice_models.rvc_runtime_assets import (
     CUDA_RVC_RUNTIME_ASSETS,
-    application_root,
     runtime_asset_download_action,
     runtime_asset_requirements,
 )
@@ -54,7 +54,7 @@ class FishSpeechInstallSpec:
 
     @classmethod
     def checkpoint_dir(cls) -> str:
-        return os.path.join(application_root(), "checkpoints", "fish-speech-1.5")
+        return str(checkpoints_dir() / "fish-speech-1.5")
 
     @classmethod
     def _model_asset_path(cls, filename: str) -> str:
@@ -150,7 +150,7 @@ class FishSpeechInstallSpec:
             if str(path).lower().endswith(".pyz") and os.path.isfile(str(path))
         ]
         packaged_archive = os.path.join(
-            os.environ.get("NEUROMITA_BASE_DIR") or os.getcwd(),
+            str(base_dir()),
             "NeuroMita.pyz",
         )
         if os.path.isfile(packaged_archive) and packaged_archive not in candidates:
@@ -253,8 +253,8 @@ class FishSpeechInstallSpec:
                     engine.resume_after_maintenance()
                 return True
 
-            base_dir = os.environ.get("NEUROMITA_BASE_DIR") or os.getcwd()
-            ref_wav = os.path.join(base_dir, "Models", "Mila.wav")
+            app_root = str(base_dir())
+            ref_wav = os.path.join(app_root, "Models", "Mila.wav")
             if not os.path.exists(ref_wav):
                 message = _(
                     "Для компиляции нужен Models/Mila.wav. Сначала установите голоса Мит.",
@@ -284,7 +284,7 @@ class FishSpeechInstallSpec:
                     bufsize=1,
                     creationflags=creationflags,
                     env=child_env,
-                    cwd=base_dir,
+                    cwd=app_root,
                 )
                 cls._track_subprocess(pip_installer, proc)
                 try:

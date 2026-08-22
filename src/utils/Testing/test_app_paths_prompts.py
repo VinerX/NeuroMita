@@ -11,7 +11,7 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from core.app_paths import prompt_path, prompts_dir
+from core.app_paths import checkpoints_dir, prompt_path, prompts_dir
 
 
 class PromptPathTests(unittest.TestCase):
@@ -38,6 +38,18 @@ class PromptPathTests(unittest.TestCase):
         with patch.dict(os.environ, {"NEUROMITA_BASE_DIR": str(self.base)}, clear=False):
             os.environ.pop("NEUROMITA_PROMPTS_DIR", None)
             self.assertEqual(prompts_dir(), (self.base / "Prompts").resolve())
+
+    def test_checkpoints_dir_follows_explicit_override(self) -> None:
+        external = self.root / "model-cache" / "checkpoints"
+        with self._env(NEUROMITA_CHECKPOINTS_DIR=str(external)):
+            self.assertEqual(checkpoints_dir(), external.resolve())
+
+    def test_relative_checkpoints_override_is_resolved_from_base_dir(self) -> None:
+        with self._env(NEUROMITA_CHECKPOINTS_DIR="AI/checkpoints"):
+            self.assertEqual(
+                checkpoints_dir(),
+                (self.base / "AI" / "checkpoints").resolve(),
+            )
 
     def test_settings_path_with_prompts_prefix_lands_in_moved_prompt_set(self) -> None:
         """Настройка написана как `Prompts/System/...`, а каталог промптов вынесен."""

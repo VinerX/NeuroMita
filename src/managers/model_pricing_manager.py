@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from main_logger import logger
 from managers.api_preset_resolver import PresetSettings
 from handlers.llm_providers.base import LLMUsage
-from handlers.llm_providers.http_transport import LLMHttpTransport
+from handlers.llm_providers.http_transport import LLMHttpClient
 from presets.provider_host_metadata import infer_provider_currency
 
 
@@ -158,11 +158,11 @@ class ModelPricingManager:
     # transient network blip does not disable cost estimation for the whole hour.
     _NEGATIVE_TTL_SECONDS = 30
 
-    def __init__(self, http_transport: LLMHttpTransport | None = None):
+    def __init__(self, http_transport: LLMHttpClient | None = None):
         self._cache: Dict[tuple[str, str], tuple[float, Optional[ModelPricingInfo]]] = {}
         self._lock = threading.Lock()
         self._inflight: set[tuple[str, str]] = set()
-        self._http_transport = http_transport or LLMHttpTransport()
+        self._http_transport = http_transport or LLMHttpClient(service_id="model-pricing")
         self._owns_http_transport = http_transport is None
 
     def close(self) -> None:

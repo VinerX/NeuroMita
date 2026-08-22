@@ -103,8 +103,9 @@ class _CatalogStub:
         self.gpu_vendor = gpu_vendor
         self.seen_contexts = []
 
-    def list_rows(self, **_kwargs):
-        return [
+    def list_rows(self, **kwargs):
+        self.seen_contexts.append(dict(kwargs))
+        rows = [
             {
                 "metadata": {
                     "id": f"tts:{component.item_id}",
@@ -124,6 +125,13 @@ class _CatalogStub:
             }
             for component in self._components
         ]
+        if kwargs.get("include_status"):
+            for row, component in zip(rows, self._components):
+                row["status"] = {
+                    "installed": bool(component._installed),
+                    "ready": bool(component._installed),
+                }
+        return rows
 
     def require_component(self, component_id):
         item_id = str(component_id).split(":", 1)[-1]
@@ -263,6 +271,30 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.installed_models, {"edge_tts_rvc_cuda"})
         self.assertEqual(catalog.seen_contexts[0]["category"], "tts")
+        self.assertTrue(catalog.seen_contexts[0]["include_status"])
+
+    def test_refresh_installed_models_preserves_known_state_for_transient_probe(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.installed_models = {"medium+"}
+        catalog = SimpleNamespace(
+            list_rows=lambda **_kwargs: [
+                {
+                    "metadata": {"item_id": "medium+"},
+                    "status": {
+                        "ready": False,
+                        "probe_state": "timeout",
+                        "details": {"transient": True},
+                    },
+                }
+            ]
+        )
+        service_registry = SimpleNamespace(get=lambda _contract: catalog)
+
+        with patch("controllers.voice_model_controller.services", return_value=service_registry):
+            controller.refresh_installed_models()
+
+        self.assertEqual(controller.installed_models, {"medium+"})
 
 
     def test_default_model_structure_comes_from_main_process_installable_catalog(self):
@@ -317,6 +349,41 @@ class VoiceModelControllerTests(unittest.TestCase):
         result.add("other")
 
         self.assertEqual(controller.installed_models, {"high"})
+
+    def test_completed_tts_probe_updates_snapshot_and_requests_ui_refresh(self):
+        emitted = []
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.installed_models = set()
+        controller.event_bus = SimpleNamespace(
+            emit=lambda name, data=None: emitted.append((name, data))
+        )
+
+        controller._on_component_status(
+            Event(
+                name="install_component_status",
+                data={
+                    "component_id": "tts:medium+",
+                    "status": {"ready": True, "installed": True},
+                },
+            )
+        )
+
+        self.assertEqual(controller.installed_models, {"medium+"})
+        self.assertEqual(emitted[0][0], "refresh_voice_model_panels")
+        self.assertEqual(emitted[0][1]["model_id"], "medium+")
+
+        controller._on_component_status(
+            Event(
+                name="install_component_status",
+                data={
+                    "component_id": "tts:medium+",
+                    "status": {"ready": False, "installed": False},
+                },
+            )
+        )
+
+        self.assertEqual(controller.installed_models, set())
 
 
 if __name__ == "__main__":

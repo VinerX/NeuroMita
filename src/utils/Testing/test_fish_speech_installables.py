@@ -19,7 +19,10 @@ class FishSpeechInstallablesTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
-            {"NEUROMITA_BASE_DIR": base_dir},
+            {
+                "NEUROMITA_BASE_DIR": base_dir,
+                "NEUROMITA_CHECKPOINTS_DIR": os.path.join(base_dir, "checkpoints"),
+            },
             clear=False,
         ):
             for model_id in FishSpeechInstallSpec.supported_model_ids():
@@ -33,7 +36,10 @@ class FishSpeechInstallablesTests(unittest.TestCase):
     def test_medium_low_also_requires_cuda_rvc_assets(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
-            {"NEUROMITA_BASE_DIR": base_dir},
+            {
+                "NEUROMITA_BASE_DIR": base_dir,
+                "NEUROMITA_CHECKPOINTS_DIR": os.path.join(base_dir, "checkpoints"),
+            },
             clear=False,
         ):
             files = {
@@ -44,10 +50,37 @@ class FishSpeechInstallablesTests(unittest.TestCase):
 
         self.assertTrue({"hubert_base.pt", "rmvpe.pt"}.issubset(files))
 
+    def test_checkpoint_requirements_use_canonical_checkpoint_override(self):
+        with (
+            tempfile.TemporaryDirectory() as base_dir,
+            tempfile.TemporaryDirectory() as checkpoint_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "NEUROMITA_BASE_DIR": base_dir,
+                    "NEUROMITA_CHECKPOINTS_DIR": checkpoint_dir,
+                },
+                clear=False,
+            ),
+        ):
+            paths = {
+                Path(req.path_fn({}) if req.path_fn else req.path)
+                for req in FishSpeechInstallSpec.requirements("medium+", {})
+                if req.kind == "file" and str(req.id).startswith("fish_asset_")
+            }
+
+        self.assertTrue(paths)
+        self.assertTrue(
+            all(path.is_relative_to(Path(checkpoint_dir).resolve()) for path in paths)
+        )
+
     def test_install_plan_downloads_weights_before_compile(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
-            {"NEUROMITA_BASE_DIR": base_dir},
+            {
+                "NEUROMITA_BASE_DIR": base_dir,
+                "NEUROMITA_CHECKPOINTS_DIR": os.path.join(base_dir, "checkpoints"),
+            },
             clear=False,
         ), patch.object(FishSpeechInstallSpec, "is_installed", return_value=False):
             plan = FishSpeechInstallSpec.build_install_plan("medium+low", {})

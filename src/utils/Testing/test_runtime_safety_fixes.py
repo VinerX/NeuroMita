@@ -38,6 +38,23 @@ class _Response:
         for index in range(0, len(self.payload), chunk_size):
             yield self.payload[index : index + chunk_size]
 
+    def iter_bytes(self, chunk_size: int):
+        yield from self.iter_content(chunk_size)
+
+
+class _HttpClient:
+    def __init__(self, response: _Response) -> None:
+        self.response = response
+        self.calls = []
+
+    def stream(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self.response
+
+    @staticmethod
+    def raise_for_status(response) -> None:
+        response.raise_for_status()
+
 
 def _prompt_zip(content: str = "new") -> bytes:
     output = io.BytesIO()
@@ -60,22 +77,16 @@ def test_prompt_update_is_streamed_and_keeps_backup(tmp_path: Path) -> None:
     prompts = tmp_path / "Prompts"
     prompts.mkdir()
     (prompts / "old.txt").write_text("old", encoding="utf-8")
-    downloader = PromptDownloader()
+    http_client = _HttpClient(_Response(_prompt_zip()))
+    downloader = PromptDownloader(http_client=http_client)
     downloader.base_path = prompts
     downloader.backup_path = tmp_path / "Prompts_backup"
 
-    captured = {}
+    assert downloader.download_and_replace_prompts() is True
 
-    def fake_get(_url, **kwargs):
-        captured.update(kwargs)
-        return _Response(_prompt_zip())
-
-    with patch("utils.prompt_downloader.requests.get", side_effect=fake_get):
-        assert downloader.download_and_replace_prompts() is True
-
-    assert captured["stream"] is True
-    assert captured["timeout"][0] > 0
-    assert captured["timeout"][1] > 0
+    _method, _url, captured = http_client.calls[0]
+    assert captured["timeout"].connect > 0
+    assert captured["timeout"].read > 0
     assert (prompts / "System" / "prompt.txt").read_text(encoding="utf-8") == "new"
     assert (downloader.backup_path / "old.txt").read_text(encoding="utf-8") == "old"
 
@@ -84,7 +95,7 @@ def test_prompt_update_restores_original_directory_on_swap_failure(tmp_path: Pat
     prompts = tmp_path / "Prompts"
     prompts.mkdir()
     (prompts / "old.txt").write_text("old", encoding="utf-8")
-    downloader = PromptDownloader()
+    downloader = PromptDownloader(http_client=_HttpClient(_Response(_prompt_zip())))
     downloader.base_path = prompts
     downloader.backup_path = tmp_path / "Prompts_backup"
 
@@ -97,9 +108,7 @@ def test_prompt_update_restores_original_directory_on_swap_failure(tmp_path: Pat
             raise OSError("swap failed")
         return real_replace(source, target)
 
-    with patch("utils.prompt_downloader.requests.get", return_value=_Response(_prompt_zip())), patch(
-        "utils.prompt_downloader.os.replace", side_effect=flaky_replace
-    ):
+    with patch("utils.prompt_downloader.os.replace", side_effect=flaky_replace):
         assert downloader.download_and_replace_prompts() is False
 
     assert (prompts / "old.txt").read_text(encoding="utf-8") == "old"

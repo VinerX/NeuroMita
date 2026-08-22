@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 import httpx
+from core.networking import NetworkRequestError
 
 from utils import _, mask_sensitive
 
@@ -490,6 +491,18 @@ def build_stream_error(
 def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] = None) -> LLMProviderError:
     if isinstance(exc, LLMProviderError):
         return exc
+
+    if isinstance(exc, NetworkRequestError):
+        return LLMProviderError(
+            provider=provider,
+            friendly_message=exc.message,
+            provider_message=exc.detail or exc.message,
+            status_code=exc.status_code,
+            retryable=exc.retryable,
+            code=exc.code,
+            phase=exc.phase,
+            url=exc.url or url,
+        )
 
     transport_error = _find_httpx_transport_error(exc)
     if isinstance(transport_error, httpx.TimeoutException):

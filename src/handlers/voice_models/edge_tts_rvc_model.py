@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from .base_model import IVoiceModel
+from core.app_paths import base_dir
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
@@ -607,7 +608,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 
     def _hubert_candidate_paths(self) -> list[str]:
         roots = (
-            os.getcwd(),
+            str(base_dir()),
             os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models")),
             os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")),
         )
@@ -668,7 +669,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 f0_method = self._normalize_f0_method(settings.get(f0_key, self.RVC_DEFAULT_F0_METHOD))
                 model_path_to_use = self._default_model_path()
                 logger.info(
-                    f"RVC init context: cwd='{os.getcwd()}', "
+                    f"RVC init context: base_dir='{base_dir()}', "
                     f"models_dir='{os.environ.get('NEUROMITA_MODELS_DIR', os.path.abspath('Models'))}', "
                     f"hubert_candidates={self._describe_hubert_state()}"
                 )

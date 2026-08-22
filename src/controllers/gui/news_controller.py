@@ -9,12 +9,14 @@ from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
 
 from main_logger import logger
+from core.networking import shared_http_client_registry
 from utils.release_assets import raw_release_has_launcher_assets
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem
 from utils import _
 
 
 NEWS_REPO = "Atm4x/NeuroMita"
+_HTTP_CLIENT = shared_http_client_registry().acquire("news")
 
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -58,7 +60,7 @@ def load_news_releases_async(
     Параллельные запросы коалесцируются: пока один поток грузит, остальные
     подписчики просто ждут его результат — повторного обращения к сети нет.
     Это и есть фикс зависания GUI: раньше `get_news_releases` дёргал
-    `requests.get(timeout=10)` прямо в GUI-потоке (кнопка «Обновить», старт
+    Синхронный сетевой запрос прямо в GUI-потоке (кнопка «Обновить», старт
     главной страницы) и при недоступном GitHub морозил окно на ~10 секунд.
     """
     if store.releases is not None:
@@ -100,9 +102,7 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
         return cached
 
     try:
-        import requests
-
-        response = requests.get(
+        response = _HTTP_CLIENT.get(
             f"https://api.github.com/repos/{NEWS_REPO}/releases",
             timeout=10,
             headers={"Accept": "application/vnd.github+json"},

@@ -13,7 +13,10 @@ class F5TTSInstallablesTests(unittest.TestCase):
     def test_required_assets_include_vocoder_and_backend_specific_rvc(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
-            {"NEUROMITA_BASE_DIR": base_dir},
+            {
+                "NEUROMITA_BASE_DIR": base_dir,
+                "NEUROMITA_CHECKPOINTS_DIR": os.path.join(base_dir, "checkpoints"),
+            },
             clear=False,
         ):
             cuda_files = {
@@ -40,7 +43,10 @@ class F5TTSInstallablesTests(unittest.TestCase):
     def test_install_plan_downloads_vocoder_and_rvc_before_runtime(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
-            {"NEUROMITA_BASE_DIR": base_dir},
+            {
+                "NEUROMITA_BASE_DIR": base_dir,
+                "NEUROMITA_CHECKPOINTS_DIR": os.path.join(base_dir, "checkpoints"),
+            },
             clear=False,
         ), patch.object(F5TTSInstallSpec, "is_installed", return_value=False):
             plan = F5TTSInstallSpec.build_install_plan(
@@ -60,6 +66,33 @@ class F5TTSInstallablesTests(unittest.TestCase):
         )
         self.assertIn(Path(base_dir) / "hubert_base.pt", destinations)
         self.assertIn(Path(base_dir) / "rmvpe.pt", destinations)
+
+    def test_model_and_vocoder_paths_use_checkpoint_override(self):
+        with (
+            tempfile.TemporaryDirectory() as base_dir,
+            tempfile.TemporaryDirectory() as checkpoint_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "NEUROMITA_BASE_DIR": base_dir,
+                    "NEUROMITA_CHECKPOINTS_DIR": checkpoint_dir,
+                },
+                clear=False,
+            ),
+        ):
+            requirements = F5TTSInstallSpec.requirements(
+                "high",
+                {"gpu_vendor": "NVIDIA", "voice_language": "ru"},
+            )
+            file_paths = {
+                Path(req.path_fn({}) if req.path_fn else req.path)
+                for req in requirements
+                if req.kind == "file"
+            }
+
+        root = Path(checkpoint_dir).resolve()
+        self.assertTrue(file_paths)
+        self.assertTrue(all(path.is_relative_to(root) for path in file_paths))
 
     def test_high_low_uses_cuda_rvc_package_on_nvidia(self):
         specs = [req.spec for req in F5TTSInstallSpec.requirements("high+low", {"gpu_vendor": "NVIDIA"})]

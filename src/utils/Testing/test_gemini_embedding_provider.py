@@ -27,7 +27,7 @@ class _Response:
         return {"embeddings": [{"values": [3.0, 4.0]}]}
 
 
-class _Requests:
+class _HttpClient:
     def __init__(self) -> None:
         self.calls = []
 
@@ -35,15 +35,18 @@ class _Requests:
         self.calls.append((url, json, headers, timeout))
         return _Response()
 
+    @staticmethod
+    def raise_for_status(response):
+        return response.raise_for_status()
+
 
 class GeminiEmbeddingProviderTests(unittest.TestCase):
     def test_key_is_sent_in_header_not_url(self) -> None:
-        requests = _Requests()
-        provider = GeminiEmbeddingProvider()
+        http_client = _HttpClient()
+        provider = GeminiEmbeddingProvider(http_client=http_client)
         request = EmbeddingRequest(texts=["test"], api_key="secret-key")
 
         result = provider._embed_batch(
-            requests,
             ["secret-key"],
             "https://example.test/v1beta",
             "text-embedding-004",
@@ -53,7 +56,7 @@ class GeminiEmbeddingProviderTests(unittest.TestCase):
         )
 
         self.assertEqual(len(result), 1)
-        url, _payload, headers, _timeout = requests.calls[0]
+        url, _payload, headers, _timeout = http_client.calls[0]
         self.assertNotIn("secret-key", url)
         self.assertNotIn("?key=", url)
         self.assertEqual(headers["x-goog-api-key"], "secret-key")

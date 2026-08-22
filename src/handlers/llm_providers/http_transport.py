@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import threading
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
+from core.networking import HttpClientRegistry, ManagedHttpClient, shared_http_client_registry
 from main_logger import logger
 
 from .request_lifecycle import (
@@ -22,11 +21,6 @@ from .request_lifecycle import (
 class LLMRequestLike(Protocol):
     api_url: str | None
     extra: dict[str, Any]
-
-
-class TransportProfile(str, Enum):
-    REMOTE = "remote"
-    LOCAL = "local"
 
 
 def is_loopback_url(url: str) -> bool:
@@ -97,39 +91,39 @@ def resolve_httpx_timeout(req: LLMRequestLike, *, payload_size_bytes: int = 0) -
     ).to_httpx()
 
 
-class LLMHttpTransport:
+class LLMHttpClient:
     def __init__(
         self,
         *,
         enable_http2: bool = True,
         client_factory: OptionalClientFactory = None,
+        registry: HttpClientRegistry | None = None,
+        service_id: str = "llm",
     ) -> None:
         self._enable_http2 = bool(enable_http2)
         self._client_factory = client_factory
         self._http2_available = importlib.util.find_spec("h2") is not None
-        self._clients: dict[TransportProfile, httpx.Client] = {}
-        self._lock = threading.RLock()
-        self._closed = False
+        self._owns_registry = registry is None and client_factory is not None
+        self._registry = registry or (
+            HttpClientRegistry() if self._owns_registry else shared_http_client_registry()
+        )
+        self._service_id = str(service_id or "llm").strip().lower()
         if self._enable_http2 and not self._http2_available:
             logger.warning(
                 "LLM HTTP/2 support is unavailable because the optional 'h2' package is not installed; "
                 "HTTP/1.1 will be used."
             )
+        self._http_client = self._registry.acquire(
+            self._service_id,
+            client_factory=self._create_client,
+        )
 
     @property
     def http2_enabled(self) -> bool:
         return self._enable_http2 and self._http2_available
 
     def client_for_url(self, url: str) -> httpx.Client:
-        profile = TransportProfile.LOCAL if is_loopback_url(url) else TransportProfile.REMOTE
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("LLM HTTP transport is closed")
-            client = self._clients.get(profile)
-            if client is None:
-                client = self._create_client(profile)
-                self._clients[profile] = client
-            return client
+        return self._http_client.client_for_sdk()
 
     def post_json(
         self,
@@ -141,17 +135,16 @@ class LLMHttpTransport:
         stream: bool,
     ) -> httpx.Response:
         check_request_cancelled(req)
-        client = self.client_for_url(url)
         payload_size = estimate_json_size(payload)
         timeout = LLMTimeoutPolicy.for_request(req, payload_size_bytes=payload_size)
-        request = client.build_request(
+        request = self._http_client.build_request(
             "POST",
             url,
             headers=dict(headers or {}),
             json=payload,
             timeout=timeout.to_httpx(),
         )
-        response = client.send(request, stream=True)
+        response = self._http_client.send(request, stream=True)
         record_response_headers_received(req)
         register_cancellable_resource(req, response)
         if not stream:
@@ -162,8 +155,8 @@ class LLMHttpTransport:
                 raise
         check_request_cancelled(req)
         logger.debug(
-            "LLM HTTP response | profile=%s | protocol=%s | status=%s | payload_bytes=%s",
-            TransportProfile.LOCAL.value if is_loopback_url(url) else TransportProfile.REMOTE.value,
+            "LLM HTTP response | destination=%s | protocol=%s | status=%s | payload_bytes=%s",
+            "loopback" if is_loopback_url(url) else "remote",
             response.http_version,
             response.status_code,
             payload_size,
@@ -177,49 +170,37 @@ class LLMHttpTransport:
         headers: Mapping[str, str] | None = None,
         timeout: float | httpx.Timeout = 30.0,
     ) -> httpx.Response:
-        client = self.client_for_url(url)
-        response = client.get(
+        response = self._http_client.get(
             url,
             headers=dict(headers or {}),
             timeout=timeout,
         )
         logger.debug(
-            "LLM metadata HTTP response | profile=%s | protocol=%s | status=%s",
-            TransportProfile.LOCAL.value if is_loopback_url(url) else TransportProfile.REMOTE.value,
+            "LLM metadata HTTP response | destination=%s | protocol=%s | status=%s",
+            "loopback" if is_loopback_url(url) else "remote",
             response.http_version,
             response.status_code,
         )
         return response
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            clients = tuple(self._clients.values())
-            self._clients.clear()
-        for client in clients:
-            try:
-                client.close()
-            except Exception:
-                logger.debug("Failed to close LLM HTTP client", exc_info=True)
+        self._http_client.close()
+        if self._owns_registry:
+            self._registry.close()
 
-    def _create_client(self, profile: TransportProfile) -> httpx.Client:
-        is_local = profile is TransportProfile.LOCAL
+    def _create_client(self) -> httpx.Client:
         if self._client_factory is not None:
-            return self._client_factory(profile, bool(self.http2_enabled and not is_local))
+            return self._client_factory(self._service_id, self.http2_enabled)
         return httpx.Client(
             http1=True,
-            http2=bool(self.http2_enabled and not is_local),
+            http2=self.http2_enabled,
             follow_redirects=True,
             limits=httpx.Limits(
-                max_connections=8 if is_local else 16,
-                max_keepalive_connections=4 if is_local else 8,
+                max_connections=16,
+                max_keepalive_connections=8,
                 keepalive_expiry=30.0,
             ),
-            # Local model servers must never inherit a broken corporate/system proxy.
-            # Remote providers still respect HTTP(S)_PROXY and certificate settings.
-            trust_env=not is_local,
+            trust_env=True,
         )
 
 
@@ -231,13 +212,12 @@ def _positive_float(value: Any, default: float) -> float:
     return max(0.1, result)
 
 
-OptionalClientFactory = Callable[[TransportProfile, bool], httpx.Client] | None
+OptionalClientFactory = Callable[[str, bool], httpx.Client] | None
 
 
 __all__ = [
-    "LLMHttpTransport",
+    "LLMHttpClient",
     "LLMTimeoutPolicy",
-    "TransportProfile",
     "estimate_json_size",
     "is_loopback_url",
     "resolve_httpx_timeout",

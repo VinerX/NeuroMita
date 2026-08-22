@@ -10,6 +10,7 @@ from .base_model import IVoiceModel
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
+from core.app_paths import checkpoints_dir
 from core.backends import BackendKind, get_backend_service
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
@@ -22,7 +23,6 @@ from handlers.voice_models.install_plan_helpers import (
 from handlers.voice_models.rvc_runtime_assets import (
     CUDA_RVC_RUNTIME_ASSETS,
     ONNX_RVC_RUNTIME_ASSETS,
-    application_root,
     runtime_asset_download_action,
     runtime_asset_requirements,
 )
@@ -113,7 +113,7 @@ class F5TTSInstallSpec:
 
     @classmethod
     def vocoder_dir(cls) -> str:
-        return os.path.join(application_root(), "checkpoints", "vocos-mel-24khz")
+        return str(checkpoints_dir() / "vocos-mel-24khz")
 
     @classmethod
     def _vocoder_asset_path(cls, filename: str) -> str:
@@ -159,7 +159,7 @@ class F5TTSInstallSpec:
         """Папка весов для языка. RU остаётся в корне checkpoints/F5-TTS
         (обратная совместимость с уже скачанными весами), EN/мультиязычные —
         в подпапке, чтобы наборы весов не перетирали друг друга."""
-        base = os.path.join(application_root(), "checkpoints", "F5-TTS")
+        base = str(checkpoints_dir() / "F5-TTS")
         return base if lang == "ru" else os.path.join(base, lang)
 
     @classmethod
@@ -368,7 +368,7 @@ class F5TTSInstallSpec:
                 pip_uninstall_action(pkgs, description=_("Удаление компонентов...", "Uninstalling components...")),
                 remove_paths_action(
                     [
-                        os.path.join(application_root(), "checkpoints", "F5-TTS"),
+                        str(checkpoints_dir() / "F5-TTS"),
                         cls.vocoder_dir(),
                     ],
                     description=_("Удаление файлов модели...", "Removing model files..."),

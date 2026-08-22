@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 import threading
-import types
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -323,12 +321,24 @@ class _Response:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
-    def iter_content(self, chunk_size: int):
+    def iter_bytes(self, chunk_size: int):
         _ = chunk_size
         for index, piece in enumerate(self._pieces):
             if self._before_piece is not None:
                 self._before_piece(index)
             yield piece
+
+
+class _HttpClient:
+    def __init__(self, stream_factory):
+        self._stream_factory = stream_factory
+
+    def stream(self, *args, **kwargs):
+        return self._stream_factory(*args, **kwargs)
+
+    @staticmethod
+    def raise_for_status(response):
+        return response.raise_for_status()
 
 
 def test_download_resumes_existing_partial_file(tmp_path: Path) -> None:
@@ -341,8 +351,10 @@ def test_download_resumes_existing_partial_file(tmp_path: Path) -> None:
     )
     captured_headers: dict[str, str] = {}
 
-    def get(_url, *, stream, timeout, headers):
-        assert stream and timeout == 30
+    def stream(method, _url, *, timeout, headers):
+        assert method == "GET"
+        assert timeout.connect == 30.0
+        assert timeout.read == 30.0
         captured_headers.update(headers)
         return _Response(
             [b"def"],
@@ -350,8 +362,8 @@ def test_download_resumes_existing_partial_file(tmp_path: Path) -> None:
             headers={"Content-Range": "bytes 3-5/6", "ETag": "tag"},
         )
 
-    fake_requests = types.SimpleNamespace(get=get)
-    with patch.dict(sys.modules, {"requests": fake_requests}):
+    fake_http_client = _HttpClient(stream)
+    with patch("updater._UPDATE_HTTP_CLIENT", fake_http_client):
         digest = _download(
             "https://example/archive.zip",
             destination,
@@ -373,15 +385,15 @@ def test_cancelled_download_keeps_partial_for_next_resume(tmp_path: Path) -> Non
         if index == 1:
             stop.set()
 
-    fake_requests = types.SimpleNamespace(
-        get=lambda *_args, **_kwargs: _Response(
+    fake_http_client = _HttpClient(
+        lambda *_args, **_kwargs: _Response(
             [b"abc", b"def"],
             status=200,
             headers={"Content-Length": "6", "ETag": "tag"},
             before_piece=before_piece,
         )
     )
-    with patch.dict(sys.modules, {"requests": fake_requests}):
+    with patch("updater._UPDATE_HTTP_CLIENT", fake_http_client):
         with pytest.raises(UpdateCancelled):
             _download(
                 "https://example/archive.zip",

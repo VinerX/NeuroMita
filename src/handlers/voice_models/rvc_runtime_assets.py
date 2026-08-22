@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from typing import Iterable
 
+from core.app_paths import base_dir
 from core.install_requirements import InstallRequirement
 from core.install_types import InstallAction
 
@@ -25,12 +25,8 @@ ONNX_RVC_RUNTIME_ASSETS: tuple[RuntimeAsset, ...] = (
 )
 
 
-def application_root() -> str:
-    return os.path.abspath(os.environ.get("NEUROMITA_BASE_DIR") or os.getcwd())
-
-
 def runtime_asset_path(filename: str) -> str:
-    return os.path.join(application_root(), filename)
+    return str(base_dir() / filename)
 
 
 def runtime_asset_requirements(

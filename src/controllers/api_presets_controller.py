@@ -18,7 +18,7 @@ from core.task_supervisor import task_supervisor
 import httpx
 
 from presets.provider_host_metadata import infer_provider_currency
-from handlers.llm_providers.http_transport import LLMHttpTransport
+from handlers.llm_providers.http_transport import LLMHttpClient
 
 
 @dataclass
@@ -98,9 +98,9 @@ class ApiPresetsController(ApiPresetService):
         "tokens_per_second": 0.5,
     }
 
-    def __init__(self, http_transport: LLMHttpTransport | None = None):
+    def __init__(self, http_transport: LLMHttpClient | None = None):
         self.event_bus = get_event_bus()
-        self._http_transport = http_transport or LLMHttpTransport()
+        self._http_transport = http_transport or LLMHttpClient(service_id="api-presets")
         self._owns_http_transport = http_transport is None
 
         self.templates_path = settings_path("api_templates.json", create_parent=True)

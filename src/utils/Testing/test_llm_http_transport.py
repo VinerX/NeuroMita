@@ -24,9 +24,8 @@ from handlers.llm_providers.common_provider import CommonProvider
 from handlers.llm_providers.errors import LLMProviderError, coerce_provider_error
 from handlers.llm_providers.gemini_provider import GeminiProvider
 from handlers.llm_providers.http_transport import (
-    LLMHttpTransport,
+    LLMHttpClient,
     LLMTimeoutPolicy,
-    TransportProfile,
 )
 from handlers.llm_providers.openai_provider import OpenAIProvider
 from handlers.llm_providers.openai_compatible import OpenAICompatibleProvider
@@ -61,7 +60,7 @@ def test_timeout_policy_separates_network_phases_and_scales_large_uploads():
     assert large.write <= 180.0
 
 
-def test_localhost_uses_fast_connect_profile_without_reducing_stream_read_budget():
+def test_localhost_uses_fast_connect_timeout_without_reducing_stream_read_budget():
     req = _request("http://127.0.0.1:11434/v1/chat/completions")
     req.extra["http_read_timeout_seconds"] = 300
 
@@ -71,27 +70,22 @@ def test_localhost_uses_fast_connect_profile_without_reducing_stream_read_budget
     assert policy.read == 300.0
 
 
-def test_transport_reuses_profile_clients_and_negotiates_http2_only_for_remote():
-    created: list[tuple[TransportProfile, bool]] = []
+def test_transport_reuses_registered_service_client():
+    created: list[tuple[str, bool]] = []
 
-    def factory(profile: TransportProfile, http2: bool) -> httpx.Client:
-        created.append((profile, http2))
+    def factory(service_id: str, http2: bool) -> httpx.Client:
+        created.append((service_id, http2))
         return httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True})))
 
-    transport = LLMHttpTransport(enable_http2=True, client_factory=factory)
-    transport._http2_available = True
+    transport = LLMHttpClient(enable_http2=False, client_factory=factory)
 
     assert transport.client_for_url("https://example.test") is transport.client_for_url("https://other.test")
-    transport.client_for_url("http://localhost:11434")
-
-    assert created == [
-        (TransportProfile.REMOTE, True),
-        (TransportProfile.LOCAL, False),
-    ]
+    assert transport.client_for_url("http://localhost:11434") is transport.client_for_url("https://example.test")
+    assert created == [("llm", False)]
     transport.close()
 
 
-def test_local_transport_does_not_inherit_environment_proxy(monkeypatch):
+def test_transport_client_is_created_with_shared_connection_limits(monkeypatch):
     created = []
 
     class DummyClient:
@@ -101,14 +95,15 @@ def test_local_transport_does_not_inherit_environment_proxy(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr("handlers.llm_providers.http_transport.httpx.Client", DummyClient)
-    transport = LLMHttpTransport(enable_http2=False)
+    transport = LLMHttpClient(
+        enable_http2=False,
+        client_factory=lambda _service_id, _http2: DummyClient(),
+    )
 
     transport.client_for_url("http://127.0.0.1:11434/v1")
     transport.client_for_url("https://example.test/v1")
 
-    assert created[0]["trust_env"] is False
-    assert created[1]["trust_env"] is True
+    assert len(created) == 1
     transport.close()
 
 
@@ -119,9 +114,9 @@ def test_transport_posts_json_with_phase_timeouts_and_returns_streamable_respons
         captured["timeout"] = request.extensions["timeout"]
         return httpx.Response(200, text='data: {"choices":[]}\n\ndata: [DONE]\n\n')
 
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(transport=httpx.MockTransport(handler)),
+        client_factory=lambda _service_id, _http2: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     req = _request()
     response = transport.post_json(req, req.api_url, headers={}, payload={"messages": []}, stream=True)
@@ -137,16 +132,16 @@ def test_transport_posts_json_with_phase_timeouts_and_returns_streamable_respons
     transport.close()
 
 
-def test_transport_get_reuses_profile_client_and_applies_timeout():
+def test_transport_get_reuses_service_client_and_applies_timeout():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["timeout"] = request.extensions["timeout"]
         return httpx.Response(200, json={"data": []})
 
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(handler)
         ),
     )
@@ -160,7 +155,6 @@ def test_transport_get_reuses_profile_client_and_applies_timeout():
         "write": 3.0,
         "pool": 3.0,
     }
-    assert len(transport._clients) == 1
     response.close()
     transport.close()
 
@@ -348,9 +342,9 @@ def test_openai_compatible_provider_streams_sse_through_normalized_accumulator()
         'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n'
         "data: [DONE]\n\n"
     )
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))
         ),
     )
@@ -395,9 +389,9 @@ def test_openai_compatible_stream_failure_never_returns_partial_success(bad_even
         f"data: {bad_event}\n\n"
         "data: [DONE]\n\n"
     )
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))
         ),
     )
@@ -431,9 +425,9 @@ def test_gemini_provider_uses_real_sse_endpoint_and_streams_deltas():
         requested_urls.append(str(request.url))
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
 
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(transport=httpx.MockTransport(handler)),
+        client_factory=lambda _service_id, _http2: httpx.Client(transport=httpx.MockTransport(handler)),
     )
     provider = GeminiProvider(http_transport=transport)
     req = LLMRequest(
@@ -461,9 +455,9 @@ def test_gemini_stream_error_never_returns_partial_success():
         'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n'
         'data: {"error":{"code":503,"message":"upstream failed"}}\n\n'
     )
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     200,
@@ -493,9 +487,9 @@ def test_gemini_stream_error_never_returns_partial_success():
 
 
 def test_gemini_http_error_preserves_retry_after_header():
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     429,
@@ -521,9 +515,9 @@ def test_gemini_http_error_preserves_retry_after_header():
 
 
 def test_openai_sdk_adapter_reuses_httpx_pool_and_disables_hidden_retries():
-    transport = LLMHttpTransport(
+    transport = LLMHttpClient(
         enable_http2=False,
-        client_factory=lambda _profile, _http2: httpx.Client(
+        client_factory=lambda _service_id, _http2: httpx.Client(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, json={}))
         ),
     )

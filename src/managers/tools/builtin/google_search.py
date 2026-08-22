@@ -1,14 +1,16 @@
 # src/managers/tools/builtin/google_search.py
-import os
 import json
+import os
 from typing import Any
 
-import requests
-
 from core.events import Events
-from managers.tools.base import Tool
+from core.networking import NetworkRequestError, shared_http_client_registry
 from main_logger import logger
 from managers.settings_manager import SettingsManager
+from managers.tools.base import Tool
+
+_HTTP_CLIENT = shared_http_client_registry().acquire("google-search")
+
 
 class GoogleSearchTool(Tool):
     name = "google_search"
@@ -51,8 +53,8 @@ class GoogleSearchTool(Tool):
         }
 
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
+            response = _HTTP_CLIENT.get(url, params=params, timeout=10)
+            _HTTP_CLIENT.raise_for_status(response)
             data = response.json()
 
             items = data.get("items", [])
@@ -69,7 +71,7 @@ class GoogleSearchTool(Tool):
 
             return json.dumps(results, ensure_ascii=False, indent=2)
 
-        except requests.exceptions.RequestException as e:
+        except NetworkRequestError as e:
             logger.error(f"Google Search API error: {e}")
             return f"[google_search] Ошибка сети или API: {e}"
         except Exception as e:

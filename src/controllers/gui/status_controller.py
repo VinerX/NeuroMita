@@ -11,6 +11,8 @@ class StatusController(BaseController):
         super().__init__(main_controller, view)
         self._last_detailed_error_text = ""
         self._last_detailed_error_ts = 0.0
+        self._last_chat_network_error_text = ""
+        self._last_chat_network_error_ts = 0.0
 
     def subscribe_to_events(self):
         self.event_bus.subscribe(Events.GUI.UPDATE_STATUS_COLORS, self._on_update_status_colors, weak=False)
@@ -135,6 +137,7 @@ class StatusController(BaseController):
         provider_error = data.get("provider_error")
         provider_message = provider_error.get("message") if isinstance(provider_error, dict) else ""
         error_message = provider_message or data.get("error", "Неизвестная ошибка")
+        provider_code = str(provider_error.get("code") or "") if isinstance(provider_error, dict) else ""
 
         if error_message and self._is_generic_generation_error(error_message):
             if self._last_detailed_error_text and (time.time() - self._last_detailed_error_ts) < 2.0:
@@ -145,6 +148,24 @@ class StatusController(BaseController):
             self._last_detailed_error_ts = time.time()
 
         self.show_mita_error(error_message)
+        if provider_code.startswith(("network.", "timeout.")):
+            self._show_network_error_in_chat(error_message)
+
+    def _show_network_error_in_chat(self, error_message: str) -> None:
+        message = str(error_message or "").strip()
+        if not message:
+            return
+        now = time.time()
+        if (
+            message == self._last_chat_network_error_text
+            and (now - self._last_chat_network_error_ts) < 2.0
+        ):
+            return
+        self._last_chat_network_error_text = message
+        self._last_chat_network_error_ts = now
+        signal = getattr(self.view, "update_chat_signal", None) if self.view else None
+        if signal is not None:
+            signal.emit("event", f"⚠ {message}", False, "")
 
     @staticmethod
     def _is_generic_generation_error(error_message: str) -> bool:

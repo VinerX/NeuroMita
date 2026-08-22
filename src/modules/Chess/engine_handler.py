@@ -1,20 +1,25 @@
 # File: Modules/Chess/engine_handler.py
-import chess
-import chess.engine
-import requests
 import gzip
-import shutil
 import os
 import platform
-import zipfile
-import tarfile
-import stat # для chmod
 import queue # Для межпроцессного взаимодействия
+import shutil
+import stat # для chmod
+import tarfile
 import time
+import zipfile
 
+import chess
+import chess.engine
+
+from core.networking import NetworkRequestError, shared_http_client_registry
 from core.task_supervisor import task_supervisor
-
 from .board_logic import PureBoardLogic # Используем относительный импорт
+
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "chess-engine-downloader",
+    client_options={"follow_redirects": True},
+)
 
 LC0_VERSION = "v0.31.2" 
 LC0_CPU_BACKEND = "cpu-dnnl"
@@ -35,14 +40,14 @@ def download_file(url, dest_path, desc=""):
     print(f"CONSOLE (engine_handler download_file): Скачивание {desc} ({url})...")
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, stream=True, timeout=60, headers=headers, allow_redirects=True)
-        response.raise_for_status()
-        with open(dest_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
+        with _HTTP_CLIENT.stream("GET", url, timeout=60, headers=headers) as response:
+            _HTTP_CLIENT.raise_for_status(response)
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_bytes(chunk_size=8192): f.write(chunk)
         print(f"CONSOLE (engine_handler download_file): {desc} УСПЕШНО СКАЧАН: {dest_path}")
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {e}", exc_info=True)
+    except NetworkRequestError as e:
+        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {e}")
         return False
 
 def extract_archive(archive_path, dest_dir, executable_name_in_archive):

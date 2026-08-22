@@ -246,9 +246,9 @@ class BaseProvider(ABC):
 
     def __init__(self, *, http_transport: Any = None) -> None:
         if http_transport is None:
-            from .http_transport import LLMHttpTransport
+            from .http_transport import LLMHttpClient
 
-            http_transport = LLMHttpTransport()
+            http_transport = LLMHttpClient()
             self._owns_http_transport = True
         else:
             self._owns_http_transport = False
