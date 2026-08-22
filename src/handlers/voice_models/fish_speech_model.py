@@ -23,8 +23,15 @@ from handlers.voice_models.context import VoiceRuntimeContext
 from handlers.voice_models.install_plan_helpers import (
     patch_tts_with_rvc_audio,
     pip_uninstall_action,
+    remove_paths_action,
     rvc_python_compat_error,
     warning_action,
+)
+from handlers.voice_models.rvc_runtime_assets import (
+    CUDA_RVC_RUNTIME_ASSETS,
+    application_root,
+    runtime_asset_download_action,
+    runtime_asset_requirements,
 )
 from installables.compatibility_specs import (
     FISH_CUDA_COMPATIBILITY,
@@ -34,6 +41,25 @@ from installables.compatibility_specs import (
 
 
 class FishSpeechInstallSpec:
+    _MODEL_REPO_URL = "https://huggingface.co/fishaudio/fish-speech-1.5/resolve/main"
+    _MODEL_ASSETS = (
+        ("model.pth", f"{_MODEL_REPO_URL}/model.pth"),
+        ("tokenizer.tiktoken", f"{_MODEL_REPO_URL}/tokenizer.tiktoken"),
+        ("config.json", f"{_MODEL_REPO_URL}/config.json"),
+        (
+            "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+            f"{_MODEL_REPO_URL}/firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+        ),
+    )
+
+    @classmethod
+    def checkpoint_dir(cls) -> str:
+        return os.path.join(application_root(), "checkpoints", "fish-speech-1.5")
+
+    @classmethod
+    def _model_asset_path(cls, filename: str) -> str:
+        return os.path.join(cls.checkpoint_dir(), filename)
+
     @classmethod
     def supported_model_ids(cls) -> list[str]:
         return ["medium", "medium+", "medium+low"]
@@ -54,6 +80,17 @@ class FishSpeechInstallSpec:
             req.append(InstallRequirement(id="triton", kind="python_dist", spec="triton-windows<3.4", required=True))
         if mid == "medium+low":
             req.append(InstallRequirement(id="tts_with_rvc", kind="python_dist", spec="tts-with-rvc", required=True))
+        req.extend(
+            InstallRequirement(
+                id=f"fish_asset_{filename}",
+                kind="file",
+                path_fn=lambda _ctx, name=filename: cls._model_asset_path(name),
+                required=True,
+            )
+            for filename, _url in cls._MODEL_ASSETS
+        )
+        if mid == "medium+low":
+            req.extend(runtime_asset_requirements(CUDA_RVC_RUNTIME_ASSETS))
         return req
     
     @classmethod
@@ -324,12 +361,41 @@ class FishSpeechInstallSpec:
             )
         )
 
+        actions.append(
+            InstallAction(
+                type="download_http",
+                description=_(
+                    "Загрузка весов Fish Speech...",
+                    "Downloading Fish Speech weights...",
+                ),
+                progress=50,
+                progress_to=64,
+                files=[
+                    {"url": url, "dest": cls._model_asset_path(filename)}
+                    for filename, url in cls._MODEL_ASSETS
+                ],
+            )
+        )
+
+        if mid == "medium+low":
+            actions.append(
+                runtime_asset_download_action(
+                    CUDA_RVC_RUNTIME_ASSETS,
+                    description=_(
+                        "Загрузка моделей RVC...",
+                        "Downloading RVC model assets...",
+                    ),
+                    progress=65,
+                    progress_to=76,
+                )
+            )
+
         if mid in ("medium+", "medium+low"):
             actions.append(
                 InstallAction(
                     type="pip",
                     description=_("Установка Triton...", "Installing Triton..."),
-                    progress=65,
+                    progress=78,
                     packages=["triton-windows<3.4"],
                     extra_args=["--upgrade"],
                 )
@@ -338,7 +404,7 @@ class FishSpeechInstallSpec:
                 InstallAction(
                     type="call",
                     description=_("Настройка компиляции Fish Speech+...", "Configuring Fish Speech+ compilation..."),
-                    progress=80,
+                    progress=88,
                     fn=cls._compile_call(optional=True),
                 )
             )
@@ -382,7 +448,12 @@ class FishSpeechInstallSpec:
         if mid == "medium":
             return InstallPlan(
                 actions=[
-                    pip_uninstall_action(["fish-speech-lib"], description=_("Удаление fish-speech-lib...", "Uninstalling fish-speech-lib..."), progress=20)
+                    pip_uninstall_action(["fish-speech-lib"], description=_("Удаление fish-speech-lib...", "Uninstalling fish-speech-lib..."), progress=20),
+                    remove_paths_action(
+                        [cls.checkpoint_dir()],
+                        description=_("Удаление весов Fish Speech...", "Removing Fish Speech weights..."),
+                        progress=85,
+                    ),
                 ],
                 ok_status=_("Удалено", "Uninstalled"),
             )
@@ -397,7 +468,12 @@ class FishSpeechInstallSpec:
                         packages,
                         description=_("Удаление компонентов Fish Speech...", "Uninstalling Fish Speech components..."),
                         progress=20,
-                    )
+                    ),
+                    remove_paths_action(
+                        [cls.checkpoint_dir()],
+                        description=_("Удаление весов Fish Speech...", "Removing Fish Speech weights..."),
+                        progress=85,
+                    ),
                 ],
                 ok_status=_("Удалено", "Uninstalled"),
             )
@@ -693,7 +769,17 @@ class FishSpeechModel(IVoiceModel):
             device = settings.get("fsprvc_fsp_device" if mode == "medium+low" else "device", "cuda")
             half = settings.get("fsprvc_fsp_half" if mode == "medium+low" else "half", "True" if compile_model else "False").lower() == "true"
 
-            self.current_fish_speech = self.fish_speech_module(device=device, half=half, compile_model=compile_model)
+            checkpoint_dir = FishSpeechInstallSpec.checkpoint_dir()
+            self.current_fish_speech = self.fish_speech_module(
+                device=device,
+                half=half,
+                compile_model=compile_model,
+                llama_checkpoint_path=checkpoint_dir,
+                decoder_checkpoint_path=os.path.join(
+                    checkpoint_dir,
+                    "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+                ),
+            )
 
             self.parent.first_compiled = compile_model
             logger.info(f"FishSpeech инициализирован (compile={compile_model})")

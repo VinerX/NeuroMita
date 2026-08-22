@@ -19,6 +19,13 @@ from handlers.voice_models.install_plan_helpers import (
     rvc_python_compat_error,
     warning_action,
 )
+from handlers.voice_models.rvc_runtime_assets import (
+    CUDA_RVC_RUNTIME_ASSETS,
+    ONNX_RVC_RUNTIME_ASSETS,
+    application_root,
+    runtime_asset_download_action,
+    runtime_asset_requirements,
+)
 from installables.compatibility_specs import (
     F5_CPU_FALLBACK_COMPATIBILITY,
     F5_RVC_FALLBACK_COMPATIBILITY,
@@ -26,6 +33,12 @@ from installables.compatibility_specs import (
 from handlers.voice_models.context import VoiceRuntimeContext
 
 class F5TTSInstallSpec:
+    _VOCODER_REPO_URL = "https://huggingface.co/charactr/vocos-mel-24khz/resolve/main"
+    _VOCODER_ASSETS = (
+        ("config.yaml", f"{_VOCODER_REPO_URL}/config.yaml"),
+        ("pytorch_model.bin", f"{_VOCODER_REPO_URL}/pytorch_model.bin"),
+    )
+
     @classmethod
     def _log_final_check_failure(cls, result: dict, callbacks=None) -> None:
         log = getattr(callbacks, "log", None) if callbacks is not None else None
@@ -92,6 +105,20 @@ class F5TTSInstallSpec:
         spec = cls._rvc_package_spec(ctx)
         return spec.split("[", 1)[0]
 
+    @classmethod
+    def _rvc_runtime_assets(cls, ctx: dict):
+        if cls._rvc_package_spec(ctx).startswith("tts-with-rvc-onnx"):
+            return ONNX_RVC_RUNTIME_ASSETS
+        return CUDA_RVC_RUNTIME_ASSETS
+
+    @classmethod
+    def vocoder_dir(cls) -> str:
+        return os.path.join(application_root(), "checkpoints", "vocos-mel-24khz")
+
+    @classmethod
+    def _vocoder_asset_path(cls, filename: str) -> str:
+        return os.path.join(cls.vocoder_dir(), filename)
+
     # --- Языковые веса F5 -------------------------------------------------
     # Раньше веса были захардкожены на русскую модель (F5-TTS_RUSSIAN), хотя
     # карточка обещала «RUSSIAN / ENGLISH». Теперь набор весов выбирается по
@@ -132,7 +159,7 @@ class F5TTSInstallSpec:
         """Папка весов для языка. RU остаётся в корне checkpoints/F5-TTS
         (обратная совместимость с уже скачанными весами), EN/мультиязычные —
         в подпапке, чтобы наборы весов не перетирали друг друга."""
-        base = os.path.join("checkpoints", "F5-TTS")
+        base = os.path.join(application_root(), "checkpoints", "F5-TTS")
         return base if lang == "ru" else os.path.join(base, lang)
 
     @classmethod
@@ -169,6 +196,15 @@ class F5TTSInstallSpec:
             InstallRequirement(id="ckpt", kind="file", path=ckpt, required=True),
             InstallRequirement(id="vocab", kind="file", path=vocab, required=True),
         ]
+        req.extend(
+            InstallRequirement(
+                id=f"vocoder_asset_{filename}",
+                kind="file",
+                path_fn=lambda _ctx, name=filename: cls._vocoder_asset_path(name),
+                required=True,
+            )
+            for filename, _url in cls._VOCODER_ASSETS
+        )
 
         if str(model_id) == "high+low":
             req.append(
@@ -179,6 +215,7 @@ class F5TTSInstallSpec:
                     required=True,
                 )
             )
+            req.extend(runtime_asset_requirements(cls._rvc_runtime_assets(ctx)))
 
         return req
 
@@ -258,10 +295,39 @@ class F5TTSInstallSpec:
                 type="download_http",
                 description=weights_desc,
                 progress=60,
-                progress_to=90,
+                progress_to=82,
                 files=cls._weight_files(lang, ckpt_dest, vocab_dest),
             )
         )
+
+        actions.append(
+            InstallAction(
+                type="download_http",
+                description=_(
+                    "Загрузка вокодера F5-TTS...",
+                    "Downloading F5-TTS vocoder...",
+                ),
+                progress=83,
+                progress_to=90,
+                files=[
+                    {"url": url, "dest": cls._vocoder_asset_path(filename)}
+                    for filename, url in cls._VOCODER_ASSETS
+                ],
+            )
+        )
+
+        if mid == "high+low":
+            actions.append(
+                runtime_asset_download_action(
+                    cls._rvc_runtime_assets(ctx),
+                    description=_(
+                        "Загрузка моделей RVC...",
+                        "Downloading RVC model assets...",
+                    ),
+                    progress=91,
+                    progress_to=96,
+                )
+            )
 
         ctx_outer = dict(ctx or {})
 
@@ -300,7 +366,14 @@ class F5TTSInstallSpec:
         return InstallPlan(
             actions=[
                 pip_uninstall_action(pkgs, description=_("Удаление компонентов...", "Uninstalling components...")),
-                remove_paths_action([os.path.join("checkpoints", "F5-TTS")], description=_("Удаление файлов модели...", "Removing model files..."), progress=85),
+                remove_paths_action(
+                    [
+                        os.path.join(application_root(), "checkpoints", "F5-TTS"),
+                        cls.vocoder_dir(),
+                    ],
+                    description=_("Удаление файлов модели...", "Removing model files..."),
+                    progress=85,
+                ),
             ],
             ok_status=_("Удалено", "Uninstalled"),
         )
@@ -486,6 +559,8 @@ class F5TTSModel(IVoiceModel):
             model="F5TTS_v1_Base",
             ckpt_file=ckpt_path,
             vocab_file=vocab_path,
+            load_vocoder_from_local=True,
+            vocoder_local_path=F5TTSInstallSpec.vocoder_dir(),
             device=device,
         )
 

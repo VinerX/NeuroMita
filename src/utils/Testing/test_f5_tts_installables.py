@@ -1,4 +1,7 @@
 import unittest
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -7,6 +10,57 @@ from handlers.voice_models.f5_tts_model import F5TTSInstallSpec
 
 
 class F5TTSInstallablesTests(unittest.TestCase):
+    def test_required_assets_include_vocoder_and_backend_specific_rvc(self):
+        with tempfile.TemporaryDirectory() as base_dir, patch.dict(
+            os.environ,
+            {"NEUROMITA_BASE_DIR": base_dir},
+            clear=False,
+        ):
+            cuda_files = {
+                Path(req.path_fn({}) if req.path_fn else req.path).name
+                for req in F5TTSInstallSpec.requirements(
+                    "high+low", {"gpu_vendor": "NVIDIA"}
+                )
+                if req.kind == "file"
+            }
+            onnx_files = {
+                Path(req.path_fn({}) if req.path_fn else req.path).name
+                for req in F5TTSInstallSpec.requirements(
+                    "high+low", {"gpu_vendor": "AMD"}
+                )
+                if req.kind == "file"
+            }
+
+        common = {"model.safetensors", "vocab.txt", "config.yaml", "pytorch_model.bin"}
+        self.assertTrue(common.issubset(cuda_files))
+        self.assertTrue(common.issubset(onnx_files))
+        self.assertTrue({"hubert_base.pt", "rmvpe.pt"}.issubset(cuda_files))
+        self.assertTrue({"vec-768-layer-12.onnx", "rmvpe.onnx"}.issubset(onnx_files))
+
+    def test_install_plan_downloads_vocoder_and_rvc_before_runtime(self):
+        with tempfile.TemporaryDirectory() as base_dir, patch.dict(
+            os.environ,
+            {"NEUROMITA_BASE_DIR": base_dir},
+            clear=False,
+        ), patch.object(F5TTSInstallSpec, "is_installed", return_value=False):
+            plan = F5TTSInstallSpec.build_install_plan(
+                "high+low", {"gpu_vendor": "NVIDIA"}
+            )
+
+        files = [
+            item
+            for action in plan.actions
+            if action.type == "download_http"
+            for item in action.files
+        ]
+        destinations = {Path(item["dest"]) for item in files}
+        self.assertIn(
+            Path(base_dir) / "checkpoints" / "vocos-mel-24khz" / "pytorch_model.bin",
+            destinations,
+        )
+        self.assertIn(Path(base_dir) / "hubert_base.pt", destinations)
+        self.assertIn(Path(base_dir) / "rmvpe.pt", destinations)
+
     def test_high_low_uses_cuda_rvc_package_on_nvidia(self):
         specs = [req.spec for req in F5TTSInstallSpec.requirements("high+low", {"gpu_vendor": "NVIDIA"})]
 

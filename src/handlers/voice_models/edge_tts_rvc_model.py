@@ -25,6 +25,12 @@ from handlers.voice_models.install_plan_helpers import (
     rvc_python_compat_error,
     warning_action,
 )
+from handlers.voice_models.rvc_runtime_assets import (
+    CUDA_RVC_RUNTIME_ASSETS,
+    ONNX_RVC_RUNTIME_ASSETS,
+    runtime_asset_download_action,
+    runtime_asset_requirements,
+)
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
@@ -43,18 +49,6 @@ SILERO_RVC_ONNX_ID = "silero_rvc_onnx"
 _RVC_F0_METHODS = ("pm", "dio", "crepe", "rmvpe", "harvest", "fcpe")
 _RVC_F0_DEFAULT = "rmvpe"
 _EDGE_TTS_COMPATIBILITY_SPEC = "edge-tts>=6.1.9,<8.0.0"
-_RVC_ASSET_BASE_URL = "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main"
-_CUDA_RVC_RUNTIME_ASSETS = (
-    ("hubert_base.pt", f"{_RVC_ASSET_BASE_URL}/hubert_base.pt"),
-    ("rmvpe.pt", f"{_RVC_ASSET_BASE_URL}/rmvpe.pt"),
-)
-_ONNX_RVC_RUNTIME_ASSETS = (
-    (
-        "vec-768-layer-12.onnx",
-        "https://huggingface.co/NaruseMioShirakana/MoeSS-SUBModel/resolve/main/vec-768-layer-12.onnx",
-    ),
-    ("rmvpe.onnx", f"{_RVC_ASSET_BASE_URL}/rmvpe.onnx"),
-)
 _RVC_F0_HELP_RU = (
     "Алгоритм извлечения F0 (высоты тона): rmvpe/crepe — точнее, "
     "pm/harvest/dio — быстрее, fcpe — компромисс."
@@ -357,21 +351,8 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             )
         if cls._is_silero_model(model_id):
             req.append(InstallRequirement(id="silero", kind="python_dist", spec="silero", required=True))
-        for filename, _url in cls.RVC_RUNTIME_ASSETS:
-            req.append(
-                InstallRequirement(
-                    id=f"rvc_asset_{filename}",
-                    kind="file",
-                    path_fn=lambda _ctx, name=filename: cls._runtime_asset_path(name),
-                    required=True,
-                )
-            )
+        req.extend(runtime_asset_requirements(cls.RVC_RUNTIME_ASSETS))
         return req
-
-    @staticmethod
-    def _runtime_asset_path(filename: str) -> str:
-        base_dir = os.environ.get("NEUROMITA_BASE_DIR") or os.getcwd()
-        return os.path.abspath(os.path.join(base_dir, filename))
 
     @classmethod
     def is_model_installed(cls, model_id: str, ctx: Dict[str, Any]) -> bool:
@@ -444,18 +425,14 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         ]
         if cls.RVC_RUNTIME_ASSETS:
             actions.append(
-                InstallAction(
-                    type="download_http",
+                runtime_asset_download_action(
+                    cls.RVC_RUNTIME_ASSETS,
                     description=_(
                         "Загрузка моделей RVC...",
                         "Downloading RVC model assets...",
                     ),
                     progress=62,
                     progress_to=88,
-                    files=[
-                        {"url": url, "dest": cls._runtime_asset_path(filename)}
-                        for filename, url in cls.RVC_RUNTIME_ASSETS
-                    ],
                 )
             )
         if cls.PATCH_FAIRSEQ_CONFIGS:
@@ -1115,7 +1092,7 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
     SUPPORTS_HALF = True
     SUPPORTS_RUNTIME_F0 = True
     PATCH_FAIRSEQ_CONFIGS = True
-    RVC_RUNTIME_ASSETS = _CUDA_RVC_RUNTIME_ASSETS
+    RVC_RUNTIME_ASSETS = CUDA_RVC_RUNTIME_ASSETS
 
     EDGE_MODEL_ID = EDGE_TTS_RVC_CUDA_ID
     SILERO_MODEL_ID = SILERO_RVC_CUDA_ID
@@ -1171,7 +1148,7 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     SUPPORTS_HALF = False
     SUPPORTS_RUNTIME_F0 = True
     PATCH_FAIRSEQ_CONFIGS = False
-    RVC_RUNTIME_ASSETS = _ONNX_RVC_RUNTIME_ASSETS
+    RVC_RUNTIME_ASSETS = ONNX_RVC_RUNTIME_ASSETS
 
     EDGE_MODEL_ID = EDGE_TTS_RVC_ONNX_ID
     SILERO_MODEL_ID = SILERO_RVC_ONNX_ID
