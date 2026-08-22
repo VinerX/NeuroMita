@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from core.settings_values import as_bool
 from services.contracts import (
     CharacterRegistry,
     InstallableCatalogService,
@@ -389,16 +388,6 @@ class LocalVoiceController(LocalVoiceService):
     ) -> str:
         model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
         initialized = bool(self._initialized_cache.get(model_id, False))
-        allow_auto_initialize = as_bool(
-            self._get_setting("LOCAL_VOICE_LOAD_LAST", False)
-        )
-        if not initialized and not allow_auto_initialize:
-            raise RuntimeError(
-                _(
-                    "Локальная модель озвучки не инициализирована. Инициализируйте её вручную или включите автозагрузку последней модели.",
-                    "The local voice model is not initialized. Initialize it manually or enable loading the last model automatically.",
-                )
-            )
 
         resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
         registry = use(CharacterRegistry)

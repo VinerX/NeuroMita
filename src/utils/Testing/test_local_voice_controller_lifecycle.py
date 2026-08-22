@@ -35,31 +35,33 @@ class LocalVoiceControllerLifecycleTests(unittest.TestCase):
 
 
 class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
-    async def test_uninitialized_model_does_not_start_worker_when_autoload_is_disabled(self):
+    async def test_uninitialized_model_uses_on_demand_initialization_fallback(self):
         controller = LocalVoiceController.__new__(LocalVoiceController)
         controller._initialized_cache = {}
         controller._get_setting = lambda key, default=None: {
             "NM_CURRENT_VOICEOVER": "medium+",
             "LOCAL_VOICE_LOAD_LAST": False,
         }.get(key, default)
-        controller._ensure_model_environment = lambda *_args, **_kwargs: self.fail(
-            "synthesis must not activate the TTS environment"
-        )
+        environment_calls = []
+
+        async def ensure_environment(model_id, *, initialize=False):
+            environment_calls.append((model_id, initialize))
+
+        controller._ensure_model_environment = ensure_environment
+        controller._engine_call_async = lambda *_args, **_kwargs: _completed("voice.wav")
         controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
 
-        with self.assertRaises(RuntimeError):
-            await controller.synthesize("hello")
+        registry = SimpleNamespace(current_profile=lambda: None, get=lambda _id: None)
+        with patch("controllers.local_voice_controller.use", return_value=registry):
+            result = await controller.synthesize("hello")
 
-    async def test_string_false_does_not_enable_automatic_initialization(self):
-        controller = LocalVoiceController.__new__(LocalVoiceController)
-        controller._initialized_cache = {}
-        controller._get_setting = lambda key, default=None: {
-            "NM_CURRENT_VOICEOVER": "medium+",
-            "LOCAL_VOICE_LOAD_LAST": "false",
-        }.get(key, default)
+        self.assertEqual(result, "voice.wav")
+        self.assertEqual(environment_calls, [("medium+", True)])
+        self.assertTrue(controller._initialized_cache["medium+"])
 
-        with self.assertRaises(RuntimeError):
-            await controller.synthesize("hello")
+
+async def _completed(value):
+    return value
 
 
 if __name__ == "__main__":
