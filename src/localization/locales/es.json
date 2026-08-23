@@ -2145,5 +2145,13 @@
   "✓ Успех": "✓ Éxito",
   "✗ Ошибка": "✗ Fallo",
   "📦 Пакеты: ": "📦 Paquetes: ",
-  "Закрытие": "Cerrando"
+  "Закрытие": "Cerrando",
+  "F5-TTS (Русский)": "F5-TTS (Ruso)",
+  "F5-TTS + RVC (Русский)": "F5-TTS + RVC (Ruso)",
+  "Cross-Lingual F5-TTS (Английский и китайский)": "Cross-Lingual F5-TTS (Inglés y chino)",
+  "Cross-Lingual F5-TTS + RVC (Английский и китайский)": "Cross-Lingual F5-TTS + RVC (Inglés y chino)",
+  "Кросс-языковое клонирование": "Clonación entre idiomas",
+  "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "F5-TTS multilingüe que clona una voz de referencia rusa y sintetiza habla en inglés o chino.",
+  "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS seguido de conversión de timbre mediante RVC.",
+  "Удаление компонентов RVC...": "Desinstalando componentes de RVC..."
 }

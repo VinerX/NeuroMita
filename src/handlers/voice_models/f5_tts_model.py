@@ -33,6 +33,47 @@ from installables.compatibility_specs import (
 )
 from handlers.voice_models.context import VoiceRuntimeContext
 
+
+def _f5_device_options() -> dict[str, Any]:
+    return {
+        "values": ["cuda", "cpu"],
+        "default": "cuda",
+        "values_nvidia": ["cuda", "cpu"],
+        "default_nvidia": "cuda",
+        "values_amd": ["cpu"],
+        "default_amd": "cpu",
+        "values_intel": ["cpu"],
+        "default_intel": "cpu",
+        "values_other": ["cpu"],
+        "default_other": "cpu",
+    }
+
+
+def _rvc_device_options() -> dict[str, Any]:
+    return {
+        "values": ["cuda:0", "cpu"],
+        "default": "cuda:0",
+        "values_nvidia": ["cuda:0", "cpu"],
+        "default_nvidia": "cuda:0",
+        "values_amd": ["dml", "cpu"],
+        "default_amd": "dml",
+        "values_intel": ["dml", "cpu"],
+        "default_intel": "dml",
+        "values_other": ["cpu", "dml"],
+        "default_other": "cpu",
+    }
+
+
+def _f5_device_setting() -> dict[str, Any]:
+    return {
+        "key": "device",
+        "label": _("Устройство", "Device"),
+        "type": "combobox",
+        "options": _f5_device_options(),
+        "help": _("Устройство для части F5‑TTS.", "Device for F5‑TTS part."),
+    }
+
+
 class F5TTSInstallSpec:
     _VOCODER_REPO_URL = "https://huggingface.co/charactr/vocos-mel-24khz/resolve/main"
     _VOCODER_ASSETS = (
@@ -427,7 +468,7 @@ class F5TTSModel(IVoiceModel):
     MODEL_CONFIGS = [
         {
             "id": "high",
-            "name": _("F5-TTS (Russian)", "F5-TTS (Russian)"),
+            "name": _("F5-TTS (Русский)", "F5-TTS (Russian)"),
             "min_vram": 4, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 4,
@@ -440,6 +481,7 @@ class F5TTSModel(IVoiceModel):
                 "Emotional diffusion model with high quality. Most GPU‑demanding."
             ),
             "settings": [
+                _f5_device_setting(),
                 {"key": "speed", "label": _("Скорость речи", "Speech Speed"), "type": "entry", "options": {"default": "1.0"},
                  "help": _("Множитель скорости: 1.0 — нормальная.", "Speed multiplier: 1.0 is normal.")},
                 {"key": "nfe_step", "label": _("Шаги диффузии", "Diffusion Steps"), "type": "entry", "options": {"default": "32"},
@@ -456,7 +498,10 @@ class F5TTSModel(IVoiceModel):
         },
         {
             "id": "high_clf5",
-            "name": "Cross-Lingual F5-TTS (English & Chinese)",
+            "name": _(
+                "Cross-Lingual F5-TTS (Английский и китайский)",
+                "Cross-Lingual F5-TTS (English & Chinese)",
+            ),
             "min_vram": 4, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 4,
@@ -469,6 +514,7 @@ class F5TTSModel(IVoiceModel):
                 "Cross-lingual F5-TTS that clones a Russian reference voice and synthesizes English or Chinese speech."
             ),
             "settings": [
+                _f5_device_setting(),
                 {"key": "speed", "label": _("Скорость речи", "Speech Speed"), "type": "entry", "options": {"default": "1.0"},
                  "help": _("Множитель скорости: 1.0 — нормальная.", "Speed multiplier: 1.0 is normal.")},
                 {"key": "nfe_step", "label": _("Шаги диффузии", "Diffusion Steps"), "type": "entry", "options": {"default": "32"},
@@ -483,7 +529,7 @@ class F5TTSModel(IVoiceModel):
         },
         {
             "id": "high+low",
-            "name": "F5-TTS + RVC (Russian)",
+            "name": _("F5-TTS + RVC (Русский)", "F5-TTS + RVC (Russian)"),
             "min_vram": 6, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 7,
@@ -497,16 +543,10 @@ class F5TTSModel(IVoiceModel):
             ),
             "settings": [
                 {"key": "f5rvc_f5_device", "label": _("[F5] Устройство", "[F5] Device"), "type": "combobox",
-                 "options": {"values_nvidia": ["cuda", "cpu"], "default_nvidia": "cuda",
-                             "values_amd": ["cpu"], "default_amd": "cpu",
-                             "values_intel": ["cpu"], "default_intel": "cpu",
-                             "values_other": ["cpu"], "default_other": "cpu"},
+                 "options": _f5_device_options(),
                  "help": _("Устройство для части F5‑TTS.", "Device for F5‑TTS part.")},
                 {"key": "f5rvc_rvc_device", "label": _("[RVC] Устройство RVC", "[RVC] RVC Device"), "type": "combobox",
-                 "options": {"values_nvidia": ["dml", "cuda:0", "cpu"], "default_nvidia": "cuda:0",
-                             "values_amd": ["dml", "cpu"], "default_amd": "dml",
-                             "values_intel": ["dml", "cpu"], "default_intel": "dml",
-                             "values_other": ["cpu", "dml"], "default_other": "cpu"},
+                 "options": _rvc_device_options(),
                  "help": _("Устройство для части RVC.", "Device for RVC part.")},
 
                 {"key": "f5rvc_f5_speed", "label": _("[F5] Скорость речи", "[F5] Speech Speed"), "type": "entry", "options": {"default": "1.0"},
@@ -549,7 +589,10 @@ class F5TTSModel(IVoiceModel):
     _cross_lingual_rvc_config.update(
         {
             "id": "high_clf5+low",
-            "name": "Cross-Lingual F5-TTS + RVC (English & Chinese)",
+            "name": _(
+                "Cross-Lingual F5-TTS + RVC (Английский и китайский)",
+                "Cross-Lingual F5-TTS + RVC (English & Chinese)",
+            ),
             "languages": ["English", "Chinese"],
             "intents": [
                 _("Кросс-языковое клонирование", "Cross-lingual cloning"),
@@ -592,11 +635,21 @@ class F5TTSModel(IVoiceModel):
         mode = self._mode()
         if F5TTSInstallSpec.is_cross_lingual(mode):
             return (
-                "Cross-Lingual F5-TTS + RVC (English & Chinese)"
+                _(
+                    "Cross-Lingual F5-TTS + RVC (Английский и китайский)",
+                    "Cross-Lingual F5-TTS + RVC (English & Chinese)",
+                )
                 if F5TTSInstallSpec.is_rvc(mode)
-                else "Cross-Lingual F5-TTS (English & Chinese)"
+                else _(
+                    "Cross-Lingual F5-TTS (Английский и китайский)",
+                    "Cross-Lingual F5-TTS (English & Chinese)",
+                )
             )
-        return "F5-TTS + RVC (Russian)" if mode == "high+low" else "F5-TTS (Russian)"
+        return (
+            _("F5-TTS + RVC (Русский)", "F5-TTS + RVC (Russian)")
+            if mode == "high+low"
+            else _("F5-TTS (Русский)", "F5-TTS (Russian)")
+        )
 
     def _load_module(self):
         cross_lingual = F5TTSInstallSpec.is_cross_lingual(self._mode())

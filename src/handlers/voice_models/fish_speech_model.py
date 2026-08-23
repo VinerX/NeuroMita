@@ -611,7 +611,7 @@ class FishSpeechModel(IVoiceModel):
                 {"key": "fsprvc_fsp_seed", "label": _("[FSP] Seed", "[FSP] Seed"), "type": "entry", "options": {"default": "0"},
                  "help": _("Сид генерации для Fish Speech+.", "Seed value for Fish Speech+.")},
                 {"key": "fsprvc_rvc_device", "label": _("[RVC] Устройство", "[RVC] Device"), "type": "combobox",
-                 "options": {"values": ["cuda:0", "cpu", "mps:0", "dml"], "default_nvidia": "cuda:0", "default_amd": "dml"},
+                 "options": {"values": ["cuda:0", "cpu"], "default": "cuda:0"},
                  "help": _("Устройство для части RVC.", "Device for RVC part.")},
                 {"key": "fsprvc_is_half", "label": _("[RVC] Half-precision", "[RVC] Half-precision"), "type": "combobox",
                  "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False"},

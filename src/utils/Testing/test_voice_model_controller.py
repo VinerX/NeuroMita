@@ -200,6 +200,64 @@ class VoiceModelControllerTests(unittest.TestCase):
         self.assertIn("INTEL", model["gpu_vendor"])
         self.assertTrue(model["compat_warning"])
 
+    def test_all_real_f5_variants_expose_nonempty_device_choices(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce RTX 4060"
+
+        adapted = controller.finalize_model_settings(
+            F5TTSModel.MODEL_CONFIGS,
+            "NVIDIA",
+            ["cuda:0"],
+        )
+
+        models = {model["id"]: model for model in adapted}
+        for model_id in ("high", "high_clf5"):
+            settings = {item["key"]: item for item in models[model_id]["settings"]}
+            device = settings["device"]["options"]
+            self.assertEqual(device["values"], ["cuda:0", "cpu"])
+            self.assertEqual(device["default"], "cuda:0")
+
+        for model_id in ("high+low", "high_clf5+low"):
+            settings = {item["key"]: item for item in models[model_id]["settings"]}
+            f5_device = settings["f5rvc_f5_device"]["options"]
+            rvc_device = settings["f5rvc_rvc_device"]["options"]
+            self.assertEqual(f5_device["values"], ["cuda:0", "cpu"])
+            self.assertEqual(f5_device["default"], "cuda:0")
+            self.assertIn("cuda:0", rvc_device["values"])
+            self.assertNotIn("dml", rvc_device["values"])
+            self.assertTrue(rvc_device["values"])
+
+    def test_raw_f5_device_schemas_have_safe_fallback_choices(self):
+        for model in F5TTSModel.MODEL_CONFIGS:
+            settings = {item["key"]: item for item in model["settings"]}
+            device_keys = (
+                ("f5rvc_f5_device", "f5rvc_rvc_device")
+                if "+low" in model["id"]
+                else ("device",)
+            )
+            for key in device_keys:
+                options = settings[key]["options"]
+                self.assertTrue(options["values"])
+                self.assertIn(options["default"], options["values"])
+
+    def test_f5_keeps_generic_cuda_choice_before_device_enumeration(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce RTX 4060"
+
+        adapted = controller.finalize_model_settings(
+            F5TTSModel.MODEL_CONFIGS,
+            "NVIDIA",
+            [],
+        )
+
+        models = {model["id"]: model for model in adapted}
+        for model_id in ("high", "high_clf5"):
+            settings = {item["key"]: item for item in models[model_id]["settings"]}
+            self.assertEqual(
+                settings["device"]["options"]["values"],
+                ["cuda", "cpu"],
+            )
+
     def test_onnx_device_uses_directml_on_nvidia_without_offering_cuda(self):
         controller = self._make_controller_stub()
         controller.gpu_name = "NVIDIA GeForce RTX 4060"

@@ -2145,5 +2145,13 @@
   "✓ Успех": "✓ Basari",
   "✗ Ошибка": "✗ Hata",
   "📦 Пакеты: ": "📦 Paketler: ",
-  "Закрытие": "Kapatılıyor"
+  "Закрытие": "Kapatılıyor",
+  "F5-TTS (Русский)": "F5-TTS (Rusça)",
+  "F5-TTS + RVC (Русский)": "F5-TTS + RVC (Rusça)",
+  "Cross-Lingual F5-TTS (Английский и китайский)": "Cross-Lingual F5-TTS (İngilizce ve Çince)",
+  "Cross-Lingual F5-TTS + RVC (Английский и китайский)": "Cross-Lingual F5-TTS + RVC (İngilizce ve Çince)",
+  "Кросс-языковое клонирование": "Diller arası klonlama",
+  "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "Rusça referans sesi klonlayıp İngilizce veya Çince konuşma üreten diller arası F5-TTS.",
+  "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS ve ardından RVC ile tını dönüşümü.",
+  "Удаление компонентов RVC...": "RVC bileşenleri kaldırılıyor..."
 }

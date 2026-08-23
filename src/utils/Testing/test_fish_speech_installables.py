@@ -6,10 +6,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec
+from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec, FishSpeechModel
 
 
 class FishSpeechInstallablesTests(unittest.TestCase):
+    def test_cuda_rvc_settings_do_not_offer_directml(self):
+        model = FishSpeechModel._find_model_config("medium+low")
+        settings = {item["key"]: item for item in model["settings"]}
+        device = settings["fsprvc_rvc_device"]["options"]
+
+        self.assertEqual(device["values"], ["cuda:0", "cpu"])
+        self.assertEqual(device["default"], "cuda:0")
+
     def test_all_modes_require_fish_checkpoint_files(self):
         expected = {
             "model.pth",

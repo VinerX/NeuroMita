@@ -42,6 +42,18 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
             BackendKind.ONNX,
         )
 
+    def test_cuda_rvc_rejects_obsolete_directml_setting(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_CUDA_ID
+
+            @staticmethod
+            def load_model_settings(_model_id):
+                return {}
+
+        model = EdgeTTSRVCCudaModel(_Parent(), EDGE_TTS_RVC_CUDA_ID)
+
+        self.assertEqual(model._resolve_runtime_device("dml"), "cuda:0")
+
     def test_install_requirements_use_explicit_rvc_package(self):
         cuda_specs = [req.spec for req in EdgeTTSRVCCudaModel.requirements(EDGE_TTS_RVC_CUDA_ID, {})]
         onnx_specs = [req.spec for req in EdgeTTSRVCOnnxModel.requirements(EDGE_TTS_RVC_ONNX_ID, {})]

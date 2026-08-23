@@ -70,7 +70,7 @@ class F5TTSInstallablesTests(unittest.TestCase):
         cross_lingual = F5TTSModel._find_model_config("high_clf5+low")
         russian_defaults = F5TTSModel.default_settings_for_model("high+low")
 
-        self.assertEqual(russian["name"], "F5-TTS + RVC (Russian)")
+        self.assertIn(russian["name"], {"F5-TTS + RVC (Русский)", "F5-TTS + RVC (Russian)"})
         self.assertEqual(russian["languages"], ["Russian"])
         self.assertTrue(russian_defaults["f5rvc_use_ruaccent"])
         self.assertEqual(cross_lingual["languages"], ["English", "Chinese"])

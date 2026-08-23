@@ -1127,6 +1127,15 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
         },
     ]
 
+    def _resolve_runtime_device(self, value: Any) -> str:
+        requested = super()._resolve_runtime_device(value).lower()
+        if requested == "dml":
+            logger.warning(
+                "CUDA RVC received an obsolete DirectML setting; using cuda:0."
+            )
+            return self.RVC_DEFAULT_DEVICE
+        return requested
+
     def _load_rvc_class(self):
         _ensure_lib_path()
         return self._import_rvc_class()

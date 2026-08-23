@@ -2145,5 +2145,13 @@
   "✓ Успех": "Succes ✓",
   "✗ Ошибка": "Eroare ✗",
   "📦 Пакеты: ": "📦 Pachete: ",
-  "Закрытие": "Închidere"
+  "Закрытие": "Închidere",
+  "F5-TTS (Русский)": "F5-TTS (Rusă)",
+  "F5-TTS + RVC (Русский)": "F5-TTS + RVC (Rusă)",
+  "Cross-Lingual F5-TTS (Английский и китайский)": "Cross-Lingual F5-TTS (Engleză și chineză)",
+  "Cross-Lingual F5-TTS + RVC (Английский и китайский)": "Cross-Lingual F5-TTS + RVC (Engleză și chineză)",
+  "Кросс-языковое клонирование": "Clonare interlingvistică",
+  "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "F5-TTS interlingvistic care clonează o voce rusă de referință și sintetizează vorbire în engleză sau chineză.",
+  "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS urmat de conversia timbrului prin RVC.",
+  "Удаление компонентов RVC...": "Se dezinstalează componentele RVC..."
 }

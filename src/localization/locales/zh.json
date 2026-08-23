@@ -2230,5 +2230,13 @@
   "⚠️ Для Fish Speech+ / +RVC нужен MSVC (VC++ Build Tools).": "⚠️ Fish Speech+ / +RVC 需要 MSVC（VC++ Build Tools）。",
   "⚠️ Для компиляции ядра Triton нужен MSVC (VC++ Build Tools)!": "⚠️ 编译 Triton 内核需要 MSVC（VC++ Build Tools）！",
   "📦 Пакеты: ": "📦 软件包： ",
-  "Закрытие": "正在关闭"
+  "Закрытие": "正在关闭",
+  "F5-TTS (Русский)": "F5-TTS（俄语）",
+  "F5-TTS + RVC (Русский)": "F5-TTS + RVC（俄语）",
+  "Cross-Lingual F5-TTS (Английский и китайский)": "Cross-Lingual F5-TTS（英语和中文）",
+  "Cross-Lingual F5-TTS + RVC (Английский и китайский)": "Cross-Lingual F5-TTS + RVC（英语和中文）",
+  "Кросс-языковое клонирование": "跨语言声音克隆",
+  "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "跨语言 F5-TTS，可克隆俄语参考声音并合成英语或中文语音。",
+  "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS，随后通过 RVC 转换音色。",
+  "Удаление компонентов RVC...": "正在卸载 RVC 组件..."
 }
