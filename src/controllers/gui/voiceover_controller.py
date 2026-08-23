@@ -388,7 +388,11 @@ class VoiceoverGuiController(BaseController):
             installed_ids = self._canonical_installed_model_ids()
 
             installed = model_id in installed_ids
-            initialized = bool(installed and local_voice and local_voice.check_initialized(model_id))
+            initialized = bool(
+                installed
+                and local_voice
+                and local_voice.check_initialized(model_id, probe_worker=True)
+            )
             selected = bool(local_voice.select_model(model_id)) if initialized and local_voice else None
 
             return {

@@ -115,6 +115,30 @@ class VoiceoverGuiControllerTests(unittest.TestCase):
             {"edge_tts_rvc_cuda", "edge_tts_rvc_onnx", "medium"},
         )
 
+    def test_model_selection_probes_worker_instead_of_stale_gui_cache(self):
+        controller, _bus = self._make_controller()
+        controller._model_id_to_name = {"high": "F5-TTS"}
+        controller._model_selection_ticket = 0
+        controller._canonical_installed_model_ids = lambda: {"high"}
+        controller._set_combobox_by_model_id = lambda _model_id: None
+        controller._sync_local_model_status_from_snapshot = lambda _state: None
+        controller._emit_voice_icon_state_from_snapshot = lambda _state: None
+        controller._run_async = lambda worker, apply, **_kwargs: apply(worker())
+
+        calls = []
+        local_voice = SimpleNamespace(
+            check_initialized=lambda model_id, *, probe_worker=False: (
+                calls.append((model_id, probe_worker)) or True
+            ),
+            select_model=lambda _model_id: True,
+        )
+        registry = SimpleNamespace(get_optional=lambda _contract: local_voice)
+
+        with patch("controllers.gui.voiceover_controller.services", return_value=registry):
+            controller._select_or_init_model_async("high")
+
+        self.assertEqual(calls, [("high", True)])
+
     def test_tts_selector_keeps_every_ready_catalog_model_after_onnx_install(self):
         controller, _bus = self._make_controller()
         combo = _ComboStub()

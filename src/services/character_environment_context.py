@@ -29,6 +29,7 @@ _VOICE_MODELS: dict[str, tuple[str, str]] = {
     "medium+": ("Fish Speech+", "one of the best-quality available voices"),
     "medium+low": ("Fish Speech+ + RVC", "one of the best-quality voices with an even closer character timbre"),
     "high": ("F5-TTS", "lively and expressive, but sometimes less stable"),
+    "high_clf5": ("Cross-Lingual F5-TTS", "cross-lingual English and Chinese synthesis from a reference voice"),
     "high+low": ("F5-TTS + RVC", "lively with a closer character timbre, but sometimes less stable"),
 }
 

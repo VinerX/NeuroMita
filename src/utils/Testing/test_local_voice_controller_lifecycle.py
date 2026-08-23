@@ -12,6 +12,7 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from controllers.local_voice_controller import LocalVoiceController
+from core.events import Event, Events
 
 
 class LocalVoiceControllerLifecycleTests(unittest.TestCase):
@@ -32,6 +33,18 @@ class LocalVoiceControllerLifecycleTests(unittest.TestCase):
 
         self.assertTrue(controller.check_initialized("medium+"))
         self.assertFalse(controller.check_initialized("high"))
+
+    def test_selecting_initialized_model_preserves_confirmed_cache_state(self):
+        controller = LocalVoiceController.__new__(LocalVoiceController)
+        controller._initialized_cache = {"high_clf5": True}
+        controller._save_setting = lambda *_args: None
+
+        selected = controller._on_select_voice_model(
+            Event(Events.Audio.SELECT_VOICE_MODEL, {"model_id": "high_clf5"})
+        )
+
+        self.assertTrue(selected)
+        self.assertTrue(controller._initialized_cache["high_clf5"])
 
 
 class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
