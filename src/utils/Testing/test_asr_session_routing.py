@@ -219,21 +219,21 @@ def test_partially_written_message_is_not_reported_as_delivered():
     assert writer.chunks  # часть байтов ушла в сокет — доставкой это не считается
 
 
-def test_payload_carries_utterance_id_and_policy():
+def test_payload_carries_utterance_id_without_unity_ui_policy():
     writer = _FakeWriter()
     with _Loop() as loop:
         srv = _server(loop, {"c#1": writer})
         srv.schedule_send_asr_text(
             client_id="c#1", text="раз", utterance_id="utt-42",
-            autosend=True, delay_sec=1.5, merge_input=False,
         ).result(timeout=5)
 
     payload = writer.payloads()[0]
     assert payload["type"] == "asr_text"
     assert payload["id"] == "utt-42"
-    assert payload["autosend"] is True
-    assert payload["delay_sec"] == 1.5
-    assert payload["merge_input"] is False
+    assert "instant_enabled" not in payload
+    assert "autosend" not in payload
+    assert "delay_sec" not in payload
+    assert "merge_input" not in payload
 
 
 # --------------------------- одна фраза = один ход ---------------------------

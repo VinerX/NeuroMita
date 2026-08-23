@@ -666,9 +666,10 @@ class SpeechController(SpeechService):
                 "engine": str(self._asr_settings.get("engine", "") or ""),
                 "ts": time.time(),
                 "final": True,
+                # Эти поля остаются только внутри Python для возврата реплики в
+                # desktop-чат, если выбранная игровая сессия успела отключиться.
                 "autosend": autosend,
                 "delay_sec": delay_sec,
-                "merge_input": bool(self.settings.get("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
             })
             perf_mark(trace_id, "asr.sent_to_game")
             performance_traces().finish(trace_id, "sent_to_game") if trace_id else None

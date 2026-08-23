@@ -130,6 +130,7 @@ class ServerController:
             "MITAS_MENU",
             "IGNORE_GAME_REQUESTS",
             "GAME_BLOCK_LEVEL",
+            "MIC_INSTANT_SENT",
             "MITA_DIALOGUE_AUTO",
             "DIALOGUE_MAX_CHAIN_TURNS",
             "DIALOGUE_MAX_CONTINUES",
@@ -568,9 +569,6 @@ class ServerController:
                 engine=str(data.get("engine") or ""),
                 ts=data.get("ts", None),
                 final=bool(data.get("final", True)),
-                autosend=bool(data.get("autosend", False)),
-                delay_sec=float(data.get("delay_sec", 0.0) or 0.0),
-                merge_input=bool(data.get("merge_input", True)),
             )
         except Exception as exc:
             logger.warning(f"Не удалось отправить asr_text в игру: {exc}")
