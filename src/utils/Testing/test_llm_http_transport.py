@@ -667,6 +667,22 @@ def test_stream_supervisor_distinguishes_first_event_and_idle_deadlines():
         raise AssertionError("stream idle deadline was not enforced")
 
 
+def test_stream_deadlines_are_capped_by_request_attempt_deadline():
+    req = _request()
+    req.extra.update({
+        "http_timeout_seconds": 12.0,
+        "stream_first_meaningful_timeout_seconds": 300.0,
+        "stream_idle_timeout_seconds": 120.0,
+        "stream_max_duration_seconds": 1800.0,
+    })
+
+    policy = StreamDeadlinePolicy.for_request(req)
+
+    assert policy.first_meaningful_event == 12.0
+    assert policy.idle_after_started == 12.0
+    assert policy.maximum_duration == 12.0
+
+
 class _RunnerSettings:
     def get(self, key, default=None):
         return default

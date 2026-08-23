@@ -9,6 +9,7 @@ from typing import Any
 
 from main_logger import logger
 from handlers.llm_providers.base import StreamChannel
+from core.cancellation import CancellationToken, OperationCancelledError
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
@@ -20,6 +21,7 @@ from services.contracts import (
     ChatGenerationRequest,
     ChatGenerationResult,
     GenerationService,
+    GenerationActivityService,
     PlayerMessageSource,
     parse_dialogue_turn_context,
     parse_player_message_source,
@@ -197,16 +199,16 @@ class StructuredJsonStreamFilter:
         return out
 
 
-class ChatController:
+class ChatController(GenerationActivityService):
     def __init__(self, settings):
         self.settings = settings
         self.event_bus = get_event_bus()
         self.dialogue_runtime_state = get_dialogue_runtime_state_service()
 
-        # Генераций может идти несколько (игра + чат + idle), поэтому счётчик,
-        # а не bool: одиночный флаг гасил статус после первой завершившейся.
+        # Реестр охватывает UI, игру и фоновые запросы, включая ожидающие очередь.
+        # Токен нужен не только для статуса, но и для отмены конкретного HTTP-стрима.
         self._inflight_lock = threading.Lock()
-        self._inflight = 0
+        self._active_generations: dict[str, CancellationToken] = {}
         self._player_message_source_lock = threading.Lock()
         self._last_player_message_source = PlayerMessageSource.NONE
 
@@ -220,18 +222,44 @@ class ChatController:
     @property
     def llm_processing(self) -> bool:
         with self._inflight_lock:
-            return self._inflight > 0
+            return bool(self._active_generations)
 
-    def _enter_generation(self) -> None:
+    def active_generation_count(self) -> int:
         with self._inflight_lock:
-            self._inflight += 1
+            return len(self._active_generations)
 
-    def _exit_generation(self) -> None:
+    def _register_generation(self, operation_id: str, token: CancellationToken) -> None:
         with self._inflight_lock:
-            self._inflight = max(0, self._inflight - 1)
+            self._active_generations[operation_id] = token
+            active_count = len(self._active_generations)
+        self._emit_generation_activity(active_count)
+
+    def _finish_generation(self, operation_id: str) -> None:
+        with self._inflight_lock:
+            self._active_generations.pop(operation_id, None)
+            active_count = len(self._active_generations)
+        self._emit_generation_activity(active_count)
+
+    def _emit_generation_activity(self, active_count: int) -> None:
+        self.event_bus.emit(
+            Events.Chat.GENERATION_ACTIVITY_CHANGED,
+            {"active_count": active_count, "generating": active_count > 0},
+        )
+
+    def _on_cancel_active_generations(self, event: Event) -> int:
+        with self._inflight_lock:
+            tokens = tuple(self._active_generations.values())
+        for token in tokens:
+            token.cancel("Cancelled by user")
+        return len(tokens)
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.Chat.SEND_MESSAGE, self._on_send_message, weak=False)
+        self.event_bus.subscribe(
+            Events.Chat.CANCEL_ACTIVE_GENERATIONS,
+            self._on_cancel_active_generations,
+            weak=False,
+        )
         self.event_bus.subscribe("send_periodic_image_request", self._on_send_periodic_image_request, weak=False)
         self.event_bus.subscribe(Events.Chat.CLEAR_CHAT, self._on_clear_chat, weak=False)
 
@@ -330,6 +358,8 @@ class ChatController:
         previous_player_message_source: PlayerMessageSource | str | None = None,
         gm_instruction_override: str | None = None,
         trace_id: str | None = None,
+        operation_id: str = "",
+        cancellation: CancellationToken | None = None,
     ):
         """Полный путь одного запроса. Выполняется в пуле GENERATION.
 
@@ -360,8 +390,9 @@ class ChatController:
         stream_current_role = None
         presentation_lock = threading.RLock()
         stream_coalescer = None
-        self._enter_generation()
         try:
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
             effective_event_type = str(event_type or "chat")
             normalized_event_type = effective_event_type.strip().lower()
             if normalized_event_type in {"game_master_observe", "game_master_command"}:
@@ -537,6 +568,7 @@ class ChatController:
                     origin_message_id=origin_message_id,
                     task_uid=task_uid,
                     trace_id=trace_id,
+                    cancellation=cancellation,
                     policy=eff_policy,
                     game_state=dict(game_state or {}),
                     dialogue=parse_dialogue_turn_context(dialogue),
@@ -545,6 +577,9 @@ class ChatController:
                     gm_instruction_override=gm_instruction_override,
                 )
             )
+
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
 
             if result is None:
                 trace_status = "error"
@@ -800,6 +835,17 @@ class ChatController:
 
             return response_text
 
+        except OperationCancelledError:
+            trace_status = "cancelled"
+            trace_error_stage = "generation.cancelled"
+            trace_error_type = "OperationCancelledError"
+            if task_uid:
+                self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
+                    "uid": task_uid,
+                    "status": TaskStatus.CANCELLED,
+                    "error": "Cancelled by user",
+                })
+            return None
         except Exception as e:
             trace_status = "error"
             trace_error_stage = "generation"
@@ -826,7 +872,7 @@ class ChatController:
                     )
                 except Exception:
                     pass
-            self._exit_generation()
+            self._finish_generation(operation_id)
             if trace_id and not voiceover_pending:
                 performance_traces().finish(
                     trace_id,
@@ -839,10 +885,16 @@ class ChatController:
         """Ставит запрос в пул генераций. Переполнение — явный отказ, а не рост очереди."""
         task_uid = kwargs.get("task_uid")
         trace_id = kwargs.get("trace_id")
+        operation_id = str(trace_id or uuid.uuid4().hex)
+        cancellation = CancellationToken()
+        kwargs["operation_id"] = operation_id
+        kwargs["cancellation"] = cancellation
+        self._register_generation(operation_id, cancellation)
         perf_mark(trace_id, "generation.enqueued")
         try:
             executors().try_submit(Pools.GENERATION, self._run_request, **kwargs)
         except PoolSaturated:
+            self._finish_generation(operation_id)
             performance_traces().finish(trace_id, "rejected", error_stage="generation.pool", error_type="PoolSaturated")
             logger.warning("Очередь генераций переполнена — запрос отклонён.")
             if task_uid:

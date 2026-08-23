@@ -1,7 +1,9 @@
 import time
 
 from core.events import Event, Events
+from core.services import services
 from main_logger import logger
+from services.contracts import GenerationActivityService
 
 from .base_controller import BaseController
 
@@ -24,6 +26,11 @@ class StatusController(BaseController):
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE_ATTEMPT, self._on_failed_response_attempt, weak=False)
         self.event_bus.subscribe(Events.Model.ON_FAILED_RESPONSE, self._on_failed_response, weak=False)
         self.event_bus.subscribe(Events.Model.ON_TOOL_EXECUTING, self._on_tool_executing, weak=False)
+        self.event_bus.subscribe(
+            Events.Chat.GENERATION_ACTIVITY_CHANGED,
+            self._on_generation_activity_changed,
+            weak=False,
+        )
         self.event_bus.subscribe(Events.GUI.SHOW_MITA_VOICING, self._on_show_voicing, weak=False)
         self.event_bus.subscribe(Events.GUI.HIDE_MITA_VOICING, self._on_hide_voicing, weak=False)
 
@@ -67,6 +74,12 @@ class StatusController(BaseController):
         else:
             logger.error("StatusController: view not found while hiding status")
 
+    def hide_generation_status(self):
+        if self.view and getattr(self.view, "hide_generation_status_signal", None):
+            self.view.hide_generation_status_signal.emit()
+        else:
+            logger.error("StatusController: generation status signal not found")
+
     def show_mita_error_pulse(self):
         logger.info("StatusController: show_mita_error_pulse")
         if self.view:
@@ -91,6 +104,10 @@ class StatusController(BaseController):
 
     def _on_started_response(self, event: Event):
         logger.info("StatusController: ON_STARTED_RESPONSE_GENERATION")
+        activity = services().get_optional(GenerationActivityService)
+        if activity is not None and activity.active_generation_count() == 0:
+            logger.info("StatusController: ignore stale generation-start event")
+            return
         character_name = None
         if event and isinstance(getattr(event, "data", None), dict):
             character_name = event.data.get("character_name")
@@ -110,7 +127,14 @@ class StatusController(BaseController):
 
     def _on_successful_response(self, event: Event):
         logger.info("StatusController: ON_SUCCESSFUL_RESPONSE")
-        self.hide_mita_status()
+        activity = services().get_optional(GenerationActivityService)
+        if activity is None or activity.active_generation_count() == 0:
+            self.hide_generation_status()
+
+    def _on_generation_activity_changed(self, event: Event):
+        data = event.data if event and isinstance(getattr(event, "data", None), dict) else {}
+        if max(0, int(data.get("active_count", 0) or 0)) == 0:
+            self.hide_generation_status()
 
     def _on_compression_finished(self, event: Event):
         logger.info("StatusController: ON_COMPRESSION_FINISHED")

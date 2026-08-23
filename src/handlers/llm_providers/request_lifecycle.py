@@ -1,38 +1,27 @@
 from __future__ import annotations
 
-import threading
 import time
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Optional, Protocol
+
+from core.cancellation import CancellationToken, OperationCancelledError
 
 
 class _RequestLike(Protocol):
     extra: dict[str, Any]
 
 
-class RequestCancelledError(RuntimeError):
+class RequestCancelledError(OperationCancelledError):
     pass
 
 
-class RequestCancellation:
-    def __init__(self) -> None:
-        self._event = threading.Event()
-        self._lock = threading.Lock()
-        self._callbacks: list[Callable[[], None]] = []
-        self._reason = ""
+class RequestCancellation(CancellationToken):
+    def __init__(self, parent: CancellationToken | None = None) -> None:
+        super().__init__(parent)
         self._started_at = time.monotonic()
         self._response_headers_received = False
         self._response_body_started = False
         self._first_meaningful_event_at: Optional[float] = None
         self._last_meaningful_event_at: Optional[float] = None
-
-    @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
-
-    @property
-    def reason(self) -> str:
-        with self._lock:
-            return self._reason
 
     @property
     def started_at(self) -> float:
@@ -76,39 +65,9 @@ class RequestCancellation:
                 self._last_meaningful_event_at,
             )
 
-    def add_cancel_callback(self, callback: Callable[[], None]) -> None:
-        call_now = False
-        with self._lock:
-            if self._event.is_set():
-                call_now = True
-            else:
-                self._callbacks.append(callback)
-        if call_now:
-            try:
-                callback()
-            except Exception:
-                pass
-
-    def cancel(self, reason: str = "") -> None:
-        with self._lock:
-            if self._event.is_set():
-                return
-            self._reason = str(reason or "")
-            self._event.set()
-            callbacks = tuple(self._callbacks)
-            self._callbacks.clear()
-        for callback in callbacks:
-            try:
-                callback()
-            except Exception:
-                pass
-
     def raise_if_cancelled(self) -> None:
-        if self._event.is_set():
+        if self.cancelled:
             raise RequestCancelledError(self.reason or "LLM request was cancelled")
-
-    def wait(self, timeout: float) -> bool:
-        return self._event.wait(max(0.0, float(timeout)))
 
 
 def get_request_cancellation(req: _RequestLike) -> Optional[RequestCancellation]:

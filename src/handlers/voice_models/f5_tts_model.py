@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+from copy import deepcopy
 from datetime import datetime
 import asyncio
 from typing import Optional, Any, List, Dict
@@ -147,11 +148,11 @@ class F5TTSInstallSpec:
 
     @classmethod
     def is_cross_lingual(cls, model_id: str) -> bool:
-        return str(model_id or "").strip() == "high_clf5"
+        return str(model_id or "").strip() in {"high_clf5", "high_clf5+low"}
 
     @classmethod
     def is_rvc(cls, model_id: str) -> bool:
-        return str(model_id or "").strip() == "high+low"
+        return str(model_id or "").strip() in {"high+low", "high_clf5+low"}
 
     @classmethod
     def variant(cls, model_id: str) -> str:
@@ -183,7 +184,7 @@ class F5TTSInstallSpec:
 
     @classmethod
     def supported_model_ids(cls) -> list[str]:
-        return ["high", "high_clf5", "high+low"]
+        return ["high", "high_clf5", "high+low", "high_clf5+low"]
 
     @classmethod
     def title(cls, model_id: str) -> str:
@@ -544,6 +545,30 @@ class F5TTSModel(IVoiceModel):
         }
     ]
 
+    _cross_lingual_rvc_config = deepcopy(MODEL_CONFIGS[-1])
+    _cross_lingual_rvc_config.update(
+        {
+            "id": "high_clf5+low",
+            "name": "Cross-Lingual F5-TTS + RVC (English & Chinese)",
+            "languages": ["English", "Chinese"],
+            "intents": [
+                _("Кросс-языковое клонирование", "Cross-lingual cloning"),
+                _("Конверсия голоса", "Voice conversion"),
+            ],
+            "description": _(
+                "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.",
+                "Cross-Lingual F5-TTS followed by timbre conversion through RVC.",
+            ),
+        }
+    )
+    _cross_lingual_rvc_config["settings"] = [
+        setting
+        for setting in _cross_lingual_rvc_config["settings"]
+        if setting.get("key") != "f5rvc_use_ruaccent"
+    ]
+    MODEL_CONFIGS.append(_cross_lingual_rvc_config)
+    del _cross_lingual_rvc_config
+
     def get_model_configs(self) -> List[Dict[str, Any]]:
         return self.MODEL_CONFIGS
 
@@ -566,7 +591,11 @@ class F5TTSModel(IVoiceModel):
     def get_display_name(self) -> str:
         mode = self._mode()
         if F5TTSInstallSpec.is_cross_lingual(mode):
-            return "Cross-Lingual F5-TTS (English & Chinese)"
+            return (
+                "Cross-Lingual F5-TTS + RVC (English & Chinese)"
+                if F5TTSInstallSpec.is_rvc(mode)
+                else "Cross-Lingual F5-TTS (English & Chinese)"
+            )
         return "F5-TTS + RVC" if mode == "high+low" else "F5-TTS"
 
     def _load_module(self):
@@ -627,7 +656,7 @@ class F5TTSModel(IVoiceModel):
             return False
 
         settings = self.parent.load_model_settings(mode)
-        device_key = "f5rvc_f5_device" if mode == "high+low" else "device"
+        device_key = "f5rvc_f5_device" if F5TTSInstallSpec.is_rvc(mode) else "device"
         device = settings.get(device_key, "cuda" if self.parent.provider == "NVIDIA" else "cpu")
 
         pipeline_class = selected_pipeline
@@ -678,7 +707,7 @@ class F5TTSModel(IVoiceModel):
         mode = self._mode()
         if F5TTSInstallSpec.is_cross_lingual(mode):
             return
-        use_ruaccent_key = "f5rvc_use_ruaccent" if mode == "high+low" else "use_ruaccent"
+        use_ruaccent_key = "f5rvc_use_ruaccent" if F5TTSInstallSpec.is_rvc(mode) else "use_ruaccent"
         if not settings.get(use_ruaccent_key, True) or self.ruaccent_instance is not None:
             return
         try:

@@ -9,6 +9,7 @@ LOCAL_VOICE_MODELS = [
     {"id": "high", "name": "F5-TTS (Russian)", "min_vram": 4, "rec_vram": 8, "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"], "size_gb": 4},
     {"id": "high_clf5", "name": "Cross-Lingual F5-TTS", "min_vram": 4, "rec_vram": 8, "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"], "size_gb": 4},
     {"id": "high+low", "name": "F5-TTS + RVC", "min_vram": 6, "rec_vram": 8, "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"], "size_gb": 4},
+    {"id": "high_clf5+low", "name": "Cross-Lingual F5-TTS + RVC", "min_vram": 6, "rec_vram": 8, "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"], "size_gb": 7},
 ]
 
 __all__ = ["LOCAL_VOICE_MODELS"]

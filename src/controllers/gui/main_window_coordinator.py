@@ -158,6 +158,7 @@ class MainWindowCoordinator:
                 reload_history=view.load_chat_history,
                 clear_chat=view.clear_chat_display,
                 send_message=view.send_message,
+                cancel_active_generations=view.cancel_active_generations,
                 open_settings=lambda category: self.show_settings_category(
                     category,
                     force=True,

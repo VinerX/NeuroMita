@@ -606,6 +606,8 @@ class Events:
     class Chat:
         """События, управляющие логикой чата и отправкой сообщений"""
         SEND_MESSAGE = "send_message"
+        CANCEL_ACTIVE_GENERATIONS = "chat_cancel_active_generations"
+        GENERATION_ACTIVITY_CHANGED = "chat_generation_activity_changed"
         CLEAR_CHAT = "clear_chat"
         ATTACH_IMAGES = "attach_images"
         STAGE_IMAGE = "stage_image"

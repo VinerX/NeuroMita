@@ -24,6 +24,7 @@ from services.contracts import (
     EmbeddingPresetService,
     EmbeddingService,
     GameLinkService,
+    GenerationActivityService,
     AudioStateService,
     CaptureService,
     GuiInteractionService,
@@ -245,6 +246,7 @@ class MainController:
         self.chat_controller = self._build_component(
             "chat", lambda: ChatController(self.settings)
         )
+        services().register(GenerationActivityService, self.chat_controller, replace=True)
         logger.notify("ChatController успешно инициализирован.")
 
         with startup_trace.phase("controller.optional_features.configure"):

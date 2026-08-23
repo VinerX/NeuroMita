@@ -75,6 +75,17 @@ QPushButton#ChatSendButtonPill:pressed { background-color: {accent_pressed}; }
 QPushButton#ChatSendButtonPill:disabled {
     background-color: {btn_disabled_bg}; color: {btn_disabled_fg};
 }
+QPushButton#ChatSendButtonPill[cancelMode="true"] {
+    background-color: {danger};
+    border-radius: 12px;
+    padding: 0px;
+}
+QPushButton#ChatSendButtonPill[cancelMode="true"]:hover {
+    background-color: {danger_hover};
+}
+QPushButton#ChatSendButtonPill[cancelMode="true"]:pressed {
+    background-color: {danger_pressed};
+}
 
 QPushButton#ScrollToBottomButton {
     border:none; border-radius:17px; background-color:{accent};

@@ -18,6 +18,7 @@ from .base import (
     get_request_cancellation,
     record_response_body_started,
     resolve_content_and_reasoning,
+    resolve_total_timeout,
 )
 
 
@@ -31,10 +32,26 @@ class StreamDeadlinePolicy:
     @classmethod
     def for_request(cls, req: LLMRequest) -> "StreamDeadlinePolicy":
         extra = req.extra or {}
+        attempt_deadline = resolve_total_timeout(req)
         return cls(
-            first_meaningful_event=_positive_float(extra.get("stream_first_meaningful_timeout_seconds"), 300.0),
-            idle_after_started=_positive_float(extra.get("stream_idle_timeout_seconds"), 120.0),
-            maximum_duration=_positive_float(extra.get("stream_max_duration_seconds"), 1800.0),
+            first_meaningful_event=min(
+                attempt_deadline,
+                _positive_float(
+                    extra.get("stream_first_meaningful_timeout_seconds"),
+                    attempt_deadline,
+                ),
+            ),
+            idle_after_started=min(
+                attempt_deadline,
+                _positive_float(extra.get("stream_idle_timeout_seconds"), 120.0),
+            ),
+            maximum_duration=min(
+                attempt_deadline,
+                _positive_float(
+                    extra.get("stream_max_duration_seconds"),
+                    attempt_deadline,
+                ),
+            ),
             poll_interval=_positive_float(extra.get("stream_watchdog_poll_seconds"), 0.25),
         )
 
@@ -56,10 +73,6 @@ class StreamSupervisor:
         current = time.monotonic() if now is None else float(now)
         started_at, first_event_at, last_event_at = self.cancellation.stream_activity()
         elapsed = current - started_at
-        if elapsed >= self.policy.maximum_duration:
-            raise StreamDeadlineExceeded(
-                f"Stream exceeded maximum duration of {self.policy.maximum_duration:.1f}s."
-            )
         if first_event_at is None and elapsed >= self.policy.first_meaningful_event:
             raise StreamDeadlineExceeded(
                 "Stream produced no meaningful event within "
@@ -69,6 +82,10 @@ class StreamSupervisor:
             raise StreamDeadlineExceeded(
                 "Stream became idle for more than "
                 f"{self.policy.idle_after_started:.1f}s."
+            )
+        if elapsed >= self.policy.maximum_duration:
+            raise StreamDeadlineExceeded(
+                f"Stream exceeded maximum duration of {self.policy.maximum_duration:.1f}s."
             )
 
 

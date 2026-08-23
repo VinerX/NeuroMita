@@ -51,6 +51,7 @@ class AppWindowBase(QMainWindow):
     show_thinking_signal = pyqtSignal(object)
     show_error_signal = pyqtSignal(str)
     hide_status_signal = pyqtSignal()
+    hide_generation_status_signal = pyqtSignal()
     pulse_error_signal = pyqtSignal()
     show_voicing_signal = pyqtSignal(object)
     hide_voicing_signal = pyqtSignal()
@@ -181,6 +182,7 @@ class AppWindowBase(QMainWindow):
         self.show_thinking_signal.connect(self._show_thinking_slot)
         self.show_error_signal.connect(self._show_error_slot)
         self.hide_status_signal.connect(self._hide_status_slot)
+        self.hide_generation_status_signal.connect(self._hide_generation_status_slot)
         self.pulse_error_signal.connect(self._pulse_error_slot)
         self.show_voicing_signal.connect(self._show_voicing_slot)
         self.hide_voicing_signal.connect(self._hide_voicing_slot)
@@ -878,6 +880,9 @@ class AppWindowBase(QMainWindow):
             self.show_send_error(_("Backend недоступен.", "Backend is unavailable."))
         return result
 
+    def cancel_active_generations(self) -> None:
+        self._shell_actions.cancel_active_generations()
+
     def load_more_history(self):
         if getattr(self, "chat_window", None) is None:
             return False
@@ -1053,6 +1058,10 @@ class AppWindowBase(QMainWindow):
             logger.info('Скрываем статус')
             self.mita_status.hide_animated()
 
+    def _hide_generation_status_slot(self):
+        if hasattr(self, 'mita_status') and self.mita_status:
+            self.mita_status.hide_generation()
+
     def _pulse_error_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.pulse_error_animation()
@@ -1083,7 +1092,7 @@ class AppWindowBase(QMainWindow):
         pass
 
     def _on_stream_finish(self, _data=None):
-        self._hide_status_slot()
+        pass
 
     def _on_reload_prompts_success(self):
         QMessageBox.information(self, _("Успешно", "Success"),

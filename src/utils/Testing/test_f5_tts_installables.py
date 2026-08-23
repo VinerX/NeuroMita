@@ -43,6 +43,28 @@ class F5TTSInstallablesTests(unittest.TestCase):
 
         self.assertNotIn("use_ruaccent", keys)
 
+    def test_cross_lingual_rvc_combines_clf5_and_rvc_requirements(self):
+        requirements = F5TTSInstallSpec.requirements(
+            "high_clf5+low",
+            {"gpu_vendor": "NVIDIA"},
+        )
+        specs = {req.spec for req in requirements if req.kind == "python_dist"}
+        files = {
+            Path(req.path_fn({}) if req.path_fn else req.path).name
+            for req in requirements
+            if req.kind == "file"
+        }
+        settings = F5TTSModel._find_model_config("high_clf5+low")["settings"]
+        setting_keys = {item["key"] for item in settings}
+
+        self.assertIn("pyphen", specs)
+        self.assertIn("tts-with-rvc", specs)
+        self.assertNotIn("ruaccent", specs)
+        self.assertIn("speaking_rate.safetensors", files)
+        self.assertIn("f5rvc_f5_nfe_step", setting_keys)
+        self.assertIn("f5rvc_rvc_pitch", setting_keys)
+        self.assertNotIn("f5rvc_use_ruaccent", setting_keys)
+
     def test_required_assets_include_vocoder_and_backend_specific_rvc(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,
