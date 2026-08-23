@@ -483,13 +483,13 @@ class F5TTSModel(IVoiceModel):
         },
         {
             "id": "high+low",
-            "name": "F5-TTS + RVC",
+            "name": "F5-TTS + RVC (Russian)",
             "min_vram": 6, "rec_vram": 8,
             "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 7,
             "backend": "cpu",
             "compatibility": F5_RVC_FALLBACK_COMPATIBILITY,
-            "languages": ["Russian", "English"],
+            "languages": ["Russian"],
             "intents": [_("Эмоции", "Emotion"), _("Конверсия голоса", "Voice conversion")],
             "description": _(
                 "F5‑TTS с последующей конверсией тембра через RVC.",
@@ -596,7 +596,7 @@ class F5TTSModel(IVoiceModel):
                 if F5TTSInstallSpec.is_rvc(mode)
                 else "Cross-Lingual F5-TTS (English & Chinese)"
             )
-        return "F5-TTS + RVC" if mode == "high+low" else "F5-TTS"
+        return "F5-TTS + RVC (Russian)" if mode == "high+low" else "F5-TTS (Russian)"
 
     def _load_module(self):
         cross_lingual = F5TTSInstallSpec.is_cross_lingual(self._mode())

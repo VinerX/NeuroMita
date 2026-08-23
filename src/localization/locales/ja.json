@@ -2230,5 +2230,6 @@
   "сообщ.": "メッセージ",
   "⚠️ Для Fish Speech+ / +RVC нужен MSVC (VC++ Build Tools).": "⚠️ Fish Speech+ / +RVCにはMSVC（VC++ Build Tools）が必要です。",
   "⚠️ Для компиляции ядра Triton нужен MSVC (VC++ Build Tools)!": "⚠️ Triton kernel compilation requires MSVC (VC++ Build Tools)!（必須）",
-  "📦 Пакеты: ": "📦 パッケージ: "
+  "📦 Пакеты: ": "📦 パッケージ: ",
+  "Закрытие": "終了しています"
 }

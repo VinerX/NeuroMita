@@ -65,6 +65,20 @@ class F5TTSInstallablesTests(unittest.TestCase):
         self.assertIn("f5rvc_rvc_pitch", setting_keys)
         self.assertNotIn("f5rvc_use_ruaccent", setting_keys)
 
+    def test_rvc_variants_mirror_the_base_language_split(self):
+        russian = F5TTSModel._find_model_config("high+low")
+        cross_lingual = F5TTSModel._find_model_config("high_clf5+low")
+        russian_defaults = F5TTSModel.default_settings_for_model("high+low")
+
+        self.assertEqual(russian["name"], "F5-TTS + RVC (Russian)")
+        self.assertEqual(russian["languages"], ["Russian"])
+        self.assertTrue(russian_defaults["f5rvc_use_ruaccent"])
+        self.assertEqual(cross_lingual["languages"], ["English", "Chinese"])
+        self.assertNotIn(
+            "f5rvc_use_ruaccent",
+            {item["key"] for item in cross_lingual["settings"]},
+        )
+
     def test_required_assets_include_vocoder_and_backend_specific_rvc(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,

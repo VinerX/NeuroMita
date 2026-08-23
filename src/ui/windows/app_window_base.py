@@ -3,6 +3,7 @@ import base64
 
 from PyQt6.QtCore import (
     QEasingCurve,
+    QEventLoop,
     QPropertyAnimation,
     QTimer,
     QUrl,
@@ -952,9 +953,26 @@ class AppWindowBase(QMainWindow):
             return
 
         self._close_requested = True
-        self.setEnabled(False)
+        self._show_shutdown_overlay()
         logger.info("Закрытие запланировано вне нативного closeEvent")
-        QTimer.singleShot(0, self._finish_deferred_close)
+        QTimer.singleShot(50, self._finish_deferred_close)
+
+    def _show_shutdown_overlay(self) -> None:
+        from ui.widgets.shutdown_overlay import ShutdownOverlayPanel
+
+        overlay = getattr(self, "overlay", None)
+        if overlay is None:
+            self.setEnabled(False)
+            return
+
+        central_widget = self.centralWidget()
+        if central_widget is not None:
+            central_widget.setEnabled(False)
+        overlay.set_content(ShutdownOverlayPanel(overlay), locked=True)
+        overlay.setGeometry(self.rect())
+        overlay.show_immediate()
+        overlay.repaint()
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
     def _finish_deferred_close(self):
         logger.info("Начинаем отложенное завершение backend и GUI")

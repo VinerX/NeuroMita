@@ -2024,5 +2024,6 @@
   "⚠️ Ошибка загрузки Triton": "⚠️ Triton Load Error",
   "✓ Успех": "✓ Success",
   "✗ Ошибка": "✗ Error",
-  "📦 Пакеты: ": "📦 Packages: "
+  "📦 Пакеты: ": "📦 Packages: ",
+  "Закрытие": "Closing"
 }
