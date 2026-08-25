@@ -13,6 +13,7 @@ from typing import Optional, Any
 from handlers.chat_handler import ChatModel
 from utils import _, redact_image_payloads
 from core.character_locks import character_generation_lock, character_lock
+from core.cancellation import OperationCancelledError
 from core.events import Event, EventDelivery, Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services, use
@@ -1261,6 +1262,8 @@ class ModelController(GenerationService, ModelStateService):
     # ---------------------------------------------------------------------
 
     def generate_chat(self, request: ChatGenerationRequest) -> Optional[ChatGenerationResult]:
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
         if request.character_id:
             char = self._get_character_ref(str(request.character_id))
             if char is None:
@@ -1283,6 +1286,8 @@ class ModelController(GenerationService, ModelStateService):
         # короткие state-lock секции фонового summary/переменных во время сетевого I/O.
         perf_mark(request.trace_id, "generation.character_lock_wait_started")
         with character_generation_lock(getattr(char, "char_id", "") or ""):
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
             perf_mark(request.trace_id, "generation.character_lock_acquired")
             return self._generate_chat_serialized(request, char)
 
@@ -1318,6 +1323,8 @@ class ModelController(GenerationService, ModelStateService):
         is_game_master = char_id.casefold() == "gamemaster"
 
         rag_context = ""
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
         if (
             not is_game_master
             and bool(self.settings.get("RAG_ENABLED", False))
@@ -1326,6 +1333,8 @@ class ModelController(GenerationService, ModelStateService):
             prompt_set_path = getattr(char, "base_data_path", None)
             with perf_span(trace_id, "generation.rag"):
                 rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
 
         # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
         # they fire on precise player input, independent of RAG availability or
@@ -1576,6 +1585,10 @@ class ModelController(GenerationService, ModelStateService):
             with perf_span(trace_id, "generation.prompt_build"):
                 with character_lock(char_id):
                     prompt_data = use(PromptBuilderService).build(prompt_request)
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
+        except OperationCancelledError:
+            raise
         except Exception as e:
             logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
@@ -1629,6 +1642,8 @@ class ModelController(GenerationService, ModelStateService):
                 structured_model_cls = None
 
         try:
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
             use_stream_cb = stream_callback if policy.allow_streaming else None
             with perf_span(trace_id, "llm.total", streaming=bool(policy.allow_streaming)):
                 llm_response = self.model.generate(
@@ -1638,7 +1653,10 @@ class ModelController(GenerationService, ModelStateService):
                     preset_id=preset_id,
                     request_id=str(task_uid or req_id or origin_message_id or ""),
                     capabilities_override=effective_capabilities,
-                    request_options_override={"trace_id": trace_id} if trace_id else None,
+                    request_options_override={
+                        "trace_id": trace_id,
+                        "cancellation": request.cancellation,
+                    },
                     structured_model=structured_model_cls,
                     context_character_id=char_id,
                     context_character_name=char_name,
@@ -1828,6 +1846,8 @@ class ModelController(GenerationService, ModelStateService):
                 ),
             )
 
+        except OperationCancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})

@@ -4,9 +4,11 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import threading
+import time
 from typing import Any, Callable, Optional
 
 from main_logger import logger
+from core.cancellation import CancellationToken, OperationCancelledError
 from core.events import Events
 from core.executors import PoolSaturated, Pools, executors
 from core.performance_trace import get_trace, perf_mark
@@ -84,11 +86,14 @@ class LLMRequestRunner:
         request_timeout: float,
         suppress_failure_events: bool = False,
         trace_id: str | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
         self.last_error = None
         self._abort_chain = False
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
 
         try:
             preset_chain = self.preset_resolver.resolve_chain(preset_id)
@@ -104,6 +109,8 @@ class LLMRequestRunner:
         last_response: Optional[LLMResponse] = None
         stream_channel_holder: list[Optional[StreamEventChannel]] = [None]
         for chain_idx, base_preset in enumerate(preset_chain, start=1):
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
             preset_label = base_preset.preset_name or f"preset#{chain_idx}"
             if chain_idx > 1:
                 logger.warning(
@@ -124,6 +131,7 @@ class LLMRequestRunner:
                 chain_total=total_presets,
                 stream_channel_holder=stream_channel_holder,
                 trace_id=trace_id,
+                operation_cancellation=cancellation,
             )
             last_response = response
             if response and response.text:
@@ -171,6 +179,7 @@ class LLMRequestRunner:
         chain_total: int,
         stream_channel_holder: list[Optional[StreamEventChannel]],
         trace_id: str | None = None,
+        operation_cancellation: CancellationToken | None = None,
     ) -> LLMResponse:
         preset_tag = f"[{chain_pos}/{chain_total} {base_preset.preset_name}]"
 
@@ -179,6 +188,8 @@ class LLMRequestRunner:
         last_model_name: Optional[str] = None
 
         for attempt in range(1, max_attempts + 1):
+            if operation_cancellation is not None:
+                operation_cancellation.raise_if_cancelled()
             logger.info(f"{preset_tag} Generation attempt {attempt}/{max_attempts}")
 
             if self._debug_dumps_enabled():
@@ -218,11 +229,11 @@ class LLMRequestRunner:
             req.extra = dict(getattr(req, "extra", None) or {})
             req.extra.setdefault("http_timeout_seconds", float(request_timeout))
             if req.stream:
-                req.extra.setdefault("http_read_timeout_seconds", 300.0)
+                req.extra.setdefault("http_read_timeout_seconds", float(request_timeout))
                 if stream_channel_holder[0] is None:
                     stream_channel_holder[0] = StreamEventChannel(req)
                 req.extra["_stream_event_channel"] = stream_channel_holder[0]
-            cancellation = RequestCancellation()
+            cancellation = RequestCancellation(operation_cancellation)
             req.extra["_request_cancellation"] = cancellation
 
             validation_error = self._validate_request(req)
@@ -264,6 +275,8 @@ class LLMRequestRunner:
                     provider=getattr(req, "provider_name", "unknown"),
                     model=getattr(req, "model", ""),
                 )
+                if operation_cancellation is not None:
+                    operation_cancellation.raise_if_cancelled()
                 if response and response.text:
                     finish_attempt(result="success", fallback=chain_pos > 1)
                     self.last_error = None
@@ -299,7 +312,13 @@ class LLMRequestRunner:
                         "Generation attempt %s returned no response object; delegated to retry policy.",
                         attempt,
                     )
+            except OperationCancelledError:
+                finish_attempt(result="cancelled", error_type="OperationCancelledError")
+                raise
             except concurrent.futures.TimeoutError:
+                if operation_cancellation is not None and operation_cancellation.cancelled:
+                    finish_attempt(result="cancelled", error_type="OperationCancelledError")
+                    operation_cancellation.raise_if_cancelled()
                 attempt_error_type = "TimeoutError"
                 last_error_message = cancellation.reason or f"Attempt {attempt} timed out after {request_timeout}s."
                 retryable_before_response = bool(
@@ -327,6 +346,9 @@ class LLMRequestRunner:
                     url=getattr(req, "api_url", None),
                 )
             except Exception as e:
+                if operation_cancellation is not None and operation_cancellation.cancelled:
+                    finish_attempt(result="cancelled", error_type="OperationCancelledError")
+                    operation_cancellation.raise_if_cancelled()
                 attempt_error_type = type(e).__name__
                 last_error_message = f"Error during generation attempt {attempt}: {e}"
                 self.last_error = coerce_provider_error(
@@ -371,7 +393,7 @@ class LLMRequestRunner:
                         "provider_error": error_payload,
                     })
                 retry_wait = self._resolve_retry_delay(retry_delay, self.last_error)
-                if self._shutdown_event.wait(retry_wait):
+                if self._wait_before_retry(retry_wait, operation_cancellation):
                     self._abort_chain = True
                     break
             elif attempt < max_attempts and self.last_error is not None:
@@ -455,19 +477,30 @@ class LLMRequestRunner:
                 "LLM HTTP pool is saturated by unfinished provider requests"
             ) from exc
         if stream_policy is None:
-            try:
-                return future.result(timeout=timeout)
-            except concurrent.futures.TimeoutError:
-                self._abort_future(
-                    future,
-                    pool,
-                    cancellation,
-                    reason=f"Provider attempt exceeded {timeout:.1f}s.",
-                    grace_timeout=timeout,
-                )
+            deadline = time.monotonic() + max(0.0, float(timeout))
+            while True:
+                if cancellation is not None and cancellation.cancelled:
+                    self._cancel_future(future, pool)
+                    cancellation.raise_if_cancelled()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._abort_future(
+                        future,
+                        pool,
+                        cancellation,
+                        reason=f"Provider attempt exceeded {timeout:.1f}s.",
+                        grace_timeout=timeout,
+                    )
+                try:
+                    return future.result(timeout=min(0.1, remaining))
+                except concurrent.futures.TimeoutError:
+                    continue
 
         supervisor = StreamSupervisor(cancellation, stream_policy)
         while True:
+            if cancellation is not None and cancellation.cancelled:
+                self._cancel_future(future, pool)
+                cancellation.raise_if_cancelled()
             try:
                 supervisor.raise_if_expired()
             except StreamDeadlineExceeded as exc:
@@ -483,6 +516,12 @@ class LLMRequestRunner:
             except concurrent.futures.TimeoutError:
                 if future.done():
                     return future.result()
+
+    @staticmethod
+    def _cancel_future(future, pool) -> None:
+        future.cancel()
+        if not future.done():
+            pool.abandon(future)
 
     @staticmethod
     def _abort_future(future, pool, cancellation, *, reason: str, grace_timeout: float):
@@ -542,6 +581,26 @@ class LLMRequestRunner:
             maximum = 120.0
         provider_delay = float(getattr(error, "retry_after_seconds", 0.0) or 0.0)
         return min(maximum, max(0.0, float(retry_delay), provider_delay))
+
+    def _wait_before_retry(
+        self,
+        delay: float,
+        cancellation: CancellationToken | None,
+    ) -> bool:
+        timeout = max(0.0, float(delay))
+        if cancellation is None:
+            return self._shutdown_event.wait(timeout)
+
+        deadline = time.monotonic() + timeout
+        while True:
+            cancellation.raise_if_cancelled()
+            if self._shutdown_event.is_set():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if cancellation.wait(min(0.1, remaining)):
+                cancellation.raise_if_cancelled()
 
     def close(self) -> None:
         self._shutdown_event.set()

@@ -93,8 +93,8 @@ class ExportDialog(QDialog):
 
         self._rating_combo = QComboBox()
         self._rating_combo.addItem(tr("Все записи", "All records"), None)
-        self._rating_combo.addItem(tr("Без отрицательных (👍 и без оценки)", "No negatives (👍 and unrated)"), 0)
-        self._rating_combo.addItem(tr("Только 👍 положительные", "Only 👍 positive"), 1)
+        self._rating_combo.addItem(tr("Без отрицательных (положительные и без оценки)", "No negatives (positive and unrated)"), 0)
+        self._rating_combo.addItem(tr("Только положительные", "Only positive"), 1)
         self._rating_combo.currentIndexChanged.connect(self._update_count)
         self._rating_combo.setMinimumWidth(280)
         rating_layout.addWidget(self._rating_combo)

@@ -75,4 +75,19 @@ def runtime_log_path() -> Path:
         if not path.is_absolute():
             path = base_dir() / path
         return path.resolve()
-    return base_dir() / "NeuroMitaLogs.log"
+    return logs_dir() / "NeuroMitaLogs.log"
+
+
+def logs_dir(*, create: bool = False) -> Path:
+    path = base_dir() / "Logs"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def ai_worker_log_path(worker_name: str) -> Path:
+    safe_name = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "_"
+        for character in str(worker_name or "worker").strip().lower()
+    ).strip("_-") or "worker"
+    return logs_dir() / "AIWorkers" / f"{safe_name}.log"

@@ -3,10 +3,10 @@ import logging
 import os
 import queue
 import sys
-from logging.handlers import QueueHandler, QueueListener
-from typing import Any, Optional
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
+from typing import Any
 
-from core.app_paths import runtime_log_path
+from core.app_paths import ai_worker_log_path, runtime_log_path
 
 try:
     import colorlog
@@ -23,6 +23,42 @@ SUCCESS_LEVEL = 35  # между WARNING (30) и ERROR (40)
 logging.addLevelName(NOTIFY_LEVEL, "NOTIFY")
 logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
 logging.addLevelName(PROGRESS_LEVEL, "PROGRESS")
+
+
+class AIWorkerFileLogger:
+    def __init__(self, worker_name: str) -> None:
+        self.worker_name = str(worker_name or "worker").strip().lower() or "worker"
+        path = ai_worker_log_path(self.worker_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._logger = logging.Logger(f"neuromita.ai_worker.{self.worker_name}", logging.DEBUG)
+        self._logger.propagate = False
+        self._handler = RotatingFileHandler(
+            path,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        self._handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)-8s %(message)s")
+        )
+        self._logger.addHandler(self._handler)
+
+    def write(self, level: str, message: str, detail: str = "") -> None:
+        normalized = str(level or "info").strip().lower()
+        level_number = {
+            "debug": logging.DEBUG,
+            "warning": logging.WARNING,
+            "success": SUCCESS_LEVEL,
+            "error": logging.ERROR,
+            "critical": logging.CRITICAL,
+        }.get(normalized, logging.INFO)
+        self._logger.log(level_number, str(message or ""))
+        if detail:
+            self._logger.debug("Diagnostic traceback:\n%s", str(detail).strip())
+
+    def close(self) -> None:
+        self._logger.removeHandler(self._handler)
+        self._handler.close()
 
 # -----------------------------------------------------------------------------
 # Фильтры
@@ -122,7 +158,12 @@ class CustomLogger(logging.Logger):
         # Файловый обработчик
         log_path = runtime_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(
             logging.Formatter(
                 '%(asctime)s - %(levelname)-8s '

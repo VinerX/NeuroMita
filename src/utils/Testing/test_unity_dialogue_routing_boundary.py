@@ -53,6 +53,25 @@ def test_python_sends_unity_owned_dialogue_policy_settings() -> None:
         assert f'"{removed_key}"' not in source
 
 
+def test_python_sends_unity_asr_instant_setting(monkeypatch) -> None:
+    source = (SRC_ROOT / "controllers" / "server_controller.py").read_text(encoding="utf-8")
+    assert '"MIC_INSTANT_SENT"' in source
+
+    controller = object.__new__(ServerController)
+    controller.settings_to_send = ["MIC_INSTANT_SENT"]
+    controller.settings = SimpleNamespace(revision=7)
+    controller._collect_characters_stats = lambda: {}
+    controller._get_setting = lambda key, default=None: True
+    monkeypatch.setattr(
+        "controllers.server_controller.ensure_shared_transfer_dirs",
+        lambda: (_ for _ in ()).throw(RuntimeError("disabled in test")),
+    )
+
+    body = controller._prepare_loaded_settings_body()
+    assert body["settings"]["MIC_INSTANT_SENT"] is True
+    assert body["settings_revision"] == 7
+
+
 def test_automatic_dialogue_setting_defaults_to_enabled(monkeypatch) -> None:
     source = (SRC_ROOT / "ui" / "settings" / "dialogue_settings.py").read_text(
         encoding="utf-8"

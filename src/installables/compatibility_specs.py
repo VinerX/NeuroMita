@@ -46,6 +46,18 @@ F5_CPU_FALLBACK_COMPATIBILITY = {
     ]
 }
 
+OMNIVOICE_CPU_FALLBACK_COMPATIBILITY = {
+    "rules": [
+        {
+            "code": "cpu_fallback",
+            "effect": "warning",
+            "vendors": ["AMD", "INTEL", "CPU"],
+            "warning_ru": "OmniVoice будет работать через CPU fallback и может быть заметно медленнее.",
+            "warning_en": "OmniVoice will use its CPU fallback and may be noticeably slower.",
+        }
+    ]
+}
+
 F5_RVC_FALLBACK_COMPATIBILITY = {
     "rules": [
         {

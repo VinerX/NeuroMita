@@ -22,6 +22,7 @@ from controllers.chat_controller import ChatController
 from core.events import Events, get_event_bus
 from core.executors import Pools, executors
 from core.services import services
+from managers.task_manager import TaskStatus
 from services.llm_stream import LLMStreamEvent, LLMStreamEventType
 from core.request_policy import resolve_policy
 from services.contracts import (
@@ -76,6 +77,20 @@ class _BlockingGeneration(GenerationService):
         self.entered.release()
         self.release.wait(10)
         return ChatGenerationResult(text="ok", character_id="Crazy")
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _CancellableGeneration(GenerationService):
+    def __init__(self):
+        self.entered = threading.Event()
+
+    def generate_chat(self, request: ChatGenerationRequest):
+        self.entered.set()
+        request.cancellation.wait(10)
+        request.cancellation.raise_if_cancelled()
+        return ChatGenerationResult(text="unexpected", character_id="Crazy")
 
     def generate_utility(self, request):
         raise AssertionError("не используется")
@@ -136,6 +151,10 @@ class ChatRequestPipelineTests(unittest.TestCase):
         # инстанс продолжит обрабатывать SEND_MESSAGE и сломает следующий тест.
         self.bus.unsubscribe(Events.Chat.SEND_MESSAGE, self.controller._on_send_message)
         self.bus.unsubscribe(
+            Events.Chat.CANCEL_ACTIVE_GENERATIONS,
+            self.controller._on_cancel_active_generations,
+        )
+        self.bus.unsubscribe(
             Events.Model.GET_LLM_PROCESSING_STATUS, self.controller._on_get_llm_processing_status
         )
         self.generation.release.set()
@@ -168,6 +187,44 @@ class ChatRequestPipelineTests(unittest.TestCase):
             self.generation.threads[0].startswith(Pools.GENERATION),
             f"генерация ушла не в свой пул: {self.generation.threads[0]}",
         )
+
+    def test_cancel_stops_unity_generation_and_marks_task_cancelled(self):
+        generation = _CancellableGeneration()
+        services().register(GenerationService, generation, replace=True)
+        task_updates: list[dict] = []
+
+        def collect_task_update(event):
+            task_updates.append(event.data or {})
+
+        subscription = self.bus.subscribe(
+            Events.Task.UPDATE_TASK_STATUS,
+            collect_task_update,
+            weak=False,
+        )
+        try:
+            self.bus.emit(
+                Events.Chat.SEND_MESSAGE,
+                {"user_input": "hi", "task_uid": "unity-task"},
+                sync=True,
+            )
+            self.assertTrue(generation.entered.wait(3))
+            self.bus.emit(Events.Chat.CANCEL_ACTIVE_GENERATIONS, sync=True)
+
+            deadline = time.time() + 3
+            while self.controller.llm_processing and time.time() < deadline:
+                time.sleep(0.02)
+            self.bus.flush(3)
+
+            self.assertFalse(self.controller.llm_processing)
+            self.assertTrue(
+                any(
+                    update.get("uid") == "unity-task"
+                    and update.get("status") == TaskStatus.CANCELLED
+                    for update in task_updates
+                )
+            )
+        finally:
+            subscription.close()
 
     def test_inflight_counter_tracks_concurrent_requests(self):
         for _ in range(3):

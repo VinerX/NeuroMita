@@ -12,11 +12,9 @@ from PyQt6.QtWidgets import QWidget
 from main_logger import logger
 from utils import _
 
-# Страховочный таймаут "завис" для занятых состояний (думает/сжатие/озвучивает).
-# Нормальный поток гасит статус по событиям успеха/ошибки, но если соединение с
-# игрой оборвалось посреди запроса, эти события могут не прийти и "думает"
-# висит вечно. Таймер срабатывает только на крайний случай, поэтому окно щедрое:
-# не мешает долгой генерации/синтезу, но не даёт залипнуть.
+# Страховочный таймаут "завис" для фоновых состояний (сжатие/озвучивает).
+# Генерация живёт по backend lifecycle и отдельного UI-таймаута не имеет.
+# Для независимых фоновых операций таймер остаётся последней страховкой.
 _BUSY_WATCHDOG_MS = 240_000  # 4 minutes
 
 
@@ -88,7 +86,7 @@ class MitaStatusWidget(QWidget):
         self.current_state = "thinking"
         self._character_name = character_name
         self._dots_phase = 0
-        self._arm_watchdog()
+        self._disarm_watchdog()
 
         if chat:
             from ui.chat.message_widget import _get_avatar_pixmap
@@ -133,6 +131,11 @@ class MitaStatusWidget(QWidget):
         # Гасим статус сжатия только если сейчас показан именно он. Так фоновое
         # сжатие, завершившись, не собьёт реальный «думает» активного чата.
         if self.current_state not in ("compression", "status"):
+            return
+        self.hide_animated()
+
+    def hide_generation(self):
+        if self.current_state not in ("thinking", "status"):
             return
         self.hide_animated()
 
@@ -193,7 +196,7 @@ class MitaStatusWidget(QWidget):
             self._watchdog_timer = None
 
     def _on_watchdog(self):
-        if self.current_state in ("thinking", "status", "compression", "voicing"):
+        if self.current_state in ("status", "compression", "voicing"):
             logger.warning(
                 f"MitaStatusWidget: status '{self.current_state}' hung for "
                 f"{_BUSY_WATCHDOG_MS // 1000}s; clearing by timeout"

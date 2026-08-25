@@ -14,6 +14,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
+from core.cancellation import CancellationToken
 from core.request_policy import RequestPolicy
 
 
@@ -746,6 +747,7 @@ class ChatGenerationRequest:
     previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
     trace_id: Optional[str] = None
+    cancellation: Optional[CancellationToken] = None
 
 
 @dataclass(frozen=True)
@@ -889,6 +891,11 @@ class ModelStateService(ABC):
 
     @abstractmethod
     def schedule_g4f_update(self, version: str = "latest") -> bool: ...
+
+
+class GenerationActivityService(ABC):
+    @abstractmethod
+    def active_generation_count(self) -> int: ...
 
 
 class CaptureService(ABC):

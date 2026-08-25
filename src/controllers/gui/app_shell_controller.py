@@ -142,6 +142,9 @@ class AppShellController:
         audio = services().get_optional(AudioStateService)
         return not (audio and audio.is_waiting_answer())
 
+    def cancel_active_generations(self) -> None:
+        self._event_bus.emit(Events.Chat.CANCEL_ACTIVE_GENERATIONS)
+
     def send_message(
         self,
         *,

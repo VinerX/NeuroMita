@@ -51,6 +51,15 @@ class OverlayWidget(QWidget):
         self.fade_animation.setStartValue(0)
         self.fade_animation.setEndValue(1)
         self.fade_animation.start()
+
+    def show_immediate(self):
+        """Show the overlay fully rendered without waiting for an animation."""
+        self.fade_animation.stop()
+        self.opacity_effect.setOpacity(1.0)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.show()
+        self.raise_()
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
         
     def hide_animated(self):
         """Скрыть overlay с анимацией"""

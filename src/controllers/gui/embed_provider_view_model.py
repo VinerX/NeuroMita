@@ -369,12 +369,11 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
             return
         self._test_timer.stop()
         success = bool(data.get("success"))
-        marker = "✓ " if success else "✗ "
         message = str(data.get("message") or ("OK" if success else "Error"))
         self.update_state(
             testing=False,
             testing_preset_id=None,
-            status_text=marker + message,
+            status_text=message,
             status_kind="success" if success else "error",
         )
 

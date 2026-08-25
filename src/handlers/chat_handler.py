@@ -22,6 +22,7 @@ from utils.openrouter_routing import (
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
+from core.cancellation import OperationCancelledError
 from core.executors import Pools, executors
 from core.services import use
 from services.contracts import GameLinkService
@@ -257,6 +258,7 @@ class ChatModel:
         retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
         request_timeout = float(request_options.get("request_timeout", 240) or 240)
         suppress_failure_events = bool(request_options.get("suppress_failure_events", False))
+        cancellation = request_options.get("cancellation")
 
         self._log_generation_start(preset_id)
 
@@ -358,7 +360,10 @@ class ChatModel:
                 request_timeout=request_timeout,
                 suppress_failure_events=suppress_failure_events,
                 trace_id=trace_id,
+                cancellation=cancellation,
             )
+        except OperationCancelledError:
+            raise
         except Exception as e:
             logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
             self.last_error = None

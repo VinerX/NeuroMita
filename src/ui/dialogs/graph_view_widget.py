@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+import qtawesome as qta
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -687,7 +688,8 @@ class GraphViewPage(QWidget):
         self._search_edit.textChanged.connect(self._on_search_changed)
         self._search_edit.returnPressed.connect(self._on_search_changed)
         search_layout.addWidget(self._search_edit)
-        btn_close_search = QPushButton("✕", self._search_bar)
+        btn_close_search = QPushButton(self._search_bar)
+        btn_close_search.setIcon(qta.icon("fa6s.xmark", color="#EAEAEA"))
         btn_close_search.setFixedWidth(26)
         btn_close_search.clicked.connect(self._close_search)
         search_layout.addWidget(btn_close_search)

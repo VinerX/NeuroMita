@@ -168,9 +168,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
         try:
             self.local_model_settings_btn.setIcon(qta.icon("fa5s.cog", color="#cccccc"))
         except Exception:
-            self.local_model_settings_btn.setText("⚙")
+            self.local_model_settings_btn.setText("")
     else:
-        self.local_model_settings_btn.setText("⚙")
+        self.local_model_settings_btn.setText("")
     def _open_current_model_settings():
         # Открываем AI Hub на разделе TTS и сразу выделяем текущую модель.
         # component_id в реестре — "tts:<model_id>" (см. make_component_id).

@@ -21,7 +21,7 @@ from core.daemon_executor import DaemonExecutor
 from core.services import services
 from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
-from main_logger import logger
+from main_logger import AIWorkerFileLogger, logger
 
 
 _VALID_MODES = frozenset(("auto", "shared", "split"))
@@ -815,43 +815,57 @@ class _Worker:
                     pass
 
     def _log_loop(self):
-        while True:
+        worker_file_logger: AIWorkerFileLogger | None = None
+        try:
             try:
-                msg = self.log_q.get()
+                worker_file_logger = AIWorkerFileLogger(self.worker_name)
             except Exception:
-                proc = self.proc
-                if self.stopping.is_set() and (proc is None or not proc.is_alive()):
+                logger.exception(
+                    f"Failed to initialize log file for AI worker '{self.worker_name}'"
+                )
+
+            while True:
+                try:
+                    msg = self.log_q.get()
+                except Exception:
+                    proc = self.proc
+                    if self.stopping.is_set() and (proc is None or not proc.is_alive()):
+                        break
+                    time.sleep(0.05)
+                    continue
+
+                if msg is None:
                     break
-                time.sleep(0.05)
-                continue
+                if not isinstance(msg, dict):
+                    continue
 
-            if msg is None:
-                break
-            if not isinstance(msg, dict):
-                continue
-
-            level = str(msg.get("level") or "info").lower()
-            text = str(msg.get("message") or "")
-            detail = str(msg.get("detail") or "").strip()
-            self.last_status = text
-            if level == "error":
-                self.last_error = text
-
-            try:
+                level = str(msg.get("level") or "info").lower()
+                text = str(msg.get("message") or "")
+                detail = str(msg.get("detail") or "").strip()
+                self.last_status = text
                 if level == "error":
-                    logger.error(f"[AI:{self.worker_name}] {text}")
-                elif level == "warning":
-                    logger.warning(f"[AI:{self.worker_name}] {text}")
-                elif level == "success":
-                    logger.success(f"[AI:{self.worker_name}] {text}")
-                else:
-                    logger.info(f"[AI:{self.worker_name}] {text}")
-                if detail:
-                    logger.debug(
-                        f"[AI:{self.worker_name}] diagnostic traceback for {text}:\n{detail}"
-                    )
-            except Exception:
-                pass
+                    self.last_error = text
+
+                try:
+                    if worker_file_logger is not None:
+                        worker_file_logger.write(level, text, detail)
+                    if level == "error":
+                        logger.error(f"[AI:{self.worker_name}] {text}")
+                    elif level == "warning":
+                        logger.warning(f"[AI:{self.worker_name}] {text}")
+                    elif level == "success":
+                        logger.success(f"[AI:{self.worker_name}] {text}")
+                    else:
+                        logger.info(f"[AI:{self.worker_name}] {text}")
+                    if detail:
+                        logger.debug(
+                            f"[AI:{self.worker_name}] diagnostic traceback for {text}:\n{detail}"
+                        )
+                except Exception:
+                    pass
+        finally:
+            if worker_file_logger is not None:
+                worker_file_logger.close()
 
 
 class AIEngineController(AIEngineService, AIEngineAdministrationService):

@@ -28,8 +28,11 @@ _VOICE_MODELS: dict[str, tuple[str, str]] = {
     "medium": ("Fish Speech", "high-quality and natural"),
     "medium+": ("Fish Speech+", "one of the best-quality available voices"),
     "medium+low": ("Fish Speech+ + RVC", "one of the best-quality voices with an even closer character timbre"),
+    "omnivoice": ("OmniVoice", "a more accessible multilingual voice-cloning option with lower quality than Fish Speech"),
     "high": ("F5-TTS", "lively and expressive, but sometimes less stable"),
-    "high+low": ("F5-TTS + RVC", "lively with a closer character timbre, but sometimes less stable"),
+    "high_clf5": ("Cross-Lingual F5-TTS", "cross-lingual English and Chinese synthesis from a reference voice"),
+    "high_clf5+low": ("Cross-Lingual F5-TTS + RVC", "cross-lingual synthesis with additional RVC timbre conversion"),
+    "high+low": ("F5-TTS + RVC (Russian)", "lively Russian speech with a closer character timbre, but sometimes less stable"),
 }
 
 
@@ -148,7 +151,8 @@ def format_character_environment_context(
 
     lines.append(
         "Voice model comparison knowledge, for questions about choosing one: Fish Speech / Fish Speech+ are the strongest overall quality choices; "
-        "Fish Speech+ + RVC adds closer character timbre; F5-TTS sounds lively and expressive but can be somewhat unstable; "
+        "Fish Speech+ + RVC adds closer character timbre; OmniVoice is a more accessible multilingual option but is weaker than Fish Speech; "
+        "F5-TTS sounds lively and expressive but can be somewhat unstable; "
         "Silero + RVC is acceptable; Edge-TTS + RVC is the weakest basic option."
     )
     lines.append("[/Character Environment]")

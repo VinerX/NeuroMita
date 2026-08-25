@@ -6,10 +6,79 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from core.install_requirements import InstallRequirement, check_requirements
-from handlers.voice_models.f5_tts_model import F5TTSInstallSpec
+from handlers.voice_models.f5_tts_model import F5TTSInstallSpec, F5TTSModel
 
 
 class F5TTSInstallablesTests(unittest.TestCase):
+    def test_cross_lingual_variant_has_own_assets_and_dependencies(self):
+        requirements = F5TTSInstallSpec.requirements(
+            "high_clf5",
+            {"gpu_vendor": "NVIDIA"},
+        )
+        specs = {req.spec for req in requirements if req.kind == "python_dist"}
+        files = {
+            Path(req.path_fn({}) if req.path_fn else req.path).name
+            for req in requirements
+            if req.kind == "file"
+        }
+
+        self.assertIn("pyphen", specs)
+        self.assertNotIn("ruaccent", specs)
+        self.assertIn("speaking_rate.safetensors", files)
+
+    def test_russian_variant_requires_ruaccent_and_enables_it_by_default(self):
+        requirements = F5TTSInstallSpec.requirements("high", {"gpu_vendor": "NVIDIA"})
+        specs = {req.spec for req in requirements if req.kind == "python_dist"}
+        defaults = F5TTSModel.default_settings_for_model("high")
+
+        self.assertIn("ruaccent", specs)
+        self.assertNotIn("pyphen", specs)
+        self.assertTrue(defaults["use_ruaccent"])
+
+    def test_cross_lingual_settings_do_not_expose_ruaccent(self):
+        keys = {
+            item["key"]
+            for item in F5TTSModel._find_model_config("high_clf5")["settings"]
+        }
+
+        self.assertNotIn("use_ruaccent", keys)
+
+    def test_cross_lingual_rvc_combines_clf5_and_rvc_requirements(self):
+        requirements = F5TTSInstallSpec.requirements(
+            "high_clf5+low",
+            {"gpu_vendor": "NVIDIA"},
+        )
+        specs = {req.spec for req in requirements if req.kind == "python_dist"}
+        files = {
+            Path(req.path_fn({}) if req.path_fn else req.path).name
+            for req in requirements
+            if req.kind == "file"
+        }
+        settings = F5TTSModel._find_model_config("high_clf5+low")["settings"]
+        setting_keys = {item["key"] for item in settings}
+
+        self.assertIn("pyphen", specs)
+        self.assertIn("tts-with-rvc", specs)
+        self.assertNotIn("ruaccent", specs)
+        self.assertIn("speaking_rate.safetensors", files)
+        self.assertIn("f5rvc_f5_nfe_step", setting_keys)
+        self.assertIn("f5rvc_rvc_pitch", setting_keys)
+        self.assertNotIn("f5rvc_use_ruaccent", setting_keys)
+
+    def test_rvc_variants_mirror_the_base_language_split(self):
+        russian = F5TTSModel._find_model_config("high+low")
+        cross_lingual = F5TTSModel._find_model_config("high_clf5+low")
+        russian_defaults = F5TTSModel.default_settings_for_model("high+low")
+
+        self.assertIn(russian["name"], {"F5-TTS + RVC (Русский)", "F5-TTS + RVC (Russian)"})
+        self.assertEqual(russian["languages"], ["Russian"])
+        self.assertTrue(russian_defaults["f5rvc_use_ruaccent"])
+        self.assertEqual(cross_lingual["languages"], ["English", "Chinese"])
+        self.assertNotIn(
+            "f5rvc_use_ruaccent",
+            {item["key"] for item in cross_lingual["settings"]},
+        )
+
     def test_required_assets_include_vocoder_and_backend_specific_rvc(self):
         with tempfile.TemporaryDirectory() as base_dir, patch.dict(
             os.environ,

@@ -560,9 +560,6 @@ class ChatServerNew:
         engine: str = "",
         ts: float | None = None,
         final: bool = True,
-        autosend: bool = False,
-        delay_sec: float = 0.0,
-        merge_input: bool = True,
     ) -> "Future[bool]":
         """Отправить распознанную фразу конкретной сессии мода.
 
@@ -581,12 +578,6 @@ class ChatServerNew:
             "engine": str(engine or ""),
             "ts": float(ts or time.time()),
             "final": bool(final),
-            # Политику решает Python и кладёт прямо в сообщение: моду не нужно
-            # синхронизировать настройки, и переключение тумблера не гоняется с
-            # уже летящим текстом.
-            "autosend": bool(autosend),
-            "delay_sec": float(delay_sec),
-            "merge_input": bool(merge_input),
         }
 
         if not self.can_schedule():

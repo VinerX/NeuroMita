@@ -2144,5 +2144,14 @@
   "⚠️ Ошибка загрузки Triton": "⚠️ Błąd ładowania Triton",
   "✓ Успех": "✓ Sukces",
   "✗ Ошибка": "✗ Błąd",
-  "📦 Пакеты: ": "📦 Pakiety: "
+  "📦 Пакеты: ": "📦 Pakiety: ",
+  "Закрытие": "Zamykanie",
+  "F5-TTS (Русский)": "F5-TTS (Rosyjski)",
+  "F5-TTS + RVC (Русский)": "F5-TTS + RVC (Rosyjski)",
+  "Cross-Lingual F5-TTS (Английский и китайский)": "Cross-Lingual F5-TTS (Angielski i chiński)",
+  "Cross-Lingual F5-TTS + RVC (Английский и китайский)": "Cross-Lingual F5-TTS + RVC (Angielski i chiński)",
+  "Кросс-языковое клонирование": "Klonowanie międzyjęzykowe",
+  "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "Międzyjęzykowy F5-TTS klonujący rosyjski głos referencyjny i syntezujący mowę angielską lub chińską.",
+  "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS z późniejszą konwersją barwy głosu przez RVC.",
+  "Удаление компонентов RVC...": "Odinstalowywanie komponentów RVC..."
 }

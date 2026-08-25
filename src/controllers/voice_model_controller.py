@@ -991,6 +991,8 @@ class VoiceModelController(VoiceModelService):
                         )
                         if cuda_devices and allows_cuda:
                             final_values_list = list(cuda_devices) + non_cuda_options
+                        elif allows_cuda:
+                            final_values_list = list(base_nvidia_values)
                         else:
                             final_values_list = non_cuda_options or [
                                 v for v in base_other_values if v in ["cpu", "mps"]

@@ -219,8 +219,6 @@ class LocalVoiceController(LocalVoiceService):
             return False
 
         self._save_setting("NM_CURRENT_VOICEOVER", model_id)
-
-        self._initialized_cache.pop(model_id, None)
         return True
 
     async def _async_init_model(self, model_id: str):

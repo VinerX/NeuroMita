@@ -134,6 +134,16 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
                     str(entry.metadata_ru.get("description") or ""),
                     str(entry.metadata_en.get("description") or ""),
                 )
+                ru_tags = list(entry.metadata_ru.get("tags") or ())
+                en_tags = list(entry.metadata_en.get("tags") or ())
+                result["tags"] = [
+                    translate_for_language(
+                        language,
+                        str(ru_tag or ""),
+                        str(en_tags[index] if index < len(en_tags) else ru_tag),
+                    )
+                    for index, ru_tag in enumerate(ru_tags)
+                ]
             except Exception:
                 pass
         return result

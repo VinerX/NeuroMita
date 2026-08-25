@@ -595,10 +595,9 @@ class AsrGlossaryView(QWidget):
                     col = "#4caf50" if ok else "#e25757"
                     ic.setPixmap(qta.icon(name, color=col).pixmap(14, 14))
                 except Exception:
-                    ic.setText("✓" if ok else "✗")
+                    ic.clear()
             else:
-                ic.setText("✓" if ok else "✗")
-                ic.setStyleSheet(f"color: {'#4caf50' if ok else '#e25757'}; font-weight: 700;")
+                ic.clear()
             hl.addWidget(ic, 0, Qt.AlignmentFlag.AlignVCenter)
 
             name = QLabel(dep_id)
