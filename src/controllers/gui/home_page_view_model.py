@@ -53,23 +53,23 @@ class _ProgressLogger:
         self._view_model = view_model
         self._prefix = prefix
 
-    def _set(self, marker: str, message: Any, level: str) -> None:
+    def _set(self, message: Any, level: str) -> None:
         getattr(logger, level, logger.info)(f"[{self._prefix}] {message}")
 
     def info(self, message: Any) -> None:
-        self._set("", message, "info")
+        self._set(message, "info")
 
     def warning(self, message: Any) -> None:
-        self._set("⚠ ", message, "warning")
+        self._set(message, "warning")
 
     def error(self, message: Any) -> None:
-        self._set("✗ ", message, "error")
+        self._set(message, "error")
 
     def success(self, message: Any) -> None:
-        self._set("✓ ", message, "info")
+        self._set(message, "info")
 
     def notify(self, message: Any) -> None:
-        self._set("★ ", message, "info")
+        self._set(message, "info")
 
 
 class HomePageViewModel(IntentViewModel[HomeState]):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional, Tuple, List
 
+import qtawesome as qta
 from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtSql import QSqlDatabase, QSqlQuery, QSqlTableModel
@@ -83,8 +84,8 @@ def _is_blob_value(v) -> bool:
 class _PrettySqlTableModel(QSqlTableModel):
     """
     QSqlTableModel with nicer display:
-    - BLOB columns: show ✓ / ✗ instead of bytes
-    - bool-ish int columns (is_deleted/is_active/is_forgotten): show ✓ / ✗
+    - BLOB columns: show status icons instead of bytes
+    - bool-ish int columns (is_deleted/is_active/is_forgotten): show status icons
     - disable editing for BLOB columns
     """
 
@@ -133,19 +134,27 @@ class _PrettySqlTableModel(QSqlTableModel):
         # Use raw value from EditRole for decisions (DisplayRole might be already prettified somewhere else).
         raw = super().data(index, Qt.ItemDataRole.EditRole)
 
+        is_status_column = self._is_blob_column(col) or "embedding" in col_name or col_name in self.BOOLISH_COLUMNS
+        if role == Qt.ItemDataRole.DecorationRole and is_status_column:
+            if self._is_blob_column(col) or "embedding" in col_name:
+                enabled = _is_blob_value(raw)
+            else:
+                try:
+                    enabled = int(raw or 0) != 0
+                except Exception:
+                    enabled = not _is_empty_value(raw)
+            name = "fa6s.circle-check" if enabled else "fa6s.circle-xmark"
+            color = "#4caf50" if enabled else "#e25757"
+            return qta.icon(name, color=color)
+
         if role == Qt.ItemDataRole.DisplayRole:
             # BLOB (embedding etc.)
             if self._is_blob_column(col) or "embedding" in col_name:
-                has = _is_blob_value(raw)
-                return "✓" if has else "✗"
+                return ""
 
             # bool-ish ints
             if col_name in self.BOOLISH_COLUMNS:
-                try:
-                    v = 0 if raw is None else int(raw)
-                    return "✓" if v != 0 else "✗"
-                except Exception:
-                    return "✗" if _is_empty_value(raw) else "✓"
+                return ""
 
         return super().data(index, role)
 
@@ -1464,7 +1473,7 @@ class DbViewerDialog(QDialog):
     - Per-tab filtering + search
     - Quick right-click filter by cell value
     - Default column hiding + global "Extended output" checkbox
-    - BLOB (embedding) rendered as ✓/✗ instead of bytes
+    - BLOB (embedding) rendered as a status icon instead of bytes
     """
 
     def __init__(self, parent=None, character_id: Optional[str] = None):
@@ -1540,7 +1549,8 @@ class DbViewerDialog(QDialog):
         self.btn_refresh.clicked.connect(self.refresh_all)
         btn_row.addWidget(self.btn_refresh)
 
-        self.btn_fullscreen = QPushButton("⛶ " + _("На весь экран", "Fullscreen"), self)
+        self.btn_fullscreen = QPushButton(_("На весь экран", "Fullscreen"), self)
+        self.btn_fullscreen.setIcon(qta.icon("fa6s.expand", color="#EAEAEA"))
         self.btn_fullscreen.setToolTip(_("Развернуть окно на весь экран", "Maximize the window"))
         self.btn_fullscreen.clicked.connect(self._toggle_maximized)
         btn_row.addWidget(self.btn_fullscreen)
@@ -1555,10 +1565,12 @@ class DbViewerDialog(QDialog):
     def _toggle_maximized(self) -> None:
         if self.isMaximized():
             self.showNormal()
-            self.btn_fullscreen.setText("⛶ " + _("На весь экран", "Fullscreen"))
+            self.btn_fullscreen.setText(_("На весь экран", "Fullscreen"))
+            self.btn_fullscreen.setIcon(qta.icon("fa6s.expand", color="#EAEAEA"))
         else:
             self.showMaximized()
-            self.btn_fullscreen.setText("❐ " + _("Свернуть", "Restore"))
+            self.btn_fullscreen.setText(_("Свернуть", "Restore"))
+            self.btn_fullscreen.setIcon(qta.icon("fa6s.compress", color="#EAEAEA"))
 
     def _table_exists(self, table_name: str) -> bool:
         """Check if a table exists in the database."""

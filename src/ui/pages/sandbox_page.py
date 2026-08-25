@@ -804,8 +804,8 @@ class SandboxPage(QWidget):
         status_text = {
             "idle": "—",
             "running": _("Генерация…", "Generating…"),
-            "success": _("✓ Успех", "✓ Success"),
-            "error": _("✗ Ошибка", "✗ Error"),
+            "success": _("Успех", "Success"),
+            "error": _("Ошибка", "Error"),
         }.get(request.status, str(request.status or "—"))
         if request.status == "error" and request.error:
             status_text = f"{status_text}: {request.error}"

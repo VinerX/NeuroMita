@@ -295,8 +295,6 @@ class AIHubDialog(QDialog):
         pix = qpixmap("fa5s.magic", "#b74b7d", 22)
         if pix is not None:
             badge.setPixmap(pix)
-        else:
-            badge.setText("✦")
         header.addWidget(badge, 0)
 
         title_box = QVBoxLayout()
@@ -1622,7 +1620,10 @@ class AIHubDialog(QDialog):
             )
             rl.addWidget(cancel, 0)
         else:
-            cancel = QPushButton("✕")
+            cancel = QPushButton()
+            cancel_icon = qicon("fa6s.xmark", "#f3edf6")
+            if cancel_icon is not None:
+                cancel.setIcon(cancel_icon)
             cancel.setObjectName("AIHubQueueCancel")
             cancel.setCursor(Qt.CursorShape.PointingHandCursor)
             cancel.setFixedSize(18, 18)

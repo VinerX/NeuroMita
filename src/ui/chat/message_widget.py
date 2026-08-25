@@ -506,7 +506,7 @@ class MessageWidget(QWidget):
                 qta.icon("fa6s.volume-high", color="#ff9cd2").pixmap(_vic, _vic)
             )
         except Exception:
-            self._voicing_label.setText("🔊")
+            self._voicing_label.clear()
         self._voicing_label.setVisible(False)
         name_row.addWidget(self._voicing_label)
 
@@ -523,7 +523,7 @@ class MessageWidget(QWidget):
             self._error_btn.setIcon(qta.icon("fa6s.circle-exclamation", color="#ff6b6b"))
             self._error_btn.setIconSize(QSize(_eic, _eic))
         except Exception:
-            self._error_btn.setText("⚠")
+            self._error_btn.setText("!")
         self._error_btn.setVisible(False)
         self._error_btn.clicked.connect(lambda: self.retry_requested.emit(self._message_id or ""))
         name_row.addWidget(self._error_btn)
@@ -626,7 +626,7 @@ class MessageWidget(QWidget):
             self._rate_up_btn.setIcon(qta.icon("fa5s.thumbs-up", color="#9CA3AF"))
             self._rate_up_btn.setFixedSize(16, 16)
             self._rate_up_btn.setFlat(True)
-            self._rate_up_btn.setToolTip("👍 " + _("Хороший ответ", "Good response"))
+            self._rate_up_btn.setToolTip(_("Хороший ответ", "Good response"))
             self._rate_up_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
             self._rate_up_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -634,7 +634,7 @@ class MessageWidget(QWidget):
             self._rate_down_btn.setIcon(qta.icon("fa5s.thumbs-down", color="#9CA3AF"))
             self._rate_down_btn.setFixedSize(16, 16)
             self._rate_down_btn.setFlat(True)
-            self._rate_down_btn.setToolTip("👎 " + _("Плохой ответ", "Bad response"))
+            self._rate_down_btn.setToolTip(_("Плохой ответ", "Bad response"))
             self._rate_down_btn.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0px; }")
             self._rate_down_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -779,9 +779,20 @@ class ImageWidget(QWidget):
             img_label.mousePressEvent = self._on_click
             bubble_layout.addWidget(img_label)
         else:
-            err_label = QLabel("⚠️ " + _("Ошибка загрузки", "Load error"), bubble)
-            err_label.setStyleSheet("color: #EF4444; padding: 12px; font-weight: bold;")
-            bubble_layout.addWidget(err_label)
+            error_row = QWidget(bubble)
+            error_layout = QHBoxLayout(error_row)
+            error_layout.setContentsMargins(12, 12, 12, 12)
+            error_layout.setSpacing(6)
+            error_icon = QLabel(error_row)
+            error_icon.setPixmap(
+                qta.icon("fa6s.triangle-exclamation", color="#EF4444").pixmap(16, 16)
+            )
+            error_layout.addWidget(error_icon)
+            err_label = QLabel(_("Ошибка загрузки", "Load error"), error_row)
+            err_label.setStyleSheet("color: #EF4444; font-weight: bold;")
+            error_layout.addWidget(err_label)
+            error_layout.addStretch()
+            bubble_layout.addWidget(error_row)
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -907,16 +918,18 @@ class ThinkBlockWidget(QFrame):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
 
-        self._header = QLabel(self)
-        self._header.setStyleSheet(f"color: #9CA3AF; font-weight: bold; font-size: {self._font_sm}pt; background: transparent; border: none;")
+        self._header = QPushButton(self)
+        self._header.setFlat(True)
+        self._header.setIcon(qta.icon("fa6s.brain", color="#9CA3AF"))
+        self._header.setStyleSheet(f"QPushButton {{ color: #9CA3AF; font-weight: bold; font-size: {self._font_sm}pt; background: transparent; border: none; text-align: left; padding: 0; }}")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._header.mousePressEvent = lambda e: self.toggle()
+        self._header.clicked.connect(self.toggle)
         # Автор у размышлений не выводится — аватар и имя принадлежат основному
         # пузырю ответа, а не мыслям (см. фидбэк по UI).
-        if is_streaming: self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + ".")
+        if is_streaming: self._header.setText("▼ " + _("Размышляет", "Thinking") + ".")
         else:
             arrow = "▶" if self._collapsed else "▼"
-            self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
+            self._header.setText(f"{arrow} " + _("Размышления", "Reasoning"))
         layout.addWidget(self._header)
 
         self._content_label = QLabel(self)
@@ -936,7 +949,7 @@ class ThinkBlockWidget(QFrame):
         self._collapsed = not self._collapsed
         self._content_label.setVisible(not self._collapsed)
         arrow = "▶" if self._collapsed else "▼"
-        self._header.setText(f"{arrow} 💭 " + _("Размышления", "Reasoning"))
+        self._header.setText(f"{arrow} " + _("Размышления", "Reasoning"))
 
     def append_content(self, text: str):
         self._content_text += text
@@ -945,7 +958,7 @@ class ThinkBlockWidget(QFrame):
     def finalize(self):
         self._is_streaming = False
         self._stop_animation()
-        self._header.setText("▼ 💭 " + _("Размышления", "Reasoning"))
+        self._header.setText("▼ " + _("Размышления", "Reasoning"))
 
     def _start_animation(self):
         from PyQt6.QtCore import QTimer
@@ -962,4 +975,4 @@ class ThinkBlockWidget(QFrame):
         phases = [".  ", ".. ", "..."]
         self._anim_phase = (self._anim_phase + 1) % 3
         dots = phases[self._anim_phase]
-        self._header.setText("▼ 💭 " + _("Размышляет", "Thinking") + dots)
+        self._header.setText("▼ " + _("Размышляет", "Thinking") + dots)

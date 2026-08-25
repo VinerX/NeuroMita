@@ -48,14 +48,14 @@ def setup_data_settings_controls(self, parent, *, view_model):
         "вместе с метаданными (модель, провайдер, температура, персонаж). "
         "Накопленные данные можно выгрузить и использовать для дообучения "
         "через Unsloth или другие инструменты.\r\n\r\n"
-        "⚠ Файлы могут занять значительное место: каждый запрос включает "
+        "Файлы могут занять значительное место: каждый запрос включает "
         "полный системный промт и историю (~20 сообщений).",
 
         "When collection is enabled, every model dialogue is saved locally "
         "with metadata (model, provider, temperature, character). "
         "Collected data can be exported and used for fine-tuning "
         "via Unsloth or other tools.\r\n\r\n"
-        "⚠ Files can take significant space: each request includes "
+        "Files can take significant space: each request includes "
         "the full system prompt and history (~20 messages)."
     )
     desc_label = QLabel(_desc_tr)

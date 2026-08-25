@@ -124,8 +124,8 @@ class LogsPage(QWidget):
         page = create_logs_page(
             title=_("Системные логи", "System logs"),
             subtitle=_(
-                "Хвост файла NeuroMitaLogs.log и быстрые действия для отладки.",
-                "Tail of NeuroMitaLogs.log plus quick debug actions.",
+                "Общий журнал — Logs/NeuroMitaLogs.log, журналы AI worker-ов — в Logs/AIWorkers.",
+                "The main log is Logs/NeuroMitaLogs.log; AI worker logs are in Logs/AIWorkers.",
             ),
             items=[],
             header_actions=[

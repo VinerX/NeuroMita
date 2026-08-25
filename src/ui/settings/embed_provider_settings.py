@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import qtawesome as qta
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
@@ -168,7 +169,7 @@ class _EmbedProviderWidget(QWidget):
         self._key_edit.setPlaceholderText("sk-...")
         self._key_edit.textChanged.connect(self._mark_dirty)
         self._key_eye = QToolButton()
-        self._key_eye.setText("👁")
+        self._key_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
         self._key_eye.setCheckable(True)
         self._key_eye.setFixedWidth(24)
         self._key_eye.toggled.connect(
@@ -190,7 +191,7 @@ class _EmbedProviderWidget(QWidget):
         header_row.setSpacing(4)
         header_row.addWidget(QLabel(_("Резервные ключи (по строке):", "Reserve keys (one per line):")))
         self._reserve_eye = QToolButton()
-        self._reserve_eye.setText("\U0001F441")
+        self._reserve_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
         self._reserve_eye.setCheckable(True)
         self._reserve_eye.setFixedWidth(24)
         tr_set(self._reserve_eye, "Показать/скрыть все ключи", "Show/hide all keys", "setToolTip")
@@ -236,7 +237,7 @@ class _EmbedProviderWidget(QWidget):
         self._hf_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._hf_edit.textChanged.connect(self._mark_dirty)
         self._hf_eye = QToolButton()
-        self._hf_eye.setText("👁")
+        self._hf_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
         self._hf_eye.setCheckable(True)
         self._hf_eye.setFixedWidth(24)
         self._hf_eye.toggled.connect(
@@ -645,7 +646,7 @@ class _EmbedProviderWidget(QWidget):
             self._download_btn.setText(_("Скачать модель", "Download model"))
 
     def _get_current_display_name(self) -> str:
-        return self._preset_combo.currentText().lstrip("✎ ").strip()
+        return self._preset_combo.currentText().strip()
 
     def _refresh_index_status_async(self):
         if self._current_preset_id is not None:

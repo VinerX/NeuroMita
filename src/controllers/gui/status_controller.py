@@ -189,7 +189,7 @@ class StatusController(BaseController):
         self._last_chat_network_error_ts = now
         signal = getattr(self.view, "update_chat_signal", None) if self.view else None
         if signal is not None:
-            signal.emit("event", f"⚠ {message}", False, "")
+            signal.emit("event", message, False, "")
 
     @staticmethod
     def _is_generic_generation_error(error_message: str) -> bool:

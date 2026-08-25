@@ -6,6 +6,7 @@ from controllers.gui.async_runner import run_async
 from pathlib import Path
 from typing import Callable
 
+import qtawesome as qta
 from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -305,16 +306,16 @@ def setup_updates_settings_controls(
                     _set_status(msg)
 
                 def warning(self, msg):
-                    _set_status_level(f"⚠ {msg}", "warning")
+                    _set_status_level(str(msg), "warning")
 
                 def error(self, msg):
-                    _set_status_level(f"✗ {msg}", "error")
+                    _set_status_level(str(msg), "error")
 
                 def success(self, msg):
-                    _set_status_level(f"✓ {msg}", "success")
+                    _set_status_level(str(msg), "success")
 
                 def notify(self, msg):
-                    _set_status_level(f"★ {msg}", "notify")
+                    _set_status_level(str(msg), "notify")
 
             ui_log = _UiLogger()
 
@@ -681,7 +682,8 @@ def setup_updates_settings_controls(
     unity_entry.setText(self.settings.get("UNITY_INSTALL_DIR", ""))
     unity_layout.addWidget(unity_entry)
 
-    unity_browse = QPushButton("📁")
+    unity_browse = QPushButton()
+    unity_browse.setIcon(qta.icon("fa6s.folder-open", color="#f2b6d8"))
     unity_browse.setFixedWidth(36)
     tr_set(unity_browse, "Выбрать папку", "Browse folder", "setToolTip")
 

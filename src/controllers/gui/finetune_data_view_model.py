@@ -113,7 +113,14 @@ class FineTuneDataViewModel(IntentViewModel[FineTuneDataState]):
             built = [
                 _("Всего записей: ", "Total records: ") + str(total),
                 _("С рейтингом: ", "Rated: ")
-                + f"{rated}  (👍 {positive} / 👎 {negative})",
+                + _(
+                    "{rated}  (положительных: {positive} / отрицательных: {negative})",
+                    "{rated}  (positive: {positive} / negative: {negative})",
+                ).format(
+                    rated=rated,
+                    positive=positive,
+                    negative=negative,
+                ),
             ]
             by_character = stats.get("by_character") or {}
             if isinstance(by_character, dict) and by_character:

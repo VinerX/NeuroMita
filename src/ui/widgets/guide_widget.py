@@ -1817,7 +1817,7 @@ class FinalGuidePage(IGuidePage):
         return """В NeuroMita вы можете общаться с разными Митами, каждая со своим характером и историей.
 Миты уже готовы вас принять.
 
-<b>🎮 Игра:</b>
+<b>Игра:</b>
 Скачайте игру NeuroMita (Unity-версия) и погрузитесь в мир Мит. Поставьте <b>1 - галочку</b> для скачивания Unity. Кнопка «Скачать Unity» загрузит последнюю версию игры.
 Если игра уже установлена, просто нажмите «Играть» и начинайте приключение.
 
@@ -1835,7 +1835,7 @@ class FinalGuidePage(IGuidePage):
         return """In NeuroMita you can chat with different Mitas, each with their own personality and story.
 The Mitas are ready to welcome you.
 
-<b>🎮 Game:</b>
+<b>Game:</b>
 Download the NeuroMita game (Unity version) and dive into the world of Mitas. Check <b>1 - the checkbox</b> to download Unity. The “Download Unity” button will fetch the latest game version.
 If the game is already installed, just click “Play” and begin your adventure.
 

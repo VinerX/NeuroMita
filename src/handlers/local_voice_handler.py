@@ -23,6 +23,7 @@ from handlers.voice_models.edge_tts_rvc_model import (
 )
 from handlers.voice_models.fish_speech_model import FishSpeechModel
 from handlers.voice_models.f5_tts_model import F5TTSModel
+from handlers.voice_models.omnivoice_model import OmniVoiceModel
 
 
 class LocalVoice:
@@ -54,9 +55,16 @@ class LocalVoice:
         rvc_handler = edge_rvc_cuda_handler if self.provider == "NVIDIA" else edge_rvc_onnx_handler
         fish_handler = FishSpeechModel(self, "fish_handler", rvc_handler=rvc_handler)
         f5_handler = F5TTSModel(self, "f5_handler", rvc_handler=rvc_handler)
+        omnivoice_handler = OmniVoiceModel(self, "omnivoice_handler")
 
         self._registry: Dict[str, IVoiceModel] = self._build_registry_from_handlers(
-            [edge_rvc_cuda_handler, edge_rvc_onnx_handler, fish_handler, f5_handler]
+            [
+                edge_rvc_cuda_handler,
+                edge_rvc_onnx_handler,
+                omnivoice_handler,
+                fish_handler,
+                f5_handler,
+            ]
         )
 
         if not self._registry:
@@ -65,6 +73,7 @@ class LocalVoice:
                 EDGE_TTS_RVC_ONNX_ID: edge_rvc_onnx_handler,
                 SILERO_RVC_CUDA_ID: edge_rvc_cuda_handler,
                 SILERO_RVC_ONNX_ID: edge_rvc_onnx_handler,
+                "omnivoice": omnivoice_handler,
                 "medium": fish_handler,
                 "medium+": fish_handler,
                 "medium+low": fish_handler,

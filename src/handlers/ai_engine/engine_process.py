@@ -117,7 +117,7 @@ async def _engine_loop(cmd_queue, res_queue, log_queue) -> None:
                 pass
 
 
-def _has_f5_reference_audio(lv) -> bool:
+def _has_clone_reference_audio(lv) -> bool:
     try:
         from utils import get_character_voice_paths
         paths = get_character_voice_paths(None, getattr(lv, "provider", None))
@@ -131,8 +131,8 @@ def _has_f5_reference_audio(lv) -> bool:
 
 
 async def _warmup_voice_model(lv, model_id: str, voice_language: str) -> bool:
-    if model_id in ("high", "high+low"):
-        if not _has_f5_reference_audio(lv):
+    if model_id in ("omnivoice", "high", "high+low"):
+        if not _has_clone_reference_audio(lv):
             return True
 
     init_text = f"Инициализация модели {model_id}" if voice_language == "ru" else f"{model_id} Model Initialization"

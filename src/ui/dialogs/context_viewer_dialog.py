@@ -7,6 +7,7 @@ import re
 import zlib
 from typing import Any, Dict, List
 
+import qtawesome as qta
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
@@ -31,10 +32,11 @@ from PyQt6.QtWidgets import (
 from utils import getTranslationVariant as _
 
 _ROLE_ICONS = {
-    "system": "⚙",
-    "user": "👤",
-    "assistant": "🤖",
-    "tool": "🔧",
+    "system": "fa6s.gear",
+    "user": "fa6s.user",
+    "assistant": "fa6s.robot",
+    "tool": "fa6s.wrench",
+    "event": "fa6s.bolt",
 }
 _ROLE_COLORS = {
     "system": "#60A5FA",
@@ -130,19 +132,19 @@ _SH_COLON    = "#F4D35E"   # :
 # ── Section markers (тегирование блоков внутри промпта) ───────────────────────
 # Категория → (иконка, цвет). Определяется по ключевым словам в имени тега/заголовка.
 _SECTION_STYLE = {
-    "memory":      ("🧠", "#34D399"),  # <relevant_memories>
-    "history":     ("🕰", "#60A5FA"),  # <past_context> / history
-    "entity":      ("🕸", "#A78BFA"),  # <entity_knowledge> / graph
-    "summary":     ("📜", "#F4D35E"),  # [HISTORY SUMMARY]
-    "state":       ("🕐", "#22D3EE"),  # [Current State] — дата/время
-    "sysstate":    ("🔌", "#38BDF8"),  # [System State] — готовность программы/связи
-    "behavior":    ("📊", "#F472B6"),  # состояние поведения
-    "participant": ("👥", "#FBBF24"),  # участники диалога
-    "unity":       ("🕹", "#8B5CF6"),  # Unity runtime: rules / capabilities / intent / events
-    "world":       ("🏠", "#4ADE80"),  # [NeuroMita World State]
-    "environment": ("🌿", "#2DD4BF"),  # [Character Environment] — live character context
-    "game":        ("🎮", "#4ADE80"),  # состояние мини-игры
-    "default":     ("🏷", "#9CA3AF"),  # прочие теги/заголовки
+    "memory":      ("fa6s.brain", "#34D399"),
+    "history":     ("fa6s.clock-rotate-left", "#60A5FA"),
+    "entity":      ("fa6s.diagram-project", "#A78BFA"),
+    "summary":     ("fa6s.scroll", "#F4D35E"),
+    "state":       ("fa6s.clock", "#22D3EE"),
+    "sysstate":    ("fa6s.plug", "#38BDF8"),
+    "behavior":    ("fa6s.chart-column", "#F472B6"),
+    "participant": ("fa6s.user-group", "#FBBF24"),
+    "unity":       ("fa6s.gamepad", "#8B5CF6"),
+    "world":       ("fa6s.house", "#4ADE80"),
+    "environment": ("fa6s.leaf", "#2DD4BF"),
+    "game":        ("fa6s.gamepad", "#4ADE80"),
+    "default":     ("fa6s.tag", "#9CA3AF"),
 }
 # Заголовок-строка целиком: <tag> / </tag> либо [Header].
 _RE_TAG_RAW = re.compile(r"^<(/?)([A-Za-z_][\w]*)>$")
@@ -156,10 +158,10 @@ _RE_HDR_ESC = re.compile(r"^\[([A-Za-z][A-Za-z0-9 _/\-]{1,48})\]$")
 # контекст: сам промпт персонажа, история диалога, «живой» контекст
 # (память/состояние/мир игры) и текущий ввод игрока. Ключ → (иконка, цвет, (ru,en)).
 _COARSE_GROUPS = {
-    "prompt":  ("📖", "#F0A868", ("Промпт", "Prompt")),
-    "history": ("🕰", "#60A5FA", ("История", "History")),
-    "context": ("🧠", "#34D399", ("Активный контекст", "Active context")),
-    "input":   ("💬", "#F4D35E", ("Ввод игрока", "Player input")),
+    "prompt":  ("fa6s.book-open", "#F0A868", ("Промпт", "Prompt")),
+    "history": ("fa6s.clock-rotate-left", "#60A5FA", ("История", "History")),
+    "context": ("fa6s.brain", "#34D399", ("Активный контекст", "Active context")),
+    "input":   ("fa6s.comment", "#F4D35E", ("Ввод игрока", "Player input")),
 }
 _SECTION_TO_GROUP = {
     "character prompts": "prompt",
@@ -277,7 +279,8 @@ class ContextViewerDialog(QDialog):
         # Кнопки внизу
         btn_row = QHBoxLayout()
 
-        self._fullscreen_btn = QPushButton("⛶ " + _("На весь экран", "Fullscreen"))
+        self._fullscreen_btn = QPushButton(_("На весь экран", "Fullscreen"))
+        self._fullscreen_btn.setIcon(qta.icon("fa6s.expand", color="#EAEAEA"))
         self._fullscreen_btn.setObjectName("SecondaryBtn")
         self._fullscreen_btn.setToolTip(_("Развернуть окно на весь экран", "Maximize the window"))
         self._fullscreen_btn.clicked.connect(self._toggle_maximized)
@@ -518,7 +521,8 @@ class ContextViewerDialog(QDialog):
         self._tree.clear()
         self._items.clear()
 
-        params_item = QTreeWidgetItem(self._tree, [_("⚙ Параметры", "⚙ Parameters")])
+        params_item = QTreeWidgetItem(self._tree, [_("Параметры", "Parameters")])
+        params_item.setIcon(0, qta.icon("fa6s.gear", color=_ROLE_COLORS["system"]))
         params_item.setExpanded(False)
         self._items.append((params_item, "params", self._data.get("extra") or {}))
 
@@ -577,16 +581,25 @@ class ContextViewerDialog(QDialog):
             idxs = group_idxs[gkey]
             icon, color, (ru, en) = _COARSE_GROUPS[gkey]
             group_tokens = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
-            glabel = f"{icon} {_(ru, en)}"
+            glabel = _(ru, en)
             if self._est_total and group_tokens:
                 glabel += f" · ~{self._fmt_int(group_tokens)} · {self._fmt_pct(group_tokens, self._est_total)}"
             parent = QTreeWidgetItem(msgs_item, [glabel])
+            parent.setIcon(0, qta.icon(icon, color=color))
             parent.setExpanded(True)
             self._items.append((parent, "group", gkey))
 
             for idx in idxs:
                 msg = self._messages[idx]
                 child = QTreeWidgetItem(parent, [self._msg_labels[idx] + self._est_suffix(idx)])
+                role = str(msg.get("role") or "unknown")
+                child.setIcon(
+                    0,
+                    qta.icon(
+                        self._message_icon_name(msg, role),
+                        color=self._msg_actor_color[idx],
+                    ),
+                )
                 child.setForeground(0, QColor(self._msg_actor_color[idx]))
                 speaker, target = self._msg_actor[idx]
                 who = f"{speaker} → {target}" if target else speaker
@@ -707,14 +720,14 @@ class ContextViewerDialog(QDialog):
 
     def _render_group_html(self, gkey: str) -> str:
         """Обзор одной крупной группы: её сообщения с превью и оценкой токенов."""
-        icon, color, names = _COARSE_GROUPS.get(
-            gkey, ("🏷", _MUTED, ("Секция", "Section"))
+        _icon, color, names = _COARSE_GROUPS.get(
+            gkey, ("fa6s.tag", _MUTED, ("Секция", "Section"))
         )
         idxs = [i for i in range(len(self._messages)) if self._group_key(i) == gkey]
         gt = sum((self._est_by_index.get(i) or {}).get("tokens", 0) for i in idxs)
         pct = self._fmt_pct(gt, self._est_total) if self._est_total else ""
         head = (
-            f"<p><b style='color:{color};font-size:14px'>{icon} {_(names[0], names[1])}</b>"
+            f"<p><b style='color:{color};font-size:14px'>{_(names[0], names[1])}</b>"
             f"&nbsp;<span style='color:{_MUTED}'>· {len(idxs)} "
             f"{_('сообщ.', 'msgs')}"
         )
@@ -1087,7 +1100,7 @@ class ContextViewerDialog(QDialog):
             return {}
 
     def _est_suffix(self, idx: int) -> str:
-        """Хвост к ярлыку узла: « · ~1.2k» (+«🖼» если есть картинки)."""
+        """Хвост к ярлыку узла с долей контекста и числом изображений."""
         # В дереве — доля сообщения от всего input-контекста (для беглого скана,
         # что раздувает окно). Абсолютные токены/символы/строки — на самом
         # сообщении (см. _est_line).
@@ -1099,7 +1112,7 @@ class ContextViewerDialog(QDialog):
         if pct:
             out = f" · {pct}"
         if info.get("images"):
-            out += " 🖼"
+            out += _(" · изображение", " · image")
         return out
 
     def _est_line(self, idx: int) -> str:
@@ -1371,6 +1384,20 @@ class ContextViewerDialog(QDialog):
     def _classify_message_label(self, msg: dict, role: str, ordinal: int, idx: int | None = None) -> str:
         return self._classify_message(msg, role, ordinal, idx)[0]
 
+    def _message_icon_name(self, msg: dict, role: str) -> str:
+        text = self._content_plain(msg.get("content"))
+        first = next((line.strip() for line in text.split("\n") if line.strip()), "")
+        first = re.sub(r"^\[\s*RUNTIME EVENT\s*\]\s*", "", first)
+        match = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
+        if first.startswith("[GAME_MASTER_DIRECTIVE]"):
+            return _SECTION_STYLE["game"][0]
+        if match:
+            name = match.group(2) if match.re is _RE_TAG_RAW else match.group(1)
+            return self._marker_meta(name)[0]
+        if role == "system" and len(text) > 400:
+            return "fa6s.book-open"
+        return _ROLE_ICONS.get(role, "fa6s.circle")
+
     def _classify_message(self, msg: dict, role: str, ordinal: int, idx: int | None = None) -> tuple[str, str]:
         """(ярлык, цвет) узла дерева.
 
@@ -1386,46 +1413,44 @@ class ContextViewerDialog(QDialog):
         # настоящий заголовок блока ([Unity Runtime Capabilities] и т.п.).
         first = re.sub(r"^\[\s*RUNTIME EVENT\s*\]\s*", "", first)
         if first.startswith("[GAME_MASTER_DIRECTIVE]"):
-            s_icon, s_color, s_label = self._marker_meta(
+            _s_icon, s_color, s_label = self._marker_meta(
                 "GAME_MASTER_DIRECTIVE"
             )
-            return f"{s_icon} {s_label}", s_color
+            return s_label, s_color
 
         if idx is not None and role in ("user", "assistant", "event"):
             if _RE_SPEAKER_PREFIX.match(first):
                 speaker, target = self._resolve_actor(msg, idx)
                 arrow = f" → {target}" if target else ""
-                icon = _ROLE_ICONS.get(role, "•")
-                return f"{icon} {speaker}{arrow}", self._actor_color(speaker, role)
+                return f"{speaker}{arrow}", self._actor_color(speaker, role)
 
         m = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if m:
             name = m.group(2) if m.re is _RE_TAG_RAW else m.group(1)
-            s_icon, s_color, s_label = self._marker_meta(name)
-            return f"{s_icon} {s_label}", s_color
+            _s_icon, s_color, s_label = self._marker_meta(name)
+            return s_label, s_color
 
-        icon = _ROLE_ICONS.get(role, "•")
         # Диалоговые сообщения — по говорящему (у system оставляем прежнее).
         if idx is not None and role in ("user", "assistant", "event"):
             speaker, target = self._resolve_actor(msg, idx)
             if speaker and speaker not in ("System", "Tool"):
                 arrow = f" → {target}" if target else ""
-                return f"{icon} {speaker}{arrow}", self._actor_color(speaker, role)
+                return f"{speaker}{arrow}", self._actor_color(speaker, role)
 
         # крупный блок без явного заголовка — основной системный промпт
         if role == "system" and len(text) > 400:
-            return "📖 System prompt", _ROLE_COLORS.get("system", _TEXT)
+            return "System prompt", _ROLE_COLORS.get("system", _TEXT)
         # С заглавной, чтобы «System #2» не выпадал рядом с «System prompt».
-        return f"{icon} {str(role).capitalize()} #{ordinal}", _ROLE_COLORS.get(role, _TEXT)
+        return f"{str(role).capitalize()} #{ordinal}", _ROLE_COLORS.get(role, _TEXT)
 
     def _banner_html(self, name: str, closing: bool) -> str:
-        icon, color, label = self._marker_meta(name)
+        _icon, color, label = self._marker_meta(name)
         if closing:
             return f"<span style='color:#5A5A6A;font-size:10px'>◂ {self._esc(label)}</span>"
         return (
             f"<span style='background:#232333;color:{color};"
             f"border-left:3px solid {color};padding:2px 10px;font-weight:bold'>"
-            f"{icon} {self._esc(label)}</span>"
+            f"{self._esc(label)}</span>"
         )
 
     def _render_prompt_body(self, text: str) -> str:
@@ -1477,10 +1502,12 @@ class ContextViewerDialog(QDialog):
     def _toggle_maximized(self):
         if self.isMaximized():
             self.showNormal()
-            self._fullscreen_btn.setText("⛶ " + _("На весь экран", "Fullscreen"))
+            self._fullscreen_btn.setText(_("На весь экран", "Fullscreen"))
+            self._fullscreen_btn.setIcon(qta.icon("fa6s.expand", color="#EAEAEA"))
         else:
             self.showMaximized()
-            self._fullscreen_btn.setText("❐ " + _("Свернуть", "Restore"))
+            self._fullscreen_btn.setText(_("Свернуть", "Restore"))
+            self._fullscreen_btn.setIcon(qta.icon("fa6s.compress", color="#EAEAEA"))
 
     # ── Копирование из дерева (ПКМ) ───────────────────────────────────────────
     def _on_tree_context_menu(self, pos):

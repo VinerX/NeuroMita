@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QTime
 from PyQt6.QtGui import QFont, QTextCursor, QGuiApplication
+import qtawesome as qta
 from utils import getTranslationVariant as _
 
 import re
@@ -383,7 +384,7 @@ class VoiceInstallationWindow(QDialog):
         pkg_total = stats.get("packages_total")
         if pkg_total:
             done = pkg_done if isinstance(pkg_done, int) else 0
-            self.packages_label.setText(_("📦 Пакеты: ", "📦 Packages: ") + f"{done} / {pkg_total}")
+            self.packages_label.setText(_("Пакеты: ", "Packages: ") + f"{done} / {pkg_total}")
         else:
             self.packages_label.setText("")
 
@@ -403,9 +404,9 @@ class VoiceInstallationWindow(QDialog):
         warnings = int(stats.get("warnings") or 0)
         issues = []
         if errors:
-            issues.append(f"✖ {errors}")
+            issues.append(_("Ошибок: {count}", "Errors: {count}").format(count=errors))
         if warnings:
-            issues.append(f"⚠ {warnings}")
+            issues.append(_("Предупреждений: {count}", "Warnings: {count}").format(count=warnings))
         self.issues_label.setStyleSheet("color: #ff5555;" if errors else "color: #ffb86c;")
         self.issues_label.setText("   " + "  ".join(issues) if issues else "")
         if errors:
@@ -939,7 +940,8 @@ class VCRedistWarningDialog(QDialog):
     def __init__(self, open_documentation, parent=None):
         super().__init__(parent)
         self._open_documentation = open_documentation
-        self.setWindowTitle(_("⚠️ Ошибка загрузки Triton", "⚠️ Triton Load Error"))
+        self.setWindowTitle(_("Ошибка загрузки Triton", "Triton Load Error"))
+        self.setWindowIcon(qta.icon("fa6s.triangle-exclamation", color="#ffb86c"))
         self.setModal(True)
         self.setMinimumSize(500, 250)
 

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import qtawesome as qta
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
@@ -16,11 +17,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-# level -> (глиф, цвет)
 _ICONS = {
-    "info": ("ⓘ", "#60A5FA"),
-    "warning": ("⚠", "#F4D35E"),
-    "error": ("✕", "#FF6B6B"),
+    "info": ("fa6s.circle-info", "#60A5FA"),
+    "warning": ("fa6s.triangle-exclamation", "#F4D35E"),
+    "error": ("fa6s.circle-xmark", "#FF6B6B"),
 }
 
 _STYLE = """
@@ -47,7 +47,7 @@ class StyledMessageDialog(QDialog):
         self.setStyleSheet(_STYLE)
         self.setWindowTitle(title)
 
-        glyph, color = _ICONS.get(level, _ICONS["info"])
+        icon_name, color = _ICONS.get(level, _ICONS["info"])
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
@@ -56,8 +56,9 @@ class StyledMessageDialog(QDialog):
         top = QHBoxLayout()
         top.setSpacing(12)
 
-        icon = QLabel(glyph)
-        icon.setStyleSheet(f"color: {color}; font-size: 22px; background: transparent; border: none;")
+        icon = QLabel()
+        icon.setPixmap(qta.icon(icon_name, color=color).pixmap(22, 22))
+        icon.setStyleSheet("background: transparent; border: none;")
         top.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
         text_col = QVBoxLayout()
