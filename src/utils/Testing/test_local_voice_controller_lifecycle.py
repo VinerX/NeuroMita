@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,6 +49,19 @@ class LocalVoiceControllerLifecycleTests(unittest.TestCase):
 
 
 class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_engine_timeout_has_actionable_message(self):
+        controller = LocalVoiceController.__new__(LocalVoiceController)
+        pending = Future()
+        controller._get_engine = lambda: SimpleNamespace(
+            call=lambda *_args, **_kwargs: pending
+        )
+
+        with self.assertRaisesRegex(
+            TimeoutError,
+            "Local TTS request 'synthesize' timed out after 0.01 seconds",
+        ):
+            await controller._engine_call_async("synthesize", timeout=0.01)
+
     async def test_uninitialized_model_uses_on_demand_initialization_fallback(self):
         controller = LocalVoiceController.__new__(LocalVoiceController)
         controller._initialized_cache = {}

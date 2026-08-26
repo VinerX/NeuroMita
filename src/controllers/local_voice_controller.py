@@ -113,7 +113,13 @@ class LocalVoiceController(LocalVoiceService):
             raise RuntimeError("AI engine not available")
 
         fut = eng.call("tts", method, payload or {})
-        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+        except TimeoutError as exc:
+            timeout_label = f"{float(timeout):g} seconds" if timeout is not None else "the configured deadline"
+            raise TimeoutError(
+                f"Local TTS request '{method}' timed out after {timeout_label}"
+            ) from exc
 
     def model_configs(self) -> list[dict[str, Any]]:
         return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])

@@ -307,9 +307,10 @@ class AudioController(AudioStateService):
             trace_status = "error"
             trace_error_stage = trace_error_stage or "tts.local"
             trace_error_type = trace_error_type or type(e).__name__
-            logger.error(f"Ошибка при выполнении локальной озвучки: {e}")
+            error_description = f"{type(e).__name__}: {e}"
+            logger.error(f"Ошибка при выполнении локальной озвучки: {error_description}")
             if task_uid:
-                self._update_task_failed_voiceover(task_uid, str(e))
+                self._update_task_failed_voiceover(task_uid, error_description)
         finally:
             self.waiting_answer = False
             if trace_id:
