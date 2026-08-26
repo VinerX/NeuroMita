@@ -159,6 +159,28 @@ class GeminiProfilePayloadTests(unittest.TestCase):
             )
             self.assertEqual(config, {"maxOutputTokens": 128}, model)
 
+    def test_floating_gemini_latest_alias_has_conservative_profile(self) -> None:
+        profile = resolve_model_profile("gemini-flash-latest", _google_profiles(), default_safe=True)
+        provider = GeminiProvider.__new__(GeminiProvider)
+
+        self.assertEqual(profile["id"], "gemini-flash-latest")
+        self.assertFalse(profile["safe_mode"])
+        self.assertFalse(profile["native_structured_output"])
+        self.assertEqual(
+            provider._map_unified_params_to_generation_config(
+                {
+                    "temperature": 0.2,
+                    "top_p": 0.8,
+                    "top_k": 10,
+                    "max_tokens": 128,
+                    "enable_thinking": True,
+                },
+                "gemini-flash-latest",
+                profile,
+            ),
+            {"maxOutputTokens": 128},
+        )
+
     def test_existing_gemini_31_flash_lite_uses_its_declared_profile(self) -> None:
         profile = resolve_model_profile("gemini-3.1-flash-lite", _google_profiles(), default_safe=True)
 

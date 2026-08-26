@@ -51,6 +51,7 @@ API_TEMPLATES_DATA = [
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
+            "gemini-flash-latest",
         ],
         "model_profiles": [
             {
@@ -174,6 +175,15 @@ API_TEMPLATES_DATA = [
                     "disable_supported": False,
                     "include_thoughts": True,
                 },
+            },
+            {
+                # Floating aliases must use only capabilities stable across
+                # the models Google may assign to the alias.
+                "id": "gemini-flash-latest",
+                "match": "gemini-flash-latest",
+                "parameters": ["max_tokens"],
+                "thinking": {"transport": "none"},
+                "native_structured_output": False,
             },
         ],
         "protocol_id": "google_gemini_default",
