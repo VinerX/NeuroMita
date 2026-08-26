@@ -75,6 +75,7 @@ class ModelProfileResolutionTests(unittest.TestCase):
         self.assertTrue(resolved["safe_mode"])
         self.assertEqual(resolved["parameters"], [])
         self.assertEqual(resolved["thinking"], {"transport": "none"})
+        self.assertFalse(resolved["native_structured_output"])
 
 
 class GeminiProfilePayloadTests(unittest.TestCase):
@@ -119,6 +120,26 @@ class GeminiProfilePayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(config, {})
+
+    def test_safe_profile_keeps_app_json_parser_without_native_schema(self) -> None:
+        profile = resolve_model_profile(
+            "gemini-future-alias",
+            _google_profiles(),
+            default_safe=True,
+        )
+
+        self.assertTrue(profile["safe_mode"])
+        self.assertFalse(profile["native_structured_output"])
+        self.assertFalse(
+            GeminiProvider._should_send_native_structured_output(
+                {"structured_output": True, "model_profile": profile}
+            )
+        )
+        self.assertTrue(
+            GeminiProvider._should_send_native_structured_output(
+                {"structured_output": True, "model_profile": {}}
+            )
+        )
 
 
 class OpenRouterProfilePayloadTests(unittest.TestCase):

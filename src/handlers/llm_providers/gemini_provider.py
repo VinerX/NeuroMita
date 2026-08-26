@@ -37,6 +37,18 @@ class GeminiProvider(BaseProvider):
         return self.generate_request_gemini(req)
 
     @staticmethod
+    def _should_send_native_structured_output(capabilities: dict | None) -> bool:
+        """Keep application JSON parsing separate from Gemini schema transport."""
+        caps = capabilities or {}
+        if not caps.get("structured_output", False):
+            return False
+        model_profile = caps.get("model_profile")
+        return not (
+            isinstance(model_profile, dict)
+            and not bool(model_profile.get("native_structured_output", True))
+        )
+
+    @staticmethod
     def _request_url(req: LLMRequest, *, stream: bool) -> str:
         url = str(req.api_url or "")
         if not stream:
@@ -308,7 +320,7 @@ class GeminiProvider(BaseProvider):
         )
 
         caps = req.capabilities or {}
-        if caps.get("structured_output", False):
+        if self._should_send_native_structured_output(caps):
             gen_cfg["responseMimeType"] = "application/json"
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
@@ -330,6 +342,8 @@ class GeminiProvider(BaseProvider):
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:
                 logger.debug("[GeminiProvider] Structured output: prompt-guided only (gemini_prompt mode)")
+        elif caps.get("structured_output", False):
+            logger.debug("[GeminiProvider] Structured output: native schema disabled by model profile")
 
         if gen_cfg:
             data["generationConfig"] = gen_cfg

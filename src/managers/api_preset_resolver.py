@@ -129,7 +129,7 @@ class ApiPresetResolver:
             if model_profile.get("safe_mode"):
                 capabilities.update({
                     "tools_native": False,
-                    "structured_output": False,
+                    "tools_prompt_enabled": False,
                     "streaming": False,
                     "streaming_with_tools": False,
                     "reasoning_control": "",

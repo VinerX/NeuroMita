@@ -352,8 +352,8 @@ def build_api_settings_ui(self, parent_layout):
     )
     tr_set(
         self.model_safe_mode_cb,
-        "Отправляет только базовый запрос без thinking, инструментов, JSON-схемы и дополнительных параметров.",
-        "Sends only the base request without thinking, tools, JSON schema, or optional parameters.",
+        "Отправляет только базовый запрос без thinking, инструментов, нативной JSON-схемы и дополнительных параметров. JSON-ответ по промпту всё равно обрабатывается приложением.",
+        "Sends only the base request without thinking, tools, native JSON schema, or optional parameters. Prompt-guided JSON is still parsed by the app.",
         "setToolTip",
     )
     self.model_capabilities_section.add_widget(self.model_safe_mode_cb)

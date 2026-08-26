@@ -65,6 +65,7 @@ def resolve_model_profile(
                 "id": "safe-compatibility",
                 "parameters": [],
                 "thinking": {"transport": "none"},
+                "native_structured_output": False,
                 "safe_mode": True,
             }
         else:
