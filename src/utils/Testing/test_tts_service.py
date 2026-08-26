@@ -13,9 +13,18 @@ class _FakeLocalVoice:
         self.init_ok = bool(init_ok)
         self.voiceover_result = voiceover_result
         self.voiceover_calls = 0
+        self.initialized_models: set[str] = set()
 
-    def initialize_model(self, _model_id: str, *, init: bool = False) -> bool:
+    def initialize_model(self, model_id: str, *, init: bool = False) -> bool:
+        if self.init_ok:
+            self.initialized_models.add(str(model_id))
         return self.init_ok
+
+    def is_model_initialized(self, model_id: str) -> bool:
+        return str(model_id) in self.initialized_models
+
+    def select_model(self, _model_id: str) -> None:
+        return None
 
     async def voiceover(self, text: str, *, output_file: str, character=None):
         self.voiceover_calls += 1
@@ -53,7 +62,10 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertFalse(ok)
         joined = "\n".join(logs)
-        self.assertIn("[tts:warmup] runtime error for model_id=high+low: hubert timeout", joined)
+        self.assertIn(
+            "[tts:warmup] runtime error for model_id=high+low: RuntimeError: hubert timeout",
+            joined,
+        )
 
     def test_init_without_warmup_only_initializes_local_runtime(self):
         service = TTSService(emit_event=lambda _event, _payload: None)
@@ -106,6 +118,23 @@ class TTSServiceTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(service._warmup_status["silero_rvc_onnx"], "failed")
         self.assertIn("initialization rejected", "\n".join(logs))
+
+    def test_synthesis_does_not_initialize_model_on_demand(self):
+        service = TTSService(emit_event=lambda _event, _payload: None)
+        service._local_voice = _FakeLocalVoice(init_ok=True, voiceover_result="ok")
+
+        with self.assertRaisesRegex(RuntimeError, "Initialize it explicitly"):
+            asyncio.run(service.handle(
+                "synthesize",
+                {
+                    "model_id": "omnivoice",
+                    "text": "hello",
+                    "output_file": "voice.wav",
+                },
+            ))
+
+        self.assertEqual(service._local_voice.voiceover_calls, 0)
+        self.assertEqual(service._local_voice.initialized_models, set())
 
 
 if __name__ == "__main__":

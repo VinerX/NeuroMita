@@ -35,6 +35,10 @@ class ShellActionsAdapter(_BoundActions):
         self._target.clear_chat()
         return True
 
+    def cancel_active_generations(self) -> None:
+        if self._target is not None:
+            self._target.cancel_active_generations()
+
     def send_message(self, **kwargs):
         if self._target is None:
             return False
