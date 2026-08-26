@@ -1,5 +1,6 @@
 # src/managers/tools/tool_manager.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from importlib import import_module
 from typing import Any, Dict, List, Optional
@@ -41,7 +42,7 @@ class _LazyTool(Tool):
             return instance
         except Exception as exc:
             self._load_error = exc
-            logger.warning(f"Tool {self._class_name} unavailable: {exc}")
+            logger.warning(f"Tool {self._class_name} unavailable: {format_exception(exc)}")
             raise
 
     @property
@@ -168,7 +169,7 @@ class ToolManager:
             with perf_span(trace_id, "tool.call", tool=name):
                 return tool.run(**(arguments or {}))
         except Exception as exc:
-            return f"[Tool-Error] {name} вызвал исключение: {exc}"
+            return f"[Tool-Error] {name} вызвал исключение: {format_exception(exc)}"
 
     def tools_prompt(self):
         return (

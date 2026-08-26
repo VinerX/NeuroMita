@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: Modules/Chess/chess_board.py
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -761,7 +762,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             except queue.Empty:
                 pass 
             except Exception as e_loop_command:
-                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки команд: {e_loop_command}")
+                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки команд: {format_exception(e_loop_command)}")
                 traceback.print_exc() 
 
             try:
@@ -778,7 +779,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             except queue.Empty:
                 pass
             except Exception as e_gui_event_loop:
-                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки GUI событий: {e_gui_event_loop}")
+                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки GUI событий: {format_exception(e_gui_event_loop)}")
                 traceback.print_exc()
 
         timer.timeout.connect(process_queues)
@@ -789,13 +790,13 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         print(f"CONSOLE (chess_board_process): [STAGE 5] <<< ВЫХОД ИЗ ГЛАВНОГО ЦИКЛА GUI.")
 
     except Exception as e_main_run_try:
-        print(f"CONSOLE (chess_board_process): КРИТИЧЕСКАЯ ОШИБКА В ОСНОВНОМ TRY-EXCEPT ПРОЦЕССА GUI: {e_main_run_try}")
+        print(f"CONSOLE (chess_board_process): КРИТИЧЕСКАЯ ОШИБКА В ОСНОВНОМ TRY-EXCEPT ПРОЦЕССА GUI: {format_exception(e_main_run_try)}")
         traceback.print_exc() 
         if state_q: 
             try:
-                state_q.put({"error": f"Critical unhandled error in GUI process: {str(e_main_run_try)}", "critical_process_failure": True})
+                state_q.put({"error": f"Critical unhandled error in GUI process: {format_exception(e_main_run_try)}", "critical_process_failure": True})
             except Exception as e_queue_put:
-                print(f"CONSOLE (chess_board_process): Не удалось отправить критическую ошибку (основной try) в state_q: {e_queue_put}")
+                print(f"CONSOLE (chess_board_process): Не удалось отправить критическую ошибку (основной try) в state_q: {format_exception(e_queue_put)}")
         _send_gui_closed("crash")
     finally:
         print(f"CONSOLE (chess_board_process): [FINALLY] Блок finally процесса GUI.")
@@ -811,14 +812,14 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                  app.close()
                  print(f"CONSOLE (chess_board_process): [FINALLY] app.close() вызван.")
             except Exception as e_destroy_generic_app:
-                print(f"CONSOLE (chess_board_process): [FINALLY] Непредвиденная ошибка при app.close(): {e_destroy_generic_app}")
+                print(f"CONSOLE (chess_board_process): [FINALLY] Непредвиденная ошибка при app.close(): {format_exception(e_destroy_generic_app)}")
                 traceback.print_exc()
         elif app_instance_ref.get("instance"): 
             print(f"CONSOLE (chess_board_process): [FINALLY] app не был присвоен в try, но app_instance_ref['instance'] существует. Попытка close() для instance.")
             try:
                  app_instance_ref["instance"].close()
             except Exception as e_destroy_instance_alt:
-                 print(f"CONSOLE (chess_board_process): [FINALLY] Ошибка при app_instance_ref['instance'].close(): {e_destroy_instance_alt}")
+                 print(f"CONSOLE (chess_board_process): [FINALLY] Ошибка при app_instance_ref['instance'].close(): {format_exception(e_destroy_instance_alt)}")
                  traceback.print_exc()
 
         print(f"CONSOLE (chess_board_process): >>> ПРОЦЕСС GUI ЗАВЕРШЕН.")
@@ -841,7 +842,7 @@ if __name__ == '__main__':
                     break
             except queue.Empty: pass
             except Exception as e_monitor: 
-                print(f"[MAIN TEST] Ошибка чтения из state_queue: {e_monitor}")
+                print(f"[MAIN TEST] Ошибка чтения из state_queue: {format_exception(e_monitor)}")
                 traceback.print_exc()
                 break
             time.sleep(0.1)

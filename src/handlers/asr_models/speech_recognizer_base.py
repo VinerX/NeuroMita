@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from abc import ABC, abstractmethod
 import os
 from typing import Any, List, Optional
@@ -152,7 +153,7 @@ class SpeechRecognizerInterface(ABC):
                 code=ComponentStatusCode.FAILED,
                 installed=False,
                 ready=False,
-                message=str(exc),
+                message=format_exception(exc),
                 backend=backend,
                 backend_ok=False,
             )
@@ -240,7 +241,7 @@ class SpeechRecognizerInterface(ABC):
                 installed = bool(self.is_installed(check_ctx))
             except Exception as exc:
                 if callbacks is not None and hasattr(callbacks, "log"):
-                    callbacks.log(f"Post-install validation crashed: {exc}")
+                    callbacks.log(f"Post-install validation crashed: {format_exception(exc)}")
                 return False
             if not installed:
                 # Раньше шаг просто возвращал False и пользователь видел только
@@ -335,7 +336,7 @@ class SpeechRecognizerInterface(ABC):
                 except Exception as exc:
                     if callbacks is not None:
                         try:
-                            callbacks.log(str(exc))
+                            callbacks.log(format_exception(exc))
                         except Exception:
                             pass
                     return False

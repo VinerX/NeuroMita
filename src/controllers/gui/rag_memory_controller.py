@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import threading
 
@@ -458,7 +459,7 @@ def _run_ttl_cleanup(gui) -> None:
         QMessageBox.critical(
             gui,
             _("Ошибка TTL", "TTL Error"),
-            str(e),
+            format_exception(e),
         )
 
 
@@ -482,7 +483,7 @@ def _run_graph_ttl_cleanup(gui) -> None:
                f"Removed: {counts['relations']} relations, {counts['entities']} entities."),
         )
     except Exception as e:
-        QMessageBox.critical(gui, _("Ошибка TTL графа", "Graph TTL Error"), str(e))
+        QMessageBox.critical(gui, _("Ошибка TTL графа", "Graph TTL Error"), format_exception(e))
 
 
 def _run_history_ttl_cleanup(gui) -> None:
@@ -503,7 +504,7 @@ def _run_history_ttl_cleanup(gui) -> None:
                f"Archived {count} messages (is_active=0)."),
         )
     except Exception as e:
-        QMessageBox.critical(gui, _("Ошибка TTL истории", "History TTL Error"), str(e))
+        QMessageBox.critical(gui, _("Ошибка TTL истории", "History TTL Error"), format_exception(e))
 
 
 def _run_entity_gc(gui, dry_run: bool = False) -> None:
@@ -1254,7 +1255,7 @@ def _run_memory_dedup(gui, dry_run: bool = True) -> None:
         QMessageBox.critical(
             gui,
             _("Ошибка дедупликации", "Deduplication error"),
-            str(e),
+            format_exception(e),
         )
 
 

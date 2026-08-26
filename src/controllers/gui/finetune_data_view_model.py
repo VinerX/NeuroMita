@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -53,7 +54,7 @@ class FineTuneDataViewModel(IntentViewModel[FineTuneDataState]):
                 "finetune-enforce-limit",
                 self._finetune.enforce_limit,
                 lambda _result: self.refresh(),
-                lambda error: self.update_state(error=str(error)),
+                lambda error: self.update_state(error=format_exception(error)),
             )
             return
         if isinstance(intent, SetFineTuneDirectory):
@@ -78,7 +79,7 @@ class FineTuneDataViewModel(IntentViewModel[FineTuneDataState]):
             "finetune-data-refresh",
             worker,
             self._apply_stats,
-            lambda error: self.update_state(loading=False, error=str(error)),
+            lambda error: self.update_state(loading=False, error=format_exception(error)),
         )
 
     def clear_all(self) -> None:
@@ -137,11 +138,11 @@ class FineTuneDataViewModel(IntentViewModel[FineTuneDataState]):
         )
 
     def _clear_failed(self, error: Exception) -> None:
-        self.update_state(loading=False, error=str(error))
+        self.update_state(loading=False, error=format_exception(error))
         self.emit_effect(
             FineTuneDataMessage(
                 _("Ошибка", "Error"),
-                str(error),
+                format_exception(error),
                 error=True,
             )
         )

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 from typing import Any
@@ -240,6 +241,6 @@ class RagPresetViewModel(IntentViewModel[RagPresetState]):
         self.emit_effect(
             RagPresetShowError(
                 _("Ошибка RAG", "RAG error"),
-                str(exc),
+                format_exception(exc),
             )
         )

@@ -12,6 +12,7 @@
     [{"text": "...", "emotions": [...], "animations": [...], "music": [...], ...}]
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -195,7 +196,7 @@ def migrate_history_file(history_path: str) -> tuple[bool, int]:
         with open(history_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
-        logger.error(f"[migration] Cannot read {history_path}: {e}")
+        logger.error(f"[migration] Cannot read {history_path}: {format_exception(e)}")
         return False, 0
 
     messages: list[dict] = data.get("messages", [])
@@ -242,7 +243,7 @@ def migrate_history_file(history_path: str) -> tuple[bool, int]:
         shutil.copy2(history_path, backup_path)
         logger.info(f"[migration] Backup saved: {backup_path}")
     except Exception as e:
-        logger.warning(f"[migration] Could not create backup: {e}")
+        logger.warning(f"[migration] Could not create backup: {format_exception(e)}")
 
     try:
         with open(history_path, "w", encoding="utf-8") as f:
@@ -250,7 +251,7 @@ def migrate_history_file(history_path: str) -> tuple[bool, int]:
         logger.info(f"[migration] Migrated {migrated} messages in {history_path}")
         return True, migrated
     except Exception as e:
-        logger.error(f"[migration] Cannot write {history_path}: {e}")
+        logger.error(f"[migration] Cannot write {history_path}: {format_exception(e)}")
         return False, 0
 
 

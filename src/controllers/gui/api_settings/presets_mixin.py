@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -18,7 +19,7 @@ class PresetsMixin:
             from ui.settings.api_settings.widgets import CustomPresetListItem
             return CustomPresetListItem
         except Exception as e:
-            logger.error(f"Failed to import CustomPresetListItem: {e}", exc_info=True)
+            logger.error(f"Failed to import CustomPresetListItem: {format_exception(e)}", exc_info=True)
             return None
 
     def reload_presets_async(self) -> None:

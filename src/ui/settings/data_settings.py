@@ -3,6 +3,7 @@
 Панель настроек для сбора данных дообучения.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 from pathlib import Path
@@ -420,7 +421,7 @@ def _clear_all_data(gui, view_model):
         view_model.dispatch(ClearFineTuneData())
     except Exception as e:
         from main_logger import logger
-        logger.error(f"Failed to clear finetune data: {e}", exc_info=True)
+        logger.error(f"Failed to clear finetune data: {format_exception(e)}", exc_info=True)
 
 
 def _open_export_dialog(gui, view_model):
@@ -430,4 +431,4 @@ def _open_export_dialog(gui, view_model):
         dlg.exec()
     except Exception as e:
         from main_logger import logger
-        logger.error(f"Failed to open ExportDialog: {e}", exc_info=True)
+        logger.error(f"Failed to open ExportDialog: {format_exception(e)}", exc_info=True)

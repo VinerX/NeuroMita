@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QRect
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QFrame, QScrollArea, QPushButton
 from PyQt6.QtGui import QPixmap, QPainter, QPaintEvent, QBrush, QPen, QColor, QRegion
@@ -95,7 +96,7 @@ class ImageThumbnail(QFrame):
             self.pixmap.loadFromData(img_bytes_io.getvalue())
             
         except Exception as e:
-            print(f"Ошибка загрузки миниатюры: {e}")
+            print(f"Ошибка загрузки миниатюры: {format_exception(e)}")
             
     def paintEvent(self, event):
         painter = QPainter(self)

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import time
 import gc
@@ -279,7 +280,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"GigaAM ONNX download failed: HTTP {e.code} {e.reason}", exc_info=True)
             return False
         except Exception as e:
-            self.logger.error(f"GigaAM ONNX install failed: {e}", exc_info=True)
+            self.logger.error(f"GigaAM ONNX install failed: {format_exception(e)}", exc_info=True)
             return False
 
     def _download_file_with_progress(self, url: str, dest: str, start_prog: int, end_prog: int) -> bool:
@@ -350,7 +351,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             self._torch = torch
             self._np = np
         except Exception as e:
-            self.logger.error(f"GigaAMOnnx init imports failed: {e}")
+            self.logger.error(f"GigaAMOnnx init imports failed: {format_exception(e)}")
             return False
 
         if self._start_process():
@@ -425,7 +426,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
                     except queue.Empty:
                         break
             except Exception as e:
-                self.logger.error(f"Ошибка в мониторе GigaAM ONNX процесса: {e}")
+                self.logger.error(f"Ошибка в мониторе GigaAM ONNX процесса: {format_exception(e)}")
 
     def _start_process(self):
         if self._monitor_thread and self._monitor_thread.is_alive():

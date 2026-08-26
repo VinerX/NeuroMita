@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # seabattle_instance.py
 
 import re
@@ -38,10 +39,10 @@ class SeaBattleGame(GameInterface):
             )
             self.gui_process.start()
         except ImportError as e:
-            logger.error(f"[{self.character.char_id}] Не удалось импортировать модуль 'Морского боя': {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Не удалось импортировать модуль 'Морского боя': {format_exception(e)}", exc_info=True)
             self.cleanup()
         except Exception as e:
-            logger.error(f"[{self.character.char_id}] Ошибка при запуске игры 'Морской бой': {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Ошибка при запуске игры 'Морской бой': {format_exception(e)}", exc_info=True)
             self.cleanup()
 
     def _send_command(self, command_data: Dict[str, Any]):
@@ -50,7 +51,7 @@ class SeaBattleGame(GameInterface):
                 self.command_queue.put(command_data)
                 logger.debug(f"[{self.character.char_id}] Отправлена команда в 'Морской бой': {command_data}")
             except Exception as e:
-                logger.error(f"[{self.character.char_id}] Ошибка при отправке команды в очередь: {e}")
+                logger.error(f"[{self.character.char_id}] Ошибка при отправке команды в очередь: {format_exception(e)}")
         else:
             logger.warning(f"[{self.character.char_id}] Невозможно отправить команду: игра неактивна.")
 
@@ -182,5 +183,5 @@ class SeaBattleGame(GameInterface):
             logger.error(f"[{self.character.char_id}] Скрипт для игры '{self.game_id}' не найден: {template_filename}")
             return f"ОШИБКА: Не найден системный скрипт для игры '{self.game_id}'."
         except Exception as e:
-            logger.error(f"[{self.character.char_id}] Ошибка исполнения DSL-скрипта '{template_filename}': {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Ошибка исполнения DSL-скрипта '{template_filename}': {format_exception(e)}", exc_info=True)
             return f"ОШИБКА: Ошибка при генерации промпта для игры '{self.game_id}'."

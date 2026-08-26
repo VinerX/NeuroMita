@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import datetime as dt
 import time
@@ -275,7 +276,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         try:
             admission = self._catalog.admit(action, payload)
         except Exception as exc:
-            self._admission_failed(task_id, intent.install_window, str(exc))
+            self._admission_failed(task_id, intent.install_window, format_exception(exc))
             return
         if not admission.accepted:
             self._admission_failed(
@@ -396,7 +397,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         self._post_ui(apply)
 
     def _apply_refresh_error(self, error: Exception) -> None:
-        self.update_state(refreshing=False, error=str(error))
+        self.update_state(refreshing=False, error=format_exception(error))
 
     def _on_refresh_timeout(self, generation: int) -> None:
         """Разблокировать UI, если проверка статусов не уложилась в бюджет."""
@@ -527,7 +528,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
             logger.warning(
                 "AI Hub failed to invalidate component status '%s': %s",
                 component_id,
-                exc,
+                format_exception(exc),
             )
 
     def _on_queue_changed(self, event) -> None:
@@ -576,7 +577,7 @@ class AIHubViewModel(IntentViewModel[AIHubState]):
         )
 
     def _operation_error(self, title: str, error: Exception) -> None:
-        message = str(error)
+        message = format_exception(error)
         self.update_state(task_status=message, error=message)
         self.emit_effect(AIHubShowError(str(title), message))
 

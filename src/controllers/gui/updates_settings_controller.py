@@ -1,5 +1,6 @@
 """Settings panel for Python/Unity updates."""
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 from controllers.gui.async_runner import run_async
@@ -158,7 +159,7 @@ def setup_updates_settings_controls(
     def _format_component_info(title: str, info: dict) -> str:
         if not info.get("ok"):
             err = info.get("error") or _("Неизвестная ошибка", "Unknown error")
-            return f"{title}\n{_('Ошибка проверки', 'Check error')}: {err}"
+            return f"{title}\n{_('Ошибка проверки', 'Check error')}: {format_exception(err)}"
 
         current_version = info.get("current_version") or "?"
         latest_version = info.get("latest_version") or "?"
@@ -234,7 +235,7 @@ def setup_updates_settings_controls(
                 _set_status(_("Новых обновлений не найдено.", "No new updates found."))
         except Exception as e:
             logger.error("[updates_ui] Check-only action failed", exc_info=True)
-            _set_status_level(f"{_('Ошибка проверки', 'Check error')}: {e}", "error")
+            _set_status_level(f"{_('Ошибка проверки', 'Check error')}: {format_exception(e)}", "error")
         finally:
             _hide_progress()
             _set_buttons_enabled(True)
@@ -371,7 +372,7 @@ def setup_updates_settings_controls(
             _refresh_version_labels()
         except Exception as e:
             logger.error("[updates_ui] Install action failed", exc_info=True)
-            _set_status_level(f"{_('Ошибка установки', 'Install error')}: {e}", "error")
+            _set_status_level(f"{_('Ошибка установки', 'Install error')}: {format_exception(e)}", "error")
         finally:
             _hide_progress()
             _set_buttons_enabled(True)
@@ -390,7 +391,7 @@ def setup_updates_settings_controls(
             _set_status_level(_("Запускаю Unity...", "Launching Unity..."), "notify")
         except Exception as e:
             logger.error("[updates_ui] Failed to launch Unity", exc_info=True)
-            _set_status_level(f"{_('Ошибка запуска Unity', 'Unity launch error')}: {e}", "error")
+            _set_status_level(f"{_('Ошибка запуска Unity', 'Unity launch error')}: {format_exception(e)}", "error")
 
     def _ensure_tester_code() -> bool:
         if _current_update_target().contour != "test":

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import abc
 import json
 import os
@@ -229,7 +230,7 @@ class IVoiceModel(abc.ABC):
                 code=ComponentStatusCode.FAILED,
                 installed=False,
                 ready=False,
-                message=str(exc),
+                message=format_exception(exc),
                 backend=backend,
                 backend_ok=False,
             )

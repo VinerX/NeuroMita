@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import time
@@ -322,7 +323,7 @@ class EventBus:
             callback(event)
         except Exception as exc:
             logger.error(
-                f"Event subscriber failed for '{event.name}': {exc}",
+                f"Event subscriber failed for '{event.name}': {format_exception(exc)}",
                 exc_info=True,
             )
 

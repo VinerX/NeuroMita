@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -81,7 +82,7 @@ class BackendInstallableComponent:
                 code=ComponentStatusCode.FAILED,
                 installed=False,
                 ready=False,
-                message=str(exc),
+                message=format_exception(exc),
                 backend=self.backend,
                 backend_ok=False,
             )

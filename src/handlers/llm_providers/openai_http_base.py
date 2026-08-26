@@ -1,5 +1,6 @@
 # src/handlers/llm_providers/openai_http_base.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import re
@@ -338,7 +339,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
         except Exception as e:
             provider_error = build_provider_error(
                 self.name,
-                provider_message=f"JSON parse error: {e}",
+                provider_message=f"JSON parse error: {format_exception(e)}",
                 payload=getattr(resp, "text", None),
                 url=request_url,
             )
@@ -435,7 +436,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     raise build_stream_error(
                         self.name,
                         payload=chunk[:500],
-                        provider_message=f"Invalid JSON in provider stream: {e}",
+                        provider_message=f"Invalid JSON in provider stream: {format_exception(e)}",
                         code="stream.invalid_json",
                         url=api_url,
                     ) from e

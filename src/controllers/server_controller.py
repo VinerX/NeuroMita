@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: src/controllers/server_controller.py
 import ipaddress
 import os
@@ -225,7 +226,7 @@ class ServerController:
             transfer_dirs = ensure_shared_transfer_dirs()
             logger.info(f"Shared image transfer root: {transfer_dirs['root']}")
         except Exception as e:
-            logger.warning(f"Failed to prepare shared image transfer directories: {e}")
+            logger.warning(f"Failed to prepare shared image transfer directories: {format_exception(e)}")
         logger.info("Using new API server")
 
         def _conn_cb(client_connected: bool, client_id: str | None):
@@ -283,7 +284,7 @@ class ServerController:
         try:
             self.server.stop()
         except Exception as e:
-            logger.error(f"Error while stopping server: {e}", exc_info=True)
+            logger.error(f"Error while stopping server: {format_exception(e)}", exc_info=True)
 
         try:
             self.ConnectedToGame = False
@@ -312,7 +313,7 @@ class ServerController:
             task_manager = get_task_manager()
             task_manager.clear_all_tasks()
         except Exception as e:
-            logger.error(f"Error while cleaning up task manager: {e}")
+            logger.error(f"Error while cleaning up task manager: {format_exception(e)}")
 
         self.server = None
         self.event_bus = None
@@ -335,7 +336,7 @@ class ServerController:
                 body = self._prepare_loaded_settings_body()
                 self.server.schedule_send_loaded_settings(client_id, body)
             except Exception as exc:
-                logger.warning(f"Failed to send initial settings to {client_id}: {exc}")
+                logger.warning(f"Failed to send initial settings to {client_id}: {format_exception(exc)}")
         elif not bool(client_connected) and client_id:
             self.echo_suppressor.forget_client(client_id)
             self.event_bus.emit(
@@ -394,14 +395,14 @@ class ServerController:
                         self.server._loop,
                     )
             except Exception as e:
-                logger.warning(f"Beat sync warmup failed: {e}")
+                logger.warning(f"Beat sync warmup failed: {format_exception(e)}")
 
         if key in self.settings_to_send:
             try:
                 body = self._prepare_loaded_settings_body()
                 self.server.schedule_broadcast_loaded_settings(body)
             except Exception as e:
-                logger.warning(f"Failed to push updated settings to clients ({key}): {e}")
+                logger.warning(f"Failed to push updated settings to clients ({key}): {format_exception(e)}")
 
     def _on_load_server_settings(self, event: Event):
         if self._destroyed or not self.server:
@@ -410,7 +411,7 @@ class ServerController:
             body = self._prepare_loaded_settings_body()
             self.server.schedule_broadcast_loaded_settings(body)
         except Exception as e:
-            logger.warning(f"LOAD_SERVER_SETTINGS broadcast failed: {e}")
+            logger.warning(f"LOAD_SERVER_SETTINGS broadcast failed: {format_exception(e)}")
 
     def _get_character_stats(self, character_id: str) -> Dict[str, float]:
         cid = str(character_id or "").strip()
@@ -475,7 +476,7 @@ class ServerController:
                 "mode": transport_raw,
             }
         except Exception as e:
-            logger.warning(f"Failed to describe shared image transfer settings: {e}")
+            logger.warning(f"Failed to describe shared image transfer settings: {format_exception(e)}")
 
         body = {"settings": settings, "characters_stats": characters_stats, "settings_revision": int(getattr(self.settings, "revision", 0) or 0)}
         if shared_transfer:
@@ -571,7 +572,7 @@ class ServerController:
                 final=bool(data.get("final", True)),
             )
         except Exception as exc:
-            logger.warning(f"Не удалось отправить asr_text в игру: {exc}")
+            logger.warning(f"Не удалось отправить asr_text в игру: {format_exception(exc)}")
             self._report_asr_undelivered(data)
             return
 

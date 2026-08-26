@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 
+from core.error_utils import format_exception
 import qtawesome as qta
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import (
@@ -605,7 +606,7 @@ class WikiPage(QWidget):
                 _(
                     "Не удалось открыть wiki-страницу: {err}",
                     "Failed to open the wiki page: {err}",
-                ).format(err=exc)
+                ).format(err=format_exception(exc))
             )
             return
 

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # OpenMita/DSL/post_dsl_engine.py
 import re
 from typing import List, Dict, Any, Tuple, Callable, TYPE_CHECKING
@@ -169,7 +170,7 @@ class PostDslInterpreter:
                 f"[{self.character.char_id}] Loaded post-processing rules and debug config from {main_rules_file}")
         except Exception as e:
             logger.info(
-                f"[{self.character.char_id}] No/Empty post-processing rules/config file found at {main_rules_file} or error loading: {e}. Post-DSL will be inactive/default debug.")
+                f"[{self.character.char_id}] No/Empty post-processing rules/config file found at {main_rules_file} or error loading: {format_exception(e)}. Post-DSL will be inactive/default debug.")
             self.rules = []
             self.debug_display_config = {}  # Сброс
 
@@ -201,7 +202,7 @@ class PostDslInterpreter:
         try:
             return safe_eval_expression(expr, names=eval_scope, allowed_calls=allowed_calls)
         except SafeEvalError as e:
-            logger.error(f"[{self.character.char_id}] Post-DSL: Error evaluating expression '{expr}': {e}",
+            logger.error(f"[{self.character.char_id}] Post-DSL: Error evaluating expression '{expr}': {format_exception(e)}",
                          exc_info=True)
             raise PostDslError(f"Error evaluating expression: {expr}") from e
 
@@ -279,13 +280,13 @@ class PostDslInterpreter:
                             context_vars[var_name] = value # Ensure it's available for current rule's context
                 except Exception as e:
                     logger.error(
-                        f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to SET '{var_name}': {e}")
+                        f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to SET '{var_name}': {format_exception(e)}")
             elif command == "LOG":
                 try:
                     log_message = self._eval_dsl_expression(args, context_vars)
                     logger.info(f"[{self.character.char_id}] Post-DSL Rule '{rule.name}' LOG: {log_message}")
                 except Exception as e:
-                    logger.error(f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to LOG: {e}")
+                    logger.error(f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to LOG: {format_exception(e)}")
 
         # Handle REMOVE_MATCH or REPLACE_MATCH
         processed_segment = current_response_segment
@@ -297,7 +298,7 @@ class PostDslInterpreter:
                 processed_segment = replacement_text
             except Exception as e:
                 logger.error(
-                    f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to evaluate REPLACE_MATCH expression: {e}. Match not replaced.")
+                    f"[{self.character.char_id}] Post-DSL Rule '{rule.name}': Failed to evaluate REPLACE_MATCH expression: {format_exception(e)}. Match not replaced.")
                 return current_response_segment, False  # Return original segment, indicate no successful processing for this specific action
 
         return processed_segment, True

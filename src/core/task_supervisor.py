@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import time
@@ -81,7 +82,7 @@ class TaskSupervisor:
                 target(*args, **(kwargs or {}))
             except BaseException as exc:
                 logger.error(
-                    f"Background task '{owner_name}:{normalized_name}' failed: {exc}",
+                    f"Background task '{owner_name}:{normalized_name}' failed: {format_exception(exc)}",
                     exc_info=True,
                 )
             finally:

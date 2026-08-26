@@ -1,5 +1,6 @@
 # src/managers/api_preset_resolver.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
@@ -180,7 +181,7 @@ class ApiPresetResolver:
             chain.append(main)
             seen_keys.add((int(preset_id) if preset_id else 0, str(main.api_model or "")))
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] resolve_chain: main resolve failed: {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] resolve_chain: main resolve failed: {format_exception(e)}", exc_info=True)
 
         # Fallback entries are stored in the main preset dict
         main_raw = self._load_preset_full(preset_id) or {}
@@ -207,7 +208,7 @@ class ApiPresetResolver:
             try:
                 ps = self.resolve(fb_pid, model_override=fb_model or None)
             except Exception as e:
-                logger.warning(f"[ApiPresetResolver] fallback resolve failed for {fb_pid}: {e}")
+                logger.warning(f"[ApiPresetResolver] fallback resolve failed for {fb_pid}: {format_exception(e)}")
                 continue
 
             key = (fb_pid, str(ps.api_model or ""))
@@ -233,7 +234,7 @@ class ApiPresetResolver:
                         pid = getattr(pm, "id", None)
                         return pid if isinstance(pid, int) else None
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to resolve preset id by name '{display_name}': {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] Failed to resolve preset id by name '{display_name}': {format_exception(e)}", exc_info=True)
         return None
 
     def apply_key_rotation(self, preset: PresetSettings, attempt: int) -> PresetSettings:
@@ -311,7 +312,7 @@ class ApiPresetResolver:
         try:
             return use(ApiPresetService).get_full(int(preset_id))
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to load preset: {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] Failed to load preset: {format_exception(e)}", exc_info=True)
         return None
 
     def _pick_fallback_preset_id(self) -> Optional[int]:
@@ -366,7 +367,7 @@ class ApiPresetResolver:
             if isinstance(built, dict) and built.get("url") and isinstance(built.get("headers"), dict):
                 return str(built["url"]), dict(built["headers"])
         except Exception as e:
-            logger.warning(f"[ApiPresetResolver] build_http_request failed, fallback: {e}")
+            logger.warning(f"[ApiPresetResolver] build_http_request failed, fallback: {format_exception(e)}")
 
         # Fallback (should rarely happen): use protocol registry directly
         reg = get_protocol_registry()

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time
 from typing import Any
@@ -60,7 +61,7 @@ class SettingsPageViewModel(IntentViewModel[SettingsPageState]):
                     )
 
         def failed(error: Exception) -> None:
-            message = str(error)
+            message = format_exception(error)
             self._finish(category, message)
             self.emit_effect(SettingsSectionFailed(category, message))
 

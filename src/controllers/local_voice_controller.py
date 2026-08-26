@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import uuid
 import asyncio
@@ -258,12 +259,12 @@ class LocalVoiceController(LocalVoiceService):
                 self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
         except Exception as e:
-            logger.error(f"init model failed (tts engine): {e}", exc_info=True)
+            logger.error(f"init model failed (tts engine): {format_exception(e)}", exc_info=True)
             self._initialized_cache[model_id] = False
             self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {"status": _("Ошибка!", "Error!")})
             self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                 "title": _("Ошибка", "Error"),
-                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {e}"
+                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {format_exception(e)}"
             })
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 

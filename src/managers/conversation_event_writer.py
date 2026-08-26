@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import base64
 import datetime
@@ -97,7 +98,7 @@ class ConversationEventWriter:
             return True
         except Exception as e:
             logger.warning(
-                f"[ConversationEventWriter] append failed for {getattr(ch_ref,'char_id','?')}: {e}",
+                f"[ConversationEventWriter] append failed for {getattr(ch_ref,'char_id','?')}: {format_exception(e)}",
                 exc_info=True
             )
             return False
@@ -121,7 +122,7 @@ class ConversationEventWriter:
         except Exception as exc:
             logger.warning(
                 f"[ConversationEventWriter] batch append failed for "
-                f"{getattr(ch_ref, 'char_id', '?')}: {exc}",
+                f"{getattr(ch_ref, 'char_id', '?')}: {format_exception(exc)}",
                 exc_info=True,
             )
             return False
@@ -288,7 +289,7 @@ class ConversationEventWriter:
                     fh.write(img)
                 logger.info(f"[ConversationEventWriter] Easel drawing saved: {fpath}")
         except Exception as e:
-            logger.warning(f"[ConversationEventWriter] Failed to save easel drawing: {e}")
+            logger.warning(f"[ConversationEventWriter] Failed to save easel drawing: {format_exception(e)}")
 
     @staticmethod
     def _dialogue_metadata(dialogue: Any) -> dict:

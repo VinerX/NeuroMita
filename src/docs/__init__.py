@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 
 import os
 import webbrowser
@@ -152,7 +153,7 @@ class DocsManager:
                 print(f"Документация '{doc_path}' обновлена.")
                 return True
             except Exception as e:
-                print(f"Ошибка при создании файла документации '{doc_path}': {e}")
+                print(f"Ошибка при создании файла документации '{doc_path}': {format_exception(e)}")
                 return False
         if os.path.exists(doc_path):
             return True
@@ -175,6 +176,6 @@ class DocsManager:
                 print(f"Открытие файла: {file_uri}")
                 webbrowser.open(file_uri)
             except Exception as e:
-                print(f"Не удалось открыть файл документации '{doc_path}' в браузере: {e}")
+                print(f"Не удалось открыть файл документации '{doc_path}' в браузере: {format_exception(e)}")
         else:
             print(f"Не удалось открыть документацию '{doc_name}', так как файл не существует и не может быть создан.")

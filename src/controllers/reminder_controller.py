@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import threading
 
 from core.events import Events, get_event_bus
@@ -29,7 +30,7 @@ class ReminderController:
                         self._check_and_fire_reminders()
                 except Exception as exc:
                     logger.error(
-                        f"[ReminderController] Error in check loop: {exc}",
+                        f"[ReminderController] Error in check loop: {format_exception(exc)}",
                         exc_info=True,
                     )
                 if self._shutdown_event.wait(max(0.1, float(self.CHECK_INTERVAL_SEC))):

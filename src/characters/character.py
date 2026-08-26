@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import datetime
 import re
 import os
@@ -116,7 +117,7 @@ class Character:
             resolved = self._resolve_prompt_set_name()
             self._apply_prompt_set(resolved)
         except Exception as e:
-            msg = f"[{self.char_id}] Failed to resolve/apply prompt set: {e}"
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set: {format_exception(e)}"
             try:
                 logger.notify(msg)
             except Exception:
@@ -237,7 +238,7 @@ class Character:
                 self.set_variable(str(k), v)
 
         except Exception as e:
-            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {e}", exc_info=True)
+            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {format_exception(e)}", exc_info=True)
 
     def get_stats_dict(self) -> Dict[str, float]:
         return {
@@ -412,7 +413,7 @@ class Character:
             )
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error during Post-DSL processing: {e}", exc_info=True
+                f"[{self.char_id}] Error during Post-DSL processing: {format_exception(e)}", exc_info=True
             )
 
         self.set_variable(
@@ -427,7 +428,7 @@ class Character:
             response = self._process_behavior_changes_from_llm(response)
         except Exception as e:
             logger.warning(
-                f"Error processing built-in behavior changes from LLM for {self.char_id}: {e}",
+                f"Error processing built-in behavior changes from LLM for {self.char_id}: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -435,7 +436,7 @@ class Character:
             response = self._process_game_tags(response)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error during game tag processing: {e}", exc_info=True
+                f"[{self.char_id}] Error during game tag processing: {format_exception(e)}", exc_info=True
             )
 
         final_response_for_log = (
@@ -480,7 +481,7 @@ class Character:
                 self.adjust_stress(structured.stress_change)
         except Exception as e:
             logger.warning(
-                f"[{self.char_id}] Error applying behavior changes from structured response: {e}",
+                f"[{self.char_id}] Error applying behavior changes from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -489,7 +490,7 @@ class Character:
             self._apply_structured_memory_ops(structured, save_as_missed)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error applying memory ops from structured response: {e}",
+                f"[{self.char_id}] Error applying memory ops from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -498,7 +499,7 @@ class Character:
             self._apply_structured_reminder_ops(structured)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error applying reminder ops from structured response: {e}",
+                f"[{self.char_id}] Error applying reminder ops from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -507,7 +508,7 @@ class Character:
             self._process_structured_game_tags(structured)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error processing game tags from structured response: {e}",
+                f"[{self.char_id}] Error processing game tags from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -517,7 +518,7 @@ class Character:
                 seg.text = self.post_dsl_interpreter.process(seg.text)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error in PostDSL text processing for segments: {e}",
+                f"[{self.char_id}] Error in PostDSL text processing for segments: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -607,7 +608,7 @@ class Character:
                     )
                 except Exception as e:
                     logger.error(
-                        f"[{self.char_id}] Error applying custom_param '{var_name}': {e}"
+                        f"[{self.char_id}] Error applying custom_param '{var_name}': {format_exception(e)}"
                     )
 
         # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)
@@ -616,7 +617,7 @@ class Character:
                 self.post_dsl_interpreter.process_structured_fields(_cf_raw)
             except Exception as e:
                 logger.error(
-                    f"[{self.char_id}] Error in PostDSL field processing: {e}",
+                    f"[{self.char_id}] Error in PostDSL field processing: {format_exception(e)}",
                     exc_info=True,
                 )
 
@@ -641,7 +642,7 @@ class Character:
                         self._last_created_memory_ids.append(eid)
                     logger.info(f"[{self.char_id}] Structured: upserted {parts[0]} island")
                 except Exception as e:
-                    logger.error(f"[{self.char_id}] Structured: error upserting island: {e}")
+                    logger.error(f"[{self.char_id}] Structured: error upserting island: {format_exception(e)}")
                 continue
             if len(parts) >= 2 and parts[0] in ("low", "normal", "high", "critical"):
                 priority = parts[0]
@@ -655,7 +656,7 @@ class Character:
                     self._last_created_memory_ids.append(eid)
                 logger.info(f"[{self.char_id}] Structured: added memory (P: {priority}): {content[:50]}...")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")
+                logger.error(f"[{self.char_id}] Structured: error adding memory: {format_exception(e)}")
 
         for update_str in (structured.memory_update or []):
             update_str = (update_str or "").strip()
@@ -675,7 +676,7 @@ class Character:
                 self.memory_system.update_memory(number=number, priority=priority, content=content)
                 logger.info(f"[{self.char_id}] Structured: updated memory #{number}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {e}")
+                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {format_exception(e)}")
 
         for delete_str in (structured.memory_delete or []):
             delete_str = (delete_str or "").strip()
@@ -701,7 +702,7 @@ class Character:
                     self.memory_system.delete_memory(int(delete_str), save_as_missed)
                 logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+                logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {format_exception(e)}")
 
         for merge_str in (structured.memory_merge or []):
             merge_str = (merge_str or "").strip()
@@ -729,7 +730,7 @@ class Character:
                     self.memory_system.delete_memory(sid, save_as_missed)
                 logger.info(f"[{self.char_id}] Structured: merged memories {src_ids} → #{tgt_id}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {e}")
+                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {format_exception(e)}")
 
     def _apply_structured_reminder_ops(self, structured: StructuredResponse):
         """Apply reminder add/delete operations from a StructuredResponse."""
@@ -745,7 +746,7 @@ class Character:
                 self.reminder_system.add_reminder(text.strip(), due_iso.strip())
                 logger.info(f"[{self.char_id}] Structured: added reminder due={due_iso.strip()}: {text.strip()[:50]}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error adding reminder: {e}")
+                logger.error(f"[{self.char_id}] Structured: error adding reminder: {format_exception(e)}")
 
         for delete_str in (structured.reminder_delete or []):
             delete_str = (delete_str or "").strip()
@@ -754,7 +755,7 @@ class Character:
                     self.reminder_system.delete_reminder(int(delete_str))
                     logger.info(f"[{self.char_id}] Structured: deleted reminder #{delete_str}")
                 except Exception as e:
-                    logger.error(f"[{self.char_id}] Structured: error deleting reminder #{delete_str}: {e}")
+                    logger.error(f"[{self.char_id}] Structured: error deleting reminder #{delete_str}: {format_exception(e)}")
             elif delete_str:
                 logger.warning(f"[{self.char_id}] Structured: reminder_delete bad format: {delete_str!r}")
 
@@ -988,7 +989,7 @@ class Character:
 
             except Exception as e:
                 logger.error(
-                    f"[{self.char_id}] Error processing memory command <{operation}memory>: {content}. Error: {str(e)}",
+                    f"[{self.char_id}] Error processing memory command <{operation}memory>: {content}. Error: {format_exception(e)}",
                     exc_info=True,
                 )
 
@@ -1007,7 +1008,7 @@ class Character:
             resolved = self._resolve_prompt_set_name()
             self._apply_prompt_set(resolved)
         except Exception as e:
-            msg = f"[{self.char_id}] Failed to resolve/apply prompt set during reload: {e}"
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set during reload: {format_exception(e)}"
             try:
                 logger.notify(msg)
             except Exception:
@@ -1029,7 +1030,7 @@ class Character:
             from managers.dsl_manager import create_dsl_interpreter
             self.dsl_interpreter = create_dsl_interpreter(self)
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Failed to recreate DSL interpreter during reload: {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Failed to recreate DSL interpreter during reload: {format_exception(e)}", exc_info=True)
 
         try:
             path_resolver_instance = LocalPathResolver(
@@ -1039,7 +1040,7 @@ class Character:
             self.post_dsl_interpreter = PostDslInterpreter(self, path_resolver_instance)
             logger.info(f"[{self.char_id}] Post-DSL interpreter re-initialized and rules loaded during reload.")
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Failed to recreate Post-DSL interpreter during reload: {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Failed to recreate Post-DSL interpreter during reload: {format_exception(e)}", exc_info=True)
 
         logger.info(f"[{self.char_id}] Character data reloaded.")
 
@@ -1083,7 +1084,7 @@ class Character:
         try:
             use(HistoryService).on_history_reset(self.char_id)
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Не удалось снять отложенное сжатие: {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Не удалось снять отложенное сжатие: {format_exception(e)}", exc_info=True)
 
         # Sticky core-memory triggers (e.g. code 23) are session/chat-scoped.
         try:
@@ -1113,7 +1114,7 @@ class Character:
             try:
                 self.history_manager.delete_variables(stale_keys)
             except Exception as e:
-                logger.warning(f"[{self.char_id}] Не удалось удалить переменные при сбросе: {e}", exc_info=True)
+                logger.warning(f"[{self.char_id}] Не удалось удалить переменные при сбросе: {format_exception(e)}", exc_info=True)
         self.flush_variables()
 
         self.memory_system.clear_memories()
@@ -1124,7 +1125,7 @@ class Character:
             from managers.database_manager import DatabaseManager
             GraphStore(DatabaseManager(), self.char_id).clear_for_character()
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {format_exception(e)}", exc_info=True)
 
         logger.info(
             f"[{self.char_id}] History cleared and state reset to initial defaults/overrides."

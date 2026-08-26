@@ -1,5 +1,6 @@
 # src/controllers/protocols_controller.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Dict, List, Optional
 import re
@@ -120,7 +121,7 @@ class ProtocolsController(ProtocolBuilderService):
             from handlers.llm_providers.message_transforms import get_transform_catalog
             return list(get_transform_catalog() or [])
         except Exception as e:
-            logger.error(f"GET_TRANSFORM_LIST failed: {e}", exc_info=True)
+            logger.error(f"GET_TRANSFORM_LIST failed: {format_exception(e)}", exc_info=True)
             return []
 
     def _on_build_http_request(self, event: Event) -> Dict[str, Any]:

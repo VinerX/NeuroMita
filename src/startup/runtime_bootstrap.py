@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import faulthandler
 import json
@@ -165,7 +166,7 @@ def _configure_paths(base_dir: str) -> str:
     except Exception as exc:
         logging.getLogger(__name__).warning(
             "Failed to activate main runtime environment paths: %s",
-            exc,
+            format_exception(exc),
             exc_info=True,
         )
         main_paths = ()
@@ -214,7 +215,7 @@ def _schedule_runtime_cleanup(logger: Any) -> None:
             RuntimeEnvironmentManager(Path(runtime_root)).cleanup_inactive_overlays()
             logger.info("Inactive runtime overlay cleanup completed")
         except Exception as exc:
-            logger.warning(f"Inactive runtime overlay cleanup failed: {exc}", exc_info=True)
+            logger.warning(f"Inactive runtime overlay cleanup failed: {format_exception(exc)}", exc_info=True)
 
     from core.task_supervisor import task_supervisor
 
@@ -305,7 +306,7 @@ def _load_environment(base_dir: str, logger: Any) -> None:
                 f"Файл окружения не найден: {env_path}. Используются системные значения."
             )
     except Exception as exc:
-        logger.warning(f"Не удалось загрузить features.env: {exc}")
+        logger.warning(f"Не удалось загрузить features.env: {format_exception(exc)}")
 
     os.environ.setdefault("WHISPER_ONNX_DEBUG", "1")
 
@@ -391,7 +392,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
         except SystemExit:
             raise
         except Exception as exc:
-            logger.warning(f"Python installation recovery failed: {exc}")
+            logger.warning(f"Python installation recovery failed: {format_exception(exc)}")
 
         try:
             recovery = resume_pending_unity_update(
@@ -405,7 +406,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
             elif not recovery.ok and recovery.status not in {"waiting_for_credentials"}:
                 logger.warning(f"Unity installation recovery failed: {recovery.error}")
         except Exception as exc:
-            logger.warning(f"Unity installation recovery failed: {exc}")
+            logger.warning(f"Unity installation recovery failed: {format_exception(exc)}")
 
         auto_update = enabled("AUTO_UPDATE", False)
         check_updates = enabled("AUTO_UPDATE_CHECK", auto_update)
@@ -425,7 +426,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
             except SystemExit:
                 raise
             except Exception as exc:
-                logger.warning(f"Python update check failed: {exc}")
+                logger.warning(f"Python update check failed: {format_exception(exc)}")
 
         if auto_update:
             run_python_check(apply_update=True)
@@ -451,7 +452,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                     auto_update=apply_update,
                 )
             except Exception as exc:
-                logger.warning(f"Unity update check failed: {exc}")
+                logger.warning(f"Unity update check failed: {format_exception(exc)}")
 
         if auto_update_unity:
             run_unity_check(apply_update=True)
@@ -463,7 +464,7 @@ def _run_update_checks(base_dir: str, logger: Any) -> None:
                 daemon=True,
             ).start()
     except Exception as exc:
-        logger.warning(f"Update check failed: {exc}")
+        logger.warning(f"Update check failed: {format_exception(exc)}")
 
 
 def _run_torch_bootstrap(_libs_dir: str, logger: Any) -> None:
@@ -487,7 +488,7 @@ def _ensure_project_root(base_dir: str, logger: Any) -> None:
             pass
         logger.info(f"Файл '{marker}' создан.")
     except Exception as exc:
-        logger.warning(f"Не удалось создать project-root marker: {exc}")
+        logger.warning(f"Не удалось создать project-root marker: {format_exception(exc)}")
 
 
 def _prime_onnxruntime(_logger: Any) -> None:

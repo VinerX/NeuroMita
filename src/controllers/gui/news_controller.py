@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 import threading
@@ -119,7 +120,7 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
         store.cards = _prepare_release_cards(data)
         return data
     except Exception as exc:
-        logger.info(f"[news] Failed to fetch releases: {exc}")
+        logger.info(f"[news] Failed to fetch releases: {format_exception(exc)}")
         store.releases = []
         store.cards = []
         return []

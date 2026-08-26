@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/handlers/asr_models/whisper_onnx_process.py
 import os
 import asyncio
@@ -194,8 +195,8 @@ class WhisperOnnxProcessWorker:
             self.result_queue.put(("init_success", True))
 
         except Exception as e:
-            self.error(f"Init error: {e}", exc_info=True)
-            self.result_queue.put(("init_error", str(e)))
+            self.error(f"Init error: {format_exception(e)}", exc_info=True)
+            self.result_queue.put(("init_error", format_exception(e)))
 
     async def transcribe_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -227,8 +228,8 @@ class WhisperOnnxProcessWorker:
             self.result_queue.put(("transcription", (text or "").strip()))
 
         except Exception as e:
-            self.error(f"Transcribe error: {e}", exc_info=True)
-            self.result_queue.put(("transcription_error", str(e)))
+            self.error(f"Transcribe error: {format_exception(e)}", exc_info=True)
+            self.result_queue.put(("transcription_error", format_exception(e)))
 
     async def process_commands(self):
         import queue as py_queue
@@ -248,7 +249,7 @@ class WhisperOnnxProcessWorker:
                 elif cmd[0] == "shutdown":
                     break
             except Exception as e:
-                self.error(f"Loop error: {e}", exc_info=True)
+                self.error(f"Loop error: {format_exception(e)}", exc_info=True)
 
 def run_whisper_onnx_process(command_queue: Queue, result_queue: Queue, log_queue: Queue):
     try:
@@ -257,4 +258,4 @@ def run_whisper_onnx_process(command_queue: Queue, result_queue: Queue, log_queu
         worker = WhisperOnnxProcessWorker(command_queue, result_queue, log_queue)
         loop.run_until_complete(worker.process_commands())
     except Exception as e:
-        log_queue.put(("error", f"Critical error: {e}\n{traceback.format_exc()}"))
+        log_queue.put(("error", f"Critical error: {format_exception(e)}\n{traceback.format_exc()}"))

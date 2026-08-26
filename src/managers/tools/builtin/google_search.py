@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/managers/tools/builtin/google_search.py
 import json
 import os
@@ -72,9 +73,9 @@ class GoogleSearchTool(Tool):
             return json.dumps(results, ensure_ascii=False, indent=2)
 
         except NetworkRequestError as e:
-            logger.error(f"Google Search API error: {e}")
-            return f"[google_search] Ошибка сети или API: {e}"
+            logger.error(f"Google Search API error: {format_exception(e)}")
+            return f"[google_search] Ошибка сети или API: {format_exception(e)}"
         except Exception as e:
-            logger.error(f"Google Search unexpected error: {e}")
-            return f"[google_search] Неизвестная ошибка: {e}"
+            logger.error(f"Google Search unexpected error: {format_exception(e)}")
+            return f"[google_search] Неизвестная ошибка: {format_exception(e)}"
 

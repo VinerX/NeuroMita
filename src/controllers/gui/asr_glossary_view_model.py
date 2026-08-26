@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Callable
 
@@ -50,7 +51,7 @@ class AsrGlossaryViewModel(IntentViewModel[AsrGlossaryState]):
             try:
                 self._install_model(engine_id)
             except Exception as exc:
-                self.install_failed(engine_id, str(exc))
+                self.install_failed(engine_id, format_exception(exc))
             return
         if isinstance(intent, SetAsrOption):
             try:
@@ -60,7 +61,7 @@ class AsrGlossaryViewModel(IntentViewModel[AsrGlossaryState]):
                     intent.value,
                 )
             except Exception as exc:
-                self.update_state(settings_error=str(exc))
+                self.update_state(settings_error=format_exception(exc))
 
     def refresh(self, *, force: bool = True) -> None:
         if not self.state.loading:
@@ -69,7 +70,7 @@ class AsrGlossaryViewModel(IntentViewModel[AsrGlossaryState]):
             "asr-glossary-refresh",
             lambda: self._load_catalog(bool(force)),
             self._apply_catalog,
-            lambda error: self.update_state(loading=False, error=str(error)),
+            lambda error: self.update_state(loading=False, error=format_exception(error)),
         )
 
     def load_settings(self, engine_id: str) -> None:
@@ -167,6 +168,6 @@ class AsrGlossaryViewModel(IntentViewModel[AsrGlossaryState]):
             settings_schema=(),
             settings_values=immutable_payload({}),
             settings_loading=False,
-            settings_error=str(error),
+            settings_error=format_exception(error),
             settings_revision=self.state.settings_revision + 1,
         )

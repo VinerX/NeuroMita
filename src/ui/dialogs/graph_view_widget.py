@@ -6,6 +6,7 @@ Supports pan, zoom (mouse wheel), drag nodes, hover tooltips, Ctrl+F search,
 double-click neighbour-only view, and labels drawn above circles.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import math
 import random
@@ -930,7 +931,7 @@ class GraphViewPage(QWidget):
                             if isinstance(pid, int):
                                 return pid
         except Exception as e:
-            logger.warning(f"[GraphView] resolve graph preset failed: {e}")
+            logger.warning(f"[GraphView] resolve graph preset failed: {format_exception(e)}")
         return None
 
     def _start_type_backfill(self) -> None:

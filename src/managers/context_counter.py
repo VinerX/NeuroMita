@@ -1,5 +1,6 @@
 # src/managers/context_counter.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 from typing import Any, Dict, List
@@ -31,7 +32,7 @@ class ContextCounter:
         except Exception as e:
             # encoding_for_model может пытаться скачать данные кодировки и упасть
             # без сети — тогда тоже переходим на эвристику, а не отключаем счётчик.
-            logger.info(f"tiktoken init failed ({e}) — оценка токенов по эвристике.")
+            logger.info(f"tiktoken init failed ({format_exception(e)}) — оценка токенов по эвристике.")
 
     @property
     def available(self) -> bool:

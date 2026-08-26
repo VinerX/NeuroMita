@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 from typing import Optional, Tuple, List
@@ -574,8 +575,8 @@ class _AdvancedTablePage(QWidget):
 
         if not self.model.select():
             err = self.model.lastError().text()
-            logger.error(f"DB Viewer: select() failed for table '{self.table_name}': {err}")
-            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _(f"Не удалось загрузить таблицу '{self.table_name}':\n{{err}}", f"Failed to load table '{self.table_name}':\n{{err}}").format(err=err))
+            logger.error(f"DB Viewer: select() failed for table '{self.table_name}': {format_exception(err)}")
+            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _(f"Не удалось загрузить таблицу '{self.table_name}':\n{{err}}", f"Failed to load table '{self.table_name}':\n{{err}}").format(err=format_exception(err)))
 
         self._refresh_columns_combos()
         self._apply_column_visibility()
@@ -859,7 +860,7 @@ class _AdvancedTablePage(QWidget):
                 text = ""
             QApplication.clipboard().setText(str(text))
         except Exception as e:
-            logger.error(f"DB Viewer: copy failed: {e}", exc_info=True)
+            logger.error(f"DB Viewer: copy failed: {format_exception(e)}", exc_info=True)
 
     def _remember_scroll_pos(self, _index) -> None:
         try:
@@ -972,12 +973,12 @@ class _AdvancedTablePage(QWidget):
                     q.addBindValue(pk)
                     if not q.exec():
                         err = q.lastError().text()
-                        logger.error(f"DB Viewer: cell save failed for '{self.table_name}.{col_name_save}': {err}")
-                        QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=err))
+                        logger.error(f"DB Viewer: cell save failed for '{self.table_name}.{col_name_save}': {format_exception(err)}")
+                        QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=format_exception(err)))
                         return
                 except Exception as e:
-                    logger.error(f"DB Viewer: cell save exception: {e}", exc_info=True)
-                    QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=e))
+                    logger.error(f"DB Viewer: cell save exception: {format_exception(e)}", exc_info=True)
+                    QMessageBox.critical(self, _("Ошибка сохранения", "Save Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit change:\n{err}").format(err=format_exception(e)))
                     return
 
                 self.refresh()
@@ -1021,12 +1022,12 @@ class _AdvancedTablePage(QWidget):
             q = QSqlQuery(db)
             if not q.exec(f'DELETE FROM "{self.table_name}" WHERE id IN ({ids_literal})'):
                 err = q.lastError().text()
-                logger.error(f"DB Viewer: delete failed on '{self.table_name}': {err}")
-                QMessageBox.critical(self, _("Ошибка удаления", "Delete Failed"), _("Не удалось удалить строки:\n{err}", "Failed to delete rows:\n{err}").format(err=err))
+                logger.error(f"DB Viewer: delete failed on '{self.table_name}': {format_exception(err)}")
+                QMessageBox.critical(self, _("Ошибка удаления", "Delete Failed"), _("Не удалось удалить строки:\n{err}", "Failed to delete rows:\n{err}").format(err=format_exception(err)))
                 return
         except Exception as e:
-            logger.error(f"DB Viewer: delete exception on '{self.table_name}': {e}", exc_info=True)
-            QMessageBox.critical(self, "Delete Failed", f"Failed to delete rows:\n{e}")
+            logger.error(f"DB Viewer: delete exception on '{self.table_name}': {format_exception(e)}", exc_info=True)
+            QMessageBox.critical(self, "Delete Failed", f"Failed to delete rows:\n{format_exception(e)}")
             return
 
         self.refresh()
@@ -1083,12 +1084,12 @@ class _AdvancedTablePage(QWidget):
             q.addBindValue(new_val)
             if not q.exec():
                 err = q.lastError().text()
-                logger.error(f"DB Viewer: direct UPDATE failed for batch edit '{self.table_name}.{col_name}': {err}")
-                QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit changes:\n{err}").format(err=err))
+                logger.error(f"DB Viewer: direct UPDATE failed for batch edit '{self.table_name}.{col_name}': {format_exception(err)}")
+                QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось сохранить изменения:\n{err}", "Failed to commit changes:\n{err}").format(err=format_exception(err)))
                 return
         except Exception as e:
-            logger.error(f"DB Viewer: batch edit exception: {e}", exc_info=True)
-            QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось обновить значения:\n{err}", "Failed to update values:\n{err}").format(err=e))
+            logger.error(f"DB Viewer: batch edit exception: {format_exception(e)}", exc_info=True)
+            QMessageBox.critical(self, _("Ошибка редактирования", "Batch Edit Failed"), _("Не удалось обновить значения:\n{err}", "Failed to update values:\n{err}").format(err=format_exception(e)))
 
         self.refresh()
 
@@ -1389,11 +1390,11 @@ class _ImageDescriptionsPage(QWidget):
             q_upd.addBindValue(int(row_id))
             if not q_upd.exec():
                 err = q_upd.lastError().text()
-                logger.error(f"[ImageDescriptionsPage] meta_data update failed: {err}")
+                logger.error(f"[ImageDescriptionsPage] meta_data update failed: {format_exception(err)}")
                 QMessageBox.critical(dlg,
                     _("Ошибка сохранения", "Save Failed"),
                     _("Не удалось сохранить описание:\n{err}",
-                      "Failed to save description:\n{err}").format(err=err))
+                      "Failed to save description:\n{err}").format(err=format_exception(err)))
                 return
 
             # Update in-memory row and table cell
@@ -1537,7 +1538,7 @@ class DbViewerDialog(QDialog):
                 self._graph_view_page = GraphViewPage(self, db=self.db, character_id=self.character_id)
                 self.tabs.addTab(self._graph_view_page, _("Граф: Визуальный", "Graph: Visual"))
             except Exception as e:
-                logger.warning(f"DB Viewer: could not load graph visualisation: {e}")
+                logger.warning(f"DB Viewer: could not load graph visualisation: {format_exception(e)}")
 
         self.chk_extended.toggled.connect(self._apply_extended_to_all)
         self._apply_extended_to_all(self.chk_extended.isChecked())
@@ -1621,8 +1622,8 @@ class DbViewerDialog(QDialog):
 
         if not db.open():
             err = db.lastError().text()
-            logger.error(f"DB Viewer: failed to open Qt DB connection: {err}")
-            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _("Не удалось открыть базу данных:\n{err}", "Failed to open database:\n{err}").format(err=err))
+            logger.error(f"DB Viewer: failed to open Qt DB connection: {format_exception(err)}")
+            QMessageBox.critical(self, _("Просмотрщик БД", "Database Viewer"), _("Не удалось открыть базу данных:\n{err}", "Failed to open database:\n{err}").format(err=format_exception(err)))
             # Remove orphaned connection to prevent leak
             db = QSqlDatabase()
             QSqlDatabase.removeDatabase(self._connection_name)
@@ -1632,7 +1633,7 @@ class DbViewerDialog(QDialog):
             db.exec("PRAGMA journal_mode=WAL;")
             db.exec("PRAGMA busy_timeout = 5000;")
         except Exception as e:
-            logger.error(f"DB Viewer: failed to apply PRAGMAs via Qt connection: {e}", exc_info=True)
+            logger.error(f"DB Viewer: failed to apply PRAGMAs via Qt connection: {format_exception(e)}", exc_info=True)
 
         return db
 

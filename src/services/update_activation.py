@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import hashlib
 import json
@@ -55,7 +56,7 @@ def validate_zipapp(path: Path | str) -> PendingZipapp:
             if broken is not None:
                 raise RuntimeError(f"NeuroMita.pyz contains a corrupt member: {broken}")
     except zipfile.BadZipFile as exc:
-        raise RuntimeError(f"NeuroMita.pyz is not a valid ZIP application: {exc}") from exc
+        raise RuntimeError(f"NeuroMita.pyz is not a valid ZIP application: {format_exception(exc)}") from exc
     return PendingZipapp(
         path=candidate,
         sha256=_sha256(candidate),

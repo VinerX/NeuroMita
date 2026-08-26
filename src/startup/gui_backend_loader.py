@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from typing import Any, Callable
@@ -107,10 +108,10 @@ class GuiBackendLoader(QObject):
             startup_trace.write()
             self._ready.emit(controller)
         except BaseException as exc:
-            logger.error(f"GUI backend startup failed: {exc}", exc_info=True)
+            logger.error(f"GUI backend startup failed: {format_exception(exc)}", exc_info=True)
             startup_trace.mark(
                 "gui.backend_thread.failed",
-                error=f"{type(exc).__name__}: {exc}",
+                error=format_exception(exc),
             )
             startup_trace.write()
             if controller is not None:
@@ -130,7 +131,7 @@ class GuiBackendLoader(QObject):
             FineTuneCollector.instance = FineTuneCollector()
             GenerationInputCollector.instance = GenerationInputCollector()
         except Exception as exc:
-            logger.warning(f"Runtime collectors are unavailable: {exc}")
+            logger.warning(f"Runtime collectors are unavailable: {format_exception(exc)}")
 
     @pyqtSlot(object)
     def _deliver_ready(self, controller: Any) -> None:

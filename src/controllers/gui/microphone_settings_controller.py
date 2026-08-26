@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 from typing import Any
@@ -189,7 +190,7 @@ class MicrophoneSettingsController(BaseController):
             if hasattr(v, "vad_min_speech_duration_spinbox"):
                 v.vad_min_speech_duration_spinbox.setValue(float(settings.get("MIN_SPEECH_DURATION_SEC", 0.35)))
         except Exception as e:
-            logger.debug(f"VAD params load error: {e}")
+            logger.debug(f"VAD params load error: {format_exception(e)}")
 
     def _on_apply_vad_params(self):
         v = self.view
@@ -212,7 +213,7 @@ class MicrophoneSettingsController(BaseController):
                 self._save_setting("MIN_SPEECH_DURATION_SEC", v.vad_min_speech_duration_spinbox.value())
             logger.info("VAD параметры применены")
         except Exception as e:
-            logger.error(f"VAD params apply error: {e}")
+            logger.error(f"VAD params apply error: {format_exception(e)}")
 
     def _on_reset_vad_params(self):
         """Сброс параметров распознавания к значениям по умолчанию: ставим
@@ -239,7 +240,7 @@ class MicrophoneSettingsController(BaseController):
             self._on_apply_vad_params()
             logger.info("VAD параметры сброшены к значениям по умолчанию")
         except Exception as e:
-            logger.error(f"VAD params reset error: {e}")
+            logger.error(f"VAD params reset error: {format_exception(e)}")
 
     def _open_ai_engine_settings(self):
         try:
@@ -383,7 +384,7 @@ class MicrophoneSettingsController(BaseController):
         try:
             speech.microphone_list_async(cb)
         except Exception as e:
-            logger.error(f"Microphone list request failed: {e}")
+            logger.error(f"Microphone list request failed: {format_exception(e)}")
             cb([_("Ошибка загрузки", "Loading error")], e)
 
     def refresh_engines(self, select_engine: str | None = None):
@@ -491,7 +492,7 @@ class MicrophoneSettingsController(BaseController):
                 status_category="asr",
             )
         except Exception as e:
-            logger.error(f"ASR component catalog request failed: {e}")
+            logger.error(f"ASR component catalog request failed: {format_exception(e)}")
             cb([], e)
 
     def _apply_asr_install_status(self, engine: str):
@@ -588,7 +589,7 @@ class MicrophoneSettingsController(BaseController):
             if active:
                 self.event_bus.emit(Events.Speech.RESTART_SPEECH_RECOGNITION, {"device_id": device_id})
         except Exception as e:
-            logger.error(f"Mic change error: {e}")
+            logger.error(f"Mic change error: {format_exception(e)}")
 
     def _on_engine_changed(self, engine: str):
         v = self.view

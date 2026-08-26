@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from ui.gui_templates import create_settings_section
 from ui.settings.runtime_options import (
     refresh_camera_options,
@@ -237,7 +238,7 @@ def _run_orphan_scan(label_widget=None) -> None:
             label_widget.setText(msg)
             label_widget.show()
     except Exception as e:
-        logger.error(f"[image_cleanup] Scan failed: {e}", exc_info=True)
+        logger.error(f"[image_cleanup] Scan failed: {format_exception(e)}", exc_info=True)
         if label_widget is not None:
             label_widget.setText(_("Ошибка при сканировании", "Scan error"))
             label_widget.show()
@@ -256,7 +257,7 @@ def _run_orphan_delete(label_widget=None) -> None:
             label_widget.setText(msg)
             label_widget.show()
     except Exception as e:
-        logger.error(f"[image_cleanup] Delete failed: {e}", exc_info=True)
+        logger.error(f"[image_cleanup] Delete failed: {format_exception(e)}", exc_info=True)
         if label_widget is not None:
             label_widget.setText(_("Ошибка при удалении", "Delete error"))
             label_widget.show()
@@ -278,7 +279,7 @@ def _show_image_stats(label_widget=None) -> None:
             label_widget.show()
         logger.info(f"[image_cleanup] Stats:\n{msg}")
     except Exception as e:
-        logger.error(f"[image_cleanup] Stats failed: {e}", exc_info=True)
+        logger.error(f"[image_cleanup] Stats failed: {format_exception(e)}", exc_info=True)
         if label_widget is not None:
             label_widget.setText(_("Ошибка при подсчёте", "Stats error"))
             label_widget.show()

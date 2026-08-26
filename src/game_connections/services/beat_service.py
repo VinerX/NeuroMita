@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import hashlib
@@ -153,7 +154,7 @@ class BeatService:
                     )
                 self._warmup_done = True
             except Exception as exc:
-                logger.error(f"[BeatSync] worker warmup failed: {exc}", exc_info=True)
+                logger.error(f"[BeatSync] worker warmup failed: {format_exception(exc)}", exc_info=True)
 
     def reset_runtime_state(self) -> None:
         self._warmup_done = False
@@ -175,7 +176,7 @@ class BeatService:
             self._warmup_done = bool(result)
             return bool(result)
         except Exception as exc:
-            logger.error(f"[BeatSync] backend initialization failed: {exc}", exc_info=True)
+            logger.error(f"[BeatSync] backend initialization failed: {format_exception(exc)}", exc_info=True)
             return False
 
     async def extract_beats(
@@ -244,7 +245,7 @@ class BeatService:
             )
             return _coerce_track_result(payload)
         except Exception as exc:
-            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}", exc_info=True)
+            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {format_exception(exc)}", exc_info=True)
             raise RuntimeError(f"Beat worker request failed for '{_short_path(audio_path)}'") from exc
 
     def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
@@ -262,7 +263,7 @@ class BeatService:
             )
             return _coerce_track_result(payload)
         except Exception as exc:
-            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}", exc_info=True)
+            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {format_exception(exc)}", exc_info=True)
             raise RuntimeError(f"Beat worker request failed for '{_short_path(audio_path)}'") from exc
 
     def get_backend_status(self) -> BeatBackendStatus:
@@ -312,7 +313,7 @@ class BeatService:
             active_backend = "engine_warming"
             resolved_backend = active_backend
         except Exception as exc:
-            logger.error(f"[BeatSync] backend status unavailable: {exc}", exc_info=True)
+            logger.error(f"[BeatSync] backend status unavailable: {format_exception(exc)}", exc_info=True)
 
         return BeatBackendStatus(
             beat_this_installed=beat_this_installed,
@@ -381,8 +382,8 @@ class BeatService:
                 generated += 1
             except Exception as exc:
                 failed += 1
-                failed_files.append(f"{audio_file.name}: {exc}")
-                logger.error(f"[BeatSync] cache build failed for '{audio_file}': {exc}", exc_info=True)
+                failed_files.append(f"{audio_file.name}: {format_exception(exc)}")
+                logger.error(f"[BeatSync] cache build failed for '{audio_file}': {format_exception(exc)}", exc_info=True)
 
         return BeatCacheBuildSummary(
             root_dir=str(root),
@@ -429,7 +430,7 @@ class BeatService:
                 bpm_estimate=float(data.get("bpm_estimate", 0.0) or 0.0),
             )
         except Exception as exc:
-            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {exc}")
+            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {format_exception(exc)}")
             return None
 
     def _save_cached_result(self, audio_path: str, result: BeatTrackResult, *, track_name: str = "") -> None:
@@ -466,7 +467,7 @@ class BeatService:
                     pass
             logger.info(f"[BeatSync] cache-save track='{_short_path(audio_path)}' method={method} beats={len(result.beats)}")
         except Exception as exc:
-            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {exc}")
+            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {format_exception(exc)}")
 
     def _cache_path_for_hash(self, source_hash: str) -> str:
         return os.path.join(self._cache_dir, f"{source_hash}.json")

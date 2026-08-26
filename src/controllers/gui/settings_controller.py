@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from main_logger import logger
 from core.events import Events, Event
 from .base_controller import BaseController
@@ -69,7 +70,7 @@ class SettingsController(BaseController):
             except ValueError:
                 logger.warning(f"Неверное значение для размера шрифта: {value}")
             except Exception as e:
-                logger.error(f"Ошибка при изменении размера шрифта: {e}")
+                logger.error(f"Ошибка при изменении размера шрифта: {format_exception(e)}")
 
         elif key in ["SHOW_CHAT_TIMESTAMPS", "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
                      "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT", "CHAT_MAX_BUBBLE_WIDTH",

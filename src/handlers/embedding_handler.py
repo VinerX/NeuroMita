@@ -1,5 +1,6 @@
 # Файл с моделью для эмбеддингов
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import sys
@@ -172,7 +173,7 @@ class EmbeddingModelHandler:
         except Exception as e:
             if cached:
                 logger.warning(
-                    f"Офлайн-загрузка модели не удалась ({e}); повтор с обращением к HF Hub."
+                    f"Офлайн-загрузка модели не удалась ({format_exception(e)}); повтор с обращением к HF Hub."
                 )
                 return self._load_model_impl(local_files_only=False)
             raise
@@ -227,7 +228,7 @@ class EmbeddingModelHandler:
                 break
             except (TypeError, ValueError) as e:
                 last_err = e
-                logger.debug(f"Загрузка attempt {i+1} не удалась: {e}")
+                logger.debug(f"Загрузка attempt {i+1} не удалась: {format_exception(e)}")
                 continue
 
         if model is None:
@@ -276,7 +277,7 @@ class EmbeddingModelHandler:
             normalized_embedding = torch.nn.functional.normalize(embedding.to(torch.float32), p=2, dim=1)
             return normalized_embedding.cpu().numpy()[0]
         except Exception as e:
-            logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {e}")
+            logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {format_exception(e)}")
             return None
 
     def get_embeddings(
@@ -345,7 +346,7 @@ class EmbeddingModelHandler:
                 except Exception as e:
                     logger.error(
                         f"Ошибка batch-вычисления эмбеддингов для элементов "
-                        f"{start}:{start + len(chunk_inputs)}: {e}",
+                        f"{start}:{start + len(chunk_inputs)}: {format_exception(e)}",
                         exc_info=True,
                     )
                     # Уже успешно обработанные batch сохраняются; ошибочный остаётся None.
@@ -365,4 +366,4 @@ if __name__ == '__main__':
         else:
             print(f"Не удалось получить эмбеддинг для '{test_text}'.")
     except Exception as e:
-        print(f"Ошибка при тестировании EmbeddingModelHandler: {e}")
+        print(f"Ошибка при тестировании EmbeddingModelHandler: {format_exception(e)}")

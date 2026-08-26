@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time
 from typing import List, Optional
@@ -108,7 +109,7 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
             except Exception as e:
                 last_exc = e
                 logger.warning(
-                    f"[EmbedAPI][openai_compat] attempt {attempt+1} failed: {e}"
+                    f"[EmbedAPI][openai_compat] attempt {attempt+1} failed: {format_exception(e)}"
                 )
                 if attempt < max_attempts - 1:
                     time.sleep(backoff_sec * (2 ** attempt))

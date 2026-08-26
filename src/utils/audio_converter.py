@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import asyncio
 import os
 import subprocess
@@ -61,7 +62,7 @@ class AudioConverter:
                 if isinstance(e.stderr, bytes)
                 else str(e.stderr or "")
             )
-            logger.error(f"Ошибка при конвертации аудио: {e}; stderr={stderr[-2000:]}")
+            logger.error(f"Ошибка при конвертации аудио: {format_exception(e)}; stderr={stderr[-2000:]}")
             return False
         except FileNotFoundError:
             logger.error(f"FFmpeg executable not found: {AudioConverter.ffmpeg_path}")

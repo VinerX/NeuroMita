@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -137,7 +138,7 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
             self.update_state(
                 preset_items=items,
                 loading_presets=False,
-                error=str(error),
+                error=format_exception(error),
                 items_revision=self.state.items_revision + 1,
             )
 
@@ -210,8 +211,8 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
             applied,
             lambda error: self.update_state(
                 loading_config=False,
-                error=str(error),
-                status_text=_("Ошибка: ", "Error: ") + str(error),
+                error=format_exception(error),
+                status_text=_("Ошибка: ", "Error: ") + format_exception(error),
                 status_kind="error",
             ),
         )
@@ -315,9 +316,9 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
             self.update_state(
                 testing=False,
                 testing_preset_id=None,
-                status_text=_("Ошибка: ", "Error: ") + str(exc),
+                status_text=_("Ошибка: ", "Error: ") + format_exception(exc),
                 status_kind="error",
-                error=str(exc),
+                error=format_exception(exc),
             )
             return
         self._test_timer.start(30_000)
@@ -354,11 +355,11 @@ class EmbedProviderViewModel(IntentViewModel[EmbedProviderState]):
     def _operation_failed(self, error: Exception) -> None:
         self.update_state(
             operation=None,
-            error=str(error),
-            status_text=_("Ошибка: ", "Error: ") + str(error),
+            error=format_exception(error),
+            status_text=_("Ошибка: ", "Error: ") + format_exception(error),
             status_kind="error",
         )
-        self.emit_effect(EmbedProviderShowError(str(error)))
+        self.emit_effect(EmbedProviderShowError(format_exception(error)))
 
     def _on_test_result(self, event: Any) -> None:
         data = dict(getattr(event, "data", None) or {})

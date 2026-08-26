@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from core.error_utils import format_exception
+
 
 class StartupTrace:
     def __init__(self) -> None:
@@ -73,7 +75,7 @@ class StartupTrace:
             self.mark(
                 f"{name}.failed",
                 duration_ms=round((time.perf_counter() - started) * 1000.0, 3),
-                error=f"{type(exc).__name__}: {exc}",
+                error=format_exception(exc),
             )
             raise
         else:

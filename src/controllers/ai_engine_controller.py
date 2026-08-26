@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import multiprocessing as mp
 import os
@@ -657,7 +658,7 @@ class _Worker:
         for event in self.ready_by_service.values():
             event.clear()
         self._fail_pending(error)
-        logger.error(str(error))
+        logger.error(format_exception(error))
         try:
             get_event_bus().emit(
                 Events.AI.ENGINE_EVENT,
@@ -956,7 +957,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 python_paths = composition.paths
                 probe_modules = composition.probe_modules
             except Exception as exc:
-                logger.error(f"Failed to compose installed AI runtime: {exc}")
+                logger.error(f"Failed to compose installed AI runtime: {format_exception(exc)}")
                 python_paths = ()
                 probe_modules = ()
             shared = _Worker(
@@ -978,7 +979,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     probe_modules = composition.probe_modules
                 except Exception as exc:
                     logger.error(
-                        f"Failed to compose isolated runtime for '{service}': {exc}"
+                        f"Failed to compose isolated runtime for '{service}': {format_exception(exc)}"
                     )
                     python_paths = ()
                     probe_modules = ()
@@ -1103,7 +1104,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         f"{service_name}.{method} returned a negative result"
                     )
             except Exception as exc:
-                detail = str(exc)
+                detail = format_exception(exc)
                 message = (
                     f"Candidate AI runtime validation failed for "
                     f"{service_name}.{method}: {detail}"
@@ -1171,7 +1172,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 )
                 return True
             except Exception as exc:
-                logger.error(f"Failed to promote shared AI runtime contract: {exc}")
+                logger.error(f"Failed to promote shared AI runtime contract: {format_exception(exc)}")
                 return False
 
         def restore_registry(snapshot) -> None:
@@ -1183,7 +1184,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             try:
                 restore(snapshot)
             except Exception as exc:
-                logger.error(f"Failed to restore AI runtime registry: {exc}")
+                logger.error(f"Failed to restore AI runtime registry: {format_exception(exc)}")
 
         def cleanup_superseded_runtime_artifacts() -> None:
             if not promote:
@@ -1203,7 +1204,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                         cleanup_revisions(logical_id)
                     except Exception as exc:
                         logger.warning(
-                            f"Failed to clean superseded revision for '{logical_id}': {exc}"
+                            f"Failed to clean superseded revision for '{logical_id}': {format_exception(exc)}"
                         )
 
             cleanup_layers = getattr(
@@ -1216,7 +1217,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     cleanup_layers()
                 except Exception as exc:
                     logger.warning(
-                        f"Failed to clean superseded AI backend layers: {exc}"
+                        f"Failed to clean superseded AI backend layers: {format_exception(exc)}"
                     )
 
         with self._runtime_switch_lock:
@@ -1312,7 +1313,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                             previous.stop(timeout=operation_timeout)
                         except Exception as exc:
                             logger.warning(
-                                f"Failed to stop current shared AI worker before switch: {exc}"
+                                f"Failed to stop current shared AI worker before switch: {format_exception(exc)}"
                             )
 
                     candidate = _Worker(
@@ -1432,7 +1433,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                             previous.stop(timeout=operation_timeout)
                         except Exception as exc:
                             logger.warning(
-                                f"Failed to stop superseded AI worker '{service_name}': {exc}"
+                                f"Failed to stop superseded AI worker '{service_name}': {format_exception(exc)}"
                             )
                 self._restart_attempts.clear()
                 cleanup_superseded_runtime_artifacts()
@@ -1455,7 +1456,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 preferred_core_layer_ids=preferred_core_layer_ids,
             )
         except Exception as exc:
-            logger.error(f"AI runtime composition rejected: {exc}")
+            logger.error(f"AI runtime composition rejected: {format_exception(exc)}")
             return False
         return self._switch_to_composition(
             composition,
@@ -1626,7 +1627,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 ok = bool(self.restart_service(service, timeout=timeout))
             except Exception as e:
                 ok = False
-                err = str(e)
+                err = format_exception(e)
 
             self.event_bus.emit(
                 Events.AI.SERVICE_RESTARTED,
@@ -2067,7 +2068,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             except Exception as exc:
                 logger.error(
                     f"Cannot compose shared runtime for service={service_name} "
-                    f"item={model_id}: {exc}"
+                    f"item={model_id}: {format_exception(exc)}"
                 )
                 return False
 
@@ -2151,7 +2152,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                     selection=selection,
                 )
             except Exception as exc:
-                logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {exc}")
+                logger.error(f"Failed to compose AI runtime without '{record.logical_id}': {format_exception(exc)}")
                 return False
 
             ready = self._switch_to_composition(
@@ -2270,7 +2271,7 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
                 self.mode = previous
                 self._stop_runtime_workers(timeout=timeout)
                 self._init_workers()
-                return {"ok": False, "error": str(exc), **self.topology_snapshot()}
+                return {"ok": False, "error": format_exception(exc), **self.topology_snapshot()}
             finally:
                 self._end_switch()
 

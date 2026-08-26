@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import importlib
 import threading
@@ -80,7 +81,7 @@ class LazyInstallableRegistry:
 
         if error is not None:
             logger.error(
-                f"Installable registry: failed to load '{loader_path}': {error}",
+                f"Installable registry: failed to load '{loader_path}': {format_exception(error)}",
                 exc_info=(type(error), error, error.__traceback__),
             )
 
@@ -107,7 +108,7 @@ class LazyInstallableRegistry:
                 error = self._failed_groups.get(entry.loader)
                 if error is not None:
                     raise RuntimeError(
-                        f"Installable component '{component_id}' failed to load: {error}"
+                        f"Installable component '{component_id}' failed to load: {format_exception(error)}"
                     ) from error
             raise KeyError(f"Unknown installable component: {component_id}")
         return component

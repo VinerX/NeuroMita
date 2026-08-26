@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import time
 import os
 import asyncio
@@ -304,7 +305,7 @@ class SpeechRecognition:
                     logger.warning(f"ASR installable id mismatch: registry='{engine_id}' component='{config_id}'")
                 components.append(instance)
             except Exception as exc:
-                logger.error(f"Failed to create ASR installable for '{engine_id}': {exc}", exc_info=True)
+                logger.error(f"Failed to create ASR installable for '{engine_id}': {format_exception(exc)}", exc_info=True)
         return components
 
     @staticmethod
@@ -319,7 +320,7 @@ class SpeechRecognition:
             if hasattr(inst, "settings_spec"):
                 return inst.settings_spec() or []
         except Exception as e:
-            logger.warning(f"settings_spec error for {engine}: {e}")
+            logger.warning(f"settings_spec error for {engine}: {format_exception(e)}")
         return []
 
     @staticmethod
@@ -332,7 +333,7 @@ class SpeechRecognition:
             try:
                 inst.apply_settings(settings or {})
             except Exception as e:
-                logger.warning(f"apply_settings error: {e}")
+                logger.warning(f"apply_settings error: {format_exception(e)}")
 
         try:
             if "silence_threshold" in settings:
@@ -443,7 +444,7 @@ class SpeechRecognition:
                 except Exception as e:
                     retry += 1
                     logger.error(
-                        f"Recognition loop error (attempt {retry}/{max_retries}): {e}",
+                        f"Recognition loop error (attempt {retry}/{max_retries}): {format_exception(e)}",
                         exc_info=True
                     )
                     if retry < max_retries and SpeechRecognition.active:
@@ -537,7 +538,7 @@ class SpeechRecognition:
                 except Exception as exc:
                     logger.error(
                         f"Managed ASR environment startup failed for engine "
-                        f"'{engine_id}': {exc}",
+                        f"'{engine_id}': {format_exception(exc)}",
                         exc_info=True,
                     )
                     activated = False

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import threading
 from core.task_supervisor import task_supervisor
 import time
@@ -53,7 +54,7 @@ class CameraCapture:
         try:
             self._ensure_cv2_installed()
         except RuntimeError as e:
-            logger.error(f"Невозможно запустить захват с камеры: {e}")
+            logger.error(f"Невозможно запустить захват с камеры: {format_exception(e)}")
             return
             
         if self._running:
@@ -142,7 +143,7 @@ class CameraCapture:
                 except Exception as e:
                     with self._lock:
                         self._error_count += 1
-                        logger.error(f"Error during camera capture (attempt {self._error_count}/{self._max_errors}): {e}", exc_info=True)
+                        logger.error(f"Error during camera capture (attempt {self._error_count}/{self._max_errors}): {format_exception(e)}", exc_info=True)
                         if self._error_count >= self._max_errors:
                             logger.critical("Maximum error count reached. Stopping camera capture.")
                             self._running = False

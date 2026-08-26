@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import datetime as _dt
 import html
@@ -976,7 +977,7 @@ class AIHubDialog(QDialog):
             path.mkdir(parents=True, exist_ok=True)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         except Exception as exc:
-            logger.info(f"AI Hub: не удалось открыть папку моделей: {exc}")
+            logger.info(f"AI Hub: не удалось открыть папку моделей: {format_exception(exc)}")
 
     # Порядок и подписи групп внутри категории RAG.
     _GROUP_ORDER = {"embeddings": 0, "reranker": 1, "other": 2}

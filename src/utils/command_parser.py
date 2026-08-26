@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import numpy as np
 import time
 import os
@@ -54,7 +55,7 @@ class CommandParser:
             print(f"Эмбеддинги успешно загружены и обработаны.")
             return processed_data
         except Exception as e:
-            print(f"Ошибка при загрузке или обработке файла эмбеддингов: {e}")
+            print(f"Ошибка при загрузке или обработке файла эмбеддингов: {format_exception(e)}")
             raise e
 
     def _prepare_all_items(self) -> List[Dict[str, Any]]:
@@ -276,7 +277,7 @@ if __name__ == "__main__":
         model_handler = EmbeddingModelHandler()
         parser = CommandParser(model_handler=model_handler)
     except Exception as e:
-        print(f"Не удалось инициализировать CommandParser: {e}")
+        print(f"Не удалось инициализировать CommandParser: {format_exception(e)}")
         exit()
 
     input_text = "Crazy: <p>-4,0,5</p> Ты хочешь, чтобы я говорила по-русски? <e>discontent</e> Ладно, так и быть. <c>Сесть на угловой диван справа</c> Теперь я здесь, но не думай, что это меня развлекает."

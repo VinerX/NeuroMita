@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import weakref
 
 from main_logger import logger
@@ -53,7 +54,7 @@ class TaskWorker(QThread):
         try:
             gui_task_supervisor().register(self)
         except TaskRefused as refusal:
-            logger.warning(f"Запуск задачи отклонён: {refusal}")
+            logger.warning(f"Запуск задачи отклонён: {format_exception(refusal)}")
             return False
         try:
             super().start(*args, **kwargs)
@@ -116,6 +117,6 @@ class TaskWorker(QThread):
             except Exception:
                 pass
         except Exception as e:
-            logger.error(f"TaskWorker error: {e}", exc_info=True)
-            self.error_signal.emit(str(e))
+            logger.error(f"TaskWorker error: {format_exception(e)}", exc_info=True)
+            self.error_signal.emit(format_exception(e))
 

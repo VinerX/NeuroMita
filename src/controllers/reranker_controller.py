@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time
 
@@ -74,7 +75,7 @@ class RerankerController:
                     logger.info(f"RerankerController: реранкер '{model}' прогрет")
                     return
             except Exception as e:
-                logger.debug(f"RerankerController: прогрев отложен: {e}")
+                logger.debug(f"RerankerController: прогрев отложен: {format_exception(e)}")
             time.sleep(2.0)
 
     def _on_setting_changed(self, change) -> None:
@@ -112,14 +113,14 @@ class RerankerController:
             return
 
         error = str(data.get("error") or "").strip() or "AI-воркер RAG не поднялся"
-        logger.error(f"RerankerController: реранкер недоступен — {error}")
+        logger.error(f"RerankerController: реранкер недоступен — {format_exception(error)}")
         # Прогрев здесь не запускаем: рестарт уже провалился, и цикл ensure_loaded
         # только пять минут стучался бы в мёртвый рантайм. Модель поднимет
         # следующий успешный рестарт или смена настроек.
         CrossEncoderReranker.reset_runtime(
             failed=True,
             error=error,
-            reason=f"рестарт не удался: {error}",
+            reason=f"рестарт не удался: {format_exception(error)}",
         )
 
     def shutdown(self) -> None:

@@ -14,6 +14,7 @@ NeuroMita.pyz use the Launcher.exe post-exit activation handoff instead.
 """
 
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import filecmp
 import hashlib
@@ -146,7 +147,7 @@ def _copy_file_over(
             if not is_locked:
                 raise
             if time.monotonic() >= deadline:
-                log(f"Could not overwrite {dst}: {exc}")
+                log(f"Could not overwrite {dst}: {format_exception(exc)}")
                 return False
             time.sleep(0.25)
 
@@ -946,7 +947,7 @@ def _cleanup_python_reserve(
         shutil.rmtree(staging, ignore_errors=True)
     except OSError as error:
         cleanup_failed = True
-        log(f"Could not remove updater staging directory {staging}: {error}", "warning")
+        log(f"Could not remove updater staging directory {staging}: {format_exception(error)}", "warning")
     if staging.exists():
         cleanup_failed = True
 
@@ -955,7 +956,7 @@ def _cleanup_python_reserve(
             path.unlink(missing_ok=True)
         except OSError as error:
             cleanup_failed = True
-            log(f"Could not remove updater artifact {path}: {error}", "warning")
+            log(f"Could not remove updater artifact {path}: {format_exception(error)}", "warning")
         if path.exists():
             cleanup_failed = True
 
@@ -964,7 +965,7 @@ def _cleanup_python_reserve(
             journal.unlink(missing_ok=True)
         except OSError as error:
             cleanup_failed = True
-            log(f"Could not remove updater journal {journal}: {error}", "warning")
+            log(f"Could not remove updater journal {journal}: {format_exception(error)}", "warning")
         if journal.exists():
             cleanup_failed = True
     else:
@@ -1378,7 +1379,7 @@ def check_for_updates(
             except (PasswordError, ArchiveCancelled, UpdateCancelled):
                 raise
             except Exception as e:
-                log(f"Patch failed ({e}), falling back to full update ...", "warning")
+                log(f"Patch failed ({format_exception(e)}), falling back to full update ...", "warning")
                 temp_archive.unlink(missing_ok=True)
                 _archive_meta_path(temp_archive).unlink(missing_ok=True)
                 full_asset = _fetch_full_fallback_asset(repo, channel)
@@ -1462,7 +1463,7 @@ def check_for_updates(
                 )
             except Exception as cleanup_error:
                 log(
-                    f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
+                    f"Update installed successfully, but updater cache cleanup failed: {format_exception(cleanup_error)}",
                     "warning",
                 )
         _emit_stage(on_stage, "Completed", 4, 4, False)
@@ -1509,7 +1510,7 @@ def check_for_updates(
         )
 
     except UpdateFilesLocked as error:
-        _set_python_operation_phase(base_path, "waiting_for_restart", error=str(error))
+        _set_python_operation_phase(base_path, "waiting_for_restart", error=format_exception(error))
         log(
             "Running launcher files will be replaced during the controlled restart.",
             "warning",
@@ -1523,11 +1524,11 @@ def check_for_updates(
             changed=True,
             restart_required=True,
             version=remote_tag,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
         )
     except (UpdateCancelled, ArchiveCancelled) as error:
-        _set_python_operation_phase(base_path, "cancelled", error=str(error))
+        _set_python_operation_phase(base_path, "cancelled", error=format_exception(error))
         log("Python update cancelled; downloaded data was kept for resume.", "warning")
         return UpdateResult(
             component="python",
@@ -1535,11 +1536,11 @@ def check_for_updates(
             status="cancelled",
             cancelled=True,
             version=remote_tag,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
         )
     except PasswordError as error:
-        _set_python_operation_phase(base_path, "waiting_for_credentials", error=str(error))
+        _set_python_operation_phase(base_path, "waiting_for_credentials", error=format_exception(error))
         log("Archive is password-protected. Set TESTER_CODE in settings to unlock.", "error")
         log(f"Archive kept for retry: {active_archive}")
         return UpdateResult(
@@ -1547,18 +1548,18 @@ def check_for_updates(
             ok=False,
             status="waiting_for_credentials",
             version=remote_tag,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
         )
     except Exception as error:
-        _set_python_operation_phase(base_path, "failed", error=str(error))
-        log(f"Update failed: {error}", "error")
+        _set_python_operation_phase(base_path, "failed", error=format_exception(error))
+        log(f"Update failed: {format_exception(error)}", "error")
         return UpdateResult(
             component="python",
             ok=False,
             status="failed",
             version=remote_tag,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
         )
 
@@ -1769,7 +1770,7 @@ def resume_pending_python_update(
             )
         except Exception as cleanup_error:
             log(
-                f"Update installed successfully, but updater cache cleanup failed: {cleanup_error}",
+                f"Update installed successfully, but updater cache cleanup failed: {format_exception(cleanup_error)}",
                 "warning",
             )
         _emit_stage(on_stage, "Completed", 4, 4, False)
@@ -1789,7 +1790,7 @@ def resume_pending_python_update(
             base_path,
             "waiting_for_restart",
             journal_path=journal,
-            error=str(error),
+            error=format_exception(error),
         )
         return UpdateResult(
             component="python",
@@ -1797,7 +1798,7 @@ def resume_pending_python_update(
             status="waiting_for_restart",
             restart_required=True,
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
             recovered=True,
         )
@@ -1806,7 +1807,7 @@ def resume_pending_python_update(
             base_path,
             "cancelled",
             journal_path=journal,
-            error=str(error),
+            error=format_exception(error),
         )
         return UpdateResult(
             component="python",
@@ -1814,7 +1815,7 @@ def resume_pending_python_update(
             status="cancelled",
             cancelled=True,
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
             recovered=True,
         )
@@ -1823,14 +1824,14 @@ def resume_pending_python_update(
             base_path,
             "waiting_for_credentials",
             journal_path=journal,
-            error=str(error),
+            error=format_exception(error),
         )
         return UpdateResult(
             component="python",
             ok=False,
             status="waiting_for_credentials",
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
             recovered=True,
         )
@@ -1839,15 +1840,15 @@ def resume_pending_python_update(
             base_path,
             "failed",
             journal_path=journal,
-            error=str(error),
+            error=format_exception(error),
         )
-        log(f"Python update recovery failed: {error}", "error")
+        log(f"Python update recovery failed: {format_exception(error)}", "error")
         return UpdateResult(
             component="python",
             ok=False,
             status="failed",
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=archive_hash,
             recovered=True,
         )
@@ -2027,7 +2028,7 @@ def _install_unity_asset(
             recovered=recovered,
         )
     except (UpdateCancelled, ArchiveCancelled) as error:
-        transaction.set_phase("cancelled", error=str(error))
+        transaction.set_phase("cancelled", error=format_exception(error))
         log("Unity installation cancelled; downloaded data was kept for resume.", "warning")
         return UpdateResult(
             component="unity",
@@ -2035,11 +2036,11 @@ def _install_unity_asset(
             status="cancelled",
             cancelled=True,
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=str(transaction.state.get("archive_sha256") or ""),
         )
     except PasswordError as error:
-        transaction.set_phase("waiting_for_credentials", error=str(error))
+        transaction.set_phase("waiting_for_credentials", error=format_exception(error))
         log("Unity archive is password-protected. Set TESTER_CODE in settings.", "error")
         log(f"Archive kept for retry: {archive}")
         return UpdateResult(
@@ -2047,19 +2048,19 @@ def _install_unity_asset(
             ok=False,
             status="waiting_for_credentials",
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=str(transaction.state.get("archive_sha256") or ""),
         )
     except Exception as error:
         if transaction.phase != "rolled_back":
-            transaction.set_phase("failed", error=str(error))
-        log(f"Unity update failed: {error}", "error")
+            transaction.set_phase("failed", error=format_exception(error))
+        log(f"Unity update failed: {format_exception(error)}", "error")
         return UpdateResult(
             component="unity",
             ok=False,
             status="failed",
             version=version,
-            error=str(error),
+            error=format_exception(error),
             archive_sha256=str(transaction.state.get("archive_sha256") or ""),
         )
 

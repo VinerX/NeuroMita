@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import hashlib
@@ -666,7 +667,7 @@ class F5TTSModel(IVoiceModel):
                 from handlers.voice_models.pipelines.f5_pipeline import F5TTSPipeline
                 self.f5_pipeline_module = F5TTSPipeline
         except Exception as ex:
-            logger.info(f"F5_TTS import failed: {ex}")
+            logger.info(f"F5_TTS import failed: {format_exception(ex)}")
             if cross_lingual:
                 self.clf5_pipeline_module = None
             else:
@@ -777,7 +778,7 @@ class F5TTSModel(IVoiceModel):
                 tiny_mode=False
             )
         except Exception as e:
-            logger.warning(f"RUAccent init failed: {e}")
+            logger.warning(f"RUAccent init failed: {format_exception(e)}")
             self.ruaccent_instance = None
 
     def _apply_ruaccent(self, text: str) -> str:
@@ -930,7 +931,7 @@ class F5TTSModel(IVoiceModel):
                             pass
                     produced = rvc_output_path
             except Exception as e:
-                logger.warning(f"RVC post-process failed: {e}")
+                logger.warning(f"RVC post-process failed: {format_exception(e)}")
 
         return produced
 

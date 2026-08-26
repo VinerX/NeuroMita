@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from core.task_supervisor import task_supervisor
@@ -212,7 +213,7 @@ class ModelPricingManager:
                 elif protocol_id == "openai_compatible_default":
                     info = self._fetch_openai_compatible_model_info(preset)
             except Exception as e:
-                logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {e}")
+                logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {format_exception(e)}")
             finally:
                 with self._lock:
                     self._cache[cache_key] = (time.time(), info)

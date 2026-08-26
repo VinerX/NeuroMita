@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from importlib import import_module
 from typing import List, Optional
@@ -34,8 +35,8 @@ class ProviderManager:
                 provider_type = getattr(import_module(module_name), class_name)
                 providers.append(provider_type(http_transport=self.http_transport))
             except Exception as exc:
-                unavailable[class_name] = f"{type(exc).__name__}: {exc}"
-                logger.warning(f"LLM provider {class_name} unavailable: {exc}")
+                unavailable[class_name] = format_exception(exc)
+                logger.warning(f"LLM provider {class_name} unavailable: {format_exception(exc)}")
 
         providers.sort(key=lambda provider: provider.priority)
         self._providers = providers
@@ -73,7 +74,7 @@ class ProviderManager:
 
         provider = self._find_by_name(req.provider_name)
         if not provider:
-            details = "; ".join(f"{name}: {error}" for name, error in self._unavailable.items())
+            details = "; ".join(f"{name}: {format_exception(error)}" for name, error in self._unavailable.items())
             logger.error(f"No provider registered with name '{req.provider_name}'. {details}")
             raise RuntimeError(f"Provider '{req.provider_name}' is unavailable")
 

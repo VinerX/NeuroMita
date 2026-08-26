@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -367,7 +368,7 @@ class GeminiProvider(BaseProvider):
         except Exception as e:
             provider_error = build_provider_error(
                 self.name,
-                provider_message=f"Gemini response parse error: {e}",
+                provider_message=f"Gemini response parse error: {format_exception(e)}",
                 payload=getattr(response, "text", None),
                 url=req.api_url,
             )
@@ -403,7 +404,7 @@ class GeminiProvider(BaseProvider):
                             raise build_stream_error(
                                 self.name,
                                 payload=data[:500],
-                                provider_message=f"Invalid JSON in Gemini stream: {e}",
+                                provider_message=f"Invalid JSON in Gemini stream: {format_exception(e)}",
                                 code="stream.invalid_json",
                                 url=str(getattr(response, "url", req.api_url) or req.api_url),
                             ) from e
@@ -450,7 +451,7 @@ class GeminiProvider(BaseProvider):
             if isinstance(e, json.JSONDecodeError):
                 provider_error = build_stream_error(
                     self.name,
-                    provider_message=f"Invalid JSON in Gemini stream: {e}",
+                    provider_message=f"Invalid JSON in Gemini stream: {format_exception(e)}",
                     code="stream.invalid_json",
                     url=str(getattr(response, "url", req.api_url) or req.api_url),
                 )

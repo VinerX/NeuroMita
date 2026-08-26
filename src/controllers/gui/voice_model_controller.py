@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
@@ -162,7 +163,7 @@ class VoiceModelGuiController(BaseController):
         try:
             preflight = backend.get_install_preflight(str(model_id))
         except Exception as exc:
-            logger.warning(f"VoiceModelGuiController: install preflight failed for '{model_id}': {exc}")
+            logger.warning(f"VoiceModelGuiController: install preflight failed for '{model_id}': {format_exception(exc)}")
             preflight = {}
 
         if preflight.get("blocked"):
@@ -301,7 +302,7 @@ class VoiceModelGuiController(BaseController):
         try:
             backend.save_settings_values(values)
         except Exception as e:
-            logger.error(f"Ошибка сохранения настроек локальных моделей: {e}", exc_info=True)
+            logger.error(f"Ошибка сохранения настроек локальных моделей: {format_exception(e)}", exc_info=True)
 
         self._after_models_changed()
         self._view_model.refresh()

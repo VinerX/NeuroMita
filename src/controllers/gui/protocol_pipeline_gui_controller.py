@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -156,5 +157,5 @@ class _ProtocolPipelineDialog(QDialog):
             try:
                 cb([dict(t) for t in self._current if isinstance(t, dict) and t.get("id")])
             except Exception as e:
-                logger.error(f"pipeline on_apply failed: {e}", exc_info=True)
+                logger.error(f"pipeline on_apply failed: {format_exception(e)}", exc_info=True)
         self.accept()

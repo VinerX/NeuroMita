@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -54,5 +55,5 @@ class NewsPageViewModel(IntentViewModel[NewsPageState]):
             "news-page-refresh",
             worker,
             applied,
-            lambda error: self.update_state(loading=False, error=str(error)),
+            lambda error: self.update_state(loading=False, error=format_exception(error)),
         )

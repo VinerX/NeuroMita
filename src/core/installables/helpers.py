@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 from typing import Any
@@ -39,7 +40,7 @@ def backend_status_ok(backend: BackendKind, ctx: dict[str, Any]) -> tuple[bool, 
         status = get_backend_service().get_status(backend, ctx=ctx)
         return bool(status.ok), status.as_dict()
     except Exception as exc:
-        return False, {"error": str(exc)}
+        return False, {"error": format_exception(exc)}
 
 
 def status_from_installed(

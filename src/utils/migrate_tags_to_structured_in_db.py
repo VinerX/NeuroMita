@@ -11,6 +11,7 @@
 Пропускает строки где structured_data уже есть в колонке.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import logging
@@ -132,7 +133,7 @@ def migrate(
                     stats["rows_skipped"] += 1
 
             except Exception as e:
-                msg = f"Row {row_id}: {e}"
+                msg = f"Row {row_id}: {format_exception(e)}"
                 logger.error(f"[migrate_tags_to_structured_in_db] {msg}", exc_info=True)
                 stats["errors"].append(msg)
                 stats["rows_skipped"] += 1

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import gc
 import os
@@ -201,7 +202,7 @@ class WorkerCrossEncoderReranker:
                 return True
             except Exception as exc:
                 logger.warning(
-                    f"[RAG][CrossEncoder] Failed to load '{self.model_name}': {exc} "
+                    f"[RAG][CrossEncoder] Failed to load '{self.model_name}': {format_exception(exc)} "
                     "(cross-encoder disabled)"
                 )
                 self._failed = True

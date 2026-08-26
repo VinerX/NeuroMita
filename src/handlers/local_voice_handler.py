@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import gc
 import os
@@ -131,7 +132,7 @@ class LocalVoice:
                     configs.append(cfg)
                     seen.add(cid)
             except Exception as e:
-                logger.warning(f"LocalVoice.get_all_model_configs error: {e}")
+                logger.warning(f"LocalVoice.get_all_model_configs error: {format_exception(e)}")
         return configs
 
     def is_model_installed(self, model_id: str) -> bool:
@@ -188,7 +189,7 @@ class LocalVoice:
             )
             ok = bool(model.initialize(init=init))
         except Exception as e:
-            logger.error(f"initialize_model failed for {model_id}: {e}", exc_info=True)
+            logger.error(f"initialize_model failed for {model_id}: {format_exception(e)}", exc_info=True)
             ok = False
 
         if ok:
@@ -223,7 +224,7 @@ class LocalVoice:
             try:
                 model.cleanup_state()
             except Exception as exc:
-                logger.warning(f"Voice model cleanup failed for {type(model).__name__}: {exc}")
+                logger.warning(f"Voice model cleanup failed for {type(model).__name__}: {format_exception(exc)}")
 
         self.active_model_instance = None
         self.current_model_id = None
@@ -246,7 +247,7 @@ class LocalVoice:
                     return all_settings.get(model_id, {}) if isinstance(all_settings, dict) else {}
             return {}
         except Exception as e:
-            logger.info(f"load_model_settings error for {model_id}: {e}")
+            logger.info(f"load_model_settings error for {model_id}: {format_exception(e)}")
             return {}
 
     def convert_wav_to_stereo(
@@ -275,7 +276,7 @@ class LocalVoice:
             return output_path
         except ffmpeg.Error as fe:
             err = fe.stderr.decode(errors="ignore") if getattr(fe, "stderr", None) else ""
-            logger.error(f"FFmpeg error:\n{err}\n{traceback.format_exc()}")
+            logger.error(f"FFmpeg error:\n{format_exception(err)}\n{traceback.format_exc()}")
             return None
         except Exception:
             logger.error(f"convert_wav_to_stereo error:\n{traceback.format_exc()}")

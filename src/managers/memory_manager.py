@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import json
 import logging
 import datetime
@@ -84,7 +85,7 @@ class MemoryManager(CharacterScopedService):
             self._rags[key] = RAGManager.for_character(key)
         except Exception as exc:
             logging.warning(
-                f"RAGManager init failed for {key} (RAG disabled for this session): {exc}",
+                f"RAGManager init failed for {key} (RAG disabled for this session): {format_exception(exc)}",
                 exc_info=True,
             )
             self._rags[key] = None
@@ -165,7 +166,7 @@ class MemoryManager(CharacterScopedService):
 
             self._ensure_island_uniqueness()
         except Exception as e:
-            logging.warning(f"[MemoryManager] Schema check failed (ignored): {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] Schema check failed (ignored): {format_exception(e)}", exc_info=True)
 
     def _ensure_island_uniqueness(self) -> None:
         """Collapse legacy duplicates and enforce one active island per type.
@@ -490,7 +491,7 @@ class MemoryManager(CharacterScopedService):
                 )
 
         except Exception as e:
-            logging.warning(f"[MemoryManager] prune failed (ignored): {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] prune failed (ignored): {format_exception(e)}", exc_info=True)
         finally:
             try:
                 conn.close()
@@ -501,7 +502,7 @@ class MemoryManager(CharacterScopedService):
         try:
             self.apply_ttl_cleanup()
         except Exception as e:
-            logging.warning(f"[MemoryManager] TTL cleanup in prune failed (ignored): {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] TTL cleanup in prune failed (ignored): {format_exception(e)}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -656,11 +657,11 @@ class MemoryManager(CharacterScopedService):
                 try:
                     rag.update_memory_embedding(eid, txt)
                 except Exception as e:
-                    logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+                    logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
             self._get_embed_executor().submit(_embed_job)
         except Exception as e:
-            logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+            logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
     def seed_rag_memory(self, content, priority="normal", entities=None) -> Optional[int]:
         """Create a RAG-only memory: indexed and retrievable by search, but never
@@ -815,7 +816,7 @@ class MemoryManager(CharacterScopedService):
 
             return eternal_id
         except Exception as e:
-            logging.warning(f"[MemoryManager] upsert_island failed: {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] upsert_island failed: {format_exception(e)}", exc_info=True)
             return None
 
     def seed_island(self, island_type: str, content: str, priority: str = "high") -> Optional[int]:
@@ -838,7 +839,7 @@ class MemoryManager(CharacterScopedService):
                 if cur.fetchone():
                     return None
         except Exception as e:
-            logging.warning(f"[MemoryManager] seed_island lookup failed: {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] seed_island lookup failed: {format_exception(e)}", exc_info=True)
             return None
 
         return self.upsert_island(short, str(content).strip(), priority)
@@ -882,7 +883,7 @@ class MemoryManager(CharacterScopedService):
             conn.commit()
             return True
         except Exception as e:
-            logging.warning(f"[MemoryManager] tag_with_entities failed (ignored): {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] tag_with_entities failed (ignored): {format_exception(e)}", exc_info=True)
             return False
         finally:
             try:
@@ -951,12 +952,12 @@ class MemoryManager(CharacterScopedService):
                     try:
                         rag.update_memory_embedding(eid, txt)
                     except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+                        logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
                 # В фон: не блокируем UI/генерацию ответа
                 self._get_embed_executor().submit(_embed_job)
             except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+                logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
         return True
 
@@ -1105,7 +1106,7 @@ class MemoryManager(CharacterScopedService):
                 conn.commit()
 
         except Exception as e:
-            logging.warning(f"[MemoryManager] merge_memories failed: {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] merge_memories failed: {format_exception(e)}", exc_info=True)
             return False
 
         # Recalculate since source was deleted and target content may have changed
@@ -1122,11 +1123,11 @@ class MemoryManager(CharacterScopedService):
                     try:
                         rag.update_memory_embedding(eid, txt)
                     except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {e}", exc_info=True)
+                        logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
                 self._get_embed_executor().submit(_embed_job)
             except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {e}", exc_info=True)
+                logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
         logging.info(f"[MemoryManager] Merged memory #{source_id} into #{target_id}")
         return True
@@ -1169,7 +1170,7 @@ class MemoryManager(CharacterScopedService):
             )
             rows = cur.fetchall() or []
         except Exception as e:
-            logging.warning(f"[MemoryManager] run_maintenance fetch failed (ignored): {e}", exc_info=True)
+            logging.warning(f"[MemoryManager] run_maintenance fetch failed (ignored): {format_exception(e)}", exc_info=True)
             return result
         finally:
             try:
@@ -1344,7 +1345,7 @@ class MemoryManager(CharacterScopedService):
                     if total > 0:
                         conn.commit()
             except Exception as e:
-                logging.warning(f"[MemoryManager] apply_ttl_cleanup (access_weighted) failed: {e}", exc_info=True)
+                logging.warning(f"[MemoryManager] apply_ttl_cleanup (access_weighted) failed: {format_exception(e)}", exc_info=True)
         else:
             # Pure SQL path (date_created or last_accessed)
             try:
@@ -1366,7 +1367,7 @@ class MemoryManager(CharacterScopedService):
                     if total > 0:
                         conn.commit()
             except Exception as e:
-                logging.warning(f"[MemoryManager] apply_ttl_cleanup failed: {e}", exc_info=True)
+                logging.warning(f"[MemoryManager] apply_ttl_cleanup failed: {format_exception(e)}", exc_info=True)
 
         if total > 0:
             self._calculate_total_characters()
@@ -1408,7 +1409,7 @@ class MemoryManager(CharacterScopedService):
                         (self.storage_key, self.storage_key),
                     )
                 except Exception as e:
-                    logging.warning(f"[MemoryManager] purge_deleted: {emb_table} cleanup failed: {e}")
+                    logging.warning(f"[MemoryManager] purge_deleted: {emb_table} cleanup failed: {format_exception(e)}")
             cur.execute(
                 "DELETE FROM memories WHERE character_id=? AND is_deleted=1",
                 (self.storage_key,),

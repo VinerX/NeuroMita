@@ -13,6 +13,7 @@ mutation commands and resulting facts:
     EmbeddingPresets.TEST_PRESET        → fires TEST_RESULT async
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -89,7 +90,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
                         self.builtin_overrides[str(k)] = dict(v)
             logger.info(f"[EmbedPresets] Loaded {len(self.custom_presets)} custom presets")
         except Exception as e:
-            logger.error(f"[EmbedPresets] Failed to load: {e}", exc_info=True)
+            logger.error(f"[EmbedPresets] Failed to load: {format_exception(e)}", exc_info=True)
 
     def _save(self) -> bool:
         try:
@@ -111,7 +112,7 @@ class EmbeddingPresetsController(EmbeddingPresetService):
                 os.replace(tmp, self.presets_path)
             return True
         except Exception as e:
-            logger.error(f"[EmbedPresets] Failed to save: {e}", exc_info=True)
+            logger.error(f"[EmbedPresets] Failed to save: {format_exception(e)}", exc_info=True)
             return False
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -509,5 +510,5 @@ class EmbeddingPresetsController(EmbeddingPresetService):
             })
         except Exception as e:
             self.event_bus.emit(Events.EmbeddingPresets.TEST_RESULT, {
-                "id": preset_id, "success": False, "message": str(e),
+                "id": preset_id, "success": False, "message": format_exception(e),
             })

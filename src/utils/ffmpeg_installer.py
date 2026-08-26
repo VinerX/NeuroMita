@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import shutil
 import sys
@@ -74,13 +75,13 @@ def install_ffmpeg(target_directory=".",
         logger.info(f"Download complete: '{zip_filepath}'")
 
     except NetworkRequestError as e:
-        _emit(f"Error downloading file: {e}")
+        _emit(f"Error downloading file: {format_exception(e)}")
         # Clean up potentially incomplete download
         if zip_filepath.exists():
             os.remove(zip_filepath)
         return False
     except Exception as e:
-        _emit(f"An unexpected error occurred during download: {e}")
+        _emit(f"An unexpected error occurred during download: {format_exception(e)}")
         if zip_filepath.exists():
             os.remove(zip_filepath)
         return False
@@ -119,7 +120,7 @@ def install_ffmpeg(target_directory=".",
         _emit(f"Error: Downloaded file '{zip_filepath}' is not a valid zip file.")
         return False # Failure
     except Exception as e:
-        _emit(f"An error occurred during extraction: {e}")
+        _emit(f"An error occurred during extraction: {format_exception(e)}")
         # If extraction failed but ffmpeg.exe was partially created, remove it
         if target_ffmpeg_path.exists():
              try:
@@ -135,7 +136,7 @@ def install_ffmpeg(target_directory=".",
                 os.remove(zip_filepath)
                 logger.info("Temporary file deleted.")
             except OSError as e:
-                logger.info(f"Warning: Could not delete temporary file '{zip_filepath}': {e}")
+                logger.info(f"Warning: Could not delete temporary file '{zip_filepath}': {format_exception(e)}")
 
 # --- Example Usage ---
 if __name__ == "__main__":

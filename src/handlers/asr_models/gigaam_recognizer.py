@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import gc
 from typing import Optional, List
@@ -303,7 +304,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"GigaAM download failed: HTTP {e.code} {e.reason}", exc_info=True)
             return False
         except Exception as e:
-            self.logger.error(f"GigaAM install failed: {e}", exc_info=True)
+            self.logger.error(f"GigaAM install failed: {format_exception(e)}", exc_info=True)
             return False
 
     # ---------- runtime ----------
@@ -319,7 +320,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self._torch = torch
             self._np = np
         except Exception as e:
-            self.logger.error(f"GigaAM init imports failed: {e}")
+            self.logger.error(f"GigaAM init imports failed: {format_exception(e)}")
             return False
 
         # alias for hydra targets ("gigaam.*")
@@ -378,7 +379,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             self.logger.success("GigaAM (PyTorch) initialized successfully.")
             return True
         except Exception as e:
-            self.logger.error(f"Failed to load GigaAM: {e}", exc_info=True)
+            self.logger.error(f"Failed to load GigaAM: {format_exception(e)}", exc_info=True)
             self._model = None
             self._is_initialized = False
             return False
@@ -408,7 +409,7 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
             return None
 
         except Exception as e:
-            self.logger.error(f"Transcription error: {e}", exc_info=True)
+            self.logger.error(f"Transcription error: {format_exception(e)}", exc_info=True)
             return None
 
     def cleanup(self) -> None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -96,7 +97,7 @@ class ChatMessageActionsViewModel(IntentViewModel[_ChatMessageActionsState]):
                 lambda: self._load_context(intent.sample_id),
                 lambda result: self._emit_context_result(result, intent.initial_tab),
                 lambda error: self.emit_effect(
-                    ShowChatSampleContextError(str(error), not_found=False)
+                    ShowChatSampleContextError(format_exception(error), not_found=False)
                 ),
             )
 

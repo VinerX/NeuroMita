@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/handlers/chat_handler.py
 import re
 import threading
@@ -96,7 +97,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
         }
         _write_context_record(record, context_snapshot_id)
     except Exception as _e:
-        logger.debug(f"[ContextSave] {_e}")
+        logger.debug(f"[ContextSave] {format_exception(_e)}")
 
 def _save_last_response_context(req, response: LLMResponse, *, raw_response_text: str = "", cleaned_response_text: str = "") -> None:
     """Attach response data to the exact request snapshot and update the fallback."""
@@ -141,7 +142,7 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
         })
         _write_context_record(record, context_snapshot_id)
     except Exception as _e:
-        logger.debug(f"[ContextSaveResponse] {_e}")
+        logger.debug(f"[ContextSaveResponse] {format_exception(_e)}")
 
 
 class ChatModel:
@@ -365,7 +366,7 @@ class ChatModel:
         except OperationCancelledError:
             raise
         except Exception as e:
-            logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
+            logger.error(f"Runner failed unexpectedly: {format_exception(e)}", exc_info=True)
             self.last_error = None
             return None, False
 
@@ -395,7 +396,7 @@ class ChatModel:
                             response_text.raw = {}
                         response_text.raw["finetune_sample_id"] = sample_id
             except Exception as _ft_err:
-                logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
+                logger.debug(f"[FinetuneCollector] save_sample skipped: {format_exception(_ft_err)}")
 
         if response_text:
             raw_response_text = response_text.text or ""

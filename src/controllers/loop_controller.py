@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/controllers/loop_controller.py
 
 import asyncio
@@ -39,7 +40,7 @@ class LoopController:
             try:
                 self.loop.run_forever()
             except Exception as e:
-                logger.info(f"Ошибка в цикле событий asyncio: {e}")
+                logger.info(f"Ошибка в цикле событий asyncio: {format_exception(e)}")
             finally:
                 logger.info("Начинаем shutdown asyncio loop...")
                 pending = asyncio.all_tasks(self.loop)
@@ -48,19 +49,19 @@ class LoopController:
                 try:
                     self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 except Exception as e:
-                    logger.error(f"Ошибка при завершении pending tasks: {e}")
+                    logger.error(f"Ошибка при завершении pending tasks: {format_exception(e)}")
                 try:
                     self.loop.run_until_complete(self.loop.shutdown_asyncgens())
                 except Exception as e:
-                    logger.error(f"Ошибка при shutdown async generators: {e}")
+                    logger.error(f"Ошибка при shutdown async generators: {format_exception(e)}")
                 try:
                     self.loop.run_until_complete(self.loop.shutdown_default_executor())
                 except Exception as e:
-                    logger.error(f"Ошибка при shutdown default executor: {e}")
+                    logger.error(f"Ошибка при shutdown default executor: {format_exception(e)}")
                 self.loop.close()
                 logger.info("Цикл событий asyncio закрыт.")
         except Exception as e:
-            logger.info(f"Ошибка при запуске цикла событий asyncio: {e}")
+            logger.info(f"Ошибка при запуске цикла событий asyncio: {format_exception(e)}")
             self.loop_ready_event.set()
 
     def stop_loop(self):
@@ -71,7 +72,7 @@ class LoopController:
                 if loop.is_running():
                     loop.call_soon_threadsafe(loop.stop)
             except Exception as e:
-                logger.error(f"Ошибка при остановке loop: {e}")
+                logger.error(f"Ошибка при остановке loop: {format_exception(e)}")
 
         if self.asyncio_thread.is_alive():
             self.asyncio_thread.join(timeout=5)
@@ -81,5 +82,5 @@ class LoopController:
             try:
                 loop.close()
             except Exception as e:
-                logger.error(f"Ошибка при закрытии loop: {e}")
+                logger.error(f"Ошибка при закрытии loop: {format_exception(e)}")
 

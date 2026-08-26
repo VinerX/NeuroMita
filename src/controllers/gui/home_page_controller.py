@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import subprocess
@@ -261,7 +262,7 @@ class HomePageController(QObject):
         )
 
     def _on_process_error(self, error) -> None:
-        message = self._process.errorString() or str(error)
+        message = self._process.errorString() or format_exception(error)
         state = "failed" if self._process.state() == QProcess.ProcessState.NotRunning else self._snapshot.state
         if state == "failed":
             self._clear_process_marker()

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPlainTextEdit, QProgressBar,
     QApplication, QWidget, QPushButton, QFileDialog, QTabWidget, QCheckBox
@@ -644,7 +645,7 @@ class VoiceInstallationWindow(QDialog):
                 with open(fname, "w", encoding="utf-8") as f:
                     f.write(self._raw_log_text() or "\n".join(self._full_log_lines))
             except Exception as ex:
-                logger.error(f"Не удалось сохранить лог: {ex}")
+                logger.error(f"Не удалось сохранить лог: {format_exception(ex)}")
 
     def _clear_log_screen_only(self):
         # Очистка только видимой области; полный лог остаётся для копирования/сохранения
@@ -918,7 +919,7 @@ class VoiceActionWindow(QDialog):
                 with open(fname, "w", encoding="utf-8") as f:
                     f.write("\n".join(self._full_log_lines))
             except Exception as ex:
-                logger.error(f"Не удалось сохранить лог: {ex}")
+                logger.error(f"Не удалось сохранить лог: {format_exception(ex)}")
 
     def _clear_log_screen_only(self):
         self._display_lines.clear()

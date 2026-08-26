@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 
 import qtawesome as qta
@@ -2207,7 +2208,7 @@ class SandboxPage(QWidget):
                 view_context=self._page_actions.view_debug_context,
             )
         except Exception as exc:
-            err = QLabel(f"[debug_settings error] {exc}")
+            err = QLabel(f"[debug_settings error] {format_exception(exc)}")
             err.setWordWrap(True)
             debug_panel_layout.addWidget(err)
         layout.addWidget(debug_panel_strip)

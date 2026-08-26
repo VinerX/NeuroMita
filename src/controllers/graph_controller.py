@@ -8,6 +8,7 @@ Pattern mirrors HistoryController._compress_history() but runs asynchronously
 in a background thread to never block the conversation.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -155,7 +156,7 @@ class GraphController:
             except PoolSaturated:
                 logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — inline store для '{char_id}' пропущен.")
             except Exception as e:
-                logger.warning(f"[GraphController] Failed to schedule inline store: {e}")
+                logger.warning(f"[GraphController] Failed to schedule inline store: {format_exception(e)}")
             return
 
         # Real-time extraction (separate LLM call) — only if explicitly enabled.
@@ -190,7 +191,7 @@ class GraphController:
         except PoolSaturated:
             logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — extraction для '{char_id}' пропущен.")
         except Exception as e:
-            logger.warning(f"[GraphController] Failed to schedule extraction: {e}")
+            logger.warning(f"[GraphController] Failed to schedule extraction: {format_exception(e)}")
 
     @classmethod
     def _track_future(cls, char_id: str, future: Future) -> None:
@@ -314,7 +315,7 @@ class GraphController:
                         )
 
         except Exception as e:
-            logger.warning(f"[GraphController] Extraction failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[GraphController] Extraction failed (ignored): {format_exception(e)}", exc_info=True)
 
     def _store_inline(
         self,
@@ -363,7 +364,7 @@ class GraphController:
                         character.memory_system.tag_with_entities(eid, entity_names)
 
         except Exception as e:
-            logger.warning(f"[GraphController] Inline store failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[GraphController] Inline store failed (ignored): {format_exception(e)}", exc_info=True)
 
     @staticmethod
     def _tag_history_messages(
@@ -445,7 +446,7 @@ class GraphController:
                 )
 
         except Exception as e:
-            logger.warning(f"[GraphController] Failed to tag history messages (ignored): {e}", exc_info=True)
+            logger.warning(f"[GraphController] Failed to tag history messages (ignored): {format_exception(e)}", exc_info=True)
 
     def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
         """Load extraction prompt template, format with message text.
@@ -514,5 +515,5 @@ class GraphController:
                 f"falling back to current preset."
             )
         except Exception as e:
-            logger.warning(f"[GraphController] Preset name lookup failed: {e}")
+            logger.warning(f"[GraphController] Preset name lookup failed: {format_exception(e)}")
         return None

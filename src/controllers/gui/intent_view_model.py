@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from collections.abc import Callable
 from dataclasses import replace
@@ -125,7 +126,7 @@ class IntentViewModel(QObject, Generic[StateT]):
             try:
                 result = worker()
             except Exception as exc:
-                logger.error(f"ViewModel task failed: {name}: {exc}", exc_info=True)
+                logger.error(f"ViewModel task failed: {name}: {format_exception(exc)}", exc_info=True)
                 self._post_ui(
                     lambda exc=exc: self._apply_latest_error(
                         name, generation, exc, on_error
@@ -150,7 +151,7 @@ class IntentViewModel(QObject, Generic[StateT]):
                 allow_overlap=True,
             )
         except Exception as exc:
-            logger.error(f"Failed to start ViewModel task: {name}: {exc}", exc_info=True)
+            logger.error(f"Failed to start ViewModel task: {name}: {format_exception(exc)}", exc_info=True)
             self._post_ui(
                 lambda exc=exc: self._apply_latest_error(
                     name,
@@ -178,7 +179,7 @@ class IntentViewModel(QObject, Generic[StateT]):
             try:
                 result = worker()
             except Exception as exc:
-                logger.error(f"ViewModel operation failed: {name}: {exc}", exc_info=True)
+                logger.error(f"ViewModel operation failed: {name}: {format_exception(exc)}", exc_info=True)
                 self._post_ui(
                     lambda exc=exc: self._finish_exclusive(
                         name, generation, None, exc, on_success, on_error
@@ -196,7 +197,7 @@ class IntentViewModel(QObject, Generic[StateT]):
         except Exception as exc:
             self._inflight.discard(name)
             logger.error(
-                f"Failed to start ViewModel operation: {name}: {exc}",
+                f"Failed to start ViewModel operation: {name}: {format_exception(exc)}",
                 exc_info=True,
             )
             self._post_ui(
@@ -245,7 +246,7 @@ class IntentViewModel(QObject, Generic[StateT]):
                 result = worker()
             except Exception as exc:
                 error = exc
-                logger.error(f"ViewModel refresh failed: {name}: {exc}", exc_info=True)
+                logger.error(f"ViewModel refresh failed: {name}: {format_exception(exc)}", exc_info=True)
             self._post_ui(
                 lambda result=result, error=error: self._finish_coalesced(
                     name,
@@ -262,7 +263,7 @@ class IntentViewModel(QObject, Generic[StateT]):
         except Exception as exc:
             self._inflight.discard(name)
             logger.error(
-                f"Failed to start coalesced ViewModel refresh: {name}: {exc}",
+                f"Failed to start coalesced ViewModel refresh: {name}: {format_exception(exc)}",
                 exc_info=True,
             )
             self._post_ui(

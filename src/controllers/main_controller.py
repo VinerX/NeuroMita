@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from typing import TYPE_CHECKING
@@ -615,7 +616,7 @@ class MainController:
             try:
                 callback()
             except Exception as exc:
-                logger.error(f"Ошибка при остановке {name}: {exc}", exc_info=True)
+                logger.error(f"Ошибка при остановке {name}: {format_exception(exc)}", exc_info=True)
 
         server_controller = getattr(self, "server_controller", None)
         if server_controller is not None:

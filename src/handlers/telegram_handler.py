@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 from telethon import TelegramClient
 import os
 import sys
@@ -74,7 +75,7 @@ class TelegramBotHandler:
                 app_version=app_version,
             )
         except Exception as e:
-            logger.error(f"Проблема в ините Telegram-клиента: {e}")
+            logger.error(f"Проблема в ините Telegram-клиента: {format_exception(e)}")
 
     def reset_message_count(self):
         if time.time() - self.start_time > 60:
@@ -251,7 +252,7 @@ class TelegramBotHandler:
                 try:
                     os.remove(sound_absolute_path)
                 except OSError as remove_error:
-                    logger.info(f"Ошибка при удалении файла {sound_absolute_path}: {remove_error}")
+                    logger.info(f"Ошибка при удалении файла {sound_absolute_path}: {format_exception(remove_error)}")
 
                 self.event_bus.emit(Events.Server.SET_PATCH_TO_SOUND_FILE, absolute_wav_path)
                 # emit, а не sync EventBus RPC: подписчиков у SET_ID_SOUND нет, ответ
@@ -286,7 +287,7 @@ class TelegramBotHandler:
                     logger.info("Авторизация отменена пользователем.")
                     raise
                 except Exception as e:
-                    logger.error(f"Ошибка при авторизации: {e}")
+                    logger.error(f"Ошибка при авторизации: {format_exception(e)}")
                     raise
 
             # Bot init sequence with rate limiting to avoid bot spam
@@ -310,7 +311,7 @@ class TelegramBotHandler:
             logger.info("Telegram bot configured for voiceover")
         except Exception as e:
             self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
-            logger.error(f"Ошибка авторизации/старта: {e}")
+            logger.error(f"Ошибка авторизации/старта: {format_exception(e)}")
             # Пробрасываем, иначе вызывающий (TelegramController) считает подключение
             # успешным и эмитит connected=True поверх нашего connected=False — ложный успех.
             raise
@@ -445,7 +446,7 @@ class TelegramBotHandler:
                     return True
 
             except Exception as e:
-                logger.info(f"Ошибка при выполнении команды {command}: {str(e)}")
+                logger.info(f"Ошибка при выполнении команды {command}: {format_exception(e)}")
                 if attempts < max_attempts:
                     await asyncio.sleep(retry_delay)
 

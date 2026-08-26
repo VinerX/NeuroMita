@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass
 from typing import Callable, Any, Optional
@@ -146,11 +147,11 @@ class WindowManager(QObject):
             try:
                 dialog = spec.factory(self._parent, payload)
             except Exception as e:
-                logger.error(f"WindowManager: ошибка factory для '{window_id}': {e}", exc_info=True)
+                logger.error(f"WindowManager: ошибка factory для '{window_id}': {format_exception(e)}", exc_info=True)
                 err_cb = payload.get("error_callback")
                 if callable(err_cb):
                     try:
-                        err_cb(str(e))
+                        err_cb(format_exception(e))
                     except Exception:
                         pass
                 return None
@@ -201,11 +202,11 @@ class WindowManager(QObject):
             dialog.raise_()
             dialog.activateWindow()
         except Exception as e:
-            logger.error(f"WindowManager: ошибка show '{window_id}': {e}", exc_info=True)
+            logger.error(f"WindowManager: ошибка show '{window_id}': {format_exception(e)}", exc_info=True)
             err_cb = payload.get("error_callback")
             if callable(err_cb):
                 try:
-                    err_cb(str(e))
+                    err_cb(format_exception(e))
                 except Exception:
                     pass
 
@@ -254,8 +255,8 @@ class WindowManager(QObject):
             holder["done"] = True
 
         except Exception as e:
-            logger.error(f"WindowManager: ошибка show_blocking '{window_id}': {e}", exc_info=True)
-            holder["error"] = str(e)
+            logger.error(f"WindowManager: ошибка show_blocking '{window_id}': {format_exception(e)}", exc_info=True)
+            holder["error"] = format_exception(e)
 
         finally:
             if f:

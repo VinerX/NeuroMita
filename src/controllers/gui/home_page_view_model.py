@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import time
@@ -234,10 +235,10 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 self._schedule_hide_progress()
 
         def failed(error: Exception) -> None:
-            self.update_state(update_checking=False, error=str(error))
+            self.update_state(update_checking=False, error=format_exception(error))
             if show_result:
                 self._set_progress(
-                    _("Ошибка проверки: {err}", "Check error: {err}").format(err=error),
+                    _("Ошибка проверки: {err}", "Check error: {err}").format(err=format_exception(error)),
                     0,
                     0,
                     busy=False,
@@ -250,7 +251,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         try:
             self._news.load_async(self._host, self._on_news_ready)
         except Exception as exc:
-            logger.debug("Home release feed refresh failed: %s", exc)
+            logger.debug("Home release feed refresh failed: %s", format_exception(exc))
 
     def post_progress(
         self,
@@ -289,7 +290,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                         _(
                             "Не удалось запустить Unity: {err}",
                             "Failed to launch Unity: {err}",
-                        ).format(err=exc),
+                        ).format(err=format_exception(exc)),
                     )
                 )
 
@@ -672,10 +673,10 @@ class HomePageViewModel(IntentViewModel[HomeState]):
             operation_item_index=0,
             operation_item_total=0,
             can_cancel=False,
-            error=str(error),
+            error=format_exception(error),
         )
         self._set_progress(
-            _("Ошибка: {err}", "Error: {err}").format(err=error),
+            _("Ошибка: {err}", "Error: {err}").format(err=format_exception(error)),
             0,
             0,
             busy=False,
@@ -707,7 +708,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                     _(
                         "Не удалось закрыть Unity: {err}",
                         "Failed to close Unity: {err}",
-                    ).format(err=exc),
+                    ).format(err=format_exception(exc)),
                 )
             )
 
@@ -744,7 +745,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                     _(
                         "Не удалось открыть папку Unity: {err}",
                         "Failed to open Unity folder: {err}",
-                    ).format(err=exc),
+                    ).format(err=format_exception(exc)),
                 )
             )
 
@@ -761,7 +762,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                     _(
                         "Не удалось перезапустить приложение: {err}",
                         "Failed to restart the application: {err}",
-                    ).format(err=exc),
+                    ).format(err=format_exception(exc)),
                 )
             )
 
@@ -779,7 +780,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 for item in items
             )
         except Exception as exc:
-            logger.debug("Failed to build home news items: %s", exc)
+            logger.debug("Failed to build home news items: %s", format_exception(exc))
             news = ()
         self._post_ui(
             lambda news=news: self.update_state(
@@ -1057,7 +1058,7 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         message = str(data.get("error") or data.get("message") or _("ошибка", "error"))
         self._post_ui(
             lambda: self._set_progress(
-                _("Ошибка: {err}", "Error: {err}").format(err=message),
+                _("Ошибка: {err}", "Error: {err}").format(err=format_exception(message)),
                 0,
                 0,
                 busy=False,

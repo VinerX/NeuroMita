@@ -6,6 +6,7 @@ ReminderTool — позволяет Мите управлять напомина
   delete — удалить напоминание по номеру
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import datetime
 import re
@@ -164,7 +165,7 @@ class ReminderTool(Tool):
                 new_n = rs.add_reminder(str(text), due_iso)
                 return f"Напоминание #{new_n} добавлено: «{text}» — {dt.strftime('%Y-%m-%d %H:%M')}."
             except Exception as e:
-                return f"[reminder] Ошибка при добавлении: {e}"
+                return f"[reminder] Ошибка при добавлении: {format_exception(e)}"
 
         elif action == "delete":
             if n is None:

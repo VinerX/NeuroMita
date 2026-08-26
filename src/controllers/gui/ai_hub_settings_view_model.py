@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Callable
 
@@ -183,7 +184,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             applied,
             lambda error: self.update_state(
                 loading=False,
-                status_text=str(error),
+                status_text=format_exception(error),
             ),
         )
 
@@ -225,7 +226,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             )
 
         def preparation_failed(error: Exception) -> None:
-            details = f"{type(error).__name__}: {error}"
+            details = format_exception(error)
             self.update_state(
                 compile_busy=False,
                 status_text=_(
@@ -337,5 +338,5 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         )
 
     def _save_failed(self, error: Exception) -> None:
-        self.update_state(saving=False, status_text=str(error))
-        self.emit_effect(AIHubSettingsWarning(str(error)))
+        self.update_state(saving=False, status_text=format_exception(error))
+        self.emit_effect(AIHubSettingsWarning(format_exception(error)))

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import time
 import threading
 from core.task_supervisor import task_supervisor
@@ -67,7 +68,7 @@ class ScreenCapture:
         try:
             self._ensure_pil_installed()
         except RuntimeError as e:
-            logger.error(f"Невозможно запустить захват экрана: {e}")
+            logger.error(f"Невозможно запустить захват экрана: {format_exception(e)}")
             return
         # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
@@ -110,7 +111,7 @@ class ScreenCapture:
         except Exception as exc:
             with self._lock:
                 self._running = False
-            logger.error(f"Модуль захвата экрана недоступен: {exc}", exc_info=True)
+            logger.error(f"Модуль захвата экрана недоступен: {format_exception(exc)}", exc_info=True)
             return
 
         # Инициализируем mss.mss() внутри потока
@@ -179,7 +180,7 @@ class ScreenCapture:
                             else:
                                 logger.warning(f"Координаты окна GUI ({left},{top},{right},{bottom}) вне захваченной области монитора ({monitor_to_capture}). Исключение не применено.")
                         except Exception as e:
-                            logger.error(f"Ошибка при исключении окна GUI из захвата: {e}", exc_info=True)
+                            logger.error(f"Ошибка при исключении окна GUI из захвата: {format_exception(e)}", exc_info=True)
                     elif self.exclude_gui_window and not self.hwnd_to_exclude:
                         logger.warning("exclude_gui_window включен, но HWND окна GUI не установлен.")
 
@@ -200,7 +201,7 @@ class ScreenCapture:
                 except Exception as e:
                     with self._lock:  # Блокировка для обновления счетчика ошибок
                         self._error_count += 1
-                        logger.error(f"Ошибка при захвате экрана (попытка {self._error_count}/{self._max_errors}): {e}",
+                        logger.error(f"Ошибка при захвате экрана (попытка {self._error_count}/{self._max_errors}): {format_exception(e)}",
                                      exc_info=True)
                         if self._error_count >= self._max_errors:
                             logger.critical(
@@ -252,7 +253,7 @@ class ScreenCapture:
                         if 0 <= paste_x < img.width and 0 <= paste_y < img.height:
                             img.paste(black_patch, (paste_x, paste_y))
                     except Exception as e:
-                        logger.error(f"Ошибка при исключении окна GUI в one-shot: {e}")
+                        logger.error(f"Ошибка при исключении окна GUI в one-shot: {format_exception(e)}")
 
                 max_size = (width, height)
                 img.thumbnail(max_size, Image.Resampling.LANCZOS)
@@ -261,7 +262,7 @@ class ScreenCapture:
                 img.save(byte_arr, format='JPEG', quality=quality)
                 return byte_arr.getvalue()
         except Exception as e:
-            logger.error(f"Ошибка при one-shot захвате экрана: {e}")
+            logger.error(f"Ошибка при one-shot захвате экрана: {format_exception(e)}")
             return None
 
     def set_exclusion_parameters(self, hwnd: int | None, title: str | None, exclude: bool):

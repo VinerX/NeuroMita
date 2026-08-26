@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -160,7 +161,7 @@ class WindowCompositionController:
             )
         except Exception as exc:
             holder["error"] = exc
-            logger.error("Failed to create installation window: %s", exc, exc_info=True)
+            logger.error("Failed to create installation window: %s", format_exception(exc), exc_info=True)
         finally:
             if ready_event is not None and hasattr(ready_event, "set"):
                 ready_event.set()

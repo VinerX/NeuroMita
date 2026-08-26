@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import json
 import sqlite3
 import logging
@@ -100,13 +101,13 @@ class DatabaseManager:
                                 f"SQLite PRAGMA journal_mode returned '{row[0] if row else None}' (expected 'wal')."
                             )
                     except Exception as e:
-                        logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {e}")
+                        logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {format_exception(e)}")
 
         try:
             conn.execute(f"PRAGMA busy_timeout = {int(self._BUSY_TIMEOUT_MS)};")
             conn.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:
-            logging.warning(f"Failed to apply SQLite connection pragmas: {e}")
+            logging.warning(f"Failed to apply SQLite connection pragmas: {format_exception(e)}")
 
     def get_connection(self):
         # timeout (seconds) is sqlite3's busy timeout; we also set PRAGMA busy_timeout explicitly.
@@ -138,7 +139,7 @@ class DatabaseManager:
             cur.execute(f"PRAGMA table_info({self._q_ident(table)})")
             return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
         except Exception as e:
-            logging.warning(f"Failed to read schema for table '{table}': {e}")
+            logging.warning(f"Failed to read schema for table '{table}': {format_exception(e)}")
             return set()
         finally:
             try:
@@ -167,10 +168,10 @@ class DatabaseManager:
                         logging.info(f"DB ensure: adding column {table}.{col} {col_type}")
                         cur.execute(f"ALTER TABLE {self._q_ident(table)} ADD COLUMN {self._q_ident(col)} {col_type}")
                     except Exception as e:
-                        logging.warning(f"DB ensure: failed to add {table}.{col}: {e}")
+                        logging.warning(f"DB ensure: failed to add {table}.{col}: {format_exception(e)}")
                 conn.commit()
             except Exception as e:
-                logging.warning(f"DB ensure: failed to ensure columns for {table}: {e}")
+                logging.warning(f"DB ensure: failed to ensure columns for {table}: {format_exception(e)}")
             finally:
                 try:
                     conn.close()
@@ -235,7 +236,7 @@ class DatabaseManager:
 
             return True
         except Exception as e:
-            logging.debug(f"DB: fts5_ready() failed (ignored): {e}")
+            logging.debug(f"DB: fts5_ready() failed (ignored): {format_exception(e)}")
             return False
 
     def sqlite_supports_fts5(self) -> bool:
@@ -256,7 +257,7 @@ class DatabaseManager:
                 conn.execute("DROP TABLE temp.__fts5_test")
                 ok = True
             except Exception as e:
-                logging.debug(f"SQLite FTS5 not available (or blocked): {e}")
+                logging.debug(f"SQLite FTS5 not available (or blocked): {format_exception(e)}")
                 ok = False
             finally:
                 try:
@@ -296,7 +297,7 @@ class DatabaseManager:
                     self._drop_fts_triggers(conn)
                     conn.commit()
                 except Exception as e:
-                    logging.warning(f"DB: failed to drop FTS triggers on commit: {e}")
+                    logging.warning(f"DB: failed to drop FTS triggers on commit: {format_exception(e)}")
                 return False
 
             cur = conn.cursor()
@@ -327,12 +328,12 @@ class DatabaseManager:
                 )
             except Exception as e:
                 # If we can't create FTS tables, DO NOT leave triggers around.
-                logging.warning(f"DB upgrade: failed to create FTS5 tables (disabling FTS triggers): {e}")
+                logging.warning(f"DB upgrade: failed to create FTS5 tables (disabling FTS triggers): {format_exception(e)}")
                 try:
                     self._drop_fts_triggers(conn)
                     conn.commit()
                 except Exception as e:
-                    logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {e}")
+                    logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {format_exception(e)}")
                 return False
 
             # Use ACTUAL FTS columns
@@ -402,7 +403,7 @@ class DatabaseManager:
                     )
                     logging.info("DB upgrade: history_fts backfill done")
                 except Exception as e:
-                    logging.warning(f"DB upgrade: history_fts backfill failed (ignored): {e}")
+                    logging.warning(f"DB upgrade: history_fts backfill failed (ignored): {format_exception(e)}")
 
             if m_cnt == 0:
                 try:
@@ -413,17 +414,17 @@ class DatabaseManager:
                     )
                     logging.info("DB upgrade: memories_fts backfill done")
                 except Exception as e:
-                    logging.warning(f"DB upgrade: memories_fts backfill failed (ignored): {e}")
+                    logging.warning(f"DB upgrade: memories_fts backfill failed (ignored): {format_exception(e)}")
 
             try:
                 conn.commit()
             except Exception as e:
-                logging.warning(f"DB: FTS5 schema commit failed: {e}")
+                logging.warning(f"DB: FTS5 schema commit failed: {format_exception(e)}")
                 return False
             return True
 
         except Exception as e:
-            logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {e}")
+            logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {format_exception(e)}")
             return False
 
     @staticmethod
@@ -601,7 +602,7 @@ class DatabaseManager:
             conn.commit()
             return True
         except Exception as e:
-            logging.warning(f"DB: rebuild FTS indexes failed (ignored): {e}", exc_info=True)
+            logging.warning(f"DB: rebuild FTS indexes failed (ignored): {format_exception(e)}", exc_info=True)
             try:
                 if conn:
                     conn.rollback()
@@ -775,7 +776,7 @@ class DatabaseManager:
                             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
                             logging.info(f"DB upgrade: added column '{col_name}' to '{table}'")
                         except Exception as e:
-                            logging.warning(f"DB upgrade: failed to add '{col_name}' to '{table}' (ignored): {e}")
+                            logging.warning(f"DB upgrade: failed to add '{col_name}' to '{table}' (ignored): {format_exception(e)}")
 
             try:
                 cursor.execute("PRAGMA table_info(history)")
@@ -818,7 +819,7 @@ class DatabaseManager:
                         self._MIGRATION_TIMESTAMP_NORMALIZATION,
                     )
                 except Exception as e:
-                    logging.warning(f"DB upgrade: failed to normalize history timestamps (ignored): {e}")
+                    logging.warning(f"DB upgrade: failed to normalize history timestamps (ignored): {format_exception(e)}")
 
             if {"character_id", "message_id"}.issubset(hist_cols):
                 try:
@@ -859,7 +860,7 @@ class DatabaseManager:
                         )
                     logging.info("DB upgrade: ensured message-id UNIQUE index")
                 except Exception as e:
-                    logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {e}")
+                    logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {format_exception(e)}")
 
             if {"speaker", "sender", "target", "participants", "meta_data"}.issubset(hist_cols):
                 try:
@@ -878,7 +879,7 @@ class DatabaseManager:
                         )
                 except Exception as e:
                     logging.warning(
-                        f"DB upgrade: failed to repair dialogue sender identities (ignored): {e}"
+                        f"DB upgrade: failed to repair dialogue sender identities (ignored): {format_exception(e)}"
                     )
 
             # --- Performance indexes for common queries ---
@@ -889,7 +890,7 @@ class DatabaseManager:
                 try:
                     cursor.execute(idx_sql)
                 except Exception as e:
-                    logging.warning(f"DB upgrade: failed to create index (ignored): {e}")
+                    logging.warning(f"DB upgrade: failed to create index (ignored): {format_exception(e)}")
 
             # --- FTS5 lexical indexes (safe, optional) ---
             if not self._fts5_schema_present(conn):
@@ -915,7 +916,7 @@ class DatabaseManager:
                        ON embeddings(source_table, character_id, model_name)"""
                 )
             except Exception as e:
-                logging.warning(f"DB upgrade: failed to ensure embeddings table (ignored): {e}")
+                logging.warning(f"DB upgrade: failed to ensure embeddings table (ignored): {format_exception(e)}")
 
             # --- Sentence-level embeddings table ---
             try:
@@ -937,7 +938,7 @@ class DatabaseManager:
                        ON sentence_embeddings(source_table, character_id, model_name)"""
                 )
             except Exception as e:
-                logging.warning(f"DB upgrade: failed to ensure sentence_embeddings table (ignored): {e}")
+                logging.warning(f"DB upgrade: failed to ensure sentence_embeddings table (ignored): {format_exception(e)}")
 
             # --- Migrate old BLOB embeddings into separate table ---
             self._migrate_embeddings_to_table(cursor)
@@ -1042,7 +1043,7 @@ class DatabaseManager:
             if migrated:
                 logging.info(f"DB upgrade: migrated {migrated} embeddings to separate table")
         except Exception as e:
-            logging.warning(f"DB upgrade: embedding migration failed (ignored): {e}")
+            logging.warning(f"DB upgrade: embedding migration failed (ignored): {format_exception(e)}")
 
     def _drop_fts_triggers(self, conn: sqlite3.Connection) -> None:
         """Drop FTS sync triggers so base table writes never fail (safe no-op)."""
@@ -1060,7 +1061,7 @@ class DatabaseManager:
                 """
             )
         except Exception as e:
-            logging.warning(f"DB: failed to drop FTS triggers (ignored): {e}")
+            logging.warning(f"DB: failed to drop FTS triggers (ignored): {format_exception(e)}")
 
     # ---------------------------
     # UI-facing DB helpers
@@ -1115,11 +1116,11 @@ class DatabaseManager:
             try:
                 conn.commit()
             except Exception as e:
-                logging.warning(f"DB: dedupe commit failed: {e}")
+                logging.warning(f"DB: dedupe commit failed: {format_exception(e)}")
 
             return deleted
         except Exception as e:
-            logging.warning(f"DB: dedupe_history failed (ignored): {e}", exc_info=True)
+            logging.warning(f"DB: dedupe_history failed (ignored): {format_exception(e)}", exc_info=True)
             try:
                 if conn:
                     conn.rollback()
@@ -1207,7 +1208,7 @@ class DatabaseManager:
 
             return (h, m)
         except Exception as e:
-            logging.debug(f"DB: count_missing_embeddings failed (ignored): {e}")
+            logging.debug(f"DB: count_missing_embeddings failed (ignored): {format_exception(e)}")
             return (0, 0)
         finally:
             try:
@@ -1276,7 +1277,7 @@ class DatabaseManager:
                 last = (cur.fetchone() or [None])[0]
                 out["last_activity"] = str(last) if last else ""
         except Exception as e:
-            logging.debug(f"DB: get_world_stats failed (ignored): {e}")
+            logging.debug(f"DB: get_world_stats failed (ignored): {format_exception(e)}")
         finally:
             try:
                 if conn:
@@ -1338,7 +1339,7 @@ class DatabaseManager:
 
             return (h, m)
         except Exception as e:
-            logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {e}")
+            logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {format_exception(e)}")
             return (0, 0)
         finally:
             try:

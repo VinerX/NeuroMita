@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # seabattle_gui.py
 
 import sys
@@ -174,7 +175,7 @@ class SeaBattleWindow(QWidget):
         try:
             self.state_queue.put(state)
         except Exception as e:
-            print(f"GUI Error: Could not put state in queue: {e}")
+            print(f"GUI Error: Could not put state in queue: {format_exception(e)}")
 
     def process_commands(self):
         while not self.command_queue.empty():
@@ -200,7 +201,7 @@ class SeaBattleWindow(QWidget):
                             orient = 'v' if orient_char.lower() == 'v' else 'h'
                             self.game.engine.place_ship(self.game.mita_id, x, y, length, orient)
                         except Exception as e:
-                            print(f"Mita place ship error: {e}")
+                            print(f"Mita place ship error: {format_exception(e)}")
                 
                 if action == "mita_place_randomly":
                     self.game.engine.place_all_mita_ships_randomly()
@@ -210,7 +211,7 @@ class SeaBattleWindow(QWidget):
                         x, y = from_alg(cmd.get("coord"))
                         self.game.engine.make_move(self.game.mita_id, x, y)
                     except Exception as e:
-                        print(f"Mita move error: {e}")
+                        print(f"Mita move error: {format_exception(e)}")
 
                 self.update_view()
                 self.send_state_update()
@@ -218,7 +219,7 @@ class SeaBattleWindow(QWidget):
             except multiprocessing.queues.Empty:
                 break
             except Exception as e:
-                print(f"GUI Error processing command: {e}")
+                print(f"GUI Error processing command: {format_exception(e)}")
 
     def select_ship_to_place(self, length):
         self.ship_to_place = {'len': length, 'orient': 'h'} if not (self.ship_to_place and self.ship_to_place['len'] == length) else None

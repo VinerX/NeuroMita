@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import time
 import threading
@@ -115,12 +116,12 @@ class VoiceoverGuiController(BaseController):
             local_voice.initialize_model(model_id)
         except Exception as exc:
             logger.error(
-                f"Failed to schedule local voice initialization for '{model_id}': {exc}",
+                f"Failed to schedule local voice initialization for '{model_id}': {format_exception(exc)}",
                 exc_info=True,
             )
             self.event_bus.emit(
                 Events.GUI.SHOW_ERROR_MESSAGE,
-                {"title": _("Ошибка", "Error"), "message": str(exc)},
+                {"title": _("Ошибка", "Error"), "message": format_exception(exc)},
             )
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
@@ -242,7 +243,7 @@ class VoiceoverGuiController(BaseController):
                 self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                     "title": _("Ошибка", "Error"),
                     "message": _("Не удалось перезапустить нейро-ядро озвучки.", "Failed to restart voice AI engine.")
-                            + (f"\n\n{err}" if err else "")
+                            + (f"\n\n{format_exception(err)}" if err else "")
                 })
 
         self._ui(apply)
@@ -1176,7 +1177,7 @@ class VoiceoverGuiController(BaseController):
                         {"window_id": "ai_hub", "payload": {"category": "voices"}},
                     )
                 except Exception as exc:
-                    logger.error(f"Failed to open AI Hub from models error: {exc}")
+                    logger.error(f"Failed to open AI Hub from models error: {format_exception(exc)}")
             return False
 
         self._loading_model_id = model_id
@@ -1244,7 +1245,7 @@ class VoiceoverGuiController(BaseController):
         try:
             return dict(catalog.get_row(f"tts:{model_id}", include_status=False) or {})
         except Exception as exc:
-            logger.warning(f"Cannot evaluate compatibility for voice model '{model_id}': {exc}")
+            logger.warning(f"Cannot evaluate compatibility for voice model '{model_id}': {format_exception(exc)}")
             return {}
 
     def _model_compatibility(self, model_id: str) -> dict[str, Any]:

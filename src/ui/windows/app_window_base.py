@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 
 import base64
 
@@ -281,7 +282,7 @@ class AppWindowBase(QMainWindow):
             if callable(fn):
                 fn()
         except Exception as exc:
-            logger.error(f"_run_ui_task_slot error: {exc}", exc_info=True)
+            logger.error(f"_run_ui_task_slot error: {format_exception(exc)}", exc_info=True)
 
     def attach_settings_binding(self, binding) -> None:
         self.settings_view_model = binding
@@ -467,7 +468,7 @@ class AppWindowBase(QMainWindow):
             self.overlay.set_content(viewer)
             self.overlay.show_animated()
         except Exception as exc:
-            logger.error("Failed to show chat image: %s", exc, exc_info=True)
+            logger.error("Failed to show chat image: %s", format_exception(exc), exc_info=True)
 
     def _on_chat_ui_ready(self):
         """Flush deferred chat work when the lazy Sandbox page materializes."""
@@ -566,7 +567,7 @@ class AppWindowBase(QMainWindow):
             self.update_debug_info()
             chat_window.scroll_to_bottom()
         except Exception as exc:
-            logger.error(f"Failed to project loaded history: {exc}", exc_info=True)
+            logger.error(f"Failed to project loaded history: {format_exception(exc)}", exc_info=True)
         finally:
             self._history_load_inflight = False
             chat_window.setUpdatesEnabled(True)
@@ -979,7 +980,7 @@ class AppWindowBase(QMainWindow):
         try:
             self._shell_actions.close_application()
         except Exception as exc:
-            logger.error(f"Ошибка при закрытии приложения: {exc}", exc_info=True)
+            logger.error(f"Ошибка при закрытии приложения: {format_exception(exc)}", exc_info=True)
 
         try:
             self._window_actions.close()
@@ -1046,7 +1047,7 @@ class AppWindowBase(QMainWindow):
                 block_id = int(href.split("/")[-1])
                 message_renderer.toggle_think_block(self._chat_render_context, block_id)
             except Exception as e:
-                logger.error(f"Error toggling think block {block_id}: {e}")
+                logger.error(f"Error toggling think block {block_id}: {format_exception(e)}")
 
     def _show_thinking_slot(self, character_name):
         # Старт новой генерации (имя персонажа — строка, а не dict сжатия/инструмента):

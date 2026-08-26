@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import base64
 import json
@@ -48,7 +49,7 @@ class SettingsController:
             resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
             preset = resolver.resolve(int(preset_id) if preset_id else None)
         except Exception as exc:
-            logger.error(f"Failed to resolve API preset: {exc}", exc_info=True)
+            logger.error(f"Failed to resolve API preset: {format_exception(exc)}", exc_info=True)
             return None
 
         if preset is None:

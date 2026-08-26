@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import time
 import wave
@@ -268,7 +269,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"Whisper ONNX download failed: HTTP {e.code} {e.reason}", exc_info=True)
             return False
         except Exception as e:
-            self.logger.error(f"Whisper ONNX install failed: {e}", exc_info=True)
+            self.logger.error(f"Whisper ONNX install failed: {format_exception(e)}", exc_info=True)
             return False
 
     async def init(self, **kwargs) -> bool:
@@ -281,7 +282,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
             self._torch = torch
             self._np = np
         except Exception as e:
-            self.logger.error(f"Whisper ONNX init imports failed: {e}")
+            self.logger.error(f"Whisper ONNX init imports failed: {format_exception(e)}")
             return False
 
         if self._start_process():
@@ -320,7 +321,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
             self.logger.info(f"Фрагмент сохранен в: {filename}")
         except Exception as e:
-            self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
+            self.logger.error(f"Не удалось сохранить аудиофрагмент: {format_exception(e)}")
 
     def cleanup(self) -> None:
         self._stop_process()
@@ -372,7 +373,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
                         break
 
             except Exception as e:
-                self.logger.error(f"Ошибка в мониторе Whisper ONNX процесса: {e}")
+                self.logger.error(f"Ошибка в мониторе Whisper ONNX процесса: {format_exception(e)}")
 
     def _start_process(self) -> bool:
         if self._monitor_thread and self._monitor_thread.is_alive():

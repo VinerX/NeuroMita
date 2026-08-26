@@ -1,4 +1,5 @@
 """Utility for loading optional template files with fallback to defaults."""
+from core.error_utils import format_exception
 
 import os
 from main_logger import logger
@@ -16,5 +17,5 @@ def load_optional_template(base_path: str, rel_path: str, default: str) -> str:
             content = f.read()
         return content if content.strip() else default
     except Exception as e:
-        logger.warning(f"Failed to load template '{full}': {e}")
+        logger.warning(f"Failed to load template '{full}': {format_exception(e)}")
         return default

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: src/ui/settings/character_settings/logic.py
 
 import os
@@ -957,7 +958,7 @@ def purge_deleted_data(gui):
             if r.get("backed_up"):
                 backups.append(r["backed_up"])
         except Exception as e:
-            errors.append(f"{char_id} memories: {e}")
+            errors.append(f"{char_id} memories: {format_exception(e)}")
 
         try:
             hm = character_resources.history_for(char_id)
@@ -966,13 +967,13 @@ def purge_deleted_data(gui):
             if r.get("backed_up"):
                 backups.append(r["backed_up"])
         except Exception as e:
-            errors.append(f"{char_id} history: {e}")
+            errors.append(f"{char_id} history: {format_exception(e)}")
 
     # VACUUM compacts the SQLite file and actually releases disk space
     try:
         db.vacuum()
     except Exception as e:
-        errors.append(f"VACUUM: {e}")
+        errors.append(f"VACUUM: {format_exception(e)}")
 
     db_size_after = os.path.getsize(db.db_path) if os.path.exists(db.db_path) else 0
     freed_mb = (db_size_before - db_size_after) / (1024 * 1024)
@@ -1313,7 +1314,7 @@ def migrate_db_to_structured(gui, character_id: str | None = "current"):
 
     def on_error(err):
         progress.close()
-        QMessageBox.critical(gui, _("Ошибка", "Error"), str(err))
+        QMessageBox.critical(gui, _("Ошибка", "Error"), format_exception(err))
 
     def on_cancel():
         try:
@@ -1513,7 +1514,7 @@ def run_reindexing(gui):
             return
 
     except Exception as e:
-        logger.warning(f"Skipping pre-check due to error: {e}")
+        logger.warning(f"Skipping pre-check due to error: {format_exception(e)}")
 
     # Запуск воркера
     worker = _create_reindex_worker(character_id, full=False)
@@ -1781,7 +1782,7 @@ def run_full_reindexing(gui):
             pass
         total_count = int(h_c or 0) + int(m_c or 0)
     except Exception as e:
-        logger.warning(f"Skipping count check (full reindex): {e}")
+        logger.warning(f"Skipping count check (full reindex): {format_exception(e)}")
         total_count = 0  # unknown; proceed
 
     # Запуск воркера
