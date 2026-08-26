@@ -10,6 +10,7 @@ from core.services import use
 from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
+from presets.model_profiles import resolve_model_profile
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,23 @@ class ApiPresetResolver:
             if isinstance(oc, dict):
                 for k, v in oc.items():
                     capabilities[str(k)] = v
+
+        model_profile = resolve_model_profile(
+            api_model,
+            (preset or {}).get("model_profiles"),
+            (preset or {}).get("model_profile_overrides"),
+            default_safe=dialect_id == "gemini_generate_content",
+        )
+        if model_profile:
+            capabilities["model_profile"] = model_profile
+            if model_profile.get("safe_mode"):
+                capabilities.update({
+                    "tools_native": False,
+                    "tools_prompt_enabled": False,
+                    "streaming": False,
+                    "streaming_with_tools": False,
+                    "reasoning_control": "",
+                })
 
         # headers: let ProtocolsController build final headers/auth,
         # but allow preset overrides to contribute extra headers.

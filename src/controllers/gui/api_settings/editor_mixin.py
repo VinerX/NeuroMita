@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional, Any
 
 from PyQt6.QtCore import QTimer
@@ -14,6 +15,7 @@ from core.events import Events
 from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
+from presets.model_profiles import resolve_model_profile
 from .state import PresetSnapshot
 
 
@@ -59,6 +61,102 @@ class EditorMixin:
             else:
                 raw = spec.get("value")
                 val_widget.setText(str(raw) if raw is not None else "")
+
+    def _read_model_profile_overrides(self) -> dict:
+        editor = getattr(self.view, "model_profile_overrides_edit", None)
+        raw = editor.toPlainText().strip() if editor is not None else ""
+        if not raw:
+            result = {}
+        else:
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Model profile JSON is invalid: {exc.msg}") from exc
+            if not isinstance(result, dict):
+                raise ValueError("Model profile JSON must contain an object.")
+
+        safe_mode = bool(getattr(self.view, "model_safe_mode_cb", None).isChecked()) \
+            if getattr(self.view, "model_safe_mode_cb", None) is not None else False
+        if safe_mode:
+            result["safe_mode"] = True
+        else:
+            result.pop("safe_mode", None)
+        return result
+
+    def _write_model_profile_overrides(self, overrides: dict) -> None:
+        value = dict(overrides) if isinstance(overrides, dict) else {}
+        safe_mode = bool(value.pop("safe_mode", False))
+        checkbox = getattr(self.view, "model_safe_mode_cb", None)
+        if checkbox is not None:
+            checkbox.setChecked(safe_mode)
+        editor = getattr(self.view, "model_profile_overrides_edit", None)
+        if editor is not None:
+            editor.setPlainText(json.dumps(value, ensure_ascii=False, indent=2) if value else "")
+
+    def _refresh_model_profile_controls(self) -> None:
+        """Reflect the selected model profile in the editable preset controls."""
+        v = self.view
+        model = str(v.api_model_row.text() or "").strip()
+        source = getattr(self, "_active_template", None)
+        if not isinstance(source, dict):
+            source = self.current_preset_data if isinstance(self.current_preset_data, dict) else {}
+
+        try:
+            overrides = self._read_model_profile_overrides()
+        except ValueError:
+            summary = getattr(v, "model_profile_summary_label", None)
+            if summary is not None:
+                summary.setText(_("Профиль модели: JSON содержит ошибку.", "Model profile: JSON is invalid."))
+            return
+
+        protocol_id = self._current_protocol_id_ui()
+        profile = resolve_model_profile(
+            model,
+            source.get("model_profiles"),
+            overrides,
+            default_safe=protocol_id == "google_gemini_default",
+        )
+        summary = getattr(v, "model_profile_summary_label", None)
+        if summary is not None:
+            if profile.get("safe_mode"):
+                summary.setText(_(
+                    "Профиль: безопасная совместимость — дополнительные параметры и thinking отключены.",
+                    "Profile: safe compatibility — optional generation parameters and explicit thinking controls are disabled.",
+                ))
+            elif profile:
+                profile_id = str(profile.get("id") or model or "custom")
+                transport = str((profile.get("thinking") or {}).get("transport") or "none")
+                summary.setText(_(
+                    f"Профиль: {profile_id}; thinking: {transport}.",
+                    f"Profile: {profile_id}; thinking: {transport}.",
+                ))
+            else:
+                summary.setText(_(
+                    "Профиль не задан: используются настройки провайдера по умолчанию.",
+                    "No profile: provider defaults are used.",
+                ))
+
+        widget_pair = getattr(v, "gen_override_widgets", {}).get("reasoning_effort")
+        if not widget_pair:
+            return
+        _enabled_checkbox, combo = widget_pair
+        thinking = profile.get("thinking") if isinstance(profile, dict) else {}
+        allowed_levels = [
+            str(value).strip()
+            for value in (thinking.get("allowed_levels") or [])
+            if str(value).strip()
+        ] if isinstance(thinking, dict) else []
+        levels = allowed_levels or ["minimal", "low", "medium", "high"]
+        current = str(combo.currentText() or "")
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(levels)
+        if current in levels:
+            combo.setCurrentText(current)
+        else:
+            default_level = str((thinking or {}).get("default_level") or levels[0])
+            combo.setCurrentText(default_level if default_level in levels else levels[0])
+        combo.blockSignals(False)
 
     def _read_openrouter_routing(self) -> dict:
         v = self.view
@@ -133,6 +231,8 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             reserve_keys_distribute=bool(v.reserve_keys_row.is_distribute()),
             protocol_id=self._current_protocol_id_ui(),
+            model_safe_mode=bool(getattr(v, "model_safe_mode_cb", None).isChecked()) if getattr(v, "model_safe_mode_cb", None) is not None else False,
+            model_profile_overrides_text=str(getattr(v, "model_profile_overrides_edit", None).toPlainText() or "") if getattr(v, "model_profile_overrides_edit", None) is not None else "",
             generation_overrides=self._read_generation_overrides(),
             openrouter_routing=self._read_openrouter_routing(),
             fallbacks=fb_tuple,
@@ -219,6 +319,8 @@ class EditorMixin:
                     v.api_url_row.set_text(new_url)
                     self._is_loading_ui = False
 
+        self._refresh_model_profile_controls()
+
         # normal dirty + debounce state
         self._set_dirty(self._snapshot is not None and (self._get_snapshot() != self._snapshot))
         self._state_save_timer.start(350)
@@ -286,6 +388,7 @@ class EditorMixin:
                 v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
 
             self._apply_help_links(tpl)
+            self._refresh_model_profile_controls()
 
             self._is_loading_ui = False
             self._on_field_changed()
@@ -343,6 +446,7 @@ class EditorMixin:
             data["url"] = ""
 
         data["generation_overrides"] = self._read_generation_overrides()
+        data["model_profile_overrides"] = self._read_model_profile_overrides()
         data["openrouter_routing"] = self._read_openrouter_routing()
         data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
         return data
@@ -418,7 +522,12 @@ class EditorMixin:
         self._apply_protocol_details(self._current_protocol_id_ui())
 
         self._write_generation_overrides(self._snapshot.generation_overrides)
+        if getattr(v, "model_safe_mode_cb", None) is not None:
+            v.model_safe_mode_cb.setChecked(self._snapshot.model_safe_mode)
+        if getattr(v, "model_profile_overrides_edit", None) is not None:
+            v.model_profile_overrides_edit.setPlainText(self._snapshot.model_profile_overrides_text)
         self._write_openrouter_routing(self._snapshot.openrouter_routing)
+        self._refresh_model_profile_controls()
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.blockSignals(True)
@@ -435,7 +544,15 @@ class EditorMixin:
             return
 
         pid = int(self.current_preset_id)
-        data = self._build_current_preset_payload(preset_id=pid)
+        try:
+            data = self._build_current_preset_payload(preset_id=pid)
+        except ValueError as exc:
+            QMessageBox.warning(
+                self.view,
+                _("Ошибка профиля модели", "Model profile error"),
+                str(exc),
+            )
+            return
 
         def _call():
             return use(ApiPresetService).save_custom(data)
@@ -470,10 +587,18 @@ class EditorMixin:
         if not ok or not str(new_name or "").strip():
             return
 
-        payload = self._build_current_preset_payload(
-            preset_id=None,
-            name=str(new_name).strip(),
-        )
+        try:
+            payload = self._build_current_preset_payload(
+                preset_id=None,
+                name=str(new_name).strip(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(
+                v,
+                _("Ошибка профиля модели", "Model profile error"),
+                str(exc),
+            )
+            return
         state = self._build_preset_state()
 
         def _call():

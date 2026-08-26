@@ -1421,7 +1421,11 @@ class ModelController(GenerationService, ModelStateService):
         if is_game_master:
             effective_capabilities["structured_output"] = True
 
-        _tools_on = bool(self.settings.get("TOOLS_ON", True)) and not is_game_master
+        _tools_on = (
+            bool(self.settings.get("TOOLS_ON", True))
+            and not is_game_master
+            and bool(effective_capabilities.get("tools_prompt_enabled", True))
+        )
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False

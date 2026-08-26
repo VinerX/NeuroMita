@@ -162,6 +162,12 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
         v.api_model_row.edit.textChanged.connect(self._safe(self._on_field_changed, "model_changed"))
         v.api_key_row.edit.textChanged.connect(self._safe(self._on_field_changed, "key_changed"))
         v.reserve_keys_row.changed.connect(self._safe(self._on_field_changed, "reserve_keys_changed"))
+        if getattr(v, "model_safe_mode_cb", None) is not None:
+            v.model_safe_mode_cb.toggled.connect(self._safe(self._on_field_changed, "model_safe_mode_changed"))
+        if getattr(v, "model_profile_overrides_edit", None) is not None:
+            v.model_profile_overrides_edit.textChanged.connect(
+                self._safe(self._on_field_changed, "model_profile_overrides_changed")
+            )
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.changed.connect(self._safe(self._on_field_changed, "fallbacks_changed"))
