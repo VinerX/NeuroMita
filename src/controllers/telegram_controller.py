@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import asyncio
 import time
 from concurrent.futures import Future
@@ -275,14 +276,14 @@ class TelegramController(TelegramService):
                 logger.info("ТГ успешно подключен")
 
             except Exception as e:
-                logger.info(f"Ошибка при запуске Telegram бота: {e}")
+                logger.info(f"Ошибка при запуске Telegram бота: {format_exception(e)}")
                 self.bot_handler_ready = False
                 self._connecting = False
                 self.silero_connected = False
                 self.event_bus.emit(Events.Telegram.SET_SILERO_CONNECTED, {'connected': False})
 
         except Exception as e:
-            logger.info(f"Критическая ошибка при инициализации Telegram Bot: {e}")
+            logger.info(f"Критическая ошибка при инициализации Telegram Bot: {format_exception(e)}")
             self._connecting = False
             self.silero_connected = False
             self.bot_handler_ready = False
@@ -405,7 +406,7 @@ class TelegramController(TelegramService):
                 return
             if error is not None:
                 logger.error(
-                    f"TG voice queue worker terminated: {error}",
+                    f"TG voice queue worker terminated: {format_exception(error)}",
                     exc_info=(type(error), error, error.__traceback__),
                 )
 
@@ -458,7 +459,7 @@ class TelegramController(TelegramService):
                     item['text'], item['speaker_command'], item['mid'], future
                 )
             except Exception as e:
-                logger.error(f"TG queue worker: ошибка при обработке запроса: {e}")
+                logger.error(f"TG queue worker: ошибка при обработке запроса: {format_exception(e)}")
                 if future and not future.done():
                     future.set_exception(e)
             finally:
@@ -470,6 +471,6 @@ class TelegramController(TelegramService):
             if future and not future.done():
                 future.set_result(voice_path)
         except Exception as e:
-            logger.error(f"Ошибка при отправке голосового запроса: {e}")
+            logger.error(f"Ошибка при отправке голосового запроса: {format_exception(e)}")
             if future and not future.done():
                 future.set_exception(e)

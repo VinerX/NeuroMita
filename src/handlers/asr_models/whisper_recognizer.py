@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import re
 import time
@@ -421,7 +422,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             diagnostic = self._diagnose_init_failure(e)
             if diagnostic:
                 self.logger.error(diagnostic)
-            self.logger.error(f"Whisper init failed: {e}", exc_info=True)
+            self.logger.error(f"Whisper init failed: {format_exception(e)}", exc_info=True)
             self._is_initialized = False
             return False
 
@@ -499,7 +500,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
             return text
 
         except Exception as e:
-            self.logger.error(f"Whisper transcribe error: {e}", exc_info=True)
+            self.logger.error(f"Whisper transcribe error: {format_exception(e)}", exc_info=True)
             return None
 
         finally:
@@ -525,7 +526,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
 
             self.logger.info(f"Фрагмент сохранен в: {filename}")
         except Exception as e:
-            self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
+            self.logger.error(f"Не удалось сохранить аудиофрагмент: {format_exception(e)}")
 
     def cleanup(self) -> None:
         try:

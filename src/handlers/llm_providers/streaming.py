@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import threading
@@ -155,7 +156,7 @@ class StreamEventChannel:
                 retryable=bool(getattr(error, "retryable", False)),
                 error_code=getattr(error, "code", None),
                 raw_provider_code=getattr(error, "code", None),
-                metadata={"message": getattr(error, "to_user_message", lambda: str(error))()},
+                metadata={"message": getattr(error, "to_user_message", lambda: format_exception(error))()},
             )
             self._terminal = True
 

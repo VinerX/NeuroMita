@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import threading
 import time
 from collections import deque
@@ -82,7 +83,7 @@ class InstallGuiController(
                 )
             except Exception as exc:
                 self._worker_thread = None
-                self._last_enqueue_error = f"Failed to start install queue: {exc}"
+                self._last_enqueue_error = f"Failed to start install queue: {format_exception(exc)}"
                 logger.error(self._last_enqueue_error, exc_info=True)
                 return False
             self._worker_thread = worker
@@ -219,10 +220,10 @@ class InstallGuiController(
             try:
                 self._run_job(job)
             except Exception as e:
-                logger.error(f"Install worker failed: {e}", exc_info=True)
+                logger.error(f"Install worker failed: {format_exception(e)}", exc_info=True)
                 self._report_start_failure(
                     job,
-                    f"Installation worker failed before the task could start: {e}",
+                    f"Installation worker failed before the task could start: {format_exception(e)}",
                 )
             finally:
                 with self._queue_cond:
@@ -342,11 +343,11 @@ class InstallGuiController(
                 cancel_event=job.get("cancel_event"),
             )
         except Exception as e:
-            logger.error(f"Install worker failed: {e}", exc_info=True)
+            logger.error(f"Install worker failed: {format_exception(e)}", exc_info=True)
             if not headless and cbs:
                 try:
                     cbs[1]("Failed")
-                    cbs[2](f"Critical error: {str(e)}")
+                    cbs[2](f"Critical error: {format_exception(e)}")
                 except Exception:
                     pass
             ok = False
@@ -396,7 +397,7 @@ class InstallGuiController(
         meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
         component_id = str(meta.get("component_id") or "")
         error = str(message or "Installation task failed to start")
-        logger.error(f"Install task '{task_id}' failed to start: {error}")
+        logger.error(f"Install task '{task_id}' failed to start: {format_exception(error)}")
 
         callbacks = job.get("callbacks")
         if not bool(job.get("headless")) and callbacks:
@@ -430,7 +431,7 @@ class InstallGuiController(
         try:
             return self.main_controller.ensure_feature("install", timeout=20.0)
         except Exception as exc:
-            logger.error(f"Install backend is unavailable: {exc}")
+            logger.error(f"Install backend is unavailable: {format_exception(exc)}")
             return None
 
     def _finish_install_window(self, win: object, close_now: bool) -> None:
@@ -467,7 +468,7 @@ class InstallGuiController(
         try:
             self.view.create_installation_window_signal.emit(title, initial_status, holder)
         except Exception as e:
-            logger.error(f"Failed to create install window: {e}", exc_info=True)
+            logger.error(f"Failed to create install window: {format_exception(e)}", exc_info=True)
             return None, (lambda *_: None), (lambda *_: None), (lambda *_: None), (lambda *_: None)
 
         try:

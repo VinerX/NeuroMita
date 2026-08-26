@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import gc
@@ -388,7 +389,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     log(_("Патч fairseq/dataclass/configs.py применён", "fairseq/dataclass/configs.py patched"))
                 return True
             except Exception as exc:
-                log(str(exc))
+                log(format_exception(exc))
                 log(traceback.format_exc())
                 return False
 
@@ -535,7 +536,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     )
                 return rvc_class
             except Exception as exc:
-                errors.append(f"{module_name}: {exc}")
+                errors.append(f"{module_name}: {format_exception(exc)}")
         raise ImportError(
             f"Unable to import TTS_RVC for '{cls.RVC_PACKAGE}'. Tried: "
             + "; ".join(errors)
@@ -709,7 +710,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return True
         except Exception as exc:
             logger.error(
-                f"Failed to initialize {self.__class__.__name__}: {exc}. "
+                f"Failed to initialize {self.__class__.__name__}: {format_exception(exc)}. "
                 f"mode='{current_mode}', runtime='{runtime_mode}', "
                 f"hubert_candidates={self._describe_hubert_state()}",
                 exc_info=True,
@@ -941,7 +942,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self._convert_to_stereo(output_file_rvc, volume)
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"RVC file conversion failed: {error}")
+            logger.info(f"RVC file conversion failed: {format_exception(error)}")
             return None
 
     async def _voiceover_edge_tts_rvc(
@@ -1013,12 +1014,12 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 "Edge-TTS + RVC exceeded the vendor 300-second operation timeout. "
                 "The runtime was initialized successfully; the timeout occurred during synthesis/RVC. "
                 "For DirectML, try the PM F0 method if RMVPE remains too slow. "
-                f"Details: {error}"
+                f"Details: {format_exception(error)}"
             )
             return None
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"Edge-TTS + RVC voiceover failed: {error}")
+            logger.info(f"Edge-TTS + RVC voiceover failed: {format_exception(error)}")
             return None
 
     async def _voiceover_silero_rvc(self, text, character=None, output_file: Optional[str] = None):
@@ -1069,7 +1070,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self._maybe_move_to_output(final_output_path, output_file)
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"Silero + RVC voiceover failed: {error}")
+            logger.info(f"Silero + RVC voiceover failed: {format_exception(error)}")
             return None
         finally:
             if temp_wav and os.path.exists(temp_wav):

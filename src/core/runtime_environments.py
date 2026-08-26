@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import csv
 import hashlib
@@ -1052,7 +1053,7 @@ class RuntimeEnvironmentManager:
             logger.warning(
                 "Runtime environment registry is unreadable; using defaults | path=%s | error=%s",
                 self.registry_path,
-                exc,
+                format_exception(exc),
             )
             return self._default_registry()
 

@@ -11,6 +11,7 @@ RAGManager держит тонкие делегаторы ради обратн�
 вызовов (см. rag_manager.py).
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time as _time
 from typing import List, Optional
@@ -88,13 +89,13 @@ class RagEmbedder:
                     return vec
             except Exception as e:
                 # Не валим RAG из-за сервиса — просто откатываемся на прямой вызов провайдера
-                logger.warning(f"RAGManager: EmbeddingService не сработал, fallback на провайдер. Причина: {e}")
+                logger.warning(f"RAGManager: EmbeddingService не сработал, fallback на провайдер. Причина: {format_exception(e)}")
 
         try:
             results = self.embed_via_provider([text], is_query=bool(prefix), prefix=prefix)
             return results[0] if results else None
         except Exception as e:
-            logger.error(f"RAGManager: ошибка провайдера эмбеддинга: {e}", exc_info=True)
+            logger.error(f"RAGManager: ошибка провайдера эмбеддинга: {format_exception(e)}", exc_info=True)
             return None
 
     def get_embeddings(
@@ -174,7 +175,7 @@ class RagEmbedder:
                     return out
             except Exception as e:
                 logger.warning(
-                    f"RAGManager: EmbeddingService batch не сработал, fallback на провайдер. Причина: {e}"
+                    f"RAGManager: EmbeddingService batch не сработал, fallback на провайдер. Причина: {format_exception(e)}"
                 )
                 out.clear()
 
@@ -196,7 +197,7 @@ class RagEmbedder:
                         pass
             return merged
         except Exception as e:
-            logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
+            logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {format_exception(e)}", exc_info=True)
             return [None] * len(cleaned)
 
     # --- локальные setting-хелперы --------------------------------------- #

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Callable
 
@@ -30,7 +31,7 @@ class MainWindowCoordinator:
         try:
             apply_section_visibility(view)
         except Exception as exc:
-            logger.debug("Failed to apply settings section visibility: %s", exc)
+            logger.debug("Failed to apply settings section visibility: %s", format_exception(exc))
         self.ensure_page("home", eager=True)
         self.switch_page("home", activate=False)
         view.apply_initial_geometry(1560, 920)
@@ -46,7 +47,7 @@ class MainWindowCoordinator:
             if not getattr(self._view, "page_map", {}).get("settings"):
                 self.ensure_page("settings")
         except Exception as exc:
-            logger.debug("Settings page prebuild failed: %s", exc)
+            logger.debug("Settings page prebuild failed: %s", format_exception(exc))
 
     def ensure_page(self, page_key: str, *, eager: bool = False):
         view = self._view
@@ -113,13 +114,13 @@ class MainWindowCoordinator:
             logger.error(
                 "Failed to build main page '%s': %s",
                 page_key,
-                exc,
+                format_exception(exc),
                 exc_info=True,
             )
             view._page_building.discard(page_key)
             label = placeholder.findChild(QLabel)
             if label is not None:
-                label.setText(f"Failed to load {page_key}: {exc}")
+                label.setText(f"Failed to load {page_key}: {format_exception(exc)}")
             return
         index = view.page_stack.indexOf(placeholder)
         if index >= 0:
@@ -484,7 +485,7 @@ class MainWindowCoordinator:
                 except Exception as exc:
                     logger.debug(
                         "Page presentation model close failed during shutdown: %s",
-                        exc,
+                        format_exception(exc),
                     )
                 closed_models.add(id(model))
 
@@ -495,7 +496,7 @@ class MainWindowCoordinator:
             try:
                 page.on_deactivated()
             except Exception as exc:
-                logger.debug("Current page deactivation failed during shutdown: %s", exc)
+                logger.debug("Current page deactivation failed during shutdown: %s", format_exception(exc))
         pending = getattr(view, "_pending_page_actions", None)
         if isinstance(pending, dict):
             pending.clear()

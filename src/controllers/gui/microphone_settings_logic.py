@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import re
 from PyQt6.QtCore import Qt
 from utils import getTranslationVariant as _
@@ -44,7 +45,7 @@ def wire_microphone_settings_logic(self):
                 f"color: {fg}; background: {bg}; border: 1px solid {br}; }}"
             )
         except Exception as e:
-            logger.debug(f"asr_set_pill handler failed: {e}")
+            logger.debug(f"asr_set_pill handler failed: {format_exception(e)}")
 
     def reset_init_status():
         if hasattr(self, "asr_init_status") and self.asr_init_status is not None:
@@ -96,7 +97,7 @@ def on_mic_selected(gui, full_device_name=None):
                 if gui.settings.get("MIC_ACTIVE", False):
                     bus.emit(Events.Speech.RESTART_SPEECH_RECOGNITION, {"device_id": device_id})
         except Exception as e:
-            logger.error(f"Ошибка выбора микрофона: {e}")
+            logger.error(f"Ошибка выбора микрофона: {format_exception(e)}")
 
 
 def load_mic_settings(gui):
@@ -110,4 +111,4 @@ def load_mic_settings(gui):
             gui.mic_active_checkbox.setChecked(True)
 
     except Exception as e:
-        logger.error(f"Ошибка загрузки настроек микрофона: {e}")
+        logger.error(f"Ошибка загрузки настроек микрофона: {format_exception(e)}")

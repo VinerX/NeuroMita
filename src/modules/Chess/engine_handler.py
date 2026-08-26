@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: Modules/Chess/engine_handler.py
 import gzip
 import os
@@ -47,7 +48,7 @@ def download_file(url, dest_path, desc=""):
         print(f"CONSOLE (engine_handler download_file): {desc} УСПЕШНО СКАЧАН: {dest_path}")
         return True
     except NetworkRequestError as e:
-        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {e}")
+        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {format_exception(e)}")
         return False
 
 def extract_archive(archive_path, dest_dir, executable_name_in_archive):
@@ -99,7 +100,7 @@ def extract_archive(archive_path, dest_dir, executable_name_in_archive):
                         with tar_ref.extractfile(member_info) as source, open(target_path, "wb") as target: shutil.copyfileobj(source, target)
                         extracted_something = True
                         if os.path.basename(target_filename) == executable_name_in_archive: main_exe_path = target_path
-                    except Exception as e_extract_file: print(f"CONSOLE (engine_handler extract_archive): Ошибка при извлечении файла {member_info.name}: {e_extract_file}", exc_info=True)
+                    except Exception as e_extract_file: print(f"CONSOLE (engine_handler extract_archive): Ошибка при извлечении файла {member_info.name}: {format_exception(e_extract_file)}", exc_info=True)
         else: print(f"CONSOLE (engine_handler extract_archive): Неподдерживаемый формат архива: {archive_path}"); return None
 
         if main_exe_path and os.path.exists(main_exe_path): print(f"CONSOLE (engine_handler extract_archive): Архив УСПЕШНО РАСПАКОВАН, Lc0 основной файл: {main_exe_path}"); return main_exe_path
@@ -108,11 +109,11 @@ def extract_archive(archive_path, dest_dir, executable_name_in_archive):
             if os.path.exists(potential_main_exe): print(f"CONSOLE (engine_handler extract_archive): Найден {executable_name_in_archive} в {dest_dir} после распаковки (не через main_exe_path)."); return potential_main_exe
             print(f"CONSOLE (engine_handler extract_archive): Извлечены некоторые файлы, но '{executable_name_in_archive}' не идентифицирован как main_exe_path. Проверьте {dest_dir}"); return None
         else: print(f"CONSOLE (engine_handler extract_archive): ОШИБКА: Не удалось найти '{executable_name_in_archive}' или другие файлы в архиве '{archive_path}'."); return None
-    except Exception as e: print(f"CONSOLE (engine_handler extract_archive): КРИТИЧЕСКАЯ ОШИБКА распаковки {archive_path}: {e}", exc_info=True); return None
+    except Exception as e: print(f"CONSOLE (engine_handler extract_archive): КРИТИЧЕСКАЯ ОШИБКА распаковки {archive_path}: {format_exception(e)}", exc_info=True); return None
     finally:
         if os.path.exists(archive_path):
             try: os.remove(archive_path)
-            except Exception as e_del: print(f"CONSOLE (engine_handler extract_archive): Не удалось удалить временный архив {archive_path}: {e_del}")
+            except Exception as e_del: print(f"CONSOLE (engine_handler extract_archive): Не удалось удалить временный архив {archive_path}: {format_exception(e_del)}")
 
 def setup_lc0():
     global LC0_EXECUTABLE_PATH_GLOBAL
@@ -142,7 +143,7 @@ def setup_lc0():
                     print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Chmod НЕ ПОМОГ. Lc0 НЕ ИСПОЛНЯЕМЫЙ.")
                     return False
             except Exception as e_chmod_existing:
-                print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА chmod для существующего Lc0: {e_chmod_existing}", exc_info=True)
+                print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА chmod для существующего Lc0: {format_exception(e_chmod_existing)}", exc_info=True)
                 return False
     else:
         print(f"CONSOLE (engine_handler setup_lc0): Lc0 файл НЕ НАЙДЕН в '{LC0_DIR_BASE}'. Попытка скачивания...")
@@ -172,7 +173,7 @@ def setup_lc0():
                                  print(f"CONSOLE (engine_handler setup_lc0): ВНИМАНИЕ: Права на исполнение НЕ УДАЛОСЬ УСТАНОВИТЬ (os.X_OK=False) для {LC0_EXECUTABLE_PATH_GLOBAL} после chmod.")
                                  # Тем не менее, возвращаем True, т.к. файл извлечен. Проблемы с правами могут быть специфичны для окружения.
                         except Exception as e_chmod:
-                            print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Не удалось установить права на исполнение для Lc0: {e_chmod}", exc_info=True)
+                            print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Не удалось установить права на исполнение для Lc0: {format_exception(e_chmod)}", exc_info=True)
                             # Возвращаем True, так как файл извлечен, но с предупреждением о правах.
                     print(f"CONSOLE (engine_handler setup_lc0): Lc0 скачан и настроен: {LC0_EXECUTABLE_PATH_GLOBAL}")
                     return True
@@ -210,16 +211,16 @@ def setup_maia_weights(maia_elo: int):
             print(f"CONSOLE (engine_handler setup_maia_weights): Веса Maia ELO {maia_elo} УСПЕШНО РАСПАКОВАНЫ: {maia_weights_pb_filename}")
             if os.path.exists(maia_weights_gz_filename): 
                 try: os.remove(maia_weights_gz_filename)
-                except Exception as e_del_gz: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить временный .gz файл: {e_del_gz}")
+                except Exception as e_del_gz: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить временный .gz файл: {format_exception(e_del_gz)}")
             return maia_weights_pb_filename
         except Exception as e:
-            print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА распаковки весов Maia ELO {maia_elo} из {maia_weights_gz_filename}: {e}", exc_info=True)
+            print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА распаковки весов Maia ELO {maia_elo} из {maia_weights_gz_filename}: {format_exception(e)}", exc_info=True)
             if os.path.exists(maia_weights_gz_filename): 
                 try: os.remove(maia_weights_gz_filename)
-                except Exception as e_del_gz_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить .gz файл после ошибки распаковки: {e_del_gz_fail}")
+                except Exception as e_del_gz_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить .gz файл после ошибки распаковки: {format_exception(e_del_gz_fail)}")
             if os.path.exists(maia_weights_pb_filename): 
                 try: os.remove(maia_weights_pb_filename)
-                except Exception as e_del_pb_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить частично созданный .pb файл: {e_del_pb_fail}")
+                except Exception as e_del_pb_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить частично созданный .pb файл: {format_exception(e_del_pb_fail)}")
             return None
     else: # download_file вернул False
         print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА скачивания весов Maia ELO {maia_elo} с URL: {maia_weights_url}")
@@ -315,20 +316,20 @@ class ChessGameController:
                 self.engine = None 
                 raise 
             except Exception as e_ping:
-                 print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА: Движок не ответил на ping: {e_ping}", exc_info=True)
+                 print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА: Движок не ответил на ping: {format_exception(e_ping)}", exc_info=True)
 
             self._send_status_to_gui_if_possible(f"Движок Maia ELO {self.current_maia_elo} запущен.")
             print(f"CONSOLE (engine_handler _start_engine_process_internal): Движок Maia ELO {self.current_maia_elo} УСПЕШНО запущен и настроен.")
             return True
         except Exception as e:
-            msg = f"КРИТИЧЕСКАЯ ОШИБКА запуска движка: {e}. Проверьте консоль."
+            msg = f"КРИТИЧЕСКАЯ ОШИБКА запуска движка: {format_exception(e)}. Проверьте консоль."
             self._send_status_to_gui_if_possible(msg)
-            print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА запуска/конфигурации движка Lc0 ('{LC0_EXECUTABLE_PATH_GLOBAL}'): {e}", exc_info=True)
+            print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА запуска/конфигурации движка Lc0 ('{LC0_EXECUTABLE_PATH_GLOBAL}'): {format_exception(e)}", exc_info=True)
             if self.engine: 
                 try: self.engine.quit()
                 except: pass
             self.engine = None
-            self._send_state_to_main_process(error=f"Engine start/configure failed: {str(e)}", critical_process_failure=True)
+            self._send_state_to_main_process(error=f"Engine start/configure failed: {format_exception(e)}", critical_process_failure=True)
             return False
 
     def new_game(self, fen=None, player_is_white_gui_override=None):
@@ -380,7 +381,7 @@ class ChessGameController:
             else:
                 self._send_status_to_gui_if_possible("Maia не смогла сделать ход.")
         except Exception as e:
-            self._send_status_to_gui_if_possible(f"Ошибка Maia: {e}")
+            self._send_status_to_gui_if_possible(f"Ошибка Maia: {format_exception(e)}")
         finally:
             self.engine_is_thinking = False
 
@@ -498,13 +499,13 @@ class ChessGameController:
 
             except chess.engine.EngineTerminatedError as ete:
                 self._send_status_to_gui_if_possible("Критическая ошибка: Движок неожиданно завершил работу.")
-                print(f"CONSOLE (ChessGameController _think): ОШИБКА - Движок Lc0 завершил работу: {ete}", exc_info=True)
+                print(f"CONSOLE (ChessGameController _think): ОШИБКА - Движок Lc0 завершил работу: {format_exception(ete)}", exc_info=True)
                 self.engine = None 
-                error_during_think = f"Engine terminated during thinking: {str(ete)}"
+                error_during_think = f"Engine terminated during thinking: {format_exception(ete)}"
             except Exception as e:
-                self._send_status_to_gui_if_possible(f"Ошибка во время хода движка: {e}. Проверьте консоль.")
-                print(f"CONSOLE (ChessGameController _think): ОШИБКА во время хода движка: {e}", exc_info=True)
-                error_during_think = f"Engine thinking error: {str(e)}"
+                self._send_status_to_gui_if_possible(f"Ошибка во время хода движка: {format_exception(e)}. Проверьте консоль.")
+                print(f"CONSOLE (ChessGameController _think): ОШИБКА во время хода движка: {format_exception(e)}", exc_info=True)
+                error_during_think = f"Engine thinking error: {format_exception(e)}"
             finally:
                 self.engine_is_thinking = False # Сбрасываем флаг в любом случае
                 print(f"CONSOLE (ChessGameController _think): Поток _think завершен. SAN движка: {engine_san_move}, UCI: {engine_uci_move}, Ошибка: {error_during_think}")
@@ -595,7 +596,7 @@ class ChessGameController:
             "last_move_san": current_last_move_san if current_last_move_san else "N/A",
             "timestamp": time.time()
         }
-        if error: state_data["error"] = str(error)
+        if error: state_data["error"] = format_exception(error)
         if error_move: state_data["error_move"] = error_move
         if error_message: state_data["error_message_for_move"] = error_message
         if game_resigned: state_data["game_resigned_by_llm"] = True; state_data["outcome_message"] = "LLM (Maia) сдался."
@@ -607,7 +608,7 @@ class ChessGameController:
             self.state_queue.put(state_data)
             print(f"CONSOLE (ChessGameController _send_state_to_main_process): Состояние отправлено. FEN: {state_data['fen'][:20]}..., Turn: {state_data['turn']}, GameOver: {state_data['is_game_over']}, Outcome: {state_data['outcome_message']}, Error: {state_data.get('error')}, LastSAN: {state_data.get('last_move_san')}")
         except Exception as e:
-            print(f"CONSOLE (ChessGameController _send_state_to_main_process): ОШИБКА отправки состояния в state_queue: {e}", exc_info=True)
+            print(f"CONSOLE (ChessGameController _send_state_to_main_process): ОШИБКА отправки состояния в state_queue: {format_exception(e)}", exc_info=True)
 
     def shutdown_engine_process(self):
         print("CONSOLE (ChessGameController shutdown_engine_process): Запрос на остановку движка.")
@@ -620,7 +621,7 @@ class ChessGameController:
             except chess.engine.EngineTerminatedError:
                 print("CONSOLE (ChessGameController shutdown_engine_process): Движок уже был завершен (EngineTerminatedError).")
             except Exception as e:
-                print(f"CONSOLE (ChessGameController shutdown_engine_process): ОШИБКА при engine.quit(): {e}", exc_info=True)
+                print(f"CONSOLE (ChessGameController shutdown_engine_process): ОШИБКА при engine.quit(): {format_exception(e)}", exc_info=True)
             finally:
                 self.engine = None
                 print("CONSOLE (ChessGameController shutdown_engine_process): self.engine установлен в None.")

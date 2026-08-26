@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from enum import Enum
@@ -105,7 +106,7 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
                 )
             self._state = state
             self._message = str(message)
-            self._error = str(error)
+            self._error = format_exception(error)
             self._revision += 1
         if progress is not None:
             progress(self._snapshot(include_size=False))
@@ -201,13 +202,13 @@ class DefaultAIEnvironmentMaintenanceService(AIEnvironmentMaintenanceService):
                     MaintenanceState.FAILED,
                     "Удаление AI-окружений не завершено",
                     progress,
-                    error=str(exc),
+                    error=format_exception(exc),
                 )
             except RuntimeError:
                 with self._state_lock:
                     self._state = MaintenanceState.FAILED
                     self._message = "Удаление AI-окружений не завершено"
-                    self._error = str(exc)
+                    self._error = format_exception(exc)
                     self._revision += 1
         finally:
             self._operation_lock.release()

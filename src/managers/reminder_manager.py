@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import datetime
 import json
@@ -91,7 +92,7 @@ class ReminderManager(CharacterScopedService):
                     state.reminders = list(loaded) if isinstance(loaded, list) else []
                 except Exception as exc:
                     logger.error(
-                        f"[ReminderManager] Failed to load {state.filename}: {exc}"
+                        f"[ReminderManager] Failed to load {state.filename}: {format_exception(exc)}"
                     )
                     state.reminders = []
             else:
@@ -127,7 +128,7 @@ class ReminderManager(CharacterScopedService):
             os.replace(temp_path, state.filename)
         except Exception as exc:
             logger.error(
-                f"[ReminderManager] Failed to save {state.filename}: {exc}"
+                f"[ReminderManager] Failed to save {state.filename}: {format_exception(exc)}"
             )
             try:
                 os.unlink(temp_path)
@@ -147,7 +148,7 @@ class ReminderManager(CharacterScopedService):
         try:
             datetime.datetime.fromisoformat(due_iso)
         except ValueError as exc:
-            logger.warning(f"[ReminderManager] Bad due_iso format '{due_iso}': {exc}")
+            logger.warning(f"[ReminderManager] Bad due_iso format '{due_iso}': {format_exception(exc)}")
             raise
 
         state = self._state()
@@ -194,7 +195,7 @@ class ReminderManager(CharacterScopedService):
                         due.append(reminder.copy())
                 except Exception as exc:
                     logger.warning(
-                        f"[ReminderManager] Bad due_iso in reminder #{reminder.get('N')}: {exc}"
+                        f"[ReminderManager] Bad due_iso in reminder #{reminder.get('N')}: {format_exception(exc)}"
                     )
         return due
 

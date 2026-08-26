@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: utils/migrate_json_to_sqlite.py
 
 import os
@@ -129,7 +130,7 @@ def migrate(
             shutil.copy2(db_path, backup_path)
             logging.info(f"Migration backup created: {backup_path}")
         except Exception as e:
-            logging.warning(f"Failed to create migration backup: {e}")
+            logging.warning(f"Failed to create migration backup: {format_exception(e)}")
 
     conn = db_manager.get_connection()
     cursor = conn.cursor()
@@ -243,7 +244,7 @@ def migrate(
                         )
                         stats["memories_inserted"] += 1
                     except Exception as e:
-                        stats["errors"].append(f"Error in memories {filepath}: {e}")
+                        stats["errors"].append(f"Error in memories {filepath}: {format_exception(e)}")
                     finally:
                         tick()
 
@@ -265,7 +266,7 @@ def migrate(
                                 )
                                 stats["variables_written"] += 1
                             except Exception as e:
-                                stats["errors"].append(f"Error writing variable {char_id}.{k}: {e}")
+                                stats["errors"].append(f"Error writing variable {char_id}.{k}: {format_exception(e)}")
                             finally:
                                 tick()
                 else:
@@ -328,7 +329,7 @@ def migrate(
                     )
                     stats["history_inserted"] += 1
                 except Exception as e:
-                    stats["errors"].append(f"Error in history for {char_id}: {e}")
+                    stats["errors"].append(f"Error in history for {char_id}: {format_exception(e)}")
                 finally:
                     tick()
 
@@ -336,8 +337,8 @@ def migrate(
             try:
                 conn.commit()
             except Exception as e:
-                logging.error(f"Migration commit failed for character '{char_id}': {e}", exc_info=True)
-                stats["errors"].append(f"Commit failed for {char_id}: {e}")
+                logging.error(f"Migration commit failed for character '{char_id}': {format_exception(e)}", exc_info=True)
+                stats["errors"].append(f"Commit failed for {char_id}: {format_exception(e)}")
                 try:
                     conn.rollback()
                 except Exception:

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/controllers/api_presets_controller.py
 import json
 import os
@@ -175,7 +176,7 @@ class ApiPresetsController(ApiPresetService):
                 os.replace(tmp, path)
             return True
         except Exception as e:
-            logger.error(f"Failed to write json atomically: {path}: {e}", exc_info=True)
+            logger.error(f"Failed to write json atomically: {path}: {format_exception(e)}", exc_info=True)
             return False
 
     def _normalize_presets_order(self, order: Any) -> List[int]:
@@ -345,7 +346,7 @@ class ApiPresetsController(ApiPresetService):
             )
 
         except Exception as e:
-            logger.error(f"Ошибка при миграции старых ключей API: {e}", exc_info=True)
+            logger.error(f"Ошибка при миграции старых ключей API: {format_exception(e)}", exc_info=True)
 
     def _subscribe_to_events(self):
         self.event_bus.subscribe(Events.ApiPresets.SAVE_CUSTOM_PRESET, self._on_save_custom_preset, weak=False)
@@ -378,7 +379,7 @@ class ApiPresetsController(ApiPresetService):
             self._create_default_presets()
             logger.info(f"Created default user presets. Templates: {len(self.templates)}, Presets: {len(self.presets)}")
         except Exception as e:
-            logger.error(f"Failed to load preset data, fallback to full defaults: {e}", exc_info=True)
+            logger.error(f"Failed to load preset data, fallback to full defaults: {format_exception(e)}", exc_info=True)
             self._create_default_data()
 
     def _refresh_templates_from_code(self):
@@ -398,7 +399,7 @@ class ApiPresetsController(ApiPresetService):
                     for k, v in existing_payload.get("templates", {}).items()
                 }
             except Exception as e:
-                logger.warning(f"Failed to read existing api_templates.json for merge: {e}")
+                logger.warning(f"Failed to read existing api_templates.json for merge: {format_exception(e)}")
 
         for tid, tpl in code_templates.items():
             merged_models = set(tpl.known_models or [])
@@ -563,7 +564,7 @@ class ApiPresetsController(ApiPresetService):
                 self._save_presets()
 
         except Exception as e:
-            logger.error(f"Failed to load presets file: {e}", exc_info=True)
+            logger.error(f"Failed to load presets file: {format_exception(e)}", exc_info=True)
             self.presets = {}
             self.presets_order = []
 
@@ -656,7 +657,7 @@ class ApiPresetsController(ApiPresetService):
             self._save_presets()
             logger.info(f"Migrated legacy custom presets only. Presets: {len(self.presets)}")
         except Exception as e:
-            logger.error(f"Failed to migrate legacy presets: {e}", exc_info=True)
+            logger.error(f"Failed to migrate legacy presets: {format_exception(e)}", exc_info=True)
             self._create_default_presets()
 
     def _create_default_presets(self):
@@ -1061,7 +1062,7 @@ class ApiPresetsController(ApiPresetService):
             self.event_bus.emit(Events.ApiPresets.PRESET_IMPORTED, {"id": new_id})
             return new_id
         except Exception as e:
-            logger.error(f"Failed to import preset: {e}", exc_info=True)
+            logger.error(f"Failed to import preset: {format_exception(e)}", exc_info=True)
             return None
 
     def import_preset(self, path: str) -> Optional[int]:
@@ -1369,8 +1370,8 @@ class ApiPresetsController(ApiPresetService):
                         message = "Connection successful"
                 except Exception as e:
                     success = False
-                    message = f"Parsing error: {str(e)}"
-                    logger.error(f"Test parsing error for {preset_id}: {e}", exc_info=True)
+                    message = f"Parsing error: {format_exception(e)}"
+                    logger.error(f"Test parsing error for {preset_id}: {format_exception(e)}", exc_info=True)
             elif status == 401:
                 message = "Invalid API key (Unauthorized)"
             elif status == 403:
@@ -1404,11 +1405,11 @@ class ApiPresetsController(ApiPresetService):
                 "message": "Connection failed. Check internet connection.",
             })
         except Exception as e:
-            logger.error(f"Test error for {preset_id}: {e}", exc_info=True)
+            logger.error(f"Test error for {preset_id}: {format_exception(e)}", exc_info=True)
             self.event_bus.emit(Events.ApiPresets.TEST_RESULT, {
                 "id": preset_id,
                 "success": False,
-                "message": f"Error: {str(e)}",
+                "message": f"Error: {format_exception(e)}",
             })
 
     def _on_update_preset_models(self, event: Event):

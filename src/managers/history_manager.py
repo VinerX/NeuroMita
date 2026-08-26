@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
@@ -149,7 +150,7 @@ class HistoryManager(CharacterScopedService):
                     "RAGManager init failed for %s; retry in %.1fs: %s",
                     key,
                     delay,
-                    exc,
+                    format_exception(exc),
                     exc_info=True,
                 )
                 return None
@@ -210,7 +211,7 @@ class HistoryManager(CharacterScopedService):
                 rag.update_history_embeddings(normalized, priority="bulk")
             except Exception as e:
                 logger.warning(
-                    f"RAG failed to update history embeddings batch (ignored): {e}",
+                    f"RAG failed to update history embeddings batch (ignored): {format_exception(e)}",
                     exc_info=True,
                 )
 
@@ -218,7 +219,7 @@ class HistoryManager(CharacterScopedService):
             self._get_embed_executor().submit(_bulk_embed_job)
         except Exception as e:
             logger.warning(
-                f"[HistoryManager] Failed to schedule embeddings batch (ignored): {e}",
+                f"[HistoryManager] Failed to schedule embeddings batch (ignored): {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -229,7 +230,7 @@ class HistoryManager(CharacterScopedService):
         try:
             self._history_cols = self.db.get_history_columns(refresh=True)
         except Exception as e:
-            logger.warning(f"Failed to read history schema: {e}", exc_info=True)
+            logger.warning(f"Failed to read history schema: {format_exception(e)}", exc_info=True)
             self._history_cols = set()
         return set(self._history_cols)
 
@@ -249,7 +250,7 @@ class HistoryManager(CharacterScopedService):
                 return 0
             return self.db.dedupe_history(character_id=self.storage_key)
         except Exception as e:
-            logger.warning(f"[HistoryManager] Dedup failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[HistoryManager] Dedup failed (ignored): {format_exception(e)}", exc_info=True)
             return 0
 
     # Backward-compat: старое приватное имя могло вызываться из других мест
@@ -318,7 +319,7 @@ class HistoryManager(CharacterScopedService):
             return file_path
 
         except Exception as e:
-            logger.error(f"Failed to save base64 image to disk: {e}", exc_info=True)
+            logger.error(f"Failed to save base64 image to disk: {format_exception(e)}", exc_info=True)
             return base64_string
 
     def _image_file_to_base64(self, file_path: str) -> str:
@@ -339,7 +340,7 @@ class HistoryManager(CharacterScopedService):
 
             return f"data:image/{ext};base64,{encoded_string}"
         except Exception as e:
-            logger.error(f"Error converting file to base64: {e}", exc_info=True)
+            logger.error(f"Error converting file to base64: {format_exception(e)}", exc_info=True)
             return file_path
 
     # ---------------------------------------------------------------------
@@ -950,7 +951,7 @@ class HistoryManager(CharacterScopedService):
                 conn.commit()
                 return row_id
             except Exception as e:
-                logger.warning(f"History INSERT failed, fallback to minimal insert: {e}", exc_info=True)
+                logger.warning(f"History INSERT failed, fallback to minimal insert: {format_exception(e)}", exc_info=True)
                 try:
                     conn.rollback()
                 except Exception:
@@ -961,7 +962,7 @@ class HistoryManager(CharacterScopedService):
                     conn.commit()
                     return row_id
                 except Exception as e2:
-                    logger.error(f"History minimal INSERT failed: {e2}", exc_info=True)
+                    logger.error(f"History minimal INSERT failed: {format_exception(e2)}", exc_info=True)
                     try:
                         conn.rollback()
                     except Exception:
@@ -1184,7 +1185,7 @@ class HistoryManager(CharacterScopedService):
                     conn.rollback()
                 except Exception:
                     pass
-                logger.error(f"DB Error saving history atomically: {e}", exc_info=True)
+                logger.error(f"DB Error saving history atomically: {format_exception(e)}", exc_info=True)
                 return
             finally:
                 try:
@@ -1213,7 +1214,7 @@ class HistoryManager(CharacterScopedService):
             logger.info(f"[HistoryManager] Snapshot сохранён: {target_path}")
             return target_path
         except Exception as e:
-            logger.error(f"[HistoryManager] Не удалось сохранить snapshot: {e}", exc_info=True)
+            logger.error(f"[HistoryManager] Не удалось сохранить snapshot: {format_exception(e)}", exc_info=True)
             return ""
 
     def _schedule_message_embedding(self, row_id: int | None, message: dict) -> None:
@@ -1251,7 +1252,7 @@ class HistoryManager(CharacterScopedService):
             except Exception as exc:
                 committed.clear()
                 logger.error(
-                    f"History batch INSERT failed; the complete turn was rolled back: {exc}",
+                    f"History batch INSERT failed; the complete turn was rolled back: {format_exception(exc)}",
                     exc_info=True,
                 )
                 try:
@@ -1387,7 +1388,7 @@ class HistoryManager(CharacterScopedService):
                         (self.storage_key, self.storage_key),
                     )
                 except Exception as e:
-                    logger.warning(f"[HistoryManager] purge_deleted: {emb_table} cleanup failed: {e}")
+                    logger.warning(f"[HistoryManager] purge_deleted: {emb_table} cleanup failed: {format_exception(e)}")
             cur.execute(
                 "DELETE FROM history WHERE character_id=? AND is_deleted=1",
                 (self.storage_key,),
@@ -1448,7 +1449,7 @@ class HistoryManager(CharacterScopedService):
                 if total > 0:
                     conn.commit()
         except Exception as e:
-            logger.warning(f"[HistoryManager] apply_history_ttl_cleanup failed: {e}", exc_info=True)
+            logger.warning(f"[HistoryManager] apply_history_ttl_cleanup failed: {format_exception(e)}", exc_info=True)
 
         if total > 0:
             logger.info(f"[HistoryManager] TTL cleanup: archived {total} messages for '{self.storage_key}'")

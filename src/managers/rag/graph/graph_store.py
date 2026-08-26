@@ -10,6 +10,7 @@ Tables:
 All writes use the shared DatabaseManager singleton (WAL, busy_timeout).
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 import sqlite3
@@ -590,7 +591,7 @@ class GraphStore:
                     conn.commit()
 
         except Exception as e:
-            logger.warning(f"[GraphStore] apply_graph_ttl_cleanup failed: {e}", exc_info=True)
+            logger.warning(f"[GraphStore] apply_graph_ttl_cleanup failed: {format_exception(e)}", exc_info=True)
 
         if counts["relations"] > 0 or counts["entities"] > 0:
             logger.info(f"[GraphStore] TTL cleanup for '{self.character_id}': {counts}")

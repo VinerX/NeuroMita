@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 
 import re
 import threading
@@ -51,10 +52,10 @@ class ChessGame(GameInterface):
             )
             self.gui_thread.start()
         except ImportError as e:
-            logger.error(f"[{self.character.char_id}] Не удалось импортировать шахматный модуль: {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Не удалось импортировать шахматный модуль: {format_exception(e)}", exc_info=True)
             self.cleanup()
         except Exception as e:
-            logger.error(f"[{self.character.char_id}] Ошибка при запуске шахматной игры: {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Ошибка при запуске шахматной игры: {format_exception(e)}", exc_info=True)
             self.cleanup()
 
     def _ensure_alive(self) -> bool:
@@ -73,7 +74,7 @@ class ChessGame(GameInterface):
                 self.command_queue.put(command_data)
                 logger.debug(f"[{self.character.char_id}] Отправлена команда в поток шахмат: {command_data}")
             except Exception as e:
-                logger.error(f"[{self.character.char_id}] Ошибка при отправке команды в очередь шахмат: {e}")
+                logger.error(f"[{self.character.char_id}] Ошибка при отправке команды в очередь шахмат: {format_exception(e)}")
         else:
             logger.warning(f"[{self.character.char_id}] Невозможно отправить команду в шахматы: игра неактивна или очередь/поток недоступны.")
 
@@ -315,5 +316,5 @@ class ChessGame(GameInterface):
             logger.error(f"[{self.character.char_id}] Скрипт для игры '{self.game_id}' не найден: {template_filename}")
             return f"ОШИБКА: Не найден системный скрипт для игры '{self.game_id}'."
         except Exception as e:
-            logger.error(f"[{self.character.char_id}] Ошибка исполнения DSL-скрипта '{template_filename}': {e}", exc_info=True)
+            logger.error(f"[{self.character.char_id}] Ошибка исполнения DSL-скрипта '{template_filename}': {format_exception(e)}", exc_info=True)
             return f"ОШИБКА: Ошибка при генерации промпта для игры '{self.game_id}'."

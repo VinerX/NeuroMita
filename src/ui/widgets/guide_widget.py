@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/ui/widgets/guide_widget.py
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QRadioButton, QButtonGroup, QComboBox, QSizePolicy, QScrollArea, QMenu
@@ -919,7 +920,7 @@ class GuideWidget(QWidget):
         try:
             set_setting(self, "GUIDE_LEVEL", level)
         except Exception as e:
-            logger.warning(f"[GuideWidget] Не удалось сохранить GUIDE_LEVEL: {e}")
+            logger.warning(f"[GuideWidget] Не удалось сохранить GUIDE_LEVEL: {format_exception(e)}")
 
     def _update_filtered_pages(self):
         cur_rank = _LEVEL_RANK.get(self._guide_level, 0)

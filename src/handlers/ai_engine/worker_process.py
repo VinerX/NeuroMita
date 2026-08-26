@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import importlib
@@ -267,7 +268,7 @@ def _probe_runtime_modules(
             importlib.import_module(normalized)
         except Exception as exc:
             raise RuntimeError(
-                f"AI runtime probe failed while importing '{normalized}': {exc}"
+                f"AI runtime probe failed while importing '{normalized}': {format_exception(exc)}"
             ) from exc
 
 
@@ -389,7 +390,7 @@ async def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=Non
         "service": service_name,
         "req_id": req_id,
         "ok": bool(ok),
-        **({"result": result} if ok else {"error": str(error)}),
+        **({"result": result} if ok else {"error": format_exception(error)}),
     }
 
     def _put() -> None:
@@ -415,7 +416,7 @@ async def _dispatch(service, service_name: str, method: str, payload: dict, req_
         _log(
             log_queue,
             "error",
-            f"[{service_name}.{method}] failed: {e}",
+            f"[{service_name}.{method}] failed: {format_exception(e)}",
             detail=traceback.format_exc(),
         )
         await _respond(res_queue, service_name, req_id, ok=False, error=e)
@@ -619,7 +620,7 @@ async def _worker_loop(
                 blocked_services.pop(service_name, None)
                 await _respond(res_queue, service_name, req_id, ok=True, result=True)
             except Exception as e:
-                _log(log_queue, "error", f"[{service_name}] restart failed: {e}\n{traceback.format_exc()}")
+                _log(log_queue, "error", f"[{service_name}] restart failed: {format_exception(e)}\n{traceback.format_exc()}")
                 await _respond(res_queue, service_name, req_id, ok=False, error=e)
             continue
 
@@ -666,7 +667,7 @@ async def _restart_service(services: dict[str, Any], service_name: str, *, res_q
         if hasattr(service, "shutdown"):
             await _maybe_await(service.shutdown())
     except Exception as e:
-        _log(log_queue, "warning", f"[{service_name}] shutdown before restart failed: {e}")
+        _log(log_queue, "warning", f"[{service_name}] shutdown before restart failed: {format_exception(e)}")
 
     new_service = _LazyService(
         service_name,

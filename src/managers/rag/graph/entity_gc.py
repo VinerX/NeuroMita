@@ -13,6 +13,7 @@ Usage:
     gc.apply(plan)           # executes the plan
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 import sqlite3
@@ -409,14 +410,14 @@ class EntityGC:
                         counts["retype"] += 1
 
                 except Exception as e:
-                    logger.warning(f"EntityGC: action failed {action.action} id={action.entity_id}: {e}")
+                    logger.warning(f"EntityGC: action failed {action.action} id={action.entity_id}: {format_exception(e)}")
 
             conn.commit()
             logger.info(f"EntityGC applied: {counts}")
             return counts
 
         except Exception as e:
-            logger.error(f"EntityGC apply failed: {e}", exc_info=True)
+            logger.error(f"EntityGC apply failed: {format_exception(e)}", exc_info=True)
             try:
                 conn.rollback()
             except Exception:

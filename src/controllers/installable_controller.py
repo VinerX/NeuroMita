@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -94,7 +95,7 @@ class InstallableController(InstallableOperationsService):
                     return metadata
             return self._get_component(data).metadata().as_dict()
         except Exception as exc:
-            logger.error(f"Installable GET failed: {exc}", exc_info=True)
+            logger.error(f"Installable GET failed: {format_exception(exc)}", exc_info=True)
             return None
 
     def _on_get_status(self, event: Event):
@@ -105,7 +106,7 @@ class InstallableController(InstallableOperationsService):
                 refresh=bool(data.get("refresh", False)),
             )
         except Exception as exc:
-            logger.error(f"Installable GET_STATUS failed: {exc}", exc_info=True)
+            logger.error(f"Installable GET_STATUS failed: {format_exception(exc)}", exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -117,7 +118,7 @@ class InstallableController(InstallableOperationsService):
         try:
             return self.catalog.settings_schema(self._component_id(data))
         except Exception as exc:
-            logger.error(f"Installable GET_SETTINGS_SCHEMA failed: {exc}", exc_info=True)
+            logger.error(f"Installable GET_SETTINGS_SCHEMA failed: {format_exception(exc)}", exc_info=True)
             return []
 
     def _on_load_settings(self, event: Event):
@@ -125,7 +126,7 @@ class InstallableController(InstallableOperationsService):
         try:
             return self.catalog.load_settings(self._component_id(data))
         except Exception as exc:
-            logger.error(f"Installable LOAD_SETTINGS failed: {exc}", exc_info=True)
+            logger.error(f"Installable LOAD_SETTINGS failed: {format_exception(exc)}", exc_info=True)
             return {}
 
     def _on_save_settings(self, event: Event):
@@ -137,8 +138,8 @@ class InstallableController(InstallableOperationsService):
                 values if isinstance(values, dict) else values,
             )
         except Exception as exc:
-            logger.error(f"Installable SAVE_SETTINGS failed: {exc}", exc_info=True)
-            return {"ok": False, "errors": {"_": str(exc)}}
+            logger.error(f"Installable SAVE_SETTINGS failed: {format_exception(exc)}", exc_info=True)
+            return {"ok": False, "errors": {"_": format_exception(exc)}}
 
     def install(self, payload: dict[str, Any]) -> InstallAdmission:
         return self._run_payload(payload, op="install")
@@ -166,11 +167,11 @@ class InstallableController(InstallableOperationsService):
         try:
             component = self._get_component(data)
         except Exception as exc:
-            logger.error(f"Installable {op}: component not found: {exc}", exc_info=True)
+            logger.error(f"Installable {op}: component not found: {format_exception(exc)}", exc_info=True)
             return InstallAdmission(
                 accepted=False,
                 task_id=requested_task_id,
-                error=str(exc),
+                error=format_exception(exc),
             )
 
         with_ui = bool(data.get("with_ui", True))
@@ -274,7 +275,7 @@ class InstallableController(InstallableOperationsService):
         error = admission.error or "Installation queue is unavailable"
         logger.error(
             f"Installable {op} request rejected: "
-            f"component={component.id}, task_id={payload['task_id']}: {error}"
+            f"component={component.id}, task_id={payload['task_id']}: {format_exception(error)}"
         )
         self.event_bus.emit(
             Events.Install.TASK_FAILED,

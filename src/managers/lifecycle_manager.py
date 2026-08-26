@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import asyncio
 import threading
 from core.task_supervisor import task_supervisor
@@ -29,7 +30,7 @@ class LifecycleManager:
             self.loop_ready_event.set()
             self.loop.run_forever()
         except Exception as e:
-            logger.error(f"Error in event loop: {e}", exc_info=True)
+            logger.error(f"Error in event loop: {format_exception(e)}", exc_info=True)
         finally:
             self._cleanup_loop()
             
@@ -56,7 +57,7 @@ class LifecycleManager:
             try:
                 callback()
             except Exception as e:
-                logger.error(f"Error in cleanup callback: {e}", exc_info=True)
+                logger.error(f"Error in cleanup callback: {format_exception(e)}", exc_info=True)
                 
         # Останавливаем event loop
         if self.loop and not self.loop.is_closed():

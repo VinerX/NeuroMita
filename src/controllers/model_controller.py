@@ -1,5 +1,6 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import base64
 import dataclasses
@@ -394,7 +395,7 @@ class ModelController(GenerationService, ModelStateService):
             }
             collector.save_capture(record)
         except Exception as e:
-            logger.warning(f"[ModelController] Failed to capture generation input: {e}")
+            logger.warning(f"[ModelController] Failed to capture generation input: {format_exception(e)}")
 
     # ---------------------------------------------------------------------
     # History UI
@@ -472,7 +473,7 @@ class ModelController(GenerationService, ModelStateService):
 
         except Exception as e:
             logger.warning(
-                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {e}",
+                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {format_exception(e)}",
                 exc_info=True)
             return False
 
@@ -911,7 +912,7 @@ class ModelController(GenerationService, ModelStateService):
             # было запроса), чтобы она отражала текущие настройки, а не залипала.
             return redact_image_payloads(list(getattr(built, "messages", []) or []))
         except Exception as e:
-            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {e}")
+            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {format_exception(e)}")
             return None
 
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
@@ -1251,8 +1252,8 @@ class ModelController(GenerationService, ModelStateService):
                 provider=getattr(last_error, "provider", None) if last_error else None,
             )
         except Exception as e:
-            logger.error(f"Ошибка при {request.kind}: {e}", exc_info=True)
-            return UtilityGenerationResult(ok=False, error=str(e), details=str(e))
+            logger.error(f"Ошибка при {request.kind}: {format_exception(e)}", exc_info=True)
+            return UtilityGenerationResult(ok=False, error=format_exception(e), details=format_exception(e))
         finally:
             if request.kind == "compress":
                 self.event_bus.emit(Events.Model.ON_COMPRESSION_FINISHED)
@@ -1346,7 +1347,7 @@ class ModelController(GenerationService, ModelStateService):
                 if _core_ctx:
                     rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
             except Exception as _core_err:
-                logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {_core_err}")
+                logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {format_exception(_core_err)}")
 
         game_state = (
             copy.deepcopy(request.game_state)
@@ -1411,7 +1412,7 @@ class ModelController(GenerationService, ModelStateService):
                 f"mode={effective_capabilities.get('structured_output_mode', 'json_schema')}"
             )
         except Exception as e:
-            logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+            logger.warning(f"[ModelController] Failed to resolve preset capabilities: {format_exception(e)}")
 
         remote_only_segment_fields = self._remote_only_structured_segment_fields()
         if remote_only_segment_fields:
@@ -1436,7 +1437,7 @@ class ModelController(GenerationService, ModelStateService):
                 schema = self.model.tool_manager._filtered_schema(_enabled_tools)
                 effective_capabilities["tools_prompt"] = _render_tools_for_prompt(schema)
             except Exception as e:
-                logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
+                logger.warning(f"[ModelController] Failed to build tools prompt: {format_exception(e)}")
                 _tools_on = False
 
         with character_lock(char_id):
@@ -1544,7 +1545,7 @@ class ModelController(GenerationService, ModelStateService):
                         logger.info(f"[ModelController] Non-native image mode: replaced {len(descriptions)} image(s) with text descriptions.")
                 image_data = []  # don't send images to main model
             except Exception as _desc_exc:
-                logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
+                logger.warning(f"[ModelController] Image description fallback failed: {format_exception(_desc_exc)}")
 
         prompt_request = PromptBuildRequest(
             character=char,
@@ -1590,7 +1591,7 @@ class ModelController(GenerationService, ModelStateService):
         except OperationCancelledError:
             raise
         except Exception as e:
-            logger.error(f"Ошибка при сборке промпта: {e}", exc_info=True)
+            logger.error(f"Ошибка при сборке промпта: {format_exception(e)}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
             })
@@ -1849,8 +1850,8 @@ class ModelController(GenerationService, ModelStateService):
         except OperationCancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})
+            logger.error(f"Error during LLM generation/processing: {format_exception(e)}", exc_info=True)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": format_exception(e)})
             return None
 
     # Default RAG output templates
@@ -1976,7 +1977,7 @@ class ModelController(GenerationService, ModelStateService):
                             f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
                         return rag_block
             except Exception as e:
-                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
+                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {format_exception(e)}", exc_info=True)
         return ""
 
     # ---------------------------------------------------------------------
@@ -2025,7 +2026,7 @@ class ModelController(GenerationService, ModelStateService):
                 structured = parse_outcome.response
         except StructuredResponseParseError as e:
             logger.error(
-                f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
+                f"[ModelController] Failed to parse structured response for {char_id}: {format_exception(e)}. "
                 f"Falling back to legacy processing."
             )
             # Fallback to legacy tag-based processing
@@ -2223,7 +2224,7 @@ class ModelController(GenerationService, ModelStateService):
                 }
                 inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
             except Exception as _ge:
-                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {format_exception(_ge)}")
 
         # Notify graph extraction (and any future subscribers).
         self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
@@ -2365,8 +2366,8 @@ class ModelController(GenerationService, ModelStateService):
         try:
             tool_result = self.model.tool_manager.run(tool_name, tool_args, trace_id=trace_id)
         except Exception as e:
-            tool_result = f"[Tool error: {e}]"
-            logger.error(f"[ModelController] Tool '{tool_name}' failed: {e}", exc_info=True)
+            tool_result = f"[Tool error: {format_exception(e)}]"
+            logger.error(f"[ModelController] Tool '{tool_name}' failed: {format_exception(e)}", exc_info=True)
 
         self.event_bus.emit(Events.Model.ON_TOOL_DONE, {
             "tool_name": tool_name,
@@ -2515,8 +2516,8 @@ class ModelController(GenerationService, ModelStateService):
             else:
                 self.event_bus.emit("reload_prompts_failed", {"error": "Download failed"})
         except Exception as e:
-            logger.error(f"Ошибка при обновлении промптов: {e}", exc_info=True)
-            self.event_bus.emit("reload_prompts_failed", {"error": str(e)})
+            logger.error(f"Ошибка при обновлении промптов: {format_exception(e)}", exc_info=True)
+            self.event_bus.emit("reload_prompts_failed", {"error": format_exception(e)})
 
     # ---------------------------------------------------------------------
     # Helpers

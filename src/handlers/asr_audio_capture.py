@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import re
@@ -130,7 +131,7 @@ class AudioCaptureService:
         try:
             import sounddevice as sd
         except Exception as exc:
-            raise AudioCaptureError(f"Не удалось загрузить sounddevice: {exc}") from exc
+            raise AudioCaptureError(f"Не удалось загрузить sounddevice: {format_exception(exc)}") from exc
 
         device_name, host_api_name = _device_description(sd, microphone_index)
 

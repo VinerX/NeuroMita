@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import time
@@ -61,7 +62,7 @@ class AsrEventsController(BaseController):
             from localization.live import language_changed_signal
             language_changed_signal().connect(self._on_language_changed)
         except Exception as e:
-            logger.debug(f"ASR: language_changed subscribe failed: {e}")
+            logger.debug(f"ASR: language_changed subscribe failed: {format_exception(e)}")
 
         try:
             if self.view and getattr(self.view, "settings", None):
@@ -151,7 +152,7 @@ class AsrEventsController(BaseController):
                 "kind": pill_kind,
             })
         except Exception as e:
-            logger.debug(f"ASR pill update failed: {e}")
+            logger.debug(f"ASR pill update failed: {format_exception(e)}")
 
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):

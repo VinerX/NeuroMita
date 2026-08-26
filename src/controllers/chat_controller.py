@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/controllers/chat_controller.py
 import os
 import tempfile
@@ -850,15 +851,15 @@ class ChatController(GenerationActivityService):
             trace_status = "error"
             trace_error_stage = "generation"
             trace_error_type = type(e).__name__
-            logger.error(f"Ошибка в обработке запроса: {e}", exc_info=True)
+            logger.error(f"Ошибка в обработке запроса: {format_exception(e)}", exc_info=True)
             if task_uid:
                 self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
                     "uid": task_uid,
                     "status": TaskStatus.FAILED_ON_GENERATION,
-                    "error": str(e)
+                    "error": format_exception(e)
                 })
             if eff_policy and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {str(e)[:50]}..."})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {format_exception(e)[:50]}..."})
             return None
         finally:
             if stream_coalescer is not None:
@@ -1051,7 +1052,7 @@ class ChatController(GenerationActivityService):
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception as e:
-                logger.warning(f"Failed to delete staged temp image {tmp_path}: {e}")
+                logger.warning(f"Failed to delete staged temp image {tmp_path}: {format_exception(e)}")
             finally:
                 self._owned_staged_images.discard(tmp_path)
         self.staged_images.clear()
@@ -1484,4 +1485,4 @@ class ChatController(GenerationActivityService):
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
             logger.info(f"[ChatController] Snapshot загружен из {file_path}")
         except Exception as e:
-            logger.error(f"[ChatController] Ошибка загрузки snapshot: {e}", exc_info=True)
+            logger.error(f"[ChatController] Ошибка загрузки snapshot: {format_exception(e)}", exc_info=True)

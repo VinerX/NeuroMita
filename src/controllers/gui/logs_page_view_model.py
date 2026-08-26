@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 from typing import Any
@@ -62,7 +63,7 @@ class LogsPageViewModel(IntentViewModel[LogsPageState]):
                 text=_(
                     "Не удалось прочитать лог: {err}",
                     "Failed to read log: {err}",
-                ).format(err=exc),
+                ).format(err=format_exception(exc)),
                 loading=False,
             )
         )
@@ -75,6 +76,6 @@ class LogsPageViewModel(IntentViewModel[LogsPageState]):
             self.emit_effect(
                 LogsShowError(
                     _("Ошибка", "Error"),
-                    str(exc),
+                    format_exception(exc),
                 )
             )

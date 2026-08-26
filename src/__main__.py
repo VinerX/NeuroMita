@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import multiprocessing as mp
 import os
@@ -244,7 +245,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
             if home_page is not None:
                 home_page.refresh_status_cards()
         except Exception as exc:
-            logger.error(f"Failed to attach GUI backend: {exc}", exc_info=True)
+            logger.error(f"Failed to attach GUI backend: {format_exception(exc)}", exc_info=True)
             try:
                 controller.close_app()
             except Exception:
@@ -252,7 +253,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
             on_backend_failed(exc)
 
     def on_backend_failed(error: BaseException) -> None:
-        message = f"Backend startup failed: {type(error).__name__}: {error}"
+        message = f"Backend startup failed: {format_exception(error)}"
         logger.error(message)
         gui_root.backend_failed(error)
 
@@ -303,7 +304,7 @@ def _run_gui(runtime, startup_mode: str) -> int:
         backend_loader.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     except Exception as exc:
-        logger.error(f"Failed to finalize GUI objects: {exc}", exc_info=True)
+        logger.error(f"Failed to finalize GUI objects: {format_exception(exc)}", exc_info=True)
     if result < 0:
         logger.critical(
             "Qt event loop terminated with an invalid negative exit code: %d",

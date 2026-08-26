@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import base64
 import json
@@ -159,7 +160,7 @@ def _load_manifest_payload(
             return json.load(fh), manifest_path
     except Exception as exc:
         logger.warning(
-            f"[shared_image_transfer] Failed to load manifest {manifest_path}: {exc}"
+            f"[shared_image_transfer] Failed to load manifest {manifest_path}: {format_exception(exc)}"
         )
         return None, manifest_path
 
@@ -206,7 +207,7 @@ def _decode_base64_image(item: Any) -> bytes | None:
     try:
         return base64.b64decode(payload)
     except Exception as exc:
-        logger.warning(f"[shared_image_transfer] Failed to decode base64 image: {exc}")
+        logger.warning(f"[shared_image_transfer] Failed to decode base64 image: {format_exception(exc)}")
         return None
 
 
@@ -217,7 +218,7 @@ def _cleanup_paths(paths: Iterable[Path]) -> None:
             if path.exists():
                 path.unlink()
         except Exception as exc:
-            logger.warning(f"[shared_image_transfer] Failed to delete {path}: {exc}")
+            logger.warning(f"[shared_image_transfer] Failed to delete {path}: {format_exception(exc)}")
 
     for path in paths:
         try:
@@ -280,7 +281,7 @@ def collect_context_images(
             images.append(resolved.read_bytes())
             cleanup_candidates.append(resolved)
         except Exception as exc:
-            logger.warning(f"[shared_image_transfer] Cannot read image from {resolved}: {exc}")
+            logger.warning(f"[shared_image_transfer] Cannot read image from {resolved}: {format_exception(exc)}")
 
     if cleanup_candidates and bool(delete_after_read):
         _cleanup_paths(cleanup_candidates)

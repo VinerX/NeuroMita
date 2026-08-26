@@ -1,5 +1,6 @@
 # src/managers/protocol_registry.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -36,7 +37,7 @@ class ProtocolRegistry:
                 )
                 items[p.id] = p
             except Exception as e:
-                logger.error(f"Bad protocol definition: {raw} ({e})", exc_info=True)
+                logger.error(f"Bad protocol definition: {raw} ({format_exception(e)})", exc_info=True)
         self._items = items
 
     def get(self, protocol_id: str) -> Optional[ApiProtocol]:

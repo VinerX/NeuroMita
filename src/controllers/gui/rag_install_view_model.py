@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.error_utils import format_exception
 from controllers.gui.intent_view_model import IntentViewModel
 from core.events import Events, get_event_bus
 from managers.rag.install_spec import TARGET_EMBEDDINGS, TARGET_RERANKER
@@ -137,7 +138,7 @@ class RagInstallViewModel(IntentViewModel[RagInstallState]):
                     _("Ошибка", "Error"),
                     _(
                         "Не удалось открыть AI Hub:\n{e}", "Failed to open AI Hub:\n{e}"
-                    ).format(e=exc),
+                    ).format(e=format_exception(exc)),
                 )
             )
             self.refresh(force=True)

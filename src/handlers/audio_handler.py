@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import asyncio
 import os
 import tempfile
@@ -28,9 +29,9 @@ class AudioHandler:
                     os.remove(file_path)
                     logger.info(f"Файл {file_path} удалён.")
                 except Exception as e:
-                    logger.info(f"Файл {file_path} НЕ удалён. Ошибка: {e}")
+                    logger.info(f"Файл {file_path} НЕ удалён. Ошибка: {format_exception(e)}")
         except Exception as e:
-            logger.info(f"Ошибка при воспроизведении файла: {e}")
+            logger.info(f"Ошибка при воспроизведении файла: {format_exception(e)}")
 
     @staticmethod
     def _amplify_wav(path: str, gain: float) -> str | None:
@@ -49,7 +50,7 @@ class AudioHandler:
             sf.write(tmp_path, data, sr)
             return tmp_path
         except Exception as e:
-            logger.info(f"Не удалось усилить WAV (откат на set_volume): {e}")
+            logger.info(f"Не удалось усилить WAV (откат на set_volume): {format_exception(e)}")
             return None
 
     @classmethod

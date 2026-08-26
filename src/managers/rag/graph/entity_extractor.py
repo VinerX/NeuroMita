@@ -6,6 +6,7 @@ Expected LLM output format:
      "relations": [{"s": "...", "p": "...", "o": "..."}]}
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import re
@@ -265,7 +266,7 @@ def store_extraction(
             name_to_id[name] = eid
             entities_stored += 1
         except Exception as e:
-            logger.warning(f"entity_extractor: upsert_entity({name!r}) failed: {e}")
+            logger.warning(f"entity_extractor: upsert_entity({name!r}) failed: {format_exception(e)}")
 
     # --- relations ----------------------------------------------------------
     for rel in extraction.get("relations") or []:
@@ -310,6 +311,6 @@ def store_extraction(
             )
             relations_stored += 1
         except Exception as e:
-            logger.warning(f"entity_extractor: upsert_relation({subj}->{pred}->{obj_}) failed: {e}")
+            logger.warning(f"entity_extractor: upsert_relation({subj}->{pred}->{obj_}) failed: {format_exception(e)}")
 
     return entities_stored, relations_stored

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 import time
@@ -27,7 +28,7 @@ def _safe_error_text(exc: BaseException | None, secrets) -> str:
     """Return an exception string safe for logs."""
     if exc is None:
         return "unknown error"
-    text = str(exc)
+    text = format_exception(exc)
     for secret in secrets or ():
         secret_text = str(secret or "")
         if secret_text:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Callable
 
@@ -59,7 +60,7 @@ class VoiceModelsViewModel(IntentViewModel[VoiceModelsState]):
                 if accepted is False:
                     self.update_state(operation=None, operation_model_id=None)
             except Exception as exc:
-                self.update_state(operation=None, operation_model_id=None, error=str(exc))
+                self.update_state(operation=None, operation_model_id=None, error=format_exception(exc))
             return
         if isinstance(intent, UninstallVoiceModel):
             model_id = str(intent.model_id or "").strip()
@@ -76,13 +77,13 @@ class VoiceModelsViewModel(IntentViewModel[VoiceModelsState]):
                 if accepted is False:
                     self.update_state(operation=None, operation_model_id=None)
             except Exception as exc:
-                self.update_state(operation=None, operation_model_id=None, error=str(exc))
+                self.update_state(operation=None, operation_model_id=None, error=format_exception(exc))
             return
         if isinstance(intent, SaveVoiceSettings):
             try:
                 self._save(dict(intent.values))
             except Exception as exc:
-                self.update_state(error=str(exc))
+                self.update_state(error=format_exception(exc))
                 return
             self.refresh()
             return
@@ -90,7 +91,7 @@ class VoiceModelsViewModel(IntentViewModel[VoiceModelsState]):
             try:
                 self._close_view(dict(intent.values))
             except Exception as exc:
-                self.update_state(error=str(exc))
+                self.update_state(error=format_exception(exc))
             return
         if isinstance(intent, OpenVoiceDocumentation):
             self._open_documentation(str(intent.path))
@@ -150,4 +151,4 @@ class VoiceModelsViewModel(IntentViewModel[VoiceModelsState]):
         )
 
     def _apply_error(self, error: Exception) -> None:
-        self.update_state(loading=False, error=str(error))
+        self.update_state(loading=False, error=format_exception(error))

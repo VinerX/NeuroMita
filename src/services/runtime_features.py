@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import importlib.util
 import threading
@@ -231,7 +232,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
         public_future: Future[Any],
         error: BaseException,
     ) -> None:
-        wrapped = RuntimeError(f"Feature '{name}' dependency failed: {error}")
+        wrapped = RuntimeError(f"Feature '{name}' dependency failed: {format_exception(error)}")
         with self._lock:
             entry = self._entries.get(name)
             if (
@@ -308,7 +309,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 entries = [self._entries[name] for name in shutdown_order]
             except RuntimeError as exc:
                 logger.error(
-                    f"Invalid feature graph during shutdown: {exc}",
+                    f"Invalid feature graph during shutdown: {format_exception(exc)}",
                     exc_info=True,
                 )
                 entries = sorted(
@@ -345,7 +346,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
                 self._shutdown_instance(spec, instance)
             except Exception as exc:
                 logger.error(
-                    f"Failed to stop optional feature '{spec.name}': {exc}",
+                    f"Failed to stop optional feature '{spec.name}': {format_exception(exc)}",
                     exc_info=True,
                 )
             finally:
@@ -381,10 +382,10 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             startup_trace.mark(
                 f"feature.{name}.failed",
                 generation=generation,
-                error=f"{type(exc).__name__}: {exc}",
+                error=format_exception(exc),
             )
             if not self._closed:
-                logger.warning(f"Optional feature '{name}' is unavailable: {exc}")
+                logger.warning(f"Optional feature '{name}' is unavailable: {format_exception(exc)}")
             raise
 
         with self._lock:
@@ -559,7 +560,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             self._shutdown_instance(spec, instance)
         except Exception as exc:
             logger.error(
-                f"Failed to stop disabled feature '{name}': {exc}",
+                f"Failed to stop disabled feature '{name}': {format_exception(exc)}",
                 exc_info=True,
             )
         finally:
@@ -690,7 +691,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             return bool(spec.enabled(self._settings))
         except Exception as exc:
             logger.error(
-                f"Failed to evaluate optional feature '{spec.name}' settings: {exc}",
+                f"Failed to evaluate optional feature '{spec.name}' settings: {format_exception(exc)}",
                 exc_info=True,
             )
             return False
@@ -718,7 +719,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
         except Exception as exc:
             logger.error(
                 f"Failed to detach EventBus subscriptions for feature "
-                f"'{spec.name}': {exc}",
+                f"'{spec.name}': {format_exception(exc)}",
                 exc_info=True,
             )
         task_supervisor().cancel_owner(instance, timeout=1.0)
@@ -745,7 +746,7 @@ class RuntimeFeatureManager(RuntimeFeatureService):
             except Exception as exc:
                 logger.error(
                     f"Failed to unregister optional service "
-                    f"'{registration.contract.__name__}': {exc}",
+                    f"'{registration.contract.__name__}': {format_exception(exc)}",
                     exc_info=True,
                 )
 

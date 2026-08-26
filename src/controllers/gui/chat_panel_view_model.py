@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Callable
 
@@ -190,7 +191,7 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
 
             open_db_viewer(self._host, character_id=cid or None)
         except Exception as exc:
-            self.emit_effect(ChatShowError("History", str(exc)))
+            self.emit_effect(ChatShowError("History", format_exception(exc)))
 
     _MAX_STAGED_FILE_BYTES = 32 * 1024 * 1024
     _MAX_STAGED_TOTAL_BYTES = 64 * 1024 * 1024
@@ -265,7 +266,7 @@ class ChatPanelViewModel(IntentViewModel[ChatPanelState]):
             "chat-stage-files",
             worker,
             self._stage_images,
-            lambda error: self.emit_effect(ChatShowError("Images", str(error))),
+            lambda error: self.emit_effect(ChatShowError("Images", format_exception(error))),
         )
 
     def _stage_images(self, images: tuple[bytes, ...]) -> None:

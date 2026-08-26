@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 
 import re
 
@@ -42,7 +43,7 @@ class WebPageReaderTool(Tool):
             resp = _HTTP_CLIENT.get(reader_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             _HTTP_CLIENT.raise_for_status(resp)
         except Exception as e:
-            return f"[web_reader] Ошибка при загрузке: {e}"
+            return f"[web_reader] Ошибка при загрузке: {format_exception(e)}"
 
         text = (resp.text or "").strip()
         if not text:

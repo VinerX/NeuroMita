@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -96,8 +97,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 hardware_loading=False,
-                hardware_error=str(exc),
-                error=str(exc),
+                hardware_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 
@@ -113,8 +114,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 topology_loading=False,
-                topology_error=str(exc),
-                error=str(exc),
+                topology_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 
@@ -130,8 +131,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 maintenance_loading=False,
-                maintenance_error=str(exc),
-                error=str(exc),
+                maintenance_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 
@@ -147,8 +148,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 backends_loading=False,
-                backends_error=str(exc),
-                error=str(exc),
+                backends_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 
@@ -180,8 +181,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 busy=False,
-                topology_error=str(exc),
-                error=str(exc),
+                topology_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 
@@ -223,8 +224,8 @@ class AIEngineSettingsViewModel(IntentViewModel[AIEngineSettingsState]):
             ),
             lambda exc: self.update_state(
                 busy=False,
-                maintenance_error=str(exc),
-                error=str(exc),
+                maintenance_error=format_exception(exc),
+                error=format_exception(exc),
             ),
         )
 

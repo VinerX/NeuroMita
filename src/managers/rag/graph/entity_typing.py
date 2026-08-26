@@ -8,6 +8,7 @@
 `set_entity_type`, `get_entity_relation_context`).
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import re
@@ -106,7 +107,7 @@ def reclassify_untyped_entities(
         try:
             raw = generate(prompt) or ""
         except Exception as ex:
-            logger.warning(f"[entity_typing] LLM generate failed for batch: {ex}")
+            logger.warning(f"[entity_typing] LLM generate failed for batch: {format_exception(ex)}")
             raw = ""
         mapping = parse_typing_response(raw)
         result["batches"] += 1
@@ -121,7 +122,7 @@ def reclassify_untyped_entities(
                         continue
                 except Exception as ex:
                     logger.warning(
-                        f"[entity_typing] set_entity_type({e.get('id')}, {new_type}) failed: {ex}"
+                        f"[entity_typing] set_entity_type({e.get('id')}, {new_type}) failed: {format_exception(ex)}"
                     )
             result["unchanged"] += 1
 

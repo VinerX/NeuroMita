@@ -5,6 +5,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+from core.error_utils import format_exception
 from main_logger import logger
 from .base import (
     BaseProvider,
@@ -261,7 +262,7 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     raise build_stream_error(
                         self.name,
                         payload=chunk_payload,
-                        provider_message=f"Invalid provider stream chunk: {type(e).__name__}: {e}",
+                        provider_message=f"Invalid provider stream chunk: {format_exception(e)}",
                         code="stream.invalid_payload",
                         url=req.api_url,
                     ) from e

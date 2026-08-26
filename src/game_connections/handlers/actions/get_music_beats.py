@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import time
@@ -177,13 +178,13 @@ class GetMusicBeatsAction:
             )
         except Exception as e:
             elapsed = time.perf_counter() - t0
-            logger.error(f"[BeatSync] failed req={req_tag} after {elapsed:.2f}s: {e}", exc_info=True)
+            logger.error(f"[BeatSync] failed req={req_tag} after {elapsed:.2f}s: {format_exception(e)}", exc_info=True)
             await ctx.server.send_json(ctx.writer, {
                 "type": "music_beats_error",
                 "body": {
                     "track_name": track_name,
                     "audio_path": audio_path,
                     "request_id": request_id,
-                    "error": str(e),
+                    "error": format_exception(e),
                 },
             })

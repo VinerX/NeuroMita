@@ -18,6 +18,7 @@ unit-testable on the embedded runtime.
 """
 
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -270,7 +271,7 @@ def extract_bundle(zip_path: str | Path, short_name: str, log: _Log = _noop, *, 
         log(f"Voice bundle {zip_path.name} is not a valid zip.")
         return False
     except Exception as exc:  # noqa: BLE001 — surface to install log, don't crash the task
-        log(f"Failed to extract {zip_path.name}: {exc}")
+        log(f"Failed to extract {zip_path.name}: {format_exception(exc)}")
         return False
     finally:
         if stage.exists():
@@ -308,7 +309,7 @@ def remove_assets(short_name: str, log: _Log = _noop, *, base: Path | None = Non
                 path.unlink()
                 removed += 1
         except OSError as exc:
-            log(f"Could not remove {path.name}: {exc}")
+            log(f"Could not remove {path.name}: {format_exception(exc)}")
 
     cuts = root / f"{short_name}_Cuts"
     try:

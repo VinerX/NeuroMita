@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time
 from dataclasses import replace
@@ -120,7 +121,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
                 try:
                     self._controller.open_history(self._host, cid)
                 except Exception as exc:
-                    self.emit_effect(SandboxShowError("History", str(exc)))
+                    self.emit_effect(SandboxShowError("History", format_exception(exc)))
             return
         if isinstance(intent, SandboxRefreshVoicePanelsRequested):
             self._controller.refresh_voice_panels()
@@ -178,8 +179,8 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             self._update(selectors_loading=False, error=None, **payload)
 
         def failed(error: Exception) -> None:
-            self._update(selectors_loading=False, error=str(error))
-            self.emit_effect(SandboxShowError("Sandbox", str(error)))
+            self._update(selectors_loading=False, error=format_exception(error))
+            self.emit_effect(SandboxShowError("Sandbox", format_exception(error)))
 
         self.run_coalesced("sandbox-selectors", worker, applied, failed)
 
@@ -232,7 +233,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             self._update(memory=memory)
 
         def failed(error: Exception) -> None:
-            self._update(memory=replace(self.state.memory, loading=False), error=str(error))
+            self._update(memory=replace(self.state.memory, loading=False), error=format_exception(error))
 
         self.run_coalesced("sandbox-memory", worker, applied, failed)
 
@@ -256,7 +257,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
             worker,
             lambda value: self._update(budget=value),
             lambda error: self._update(
-                budget=replace(self.state.budget, loading=False), error=str(error)
+                budget=replace(self.state.budget, loading=False), error=format_exception(error)
             ),
         )
 
@@ -275,7 +276,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         try:
             self._controller.select_model(int(preset_id))
         except Exception as exc:
-            self.emit_effect(SandboxShowError("Model", str(exc)))
+            self.emit_effect(SandboxShowError("Model", format_exception(exc)))
             return
         self._update(current_model_id=int(preset_id))
         self.refresh_budget()
@@ -287,7 +288,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         try:
             self._controller.select_prompt(self.state.current_character_id, prompt_set)
         except Exception as exc:
-            self.emit_effect(SandboxShowError("Prompt", str(exc)))
+            self.emit_effect(SandboxShowError("Prompt", format_exception(exc)))
             return
         self._update(current_prompt=str(prompt_set))
 
@@ -298,7 +299,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         try:
             self._controller.select_character(cid, reload_data=reload_data)
         except Exception as exc:
-            self.emit_effect(SandboxShowError("Character", str(exc)))
+            self.emit_effect(SandboxShowError("Character", format_exception(exc)))
             return
         self._update(current_character_id=cid, prompt_items=(), current_prompt="")
         self.refresh_selectors()
@@ -320,14 +321,14 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
                 current.pop(normalized, None)
             else:
                 current[normalized] = previous
-            self._update(settings=self._freeze_mapping(current), error=str(exc))
-            self.emit_effect(SandboxShowError("Settings", str(exc)))
+            self._update(settings=self._freeze_mapping(current), error=format_exception(exc))
+            self.emit_effect(SandboxShowError("Settings", format_exception(exc)))
 
     def _clear_history(self) -> None:
         try:
             self._controller.clear_current_history()
         except Exception as exc:
-            self.emit_effect(SandboxShowError("History", str(exc)))
+            self.emit_effect(SandboxShowError("History", format_exception(exc)))
             return
         self.emit_effect(SandboxHistoryCleared())
         self.refresh_memory()
@@ -439,7 +440,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
 
     def _report_refresh_error(self, error: Exception) -> None:
         logger.debug("Sandbox refresh failed: %s", error, exc_info=True)
-        self._update(error=str(error))
+        self._update(error=format_exception(error))
 
     def _update(self, **changes: Any) -> None:
         changes.setdefault("revision", self.state.revision + 1)

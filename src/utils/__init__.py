@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import sys
 import json
@@ -167,7 +168,7 @@ def load_text_from_file(filename):
         with open(filepath, 'r', encoding='utf-8') as file:
             return file.read()
     except Exception as e:
-        logger.info(f"Ошибка при чтении файла {filename}: {e}")
+        logger.info(f"Ошибка при чтении файла {filename}: {format_exception(e)}")
         return ""
 
 
@@ -390,7 +391,7 @@ def guess_lang_statistically(text: str) -> str | None:
     except LangDetectException:
         return None
     except Exception as e:
-        logger.debug(f"langdetect error: {e}")
+        logger.debug(f"langdetect error: {format_exception(e)}")
         return None
 
 

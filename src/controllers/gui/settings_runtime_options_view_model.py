@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -47,7 +48,7 @@ class SettingsRuntimeOptionsViewModel(IntentViewModel[SettingsRuntimeOptionsStat
             ),
             lambda error: self.update_state(
                 providers_loading=False,
-                error=str(error),
+                error=format_exception(error),
             ),
         )
 
@@ -67,7 +68,7 @@ class SettingsRuntimeOptionsViewModel(IntentViewModel[SettingsRuntimeOptionsStat
                     _("Камеры недоступны", "Cameras unavailable"),
                 ),
                 cameras_loading=False,
-                error=str(error),
+                error=format_exception(error),
                 camera_revision=self.state.camera_revision + 1,
             ),
         )

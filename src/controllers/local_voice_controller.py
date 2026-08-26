@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import uuid
 import asyncio
@@ -113,7 +114,13 @@ class LocalVoiceController(LocalVoiceService):
             raise RuntimeError("AI engine not available")
 
         fut = eng.call("tts", method, payload or {})
-        return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+        try:
+            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout=timeout)
+        except TimeoutError as exc:
+            timeout_label = f"{float(timeout):g} seconds" if timeout is not None else "the configured deadline"
+            raise TimeoutError(
+                f"Local TTS request '{method}' timed out after {timeout_label}"
+            ) from exc
 
     def model_configs(self) -> list[dict[str, Any]]:
         return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
@@ -252,12 +259,12 @@ class LocalVoiceController(LocalVoiceService):
                 self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
         except Exception as e:
-            logger.error(f"init model failed (tts engine): {e}", exc_info=True)
+            logger.error(f"init model failed (tts engine): {format_exception(e)}", exc_info=True)
             self._initialized_cache[model_id] = False
             self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {"status": _("Ошибка!", "Error!")})
             self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                 "title": _("Ошибка", "Error"),
-                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {e}"
+                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {format_exception(e)}"
             })
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
@@ -414,7 +421,7 @@ class LocalVoiceController(LocalVoiceService):
                 "character": resolved_profile,
                 "model_id": model_id,
             },
-            timeout=120.0,
+            timeout=3600.0,
         )
         if not result_path:
             raise RuntimeError("Local voiceover failed: empty result")

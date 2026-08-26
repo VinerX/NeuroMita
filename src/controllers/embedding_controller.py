@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import time
 from threading import Lock
@@ -221,7 +222,7 @@ class EmbeddingController(EmbeddingService):
             try:
                 self._activate_embeddings()
             except Exception as e:
-                if "AI engine not available" in str(e):
+                if "AI engine not available" in format_exception(e):
                     # Движок ещё не поднялся — не окончательный провал, фоновый
                     # прогрев повторит попытку позже.
                     logger.debug(
@@ -229,10 +230,10 @@ class EmbeddingController(EmbeddingService):
                     )
                     return False
                 logger.error(
-                    f"EmbeddingController: не удалось прогреть local embedding backend: {e}",
+                    f"EmbeddingController: не удалось прогреть local embedding backend: {format_exception(e)}",
                     exc_info=True,
                 )
-                self._set_state(ModelState.ERROR, str(e), epoch=epoch)
+                self._set_state(ModelState.ERROR, format_exception(e), epoch=epoch)
                 return False
 
         # Индикатор RAG показывает «готово» только когда модель реально в памяти,
@@ -352,10 +353,10 @@ class EmbeddingController(EmbeddingService):
             return results[0] if results else None
         except AIRuntimeUnavailable as e:
             # Временная недоступность рантайма — не дефект, трейсбек только шумит.
-            logger.warning(f"EmbeddingController: embed_one отложен, {e}")
+            logger.warning(f"EmbeddingController: embed_one отложен, {format_exception(e)}")
             return None
         except Exception as e:
-            logger.error(f"EmbeddingController: ошибка embed_one via AI engine: {e}", exc_info=True)
+            logger.error(f"EmbeddingController: ошибка embed_one via AI engine: {format_exception(e)}", exc_info=True)
             return None
 
     def embed_many(
@@ -384,8 +385,8 @@ class EmbeddingController(EmbeddingService):
                 priority=priority,
             )
         except AIRuntimeUnavailable as e:
-            logger.warning(f"EmbeddingController: embed_many отложен, {e}")
+            logger.warning(f"EmbeddingController: embed_many отложен, {format_exception(e)}")
             return []
         except Exception as e:
-            logger.error(f"EmbeddingController: ошибка embed_many via AI engine: {e}", exc_info=True)
+            logger.error(f"EmbeddingController: ошибка embed_many via AI engine: {format_exception(e)}", exc_info=True)
             return []

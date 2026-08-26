@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import base64
 import os
@@ -71,9 +72,9 @@ class AppShellController:
         self._presentation.app.detach_backend()
 
     def backend_failed(self, error: BaseException | str) -> None:
-        message = str(error)
+        message = format_exception(error)
         if not isinstance(error, str):
-            message = f"Backend startup failed: {type(error).__name__}: {error}"
+            message = f"Backend startup failed: {format_exception(error)}"
         self._main_controller = None
         self._backend_error = message
         self._presentation.app.mark_failed(message)

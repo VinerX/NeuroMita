@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import json
 from datetime import datetime
@@ -300,7 +301,7 @@ class DbExportDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(
                     self, _("Ошибка", "Error"),
-                    _("Некорректный JSON фильтров:\n{e}", "Invalid JSON filters:\n{e}").format(e=str(e))
+                    _("Некорректный JSON фильтров:\n{e}", "Invalid JSON filters:\n{e}").format(e=format_exception(e))
                 )
                 return
 

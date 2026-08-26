@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import hashlib
@@ -347,7 +348,7 @@ class OmniVoiceModel(IVoiceModel):
             self.initialized_for = mode
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"OmniVoice initialization failed: {exc}", exc_info=True)
+            logger.error(f"OmniVoice initialization failed: {format_exception(exc)}", exc_info=True)
             self.current_model = None
             self.initialized = False
             self.initialized_for = None

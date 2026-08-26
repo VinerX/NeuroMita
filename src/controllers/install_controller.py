@@ -1,5 +1,6 @@
 # src/controllers/install_controller.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Callable, Optional, Any, Iterable, Sequence
 import importlib
@@ -132,7 +133,7 @@ def _get_installed_constraints(target_dir: str, exclude_specs: list[str]) -> lis
                     candidates[canon_name] = (name, version)
                     
     except Exception as e:
-        logger.warning(f"[InstallController] Ошибка сканирования установленных пакетов: {e}")
+        logger.warning(f"[InstallController] Ошибка сканирования установленных пакетов: {format_exception(e)}")
 
     return [
         f"{candidates[key][0]}=={candidates[key][1]}"
@@ -604,7 +605,7 @@ class InstallController(InstallService):
                 cb.status("Failed")
                 return False
             except Exception as e:
-                cb.log(f"Download failed for {url}: {e}")
+                cb.log(f"Download failed for {url}: {format_exception(e)}")
                 cb.status("Failed")
                 return False
 
@@ -728,7 +729,7 @@ class InstallController(InstallService):
                 ),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            logger.error("Main dependency validation failed: %s", exc)
+            logger.error("Main dependency validation failed: %s", format_exception(exc))
             return False
         if completed.returncode == 0:
             return True
@@ -1066,8 +1067,8 @@ class InstallController(InstallService):
                     raise
                 except Exception as e:
                     cb.status("Failed")
-                    cb.log(str(e))
-                    logger.error(f"Install call step '{desc or atype}' failed: {e}", exc_info=True)
+                    cb.log(format_exception(e))
+                    logger.error(f"Install call step '{desc or atype}' failed: {format_exception(e)}", exc_info=True)
                     return False
 
             elif atype == "call_async":
@@ -1120,8 +1121,8 @@ class InstallController(InstallService):
                     raise
                 except Exception as e:
                     cb.status("Failed")
-                    cb.log(str(e))
-                    logger.error(f"Install async step '{desc or atype}' failed: {e}", exc_info=True)
+                    cb.log(format_exception(e))
+                    logger.error(f"Install async step '{desc or atype}' failed: {format_exception(e)}", exc_info=True)
                     return False
 
             else:
@@ -1503,7 +1504,7 @@ class InstallController(InstallService):
         except InstallCancelled as exc:
             if transaction is not None:
                 transaction.abort()
-            error = str(exc) or "Installation cancelled"
+            error = format_exception(exc) or "Installation cancelled"
             cb.status("Cancelled")
             cb.log(error)
             self._emit(
@@ -1529,9 +1530,9 @@ class InstallController(InstallService):
                 except Exception as restore_exc:
                     cb.log(
                         "Failed to restore the previous shared AI runtime after an "
-                        f"uninstall error: {restore_exc}"
+                        f"uninstall error: {format_exception(restore_exc)}"
                     )
-            error = str(exc) or repr(exc)
+            error = format_exception(exc) or repr(exc)
             cb.status("Failed")
             cb.log(error)
             self._emit(

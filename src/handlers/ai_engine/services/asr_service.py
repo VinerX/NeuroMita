@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import gc
@@ -203,7 +204,7 @@ class ASRService:
                 if not capture_ready.done():
                     capture_ready.set_exception(e)
                 else:
-                    self.emit_event("error", {"message": f"{type(e).__name__}: {e}"})
+                    self.emit_event("error", {"message": format_exception(e)})
             finally:
                 self._active = False
                 if not capture_ready.done():
@@ -249,7 +250,7 @@ class ASRService:
                     "устройство или аудиодрайвер не отвечает"
                 )
             else:
-                message = str(exc).strip() or f"Не удалось запустить микрофон {mic_index}"
+                message = format_exception(exc).strip() or f"Не удалось запустить микрофон {mic_index}"
             raise RuntimeError(message) from exc
 
         if self._task.done() or not self._active:
@@ -299,7 +300,7 @@ class ASRService:
             try:
                 from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
             except Exception as e:
-                raise RuntimeError(f"silero_vad not available: {e}") from None
+                raise RuntimeError(f"silero_vad not available: {format_exception(e)}") from None
             return load_silero_vad_compatible()
 
         self._vad_model = await asyncio.to_thread(load)

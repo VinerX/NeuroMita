@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: src/game_connections/server.py
 import json
 import asyncio
@@ -174,7 +175,7 @@ class ChatServerNew:
             self._startup_error = exc
             self.running = False
             self._ready_event.set()
-            logger.error(f"Не удалось запустить сервер {self.host}:{self.port}: {exc}", exc_info=True)
+            logger.error(f"Не удалось запустить сервер {self.host}:{self.port}: {format_exception(exc)}", exc_info=True)
         finally:
             try:
                 pending = asyncio.all_tasks(loop)
@@ -231,7 +232,7 @@ class ChatServerNew:
                 except json.JSONDecodeError as exc:
                     await self.send_error(writer, "Malformed JSON message")
                     logger.warning(
-                        f"Клиент {client_id} прислал повреждённый JSON frame: {exc}"
+                        f"Клиент {client_id} прислал повреждённый JSON frame: {format_exception(exc)}"
                     )
                     continue
 
@@ -242,9 +243,9 @@ class ChatServerNew:
             # Unity закрыл сокет резко (краш/жёсткое закрытие/сетевой сбой,
             # напр. WinError 64). Это обычный разрыв, а не ошибка сервера —
             # корутина клиента штатно завершается, сам сервер продолжает работу.
-            logger.info(f"Клиент {client_id} разорвал соединение: {e}")
+            logger.info(f"Клиент {client_id} разорвал соединение: {format_exception(e)}")
         except Exception as e:
-            logger.error(f"Ошибка в handle_client: {e}", exc_info=True)
+            logger.error(f"Ошибка в handle_client: {format_exception(e)}", exc_info=True)
         finally:
             self._forget_client_state(client_id)
 
@@ -298,7 +299,7 @@ class ChatServerNew:
             raise
         except Exception as exc:
             logger.error(
-                f"Ошибка обработчика action={action!r} от {client_id}: {exc}",
+                f"Ошибка обработчика action={action!r} от {client_id}: {format_exception(exc)}",
                 exc_info=True,
             )
             await self.send_error(writer, f"Action failed: {action}")
@@ -358,7 +359,7 @@ class ChatServerNew:
             await writer.drain()
             return True
         except Exception as e:
-            logger.error(f"Ошибка отправки JSON: {e}")
+            logger.error(f"Ошибка отправки JSON: {format_exception(e)}")
             return False
 
     async def send_error(self, writer: asyncio.StreamWriter, error: str):
@@ -374,7 +375,7 @@ class ChatServerNew:
             try:
                 future.result(timeout=5)
             except Exception as exc:
-                logger.warning(f"Ошибка при остановке сервера: {exc}")
+                logger.warning(f"Ошибка при остановке сервера: {format_exception(exc)}")
 
         thread = self._server_thread
         if thread and thread is not threading.current_thread():
@@ -595,7 +596,7 @@ class ChatServerNew:
         try:
             return asyncio.run_coroutine_threadsafe(_push(), self._loop)
         except Exception as exc:
-            logger.warning(f"Не удалось запланировать отправку asr_text: {exc}")
+            logger.warning(f"Не удалось запланировать отправку asr_text: {format_exception(exc)}")
             return _finished_future(False)
 
     def on_task_status_changed(self, task) -> None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 import datetime
@@ -354,7 +355,7 @@ class HistoryController(HistoryService):
             logger.debug(f"[HistoryController] История персонажа {char_id} сохранена ({len(messages)} сообщений).")
             return True
         except Exception as e:
-            logger.error(f"[HistoryController] Ошибка сохранения истории для {char_id}: {e}", exc_info=True)
+            logger.error(f"[HistoryController] Ошибка сохранения истории для {char_id}: {format_exception(e)}", exc_info=True)
             return False
 
     def _on_message_completed(self, event: Event) -> None:
@@ -401,7 +402,7 @@ class HistoryController(HistoryService):
         try:
             executors().try_submit(Pools.BACKGROUND_LLM, self._run_memory_maintenance, character)
         except Exception as e:
-            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить ревизию памяти в очередь: {e}")
+            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить ревизию памяти в очередь: {format_exception(e)}")
             with self._compression_guard:
                 self._maintenance_inflight.discard(char_id)
 
@@ -413,7 +414,7 @@ class HistoryController(HistoryService):
                 mem.run_maintenance()
         except Exception as e:
             logger.warning(
-                f"[HistoryController][{char_id}] Memory maintenance failed: {e}", exc_info=True
+                f"[HistoryController][{char_id}] Memory maintenance failed: {format_exception(e)}", exc_info=True
             )
         finally:
             with self._compression_guard:
@@ -531,7 +532,7 @@ class HistoryController(HistoryService):
             self._extract_memory_candidates(character, messages_to_compress, epoch=epoch)
         except Exception as e:
             logger.warning(
-                f"[HistoryController][{char_id}] Memory candidate extraction failed: {e}",
+                f"[HistoryController][{char_id}] Memory candidate extraction failed: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -604,7 +605,7 @@ class HistoryController(HistoryService):
                 )
             )
         except Exception as e:
-            logger.warning(f"[HistoryController][{char_id}] candidate request failed: {e}")
+            logger.warning(f"[HistoryController][{char_id}] candidate request failed: {format_exception(e)}")
             return
 
         if not result or not getattr(result, "ok", False) or not (result.text or "").strip():
@@ -812,7 +813,7 @@ class HistoryController(HistoryService):
                 Pools.BACKGROUND_LLM, self._run_post_response_compression, character
             )
         except Exception as e:
-            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить сжатие в очередь: {e}")
+            logger.warning(f"[HistoryController][{char_id}] Не удалось поставить сжатие в очередь: {format_exception(e)}")
             with self._compression_guard:
                 self._background_compression_inflight.discard(char_id)
 
@@ -854,7 +855,7 @@ class HistoryController(HistoryService):
         except Exception as e:
             logger.warning(
                 f"[HistoryController][{getattr(character, 'char_id', 'Unknown')}] "
-                f"Background compression failed: {e}",
+                f"Background compression failed: {format_exception(e)}",
                 exc_info=True,
             )
         finally:
@@ -914,7 +915,7 @@ class HistoryController(HistoryService):
                     "[HistoryController] Compression template unavailable at %s; "
                     "using built-in fallback: %s",
                     resolved_template_path,
-                    exc,
+                    format_exception(exc),
                 )
         if not prompt_template:
             prompt_template = self._DEFAULT_COMPRESSION_PROMPT
@@ -980,7 +981,7 @@ class HistoryController(HistoryService):
                                 if preset_id is not None:
                                     break
                     except Exception as e:
-                        logger.warning(f"[HistoryController] Preset name lookup failed: {e}")
+                        logger.warning(f"[HistoryController] Preset name lookup failed: {format_exception(e)}")
                     if preset_id is None:
                         logger.warning(
                             f"[HistoryController] Не удалось найти пресет '{hc_provider}', используется текущий."
@@ -1001,7 +1002,7 @@ class HistoryController(HistoryService):
             )
 
         except Exception as e:
-            logger.error(f"[HistoryController] Ошибка при сжатии истории: {e}", exc_info=True)
+            logger.error(f"[HistoryController] Ошибка при сжатии истории: {format_exception(e)}", exc_info=True)
             return None
 
     def _run_compression_request(
@@ -1196,7 +1197,7 @@ class HistoryController(HistoryService):
                 return mem.add_memory(**kwargs) is not None
         except Exception as e:
             logger.warning(
-                f"[HistoryController][{char_id or 'Unknown'}] Запись в память не удалась: {e}",
+                f"[HistoryController][{char_id or 'Unknown'}] Запись в память не удалась: {format_exception(e)}",
                 exc_info=True,
             )
             return False
@@ -1248,7 +1249,7 @@ class HistoryController(HistoryService):
             return True
         except Exception as e:
             logger.warning(
-                f"[HistoryController] Не удалось сохранить состояние сводки: {e}", exc_info=True
+                f"[HistoryController] Не удалось сохранить состояние сводки: {format_exception(e)}", exc_info=True
             )
             return False
 
@@ -1511,7 +1512,7 @@ class HistoryController(HistoryService):
             )
             return processed_bytes
         except Exception as e:
-            logger.error(f"[HistoryController] Ошибка при обработке качества изображения: {e}", exc_info=True)
+            logger.error(f"[HistoryController] Ошибка при обработке качества изображения: {format_exception(e)}", exc_info=True)
             return image_bytes
 
     def _apply_history_image_quality_reduction(
@@ -1595,7 +1596,7 @@ class HistoryController(HistoryService):
                                 )
                         except Exception as e:
                             logger.error(
-                                f"[HistoryController] Ошибка при обработке изображения в сообщении {i}: {e}",
+                                f"[HistoryController] Ошибка при обработке изображения в сообщении {i}: {format_exception(e)}",
                                 exc_info=True
                             )
                             new_content_chunks.append(item)

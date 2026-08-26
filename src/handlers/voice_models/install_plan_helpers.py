@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import shutil
@@ -29,7 +30,7 @@ def pip_uninstall_action(packages: list[str], *, description: str, progress: int
         except Exception as e:
             try:
                 if callbacks:
-                    callbacks.log(str(e))
+                    callbacks.log(format_exception(e))
             except Exception:
                 pass
             return False
@@ -194,5 +195,5 @@ def patch_tts_with_rvc_audio(
         return True
     except Exception as exc:
         if callbacks is not None:
-            callbacks.log(f"Failed to patch tts_with_rvc/lib/audio.py: {exc}")
+            callbacks.log(f"Failed to patch tts_with_rvc/lib/audio.py: {format_exception(exc)}")
         return False

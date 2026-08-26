@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import ast
 from dataclasses import dataclass
@@ -189,7 +190,7 @@ class _SafeExpressionEvaluator:
         try:
             return format(value, format_spec)
         except (TypeError, ValueError) as exc:
-            raise SafeEvalError(f"Invalid formatted-string format spec: {exc}") from exc
+            raise SafeEvalError(f"Invalid formatted-string format spec: {format_exception(exc)}") from exc
 
     def _visit_BoolOp(self, node: ast.BoolOp) -> Any:
         if not self._policy.allow_bool_ops:

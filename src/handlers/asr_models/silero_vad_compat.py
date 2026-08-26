@@ -1,6 +1,7 @@
 """Compatibility helpers for loading Silero VAD on Windows."""
 
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from importlib import resources
 from typing import Any
@@ -25,4 +26,4 @@ def load_silero_vad_compatible() -> Any:
             native_path = path_for_native_loader(model_path)
             return init_jit_model(native_path)
     except NativePathError as exc:
-        raise RuntimeError(f"Silero VAD model path is not native-loader compatible: {exc}") from exc
+        raise RuntimeError(f"Silero VAD model path is not native-loader compatible: {format_exception(exc)}") from exc

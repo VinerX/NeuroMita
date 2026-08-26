@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any, Optional
 
@@ -75,7 +76,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
             else:
                 logger.error("[API UI] dispatch_to_gui received non-callable")
         except Exception as e:
-            logger.error(f"[API UI] dispatched callable crashed: {e}", exc_info=True)
+            logger.error(f"[API UI] dispatched callable crashed: {format_exception(e)}", exc_info=True)
             try:
                 if hasattr(self.view, "provider_label"):
                     self.view.provider_label.setText("API UI: dispatched callable crashed (see logs)")
@@ -107,7 +108,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
                     try:
                         return fn()
                     except Exception as e2:
-                        logger.error(f"[API UI] handler crashed: {name}: {e2}", exc_info=True)
+                        logger.error(f"[API UI] handler crashed: {name}: {format_exception(e2)}", exc_info=True)
                         try:
                             if hasattr(self.view, "provider_label"):
                                 self.view.provider_label.setText(f"API UI error: {name} (see logs)")
@@ -115,7 +116,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
                             pass
                         return None
 
-                logger.error(f"[API UI] handler crashed: {name}: {e}", exc_info=True)
+                logger.error(f"[API UI] handler crashed: {name}: {format_exception(e)}", exc_info=True)
                 try:
                     if hasattr(self.view, "provider_label"):
                         self.view.provider_label.setText(f"API UI error: {name} (see logs)")
@@ -123,7 +124,7 @@ class ApiSettingsController(QObject, ProtocolsMixin, EditorMixin, PresetsMixin, 
                     pass
                 return None
             except Exception as e:
-                logger.error(f"[API UI] handler crashed: {name}: {e}", exc_info=True)
+                logger.error(f"[API UI] handler crashed: {name}: {format_exception(e)}", exc_info=True)
                 try:
                     if hasattr(self.view, "provider_label"):
                         self.view.provider_label.setText(f"API UI error: {name} (see logs)")

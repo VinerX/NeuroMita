@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import itertools
 import threading
@@ -262,7 +263,7 @@ class SettingsRegistry(MutableMapping[str, Any]):
             callback()
         except Exception as exc:
             logger.error(
-                f"Settings persistence callback failed: {exc}",
+                f"Settings persistence callback failed: {format_exception(exc)}",
                 exc_info=True,
             )
 
@@ -332,7 +333,7 @@ class SettingsRegistry(MutableMapping[str, Any]):
             ) or repr(callback)
             logger.error(
                 f"Settings observer '{callback_name}' failed for "
-                f"key '{change.key}' at revision {change.revision}: {exc}",
+                f"key '{change.key}' at revision {change.revision}: {format_exception(exc)}",
                 exc_info=True,
             )
 

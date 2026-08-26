@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import glob
 from typing import Optional
@@ -179,9 +180,9 @@ class AudioController(AudioStateService):
             # показ переехал к моменту старта воспроизведения (см. корутины ниже).
         except Exception as e:
             performance_traces().finish(trace_id, "error", error_stage="tts.request", error_type=type(e).__name__) if trace_id else None
-            logger.error(f"Ошибка при отправке текста на озвучку: {e}")
+            logger.error(f"Ошибка при отправке текста на озвучку: {format_exception(e)}")
             if task_uid:
-                self._update_task_failed_voiceover(task_uid, str(e))
+                self._update_task_failed_voiceover(task_uid, format_exception(e))
             self.waiting_answer = False
 
     async def run_send_and_receive(self, voice_text, original_text, speaker_command, task_uid=None, message_id=None, trace_id=None):
@@ -216,9 +217,9 @@ class AudioController(AudioStateService):
             trace_status = "error"
             trace_error_stage = "tts.telegram"
             trace_error_type = type(e).__name__
-            logger.error(f"Ошибка при получении озвучки через Telegram: {e}")
+            logger.error(f"Ошибка при получении озвучки через Telegram: {format_exception(e)}")
             if task_uid:
-                self._update_task_failed_voiceover(task_uid, str(e))
+                self._update_task_failed_voiceover(task_uid, format_exception(e))
         finally:
             self.waiting_answer = False
             if trace_id:
@@ -307,9 +308,10 @@ class AudioController(AudioStateService):
             trace_status = "error"
             trace_error_stage = trace_error_stage or "tts.local"
             trace_error_type = trace_error_type or type(e).__name__
-            logger.error(f"Ошибка при выполнении локальной озвучки: {e}")
+            error_description = format_exception(e)
+            logger.error(f"Ошибка при выполнении локальной озвучки: {error_description}")
             if task_uid:
-                self._update_task_failed_voiceover(task_uid, str(e))
+                self._update_task_failed_voiceover(task_uid, error_description)
         finally:
             self.waiting_answer = False
             if trace_id:
@@ -338,7 +340,7 @@ class AudioController(AudioStateService):
                     os.remove(file)
                     logger.info(f"Удален файл: {file}")
                 except Exception as e:
-                    logger.info(f"Ошибка при удалении файла {file}: {e}")
+                    logger.info(f"Ошибка при удалении файла {file}: {format_exception(e)}")
 
     def _on_delete_sound_files(self, event: Event):
         self.delete_all_sound_files()

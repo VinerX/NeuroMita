@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import ctypes
 import os
@@ -144,7 +145,7 @@ def _nvidia_driver_inventory() -> dict[str, Any]:
     try:
         cuda = ctypes.WinDLL("nvcuda.dll")
     except OSError as exc:
-        result["error"] = str(exc)
+        result["error"] = format_exception(exc)
         return result
 
     def bind(name: str, argtypes, restype=ctypes.c_int):
@@ -168,7 +169,7 @@ def _nvidia_driver_inventory() -> dict[str, Any]:
         cu_name = bind("cuDeviceGetName", (ctypes.c_void_p, ctypes.c_int, ctypes.c_int))
         cu_driver = bind("cuDriverGetVersion", (ctypes.POINTER(ctypes.c_int),))
     except (AttributeError, OSError) as exc:
-        result["error"] = str(exc)
+        result["error"] = format_exception(exc)
         return result
 
     code = int(cu_init(0))
@@ -267,11 +268,11 @@ class WindowsHardwareInventoryService(HardwareInventoryService):
                 adapters = _dxgi_adapters()
             except Exception as exc:
                 adapters = []
-                error = str(exc)
+                error = format_exception(exc)
             try:
                 cuda = _nvidia_driver_inventory() if any(item.get("vendor") == "NVIDIA" for item in adapters) else {"available": False, "devices": []}
             except Exception as exc:
-                cuda = {"available": False, "devices": [], "error": str(exc)}
+                cuda = {"available": False, "devices": [], "error": format_exception(exc)}
 
         cuda_by_luid = {
             str(item.get("luid") or ""): item

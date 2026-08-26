@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import time
 import threading
 from handlers.screen_handler import ScreenCapture
@@ -211,7 +212,7 @@ class CaptureController(CaptureService):
                     else:
                         logger.warning(f"Окно с заголовком '{exclude_title}' не найдено.")
                 except Exception as e:
-                    logger.error(f"Ошибка при поиске окна по заголовку '{exclude_title}': {e}")
+                    logger.error(f"Ошибка при поиске окна по заголовку '{exclude_title}': {format_exception(e)}")
 
             self.event_bus.emit("update_screen_capture_exclusion", {
                 'hwnd': hwnd_to_pass,
@@ -343,7 +344,7 @@ class CaptureController(CaptureService):
                         self.send_interval_image()
                     time.sleep(1)
                 except Exception as e:
-                    logger.error(f"Ошибка в периодической проверке отправки изображений: {e}")
+                    logger.error(f"Ошибка в периодической проверке отправки изображений: {format_exception(e)}")
                     time.sleep(5)
         
         self.image_request_thread = task_supervisor().start_thread(

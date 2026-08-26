@@ -1,5 +1,6 @@
 # src/handlers/llm_providers/g4f_provider.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from main_logger import logger
 
@@ -29,5 +30,5 @@ class G4FProvider(OpenAICompatibleProvider):
             )
             return None
         except Exception as e:
-            logger.error(f"g4f import failed unexpectedly: {e}", exc_info=True)
+            logger.error(f"g4f import failed unexpectedly: {format_exception(e)}", exc_info=True)
             return None

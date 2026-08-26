@@ -1,5 +1,6 @@
 # src/managers/llm_request_runner.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import concurrent.futures
 import os
@@ -98,8 +99,8 @@ class LLMRequestRunner:
         try:
             preset_chain = self.preset_resolver.resolve_chain(preset_id)
         except Exception as e:
-            logger.error(f"[LLMRequestRunner] Failed to resolve preset chain: {e}", exc_info=True)
-            return LLMResponse(text=None, error_message=f"Failed to resolve preset: {e}")
+            logger.error(f"[LLMRequestRunner] Failed to resolve preset chain: {format_exception(e)}", exc_info=True)
+            return LLMResponse(text=None, error_message=f"Failed to resolve preset: {format_exception(e)}")
 
         if not preset_chain:
             logger.error("[LLMRequestRunner] Empty preset chain (no main, no fallbacks).")
@@ -208,8 +209,8 @@ class LLMRequestRunner:
             try:
                 req = build_request(preset_attempt, effective_model)
             except Exception as e:
-                logger.error(f"{preset_tag} Failed to build request: {e}", exc_info=True)
-                last_error_message = f"Failed to build request: {e}"
+                logger.error(f"{preset_tag} Failed to build request: {format_exception(e)}", exc_info=True)
+                last_error_message = f"Failed to build request: {format_exception(e)}"
                 self.last_error = build_provider_error(
                     provider=getattr(preset_attempt, "provider_name", "unknown"),
                     provider_message=last_error_message,
@@ -350,7 +351,7 @@ class LLMRequestRunner:
                     finish_attempt(result="cancelled", error_type="OperationCancelledError")
                     operation_cancellation.raise_if_cancelled()
                 attempt_error_type = type(e).__name__
-                last_error_message = f"Error during generation attempt {attempt}: {e}"
+                last_error_message = f"Error during generation attempt {attempt}: {format_exception(e)}"
                 self.last_error = coerce_provider_error(
                     getattr(req, "provider_name", "unknown"),
                     e,
@@ -508,7 +509,7 @@ class LLMRequestRunner:
                     future,
                     pool,
                     cancellation,
-                    reason=str(exc),
+                    reason=format_exception(exc),
                     grace_timeout=supervisor.poll_interval,
                 )
             try:

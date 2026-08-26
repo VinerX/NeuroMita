@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass, field
 import io
@@ -163,7 +164,7 @@ def _validate_embedded_zipapp(path: Path, result: AssetValidationResult) -> None
             if broken is not None:
                 result.add_error(f"NeuroMita.pyz contains a corrupt member: {broken}")
     except (zipfile.BadZipFile, OSError, RuntimeError, ValueError) as exc:
-        result.add_error(f"NeuroMita.pyz is not a valid ZIP application: {exc}")
+        result.add_error(f"NeuroMita.pyz is not a valid ZIP application: {format_exception(exc)}")
 
 
 def classify_asset_name(name: str, tag: str) -> str:

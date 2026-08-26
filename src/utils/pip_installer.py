@@ -3,6 +3,7 @@ PipInstaller 3.1 — упрощённый PTY/Pipes-раннер без снап
 """
 
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import gc
 import json
@@ -43,7 +44,7 @@ class DependencyResolver:
                 with open(self.cache_file_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as ex:
-                logger.error("Ошибка при _load_tree_cache: " + str(ex))
+                logger.error("Ошибка при _load_tree_cache: " + format_exception(ex))
         return {}
 
     def _save_tree_cache(self):
@@ -51,7 +52,7 @@ class DependencyResolver:
             with open(self.cache_file_path, "w", encoding="utf-8") as f:
                 json.dump(self._tree_cache, f, indent=4)
         except Exception as ex:
-            logger.error("Ошибка при _save_tree_cache: " + str(ex))
+            logger.error("Ошибка при _save_tree_cache: " + format_exception(ex))
 
     def _find_dist_info_path(self, package_name_canon: NormalizedName):
         cached = self._dist_info_cache.get(package_name_canon)
@@ -72,7 +73,7 @@ class DependencyResolver:
                         logger.debug(f"Найден dist-info для {package_name_canon}: {p}")
                         return p
                 except Exception as ex:
-                    logger.debug(f"Пропуск повреждённого dist-info {item}: {ex}")
+                    logger.debug(f"Пропуск повреждённого dist-info {item}: {format_exception(ex)}")
                     continue
         self._dist_info_cache[package_name_canon] = None
         return None
@@ -88,7 +89,7 @@ class DependencyResolver:
                 if v and v[0].isdigit():
                     return str(parse_version(v))
         except Exception as ex:
-            logger.error("Ошибка при _get_package_version: " + str(ex))
+            logger.error("Ошибка при _get_package_version: " + format_exception(ex))
         meta = os.path.join(dist_path, "METADATA")
         if os.path.exists(meta):
             try:
@@ -97,7 +98,7 @@ class DependencyResolver:
                         if line.lower().startswith("version:"):
                             return line.split(":", 1)[1].strip()
             except Exception as ex:
-                logger.error("Ошибка при _get_package_version (METADATA): " + str(ex))
+                logger.error("Ошибка при _get_package_version (METADATA): " + format_exception(ex))
         return None
 
     def _get_direct_dependencies(self, package_name_canon: NormalizedName):
@@ -119,9 +120,9 @@ class DependencyResolver:
                                     if req_part:
                                         deps.add(canonicalize_name(Requirement(req_part).name))
                                 except Exception as ex:
-                                    logger.error("Ошибка парсинга requires-dist: " + str(ex))
+                                    logger.error("Ошибка парсинга requires-dist: " + format_exception(ex))
                 except Exception as ex:
-                    logger.error("Ошибка чтения METADATA: " + str(ex))
+                    logger.error("Ошибка чтения METADATA: " + format_exception(ex))
         self._dep_cache[package_name_canon] = deps
         logger.debug(f"Direct deps for {package_name_canon}: {deps}")
         return deps
@@ -168,7 +169,7 @@ class DependencyResolver:
                         pkgs.add(pkg_name)
                         logger.debug(f"Найден пакет: {pkg_name}")
                     except Exception as ex:
-                        logger.error("Ошибка при get_all_installed_packages: " + str(ex))
+                        logger.error("Ошибка при get_all_installed_packages: " + format_exception(ex))
         else:
             logger.warning(f"Директория {self.libs_path} не существует для get_all_installed_packages.")
         logger.debug(f"Все установленные пакеты: {pkgs}")
@@ -705,7 +706,7 @@ class PipInstaller:
                 shutil.rmtree(target)
             except OSError as exc:
                 self.update_log(
-                    f"Повреждённый приватный uv не удалось очистить ({exc}). "
+                    f"Повреждённый приватный uv не удалось очистить ({format_exception(exc)}). "
                     "Установка остановлена: fallback на другой installer запрещён."
                 )
                 return False
@@ -744,7 +745,7 @@ class PipInstaller:
         try:
             return bool(self._run_pip_process(cmd, description))
         except Exception as exc:
-            self.update_log(f"Не удалось очистить кэш: {exc}")
+            self.update_log(f"Не удалось очистить кэш: {format_exception(exc)}")
             return False
 
         
@@ -783,7 +784,7 @@ class PipInstaller:
                 logger.warning(f"[installer] Probe command exited with code {proc.returncode}: {details}")
             return False
         except Exception as ex:
-            logger.warning(f"[installer] Failed to probe installer command {cmd}: {ex}")
+            logger.warning(f"[installer] Failed to probe installer command {cmd}: {format_exception(ex)}")
             return False
 
     def _unload_module_from_sys(self, module_name: str):
@@ -803,7 +804,7 @@ class PipInstaller:
                     self.update_log(f"Выгружаем модуль из памяти: {mod_name}")
                     del sys.modules[mod_name]
             except Exception as e:
-                logger.warning(f"Не удалось выгрузить модуль {mod_name}: {e}")
+                logger.warning(f"Не удалось выгрузить модуль {mod_name}: {format_exception(e)}")
         gc.collect()
 
     def _is_protected_dependency(self, package_canon: NormalizedName, protected_deps: Set[NormalizedName]) -> bool:
@@ -956,7 +957,7 @@ class PipInstaller:
                         if p and not _under_dist_info(p):
                             code_targets.add(p)
             except Exception as ex:
-                logger.warning(f"[installer] {pkg_name}: failed to read RECORD: {ex}")
+                logger.warning(f"[installer] {pkg_name}: failed to read RECORD: {format_exception(ex)}")
 
             if code_targets:
                 # RECORD дал точный список — этого достаточно, каталоги не трогаем.
@@ -979,7 +980,7 @@ class PipInstaller:
                             if p and not _under_dist_info(p):
                                 code_targets.add(p)
             except Exception as ex:
-                logger.warning(f"[installer] {pkg_name}: failed to read top_level.txt: {ex}")
+                logger.warning(f"[installer] {pkg_name}: failed to read top_level.txt: {format_exception(ex)}")
 
         if not code_targets:
             base = canonicalize_name(pkg_name).replace("-", "_")
@@ -1038,7 +1039,7 @@ class PipInstaller:
                     return True
             except Exception as ex:
                 logger.warning(
-                    f"[installer] {pkg_name}: failed to remove {path} (attempt {attempt+1}/{retries}): {ex}"
+                    f"[installer] {pkg_name}: failed to remove {path} (attempt {attempt+1}/{retries}): {format_exception(ex)}"
                 )
                 self._unload_module_from_sys(pkg_name)
                 gc.collect()
@@ -2263,7 +2264,7 @@ class PipInstaller:
             self.update_status(state.description + " — ошибка.")
             return False, -1
         except Exception as e:
-            self.update_log(f"ОШИБКА запуска subprocess: {e}")
+            self.update_log(f"ОШИБКА запуска subprocess: {format_exception(e)}")
             self.update_status(state.description + " — ошибка.")
             return False, -1
 
@@ -2341,7 +2342,7 @@ class PipInstaller:
             except TypeError:
                 pty = PtyProcess.spawn(cmdline)
         except Exception as e:
-            logger.warning(f"PTY-режим недоступен или ошибка запуска PTY: {e}")
+            logger.warning(f"PTY-режим недоступен или ошибка запуска PTY: {format_exception(e)}")
             return False, -1
 
         self._set_active_process(pty, lambda: pty.close(force=True))

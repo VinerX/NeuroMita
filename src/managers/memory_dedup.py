@@ -17,6 +17,7 @@ MemoryDeduplicator — векторная дедупликация воспом�
   MEMORY_DEDUP_THRESHOLD   float  default 0.94
   MEMORY_DEDUP_AGE_DECAY   bool   default True
 """
+from core.error_utils import format_exception
 
 import datetime
 import json
@@ -252,7 +253,7 @@ class MemoryDeduplicator:
                 if rows:
                     return rows
             except Exception as e:
-                logging.debug(f"[MemoryDeduplicator] embeddings JOIN failed, fallback: {e}")
+                logging.debug(f"[MemoryDeduplicator] embeddings JOIN failed, fallback: {format_exception(e)}")
 
             # Fallback: legacy BLOB column on memories table
             try:
@@ -270,5 +271,5 @@ class MemoryDeduplicator:
                 )
                 return cur.fetchall() or []
             except Exception as e:
-                logging.warning(f"[MemoryDeduplicator] fallback embedding query failed: {e}")
+                logging.warning(f"[MemoryDeduplicator] fallback embedding query failed: {format_exception(e)}")
                 return []

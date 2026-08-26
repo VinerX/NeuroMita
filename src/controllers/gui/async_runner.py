@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import weakref
@@ -142,7 +143,7 @@ def run_async(
         try:
             result = worker()
         except Exception as exc:
-            logger.error(f"Async GUI worker failed: {name}: {exc}", exc_info=True)
+            logger.error(f"Async GUI worker failed: {name}: {format_exception(exc)}", exc_info=True)
             if on_error is None:
                 finish()
                 return

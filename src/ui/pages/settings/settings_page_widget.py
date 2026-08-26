@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import qtawesome as qta
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
@@ -621,7 +622,7 @@ class SettingsPage(QWidget):
             self._set_section_placeholder(
                 page,
                 "error",
-                _("Компонент недоступен", "Component unavailable") + f": {error}",
+                _("Компонент недоступен", "Component unavailable") + f": {format_exception(error)}",
             )
         self._loading_sections.discard(category)
 
@@ -643,10 +644,10 @@ class SettingsPage(QWidget):
             logger.error(
                 "Failed to build settings section '%s': %s",
                 category,
-                exc,
+                format_exception(exc),
                 exc_info=True,
             )
-            self._set_section_placeholder(page, "error", f"Failed to load section: {exc}")
+            self._set_section_placeholder(page, "error", f"Failed to load section: {format_exception(exc)}")
         finally:
             self._loading_sections.discard(category)
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import uuid
@@ -224,10 +225,10 @@ class TTSService:
             return True
 
         except RuntimeError as e:
-            self.emit_event("log", f"[tts:warmup] runtime error for model_id={model_id}: {e}")
+            self.emit_event("log", f"[tts:warmup] runtime error for model_id={model_id}: {format_exception(e)}")
             return False
         except Exception as exc:
-            self.emit_event("log", f"[tts:warmup] unexpected error for model_id={model_id}: {exc}")
+            self.emit_event("log", f"[tts:warmup] unexpected error for model_id={model_id}: {format_exception(exc)}")
             return False
         finally:
             for p in [out, produced]:

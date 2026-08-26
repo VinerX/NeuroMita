@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # src/handlers/asr_models/google_recognizer.py
 from typing import Optional
 import numpy as np
@@ -111,7 +112,7 @@ class GoogleRecognizer(SpeechRecognizerInterface):
         except self._sr.UnknownValueError:
             return None
         except Exception as e:
-            self.logger.error(f"Ошибка при распознавании Google: {e}")
+            self.logger.error(f"Ошибка при распознавании Google: {format_exception(e)}")
             return None
 
     def cleanup(self) -> None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import sys
@@ -314,7 +315,7 @@ class FishSpeechInstallSpec:
                 return False
 
             except Exception as e:
-                log(_(f"Ошибка компиляции: {e}", f"Compilation error: {e}"))
+                log(_(f"Ошибка компиляции: {format_exception(e)}", f"Compilation error: {format_exception(e)}"))
                 log(traceback.format_exc())
                 status(_("Ошибка компиляции", "Compilation error"))
                 if suspended and engine is not None:
@@ -719,7 +720,7 @@ class FishSpeechModel(IVoiceModel):
                 open(marker, "w").close()
                 logger.info(f"Создан маркер .project-root для fish_speech_lib: {marker}")
         except Exception as ex:
-            logger.warning(f"Не удалось создать .project-root для fish_speech_lib: {ex}")
+            logger.warning(f"Не удалось создать .project-root для fish_speech_lib: {format_exception(ex)}")
 
     def get_display_name(self) -> str:
         mode = self._mode()
@@ -909,7 +910,7 @@ class FishSpeechModel(IVoiceModel):
 
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"Ошибка при создании озвучки с Fish Speech ({self.model_id}): {error}")
+            logger.info(f"Ошибка при создании озвучки с Fish Speech ({self.model_id}): {format_exception(error)}")
             return None
 
     def _mode(self) -> str:

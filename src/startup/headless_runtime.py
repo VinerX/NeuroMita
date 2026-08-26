@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import signal
@@ -142,7 +143,7 @@ class HeadlessRuntimeHost:
             self.request_stop("keyboard interrupt")
             return 0
         except Exception as exc:
-            self.logger.error(f"Headless runtime failed: {exc}", exc_info=True)
+            self.logger.error(f"Headless runtime failed: {format_exception(exc)}", exc_info=True)
             return 1
         finally:
             controller = self.controller
@@ -150,7 +151,7 @@ class HeadlessRuntimeHost:
                 try:
                     controller.close_app()
                 except Exception as exc:
-                    self.logger.error(f"Headless shutdown failed: {exc}", exc_info=True)
+                    self.logger.error(f"Headless shutdown failed: {format_exception(exc)}", exc_info=True)
             startup_trace.mark("headless.stopped")
             startup_trace.write()
             self._restore_signal_handlers()

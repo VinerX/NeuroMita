@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import queue
 import threading
@@ -145,7 +146,7 @@ class SerialDispatcher:
                 item.callback(*item.args, **item.kwargs)
             except BaseException as exc:
                 logger.error(
-                    f"Serial task '{item.description}' failed in '{self._name}': {exc}",
+                    f"Serial task '{item.description}' failed in '{self._name}': {format_exception(exc)}",
                     exc_info=True,
                 )
             finally:

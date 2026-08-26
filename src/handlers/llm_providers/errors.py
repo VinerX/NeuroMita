@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import ast
 import json
@@ -544,7 +545,7 @@ def coerce_provider_error(provider: str, exc: Exception, *, url: Optional[str] =
         except Exception:
             payload = getattr(response, "text", None)
 
-    provider_message = _compact_text(getattr(exc, "message", None)) or _compact_text(str(exc))
+    provider_message = _compact_text(getattr(exc, "message", None)) or _compact_text(format_exception(exc))
     return build_provider_error(
         provider,
         status_code=status_code,

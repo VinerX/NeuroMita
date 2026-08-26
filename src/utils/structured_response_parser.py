@@ -1,5 +1,6 @@
 # src/utils/structured_response_parser.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import re
@@ -268,7 +269,7 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
         except Exception as second_error:
             raise StructuredResponseParseError(
                 f"JSON does not match StructuredResponse schema "
-                f"(even after coercion): {second_error}"
+                f"(even after coercion): {format_exception(second_error)}"
             ) from first_error
 
 

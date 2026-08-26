@@ -6,6 +6,7 @@ FineTuneCollector — сбор данных для дообучения моде
 с полным контекстом (messages), метаданными модели/провайдера и опциональным рейтингом.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -120,7 +121,7 @@ class FineTuneCollector:
             return sample_id
 
         except Exception as e:
-            logger.error(f"[FineTuneCollector] Failed to save sample: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] Failed to save sample: {format_exception(e)}", exc_info=True)
             return None
 
     def enforce_limit(self) -> None:
@@ -161,7 +162,7 @@ class FineTuneCollector:
                         fp.write_text("\n".join(lines[to_drop:]) + "\n", encoding="utf-8")
                         to_drop = 0
         except Exception as e:
-            logger.error(f"[FineTuneCollector] _enforce_limit error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] _enforce_limit error: {format_exception(e)}", exc_info=True)
 
     # ── Rating ────────────────────────────────────────────────────────────────
 
@@ -195,7 +196,7 @@ class FineTuneCollector:
                         return True
             return False
         except Exception as e:
-            logger.error(f"[FineTuneCollector] Failed to update rating: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] Failed to update rating: {format_exception(e)}", exc_info=True)
             return False
 
     # ── Pending sample_id (for UI rating buttons) ─────────────────────────────
@@ -258,7 +259,7 @@ class FineTuneCollector:
                     except json.JSONDecodeError:
                         pass
         except Exception as e:
-            logger.error(f"[FineTuneCollector] get_stats error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] get_stats error: {format_exception(e)}", exc_info=True)
 
         result = {
             "total": total,
@@ -337,7 +338,7 @@ class FineTuneCollector:
 
                     results.append(rec)
         except Exception as e:
-            logger.error(f"[FineTuneCollector] load_samples error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] load_samples error: {format_exception(e)}", exc_info=True)
 
         return results
 
@@ -390,7 +391,7 @@ class FineTuneCollector:
                         f.write(json.dumps(record, ensure_ascii=False) + "\n")
                         count += 1
         except Exception as e:
-            logger.error(f"[FineTuneCollector] export_sharegpt error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] export_sharegpt error: {format_exception(e)}", exc_info=True)
         return count
 
     def clear_all(self) -> int:
@@ -403,7 +404,7 @@ class FineTuneCollector:
                     count += 1
                 self._pending_sample_id = None
         except Exception as e:
-            logger.error(f"[FineTuneCollector] clear_all error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] clear_all error: {format_exception(e)}", exc_info=True)
         return count
 
     def export_raw_jsonl(self, samples: List[Dict], output_path: str) -> int:
@@ -415,5 +416,5 @@ class FineTuneCollector:
                     f.write(json.dumps(sample, ensure_ascii=False) + "\n")
                     count += 1
         except Exception as e:
-            logger.error(f"[FineTuneCollector] export_raw_jsonl error: {e}", exc_info=True)
+            logger.error(f"[FineTuneCollector] export_raw_jsonl error: {format_exception(e)}", exc_info=True)
         return count

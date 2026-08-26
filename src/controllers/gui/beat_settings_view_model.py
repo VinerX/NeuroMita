@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from typing import Any
 
@@ -82,7 +83,7 @@ class BeatSettingsViewModel(IntentViewModel[BeatSettingsState]):
             "beat-settings-refresh",
             worker,
             applied,
-            lambda error: self.update_state(busy=False, error=str(error)),
+            lambda error: self.update_state(busy=False, error=format_exception(error)),
         )
 
     def rebuild_cache(self, directory: str) -> None:
@@ -120,8 +121,8 @@ class BeatSettingsViewModel(IntentViewModel[BeatSettingsState]):
             message = _(
                 "Не удалось построить кеш битов:\n{}",
                 "Failed to build beat cache:\n{}",
-            ).format(error)
-            self.update_state(busy=False, message=message, error=str(error))
+            ).format(format_exception(error))
+            self.update_state(busy=False, message=message, error=format_exception(error))
             self.emit_effect(
                 BeatShowMessage(_("Beat Sync", "Beat Sync"), message, error=True)
             )

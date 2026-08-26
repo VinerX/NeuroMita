@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import shutil
@@ -66,7 +67,7 @@ class PromptDownloader:
             logger.info("Successfully downloaded and replaced prompts")
             return True
         except Exception as exc:
-            logger.error("Error in download_and_replace_prompts: %s", exc, exc_info=True)
+            logger.error("Error in download_and_replace_prompts: %s", format_exception(exc), exc_info=True)
             self._remove_path(staging_path)
             return False
 

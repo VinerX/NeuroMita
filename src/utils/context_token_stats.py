@@ -4,6 +4,7 @@
 контекста (ui.dialogs.context_viewer_dialog): обе стороны должны считать
 секции и проценты одинаково, а UI не должен импортировать backend-слои.
 """
+from core.error_utils import format_exception
 from typing import Any, Dict
 
 _SECTION_MARKERS = (
@@ -125,7 +126,7 @@ def compute_token_usage(messages: Any) -> Dict[str, Any]:
         from managers.context_counter import ContextCounter
         counter = ContextCounter()
     except Exception as e:
-        return {"available": False, "note": f"ContextCounter unavailable: {e}"}
+        return {"available": False, "note": f"ContextCounter unavailable: {format_exception(e)}"}
 
     # Текущий триггер хода — последнее сообщение игрока: реальная реплика ЛИБО
     # idle-событие «игрок молчит», которое физически стоит последним и по смыслу

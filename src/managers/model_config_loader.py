@@ -1,5 +1,6 @@
 # src/managers/model_config_loader.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -156,7 +157,7 @@ class ModelRuntimeConfig:
                 self.max_model_tokens = _to_int(value, self.max_model_tokens)
 
         except Exception as e:
-            logger.warning(f"[ModelRuntimeConfig] Failed to apply setting {key}={value}: {e}")
+            logger.warning(f"[ModelRuntimeConfig] Failed to apply setting {key}={value}: {format_exception(e)}")
 
 
 class ModelConfigLoader:
@@ -234,7 +235,7 @@ class ModelConfigLoader:
                     forced.add(key)
                     applied.append(f"{key}={new_val}")
                 except Exception as e:
-                    logger.warning(f"[ModelConfigLoader] Failed to apply preset override {key}={spec['value']}: {e}")
+                    logger.warning(f"[ModelConfigLoader] Failed to apply preset override {key}={spec['value']}: {format_exception(e)}")
 
         # enable_thinking: boolean or None (None = don't send the param)
         et_spec = overrides.get("enable_thinking") or {}

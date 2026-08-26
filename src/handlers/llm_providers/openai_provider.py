@@ -1,5 +1,6 @@
 # src/handlers/llm_providers/openai_provider.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 
@@ -60,10 +61,10 @@ class OpenAIProvider(OpenAICompatibleProvider):
                 max_retries=0,
             )
         except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
+            logger.error(f"Failed to initialize OpenAI client: {format_exception(e)}", exc_info=True)
             raise build_provider_error(
                 self.name,
-                provider_message=f"Failed to initialize OpenAI client: {e}",
+                provider_message=f"Failed to initialize OpenAI client: {format_exception(e)}",
                 url=req.api_url,
             ) from e
 

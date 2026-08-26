@@ -12,6 +12,7 @@
 закрепляется собственный AppUserModelID.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import sys
 import os
@@ -76,4 +77,4 @@ def set_app_user_model_id() -> None:
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
     except Exception as exc:  # pragma: no cover - platform dependent
-        logger.debug(f"set_app_user_model_id skipped: {exc}")
+        logger.debug(f"set_app_user_model_id skipped: {format_exception(exc)}")

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import shutil
@@ -221,7 +222,7 @@ def _extract_with_7z(
     except (PasswordError, ArchiveCancelled):
         raise
     except Exception as exc:
-        log(f"External 7z extractor failed with exception: {exc}.", "warning")
+        log(f"External 7z extractor failed with exception: {format_exception(exc)}.", "warning")
         shutil.rmtree(stage_dir, ignore_errors=True)
         return False
     finally:
@@ -281,7 +282,7 @@ def _extract_with_winrar(
     except (PasswordError, ArchiveCancelled):
         raise
     except Exception as exc:
-        log(f"WinRAR extractor failed with exception: {exc}.", "warning")
+        log(f"WinRAR extractor failed with exception: {format_exception(exc)}.", "warning")
         shutil.rmtree(stage_dir, ignore_errors=True)
         return False
     finally:
@@ -337,7 +338,7 @@ def _extract_zip_with_expand_archive(
     except ArchiveCancelled:
         raise
     except Exception as exc:
-        log(f"Expand-Archive failed with exception: {exc}.", "warning")
+        log(f"Expand-Archive failed with exception: {format_exception(exc)}.", "warning")
         shutil.rmtree(stage_dir, ignore_errors=True)
         return False
     finally:
@@ -397,9 +398,9 @@ def _extract_zip_python(
                         )
                         last_log = now
             except RuntimeError as exc:
-                msg = str(exc).lower()
+                msg = format_exception(exc).lower()
                 if "password" in msg or "encrypted" in msg:
-                    raise PasswordError(str(exc)) from exc
+                    raise PasswordError(format_exception(exc)) from exc
                 raise
             log(f"ZIP extraction finished: {archive.name}")
     except zipfile.BadZipFile as exc:
@@ -454,7 +455,7 @@ def _extract_7z_python(
             raise ArchiveCancelled(f"Extraction cancelled: {archive.name}")
         log(f"7z extraction finished: {archive.name}")
     except py7zr.exceptions.PasswordRequired as exc:
-        raise PasswordError(str(exc)) from exc
+        raise PasswordError(format_exception(exc)) from exc
     except py7zr.exceptions.Bad7zFile as exc:
         if password:
             raise PasswordError("Wrong tester code") from exc
@@ -524,7 +525,7 @@ def extract_archive(
         except ImportError:
             pass
         except py7zr.exceptions.PasswordRequired as exc:
-            raise PasswordError(str(exc)) from exc
+            raise PasswordError(format_exception(exc)) from exc
         except py7zr.exceptions.Bad7zFile as exc:
             if password:
                 raise PasswordError("Wrong tester code") from exc
@@ -582,12 +583,12 @@ def wipe_dir(target: Path, logger=None) -> None:
             try:
                 shutil.rmtree(child)
             except Exception as exc:
-                log(f"Failed to remove directory {child}: {exc}", "warning")
+                log(f"Failed to remove directory {child}: {format_exception(exc)}", "warning")
         else:
             try:
                 child.unlink()
             except OSError as exc:
-                log(f"Failed to remove file {child}: {exc}", "warning")
+                log(f"Failed to remove file {child}: {format_exception(exc)}", "warning")
 
     if backup and backup.exists():
         log(f"Restoring preserved user_data to {user_data}")

@@ -4,6 +4,7 @@ MemorySearchTool — позволяет Мите самостоятельно и
 Работает независимо от RAG_ENABLED (автоматический RAG и ручная тула — разные галки).
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import datetime
 import re
@@ -251,8 +252,8 @@ class MemorySearchTool(Tool):
                 config_overrides=overrides,
             )
         except Exception as e:
-            logger.error(f"[memory_search] RAG error: {e}", exc_info=True)
-            return f"[memory_search] Ошибка поиска: {e}"
+            logger.error(f"[memory_search] RAG error: {format_exception(e)}", exc_info=True)
+            return f"[memory_search] Ошибка поиска: {format_exception(e)}"
 
         if not results:
             date_hint = ""

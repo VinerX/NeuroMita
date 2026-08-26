@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import time
 import re
@@ -347,7 +348,7 @@ class SpeechController(SpeechService):
                 try:
                     self._reconcile_once()
                 except Exception as e:
-                    logger.error(f"ASR reconcile failed: {e}", exc_info=True)
+                    logger.error(f"ASR reconcile failed: {format_exception(e)}", exc_info=True)
 
                 with self._state_lock:
                     self._applied_generation = generation
@@ -397,7 +398,7 @@ class SpeechController(SpeechService):
             SpeechRecognition.speech_recognition_stop()
             time.sleep(0.2)
         except Exception as e:
-            logger.error(f"Остановка распознавания не удалась: {e}", exc_info=True)
+            logger.error(f"Остановка распознавания не удалась: {format_exception(e)}", exc_info=True)
         self.mic_recognition_active = False
         self.asr_is_ready = False
         self._running_engine = None
@@ -802,7 +803,7 @@ class SpeechController(SpeechService):
                 self.settings.set("MIC_ACTIVE", bool(active))
                 self.settings.save_settings()
         except Exception as e:
-            logger.error(f"Не удалось записать MIC_ACTIVE={active}: {e}", exc_info=True)
+            logger.error(f"Не удалось записать MIC_ACTIVE={active}: {format_exception(e)}", exc_info=True)
 
     def _on_start_speech_recognition(self, event: Event):
         dev_id = (event.data or {}).get('device_id')
@@ -842,7 +843,7 @@ class SpeechController(SpeechService):
                         result.append(f"{name} ({i})")
                 return result or ["Микрофоны не найдены"]
             except Exception as e:
-                logger.error(f"Ошибка получения списка микрофонов: {e}")
+                logger.error(f"Ошибка получения списка микрофонов: {format_exception(e)}")
                 return ["Ошибка загрузки"]
 
         if not cb:
@@ -900,7 +901,7 @@ class SpeechController(SpeechService):
             try:
                 result = self._compute_asr_models_glossary(refresh=refresh)
             except Exception as exc:
-                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {exc}", exc_info=True)
+                logger.error(f"GET_ASR_MODELS_GLOSSARY error: {format_exception(exc)}", exc_info=True)
                 result = []
                 error = exc
 

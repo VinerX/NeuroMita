@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -55,5 +56,5 @@ class GenerationInputCollector:
 
             return capture_id
         except Exception as e:
-            logger.error(f"[GenerationInputCollector] Failed to save capture: {e}", exc_info=True)
+            logger.error(f"[GenerationInputCollector] Failed to save capture: {format_exception(e)}", exc_info=True)
             return None

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from dataclasses import dataclass
@@ -153,7 +154,7 @@ class CharacterResourceManager:
                 callback()
             except Exception as exc:
                 logger.warning(
-                    f"[CharacterResources] Failed to shutdown {name} executor: {exc}"
+                    f"[CharacterResources] Failed to shutdown {name} executor: {format_exception(exc)}"
                 )
 
         try:
@@ -162,7 +163,7 @@ class CharacterResourceManager:
             RAGManager.shutdown_executor()
         except Exception as exc:
             logger.warning(
-                f"[CharacterResources] Failed to shutdown rag executor: {exc}"
+                f"[CharacterResources] Failed to shutdown rag executor: {format_exception(exc)}"
             )
 
 

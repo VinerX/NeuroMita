@@ -1,5 +1,6 @@
 """AI-engine proxy for the optional RAG cross-encoder reranker."""
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass
 from threading import Lock
@@ -145,7 +146,7 @@ class CrossEncoderReranker:
                 return activated
             except Exception as exc:
                 logger.warning(
-                    f"[CrossEncoder] RAG runtime activation failed: {exc}"
+                    f"[CrossEncoder] RAG runtime activation failed: {format_exception(exc)}"
                 )
                 return False
 
@@ -228,8 +229,8 @@ class CrossEncoderReranker:
                 total_candidates=len(cands),
             )
         except Exception as exc:
-            logger.warning(f"[CrossEncoder] AI engine rerank failed (ignored): {exc}")
-            self._set_state(ModelState.ERROR, str(exc), epoch=epoch)
+            logger.warning(f"[CrossEncoder] AI engine rerank failed (ignored): {format_exception(exc)}")
+            self._set_state(ModelState.ERROR, format_exception(exc), epoch=epoch)
             return
 
         updates = result.get("updates") if isinstance(result, dict) else None

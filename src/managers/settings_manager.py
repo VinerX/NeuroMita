@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import atexit
 import json
@@ -143,11 +144,11 @@ class SettingsManager:
             logger.info("Настройки загружены")
             return loaded if isinstance(loaded, dict) else {}
         except json.JSONDecodeError as exc:
-            logger.error(f"Не удалось загрузить настройки: {exc}")
+            logger.error(f"Не удалось загрузить настройки: {format_exception(exc)}")
             self._backup_corrupt_settings_file()
             return {}
         except OSError as exc:
-            logger.error(f"Не удалось загрузить настройки: {exc}")
+            logger.error(f"Не удалось загрузить настройки: {format_exception(exc)}")
             return {}
 
     def _backup_corrupt_settings_file(self) -> None:
@@ -158,7 +159,7 @@ class SettingsManager:
             shutil.copy2(self.config_path, backup_path)
             logger.warning(f"Повреждённые настройки сохранены в: {backup_path}")
         except OSError as exc:
-            logger.error(f"Не удалось сохранить резервную копию настроек: {exc}")
+            logger.error(f"Не удалось сохранить резервную копию настроек: {format_exception(exc)}")
 
     def load_settings(self) -> None:
         loaded = self._read_settings_file()
@@ -221,7 +222,7 @@ class SettingsManager:
             try:
                 self._write_file()
             except Exception as exc:
-                logger.error(f"Ошибка сохранения настроек: {exc}")
+                logger.error(f"Ошибка сохранения настроек: {format_exception(exc)}")
 
     def close(self) -> None:
         self._stop_writer()
@@ -247,6 +248,6 @@ class SettingsManager:
         try:
             self._write_file()
         except Exception as exc:
-            logger.error(f"Ошибка финального сохранения настроек: {exc}")
+            logger.error(f"Ошибка финального сохранения настроек: {format_exception(exc)}")
         self.registry.close()
         task_supervisor().cancel_owner(self, timeout=0.5)

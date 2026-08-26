@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 from typing import Dict, Any, List, Optional
 import os
 import re
@@ -274,7 +275,7 @@ class PromptController(PromptBuilderService):
                 ),
             }
         except Exception as exc:
-            logger.debug("Character environment context is unavailable: %s", exc)
+            logger.debug("Character environment context is unavailable: %s", format_exception(exc))
             return None
 
     @staticmethod
@@ -461,7 +462,7 @@ class PromptController(PromptBuilderService):
         except Exception as e:
             logger.error(
                 f"[PromptController] Ошибка DSL при обработке шаблона '{chosen_template}' "
-                f"для персонажа {getattr(character, 'char_id', '')}: {e}",
+                f"для персонажа {getattr(character, 'char_id', '')}: {format_exception(e)}",
                 exc_info=True
             )
             return [], [], []
@@ -491,7 +492,7 @@ class PromptController(PromptBuilderService):
         except Exception as e:
             logger.warning(
                 f"[PromptController] Ошибка получения памяти для персонажа "
-                f"{getattr(character, 'char_id', '')}: {e}"
+                f"{getattr(character, 'char_id', '')}: {format_exception(e)}"
             )
             memory_blocks = []
 
@@ -515,7 +516,7 @@ class PromptController(PromptBuilderService):
         except Exception as e:
             logger.warning(
                 f"[PromptController] Ошибка получения напоминаний для персонажа "
-                f"{getattr(character, 'char_id', '')}: {e}"
+                f"{getattr(character, 'char_id', '')}: {format_exception(e)}"
             )
 
         return stable_system_messages, volatile_system_messages, dsl_system_infos
@@ -860,7 +861,7 @@ class PromptController(PromptBuilderService):
             if character.get_variable("playingGame", False) and hasattr(character, "game_manager"):
                 game_state_prompt_content = character.game_manager.get_active_game_state_prompt()
         except Exception as e:
-            logger.warning(f"[PromptController][{char_id}] Ошибка при формировании промпта игры: {e}", exc_info=True)
+            logger.warning(f"[PromptController][{char_id}] Ошибка при формировании промпта игры: {format_exception(e)}", exc_info=True)
 
         messages: List[Dict[str, Any]] = []
 
@@ -1232,7 +1233,7 @@ class PromptController(PromptBuilderService):
             return content if content else None
 
         except Exception as e:
-            logger.warning(f"[PromptController] Не удалось обработать participants_dialogue.system через DSL: {e}", exc_info=True)
+            logger.warning(f"[PromptController] Не удалось обработать participants_dialogue.system через DSL: {format_exception(e)}", exc_info=True)
             return None
 
         finally:

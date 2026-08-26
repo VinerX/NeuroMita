@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from core.task_supervisor import task_supervisor
 from typing import Callable, Any, Optional
@@ -28,7 +29,7 @@ def bus_call_async(
         try:
             res = fn()
         except Exception as exc:
-            logger.error(f"[API UI] worker failed in {name}: {exc}", exc_info=True)
+            logger.error(f"[API UI] worker failed in {name}: {format_exception(exc)}", exc_info=True)
             if on_fail and dispatch:
                 dispatch(
                     lambda error=exc: _safe_call(
@@ -44,7 +45,7 @@ def bus_call_async(
         try:
             cb(arg)
         except Exception as ee:
-            logger.error(f"[API UI] callback crashed in {where}: {ee}", exc_info=True)
+            logger.error(f"[API UI] callback crashed in {where}: {format_exception(ee)}", exc_info=True)
 
     task_supervisor().start_thread(
         dispatch if dispatch is not None else bus_call_async,

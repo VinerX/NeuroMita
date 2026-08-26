@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 from dataclasses import dataclass
@@ -162,7 +163,7 @@ class CharacterManager:
             character.reload_character_data()
         except Exception as exc:
             logger.error(
-                f"[CharacterManager] Failed to reload character data for {target}: {exc}",
+                f"[CharacterManager] Failed to reload character data for {target}: {format_exception(exc)}",
                 exc_info=True,
             )
 
@@ -179,7 +180,7 @@ class CharacterManager:
                 self.resources.memory_for(character_id).clear_memories()
             except Exception as exc:
                 logger.error(
-                    f"[CharacterManager] Failed to clear resources for {character_id}: {exc}",
+                    f"[CharacterManager] Failed to clear resources for {character_id}: {format_exception(exc)}",
                     exc_info=True,
                 )
             try:
@@ -189,7 +190,7 @@ class CharacterManager:
                 GraphStore(DatabaseManager(), character_id).clear_for_character()
             except Exception as exc:
                 logger.warning(
-                    f"[{character_id}] Graph clear failed (ignored): {exc}",
+                    f"[{character_id}] Graph clear failed (ignored): {format_exception(exc)}",
                     exc_info=True,
                 )
 
