@@ -15,6 +15,7 @@ from core.events import Events
 from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
+from presets.model_profiles import resolve_model_profile
 from .state import PresetSnapshot
 
 
@@ -91,6 +92,71 @@ class EditorMixin:
         editor = getattr(self.view, "model_profile_overrides_edit", None)
         if editor is not None:
             editor.setPlainText(json.dumps(value, ensure_ascii=False, indent=2) if value else "")
+
+    def _refresh_model_profile_controls(self) -> None:
+        """Reflect the selected model profile in the editable preset controls."""
+        v = self.view
+        model = str(v.api_model_row.text() or "").strip()
+        source = getattr(self, "_active_template", None)
+        if not isinstance(source, dict):
+            source = self.current_preset_data if isinstance(self.current_preset_data, dict) else {}
+
+        try:
+            overrides = self._read_model_profile_overrides()
+        except ValueError:
+            summary = getattr(v, "model_profile_summary_label", None)
+            if summary is not None:
+                summary.setText(_("Профиль модели: JSON содержит ошибку.", "Model profile: JSON is invalid."))
+            return
+
+        protocol_id = self._current_protocol_id_ui()
+        profile = resolve_model_profile(
+            model,
+            source.get("model_profiles"),
+            overrides,
+            default_safe=protocol_id == "google_gemini_default",
+        )
+        summary = getattr(v, "model_profile_summary_label", None)
+        if summary is not None:
+            if profile.get("safe_mode"):
+                summary.setText(_(
+                    "Профиль: безопасная совместимость — только базовый запрос.",
+                    "Profile: safe compatibility — only the base request is sent.",
+                ))
+            elif profile:
+                profile_id = str(profile.get("id") or model or "custom")
+                transport = str((profile.get("thinking") or {}).get("transport") or "none")
+                summary.setText(_(
+                    f"Профиль: {profile_id}; thinking: {transport}.",
+                    f"Profile: {profile_id}; thinking: {transport}.",
+                ))
+            else:
+                summary.setText(_(
+                    "Профиль не задан: используются настройки провайдера по умолчанию.",
+                    "No profile: provider defaults are used.",
+                ))
+
+        widget_pair = getattr(v, "gen_override_widgets", {}).get("reasoning_effort")
+        if not widget_pair:
+            return
+        _enabled_checkbox, combo = widget_pair
+        thinking = profile.get("thinking") if isinstance(profile, dict) else {}
+        allowed_levels = [
+            str(value).strip()
+            for value in (thinking.get("allowed_levels") or [])
+            if str(value).strip()
+        ] if isinstance(thinking, dict) else []
+        levels = allowed_levels or ["minimal", "low", "medium", "high"]
+        current = str(combo.currentText() or "")
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(levels)
+        if current in levels:
+            combo.setCurrentText(current)
+        else:
+            default_level = str((thinking or {}).get("default_level") or levels[0])
+            combo.setCurrentText(default_level if default_level in levels else levels[0])
+        combo.blockSignals(False)
 
     def _read_openrouter_routing(self) -> dict:
         v = self.view
@@ -253,6 +319,8 @@ class EditorMixin:
                     v.api_url_row.set_text(new_url)
                     self._is_loading_ui = False
 
+        self._refresh_model_profile_controls()
+
         # normal dirty + debounce state
         self._set_dirty(self._snapshot is not None and (self._get_snapshot() != self._snapshot))
         self._state_save_timer.start(350)
@@ -320,6 +388,7 @@ class EditorMixin:
                 v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
 
             self._apply_help_links(tpl)
+            self._refresh_model_profile_controls()
 
             self._is_loading_ui = False
             self._on_field_changed()
@@ -458,6 +527,7 @@ class EditorMixin:
         if getattr(v, "model_profile_overrides_edit", None) is not None:
             v.model_profile_overrides_edit.setPlainText(self._snapshot.model_profile_overrides_text)
         self._write_openrouter_routing(self._snapshot.openrouter_routing)
+        self._refresh_model_profile_controls()
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.blockSignals(True)

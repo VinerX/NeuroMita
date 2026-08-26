@@ -46,6 +46,7 @@ API_TEMPLATES_DATA = [
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
@@ -65,6 +66,21 @@ API_TEMPLATES_DATA = [
                     "transport": "budget",
                     "include_thoughts": True,
                     "disabled_budget": 0,
+                },
+            },
+            {
+                "id": "gemini-3.1-flash-lite",
+                "match": "gemini-3.1-flash-lite",
+                "parameters": [
+                    "temperature", "max_tokens", "top_p", "top_k",
+                    "presence_penalty", "frequency_penalty",
+                ],
+                "thinking": {
+                    "transport": "level",
+                    "allowed_levels": ["minimal", "low", "medium", "high"],
+                    "default_level": "minimal",
+                    "disabled_level": "minimal",
+                    "include_thoughts": True,
                 },
             },
             {

@@ -93,6 +93,13 @@ class GeminiProfilePayloadTests(unittest.TestCase):
         self.assertEqual(config, {"thinkingConfig": {"thinkingLevel": "minimal"}})
         self.assertNotIn("thinkingBudget", config["thinkingConfig"])
 
+    def test_existing_gemini_31_flash_lite_uses_its_declared_profile(self) -> None:
+        profile = resolve_model_profile("gemini-3.1-flash-lite", _google_profiles(), default_safe=True)
+
+        self.assertEqual(profile["id"], "gemini-3.1-flash-lite")
+        self.assertFalse(profile["safe_mode"])
+        self.assertEqual(profile["thinking"]["disabled_level"], "minimal")
+
     def test_gemini_37_disabled_thinking_uses_low_level(self) -> None:
         config = self._generation_config("gemini-3.7-flash", {"enable_thinking": False})
 

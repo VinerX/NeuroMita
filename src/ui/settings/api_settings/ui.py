@@ -358,6 +358,11 @@ def build_api_settings_ui(self, parent_layout):
     )
     self.model_capabilities_section.add_widget(self.model_safe_mode_cb)
 
+    self.model_profile_summary_label = QLabel()
+    self.model_profile_summary_label.setWordWrap(True)
+    self.model_profile_summary_label.setStyleSheet("color: #8fc1e3; font-size: 11px;")
+    self.model_capabilities_section.add_widget(self.model_profile_summary_label)
+
     profile_note = tr_set(
         QLabel(),
         "Расширенное переопределение профиля для выбранной модели. JSON применяется только к этому пресету.",

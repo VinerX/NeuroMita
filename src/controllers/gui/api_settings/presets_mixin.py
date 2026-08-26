@@ -250,6 +250,7 @@ class PresetsMixin:
             v.api_url_row.set_enabled(base is None)
 
             self._apply_help_links(preset)
+            self._refresh_model_profile_controls()
 
             known_models = preset.get("known_models", []) or []
             if isinstance(known_models, list) and known_models:
