@@ -414,7 +414,7 @@ class LocalVoiceController(LocalVoiceService):
                 "character": resolved_profile,
                 "model_id": model_id,
             },
-            timeout=120.0,
+            timeout=3600.0,
         )
         if not result_path:
             raise RuntimeError("Local voiceover failed: empty result")
