@@ -77,6 +77,26 @@ class ModelProfileResolutionTests(unittest.TestCase):
         self.assertEqual(resolved["thinking"], {"transport": "none"})
         self.assertFalse(resolved["native_structured_output"])
 
+    def test_more_specific_glob_profile_wins(self) -> None:
+        profiles = [
+            {"id": "family", "match": "gemini-*", "match_mode": "glob"},
+            {"id": "flash", "match": "gemini-3.*-flash", "match_mode": "glob"},
+        ]
+
+        self.assertEqual(resolve_model_profile("gemini-3.7-flash", profiles)["id"], "flash")
+
+    def test_safe_mode_override_clears_model_generation_options(self) -> None:
+        resolved = resolve_model_profile(
+            "gemini-3.6-flash",
+            _google_profiles(),
+            {"safe_mode": True},
+            default_safe=True,
+        )
+
+        self.assertTrue(resolved["safe_mode"])
+        self.assertEqual(resolved["parameters"], [])
+        self.assertEqual(resolved["thinking"], {"transport": "none"})
+
 
 class GeminiProfilePayloadTests(unittest.TestCase):
     @staticmethod
@@ -93,6 +113,51 @@ class GeminiProfilePayloadTests(unittest.TestCase):
 
         self.assertEqual(config, {"thinkingConfig": {"thinkingLevel": "minimal"}})
         self.assertNotIn("thinkingBudget", config["thinkingConfig"])
+
+    def test_gemini_25_pro_clamps_budget_and_uses_minimum_when_disabled(self) -> None:
+        profile = resolve_model_profile("gemini-2.5-pro", _google_profiles(), default_safe=True)
+        provider = GeminiProvider.__new__(GeminiProvider)
+
+        self.assertEqual(
+            provider._map_unified_params_to_generation_config(
+                {"enable_thinking": True, "gemini_thinking_budget": 999999},
+                "gemini-2.5-pro",
+                profile,
+            )["thinkingConfig"]["thinkingBudget"],
+            32768,
+        )
+        self.assertEqual(
+            provider._map_unified_params_to_generation_config(
+                {"enable_thinking": False}, "gemini-2.5-pro", profile
+            )["thinkingConfig"]["thinkingBudget"],
+            128,
+        )
+
+    def test_gemini_25_flash_preserves_dynamic_budget(self) -> None:
+        profile = resolve_model_profile("gemini-2.5-flash", _google_profiles(), default_safe=True)
+        provider = GeminiProvider.__new__(GeminiProvider)
+
+        self.assertEqual(
+            provider._map_unified_params_to_generation_config(
+                {"enable_thinking": True, "gemini_thinking_budget": -1},
+                "gemini-2.5-flash",
+                profile,
+            )["thinkingConfig"]["thinkingBudget"],
+            -1,
+        )
+
+    def test_gemini_3_profiles_do_not_allow_sampling_parameters(self) -> None:
+        profiles = _google_profiles()
+        provider = GeminiProvider.__new__(GeminiProvider)
+
+        for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"):
+            profile = resolve_model_profile(model, profiles, default_safe=True)
+            config = provider._map_unified_params_to_generation_config(
+                {"temperature": 0.2, "top_p": 0.8, "top_k": 10, "max_tokens": 128},
+                model,
+                profile,
+            )
+            self.assertEqual(config, {"maxOutputTokens": 128}, model)
 
     def test_existing_gemini_31_flash_lite_uses_its_declared_profile(self) -> None:
         profile = resolve_model_profile("gemini-3.1-flash-lite", _google_profiles(), default_safe=True)

@@ -20,7 +20,6 @@ import httpx
 
 from presets.provider_host_metadata import infer_provider_currency
 from handlers.llm_providers.http_transport import LLMHttpClient
-from presets.model_profiles import deep_merge
 
 
 @dataclass
@@ -413,23 +412,9 @@ class ApiPresetsController(ApiPresetService):
                     merged_models.update(km)
             tpl.known_models = sorted(list(merged_models), reverse=True)
 
-            default_profiles = {
-                str(profile.get("id") or profile.get("match") or ""): profile
-                for profile in (tpl.model_profiles or [])
-                if isinstance(profile, dict) and str(profile.get("id") or profile.get("match") or "")
-            }
-            if isinstance(existing_tpl, dict):
-                for profile in existing_tpl.get("model_profiles", []) or []:
-                    if not isinstance(profile, dict):
-                        continue
-                    profile_id = str(profile.get("id") or profile.get("match") or "")
-                    if not profile_id:
-                        continue
-                    if profile_id in default_profiles:
-                        default_profiles[profile_id] = deep_merge(default_profiles[profile_id], profile)
-                    else:
-                        default_profiles[profile_id] = profile
-            tpl.model_profiles = list(default_profiles.values())
+            # Model profiles are compatibility metadata shipped by code.
+            # User-specific changes belong in model_profile_overrides; stale
+            # persisted profiles must not override a corrected capability matrix.
 
         self.templates = code_templates
         current_payload = {

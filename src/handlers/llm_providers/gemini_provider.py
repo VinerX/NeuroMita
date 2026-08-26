@@ -264,18 +264,36 @@ class GeminiProvider(BaseProvider):
                     logger.debug("[GeminiProvider] profile thinkingLevel=%s", level)
             return filter_jsonable_params(cfg)
 
-        if transport == "budget" and u.get("enable_thinking"):
-            budget = u.get("gemini_thinking_budget")
-            thinking_cfg: dict = {"includeThoughts": bool((thinking_profile or {}).get("include_thoughts", True))}
-            if budget is not None:
-                thinking_cfg["thinkingBudget"] = int(budget)
-            cfg["thinkingConfig"] = thinking_cfg
-            logger.debug("[GeminiProvider] profile thinking budget enabled")
-        elif transport == "budget" and "enable_thinking" in u:
-            disabled_budget = (thinking_profile or {}).get("disabled_budget", 0)
-            if disabled_budget is not None:
-                cfg["thinkingConfig"] = {"thinkingBudget": int(disabled_budget)}
-                logger.debug("[GeminiProvider] profile thinking budget disabled")
+        if transport == "budget" and "enable_thinking" in u:
+            enabled = bool(u.get("enable_thinking"))
+            if enabled:
+                budget = u.get("gemini_thinking_budget")
+                thinking_cfg: dict = {
+                    "includeThoughts": bool((thinking_profile or {}).get("include_thoughts", True))
+                }
+                if budget is not None:
+                    budget = int(budget)
+                    if budget != -1:
+                        min_budget = (thinking_profile or {}).get("min_budget")
+                        max_budget = (thinking_profile or {}).get("max_budget")
+                        if min_budget is not None:
+                            budget = max(int(min_budget), budget)
+                        if max_budget is not None:
+                            budget = min(int(max_budget), budget)
+                    thinking_cfg["thinkingBudget"] = budget
+                cfg["thinkingConfig"] = thinking_cfg
+                logger.debug(
+                    "[GeminiProvider] profile thinking budget enabled: %s",
+                    thinking_cfg.get("thinkingBudget", "dynamic/default"),
+                )
+            else:
+                disabled_budget = (thinking_profile or {}).get("disabled_budget")
+                if disabled_budget is not None:
+                    cfg["thinkingConfig"] = {"thinkingBudget": int(disabled_budget)}
+                    logger.debug(
+                        "[GeminiProvider] profile thinking reduced/disabled: %s",
+                        disabled_budget,
+                    )
 
         return filter_jsonable_params(cfg)
 

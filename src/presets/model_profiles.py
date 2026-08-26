@@ -27,9 +27,12 @@ def _profile_score(model: str, profile: Mapping[str, Any]) -> int:
     if not match:
         return 0
     if model == match:
-        return 3
+        return 100000 + len(match)
     if str(profile.get("match_mode") or "").strip().lower() == "glob" and fnmatchcase(model, match):
-        return 2
+        # Prefer the most specific glob (more literal characters) when
+        # multiple wildcard profiles match the same model.
+        literal_length = len(match.replace("*", "").replace("?", ""))
+        return 1000 + literal_length
     return 0
 
 
@@ -72,6 +75,16 @@ def resolve_model_profile(
             return {}
 
     result = deep_merge(selected, overrides if isinstance(overrides, Mapping) else {})
+    safe_mode = bool(result.get("safe_mode", False))
+    if safe_mode:
+        # Safe mode controls model-specific transport options, not the
+        # application's ability to parse its prompt-defined JSON contract.
+        result["parameters"] = []
+        result["thinking"] = {"transport": "none"}
+        result["native_structured_output"] = False
+        result["safe_mode"] = True
+        return result
+
     result["parameters"] = [
         str(name).strip()
         for name in (result.get("parameters") or [])
@@ -79,5 +92,5 @@ def resolve_model_profile(
     ]
     thinking = result.get("thinking")
     result["thinking"] = dict(thinking) if isinstance(thinking, Mapping) else {"transport": "none"}
-    result["safe_mode"] = bool(result.get("safe_mode", False))
+    result["safe_mode"] = False
     return result

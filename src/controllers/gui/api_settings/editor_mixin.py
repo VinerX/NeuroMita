@@ -120,8 +120,8 @@ class EditorMixin:
         if summary is not None:
             if profile.get("safe_mode"):
                 summary.setText(_(
-                    "Профиль: безопасная совместимость — только базовый запрос.",
-                    "Profile: safe compatibility — only the base request is sent.",
+                    "Профиль: безопасная совместимость — дополнительные параметры и thinking отключены.",
+                    "Profile: safe compatibility — optional generation parameters and explicit thinking controls are disabled.",
                 ))
             elif profile:
                 profile_id = str(profile.get("id") or model or "custom")
