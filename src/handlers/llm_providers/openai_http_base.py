@@ -148,7 +148,17 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         if transport == "openrouter":
             reasoning: Dict[str, Any] = {"enabled": enabled}
-            if enabled and budget > 0:
+            effort = str(extra.get("reasoning_effort") or "").strip().lower()
+            model_profile = (req.capabilities or {}).get("model_profile") or {}
+            thinking_profile = model_profile.get("thinking") if isinstance(model_profile, dict) else {}
+            allowed_efforts = {
+                str(value).strip().lower()
+                for value in (thinking_profile.get("allowed_levels") or [])
+                if str(value).strip()
+            } if isinstance(thinking_profile, dict) else set()
+            if enabled and effort and (not allowed_efforts or effort in allowed_efforts):
+                reasoning["effort"] = effort
+            elif enabled and budget > 0:
                 reasoning["max_tokens"] = budget
             payload["reasoning"] = reasoning
         elif transport == "deepseek":

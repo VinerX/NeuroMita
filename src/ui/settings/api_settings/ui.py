@@ -297,13 +297,13 @@ def build_api_settings_ui(self, parent_layout):
     re_lbl.setMinimumWidth(130)
     re_lbl.setMaximumWidth(130)
     re_val_combo = QComboBox()
-    re_val_combo.addItems(["low", "medium", "high"])
+    re_val_combo.addItems(["minimal", "low", "medium", "high"])
     re_val_combo.setCurrentText("medium")
     re_val_combo.setEnabled(False)
     re_val_combo.setMaximumWidth(80)
     tr_set(re_val_combo,
-           "Работает только при включённом режиме мышления и у провайдеров, понимающих reasoning_effort (LM Studio, llama.cpp).",
-           "Requires thinking mode, and only applies to providers that understand reasoning_effort (LM Studio, llama.cpp).",
+           "Работает только при включённом режиме мышления. Поддерживаемые уровни определяет профиль выбранной модели.",
+           "Requires thinking mode. Supported levels are defined by the selected model profile.",
            "setToolTip")
     re_enable_chk.toggled.connect(re_val_combo.setEnabled)
     re_lay.addWidget(re_enable_chk)
@@ -339,6 +339,42 @@ def build_api_settings_ui(self, parent_layout):
     sr_lay.addStretch()
     self.gen_overrides_section.add_widget(sr_row)
     self.gen_override_widgets["schema_reasoning"] = (sr_enable_chk, sr_val_chk)
+
+    self.model_capabilities_section = CollapsibleSection(
+        _("Возможности модели", "Model capabilities"), self, icon_name="fa5s.shield-alt"
+    )
+    api_container_layout.addWidget(self.model_capabilities_section)
+
+    self.model_safe_mode_cb = tr_set(
+        QCheckBox(),
+        "Безопасный режим совместимости",
+        "Safe compatibility mode",
+    )
+    tr_set(
+        self.model_safe_mode_cb,
+        "Отправляет только базовый запрос без thinking, инструментов, JSON-схемы и дополнительных параметров.",
+        "Sends only the base request without thinking, tools, JSON schema, or optional parameters.",
+        "setToolTip",
+    )
+    self.model_capabilities_section.add_widget(self.model_safe_mode_cb)
+
+    profile_note = tr_set(
+        QLabel(),
+        "Расширенное переопределение профиля для выбранной модели. JSON применяется только к этому пресету.",
+        "Advanced profile override for the selected model. JSON applies only to this preset.",
+    )
+    profile_note.setWordWrap(True)
+    profile_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    self.model_capabilities_section.add_widget(profile_note)
+
+    self.model_profile_overrides_edit = QTextEdit()
+    self.model_profile_overrides_edit.setAcceptRichText(False)
+    self.model_profile_overrides_edit.setPlaceholderText(
+        '{"thinking":{"transport":"level","allowed_levels":["low","medium","high"]},"parameters":["max_tokens"]}'
+    )
+    self.model_profile_overrides_edit.setMinimumHeight(92)
+    self.model_profile_overrides_edit.setMaximumHeight(150)
+    self.model_capabilities_section.add_widget(self.model_profile_overrides_edit)
 
     self.openrouter_routing_section = CollapsibleSection(
         _("OpenRouter routing", "OpenRouter routing"), self, icon_name="fa5s.sliders-h"

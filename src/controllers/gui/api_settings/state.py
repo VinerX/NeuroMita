@@ -13,6 +13,8 @@ class PresetSnapshot:
     reserve_keys_text: str
     reserve_keys_distribute: bool
     protocol_id: str
+    model_safe_mode: bool = False
+    model_profile_overrides_text: str = ""
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
     fallbacks: tuple = ()  # tuple of (preset_id, model) for hashable comparison

@@ -41,13 +41,77 @@ API_TEMPLATES_DATA = [
         "name": "Google AI Studio",
         "pricing": "mixed",
         "url_tpl": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        "default_model": "gemini-3-flash-preview",
+        "default_model": "gemini-3.6-flash",
         "known_models": [
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
             "gemini-2.0-flash",
             "gemini-flash-latest",
+        ],
+        "model_profiles": [
+            {
+                "id": "gemini-2.5",
+                "match": "gemini-2.5-*",
+                "match_mode": "glob",
+                "parameters": [
+                    "temperature", "max_tokens", "top_p", "top_k",
+                    "presence_penalty", "frequency_penalty",
+                ],
+                "thinking": {
+                    "transport": "budget",
+                    "include_thoughts": True,
+                    "disabled_budget": 0,
+                },
+            },
+            {
+                "id": "gemini-3.5-flash",
+                "match": "gemini-3.5-flash",
+                "parameters": [
+                    "temperature", "max_tokens", "top_p", "top_k",
+                    "presence_penalty", "frequency_penalty",
+                ],
+                "thinking": {
+                    "transport": "level",
+                    "allowed_levels": ["minimal", "low", "medium", "high"],
+                    "default_level": "medium",
+                    "disabled_level": "minimal",
+                    "include_thoughts": True,
+                },
+            },
+            {
+                "id": "gemini-3.6-flash",
+                "match": "gemini-3.6-flash",
+                "parameters": [
+                    "temperature", "max_tokens", "top_p", "top_k",
+                    "presence_penalty", "frequency_penalty",
+                ],
+                "thinking": {
+                    "transport": "level",
+                    "allowed_levels": ["minimal", "low", "medium", "high"],
+                    "default_level": "medium",
+                    "disabled_level": "minimal",
+                    "include_thoughts": True,
+                },
+            },
+            {
+                "id": "gemini-3.7-flash",
+                "match": "gemini-3.7-flash",
+                "parameters": [
+                    "temperature", "max_tokens", "top_p", "top_k",
+                    "presence_penalty", "frequency_penalty",
+                ],
+                "thinking": {
+                    "transport": "level",
+                    "allowed_levels": ["low", "medium", "high"],
+                    "default_level": "medium",
+                    "disabled_level": "low",
+                    "include_thoughts": True,
+                },
+            },
         ],
         "protocol_id": "google_gemini_default",
         "test_url": "https://generativelanguage.googleapis.com/v1beta/models?key={key}",

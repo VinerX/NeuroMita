@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional, Any
 
 from PyQt6.QtCore import QTimer
@@ -59,6 +60,37 @@ class EditorMixin:
             else:
                 raw = spec.get("value")
                 val_widget.setText(str(raw) if raw is not None else "")
+
+    def _read_model_profile_overrides(self) -> dict:
+        editor = getattr(self.view, "model_profile_overrides_edit", None)
+        raw = editor.toPlainText().strip() if editor is not None else ""
+        if not raw:
+            result = {}
+        else:
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Model profile JSON is invalid: {exc.msg}") from exc
+            if not isinstance(result, dict):
+                raise ValueError("Model profile JSON must contain an object.")
+
+        safe_mode = bool(getattr(self.view, "model_safe_mode_cb", None).isChecked()) \
+            if getattr(self.view, "model_safe_mode_cb", None) is not None else False
+        if safe_mode:
+            result["safe_mode"] = True
+        else:
+            result.pop("safe_mode", None)
+        return result
+
+    def _write_model_profile_overrides(self, overrides: dict) -> None:
+        value = dict(overrides) if isinstance(overrides, dict) else {}
+        safe_mode = bool(value.pop("safe_mode", False))
+        checkbox = getattr(self.view, "model_safe_mode_cb", None)
+        if checkbox is not None:
+            checkbox.setChecked(safe_mode)
+        editor = getattr(self.view, "model_profile_overrides_edit", None)
+        if editor is not None:
+            editor.setPlainText(json.dumps(value, ensure_ascii=False, indent=2) if value else "")
 
     def _read_openrouter_routing(self) -> dict:
         v = self.view
@@ -133,6 +165,8 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             reserve_keys_distribute=bool(v.reserve_keys_row.is_distribute()),
             protocol_id=self._current_protocol_id_ui(),
+            model_safe_mode=bool(getattr(v, "model_safe_mode_cb", None).isChecked()) if getattr(v, "model_safe_mode_cb", None) is not None else False,
+            model_profile_overrides_text=str(getattr(v, "model_profile_overrides_edit", None).toPlainText() or "") if getattr(v, "model_profile_overrides_edit", None) is not None else "",
             generation_overrides=self._read_generation_overrides(),
             openrouter_routing=self._read_openrouter_routing(),
             fallbacks=fb_tuple,
@@ -343,6 +377,7 @@ class EditorMixin:
             data["url"] = ""
 
         data["generation_overrides"] = self._read_generation_overrides()
+        data["model_profile_overrides"] = self._read_model_profile_overrides()
         data["openrouter_routing"] = self._read_openrouter_routing()
         data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
         return data
@@ -418,6 +453,10 @@ class EditorMixin:
         self._apply_protocol_details(self._current_protocol_id_ui())
 
         self._write_generation_overrides(self._snapshot.generation_overrides)
+        if getattr(v, "model_safe_mode_cb", None) is not None:
+            v.model_safe_mode_cb.setChecked(self._snapshot.model_safe_mode)
+        if getattr(v, "model_profile_overrides_edit", None) is not None:
+            v.model_profile_overrides_edit.setPlainText(self._snapshot.model_profile_overrides_text)
         self._write_openrouter_routing(self._snapshot.openrouter_routing)
 
         if hasattr(v, "fallback_editor"):
@@ -435,7 +474,15 @@ class EditorMixin:
             return
 
         pid = int(self.current_preset_id)
-        data = self._build_current_preset_payload(preset_id=pid)
+        try:
+            data = self._build_current_preset_payload(preset_id=pid)
+        except ValueError as exc:
+            QMessageBox.warning(
+                self.view,
+                _("Ошибка профиля модели", "Model profile error"),
+                str(exc),
+            )
+            return
 
         def _call():
             return use(ApiPresetService).save_custom(data)
@@ -470,10 +517,18 @@ class EditorMixin:
         if not ok or not str(new_name or "").strip():
             return
 
-        payload = self._build_current_preset_payload(
-            preset_id=None,
-            name=str(new_name).strip(),
-        )
+        try:
+            payload = self._build_current_preset_payload(
+                preset_id=None,
+                name=str(new_name).strip(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(
+                v,
+                _("Ошибка профиля модели", "Model profile error"),
+                str(exc),
+            )
+            return
         state = self._build_preset_state()
 
         def _call():
