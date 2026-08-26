@@ -229,6 +229,11 @@ class PresetsMixin:
             if isinstance(gen_overrides, dict):
                 self._write_generation_overrides(gen_overrides)
 
+            model_profile_overrides = preset.get("model_profile_overrides") or {}
+            self._write_model_profile_overrides(
+                model_profile_overrides if isinstance(model_profile_overrides, dict) else {}
+            )
+
             openrouter_routing = preset.get("openrouter_routing") or {}
             if isinstance(openrouter_routing, dict):
                 self._write_openrouter_routing(openrouter_routing)
@@ -245,6 +250,7 @@ class PresetsMixin:
             v.api_url_row.set_enabled(base is None)
 
             self._apply_help_links(preset)
+            self._refresh_model_profile_controls()
 
             known_models = preset.get("known_models", []) or []
             if isinstance(known_models, list) and known_models:

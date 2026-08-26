@@ -44,6 +44,7 @@ class ApiTemplate:
     url_tpl: str = ""
     default_model: str = ""
     known_models: List[str] = field(default_factory=list)
+    model_profiles: List[Dict[str, Any]] = field(default_factory=list)
 
     protocol_id: str = ""
 
@@ -70,6 +71,7 @@ class UserPreset:
     protocol_id: str = ""
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
+    model_profile_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
     # Ordered fallback chain. Each entry: {"preset_id": int, "model": str}.
     # "model" is optional (empty -> use that preset's default_model).
@@ -410,6 +412,10 @@ class ApiPresetsController(ApiPresetService):
                     merged_models.update(km)
             tpl.known_models = sorted(list(merged_models), reverse=True)
 
+            # Model profiles are compatibility metadata shipped by code.
+            # User-specific changes belong in model_profile_overrides; stale
+            # persisted profiles must not override a corrected capability matrix.
+
         self.templates = code_templates
         current_payload = {
             "templates": {str(template.id): asdict(template) for template in self.templates.values()}
@@ -461,6 +467,10 @@ class ApiPresetsController(ApiPresetService):
         if not isinstance(go, dict):
             go = {}
 
+        mpo = raw.get("model_profile_overrides", {}) or {}
+        if not isinstance(mpo, dict):
+            mpo = {}
+
         orr = raw.get("openrouter_routing", {}) or {}
         if not isinstance(orr, dict):
             orr = {}
@@ -481,6 +491,7 @@ class ApiPresetsController(ApiPresetService):
             protocol_id=protocol_id,
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
+            model_profile_overrides=dict(mpo),
             openrouter_routing=dict(orr),
             fallbacks=fallbacks,
         )
@@ -756,6 +767,8 @@ class ApiPresetsController(ApiPresetService):
             "reserve_keys_distribute": bool(p.reserve_keys_distribute),
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
+            "model_profiles": tpl.model_profiles if tpl else [],
+            "model_profile_overrides": p.model_profile_overrides or {},
             "openrouter_routing": p.openrouter_routing or {},
             "fallbacks": [dict(fb) for fb in (p.fallbacks or [])],
         }
@@ -917,6 +930,12 @@ class ApiPresetsController(ApiPresetService):
             if not isinstance(go, dict):
                 go = {}
             up.generation_overrides = dict(go)
+
+        if "model_profile_overrides" in data:
+            mpo = data.get("model_profile_overrides") or {}
+            if not isinstance(mpo, dict):
+                mpo = {}
+            up.model_profile_overrides = dict(mpo)
 
         if "openrouter_routing" in data:
             orr = data.get("openrouter_routing") or {}

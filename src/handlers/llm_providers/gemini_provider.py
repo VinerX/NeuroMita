@@ -37,6 +37,18 @@ class GeminiProvider(BaseProvider):
         return self.generate_request_gemini(req)
 
     @staticmethod
+    def _should_send_native_structured_output(capabilities: dict | None) -> bool:
+        """Keep application JSON parsing separate from Gemini schema transport."""
+        caps = capabilities or {}
+        if not caps.get("structured_output", False):
+            return False
+        model_profile = caps.get("model_profile")
+        return not (
+            isinstance(model_profile, dict)
+            and not bool(model_profile.get("native_structured_output", True))
+        )
+
+    @staticmethod
     def _request_url(req: LLMRequest, *, stream: bool) -> str:
         url = str(req.api_url or "")
         if not stream:
@@ -184,36 +196,104 @@ class GeminiProvider(BaseProvider):
                 parts.append(content)
         return parts
 
-    def _map_unified_params_to_generation_config(self, unified: dict, model: str) -> dict:
+    def _map_unified_params_to_generation_config(
+        self,
+        unified: dict,
+        model: str,
+        model_profile: dict | None = None,
+    ) -> dict:
         u = unified or {}
         cfg = {}
+        profile = model_profile if isinstance(model_profile, dict) else None
+        allowed_params = None
+        excluded_params: set[str] = set()
+        if profile is not None:
+            allowed_params = {
+                str(name).strip()
+                for name in (profile.get("parameters") or [])
+                if str(name).strip()
+            }
+            excluded_params = {
+                str(name).strip()
+                for name in (profile.get("excluded_parameters") or [])
+                if str(name).strip()
+            }
 
-        if "temperature" in u:
+        def allows(name: str) -> bool:
+            return (allowed_params is None or name in allowed_params) and name not in excluded_params
+
+        if "temperature" in u and allows("temperature"):
             cfg["temperature"] = u["temperature"]
-        if "max_tokens" in u:
+        if "max_tokens" in u and allows("max_tokens"):
             cfg["maxOutputTokens"] = u["max_tokens"]
-        if "presence_penalty" in u:
+        if "presence_penalty" in u and allows("presence_penalty"):
             cfg["presencePenalty"] = u["presence_penalty"]
-        if "frequency_penalty" in u:
+        if "frequency_penalty" in u and allows("frequency_penalty"):
             cfg["frequencyPenalty"] = u["frequency_penalty"]
-        if "top_p" in u:
+        if "top_p" in u and allows("top_p"):
             cfg["topP"] = u["top_p"]
-        if "top_k" in u:
+        if "top_k" in u and allows("top_k"):
             cfg["topK"] = u["top_k"]
 
-        if model in ("gemini-2.5-pro-exp-03-25", "gemini-2.5-flash-preview-04-17"):
-            cfg.pop("presencePenalty", None)
+        thinking_profile = profile.get("thinking") if profile is not None else None
+        if not isinstance(thinking_profile, dict):
+            thinking_profile = None
+        transport = str((thinking_profile or {}).get("transport") or "budget").strip().lower()
 
-        if u.get("enable_thinking"):
-            budget = u.get("gemini_thinking_budget")
-            thinking_cfg: dict = {"includeThoughts": True}
-            if budget is not None:
-                thinking_cfg["thinkingBudget"] = int(budget)
-            cfg["thinkingConfig"] = thinking_cfg
-            logger.debug(f"[GeminiProvider] thinkingConfig enabled: {thinking_cfg}")
-        elif "enable_thinking" in u:
-            cfg["thinkingConfig"] = {"thinkingBudget": 0}
-            logger.debug("[GeminiProvider] thinkingConfig explicitly disabled (thinkingBudget=0)")
+        if transport == "level":
+            if "enable_thinking" in u:
+                allowed_levels = {
+                    str(level).strip().lower()
+                    for level in (thinking_profile.get("allowed_levels") or [])
+                    if str(level).strip()
+                }
+                if bool(u.get("enable_thinking")):
+                    level = str(
+                        u.get("reasoning_effort")
+                        or thinking_profile.get("default_level")
+                        or ""
+                    ).strip().lower()
+                else:
+                    level = str(thinking_profile.get("disabled_level") or "").strip().lower()
+
+                if level and (not allowed_levels or level in allowed_levels):
+                    thinking_cfg = {"thinkingLevel": level}
+                    if bool(u.get("enable_thinking")) and bool(thinking_profile.get("include_thoughts", True)):
+                        thinking_cfg["includeThoughts"] = True
+                    cfg["thinkingConfig"] = thinking_cfg
+                    logger.debug("[GeminiProvider] profile thinkingLevel=%s", level)
+            return filter_jsonable_params(cfg)
+
+        if transport == "budget" and "enable_thinking" in u:
+            enabled = bool(u.get("enable_thinking"))
+            if enabled:
+                budget = u.get("gemini_thinking_budget")
+                thinking_cfg: dict = {
+                    "includeThoughts": bool((thinking_profile or {}).get("include_thoughts", True))
+                }
+                if budget is not None:
+                    budget = int(budget)
+                    if budget != -1:
+                        min_budget = (thinking_profile or {}).get("min_budget")
+                        max_budget = (thinking_profile or {}).get("max_budget")
+                        if min_budget is not None:
+                            budget = max(int(min_budget), budget)
+                        if max_budget is not None:
+                            budget = min(int(max_budget), budget)
+                    thinking_cfg["thinkingBudget"] = budget
+                cfg["thinkingConfig"] = thinking_cfg
+                logger.debug(
+                    "[GeminiProvider] profile thinking budget enabled: %s",
+                    thinking_cfg.get("thinkingBudget", "dynamic/default"),
+                )
+            else:
+                disabled_budget = (thinking_profile or {}).get("disabled_budget")
+                if disabled_budget is not None:
+                    cfg["thinkingConfig"] = {"thinkingBudget": int(disabled_budget)}
+                    logger.debug(
+                        "[GeminiProvider] profile thinking reduced/disabled: %s",
+                        disabled_budget,
+                    )
 
         return filter_jsonable_params(cfg)
 
@@ -251,10 +331,14 @@ class GeminiProvider(BaseProvider):
                 if "text" in part:
                     part["text"] = f"[SYSTEM INFO] {part['text']}"
 
-        gen_cfg = self._map_unified_params_to_generation_config(req.extra, req.model)
+        gen_cfg = self._map_unified_params_to_generation_config(
+            req.extra,
+            req.model,
+            (req.capabilities or {}).get("model_profile"),
+        )
 
         caps = req.capabilities or {}
-        if caps.get("structured_output", False):
+        if self._should_send_native_structured_output(caps):
             gen_cfg["responseMimeType"] = "application/json"
             mode = caps.get("structured_output_mode", "gemini_schema")
             if mode != "gemini_prompt":
@@ -276,11 +360,13 @@ class GeminiProvider(BaseProvider):
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")
             else:
                 logger.debug("[GeminiProvider] Structured output: prompt-guided only (gemini_prompt mode)")
+        elif caps.get("structured_output", False):
+            logger.debug("[GeminiProvider] Structured output: native schema disabled by model profile")
 
         if gen_cfg:
             data["generationConfig"] = gen_cfg
 
-        need_stream = req.stream
+        need_stream = bool(req.stream and caps.get("streaming", True))
 
         headers = {"Content-Type": "application/json"}
         if isinstance(req.headers, dict):

@@ -288,9 +288,10 @@ class LocalVoice:
 
         mid = self.current_model_id
         if not self.is_model_initialized(mid):
-            ok = self.initialize_model(mid, init=False)
-            if not ok:
-                raise RuntimeError(f"Failed to initialize model '{mid}'")
+            raise RuntimeError(
+                f"Voice model '{mid}' is not initialized. "
+                "Initialize it explicitly before requesting synthesis."
+            )
 
         os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
 

@@ -394,6 +394,12 @@ class LocalVoiceController(LocalVoiceService):
         model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
         initialized = bool(self._initialized_cache.get(model_id, False))
 
+        if not initialized:
+            raise RuntimeError(
+                f"Local voice model '{model_id}' is not initialized. "
+                "Initialize it explicitly in the voice model settings before synthesis."
+            )
+
         resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
         registry = use(CharacterRegistry)
 
@@ -408,11 +414,7 @@ class LocalVoiceController(LocalVoiceService):
         absolute_audio_path = os.path.abspath(output_file)
         os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
 
-        initialize = not initialized
-        await self._ensure_model_environment(model_id, initialize=initialize)
-        if initialize:
-            self._initialized_cache[model_id] = True
-            self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+        await self._ensure_model_environment(model_id, initialize=False)
         result_path = await self._engine_call_async(
             "synthesize",
             {

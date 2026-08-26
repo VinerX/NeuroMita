@@ -62,12 +62,11 @@ class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
         ):
             await controller._engine_call_async("synthesize", timeout=0.01)
 
-    async def test_uninitialized_model_uses_on_demand_initialization_fallback(self):
+    async def test_uninitialized_model_does_not_start_on_demand_initialization(self):
         controller = LocalVoiceController.__new__(LocalVoiceController)
         controller._initialized_cache = {}
         controller._get_setting = lambda key, default=None: {
             "NM_CURRENT_VOICEOVER": "medium+",
-            "LOCAL_VOICE_LOAD_LAST": False,
         }.get(key, default)
         environment_calls = []
 
@@ -75,16 +74,11 @@ class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
             environment_calls.append((model_id, initialize))
 
         controller._ensure_model_environment = ensure_environment
-        controller._engine_call_async = lambda *_args, **_kwargs: _completed("voice.wav")
-        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
 
-        registry = SimpleNamespace(current_profile=lambda: None, get=lambda _id: None)
-        with patch("controllers.local_voice_controller.use", return_value=registry):
-            result = await controller.synthesize("hello")
+        with self.assertRaisesRegex(RuntimeError, "Initialize it explicitly"):
+            await controller.synthesize("hello")
 
-        self.assertEqual(result, "voice.wav")
-        self.assertEqual(environment_calls, [("medium+", True)])
-        self.assertTrue(controller._initialized_cache["medium+"])
+        self.assertEqual(environment_calls, [])
 
 
 async def _completed(value):

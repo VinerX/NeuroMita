@@ -140,6 +140,12 @@ class TTSService:
             # Выбор модели и синтез являются одной критической секцией. Иначе
             # параллельный запрос мог сменить mutable active_model_instance.
             async with get_scheduler().slot(Priority.TTS):
+                initialized = await asyncio.to_thread(lv.is_model_initialized, model_id)
+                if not initialized:
+                    raise RuntimeError(
+                        f"Voice model '{model_id}' is not initialized. "
+                        "Initialize it explicitly before requesting synthesis."
+                    )
                 await asyncio.to_thread(lv.select_model, model_id)
                 self._current_model_id = model_id
                 return await lv.voiceover(text=text, output_file=out_abs, character=character)

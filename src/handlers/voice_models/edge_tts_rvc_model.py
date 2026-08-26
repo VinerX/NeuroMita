@@ -920,10 +920,10 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     ) -> Optional[str]:
         current_mode = str(getattr(self.parent, "current_model_id", "") or "").strip()
         if not self.initialized or self.initialized_for != current_mode:
-            if self.initialized:
-                self.cleanup_state()
-            if not self.initialize(init=False):
-                return None
+            raise RuntimeError(
+                f"RVC voice model is not initialized for mode '{current_mode}'. "
+                "Initialize the selected voice model explicitly before conversion."
+            )
 
         try:
             self._prepare_rvc_target(character, use_index_file)

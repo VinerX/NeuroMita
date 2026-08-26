@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 from handlers.local_voice_handler import LocalVoice
 
 
 class _RuntimeAwareModel:
-    initialized = False
-    initialized_for = None
     seen_context: dict | None = None
+
+    def __init__(self) -> None:
+        self.initialized = False
+        self.initialized_for = None
+        self.initialize_calls = 0
 
     @classmethod
     def is_model_installed(cls, model_id: str, ctx: dict) -> bool:
@@ -22,6 +26,7 @@ class _RuntimeAwareModel:
         )
 
     def initialize(self, init: bool = False) -> bool:
+        self.initialize_calls += 1
         self.initialized = True
         self.initialized_for = "edge_tts_rvc_cuda"
         return True
@@ -79,3 +84,18 @@ def test_local_voice_initialization_does_not_recheck_legacy_core(monkeypatch, tm
     assert voice.initialize_model("edge_tts_rvc_cuda") is True
     assert voice.active_model_instance is model
     assert voice.current_model_id == "edge_tts_rvc_cuda"
+
+
+def test_local_voiceover_never_initializes_model_on_demand():
+    model = _RuntimeAwareModel()
+    voice = _voice_with_model(model)
+    voice.select_model("edge_tts_rvc_cuda")
+
+    try:
+        asyncio.run(voice.voiceover("hello", output_file="unused.wav"))
+    except RuntimeError as exc:
+        assert "Initialize it explicitly" in str(exc)
+    else:
+        raise AssertionError("Uninitialized voiceover must be rejected")
+
+    assert model.initialize_calls == 0
