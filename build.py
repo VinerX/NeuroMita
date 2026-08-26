@@ -1,10 +1,11 @@
-import pathlib
-import zipfile
 import os
+import json
+import pathlib
 import shutil
 import stat
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 from typing import List, Tuple
 
@@ -39,10 +40,13 @@ for _k, _v in os.environ.items():
     if _k.startswith("BUILD_") or _k in ("NEUROMITA_BACKEND", "LAUNCH_PYTHON"):
         env[_k] = _v
 
+
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
 REBUILD_NATIVE_LAUNCHER = env.get("BUILD_REBUILD_LAUNCHER", "1") == "1"
 STRIP_EMBEDDED_UV = env.get("BUILD_STRIP_EMBEDDED_UV", "1") == "1"
+BUILD_IS_TEST = env.get("BUILD_IS_TEST", "1") == "1"
+UPDATE_CONTOUR = "test" if BUILD_IS_TEST else "release"
 
 # Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
 EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
@@ -201,6 +205,21 @@ def clean_output_dir() -> None:
         print(f"Очищаю выходную папку: {out}")
         _rmtree_robust(out)
     out.mkdir(parents=True, exist_ok=True)
+
+
+def write_distribution_metadata() -> Path:
+    """Write the update-contour marker consumed on a fresh installation."""
+    metadata_path = OUTPUT_DIR / "Settings" / "distribution.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema": 1,
+        "contour": UPDATE_CONTOUR,
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return metadata_path
 
 
 def _clear_readonly_and_retry(func, path, _exc):
@@ -377,6 +396,7 @@ if __name__ == "__main__":
     print(f"Фильтр backend Lib  : {'вкл' if EXCLUDE_MANAGED_BACKENDS else 'выкл'}")
     print(f"Очистка embedded uv : {'вкл' if STRIP_EMBEDDED_UV else 'выкл'}")
     print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
+    print(f"Контур обновлений   : {UPDATE_CONTOUR}")
 
     if CLEAN_OUTPUT:
         clean_output_dir()
@@ -430,6 +450,9 @@ if BUILD_MODE in ("full", "fast"):
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")
         copy_entries(ROOT_SCRIPTS)
+
+    metadata_path = write_distribution_metadata()
+    print(f"\nМетка контура обновлений: {metadata_path}")
 
     if STRIP_EMBEDDED_UV:
         print("\nОчищаю uv из embedded Python...")

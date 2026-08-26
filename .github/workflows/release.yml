@@ -206,6 +206,7 @@ jobs:
 
           content = "\n".join([
               f"BUILD_MODE=full",
+              f"BUILD_IS_TEST=1",
               f"BUILD_OUTPUT_DIR={output}",
               f"BUILD_COPY_DIRS=extra\\Prompts,assets,libs",
               f"BUILD_FAST_COPY_DIRS=extra\\Prompts",
