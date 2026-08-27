@@ -33,8 +33,9 @@ class NewsReleasesStore:
     """Кэш ленты релизов. Владелец — presentation-хаб (`presentation.news`);
     раньше это состояние жило атрибутами на главном окне."""
 
-    def __init__(self) -> None:
+    def __init__(self, repository: str = NEWS_REPO) -> None:
         self.lock = threading.Lock()
+        self.repository = str(repository or NEWS_REPO).strip() or NEWS_REPO
         self.releases: list[dict[str, Any]] | None = None
         self.cards: list[dict[str, Any]] | None = None
         self.waiters: list[Callable[[list[dict[str, Any]]], None]] = []
@@ -43,6 +44,16 @@ class NewsReleasesStore:
     def invalidate(self) -> None:
         self.releases = None
         self.cards = None
+
+    def set_repository(self, repository: str) -> bool:
+        normalized = str(repository or NEWS_REPO).strip() or NEWS_REPO
+        with self.lock:
+            if normalized == self.repository:
+                return False
+            self.repository = normalized
+            self.releases = None
+            self.cards = None
+        return True
 
 
 def load_news_releases_async(
@@ -102,9 +113,10 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
     if cached is not None:
         return cached
 
+    repository = store.repository
     try:
         response = _HTTP_CLIENT.get(
-            f"https://api.github.com/repos/{NEWS_REPO}/releases",
+            f"https://api.github.com/repos/{repository}/releases",
             timeout=10,
             headers={"Accept": "application/vnd.github+json"},
         )
@@ -117,10 +129,10 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
         raw_data = response.json() or []
         data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
         store.releases = data
-        store.cards = _prepare_release_cards(data)
+        store.cards = _prepare_release_cards(data, repository=repository)
         return data
     except Exception as exc:
-        logger.info(f"[news] Failed to fetch releases: {format_exception(exc)}")
+        logger.info(f"[news] Failed to fetch releases from {repository}: {format_exception(exc)}")
         store.releases = []
         store.cards = []
         return []
@@ -183,8 +195,10 @@ def _build_release_preview(body: str, *, limit: int = 280) -> tuple[str, bool]:
     return summary, has_details
 
 
-def _prepare_release_cards(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    repo_url = f"https://github.com/{NEWS_REPO}/releases"
+def _prepare_release_cards(
+    releases: list[dict[str, Any]], *, repository: str = NEWS_REPO
+) -> list[dict[str, Any]]:
+    repo_url = f"https://github.com/{repository}/releases"
     prepared: list[dict[str, Any]] = []
     for release in releases:
         tag_name = str(release.get("tag_name") or "")
@@ -211,7 +225,7 @@ def _get_prepared_release_cards(store: NewsReleasesStore) -> list[dict[str, Any]
     if cached is not None:
         return cached
     releases = get_news_releases(store)
-    prepared = _prepare_release_cards(releases)
+    prepared = _prepare_release_cards(releases, repository=store.repository)
     store.cards = prepared
     return prepared
 
@@ -359,7 +373,7 @@ def build_release_news_items(store: NewsReleasesStore, *, limit: int | None = 8)
         summary = str(release.get("summary") or "").strip() or build_release_summary("")
         published = str(release.get("published") or "")[:10]
         tag = str(release.get("tag") or "RELEASE")
-        url = str(release.get("url") or f"https://github.com/{NEWS_REPO}/releases")
+        url = str(release.get("url") or f"https://github.com/{store.repository}/releases")
         full_text = str(release.get("full_text") or "").strip()
         items.append(
             NewsItem(

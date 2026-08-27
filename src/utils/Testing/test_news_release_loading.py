@@ -15,8 +15,11 @@ from controllers.gui.news_controller import (
     NewsReleasesStore,
     _build_release_preview,
     build_release_news_items,
+    get_news_releases,
 )
+from controllers.gui import news_controller
 from controllers.gui.news_page_view_model import NewsPageViewModel
+from services.update_contour import target_for_contour
 from ui.pages.news_page import NewsPage
 
 
@@ -85,15 +88,45 @@ def test_build_release_news_items_keeps_full_text_for_expandable_card():
     assert items[0].full_text == "Short preview\n\nFull release notes"
 
 
+def test_news_store_fetches_a_distinct_release_feed_for_each_contour(monkeypatch):
+    requested_urls: list[str] = []
+
+    class Client:
+        def get(self, url, **_kwargs):
+            requested_urls.append(url)
+            return SimpleNamespace(status_code=200, json=lambda: [])
+
+    monkeypatch.setattr(news_controller, "_HTTP_CLIENT", Client())
+    store = NewsReleasesStore()
+
+    for contour in ("test", "release"):
+        store.set_repository(target_for_contour(contour).repo)
+        assert get_news_releases(store) == []
+
+    assert requested_urls == [
+        "https://api.github.com/repos/Atm4x/NeuroMita/releases",
+        "https://api.github.com/repos/VinerX/NeuroMita/releases",
+    ]
+
+
 def test_news_page_shows_loading_message_while_background_fetch_runs(monkeypatch):
     app = _app()
     host = QWidget()
 
-    stub_news = SimpleNamespace(repository="Atm4x/NeuroMita")
+    stub_news = SimpleNamespace(
+        repository="Atm4x/NeuroMita",
+        set_repository=lambda _repository: False,
+    )
+    settings = SimpleNamespace(get=lambda _key, default=None: default)
     view_model_box = {}
 
     def _make_view_model(_host, parent=None):
-        view_model = NewsPageViewModel(host=_host, news=stub_news, parent=parent)
+        view_model = NewsPageViewModel(
+            host=_host,
+            news=stub_news,
+            settings=settings,
+            parent=parent,
+        )
         # Фоновая загрузка «никогда не завершается» — страница обязана
         # показывать состояние загрузки, а не пустую ленту.
         monkeypatch.setattr(view_model, "run_coalesced", lambda *a, **k: True)

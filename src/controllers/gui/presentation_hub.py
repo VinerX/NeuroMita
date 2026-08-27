@@ -466,6 +466,7 @@ class _ViewModelFactory:
         return NewsPageViewModel(
             host=host,
             news=self._presentation.news,
+            settings=self._presentation.settings,
             parent=parent,
         )
 
@@ -534,9 +535,10 @@ class _NewsController:
 
     @property
     def repository(self) -> str:
-        from controllers.gui.news_controller import NEWS_REPO
+        return str(self._store.repository)
 
-        return str(NEWS_REPO)
+    def set_repository(self, repository: str) -> bool:
+        return bool(self._store.set_repository(repository))
 
     def invalidate(self) -> None:
         self._store.invalidate()
