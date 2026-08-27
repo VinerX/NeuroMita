@@ -1,0 +1,519 @@
+"""
+GraphController — background entity extraction from dialogue messages.
+
+Subscribes to MESSAGE_COMPLETED, extracts entities/relations via a
+configurable LLM provider (GRAPH_PROVIDER setting), stores them in GraphStore.
+
+Pattern mirrors HistoryController._compress_history() but runs asynchronously
+in a background thread to never block the conversation.
+"""
+from __future__ import annotations
+from core.error_utils import format_exception
+
+import json
+import os
+from concurrent.futures import Future
+from threading import Lock
+from typing import Any, ClassVar, Dict, List, Optional
+
+from core.events import get_event_bus, Events, Event
+from core.executors import Pools, PoolSaturated, executors
+from core.services import use
+from main_logger import logger
+from services.contracts import (
+    ApiPresetService,
+    GenerationService,
+    SettingsService,
+    UtilityGenerationRequest,
+)
+
+# Default extraction prompt (can be overridden via GRAPH_EXTRACTION_PROMPT setting
+# or via Structural/graph_extraction_prompt.txt in the prompt set).
+_DEFAULT_EXTRACTION_PROMPT = """\
+Extract named entities and their relationships from this conversation snippet.
+Output ONLY valid JSON, no commentary or markdown:
+{"entities":[{"name":"alice","type":"person"},{"name":"chess","type":"concept"}],
+ "relations":[{"s":"alice","p":"likes","o":"chess"}]}
+
+Rules:
+- Entity names: 1-3 words, lowercase, real nouns only (people, places, objects, topics).
+- Predicates: short verb phrases — "likes", "lives in", "is afraid of", "owns".
+- The AI character is referred to as "mita" (or their actual name if stated).
+- The human player is referred to as "player" (or their real name if stated).
+- DO NOT extract grammar roles: do not use "subject", "verb", "object", "predicate", "action" as names or predicates.
+- DO NOT extract emotion/animation tags: angry, sad, smile, smileteeth, magiceye, trytoque, discontent, etc.
+- DO NOT extract pronouns or generic words: it, they, he, she, we, you, i, thing, person, character.
+- DO NOT extract interjections or filler words.
+- Only extract clearly stated facts, not speculation or hypotheticals.
+- If nothing meaningful to extract, return {{"entities":[],"relations":[]}}
+
+Conversation:
+{text}"""
+
+
+class GraphController:
+    """Coordinates background graph extraction."""
+
+    # Tracks the last submitted future per character_id to avoid queue buildup
+    # when the LLM provider is slow (e.g. local Ollama).
+    _pending_futures: ClassVar[Dict[str, Future]] = {}
+    _pending_lock: ClassVar[Lock] = Lock()
+
+    def __init__(self):
+        self.event_bus = get_event_bus()
+        self._subscribe()
+
+    @staticmethod
+    def _submit(fn, *args) -> Future:
+        """Общий фоновый LLM-пул: graph extraction не конкурирует со сжатием истории."""
+        return executors().try_submit(Pools.BACKGROUND_LLM, fn, *args)
+
+    def _subscribe(self):
+        self.event_bus.subscribe(
+            Events.History.MESSAGE_COMPLETED,
+            self._on_message_completed,
+            weak=False,
+        )
+
+    # ------------------------------------------------------------------
+    # Settings helpers
+    # ------------------------------------------------------------------
+    def _get_setting(self, key: str, default: Any = None) -> Any:
+        return use(SettingsService).get(key, default)
+
+    def _is_enabled(self) -> bool:
+        return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
+
+    def _is_inline_mode(self) -> bool:
+        return bool(self._get_setting("GRAPH_EXTRACTION_INLINE", False))
+
+    def _get_preset_description(self, preset_id: Optional[int]) -> str:
+        """Return a human-readable 'Name (model)' string for logging."""
+        try:
+            presets = use(ApiPresetService)
+            effective_id = preset_id
+            if effective_id is None:
+                effective_id = presets.current_id()
+
+            if effective_id is None:
+                return "Current"
+
+            info = presets.get_full(int(effective_id))
+            if not info:
+                return f"preset#{effective_id}"
+
+            name = info.get("name") or f"preset#{effective_id}"
+            model = info.get("default_model") or ""
+            return f"{name} ({model})" if model else name
+        except Exception:
+            return f"preset#{preset_id}"
+
+    # ------------------------------------------------------------------
+    # Event handler
+    # ------------------------------------------------------------------
+    def _on_message_completed(self, event: Event) -> None:
+        """Called after every assistant response is saved."""
+        if not self._is_enabled():
+            logger.debug("[GraphController] Skipped: GRAPH_EXTRACTION_ENABLED is False")
+            return
+
+        data = event.data or {}
+        char_id = data.get("character_id")
+        if not char_id:
+            return
+
+        character = data.get("character_ref")
+        if character is None:
+            return
+
+        # Gather the messages that were just saved (user + assistant).
+        user_input = str(data.get("user_input") or "").strip()
+        assistant_output = str(data.get("assistant_output") or data.get("response_text") or "").strip()
+        created_memory_ids: List[int] = data.get("created_memory_ids") or []
+        inline_graph_json: Optional[str] = data.get("inline_graph_json")
+        memories_already_tagged: bool = bool(data.get("memories_already_tagged", False))
+        from_structured_output: bool = bool(data.get("from_structured_output", False))
+        if not user_input and not assistant_output:
+            return
+
+        text = ""
+        if user_input:
+            text += f"Player: {user_input}\n"
+        if assistant_output:
+            text += f"Character: {assistant_output}\n"
+
+        # Inline mode: model already embedded the graph JSON in its response.
+        # Two sources: legacy <graph> tag (requires GRAPH_EXTRACTION_INLINE) or
+        # structured output entities (always stored when inline_graph_json is present).
+        if inline_graph_json and (self._is_inline_mode() or from_structured_output):
+            logger.info(f"[GraphController] Inline graph JSON received for '{char_id}', storing directly")
+            try:
+                future = self._submit(
+                    self._store_inline, character, char_id, inline_graph_json,
+                    user_input, assistant_output, created_memory_ids, memories_already_tagged,
+                )
+                self._track_future(char_id, future)
+            except PoolSaturated:
+                logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — inline store для '{char_id}' пропущен.")
+            except Exception as e:
+                logger.warning(f"[GraphController] Failed to schedule inline store: {format_exception(e)}")
+            return
+
+        # Real-time extraction (separate LLM call) — only if explicitly enabled.
+        # Skip if response came from structured output path — entities are handled there.
+        if from_structured_output:
+            logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': structured output path")
+            return
+
+        if not bool(self._get_setting("GRAPH_EXTRACTION_REALTIME", False)):
+            logger.debug(f"[GraphController] Skipped real-time extraction for '{char_id}': GRAPH_EXTRACTION_REALTIME is False")
+            return
+
+        # Drop if there is already a pending/running extraction for this character.
+        # Prevents unbounded queue growth when the LLM provider is slow.
+        with self._pending_lock:
+            pending = self._pending_futures.get(char_id)
+            if pending is not None and not pending.done():
+                logger.debug(
+                    f"[GraphController] Skipped extraction for '{char_id}': "
+                    "previous task still running (provider too slow or backlog)"
+                )
+                return
+
+        # Schedule extraction via separate provider call.
+        logger.info(f"[GraphController] Scheduling extraction for '{char_id}' ({len(text)} chars)")
+        try:
+            future = self._submit(
+                self._extract_and_store, character, char_id, text.strip(),
+                user_input, assistant_output, created_memory_ids,
+            )
+            self._track_future(char_id, future)
+        except PoolSaturated:
+            logger.warning(f"[GraphController] Фоновая LLM-очередь переполнена — extraction для '{char_id}' пропущен.")
+        except Exception as e:
+            logger.warning(f"[GraphController] Failed to schedule extraction: {format_exception(e)}")
+
+    @classmethod
+    def _track_future(cls, char_id: str, future: Future) -> None:
+        """Register *future* as the latest pending task for *char_id*."""
+        with cls._pending_lock:
+            cls._pending_futures[char_id] = future
+
+    # ------------------------------------------------------------------
+    # Background extraction
+    # ------------------------------------------------------------------
+    def _extract_and_store(
+        self,
+        character,
+        char_id: str,
+        text: str,
+        user_input: str = "",
+        assistant_output: str = "",
+        created_memory_ids: Optional[List[int]] = None,
+    ) -> None:
+        """Run in background thread: call LLM provider, parse JSON, store graph."""
+        try:
+            # Build prompt.
+            prompt = self._build_extraction_prompt(character, text)
+            if not prompt:
+                logger.warning("[GraphController] Empty extraction prompt, skipping.")
+                return
+
+            # Resolve provider preset.
+            provider_label = str(self._get_setting("GRAPH_PROVIDER", "Current"))
+            preset_id = self._resolve_preset(provider_label)
+            preset_desc = self._get_preset_description(preset_id)
+            logger.info(
+                f"[GraphController] Extracting graph for '{char_id}' "
+                f"via {preset_desc}"
+            )
+
+            # Call provider.
+            result = use(GenerationService).generate_utility(
+                UtilityGenerationRequest(
+                    prompt=prompt,
+                    character_id=char_id,
+                    kind="graph_extract",
+                    preset_id=preset_id,
+                    request_timeout=30.0,
+                )
+            )
+
+            if not result.ok or not result.text:
+                logger.warning(
+                    f"[GraphController] Извлечение графа не удалось: "
+                    f"{(result.details or result.error) or 'пустой ответ'}"
+                )
+                return
+
+            raw_response = result.text
+            # Truncate for logging to avoid flooding.
+            preview = raw_response[:500] + ("..." if len(raw_response) > 500 else "")
+            logger.info(f"[GraphController] Raw LLM response: {preview}")
+
+            # Parse and store.
+            from managers.rag.graph.entity_extractor import (
+                parse_extraction_response,
+                store_extraction,
+            )
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+
+            extraction = parse_extraction_response(raw_response)
+            if extraction is None:
+                logger.warning(
+                    f"[GraphController] Could not parse extraction JSON from response: {preview}"
+                )
+                return
+
+            entities = extraction.get("entities", [])
+            relations = extraction.get("relations", [])
+            # Normalise: some local models return bare strings instead of dicts.
+            entities = [
+                e if isinstance(e, dict) else {"name": str(e), "type": "thing"}
+                for e in entities if e
+            ]
+            logger.info(
+                f"[GraphController] Parsed: {len(entities)} entities, "
+                f"{len(relations)} relations"
+            )
+            if entities:
+                ent_names = [e.get("name", "?") for e in entities[:10]]
+                logger.info(f"[GraphController] Entities: {ent_names}")
+            if relations:
+                rel_strs = [
+                    f"{r.get('s','?')} --{r.get('p','?')}--> {r.get('o','?')}"
+                    for r in relations[:10]
+                ]
+                logger.info(f"[GraphController] Relations: {rel_strs}")
+
+            db = DatabaseManager()
+            gs = GraphStore(db, char_id)
+            n_ent, n_rel = store_extraction(gs, extraction)
+
+            logger.info(
+                f"[GraphController] Stored {n_ent} entities, {n_rel} relations "
+                f"for '{char_id}' (total in DB: {gs.get_stats()})"
+            )
+
+            # Tag source history messages with extracted entity names.
+            if entities:
+                entity_names = [e.get("name", "") for e in entities if e.get("name")]
+                self._tag_history_messages(
+                    db, char_id, entity_names,
+                    user_input, assistant_output,
+                )
+                if created_memory_ids and hasattr(character, "memory_system"):
+                    tagged_mem = 0
+                    for eid in created_memory_ids:
+                        if character.memory_system.tag_with_entities(eid, entity_names):
+                            tagged_mem += 1
+                    if tagged_mem:
+                        logger.info(
+                            f"[GraphController] Tagged {tagged_mem} memory(ies) "
+                            f"with {len(entity_names)} entities"
+                        )
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Extraction failed (ignored): {format_exception(e)}", exc_info=True)
+
+    def _store_inline(
+        self,
+        character,
+        char_id: str,
+        json_str: str,
+        user_input: str = "",
+        assistant_output: str = "",
+        created_memory_ids: Optional[List[int]] = None,
+        memories_already_tagged: bool = False,
+    ) -> None:
+        """Store graph JSON that was already extracted inline by the main model."""
+        try:
+            from managers.rag.graph.entity_extractor import (
+                parse_extraction_response,
+                store_extraction,
+            )
+            from managers.rag.graph.graph_store import GraphStore
+            from managers.database_manager import DatabaseManager
+
+            extraction = parse_extraction_response(json_str)
+            if extraction is None:
+                logger.warning(f"[GraphController] Inline graph JSON unparseable: {json_str[:200]}")
+                return
+
+            entities = extraction.get("entities", [])
+            entities = [
+                e if isinstance(e, dict) else {"name": str(e), "type": "thing"}
+                for e in entities if e
+            ]
+            logger.info(
+                f"[GraphController] Inline: {len(entities)} entities, "
+                f"{len(extraction.get('relations', []))} relations for '{char_id}'"
+            )
+
+            db = DatabaseManager()
+            gs = GraphStore(db, char_id)
+            n_ent, n_rel = store_extraction(gs, extraction)
+            logger.info(f"[GraphController] Inline stored {n_ent} entities, {n_rel} relations")
+
+            if entities:
+                entity_names = [e.get("name", "") for e in entities if e.get("name")]
+                self._tag_history_messages(db, char_id, entity_names, user_input, assistant_output)
+                if not memories_already_tagged and created_memory_ids and hasattr(character, "memory_system"):
+                    for eid in created_memory_ids:
+                        character.memory_system.tag_with_entities(eid, entity_names)
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Inline store failed (ignored): {format_exception(e)}", exc_info=True)
+
+    @staticmethod
+    def _tag_history_messages(
+        db,
+        char_id: str,
+        entity_names: List[str],
+        user_input: str,
+        assistant_output: str,
+    ) -> None:
+        """Tag recent history rows (matched by content) with extracted entity names.
+
+        Uses a merge strategy: existing entity tags are preserved, new ones added.
+        """
+        if not entity_names:
+            return
+
+        # Find the most recent history entries that match the texts we extracted from.
+        # We match by content substring + character_id to avoid tagging wrong rows.
+        texts_to_match = []
+        if user_input and user_input.strip():
+            texts_to_match.append(user_input.strip())
+        if assistant_output and assistant_output.strip():
+            texts_to_match.append(assistant_output.strip())
+
+        if not texts_to_match:
+            return
+
+        try:
+            with db.connection() as conn:
+                cur = conn.cursor()
+
+                # Check if 'entities' column exists (migration may not have run yet).
+                cur.execute("PRAGMA table_info(history)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "entities" not in cols:
+                    logger.debug("[GraphController] 'entities' column not in history table, skip tagging")
+                    return
+
+                new_names_set = {n.lower().strip() for n in entity_names if n.strip()}
+                entities_json = json.dumps(sorted(new_names_set), ensure_ascii=False)
+
+                for txt in texts_to_match:
+                    # Match by exact content and character_id, most recent first.
+                    cur.execute(
+                        """
+                        SELECT id, entities FROM history
+                        WHERE character_id = ? AND content = ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (char_id, txt),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+
+                    row_id = row[0]
+                    existing_raw = row[1]
+
+                    # Merge with existing entities.
+                    try:
+                        existing = set(json.loads(existing_raw or "[]"))
+                    except (json.JSONDecodeError, TypeError):
+                        existing = set()
+
+                    merged = existing | new_names_set
+                    merged_json = json.dumps(sorted(merged), ensure_ascii=False)
+
+                    cur.execute(
+                        "UPDATE history SET entities = ? WHERE id = ?",
+                        (merged_json, row_id),
+                    )
+
+                conn.commit()
+
+                tagged_count = len(texts_to_match)
+                logger.info(
+                    f"[GraphController] Tagged {tagged_count} history message(s) "
+                    f"with {len(new_names_set)} entities: {sorted(new_names_set)[:5]}"
+                )
+
+        except Exception as e:
+            logger.warning(f"[GraphController] Failed to tag history messages (ignored): {format_exception(e)}", exc_info=True)
+
+    def _build_extraction_prompt(self, character, text: str) -> Optional[str]:
+        """Load extraction prompt template, format with message text.
+
+        Resolution order:
+        1. GRAPH_EXTRACTION_PROMPT setting (custom override).
+        2. Character's prompt-set Structural/graph_extraction_prompt.txt.
+        3. Prompts/System/graph_extraction_prompt.txt (shared base for prompters).
+        4. Hardcoded _DEFAULT_EXTRACTION_PROMPT.
+        """
+        # 1. Custom setting override.
+        custom = self._get_setting("GRAPH_EXTRACTION_PROMPT", None)
+        if custom and str(custom).strip():
+            return str(custom).strip().replace("{text}", text)
+
+        def _try_load(path: str) -> Optional[str]:
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        return f.read().strip()
+                except Exception:
+                    pass
+            return None
+
+        # 2. Character's own Structural folder.
+        base_path = getattr(character, "base_data_path", None)
+        if base_path:
+            tmpl = _try_load(os.path.join(base_path, "Structural", "graph_extraction_prompt.txt"))
+            if tmpl:
+                return tmpl.replace("{text}", text)
+
+        # 3. Shared System folder (resolved relative to Prompts root).
+        prompts_root = None
+        if base_path:
+            # base_data_path is like  .../Prompts/Kind/Default  → go up 2 levels
+            prompts_root = os.path.normpath(os.path.join(base_path, "..", ".."))
+        if prompts_root:
+            tmpl = _try_load(os.path.join(prompts_root, "System", "graph_extraction_prompt.txt"))
+            if tmpl:
+                return tmpl.replace("{text}", text)
+
+        # 4. Hardcoded default.
+        return _DEFAULT_EXTRACTION_PROMPT.replace("{text}", text)
+
+    def _resolve_preset(self, label: str) -> Optional[int]:
+        """Resolve provider label (preset name or numeric ID) to preset_id."""
+        if not label or label in ("Current", "Текущий"):
+            return None
+        # Try numeric ID first (legacy / direct ID usage).
+        try:
+            return int(label)
+        except ValueError:
+            pass
+        # Look up by display name via ApiPresetService.
+        try:
+            meta = use(ApiPresetService).list_meta()
+            if meta:
+                for bucket in ("custom", "builtin"):
+                    for pm in (meta.get(bucket) or []):
+                        if getattr(pm, "name", None) == label:
+                            pid = getattr(pm, "id", None)
+                            if isinstance(pid, int):
+                                return pid
+            logger.warning(
+                f"[GraphController] Could not resolve preset name '{label}' to ID, "
+                f"falling back to current preset."
+            )
+        except Exception as e:
+            logger.warning(f"[GraphController] Preset name lookup failed: {format_exception(e)}")
+        return None

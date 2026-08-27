@@ -1,0 +1,1 @@
+Context: New player. Create image based on interaction.

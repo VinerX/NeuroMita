@@ -1,0 +1,6 @@
+
+LOG "HistoryLoader: secretExposed=" + str(secretExposed)
+IF secretExposed == True THEN
+    RETURN LOAD "Context/Mita_history.txt"
+ENDIF
+RETURN ""

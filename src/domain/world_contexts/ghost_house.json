@@ -1,0 +1,10 @@
+{
+  "world_id": "GhostHouse",
+  "display_name": "Ghost Mita's house",
+  "owner": "Ghost",
+  "former_owners": [],
+  "default_context": "You are visiting Ghost Mita's house. It is Ghost Mita's private home, not yours.",
+  "character_contexts": {
+    "Ghost": "This is your home. The house is familiar to you in ways that are difficult for visitors to understand."
+  }
+}

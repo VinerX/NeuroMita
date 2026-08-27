@@ -1,21 +1,29 @@
-Copyright (c) 2025-2026 VinerX (https://github.com/VinerX/NeuroMita)
+# Лицензия NeuroMita
 
-RUSSIAN:
-Настоящим подтверждается разрешение на свободное использование, копирование, изменение и распространение данного программного обеспечения при соблюдении следующих условий:
+Copyright (c) 2025–2026 VinerX and NeuroMita contributors
 
-1. Использование данного кода не должно нарушать правила, условия обслуживания (ToS) или лицензионные соглашения основной игры, для которой предназначен данный мод.
-2. При использовании любой части этого кода (в оригинальном или измененном виде) обязательно указание авторства: VinerX.
-3. Обязательно наличие активной и прямой ссылки на оригинальный репозиторий: https://github.com/VinerX/NeuroMita
+Канонический репозиторий проекта: <https://github.com/VinerX/NeuroMita>
 
-ДАННОЕ ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ, ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ. АВТОР НЕ НЕСЕТ ОТВЕТСТВЕННОСТИ ЗА ЛЮБЫЕ ПРЕТЕНЗИИ, УЩЕРБ ИЛИ ИНЫЕ ТРЕБОВАНИЯ, ВОЗНИКШИЕ В РЕЗУЛЬТАТЕ ИСПОЛЬЗОВАНИЯ ДАННОГО ПО.
+## Русская версия
 
----------------------------------------------------------------------------
+Настоящим бесплатно предоставляется разрешение любому лицу, получившему копию исходного кода NeuroMita и связанной с ним документации (далее — «Программное обеспечение»), использовать, копировать, изменять, объединять, публиковать, распространять, сублицензировать и/или продавать копии Программного обеспечения при соблюдении следующих условий:
 
-ENGLISH:
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions:
+1. Во всех копиях или существенных частях Программного обеспечения должно сохраняться указание: `Copyright (c) 2025–2026 VinerX and NeuroMita contributors`.
+2. При распространении Программного обеспечения или существенных его частей должна быть указана прямая активная ссылка на канонический репозиторий: <https://github.com/VinerX/NeuroMita>.
+3. Использование не должно нарушать применимые законы, условия сервисов или лицензионные соглашения материалов, которые пользователь получает отдельно.
 
-1. The use of this code must not violate the rules, terms of service (ToS), or license agreements of the original game for which this mod is intended.
-2. Attribution to the author (VinerX) must be included in all copies or substantial portions of the Software.
-3. A direct and active link to the original repository must be provided: https://github.com/VinerX/NeuroMita
+ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ, ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ, ПОМИМО ПРОЧЕГО, ГАРАНТИИ ТОВАРНОЙ ПРИГОДНОСТИ, ПРИГОДНОСТИ ДЛЯ ОПРЕДЕЛЁННОЙ ЦЕЛИ И НЕНАРУШЕНИЯ ПРАВ. НИ ПРИ КАКИХ ОБСТОЯТЕЛЬСТВАХ АВТОРЫ ИЛИ ОБЛАДАТЕЛИ АВТОРСКИХ ПРАВ НЕ НЕСУТ ОТВЕТСТВЕННОСТИ ПО КАКИМ-ЛИБО ПРЕТЕНЗИЯМ, УБЫТКАМ ИЛИ ИНОЙ ОТВЕТСТВЕННОСТИ, ВОЗНИКШИМ ИЗ ИСПОЛЬЗОВАНИЯ ИЛИ НЕВОЗМОЖНОСТИ ИСПОЛЬЗОВАНИЯ ПРОГРАММНОГО ОБЕСПЕЧЕНИЯ.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+## English version
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of the NeuroMita source code and associated documentation files (the “Software”), to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, subject to the following conditions:
+
+1. All copies or substantial portions of the Software must retain the notice: `Copyright (c) 2025–2026 VinerX and NeuroMita contributors`.
+2. Any distribution of the Software or substantial portions of it must include a direct and active link to the canonical repository: <https://github.com/VinerX/NeuroMita>.
+3. Use must not violate applicable law, terms of service, or license agreements for materials obtained separately by the user.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Что не лицензируется
+
+Эта лицензия распространяется только на код и документацию NeuroMita в пределах прав их авторов. Она не предоставляет и не подразумевает никаких прав на MiSide, её персонажей, модели, текстуры, музыку, товарные знаки, игровые данные или иные сторонние материалы. Такие материалы регулируются их собственными правообладателями и условиями.

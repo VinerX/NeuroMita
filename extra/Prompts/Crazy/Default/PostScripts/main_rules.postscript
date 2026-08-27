@@ -1,0 +1,36 @@
+// ===== КАСТОМНАЯ ПЕРЕМЕННАЯ LOVE =====
+// Requires config.json: {"name": "love_change", "type": "float", "min": -10, "max": 10, "description": "Change in Love relationship variable"}
+RULE LoveHandler
+    MATCH FIELD "love_change"
+    ACTIONS
+        SET Love = max(1, min(Love + love_change, 300))
+        LOG "Love updated by " + str(love_change) + ". New: " + str(Love)
+    END_ACTIONS
+END_RULE
+
+// ===== АКТИВАЦИЯ КВЕСТА =====
+// Альтернатива: можно задать через op:set в config.json без DSL
+RULE SecretTrialHandler
+    MATCH FIELD "secret_trial"
+    ACTIONS
+        SET secretTrial = secret_trial
+        LOG "secretTrial set to " + str(secret_trial)
+    END_ACTIONS
+END_RULE
+
+// ===== ЧИСТКА ТЕКСТА (работает в обоих режимах: legacy и structured) =====
+RULE RemoveAsterisks
+    MATCH REGEX "(\*{1,3})"
+    ACTIONS
+        REMOVE_MATCH
+    END_ACTIONS
+END_RULE
+
+DEBUG_DISPLAY
+    "Attitude": attitude
+    "Boredom": boredom
+    "Stress": stress
+    "Love": Love
+    "Secret": secretExposed
+    "Message time": SYSTEM_DATETIME
+END_DEBUG_DISPLAY

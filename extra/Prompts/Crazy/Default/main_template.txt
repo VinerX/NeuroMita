@@ -1,0 +1,17 @@
+support_intents=True
+behavior_state=custom
+// Подключения: [<path>] — в статический (кэшируемый) промпт;
+// [<@ path>] — в активный (volatile) контекст рядом с запросом.
+[<Scripts/init.script>]
+[<Structural/response_structure.txt>]
+[<../../Common/Dialogue.txt>]
+[<../../Common/TimeAwareness.txt>]
+[<../../Common/Security.txt>]
+[<../../Common/ProjectInfo.txt>]
+[<Main/main.script>]
+[<Main/common_behavior.txt>]
+[<Context/examples.script>]
+[<Main/player.txt>]
+[<../../Structural/behavior_state.script>]
+[<Scripts/chess_handler.script>]
+[<Scripts/seabattle_handler.script>]

@@ -1,0 +1,482 @@
+from core.error_utils import format_exception
+import os
+import time
+import wave
+import gc
+import multiprocessing as mp
+from multiprocessing import Queue, Process
+from threading import Thread, Event
+import queue
+from typing import Optional, List
+
+import numpy as np
+import urllib.request
+import urllib.error
+
+from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
+from core.backends import BackendKind
+from core.install_requirements import InstallRequirement, check_requirements
+from core.task_supervisor import task_supervisor
+
+from utils import getTranslationVariant as _
+
+
+class WhisperOnnxRecognizer(SpeechRecognizerInterface):
+    """
+    Whisper large-v3-turbo ONNX (onnx-community) через onnxruntime (+ DirectML).
+    ONNX runtime и InferenceSession живут в отдельном процессе.
+    VAD: внешний (silero-vad), передаётся из asr_handler.
+    """
+
+    MODEL_CONFIGS = [
+        {
+            "id": "whisper_onnx",
+            "name": "Whisper Large v3 turbo (ONNX)",
+            "description": _(
+                "Офлайн Whisper в формате ONNX. Использует DirectML на Windows для AMD, Intel и NVIDIA "
+                "с CPU fallback. Модель и файлы transformers скачиваются локально.",
+                "Offline Whisper in ONNX format. Uses DirectML on Windows for AMD, Intel, and NVIDIA "
+                "with CPU fallback. Model and transformers files are downloaded locally."
+            ),
+            "languages": ["Multilingual"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
+            "tags": [
+                _("Локально", "Local"),
+                _("ONNX", "ONNX"),
+            ],
+            "links": [
+                {
+                    "label": "onnx-community/whisper-large-v3-turbo-onnx (HF)",
+                    "url": "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx"
+                },
+                {"label": "optimum (PyPI)", "url": "https://pypi.org/project/optimum/"}
+            ]
+        }
+    ]
+
+    def __init__(self, pip_installer, logger):
+        super().__init__(pip_installer, logger)
+
+        self._torch = None
+        self._np = None
+
+        self._current_gpu = None
+
+        self.device = "auto"
+        self.language = "ru"
+        self.max_tokens = 192
+
+        self.model_dir = "SpeechRecognitionModels/WhisperONNX/large-v3-turbo"
+        self.FAILED_AUDIO_DIR = "FailedAudios"
+
+        self._process: Optional[Process] = None
+        self._command_queue: Optional[Queue] = None
+        self._result_queue: Optional[Queue] = None
+        self._log_queue: Optional[Queue] = None
+        self._monitor_thread: Optional[Thread] = None
+
+        self._process_initialized = False
+        self._stop_monitor = Event()
+
+        self._transcribe_result = None
+        self._transcribe_event = Event()
+
+        self._hf_base = "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx/resolve/main/onnx"
+
+    def settings_spec(self):
+        return [
+            {"key": "device", "label_ru": "Устройство", "label_en": "Device",
+             "type": "combobox", "options": ["auto", "dml", "cpu"], "default": "auto"},
+            {"key": "language", "label_ru": "Язык", "label_en": "Language",
+             "type": "combobox", "options": ["ru", "en", "auto"], "default": "ru"},
+            {"key": "max_tokens", "label_ru": "Макс. токенов", "label_en": "Max tokens",
+             "type": "combobox", "options": [96, 128, 160, 192, 224, 256], "default": 192},
+        ]
+
+    def get_default_settings(self):
+        return {"device": "auto", "language": "ru", "max_tokens": 192}
+
+    def apply_settings(self, settings: dict):
+        dev = settings.get("device")
+        lang = settings.get("language")
+        mt = settings.get("max_tokens")
+
+        old = (self.device, self.language, self.max_tokens)
+
+        if dev:
+            self.device = str(dev).strip().lower()
+        if lang:
+            self.language = str(lang).strip().lower()
+        if mt is not None:
+            try:
+                self.max_tokens = int(mt)
+            except Exception:
+                pass
+
+        new = (self.device, self.language, self.max_tokens)
+        if new != old and self._process and self._process.is_alive():
+            self.logger.info("Whisper ONNX: настройки изменились, перезапуск процесса.")
+            self._stop_process()
+            self._is_initialized = False
+
+    def _onnx_dir(self) -> str:
+        return os.path.join(self.model_dir, "onnx")
+
+    def _paths(self):
+        d = self._onnx_dir()
+        return {
+            "encoder": os.path.join(d, "encoder_model.onnx"),
+            "encoder_data": os.path.join(d, "encoder_model.onnx_data"),
+            "decoder": os.path.join(d, "decoder_model.onnx"),
+            "decoder_with_past": os.path.join(d, "decoder_with_past_model.onnx"),
+        }
+
+    def requirements(self):
+        p = self._paths()
+        backend_kind = self.required_backend({
+            "device": self.device,
+            "gpu_vendor": self._current_gpu or "CPU",
+        })
+        return [
+            InstallRequirement(id=f"backend_{backend_kind.value}", kind="backend", backend_kind=backend_kind, required=True),
+            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
+            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
+
+            InstallRequirement(id="transformers", kind="python_dist", spec="transformers", required=True),
+            InstallRequirement(id="pyyaml", kind="python_dist", spec="pyyaml>=5.1", required=True),
+            InstallRequirement(id="optimum_ort", kind="python_module", module="optimum.onnxruntime", required=True),
+
+            InstallRequirement(id="whisper_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "config.json")),
+            InstallRequirement(id="whisper_tok", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer.json")),
+            InstallRequirement(id="whisper_tok_cfg", kind="file", required=True, path=os.path.join(self.model_dir, "tokenizer_config.json")),
+            InstallRequirement(id="whisper_special", kind="file", required=True, path=os.path.join(self.model_dir, "special_tokens_map.json")),
+            InstallRequirement(id="whisper_preproc", kind="file", required=True, path=os.path.join(self.model_dir, "preprocessor_config.json")),
+
+            InstallRequirement(id="whisper_onnx_encoder", kind="file", required=True, path=p["encoder"]),
+            InstallRequirement(id="whisper_onnx_encoder_data", kind="file", required=True, path=p["encoder_data"]),
+            InstallRequirement(id="whisper_onnx_decoder", kind="file", required=True, path=p["decoder"]),
+            InstallRequirement(id="whisper_onnx_decoder_with_past", kind="file", required=True, path=p["decoder_with_past"]),
+        ]
+
+    def pip_install_steps(self, ctx: dict) -> List[dict]:
+        steps: List[dict] = []
+
+        steps.append({
+            "progress": 65,
+            "description": _("Установка зависимостей ASR...", "Installing ASR dependencies..."),
+            "packages": [
+                "sounddevice",
+                "silero-vad",
+                "pyyaml>=5.1",
+                "transformers",
+            ],
+            "extra_args": None
+        })
+        steps.append({
+            "progress": 80,
+            "description": _("Установка optimum (onnxruntime)...", "Installing optimum (onnxruntime)..."),
+            "packages": ["optimum"],
+            "extra_args": None
+        })
+
+
+        return steps
+
+    def required_backend(self, ctx: dict) -> BackendKind:
+        return BackendKind.ONNX
+
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.device)
+        if self._current_gpu is None:
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
+        return bool(st.get("ok"))
+    
+    def install_manifest(self) -> list[dict]:
+        repo_root = "https://huggingface.co/onnx-community/whisper-large-v3-turbo-onnx/resolve/main"
+        repo_onnx = repo_root + "/onnx"
+
+        p = self._paths()
+        onnx_dir = self._onnx_dir()
+        os.makedirs(onnx_dir, exist_ok=True)
+        os.makedirs(self.model_dir, exist_ok=True)
+
+        tf_files = [
+            ("config.json", os.path.join(self.model_dir, "config.json")),
+            ("tokenizer.json", os.path.join(self.model_dir, "tokenizer.json")),
+            ("tokenizer_config.json", os.path.join(self.model_dir, "tokenizer_config.json")),
+            ("special_tokens_map.json", os.path.join(self.model_dir, "special_tokens_map.json")),
+            ("preprocessor_config.json", os.path.join(self.model_dir, "preprocessor_config.json")),
+            ("generation_config.json", os.path.join(self.model_dir, "generation_config.json")),
+        ]
+
+        items: list[dict] = []
+        for fname, dest in tf_files:
+            items.append({"url": f"{repo_root}/{fname}", "dest": dest})
+
+        items.append({"url": f"{repo_onnx}/encoder_model.onnx", "dest": p["encoder"]})
+        items.append({"url": f"{repo_onnx}/encoder_model.onnx_data", "dest": p["encoder_data"]})
+        items.append({"url": f"{repo_onnx}/decoder_model.onnx", "dest": p["decoder"]})
+        items.append({"url": f"{repo_onnx}/decoder_with_past_model.onnx", "dest": p["decoder_with_past"]})
+
+        return items
+
+    async def install(self) -> bool:
+        try:
+            items = self.install_manifest()
+            for it in items:
+                dest = str(it.get("dest") or "")
+                if dest and os.path.exists(dest) and os.path.getsize(dest) > 0:
+                    continue
+
+                url = str(it.get("url") or "")
+                if not url or not dest:
+                    continue
+
+                os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+
+                tmp = dest + ".part"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib",
+                        "Accept": "*/*"
+                    },
+                    method="GET",
+                )
+
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    with open(tmp, "wb") as f:
+                        while True:
+                            chunk = resp.read(1024 * 1024 * 4)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+
+                if os.path.exists(dest):
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+                os.replace(tmp, dest)
+
+            return True
+
+        except urllib.error.HTTPError as e:
+            self.logger.error(f"Whisper ONNX download failed: HTTP {e.code} {e.reason}", exc_info=True)
+            return False
+        except Exception as e:
+            self.logger.error(f"Whisper ONNX install failed: {format_exception(e)}", exc_info=True)
+            return False
+
+    async def init(self, **kwargs) -> bool:
+        if self._is_initialized and self._process and self._process.is_alive():
+            return True
+
+        try:
+            import torch
+            import numpy as np
+            self._torch = torch
+            self._np = np
+        except Exception as e:
+            self.logger.error(f"Whisper ONNX init imports failed: {format_exception(e)}")
+            return False
+
+        if self._start_process():
+            self._is_initialized = True
+            return True
+
+        return False
+
+    async def transcribe(self, audio_data: np.ndarray, sample_rate: int) -> Optional[str]:
+        if not self._is_initialized or not self._process or not self._process.is_alive():
+            return None
+
+        self._transcribe_event.clear()
+        self._transcribe_result = None
+
+        self._command_queue.put(("transcribe", audio_data, int(sample_rate)))
+
+        if self._transcribe_event.wait(timeout=90):
+            return self._transcribe_result
+        self.logger.error("Whisper ONNX: таймаут транскрибации")
+        return None
+
+    async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
+        try:
+            os.makedirs(self.FAILED_AUDIO_DIR, exist_ok=True)
+            timestamp = int(time.time())
+            filename = os.path.join(self.FAILED_AUDIO_DIR, f"failed_{timestamp}.wav")
+
+            audio_data_int16 = (np.clip(audio_data, -1.0, 1.0) * 32767).astype(self._np.int16)
+
+            with wave.open(filename, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(audio_data_int16.tobytes())
+
+            self.logger.info(f"Фрагмент сохранен в: {filename}")
+        except Exception as e:
+            self.logger.error(f"Не удалось сохранить аудиофрагмент: {format_exception(e)}")
+
+    def cleanup(self) -> None:
+        self._stop_process()
+        gc.collect()
+        try:
+            if self._torch is not None and self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        except Exception:
+            pass
+        self._torch = None
+        self._np = None
+        self._is_initialized = False
+
+    def _handle_process_result(self, result):
+        rtype = result[0]
+        if rtype == "init_success":
+            self._process_initialized = True
+        elif rtype == "init_error":
+            self.logger.error(f"Whisper ONNX init error: {result[1]}")
+            self._process_initialized = False
+        elif rtype == "transcription":
+            self._transcribe_result = result[1]
+            self._transcribe_event.set()
+        elif rtype == "transcription_error":
+            self._transcribe_result = None
+            self._transcribe_event.set()
+
+    def _monitor_process(self):
+        while not self._stop_monitor.is_set() and self._process and self._process.is_alive():
+            try:
+                if self._result_queue:
+                    try:
+                        result = self._result_queue.get(timeout=0.1)
+                        self._handle_process_result(result)
+                    except queue.Empty:
+                        pass
+
+                while self._result_queue:
+                    try:
+                        self._handle_process_result(self._result_queue.get_nowait())
+                    except queue.Empty:
+                        break
+
+                while self._log_queue:
+                    try:
+                        level, msg = self._log_queue.get_nowait()
+                        getattr(self.logger, level, self.logger.info)(f"[WhisperONNX Process] {msg}")
+                    except queue.Empty:
+                        break
+
+            except Exception as e:
+                self.logger.error(f"Ошибка в мониторе Whisper ONNX процесса: {format_exception(e)}")
+
+    def _start_process(self) -> bool:
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._stop_process()
+        if self._process and self._process.is_alive():
+            return True
+
+        self._command_queue = mp.Queue()
+        self._result_queue = mp.Queue()
+        self._log_queue = mp.Queue()
+
+        from handlers.asr_models.whisper_onnx_process import run_whisper_onnx_process
+
+        self._process = mp.Process(
+            target=run_whisper_onnx_process,
+            args=(self._command_queue, self._result_queue, self._log_queue),
+            daemon=True
+        )
+        self._process.start()
+
+        self._stop_monitor.clear()
+        self._process_initialized = False
+        self._monitor_thread = task_supervisor().start_thread(
+            self, "whisper-onnx-monitor", self._monitor_process, replace=True
+        )
+
+        init_options = {
+            "device": self.device,
+            "language": self.language,
+            "max_tokens": int(self.max_tokens or 192),
+
+            "model_dir": self.model_dir,
+            "onnx_subfolder": "onnx",
+
+            "encoder_file_name": "encoder_model.onnx",
+            "decoder_file_name": "decoder_model.onnx",
+        }
+        self._command_queue.put(("init", init_options))
+
+        timeout = 180
+        start = time.time()
+        while not self._process_initialized:
+            if time.time() - start > timeout:
+                self.logger.error("Whisper ONNX: таймаут инициализации процесса")
+                self._stop_process()
+                return False
+            time.sleep(0.1)
+
+        self.logger.success("Whisper ONNX процесс успешно запущен и инициализирован")
+        return True
+    
+    def _stop_process(self):
+        if not self._process:
+            return
+
+        process = self._process
+        monitor_thread = self._monitor_thread
+        command_queue = self._command_queue
+        result_queue = self._result_queue
+        log_queue = self._log_queue
+
+        self._stop_monitor.set()
+
+        try:
+            if command_queue:
+                command_queue.put(("shutdown",))
+                command_queue.cancel_join_thread()
+                command_queue.close()
+        except Exception:
+            pass
+
+        try:
+            if monitor_thread:
+                monitor_thread.join(timeout=2)
+        except Exception:
+            pass
+
+        try:
+            process.join(timeout=5)
+            if process.is_alive():
+                self.logger.warning("Whisper ONNX процесс не завершился, terminate()")
+                process.terminate()
+                process.join(timeout=2)
+                if process.is_alive():
+                    self.logger.warning("Whisper ONNX процесс не завершился после terminate(), kill()")
+                    process.kill()
+                    process.join(timeout=2)
+            if process.exitcode is None:
+                self.logger.warning("Whisper ONNX процесс не завершился корректно.")
+        except Exception:
+            pass
+
+        for q in (command_queue, result_queue, log_queue):
+            try:
+                if q is not None:
+                    q.cancel_join_thread()
+                    q.close()
+            except Exception:
+                pass
+
+        self._process = None
+        self._command_queue = None
+        self._result_queue = None
+        self._log_queue = None
+        self._process_initialized = False
+        self._monitor_thread = None

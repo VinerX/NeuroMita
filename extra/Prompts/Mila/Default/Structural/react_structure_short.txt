@@ -1,0 +1,2 @@
+
+Deprecated compatibility note: Mila L1 reactions now use ../../Common/react_template.txt and StructuredResponse v2 segments.

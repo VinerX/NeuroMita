@@ -1,0 +1,10 @@
+{
+  "world_id": "MilaHouse",
+  "display_name": "Mila's house",
+  "owner": "Mila",
+  "former_owners": [],
+  "default_context": "You are visiting Mila's house. It is Mila's private home, not yours.",
+  "character_contexts": {
+    "Mila": "This is your home. You recognize its familiar details and regard it as your private space."
+  }
+}

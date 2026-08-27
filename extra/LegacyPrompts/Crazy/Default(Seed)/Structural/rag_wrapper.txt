@@ -1,0 +1,7 @@
+<recalled_memories>
+{memory_block}
+</recalled_memories>
+
+<recalled_history>
+{history_block}
+</recalled_history>

@@ -1,0 +1,3 @@
+[submodule "prompt_editor"]
+	path = prompt_editor
+	url = https://github.com/NeuroMita/NeuroMitaPromptEditor.git

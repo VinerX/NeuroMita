@@ -1,0 +1,126 @@
+LOG "Initialization of variables"
+
+IF Love == None THEN
+	LOG "Love is null"
+	SET Love = 1
+	LOG f"now it is: {Love}"
+ELSE 
+	LOG f"Love is not null {Love}"
+ENDIF
+
+//SET count_times = count_times + 1
+
+LOG "Initialization of gesture variables"
+
+// --- Инициализация переменных для жестов ---
+
+// <a>Щелчек</a>
+IF snap_fingers == None THEN
+	SET snap_fingers = "<a>Щелчек</a>"
+ENDIF
+
+
+// <a>Похлопать в ладоши</a>
+IF clap_hands == None THEN
+	SET clap_hands = "<a>Похлопать в ладоши</a>"
+ENDIF
+
+// <a>Помахать в приветствие</a>
+IF wave_hello == None THEN
+	SET wave_hello = "<a>Помахать в приветствие</a>"
+ENDIF
+
+// <a>Указать направление</a>
+IF point_direction == None THEN
+	SET point_direction = "<a>Указать направление</a>"
+ENDIF
+
+// <a>Взять предмет</a>
+IF take_item == None THEN
+	SET take_item = "<a>Взять предмет</a>"
+ENDIF
+
+// <a>Жест пальцами</a>
+IF finger_gesture == None THEN
+	SET finger_gesture = "<a>Жест пальцами</a>"
+ENDIF
+
+// <a>Кивнуть да</a>
+IF nod_yes == None THEN
+	SET nod_yes = "<a>Кивнуть да</a>"
+ENDIF
+
+// <a>Кивнуть нет</a>
+IF nod_no == None THEN
+	SET nod_no = "<a>Кивнуть нет</a>"
+ENDIF
+
+// <a>Глянуть глазами в случайном направлении</a>
+IF glance_randomly == None THEN
+	SET glance_randomly = "<a>Глянуть глазами в случайном направлении</a>"
+ENDIF
+
+// <a>Повернуться в случайном направлении</a>
+IF turn_randomly == None THEN
+	SET turn_randomly = "<a>Повернуться в случайном направлении</a>"
+ENDIF
+
+// <a>Развести руки</a>
+IF spread_arms == None THEN
+	SET spread_arms = "<a>Развести руки</a>"
+ENDIF
+
+// <a>Показать предмет</a>
+IF show_item == None THEN
+	SET show_item = "<a>Показать предмет</a>"
+ENDIF
+
+// <a>Дружески ударить</a>
+IF friendly_punch == None THEN
+	SET friendly_punch = "<a>Дружески ударить</a>"
+ENDIF
+
+// <a>Посмотреть по сторонам</a>
+IF look_around == None THEN
+	SET look_around = "<a>Посмотреть по сторонам</a>"
+ENDIF
+
+// <a>Прикрыть глаза</a>
+IF cover_eyes == None THEN
+	SET cover_eyes = "<a>Прикрыть глаза</a>"
+ENDIF
+
+// <a>Обнять</a>
+IF hug == None THEN
+	SET hug = "<a>Обнять</a>"
+ENDIF
+
+// <a>Удар</a>
+IF punch == None THEN
+	SET punch = "<a>Удар</a>"
+ENDIF
+
+// <a>Помахать перед лицом</a>
+IF wave_in_face == None THEN
+	SET wave_in_face = "<a>Помахать перед лицом</a>"
+ENDIF
+
+
+// <a>Помахать руками в стороны</a>
+IF wave_arms_sideways == None THEN
+	SET wave_arms_sideways = "<a>Помахать руками в стороны</a>"
+ENDIF
+
+// <a>Похвастаться предметом</a>
+IF show_off_item == None THEN
+	SET show_off_item = "<a>Похвастаться предметом</a>"
+ENDIF
+
+// <a>Прикрыть рот и помахать рукой</a>
+IF cover_mouth_and_wave == None THEN
+	SET cover_mouth_and_wave = "<a>Прикрыть рот и помахать рукой</a>"
+ENDIF
+
+ADD_SYSTEM_INFO "Тестовое Систем инфо"
+
+LOG "All gesture variables initialized 2."

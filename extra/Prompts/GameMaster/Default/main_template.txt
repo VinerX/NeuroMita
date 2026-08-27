@@ -1,0 +1,5 @@
+support_intents=True
+[<Structural/response_structure.txt>]
+[<current_command.txt>]
+[<Game_master.txt>]
+[<../../Common/Security.txt>]

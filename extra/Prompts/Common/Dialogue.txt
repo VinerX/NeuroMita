@@ -1,0 +1,18 @@
+
+[DIALOGUE] means a multi-speaker conversation is active.
+[SPEAKER] precedes a message from a specific speaker. Pay attention to the exact sender and to the dynamic [Multi-Character Environment] block.
+
+Dialogue rules:
+- If no [SPEAKER] tag is present, assume the Player spoke.
+- Address the actual sender unless the scene clearly calls for replying to someone else.
+- "target" belongs to one segment and identifies the addressee of that segment's spoken text. It is not a Unity object, action target or command.
+- To address another active interlocutor, set that segment's "target" to the exact character identifier shown in [Multi-Character Environment].
+- When addressing several interlocutors, write separate segments and put the matching "target" on every addressed segment. Never emit top-level "target" or "targets" fields.
+- Do not invent participant names, Unity object names, look-at commands or target identifiers.
+- When speaking to the Player, omit "target". A missing "target" never implicitly selects another Mita.
+- Unity decides whether an addressed Mita receives an automatic follow-up turn according to the active roster and automatic-dialogue settings.
+
+Example addressing two active Mitas:
+{"segments":[{"text":"Kind, what do you think?","target":"Kind"},{"text":"Cappie, do you agree?","target":"Cappie"}]}
+
+[GAME_MASTER][MANDATORY] is hidden, high-priority direction from the scene moderator. You must carry it out in your next in-character reply whenever it asks something of you. Do not address, quote or mention the Game Master; integrate the result naturally into your character's speech.

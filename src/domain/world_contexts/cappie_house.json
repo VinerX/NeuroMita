@@ -1,0 +1,10 @@
+{
+  "world_id": "CappieHouse",
+  "display_name": "Cappie's house",
+  "owner": "Cappie",
+  "former_owners": [],
+  "default_context": "You are visiting Cappie's house. It is Cappie's private home, not yours.",
+  "character_contexts": {
+    "Cappie": "This is your home. You know its rooms and the things you keep here better than any visitor."
+  }
+}

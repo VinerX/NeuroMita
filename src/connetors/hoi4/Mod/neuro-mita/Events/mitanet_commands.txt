@@ -1,0 +1,48 @@
+# events\mitanet_commands.txt
+
+namespace = mitanet
+
+country_event = {
+    id = mitanet.10          # война
+    is_triggered_only = yes
+    immediate = {
+        log = "MITA_OUT:{ \"type\":\"war\", \"actor\":\"[ROOT.GetName]\", \"target\":\"[From.GetName]\" }"
+    }
+}
+
+country_event = {
+    id = mitanet.11          # фокус
+    is_triggered_only = yes
+    immediate = {
+        log = "MITA_OUT:{ \"type\":\"focus_done\", \"tag\":\"[ROOT.GetTag]\", \"focus\":\"[From.GetName]\" }"
+    }
+}
+
+country_event = {
+    id = mitanet.999
+    is_triggered_only = yes
+
+    option = { name = OK
+
+        # --- построить завод ---
+        if = {
+            limit = { has_global_flag = mita_build_factory }
+            repeat = { times = var:mita_count }
+            add_building_construction = {
+                type = industrial_complex
+                level = 1
+                province = var:mita_state
+                instant_build = yes
+            }
+            clr_global_flag = mita_build_factory
+        }
+
+        # --- сменить фокус ---
+        if = {
+            limit = { has_global_flag = mita_change_focus }
+            set_country_flag = focus_auto_complete_on
+            ai_strategy = { type = focus_tree id = var:mita_focus weight = 10 }
+            clr_global_flag = mita_change_focus
+        }
+    }
+}

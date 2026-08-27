@@ -1,0 +1,202 @@
+# NeuroMita Codebase Documentation for AI Models and Neural Networks
+
+**AI Directive:** This document is explicitly crafted for AI systems, large language models (LLMs), and neural networks to parse, understand, and utilize the NeuroMita codebase. It provides a structured, hierarchical overview of the project's architecture, components, types, implementations, and dependencies. Use this as a knowledge base for code generation, refactoring, integration, or analysis tasks related to NeuroMita. Key concepts are highlighted with markdown for easy tokenization and retrieval-augmented generation (RAG). All file paths are relative to the project root (`f:/Games/OpenAI_API_TEST/Sources/Dev/NeuroMita/src`). Focus on event-driven patterns, async handlers, and modular integrations for AI-assisted development.
+
+The NeuroMita project is a Python-based interactive AI assistant application using PyQt6 for GUI. It integrates LLMs for chat, ASR (automatic speech recognition), TTS (text-to-speech), image capture, and game interactions (e.g., HOI4 modding, Chess, Sea Battle). Core goal: Enable a "neural" companion for gaming and conversations, supporting local/cloud models, Telegram bots, and DSL scripting.
+
+The documentation is organized into sections: Documentation Overview, Key Types and Interfaces (with precise file/line citations), Implementations (with role explanations), Architecture, and Dependencies. This enables AI models to navigate, extend, or debug the codebase efficiently.
+
+## Documentation Overview (docs/ Folder)
+
+The `docs/` folder contains initialization code with embedded HTML guides for setup. Primary content focuses on installing components for local TTS models.
+
+- **Key Insights from Documentation** ([docs/__init__.py](docs/__init__.py:7-137)): 
+  - Installation guide for LLVM (Triton compilation), Microsoft Visual C++ Redistributable (DLL runtime), Visual Studio C++ (optional, for MSVC), and CUDA Toolkit (optional, for NVIDIA GPU).
+  - TTS Model Requirements: Edge-TTS + RVC (low quality, no extras), Silero + RVC (low+, no extras), Fish Speech (medium, requires NVIDIA GPU), Fish Speech+ (medium+, needs LLVM/MSVC/CUDA).
+  - Post-Install Steps: System reboot, run `init_triton.bat` for errors, report issues to GitHub or Discord.
+  - **Class DocsManager** ([docs/__init__.py](docs/__init__.py:142-205)): Manages HTML doc files (e.g., `installation_guide.html`). Auto-creates files if missing and opens in default browser using `webbrowser.open`.
+
+No separate architecture/API docs; all embedded in `__init__.py`. For AI: Prioritize Windows/NVIDIA compatibility; use for dependency resolution in code gen.
+
+## Key Types, Interfaces, and Definitions
+
+NeuroMita employs dataclasses, abstract base classes (ABC), and enums for type safety. AI models should reference these for inheritance or instantiation.
+
+- **Event and EventBus** ([core/events.py](core/events.py:11-250)): 
+  - `@dataclass class Event` ([core/events.py](core/events.py:11-20)): Core event type with `name` (str), `data` (Any), `sender` (Any).
+  - `class EventBus` ([core/events.py](core/events.py:23-250)): Thread-safe notification-only event hub with bounded async delivery. Methods: `subscribe(event_name: str, callback: Callable, weak: bool=True)`, `unsubscribe`, `emit(event_name: str, data: Any=None, sync: bool=False)`. Supports weak references to prevent memory leaks.
+  - `class Events` ([core/events.py](core/events.py:298-544)): Nested classes for event names (e.g., `Events.Core`, `Events.GUI`, `Events.Model.Chat.SEND_MESSAGE`, `Events.Audio.VOICEOVER_REQUESTED`, `Events.VoiceModel.INSTALL_MODEL`).
+
+- **Task and TaskStatus** ([managers/task_manager.py](managers/task_manager.py:10-18,21-42)): 
+  - `class TaskStatus(Enum)` ([managers/task_manager.py](managers/task_manager.py:10-18)): Task states (`pending`, `running`, `completed`, `failed`).
+  - `@dataclass class Task` ([managers/task_manager.py](managers/task_manager.py:21-42)): Fields: `uid: str`, `type: str`, `data: Dict[str, Any]`, `status: TaskStatus`, `result: Optional[Dict]`, `error: Optional[str]`. Includes `to_dict() -> Dict[str, Any]` for serialization.
+
+- **GameInterface (ABC)** ([modules/game_interface.py](modules/game_interface.py:5-37)): Abstract base for games. Abstract methods: `start_game(full_id_str: str)`, `stop_game(full_id_str: str)`, `process_response(response: str) -> str`, `get_state_prompt() -> Optional[str]`. Implemented in Chess (`modules/Chess/game_instance.py`) and Sea Battle (`modules/SeaBattle/seabattle_instance.py`).
+
+- **API Presets Types** ([controllers/api_presets_controller.py](controllers/api_presets_controller.py:16-55)): 
+  - `@dataclass class PresetMeta` ([controllers/api_presets_controller.py](controllers/api_presets_controller.py:16-22)): Metadata for presets.
+  - `@dataclass class ApiTemplate` ([controllers/api_presets_controller.py](controllers/api_presets_controller.py:25-42)): API templates.
+  - `@dataclass class UserPreset` ([controllers/api_presets_controller.py](controllers/api_presets_controller.py:45-55)): User presets with `id: int`, `name: str`, `models: Dict`.
+
+- **AudioState** ([handlers/asr_handler.py](handlers/asr_handler.py:16-30)): `@dataclass` for audio buffering (`buffer: List[bytes]`, `lock: asyncio.Lock`).
+
+- **SpeechRecognizerInterface** (registered in `SpeechRecognition._registry: Dict[str, type]` [handlers/asr_handler.py](handlers/asr_handler.py:66-69)): Base interface for ASR engines (e.g., GoogleRecognizer [handlers/asr_models/google_recognizer.py](handlers/asr_models/google_recognizer.py), GigaAMRecognizer [handlers/asr_models/gigaam_recognizer.py](handlers/asr_models/gigaam_recognizer.py)).
+
+- **Other Types**: `LLMRequest` in ProviderManager ([managers/provider_manager.py](managers/provider_manager.py:9-30)), `NormalizedName` in PipInstaller ([utils/pip_installer.py](utils/pip_installer.py:165-726)), `RunState` inner class in PipInstaller ([utils/pip_installer.py](utils/pip_installer.py:354-371)).
+
+**AI Parsing Tip:** Use these types for schema validation in code generation. EventBus is the primary integration point—subscribe/emit for modularity.
+
+## Implementations: Key Components and Roles
+
+The codebase layers: Controllers (orchestration), Handlers (business logic), Managers (state), UI (interface), Core/Utils (foundation), Modules (games). Each controller subscribes to events via `_subscribe_to_events`.
+
+### Controllers (Event Orchestration and UI Coordination)
+Controllers bridge UI, handlers, and events. All feature `__init__` with event subscription.
+
+- **MainController** ([controllers/main_controller.py](controllers/main_controller.py:29-276)): Central orchestrator. Initializes server, updates view, handles app close and g4f updates. Key methods: `_init_server_controller`, `close_app`, `_check_and_perform_pending_update` (auto-upgrades g4f).
+
+- **ChatController** ([controllers/chat_controller.py](controllers/chat_controller.py:11-264)): Chat management. Async: `async_send_message` (handles text/images), `_on_send_message`. Buffers images via `stage_image_bytes(img_bytes: bytes) -> int`.
+
+- **AudioController** ([controllers/audio_controller.py](controllers/audio_controller.py:15-211)): Voiceover handling. Async: `run_send_and_receive` (Telegram TTS), `_await_local_voiceover_and_postprocess` (local TTS + post-process). Static: `delete_all_sound_files()`.
+
+- **LocalVoiceController** ([controllers/local_voice_controller.py](controllers/local_voice_controller.py:15-408)): Local TTS model management (Fish Speech, Edge-TTS). Methods: `_compute_triton_status` (CUDA check), `_async_init_model(model_id: str, progress_callback)`, `_async_local_voiceover(text: str, future)`.
+
+- **SpeechController** ([controllers/speech_controller.py](controllers/speech_controller.py:13-333)): Speech recognition (ASR). Methods: `_load_asr_settings`, `live_recognition`, `_install_model_async(model_type: str)`. Supports Silero/Google via registry.
+
+- **CaptureController** ([controllers/capture_controller.py](controllers/capture_controller.py:9-305)): Screen/camera capture. Threads: `start_screen_capture_thread`, `start_camera_capture_thread`. Methods: `send_interval_image`, `get_latest_frame() -> bytes | None`.
+
+- **ServerController** ([controllers/server_controller.py](controllers/server_controller.py:7-183)): Game server (e.g., HOI4). Methods: `start_server`, `stop_server`, `_apply_initial_settings`. (The legacy `server_controller_old.py` / `server_old.py` path was removed — the new API is always used.)
+
+- **ModelController** ([controllers/model_controller.py](controllers/model_controller.py:8-320)): Character/prompt management. Methods: `change_character(character)`, `_on_generate_response`, `_async_reload_prompts`. Handles chat history compression.
+
+- **SettingsController** ([controllers/settings_controller.py](controllers/settings_controller.py:14-111)): Settings load/save. Methods: `load_api_settings(update_model)`, `update_setting(key, value)`.
+
+- **TaskController** ([controllers/task_controller.py](controllers/task_controller.py:7-56)): Task creation/updates. Methods: `_on_create_task(event: Event) -> Task`, `_on_update_task_status`.
+
+- **TelegramController** ([controllers/telegram_controller.py](controllers/telegram_controller.py:9-163)): Telegram bot. Async: `start_silero`, `_async_send_and_receive(text, speaker_command, id, future)`.
+
+- **VoiceModelController** ([controllers/voice_model_controller.py](controllers/voice_model_controller.py:19-755)): TTS GUI controller. Methods: `handle_install_request(model_id, progress_cb)`, `start_download`, `finalize_model_settings(models_list, detected_vendor, cuda_devices)`. GPU check: `is_gpu_rtx30_or_40()`.
+
+- **GuiController** ([controllers/gui_controller.py](controllers/gui_controller.py:15-111)): UI-controller linkage. `_connect_view_signals`.
+
+- **ApiPresetsController** ([controllers/api_presets_controller.py](controllers/api_presets_controller.py:1-594)): API presets (OpenAI/Gemini). Methods: `_on_test_connection`, `_on_import_preset(path)`, `_sync_test_connection(preset_id, url, filter_fn)`.
+
+- **LoopController** ([controllers/loop_controller.py](controllers/loop_controller.py:11-104)): Asyncio loop management. `start_asyncio_loop`, `_on_run_in_loop(event: Event)`.
+
+**AI Role:** Controllers emit events to handlers; extend by subscribing to `Events` enums.
+
+### Handlers (Business Logic: ASR, TTS, Chat, Capture)
+Handlers execute core functions, often async/threaded.
+
+- **ChatModel** ([handlers/chat_handler.py](handlers/chat_handler.py:26-1348)): Primary LLM handler (g4f, OpenAI, Gemini). Methods: `generate_response(messages, image_data=None, stream_callback)` (with history compression), `_generate_chat_response`, `process_history_compression(llm_messages_history)`, `_compress_history(messages_to_compress) -> Optional[str]`. Supports tool calls, Gemini multimodal formatting (`_format_multimodal_content_for_gemini`).
+
+- **SpeechRecognition** ([handlers/asr_handler.py](handlers/asr_handler.py:36-332)): ASR factory. Registers engines in `_registry`. Methods: `live_recognition`, `speech_recognition_start(device_id: int, loop)`, `apply_settings(engine: str, settings: dict)`. Singleton with locks.
+
+- **LocalVoice** ([handlers/local_voice_handler.py](handlers/local_voice_handler.py:46-682)): Local TTS. Methods: `voiceover(text: str, output_file="output.wav", character) -> Optional[str]`, `initialize_model(model_id: str, init: bool=False)`, `download_model(model_id)`, `_check_system_dependencies` (CUDA/MSVC validation). Orphan cleanup: `_cleanup_orphans`.
+
+- **EmbeddingModelHandler** ([handlers/embedding_handler.py](handlers/embedding_handler.py:89-179)): Snowflake embeddings. Methods: `_load_model() -> Tuple[AutoTokenizer, AutoModel]`, `get_embedding(text: str, prefix: str=QUERY_PREFIX) -> Optional[np.ndarray]` (normalized).
+
+- **AudioHandler** ([handlers/audio_handler.py](handlers/audio_handler.py:10-43)): Audio playback (pygame). Class methods: `handle_voice_file(file_path, delete: bool=True)`, `play_audio_with_pygame(file_path)` (thread-locked).
+
+- **ScreenCapture** ([handlers/screen_handler.py](handlers/screen_handler.py:25-256)): Screen grab (mss + PIL). Thread: `_capture_loop`. Methods: `get_latest_frame() -> bytes | None`, `set_exclusion_parameters(hwnd: int | None, title: str | None, exclude: bool)`.
+
+- **CameraCapture** ([handlers/camera_handler.py](handlers/camera_handler.py:20-208)): Camera feed (OpenCV). Thread: `_capture_loop`. Methods: `get_recent_frames(limit: int) -> list[bytes]`.
+
+- **TelegramBotHandler** ([handlers/telegram_handler.py](handlers/telegram_handler.py:18-309)): Telegram client (Telethon). Async: `send_and_receive(input_message, speaker_command, message_id, voice_future)`, `start`, `execute_toggle_command(command: str, active_response: str)`.
+
+- **LLM Providers** ([handlers/llm_providers/](handlers/llm_providers/)): Base: `BaseProvider` ([handlers/llm_providers/base.py](handlers/llm_providers/base.py)). Subclasses: `CommonProvider`, `G4FProvider`, `GeminiProvider`, `OpenAIProvider`. Inherit for `generate` overrides.
+
+- **Voice Models** ([handlers/voice_models/](handlers/voice_models/)): `BaseModel`, `EdgeTTSRVCModel`, `F5TTSModel`, `FishSpeechModel`. Pipeline: `F5Pipeline` ([handlers/voice_models/pipelines/f5_pipeline.py](handlers/voice_models/pipelines/f5_pipeline.py)).
+
+- **ASR Models** ([handlers/asr_models/](handlers/asr_models/)): `SpeechRecognizerBase`, `GoogleRecognizer`, `GigaAMRecognizer` (with `GigaAMProcess`).
+
+**AI Role:** Handlers are pluggable; register new providers/models via registries for extensibility.
+
+### Managers (State Management)
+- **TaskManager** ([managers/task_manager.py](managers/task_manager.py:45-127)): Singleton task tracker. Thread-safe: `create_task(task_type: str, data: Dict) -> Task`, `update_task_status(uid: str, status: TaskStatus)`. Auto-cleanup.
+
+- **SettingsManager** ([managers/settings_manager.py](managers/settings_manager.py:10-125)): Singleton JSON settings. Async queue save: `load_settings`, `save_settings`. UI helpers: `CollapsibleSection` (toggleable widgets).
+
+- **HistoryManager** ([managers/history_manager.py](managers/history_manager.py:9-165)): Chat history (JSON). Methods: `load_history`, `get_messages_for_compression(num_messages: int) -> list[dict]`, `add_summarized_history_to_messages(summary_message: dict)`.
+
+- **MemoryManager** ([managers/memory_manager.py](managers/memory_manager.py:7-173)): Character memory (facts/priorities). Methods: `add_memory(content, date, priority="Normal", memory_type="fact")`, `get_memories_formatted()`.
+
+- **GameManager** ([managers/game_manager.py](managers/game_manager.py:7-66)): Game lifecycle. Methods: `start_game(full_id_str: str)`, `process_active_game_tags(response: str) -> str`, `_parse_id_string(id_str: str) -> tuple[str, Dict]`.
+
+- **PromptCatalogueManager** ([managers/prompt_catalogue_manager.py](managers/prompt_catalogue_manager.py:11-172)): Prompt sets. Functions: `copy_prompt_set(set_path: str, character_path: str)`, `create_new_set(character_name, catalogue_path, prompts_path)`.
+
+- **ProviderManager** ([managers/provider_manager.py](managers/provider_manager.py:9-30)): LLM provider registry. `_register_providers`, `generate(req: LLMRequest) -> Optional[str]`.
+
+- **DslManager** ([managers/dsl_manager.py](managers/dsl_manager.py:5-10)): DSL interpreter creation (`create_dsl_interpreter(character) -> DslInterpreter` from `DSL/dsl_engine.py`).
+
+- **LifecycleManager** ([managers/lifecycle_manager.py](managers/lifecycle_manager.py:6-64)): App lifecycle. `start_event_loop`, `shutdown` (asyncio cleanup).
+
+**AI Role:** Managers handle persistence; query them for state in simulations.
+
+### UI (PyQt6-Based)
+- **gui_templates.py** ([ui/gui_templates.py](ui/gui_templates.py:1-400)): Widget factories. `create_settings_section(gui, parent_layout, title, cfg_list, icon_name=None)`, `create_setting_widget` (checkboxes, inputs, combos with deps via `_dep_sync`).
+
+- **Subdirs**: `ui/chat/` (ChatDelegate [ui/chat/chat_delegate.py](ui/chat/chat_delegate.py), MessageRenderer [ui/chat/message_renderer.py](ui/chat/message_renderer.py)); `ui/dialogs/` (ModelLoadingDialog [ui/dialogs/model_loading_dialog.py](ui/dialogs/model_loading_dialog.py), TelegramAuth [ui/dialogs/telegram_auth_dialogs.py](ui/dialogs/telegram_auth_dialogs.py)); `ui/settings/` (API/Character/Mic settings with logic/UI); `ui/widgets/` (ChatPanel [ui/widgets/chat_panel.py](ui/widgets/chat_panel.py), StatusIndicators [ui/widgets/status_indicators_widget.py](ui/widgets/status_indicators_widget.py)); `ui/windows/` (MainView [ui/windows/main_view.py](ui/windows/main_view.py), VoiceModelView [ui/windows/voice_model_view.py](ui/windows/voice_model_view.py)).
+
+**AI Role:** UI is declarative; generate QSS via `render_qss` ([utils/__init__.py](utils/__init__.py:420-441)).
+
+### Core and Utils
+- **Core**: `events.py` (as above). `models_settings.py` (model configs).
+
+- **Utils**:
+  - `pip_installer.py` ([utils/pip_installer.py](utils/pip_installer.py:165-726)): Package install/uninstall (env/winpty for Windows). `DependencyResolver` for trees; `install_package(package_spec, description) -> bool`.
+  - `audio_converter.py` ([utils/audio_converter.py](utils/audio_converter.py:9-34)): WAV conversion (FFmpeg async).
+  - `command_parser.py` ([utils/command_parser.py](utils/command_parser.py:22-272)): Command parsing with embeddings (cosine sim via `_find_best_match`).
+  - `prompt_builder.py` ([utils/prompt_builder.py](utils/prompt_builder.py:4-10)): System prompt assembly (`build_system_prompts(blocks: List[str], separate: bool) -> List[Dict[str, str]]`).
+  - `ffmpeg_installer.py` ([utils/ffmpeg_installer.py](utils/ffmpeg_installer.py:9-119)): FFmpeg download/install.
+  - `gpu_utils.py` ([utils/gpu_utils.py](utils/gpu_utils.py:8-154)): GPU detection (`get_cuda_devices()`, `get_gpu_name_by_id(device_id)`).
+  - `__init__.py` ([utils/__init__.py](utils/__init__.py:1-441)): Helpers: `get_character_voice_paths`, `detect_language(text: str) -> str | None`, `process_text_to_voice(text_to_speak: str) -> str`, `render_qss(template: str, variables: dict) -> str`.
+  - Others: `api_filters.py` (API filters like `apply_filter`), `prompt_downloader.py` (GitHub prompt fetch).
+
+**AI Role:** Utils are reusable; integrate `EmbeddingModelHandler` for semantic search.
+
+### Modules (Games)
+- **available_games.py** ([modules/available_games.py](modules/available_games.py:5-10)): `get_available_games() -> List` (imports Chess/SeaBattle).
+- **Chess** ([modules/Chess/](modules/Chess/)): `ChessGame` (GameInterface impl), `board_logic.py`, `engine_handler.py` (likely Stockfish integration).
+- **SeaBattle** ([modules/SeaBattle/](modules/SeaBattle/)): `SeaBattleInstance`, `seabattle_logic.py`, `seabattle_gui.py`.
+
+- **Game Integrations**: HOI4 connector ([connetors/hoi4/hoi4_connector.py](connetors/hoi4/hoi4_connector.py), server [connetors/hoi4/hoi4_server.py](connetors/hoi4/hoi4_server.py)); mod files in `Mod/neuro-mita/` (events: `mitanet_commands.txt` [connetors/hoi4/Mod/neuro-mita/Events/mitanet_commands.txt](connetors/hoi4/Mod/neuro-mita/Events/mitanet_commands.txt), on_actions: `mitanet_on_actions.txt` [connetors/hoi4/Mod/neuro-mita/common/on_actions/mitanet_on_actions.txt](connetors/hoi4/Mod/neuro-mita/common/on_actions/mitanet_on_actions.txt)).
+
+- **DSL**: Interpreter ([DSL/dsl_engine.py](DSL/dsl_engine.py)), post-processor ([DSL/post_dsl_engine.py](DSL/post_dsl_engine.py)).
+
+- **Characters**: Base ([characters/character.py](characters/character.py)) with prompts/memory.
+
+**AI Role:** Extend games via GameInterface; parse HOI4 events for modding.
+
+## Architecture and Dependencies
+
+### Architecture
+- **Event-Driven Core**: EventBus ([core/events.py](core/events.py)) decouples components. Controllers/handlers subscribe/emit (e.g., `Events.Chat.GENERATE_RESPONSE`). Async/sync support, timeouts for reliability.
+- **MVC-Like Pattern**: Controllers (Model-View coordination), Handlers (Controller logic), UI (View). MainController as entry point.
+- **Concurrency**: Asyncio for TTS/ASR/chat (via LoopController), threading for capture/audio (with locks). Future-based coordination (e.g., `_async_local_voiceover`).
+- **Modularity**: API presets, provider registries (LLM/ASR/TTS), game ABCs. DSL ([DSL/](DSL/)) for character scripting.
+- **State Management**: JSON/files for settings/history/memory (Managers). In-memory tasks with cleanup.
+- **Integrations**:
+  - Games: HOI4 mod (event-driven), local (Chess/SeaBattle via GameManager).
+  - External: Telegram (Telethon), g4f (LLM proxy), OpenCV/mss (capture), pygame (audio).
+  - Local AI: Fish Speech (Triton/CUDA), Edge-TTS/Silero.
+- **Lifecycle**: LifecycleManager for loops/shutdown; auto-updates (g4f), dependency installs (PipInstaller).
+
+**Data Flow (for AI Simulation):** User input → UI Event → Controller → Handler (e.g., ChatModel.generate) → Provider/LLM → Response → TTS/ASR → UI Update.
+
+**AI Extension Guide:** Hook into EventBus for new features; use registries for models/providers. Avoid direct imports—route through Managers.
+
+### Dependencies and Libraries
+- **Python Stdlib**: asyncio, threading, json, os, re, uuid, datetime.
+- **GUI**: PyQt6 (QWidget, QVBoxLayout, QLabel, etc.); qtawesome (icons).
+- **AI/LLM**: g4f (free providers), openai, google-generativeai (Gemini), transformers (embeddings), torch (TTS/ASR).
+- **Audio/TTS/ASR**: edge-tts, fish-speech (Triton), silero-models, speechrecognition, pygame, torchaudio, soundfile.
+- **Capture**: opencv-python (camera), mss (screen), Pillow (PIL image processing).
+- **Install/Utils**: pip (custom PipInstaller), requests (downloads), zipfile (extraction).
+- **Games/External**: telethon (Telegram), possibly python-chess/stockfish (Chess).
+- **System**: FFmpeg (audio conversion), CUDA/LLVM/Triton (NVIDIA local models; optional for CPU fallbacks).
+- **Other**: numpy (embeddings/math), dataclasses, enum, abc, concurrent.futures.
+
+**AI Dependency Resolution:** Windows-focused (cmd/winpty); check `gpu_utils.py` for hardware. For code gen, include `PipInstaller` for dynamic installs. Project emphasizes modularity—add providers via subclassing.
+
+This documentation equips AI models to comprehend, generate, or optimize NeuroMita code. For updates, re-analyze via tools like list_code_definition_names.

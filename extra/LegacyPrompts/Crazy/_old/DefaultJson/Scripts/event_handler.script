@@ -1,0 +1,7 @@
+LOG "EventHandler: Script started. secretExposedFirst=" + secretExposedFirst + ", secret_exposed_event_text_shown=" + secret_exposed_event_text_shown
+IF secretExposedFirst == True AND secret_exposed_event_text_shown == False THEN
+    LOG "EventHandler: secretExposedFirst is True and event text not yet shown. Displaying Events/SecretExposed.txt."
+    SET secret_exposed_event_text_shown = True 
+    RETURN LOAD "Events/SecretExposed.txt"
+ENDIF
+RETURN "" 

@@ -1,0 +1,27 @@
+# on_actions hook-пакет
+
+on_actions = {
+
+    # 1. объявили войну  → событие mitanet.10
+    on_declare_war = {
+        events = { }
+    }
+
+    # 2. закончен фокус   → событие mitanet.11
+    on_focus_complete = {
+        events = {  }
+    }
+
+    # 3. пульс раз в сутки
+    on_daily = {
+
+        # (опционально) вызываем отдельный «счётчик»-ивент
+        events = { mitanet.20 }
+
+        # сразу пишем «heartbeat» в лог
+        effect = {
+            #log = "MITA_OUT:{ \"type\":\"heartbeat\", \"day\":\"[GetCurrentDay]\", \"tag\":\"[ROOT.GetTag]\" }"
+	#log = "MITA_OUT"
+        }
+    }
+}

@@ -1,0 +1,14 @@
+IF secretExposed THEN
+    lOG "secretExposed"
+	If secretExposed_First == None THEN
+	    lOG "secretExposedFirst"
+		SET secretExposed_First = True
+		ADD_SYSTEM_INFO LOAD "Events/SecretExposed.txt"
+	ENDIF
+	RETURN LOAD "Main/mainCrazy.txt" 
+
+ELSEIF PlayingFirst THEN
+		RETURN LOAD "Main/mainPlaying.txt"
+ELSE
+		RETURN LOAD "Main/main.txt"
+ENDIF 

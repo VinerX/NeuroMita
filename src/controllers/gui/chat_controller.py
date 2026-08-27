@@ -1,0 +1,167 @@
+from PyQt6.QtCore import QTimer
+from main_logger import logger
+from core.events import Events, Event
+from .base_controller import BaseController
+
+
+class ChatController(BaseController):
+    def subscribe_to_events(self):
+        self.event_bus.subscribe(Events.GUI.CLEAR_USER_INPUT_UI, self._on_clear_user_input_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.CLEAR_USER_INPUT, self._on_clear_user_input_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.UPDATE_CHAT_UI, self._on_update_chat_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.PREPARE_STREAM_UI, self._on_prepare_stream_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.APPEND_STREAM_CHUNK_UI, self._on_append_stream_chunk_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.FINISH_STREAM_UI, self._on_finish_stream_ui, weak=False)
+        self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT, self._on_update_token_count, weak=False)
+        self.event_bus.subscribe(Events.GUI.UPDATE_TOKEN_COUNT_UI, self._on_update_token_count_ui, weak=False)
+        # Пересчитываем счётчик под чатом, когда персонаж стал активным: на
+        # старте первый пересчёт (из _on_chat_ui_ready) случается ДО готовности
+        # персонажа/модели, поэтому окно контекста залипало на дефолтных 32к, а
+        # оценка — на 0. Смена персонажа тоже меняет и контекст, и окно модели.
+        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_update_token_count, weak=False)
+        self.event_bus.subscribe(Events.GUI.INSERT_TEXT_TO_INPUT, self._on_insert_text_to_input, weak=False)
+        self.event_bus.subscribe(Events.GUI.SEND_TEXT_MESSAGE, self._on_send_text_message, weak=False)
+        self.event_bus.subscribe(Events.GUI.CHECK_USER_ENTRY_EXISTS, self._on_check_user_entry_exists, weak=False)
+
+    def clear_user_input(self):
+        logger.debug("ChatController: clear_user_input")
+        self.event_bus.emit(Events.GUI.CLEAR_USER_INPUT)
+        if self.view and self.view.user_entry:
+            self.view.user_entry.clear()
+        else:
+            logger.error("ChatController: view или user_entry не найден!")
+
+    def stream_callback_handler(self, chunk: str, role: str = "assistant", stream_id: str = "default"):
+        logger.debug(f"ChatController: stream_callback_handler [{role}/{stream_id}]: {chunk[:50]}...")
+        if self.view:
+            self.view.append_stream_chunk_signal.emit({
+                "stream_id": stream_id,
+                "chunk": chunk,
+                "role": role,
+            })
+        else:
+            logger.error("ChatController: view не найден!")
+
+    def prepare_stream(self, data: dict = None):
+        logger.info(f"ChatController: prepare_stream, data={data}")
+        if self.view:
+            self.view.prepare_stream_signal.emit(data if data is not None else {})
+        else:
+            logger.error("ChatController: view не найден!")
+
+    def finish_stream(self, data: dict | None = None):
+        logger.info("ChatController: finish_stream")
+        if self.view:
+            self.view.finish_stream_signal.emit(data or {})
+        else:
+            logger.error("ChatController: view не найден!")
+
+    def update_chat(self, role, response, is_initial, emotion, speaker_label: str = ""):
+        if not self.view:
+            logger.error("ChatController: view не найден!")
+            return
+
+        payload = response
+        if speaker_label:
+            if isinstance(payload, list):
+                payload = [{"type": "meta", "speaker": speaker_label}] + payload
+            else:
+                payload = [{"type": "meta", "speaker": speaker_label}, {"type": "text", "text": str(payload)}]
+
+        self.view.update_chat_signal.emit(role, payload, is_initial, emotion)
+
+    def update_token_count(self):
+        logger.debug("ChatController: update_token_count")
+        if self.view:
+            QTimer.singleShot(0, self.view.update_token_count)
+        else:
+            logger.error("ChatController: view не найден!")
+
+    def _on_clear_user_input_ui(self, event: Event):
+        logger.debug("ChatController: получено событие CLEAR_USER_INPUT_UI")
+        self.clear_user_input()
+
+    def _on_update_chat_ui(self, event: Event):
+        data = event.data or {}
+        role = data.get('role', '')
+        response = data.get('response', '')
+        is_initial = data.get('is_initial', False)
+        emotion = data.get('emotion', '')
+        structured_data = data.get('structured_data')
+
+        speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
+        target = str(data.get("target") or "")
+
+        speaker_label = speaker_name
+        if role == "assistant" and speaker_name and target and target != "Player":
+            # Don't add → when there are multiple distinct segment targets:
+            # message_renderer splits those into separate bubbles and adds arrows itself.
+            segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+            distinct_targets = {str(s.get("target") or "") for s in segments if isinstance(s, dict)}
+            if len(distinct_targets) <= 1:
+                speaker_label = f"{speaker_name} → {target}"
+
+        # Attach structured_data and message_id to the view for the next insert_message call
+        if self.view and structured_data:
+            self.view._pending_structured_data = structured_data
+        message_id = str(data.get("message_id") or "")
+        if self.view:
+            self.view._pending_message_id = message_id
+            if role == "assistant":
+                self.view._pending_sample_id = str(data.get("sample_id") or "")
+                self.view._pending_context_snapshot_id = str(data.get("context_snapshot_id") or "")
+        self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
+
+    def _on_prepare_stream_ui(self, event: Event):
+        self.prepare_stream(event.data or {})
+
+    def _on_append_stream_chunk_ui(self, event: Event):
+        data = event.data or {}
+        chunk = data.get('chunk', '')
+        role = data.get('role', 'assistant')
+        stream_id = str(data.get('stream_id') or 'default')
+        self.stream_callback_handler(chunk, role, stream_id)
+
+    def _on_finish_stream_ui(self, event: Event):
+        self.finish_stream(event.data or {})
+
+    def _on_update_token_count(self, event: Event):
+        self.update_token_count()
+
+    def _on_update_token_count_ui(self, event: Event):
+        self.update_token_count()
+
+    def _on_insert_text_to_input(self, event: Event):
+        data = event.data
+        if isinstance(data, dict):
+            text = str(data.get('text') or '')
+            autosend_after = float(data.get('autosend_after') or 0.0)
+        else:
+            # Правка/повтор сообщения кладёт в событие голую строку.
+            text = str(data or '')
+            autosend_after = 0.0
+
+        if not self.view or not text:
+            return
+
+        if hasattr(self.view, "insert_user_input_signal"):
+            self.view.insert_user_input_signal.emit({
+                "text": text,
+                "autosend_after": autosend_after,
+            })
+        elif self.view.user_entry:
+            QTimer.singleShot(0, lambda: self.view.user_entry.insertPlainText(text + " "))
+
+    def _on_send_text_message(self, event: Event):
+        payload = event.data or {}
+        text = payload.get("text", "") if isinstance(payload, dict) else payload
+        if not self.view or not str(text).strip():
+            return
+        if hasattr(self.view, "send_text_message_signal"):
+            self.view.send_text_message_signal.emit({
+                "text": str(text),
+                "trace_id": payload.get("trace_id") if isinstance(payload, dict) else None,
+            })
+
+    def _on_check_user_entry_exists(self, event: Event):
+        return bool(self.view and self.view.user_entry)

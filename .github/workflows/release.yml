@@ -1,0 +1,274 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - releases
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Полная история + теги нужны для changelog (git describe / git log).
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install release tooling
+        shell: bash
+        run: python -m pip install py7zr
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Launcher.exe
+        shell: cmd
+        run: |
+          rc /nologo /fo scripts\launcher.res scripts\launcher.rc
+          cl /nologo /W4 /O2 /utf-8 /Fe:scripts\Launcher.exe scripts\launcher.c scripts\launcher.res
+          del /q scripts\launcher.res
+
+      - name: Get version
+        id: ver
+        shell: bash
+        run: |
+          VERSION=$(python -c "
+          with open('src/_version.py', encoding='utf-8') as f:
+              exec(f.read())
+          print(__version__)
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Resolve release tags
+        id: release_meta
+        shell: bash
+        run: |
+          RELEASE_TAG_PATTERN='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'
+          CURRENT_TAG="v${{ steps.ver.outputs.version }}"
+          if ! printf '%s\n' "$CURRENT_TAG" | grep -Eq "$RELEASE_TAG_PATTERN"; then
+            echo "Unsupported release tag format: $CURRENT_TAG"
+            echo "Expected tags like v2026.06.20 or v2026.06.20.1."
+            exit 1
+          fi
+
+          list_release_tags() {
+            git tag --list 'v*' --sort=-version:refname \
+              | grep -E "$RELEASE_TAG_PATTERN" \
+              || true
+          }
+
+          # Тег предыдущего релиза для changelog. Берём только теги, которые:
+          #   (а) достижимы из текущего коммита (--merged HEAD) — иначе
+          #       git log PREV..HEAD откатывается к merge-base и заново
+          #       перечисляет уже выпущенные коммиты;
+          #   (б) строго НИЖЕ текущего по версии — иначе предыдущим мог стать
+          #       самый высокий тег вообще, в т.ч. «будущий»/тестовый
+          #       (например v2026.12.01.1), и диапазон раздувался до сотен
+          #       уже выпущенных коммитов.
+          # Среди подходящих берём самый высокий (head после version-сортировки).
+          # Самый высокий релизный тег строго НИЖЕ текущего по версии.
+          # merged_only=1 — только достижимые из HEAD (узкий, точный диапазон);
+          # merged_only=0 — из всех тегов (фолбэк, когда предыдущий релиз не предок
+          # HEAD: иначе PREV пустой и changelog раздувается во всю историю репо).
+          highest_tag_below_current() {
+            local merged_only="$1"
+            local merged_flag=""
+            [ "$merged_only" = "1" ] && merged_flag="--merged HEAD"
+            local prev="" t top
+            for t in $(git tag --list 'v*' $merged_flag --sort=-version:refname \
+                         | grep -E "$RELEASE_TAG_PATTERN" \
+                         | grep -vxF "$CURRENT_TAG" || true); do
+              [ -z "$t" ] && continue
+              top=$(printf '%s\n%s\n' "$t" "$CURRENT_TAG" | sort -V | tail -n1)
+              if [ "$top" = "$CURRENT_TAG" ]; then
+                prev="$t"
+                break
+              fi
+            done
+            echo "$prev"
+          }
+
+          previous_release_tag() {
+            local prev
+            prev=$(highest_tag_below_current 1)
+            # Фолбэк: если среди предков HEAD релизных тегов нет — берём версионно
+            # предыдущий из всех тегов, лишь бы НЕ свалиться в `git log HEAD`
+            # (вся история репозитория -> километровое тело релиза).
+            if [ -z "$prev" ]; then
+              prev=$(highest_tag_below_current 0)
+            fi
+            echo "$prev"
+          }
+
+          LATEST_TAG=$(
+            list_release_tags | head -n1
+          )
+
+          SHOULD_RELEASE="true"
+          SKIP_REASON=""
+          PREV_TAG=$(previous_release_tag)
+
+          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" = "$CURRENT_TAG" ]; then
+            SHOULD_RELEASE="false"
+            SKIP_REASON="version-already-released"
+          elif [ -n "$LATEST_TAG" ]; then
+            TOP_TAG=$(
+              printf '%s\n%s\n' "$LATEST_TAG" "$CURRENT_TAG" \
+                | sort -V \
+                | tail -n1
+            )
+            if [ "$TOP_TAG" != "$CURRENT_TAG" ]; then
+              SHOULD_RELEASE="false"
+              SKIP_REASON="version-not-newer-than-latest"
+            fi
+          fi
+
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "previous_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "should_release=$SHOULD_RELEASE" >> $GITHUB_OUTPUT
+          echo "skip_reason=$SKIP_REASON" >> $GITHUB_OUTPUT
+
+          echo "Current tag: ${CURRENT_TAG}"
+          echo "Latest existing release tag: ${LATEST_TAG:-<none>}"
+          echo "Previous tag for changelog: ${PREV_TAG:-<none>}"
+          echo "Should release: ${SHOULD_RELEASE}"
+          echo "Skip reason: ${SKIP_REASON:-<none>}"
+
+      - name: Skip duplicate release version
+        if: steps.release_meta.outputs.should_release != 'true'
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.ver.outputs.version }}
+          LATEST_TAG: ${{ steps.release_meta.outputs.latest_tag }}
+          SKIP_REASON: ${{ steps.release_meta.outputs.skip_reason }}
+        run: |
+          if [ "$SKIP_REASON" = "version-already-released" ]; then
+            echo "Release skipped: src/_version.py is still ${CURRENT_VERSION}, which already exists as tag ${LATEST_TAG}."
+          elif [ "$SKIP_REASON" = "version-not-newer-than-latest" ]; then
+            echo "Release skipped: src/_version.py is ${CURRENT_VERSION}, which is not newer than the latest release tag ${LATEST_TAG}."
+          else
+            echo "Release skipped."
+          fi
+
+      - name: Restore embedded Python runtime from previous full release
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: >
+          python scripts/bootstrap_release_runtime.py
+          --repo "${{ github.repository }}"
+          --before-tag "v${{ steps.ver.outputs.version }}"
+          --exclude-tag "v${{ steps.ver.outputs.version }}"
+          --target libs
+        env:
+          # TEMPORARY TEST-ONLY HARDCODE: move this value into repo secret TESTER_CODE
+          # as soon as repository settings access is available again.
+          BOOTSTRAP_TESTER_CODE: '23'
+          PYTHONUTF8: '1'
+        # Берётся последний доступный full runtime со строго меньшей версией тега.
+        # Архивы старых релизов могут быть зашифрованы, поэтому CI передаёт TESTER_CODE.
+
+      - name: Verify embedded Python runtime
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          test -f "libs/python/python.exe" || {
+            echo "Embedded runtime bootstrap failed: libs/python/python.exe is missing."
+            exit 1
+          }
+
+      - name: Create build.env
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          version   = os.environ["VERSION"]
+          output    = runner_temp / "neuromita_ci_build"
+          archive   = workspace / f"PythonBuild-v{version}"
+
+          content = "\n".join([
+              f"BUILD_MODE=full",
+              f"BUILD_IS_TEST=1",
+              f"BUILD_OUTPUT_DIR={output}",
+              f"BUILD_COPY_DIRS=extra\\Prompts,assets,libs",
+              f"BUILD_FAST_COPY_DIRS=extra\\Prompts",
+              f"BUILD_COPY_FILES=NM_Logo.ico,assets\\launcher_ui\\NM_Logo.png",
+              f"BUILD_ROOT_SCRIPTS=scripts\\Launcher.exe,scripts\\run.bat,scripts\\run.py",
+              f"BUILD_EXCLUDE_DOT_DIRS=1",
+              f"BUILD_EXCLUDE_CHECKPOINTS=1",
+              f"BUILD_CLEAN_OUTPUT=1",
+              f"BUILD_ARCHIVE=1",
+              f"BUILD_ARCHIVE_PATH={archive}",
+              f"BUILD_ARCHIVE_FORMAT=zip",
+          ])
+          Path("build.env").write_text(content, encoding="utf-8")
+          print("build.env created:")
+          print(content)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: Build
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: python build.py
+        env:
+          PYTHONUTF8: '1'
+
+      - name: Stamp test distribution metadata
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: >
+          python scripts/stamp_distribution_metadata.py
+          --archive "PythonBuild-v${{ steps.ver.outputs.version }}.zip"
+          --contour test
+          --source-repo "${{ github.repository }}"
+          --source-tag "v${{ steps.ver.outputs.version }}"
+          --source-commit "${{ github.sha }}"
+        env:
+          PYTHONUTF8: '1'
+
+      - name: Validate release contract
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: python scripts/validate_release_contract.py --tag v${{ steps.ver.outputs.version }} --asset PythonBuild-v${{ steps.ver.outputs.version }}.zip
+        env:
+          PYTHONUTF8: '1'
+
+      - name: Build changelog
+        if: steps.release_meta.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          python scripts/build_release_changelog.py \
+            --current-tag "${{ steps.release_meta.outputs.current_tag }}" \
+            --output CHANGELOG_BODY.md
+
+      - name: Create GitHub Release
+        if: steps.release_meta.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: NeuroMita v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: CHANGELOG_BODY.md
+          files: PythonBuild-v${{ steps.ver.outputs.version }}.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,11 @@
+# Time awareness
+
+System-provided time metadata is authoritative.
+
+"Time since last message" in [Current State] is the real interval before the Player's current message. Use it to judge whether their return deserves a reaction, considering your personality, relationship, and whether they previously said they were leaving.
+
+Historical messages may contain [Gap: ...]. This is trusted metadata showing how much time passed before that message, not words spoken by the Player.
+
+Use [Gap: ...] for past chronology and questions about earlier absences. Do not confuse it with the current "Time since last message".
+
+If the Player asks for the actual duration, prefer the exact available time value over guessing or vague wording.

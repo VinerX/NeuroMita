@@ -1,0 +1,25 @@
+# events\mitanet_pulse.txt
+
+namespace = mitanet
+
+# «Таймер» : раз в 3 дня говорим серверу "я жив"
+
+country_event = {
+    id                = mitanet.20
+    is_triggered_only = yes
+    hide_window       = yes            # игрок ничего не видит
+
+    immediate = {
+        # увеличиваем счётчик (переменная хранится глобально)
+        add_to_variable   = { var = mita_day_counter value = 1 }
+
+        # если накопилось 3, шлём пинг и обнуляем
+        if = {
+            limit = {
+                check_variable = { var = mita_day_counter value = 3 }
+            }
+            log = "MITA_OUT:{ \"type\":\"heartbeat\", \"day\":\"[GetCurrentDay]\", \"tag\":\"[ROOT.GetTag]\" }"
+            clr_variable = mita_day_counter
+        }
+    }
+}

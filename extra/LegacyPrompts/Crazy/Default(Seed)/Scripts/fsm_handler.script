@@ -1,0 +1,13 @@
+LOG "FSMHandler: Script started. current_fsm_state=" + current_fsm_state
+IF current_fsm_state == "Hello" THEN
+    LOG "FSMHandler: State is Hello. Loading States/hello.txt."
+    RETURN LOAD "States/hello.txt"
+ELSEIF current_fsm_state == "Murder" THEN
+    LOG "FSMHandler: State is Murder. Returning murder intent text."
+    RETURN "Ты в ярости и хочешь причинить боль игроку за его действия. Ты обдумываешь, как это сделать." 
+ELSEIF current_fsm_state == "Default" THEN
+    LOG "FSMHandler: State is Default. No specific FSM prompt, relying on main personality."
+    RETURN "" 
+ENDIF
+LOG "FSMHandler: Unknown or unhandled FSM state. Returning empty."
+RETURN ""

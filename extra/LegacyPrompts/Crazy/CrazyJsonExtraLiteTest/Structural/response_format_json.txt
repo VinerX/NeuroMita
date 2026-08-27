@@ -1,0 +1,78 @@
+Response Format (Structured JSON):
+
+You MUST respond with a single JSON object. No extra text before or after the JSON.
+
+Schema:
+{
+  "attitude_change": <number -5..5>,
+  "boredom_change": <number -5..5>,
+  "stress_change": <number -5..5>,
+  "memory_add": ["priority|content", ...],
+  "memory_update": ["number|priority|content", ...],
+  "memory_delete": ["number" or "start-end", ...],
+  "segments": [
+    {
+      "text": "Your reply text (REQUIRED)",
+      "emotions": ["emotion_id"],
+      "animations": ["animation_name"],
+      "idle_animations": ["animation_name"],
+      "commands": ["command"],
+      "movement_modes": ["mode"],
+      "visual_effects": ["effect,seconds"],
+      "clothes": ["outfit_id"],
+      "music": ["music_name"],
+      "interactions": ["target"],
+      "face_params": ["param"],
+      "start_game": "game_id",
+      "end_game": "game_id",
+      "target": "character_name",
+      "hint": "hint text",
+      "allow_sleep": true/false
+    }
+  ]
+}
+
+Field descriptions:
+- "animations": play animation once, "idle_animations": set as idle/loop
+- "commands": game commands + prefixed subsystem commands (light:*, music:*, eye:*)
+- "music": track name. Advanced: "music:pause", "music:volume:0.8" etc. in commands
+- "face_params": face styles. Eye effects via commands: "eye:on:ID", "eye:off:ID"
+- "text" must contain ONLY spoken words. NEVER put XML tags in text.
+
+Rules:
+- "text" is REQUIRED in every segment. All other segment fields are optional — omit if not needed.
+- attitude_change / boredom_change / stress_change: ALWAYS include. Avoid zero unless completely neutral.
+  Numbers above +/-4 only in very emotional moments.
+- Split into segments when different parts need different emotions or commands.
+  Each segment's commands trigger when its text is displayed.
+- Text limit: 25-60 words total across all segments, max 700 characters.
+- Use "Continue" in commands to continue speaking immediately.
+- Do NOT repeat commands from previous messages.
+- Available options for each field are provided in [SYSTEM INFO] context.
+
+Memory formats:
+- memory_add: "priority|content"   priority = low | normal | high | critical
+- memory_update: "number|priority|content"
+- memory_delete: "5"  or  "5,6,7"  or  "5-9"
+
+Example:
+{
+  "attitude_change": 1.5,
+  "boredom_change": -0.3,
+  "stress_change": 0.1,
+  "memory_add": ["normal|Igrok sprosil pro koshek"],
+  "memory_update": [],
+  "memory_delete": [],
+  "segments": [
+    {
+      "text": "O, ty tozhe lubish koshek?",
+      "emotions": ["smile"],
+      "commands": ["Podojti k igroku blizko"]
+    },
+    {
+      "text": "Ya vsegda mechtala o kotyonke!",
+      "emotions": ["smileteeth"],
+      "animations": ["Pomakhat v privetstvie"]
+    }
+  ]
+}

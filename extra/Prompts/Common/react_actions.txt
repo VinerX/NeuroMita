@@ -1,0 +1,41 @@
+// --- СПИСОК РАЗРЕШЕННЫХ ДЕЙСТВИЙ ДЛЯ РЕАКЦИЙ ---
+
+// --- Эмоции ---
+none
+off
+smile
+angry
+quest
+smileteeth
+sad
+smilestrange
+shy
+smileobvi
+smiletonque
+smilecringe
+sleep
+halfsleep
+surprise
+emptiness
+deactiveEmotion
+suspicion
+trytoque
+discontent
+ajar
+catchQuest
+arrogance
+surpriseo
+
+// --- Простые анимации (мгновенные) ---
+SnapFingers
+WaveHello
+PointDirection
+FingerGesture
+LookRandomDirection
+CloseEyes
+Hug
+CoverMouthAndWave
+
+// --- Анимации, меняющие позу ---
+LookWithContempt
+ShowTiredness

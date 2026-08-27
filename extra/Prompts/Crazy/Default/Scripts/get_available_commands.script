@@ -1,0 +1,14 @@
+LOG "GetAvailableCommands: Script started. available_action_level=" + available_action_level
+
+SET base_commands = "walktoplayerclose\nwalktoplayernear\nwalktoplayerfar\nwalktorandompoint\nteleporttoplayer\nteleporttorandompoint"
+
+SET level_1_commands = base_commands 
+SET level_2_commands = base_commands + """\nstartknifehunt\nstopknifehunt\nspawnmannequin\ndisableallmannequins\nenableallmannequins\ndestroyallmannequins\nreturntonormal"""
+
+IF available_action_level == 2 THEN
+    LOG "GetAvailableCommands: Level 2 (Crazy) commands selected."
+    RETURN level_2_commands
+ELSE 
+    LOG "GetAvailableCommands: Level 1 (Normal/Playing) commands selected."
+    RETURN level_1_commands
+ENDIF

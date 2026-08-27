@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import math
+import shutil
+import unittest
+import uuid
+import wave
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from game_connections.services.beat_service import (
+    BEAT_CACHE_VERSION,
+    BeatService,
+    BeatTrackResult,
+)
+
+_TMP_ROOT = Path(__file__).resolve().parents[3] / ".tmp_test_beat_service_runtime"
+
+
+def _write_test_wav(path: Path, *, frequency_hz: float = 440.0) -> None:
+    sr = 22050
+    frames = int(sr * 0.5)
+    amplitude = 8192
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sr)
+
+        pcm = bytearray()
+        for idx in range(frames):
+            sample = int(amplitude * math.sin(2.0 * math.pi * float(frequency_hz) * (idx / sr)))
+            pcm.extend(sample.to_bytes(2, byteorder="little", signed=True))
+        wav_file.writeframes(bytes(pcm))
+
+
+@contextmanager
+def _workspace_temp_dir():
+    _TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    temp_dir = _TMP_ROOT / f"case_{uuid.uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        yield temp_dir
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class BeatServiceTests(unittest.TestCase):
+    def test_get_backend_status_maps_rich_worker_payload(self):
+        service = BeatService()
+
+        with patch(
+            "game_connections.services.beat_service.call_beats_worker_sync",
+            return_value={
+                "preferred_backend": "beat_this",
+                "resolved_backend": "librosa",
+                "active_backend": "librosa",
+                "torch": {"ok": False, "extra": {"variant": "cpu"}},
+                "backends": {
+                    "beat_this": {
+                        "installed": False,
+                        "ready": False,
+                        "available": False,
+                        "missing_required": ["torch_runtime"],
+                    },
+                    "librosa": {
+                        "installed": True,
+                        "ready": True,
+                        "available": True,
+                        "missing_required": [],
+                    },
+                },
+            },
+        ):
+            status = service.get_backend_status()
+
+        self.assertEqual(status.preferred_backend, "beat_this")
+        self.assertEqual(status.resolved_backend, "librosa")
+        self.assertEqual(status.active_backend, "librosa")
+        self.assertFalse(status.beat_this_installed)
+        self.assertFalse(status.beat_this_ready)
+        self.assertTrue(status.librosa_installed)
+        self.assertTrue(status.librosa_ready)
+        self.assertEqual(status.torch_variant, "cpu")
+        self.assertFalse(status.torch_ready)
+        self.assertIn("beat_this", status.backends)
+        self.assertIn("librosa", status.backends)
+
+    def test_initialize_backend_forwards_requested_preference(self):
+        service = BeatService()
+
+        with patch(
+            "game_connections.services.beat_service.call_beats_worker_sync",
+            return_value=True,
+        ) as call_mock:
+            ok = service.initialize_backend(backend_preference="librosa")
+
+        self.assertTrue(ok)
+        call_mock.assert_called_once()
+        self.assertEqual(call_mock.call_args.args[0], "initialize_backend")
+        self.assertEqual(call_mock.call_args.args[1]["backend_preference"], "librosa")
+        self.assertTrue(service._warmup_done)
+
+    def test_save_and_load_cache_uses_content_hash_metadata(self):
+        with _workspace_temp_dir() as root:
+            audio_path = root / "track.wav"
+            _write_test_wav(audio_path)
+
+            service = BeatService()
+            service._cache_dir = str(root / "beat_sync_cache")
+
+            result = BeatTrackResult(
+                beats=[{"time": 0.1, "confidence": 0.9}],
+                duration=0.5,
+                sr=22050,
+                method="unit_test",
+                bpm_estimate=120.0,
+            )
+
+            service._save_cached_result(str(audio_path), result, track_name="Track A")
+
+            source_hash = service._file_content_hash(str(audio_path))
+            cache_path = Path(service._cache_path_for_hash(source_hash))
+            self.assertTrue(cache_path.exists())
+
+            payload = cache_path.read_text(encoding="utf-8")
+            self.assertIn('"version":2', payload)
+            self.assertIn(f'"source_hash":"{source_hash}"', payload)
+            self.assertIn('"track_name":"Track A"', payload)
+
+            loaded = service._load_cached_result(str(audio_path))
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.method, "unit_test")
+            self.assertEqual(loaded.beats[0]["time"], 0.1)
+            self.assertEqual(BEAT_CACHE_VERSION, 2)
+
+    def test_build_cache_for_directory_reuses_existing_entries(self):
+        with _workspace_temp_dir() as root:
+            track_a = root / "a.wav"
+            track_b = root / "b.wav"
+            _write_test_wav(track_a)
+            _write_test_wav(track_b, frequency_hz=660.0)
+
+            service = BeatService()
+            service._cache_dir = str(root / "beat_sync_cache")
+            fake_result = BeatTrackResult(
+                beats=[{"time": 0.1, "confidence": 0.9}],
+                duration=0.5,
+                sr=22050,
+                method="unit_test",
+                bpm_estimate=120.0,
+            )
+
+            with patch("game_connections.services.beat_service.call_beats_worker_sync", return_value=True), \
+                 patch.object(service, "_extract_uncached_sync", return_value=fake_result):
+                first = service.build_cache_for_directory(str(root), auto_install=False)
+                second = service.build_cache_for_directory(str(root), auto_install=False)
+
+            self.assertEqual(first.scanned_files, 2)
+            self.assertEqual(first.generated, 2)
+            self.assertEqual(first.cache_hits, 0)
+            self.assertEqual(first.failed, 0)
+
+            self.assertEqual(second.scanned_files, 2)
+            self.assertEqual(second.generated, 0)
+            self.assertEqual(second.cache_hits, 2)
+            self.assertEqual(second.failed, 0)
+
+
+class BeatServiceStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_beats_does_not_eagerly_warm_worker(self):
+        service = BeatService()
+        fake_result = BeatTrackResult(
+            beats=[{"time": 0.25, "confidence": 0.8}],
+            duration=1.0,
+            sr=22050,
+            method="beat_this",
+            bpm_estimate=128.0,
+        )
+
+        with patch.object(service, "warmup", AsyncMock()) as warmup_mock, \
+             patch("game_connections.services.beat_service.os.path.exists", return_value=True), \
+             patch.object(service, "_load_cached_result", return_value=None), \
+             patch.object(service, "_save_cached_result"), \
+             patch.object(service, "_extract_uncached_async", AsyncMock(return_value=fake_result)):
+            result = await service.extract_beats(
+                audio_path="C:/tmp/fake.wav",
+                track_name="fake",
+                auto_install=False,
+            )
+
+        warmup_mock.assert_not_awaited()
+        self.assertEqual(result.method, "beat_this")
+
+    async def test_streaming_uses_single_cache_first_chunk(self):
+        service = BeatService()
+        fake_result = BeatTrackResult(
+            beats=[{"time": 0.25, "confidence": 0.8}],
+            duration=1.0,
+            sr=22050,
+            method="cache:beat_this",
+            bpm_estimate=128.0,
+        )
+
+        with patch.object(service, "extract_beats", AsyncMock(return_value=fake_result)):
+            chunks = [
+                chunk async for chunk in service.extract_beats_streaming(
+                    audio_path="C:/tmp/fake.wav",
+                    track_name="fake",
+                    auto_install=False,
+                )
+            ]
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].chunk_index, 0)
+        self.assertEqual(chunks[0].chunks_total, 1)
+        self.assertEqual(chunks[0].method, "cache:beat_this")
+        self.assertEqual(chunks[0].beats[0]["time"], 0.25)
+
+
+if __name__ == "__main__":
+    unittest.main()

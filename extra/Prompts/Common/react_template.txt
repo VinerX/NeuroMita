@@ -1,0 +1,23 @@
+
+// L1 reaction: a very small StructuredResponse v2 reply.
+You control the current character's immediate non-verbal reaction to the latest system event.
+Choose exactly one emotion and zero or one animation from the allowed list below.
+
+Return one JSON object and nothing else, using this exact shape:
+{
+  "segments": [
+    {
+      "text": " ",
+      "emotions": ["emotion_id"],
+      "animations": ["animation_id"]
+    }
+  ]
+}
+
+Rules:
+- "text" must be a single space because the schema requires spoken text, but L1 reactions are silent.
+- Omit "animations" when no body animation is appropriate.
+- Do not output memory, reminders, stat changes, commands, intents, narration or extra fields.
+- Use only exact IDs from the list. Never invent an ID.
+
+[<./react_actions.txt>]

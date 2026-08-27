@@ -1,0 +1,1853 @@
+from core.error_utils import format_exception
+import json
+import sqlite3
+import logging
+import os
+from contextlib import contextmanager
+from datetime import datetime
+from threading import Lock, RLock
+from typing import Iterable, Tuple, Set, Optional, List
+
+
+# TODO: Decompose — this class is 1200+ lines. Consider splitting into:
+#   schema_manager.py (DDL, migrations, ensure_columns)
+#   connection_pool.py (get_connection, connection context manager, pragmas)
+#   fts_manager.py (FTS5 setup, sync, queries)
+#   embedding_storage.py (blob I/O, indexing)
+class DatabaseManager:
+    _instance = None
+    _lock = RLock()
+    _path_override: str | None = None  # set before first instantiation to use a custom DB path
+
+    # FTS5 capability cache (per-process)
+    _fts5_checked: bool = False
+    _fts5_supported: bool = False
+
+    # Required for concurrent QtSql reads while sqlite3 writes
+    _BUSY_TIMEOUT_MS: int = 5000
+    _MIGRATION_TIMESTAMP_NORMALIZATION = "history_timestamp_iso_v1"
+    _MIGRATION_MESSAGE_ID_UNIQUE = "history_message_id_unique_v1"
+    _MIGRATION_DIALOGUE_SENDER_IDENTITY = "history_dialogue_sender_identity_v1"
+
+    # Single source of truth: extra columns to ensure in history table.
+    # (column_name -> SQL type). Base columns (id, character_id, role, content,
+    # timestamp, is_active, meta_data, embedding) are always in CREATE TABLE.
+    HISTORY_EXTRA_COLUMNS: dict = {
+        "target": "TEXT",
+        "participants": "TEXT",
+        "tags": "TEXT",
+        "rag_id": "TEXT",
+        "message_id": "TEXT",
+        "speaker": "TEXT",
+        "sender": "TEXT",
+        "event_type": "TEXT",
+        "req_id": "TEXT",
+        "task_uid": "TEXT",
+        "turn_id": "TEXT",
+        "is_deleted": "INTEGER DEFAULT 0",
+        "structured_data": "TEXT",
+        "thinking": "TEXT",
+        "llm_prompt_tokens": "INTEGER",
+        "llm_completion_tokens": "INTEGER",
+        "llm_total_tokens": "INTEGER",
+        "llm_reasoning_tokens": "INTEGER",
+        "llm_cached_prompt_tokens": "INTEGER",
+        "llm_cache_write_tokens": "INTEGER",
+        "llm_cost": "REAL",
+        "llm_cost_currency": "TEXT",
+        "llm_cost_source": "TEXT",
+        "llm_model": "TEXT",
+        "llm_provider": "TEXT",
+    }
+
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(DatabaseManager, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
+    def __init__(self):
+        with DatabaseManager._lock:
+            if self._initialized:
+                return
+
+            if DatabaseManager._path_override:
+                self.db_path = DatabaseManager._path_override
+                os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+            else:
+                histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
+                os.makedirs(histories_dir, exist_ok=True)
+                self.db_path = os.path.join(histories_dir, "world.db")
+
+            self._wal_initialized = False
+            self._pragmas_lock = Lock()
+            self._history_columns_cache: Set[str] = set()
+            self._init_db()
+            self._initialized = True
+
+    def _apply_sqlite_pragmas(self, conn: sqlite3.Connection) -> None:
+        """Apply persistent WAL once and connection-local pragmas on every connection."""
+        if not getattr(self, "_wal_initialized", False):
+            with self._pragmas_lock:
+                if not self._wal_initialized:
+                    try:
+                        cur = conn.execute("PRAGMA journal_mode=WAL;")
+                        row = cur.fetchone()
+                        if row and str(row[0]).lower() == "wal":
+                            self._wal_initialized = True
+                        else:
+                            logging.warning(
+                                f"SQLite PRAGMA journal_mode returned '{row[0] if row else None}' (expected 'wal')."
+                            )
+                    except Exception as e:
+                        logging.warning(f"Failed to set PRAGMA journal_mode=WAL: {format_exception(e)}")
+
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {int(self._BUSY_TIMEOUT_MS)};")
+            conn.execute("PRAGMA foreign_keys = ON;")
+        except Exception as e:
+            logging.warning(f"Failed to apply SQLite connection pragmas: {format_exception(e)}")
+
+    def get_connection(self):
+        # timeout (seconds) is sqlite3's busy timeout; we also set PRAGMA busy_timeout explicitly.
+        conn = sqlite3.connect(
+            self.db_path,
+            check_same_thread=False,
+            timeout=self._BUSY_TIMEOUT_MS / 1000.0,
+        )
+        self._apply_sqlite_pragmas(conn)
+        return conn
+
+    @contextmanager
+    def connection(self):
+        """Context manager that yields a connection and closes it on exit."""
+        conn = self.get_connection()
+        try:
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def get_table_columns(self, table: str) -> Set[str]:
+        """Возвращает set фактических колонок таблицы (не падает)."""
+        conn = self.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({self._q_ident(table)})")
+            return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
+        except Exception as e:
+            logging.warning(f"Failed to read schema for table '{table}': {format_exception(e)}")
+            return set()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def ensure_columns(self, table: str, columns: Iterable[Tuple[str, str]]) -> Set[str]:
+        """
+        Гарантирует наличие колонок:
+        - если колонки нет -> пытаемся ALTER TABLE ADD COLUMN
+        - любые ошибки логируем, но НЕ валим приложение
+        Возвращает актуальный набор колонок после попытки.
+        """
+        with self._lock:
+            existing = self.get_table_columns(table)
+            to_add = [(c, t) for (c, t) in columns if c not in existing]
+            if not to_add:
+                return existing
+
+            conn = self.get_connection()
+            try:
+                cur = conn.cursor()
+                for col, col_type in to_add:
+                    try:
+                        logging.info(f"DB ensure: adding column {table}.{col} {col_type}")
+                        cur.execute(f"ALTER TABLE {self._q_ident(table)} ADD COLUMN {self._q_ident(col)} {col_type}")
+                    except Exception as e:
+                        logging.warning(f"DB ensure: failed to add {table}.{col}: {format_exception(e)}")
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"DB ensure: failed to ensure columns for {table}: {format_exception(e)}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            return self.get_table_columns(table)
+
+    def _get_table_columns_conn(self, conn: sqlite3.Connection, table: str) -> Set[str]:
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({self._q_ident(table)})")
+            return set(r[1] for r in cur.fetchall() if r and len(r) > 1)
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _q_ident(ident: str) -> str:
+        """Safely quote SQLite identifiers (table/column names)."""
+        return '"' + str(ident).replace('"', '""') + '"'
+
+    @staticmethod
+    def table_exists(cursor: sqlite3.Cursor, name: str) -> bool:
+        """
+        Check table existence via sqlite_master (safe no-throw).
+        Designed to be used with an existing connection/cursor (no extra connections).
+        """
+        try:
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (str(name),),
+            )
+            return bool(cursor.fetchone())
+        except Exception:
+            return False
+
+    def fts5_ready(self, cursor: sqlite3.Cursor, *, tables: Optional[List[str]] = None) -> bool:
+        """
+        Runtime check that FTS5 can be queried on the *current* connection:
+          - SQLite build supports FTS5 (feature-detect, cached)
+          - at least one requested FTS table exists
+          - simple SELECT from existing FTS tables doesn't crash
+
+        Safe fallback: returns False on any error.
+        """
+        try:
+            if not self.sqlite_supports_fts5():
+                return False
+
+            tnames = tables or ["history_fts", "memories_fts"]
+            existing: List[str] = []
+            for t in tnames:
+                if self.table_exists(cursor, t):
+                    existing.append(t)
+            if not existing:
+                return False
+
+            # Sanity query (covers cases like "no such module: fts5" / broken virtual table)
+            for t in existing:
+                cursor.execute(f"SELECT rowid FROM {self._q_ident(t)} LIMIT 1")
+                cursor.fetchone()
+
+            return True
+        except Exception as e:
+            logging.debug(f"DB: fts5_ready() failed (ignored): {format_exception(e)}")
+            return False
+
+    def sqlite_supports_fts5(self) -> bool:
+        """
+        Feature-detect FTS5 support in the current SQLite build.
+        Must NEVER crash the app: return False on any error.
+        """
+        with self._lock:
+            if self._fts5_checked:
+                return bool(self._fts5_supported)
+
+            conn = None
+            ok = False
+            try:
+                conn = self.get_connection()
+                # TEMP to avoid touching disk schema; if fts5 is missing -> OperationalError: no such module: fts5
+                conn.execute("CREATE VIRTUAL TABLE temp.__fts5_test USING fts5(x)")
+                conn.execute("DROP TABLE temp.__fts5_test")
+                ok = True
+            except Exception as e:
+                logging.debug(f"SQLite FTS5 not available (or blocked): {format_exception(e)}")
+                ok = False
+            finally:
+                try:
+                    if conn:
+                        conn.close()
+                except Exception:
+                    pass
+
+            self._fts5_supported = bool(ok)
+            self._fts5_checked = True
+            return bool(ok)
+
+    def _ensure_fts5_schema(self, conn: sqlite3.Connection) -> bool:
+        """
+        Create/maintain FTS5 tables + sync triggers safely.
+
+        Safety rules:
+        - If FTS5 is NOT available: drop FTS triggers and return (so UPDATE/INSERT on base tables work).
+        - If FTS tables already exist with older/different columns: build triggers using ACTUAL FTS columns.
+        """
+
+        def q(ident: str) -> str:
+            return '"' + str(ident).replace('"', '""') + '"'
+
+        def table_cols(name: str) -> list[str]:
+            try:
+                cur = conn.cursor()
+                cur.execute(f"PRAGMA table_info({q(name)})")
+                return [r[1] for r in (cur.fetchall() or []) if r and len(r) > 1 and r[1]]
+            except Exception:
+                return []
+
+        try:
+            # If current SQLite build can't do FTS5, triggers must NOT exist (they break base writes).
+            if not self.sqlite_supports_fts5():
+                try:
+                    self._drop_fts_triggers(conn)
+                    conn.commit()
+                except Exception as e:
+                    logging.warning(f"DB: failed to drop FTS triggers on commit: {format_exception(e)}")
+                return False
+
+            cur = conn.cursor()
+
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            mem_cols = self._get_table_columns_conn(conn, "memories")
+            if not hist_cols or not mem_cols:
+                return False
+
+            # Desired columns (based on base table availability)
+            history_desired = ["content"]
+            for c in ("speaker", "target", "tags", "participants", "event_type"):
+                if c in hist_cols:
+                    history_desired.append(c)
+
+            memories_desired = ["content"]
+            for c in ("type", "priority", "tags", "participants"):
+                if c in mem_cols:
+                    memories_desired.append(c)
+
+            # Ensure FTS tables exist (but don't assume their schema matches "desired")
+            try:
+                cur.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {q('history_fts')} USING fts5({', '.join(map(q, history_desired))})"
+                )
+                cur.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {q('memories_fts')} USING fts5({', '.join(map(q, memories_desired))})"
+                )
+            except Exception as e:
+                # If we can't create FTS tables, DO NOT leave triggers around.
+                logging.warning(f"DB upgrade: failed to create FTS5 tables (disabling FTS triggers): {format_exception(e)}")
+                try:
+                    self._drop_fts_triggers(conn)
+                    conn.commit()
+                except Exception as e:
+                    logging.warning(f"DB: failed to drop FTS triggers after FTS5 table creation failure: {format_exception(e)}")
+                return False
+
+            # Use ACTUAL FTS columns
+            history_fts_cols = table_cols("history_fts") or ["content"]
+            memories_fts_cols = table_cols("memories_fts") or ["content"]
+
+            # Also make sure we don't reference a base column that doesn't exist (extra safety)
+            history_fts_cols = [c for c in history_fts_cols if c in hist_cols] or ["content"]
+            memories_fts_cols = [c for c in memories_fts_cols if c in mem_cols] or ["content"]
+
+            h_cols_sql = ", ".join(map(q, history_fts_cols))
+            m_cols_sql = ", ".join(map(q, memories_fts_cols))
+
+            def coalesce_new(c: str) -> str:
+                return f"COALESCE(new.{q(c)}, '')"
+
+            h_new_vals = ", ".join(coalesce_new(c) for c in history_fts_cols)
+            m_new_vals = ", ".join(f"COALESCE(new.{q(c)}, '')" for c in memories_fts_cols)
+
+            # Recreate triggers
+            self._drop_fts_triggers(conn)
+
+            cur.executescript(
+                f"""
+                CREATE TRIGGER history_fts_ai AFTER INSERT ON {q('history')} BEGIN
+                    INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals});
+                END;
+                CREATE TRIGGER history_fts_ad AFTER DELETE ON {q('history')} BEGIN
+                    DELETE FROM {q('history_fts')} WHERE rowid = old.id;
+                END;
+                CREATE TRIGGER history_fts_au AFTER UPDATE ON {q('history')} BEGIN
+                    DELETE FROM {q('history_fts')} WHERE rowid = old.id;
+                    INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) VALUES (new.id, {h_new_vals});
+                END;
+
+                CREATE TRIGGER memories_fts_ai AFTER INSERT ON {q('memories')} BEGIN
+                    INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals});
+                END;
+                CREATE TRIGGER memories_fts_ad AFTER DELETE ON {q('memories')} BEGIN
+                    DELETE FROM {q('memories_fts')} WHERE rowid = old.id;
+                END;
+                CREATE TRIGGER memories_fts_au AFTER UPDATE ON {q('memories')} BEGIN
+                    DELETE FROM {q('memories_fts')} WHERE rowid = old.id;
+                    INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) VALUES (new.id, {m_new_vals});
+                END;
+                """
+            )
+
+            # Backfill only if empty (best-effort)
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {q('history_fts')}")
+                h_cnt = int(cur.fetchone()[0] or 0)
+            except Exception:
+                h_cnt = -1
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {q('memories_fts')}")
+                m_cnt = int(cur.fetchone()[0] or 0)
+            except Exception:
+                m_cnt = -1
+
+            if h_cnt == 0:
+                try:
+                    h_sel = ", ".join([f"COALESCE({q(c)}, '')" for c in history_fts_cols])
+                    cur.execute(
+                        f"INSERT INTO {q('history_fts')}(rowid, {h_cols_sql}) "
+                        f"SELECT id, {h_sel} FROM {q('history')}"
+                    )
+                    logging.info("DB upgrade: history_fts backfill done")
+                except Exception as e:
+                    logging.warning(f"DB upgrade: history_fts backfill failed (ignored): {format_exception(e)}")
+
+            if m_cnt == 0:
+                try:
+                    m_sel = ", ".join([f"COALESCE({q(c)}, '')" for c in memories_fts_cols])
+                    cur.execute(
+                        f"INSERT INTO {q('memories_fts')}(rowid, {m_cols_sql}) "
+                        f"SELECT id, {m_sel} FROM {q('memories')}"
+                    )
+                    logging.info("DB upgrade: memories_fts backfill done")
+                except Exception as e:
+                    logging.warning(f"DB upgrade: memories_fts backfill failed (ignored): {format_exception(e)}")
+
+            try:
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"DB: FTS5 schema commit failed: {format_exception(e)}")
+                return False
+            return True
+
+        except Exception as e:
+            logging.warning(f"DB upgrade: ensure FTS5 schema failed (ignored): {format_exception(e)}")
+            return False
+
+    @staticmethod
+    def _fts5_schema_present(conn: sqlite3.Connection) -> bool:
+        required = {
+            ("table", "history_fts"),
+            ("table", "memories_fts"),
+            ("trigger", "history_fts_ai"),
+            ("trigger", "history_fts_ad"),
+            ("trigger", "history_fts_au"),
+            ("trigger", "memories_fts_ai"),
+            ("trigger", "memories_fts_ad"),
+            ("trigger", "memories_fts_au"),
+        }
+        try:
+            rows = conn.execute(
+                "SELECT type, name FROM sqlite_master "
+                "WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(name for _kind, name in required),
+            ).fetchall()
+        except Exception:
+            return False
+        return required.issubset({(str(kind), str(name)) for kind, name in rows})
+
+    @staticmethod
+    def _ensure_migration_table(cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+    @staticmethod
+    def _migration_applied(cursor: sqlite3.Cursor, name: str) -> bool:
+        cursor.execute("SELECT 1 FROM schema_migrations WHERE name = ?", (name,))
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def _mark_migration(cursor: sqlite3.Cursor, name: str) -> None:
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations(name) VALUES (?)",
+            (name,),
+        )
+
+    @staticmethod
+    def _repair_dialogue_sender_identity(cursor: sqlite3.Cursor) -> int:
+        """Restore Mita senders that were persisted as Player in dialogue turns."""
+        cursor.execute(
+            """
+            SELECT id, role, speaker, sender, target, participants, meta_data
+            FROM history
+            WHERE meta_data IS NOT NULL AND TRIM(meta_data) != ''
+            ORDER BY id ASC
+            """
+        )
+        rows = cursor.fetchall()
+        parsed_rows: list[tuple[tuple, dict]] = []
+        actor_characters: dict[tuple[str, str], str] = {}
+
+        def normalize_actor(value) -> str:
+            return str(value or "").strip()
+
+        def normalize_character(value) -> str:
+            character = str(value or "").strip()
+            return "" if character.casefold() == "player" else character
+
+        def remember(conversation_id: str, actor_id: str, character_id: str) -> None:
+            actor = normalize_actor(actor_id)
+            character = normalize_character(character_id)
+            if actor and actor.casefold() != "player" and character:
+                actor_characters.setdefault((conversation_id, actor), character)
+
+        for row in rows:
+            try:
+                meta = json.loads(row[6])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            parsed_rows.append((row, meta))
+
+            conversation_id = normalize_actor(meta.get("conversation_id"))
+            role = str(row[1] or "").strip().casefold()
+            speaker = normalize_character(row[2] or row[3])
+            if role == "assistant" and speaker:
+                remember(conversation_id, meta.get("speaker_actor_id"), speaker)
+                remember(conversation_id, meta.get("responder_actor_id"), speaker)
+
+            remember(conversation_id, meta.get("responder_actor_id"), row[4])
+
+            actor_ids = meta.get("participant_actor_ids")
+            try:
+                characters = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                characters = None
+            if (
+                isinstance(actor_ids, list)
+                and isinstance(characters, list)
+                and len(actor_ids) == len(characters)
+            ):
+                for actor_id, character_id in zip(actor_ids, characters):
+                    remember(conversation_id, actor_id, character_id)
+
+        repaired = 0
+        for row, meta in parsed_rows:
+            role = str(row[1] or "").strip().casefold()
+            speaker = str(row[2] or "").strip()
+            sender = str(row[3] or "").strip()
+            if role != "user" or not (
+                speaker.casefold() == "player" or sender.casefold() == "player"
+            ):
+                continue
+
+            actor_id = normalize_actor(meta.get("speaker_actor_id"))
+            if not actor_id or actor_id.casefold() == "player":
+                continue
+            conversation_id = normalize_actor(meta.get("conversation_id"))
+            character_id = actor_characters.get((conversation_id, actor_id), "")
+            if not character_id:
+                continue
+
+            cursor.execute(
+                "UPDATE history SET speaker = ?, sender = ? WHERE id = ?",
+                (character_id, character_id, int(row[0])),
+            )
+            repaired += max(0, int(cursor.rowcount or 0))
+
+        return repaired
+
+    def rebuild_fts_indexes(self) -> bool:
+        """
+        Manual full rebuild for both FTS tables (safe no-op if FTS5 is unavailable).
+        Returns True if rebuild was attempted successfully, else False.
+        """
+        if not self.sqlite_supports_fts5():
+            return False
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            self._ensure_fts5_schema(conn)
+            cur = conn.cursor()
+
+            # Check tables exist
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_fts'")
+            if not cur.fetchone():
+                return False
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'")
+            if not cur.fetchone():
+                return False
+
+            # Clear + backfill
+            cur.execute("DELETE FROM history_fts")
+            cur.execute("DELETE FROM memories_fts")
+
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            mem_cols = self._get_table_columns_conn(conn, "memories")
+            history_fts_cols: List[str] = ["content"]
+            for c in ("speaker", "target", "tags", "participants", "event_type"):
+                if c in hist_cols:
+                    history_fts_cols.append(c)
+            memories_fts_cols: List[str] = ["content"]
+            for c in ("type", "priority", "tags", "participants"):
+                if c in mem_cols:
+                    memories_fts_cols.append(c)
+
+            h_cols_sql = ", ".join(history_fts_cols)
+            h_sel_cols = ", ".join([f"COALESCE({c}, '')" for c in history_fts_cols])
+            m_cols_sql = ", ".join(memories_fts_cols)
+            m_sel_cols = ", ".join([f"COALESCE({c}, '')" for c in memories_fts_cols])
+
+            cur.execute(f"INSERT INTO history_fts(rowid, {h_cols_sql}) SELECT id, {h_sel_cols} FROM history")
+            cur.execute(f"INSERT INTO memories_fts(rowid, {m_cols_sql}) SELECT id, {m_sel_cols} FROM memories")
+            conn.commit()
+            return True
+        except Exception as e:
+            logging.warning(f"DB: rebuild FTS indexes failed (ignored): {format_exception(e)}", exc_info=True)
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            return False
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def _init_db(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''
+               CREATE TABLE IF NOT EXISTS memories (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   character_id TEXT NOT NULL,
+                   eternal_id INTEGER NOT NULL,
+                   content TEXT NOT NULL,
+                   priority TEXT DEFAULT 'Normal',
+                   type TEXT DEFAULT 'fact',
+                   date_created TEXT,
+                   is_deleted INTEGER DEFAULT 0,
+                   embedding_id INTEGER,
+                   tags TEXT,
+                   participants TEXT,
+                   embedding BLOB
+               )
+           '''
+        )
+
+        cursor.execute(
+            '''
+               CREATE TABLE IF NOT EXISTS history (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   character_id TEXT NOT NULL,
+                   role TEXT NOT NULL,
+                   target TEXT,
+                   participants TEXT,
+                   tags TEXT,
+                   rag_id TEXT,
+                   message_id TEXT,
+                   speaker TEXT,
+                   sender TEXT,
+                   event_type TEXT,
+                   req_id TEXT,
+                   task_uid TEXT,
+                   content TEXT,
+                   timestamp TEXT,
+                   is_active INTEGER DEFAULT 1,
+                   is_deleted INTEGER DEFAULT 0,
+                   llm_prompt_tokens INTEGER,
+                   llm_completion_tokens INTEGER,
+                   llm_total_tokens INTEGER,
+                   llm_reasoning_tokens INTEGER,
+                   llm_cached_prompt_tokens INTEGER,
+                   llm_cache_write_tokens INTEGER,
+                   llm_cost REAL,
+                   llm_cost_currency TEXT,
+                   llm_cost_source TEXT,
+                   llm_model TEXT,
+                   llm_provider TEXT,
+                   meta_data TEXT
+                   ,embedding BLOB
+               )
+           '''
+        )
+
+        cursor.execute(
+            '''
+               CREATE TABLE IF NOT EXISTS variables (
+                   character_id TEXT NOT NULL,
+                   key TEXT NOT NULL,
+                   value TEXT,
+                   PRIMARY KEY (character_id, key)
+               )
+           '''
+        )
+
+        cursor.execute(
+            '''
+               CREATE TABLE IF NOT EXISTS embeddings (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   source_table TEXT NOT NULL,
+                   source_id INTEGER NOT NULL,
+                   character_id TEXT NOT NULL,
+                   model_name TEXT NOT NULL,
+                   dimensions INTEGER NOT NULL DEFAULT 0,
+                   embedding BLOB NOT NULL,
+                   created_at TEXT,
+                   UNIQUE(source_table, source_id, character_id, model_name)
+               )
+           '''
+        )
+        cursor.execute(
+            '''CREATE INDEX IF NOT EXISTS idx_emb_lookup
+               ON embeddings(source_table, character_id, model_name)'''
+        )
+
+        conn.commit()
+        conn.close()
+
+        self._upgrade_schema()
+
+    def _upgrade_schema(self):
+        """Добавляет недостающие колонки, если они не были созданы ранее.
+        Принцип: если не хватает столбца — пытаемся добавить; если не получилось — не падаем.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        history_columns = [
+            ("character_id", "TEXT"),
+            ("role", "TEXT"),
+            ("content", "TEXT"),
+            ("timestamp", "TEXT"),
+            ("is_active", "INTEGER DEFAULT 1"),
+            ("meta_data", "TEXT"),
+            ("embedding", "BLOB"),
+            ("entities", "TEXT DEFAULT '[]'"),
+        ]
+        known_history_columns = {name for name, _definition in history_columns}
+        history_columns.extend(
+            (name, definition)
+            for name, definition in self.HISTORY_EXTRA_COLUMNS.items()
+            if name not in known_history_columns
+        )
+
+        desired = {
+            "memories": [
+                ("character_id", "TEXT"),
+                ("eternal_id", "INTEGER"),
+                ("content", "TEXT"),
+                ("priority", "TEXT DEFAULT 'Normal'"),
+                ("type", "TEXT DEFAULT 'fact'"),
+                ("date_created", "TEXT"),
+                ("is_deleted", "INTEGER DEFAULT 0"),
+                ("is_forgotten", "INTEGER DEFAULT 0"),
+                ("embedding_id", "INTEGER"),
+                ("tags", "TEXT"),
+                ("participants", "TEXT"),
+                ("embedding", "BLOB"),
+                ("entities", "TEXT DEFAULT '[]'"),
+            ],
+            "history": history_columns,
+            "variables": [
+                ("character_id", "TEXT"),
+                ("key", "TEXT"),
+                ("value", "TEXT"),
+            ],
+        }
+
+        try:
+            self._ensure_migration_table(cursor)
+            # --- ADD missing columns for each table ---
+            for table, columns in desired.items():
+                try:
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    existing_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+                except Exception:
+                    existing_cols = set()
+
+                for col_name, col_def in columns:
+                    if col_name not in existing_cols:
+                        try:
+                            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                            logging.info(f"DB upgrade: added column '{col_name}' to '{table}'")
+                        except Exception as e:
+                            logging.warning(f"DB upgrade: failed to add '{col_name}' to '{table}' (ignored): {format_exception(e)}")
+
+            try:
+                cursor.execute("PRAGMA table_info(history)")
+                hist_cols = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+            except Exception:
+                hist_cols = set()
+
+            if (
+                "timestamp" in hist_cols
+                and not self._migration_applied(
+                    cursor,
+                    self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                )
+            ):
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE history
+                        SET timestamp =
+                            CASE
+                                WHEN timestamp GLOB '__.__.____ __:__:__' THEN
+                                    substr(timestamp, 7, 4) || '-' || substr(timestamp, 4, 2) || '-' ||
+                                    substr(timestamp, 1, 2) || ' ' || substr(timestamp, 12, 8)
+                                WHEN timestamp GLOB '__.__.____ __:__' THEN
+                                    substr(timestamp, 7, 4) || '-' || substr(timestamp, 4, 2) || '-' ||
+                                    substr(timestamp, 1, 2) || ' ' || substr(timestamp, 12, 5) || ':00'
+                                WHEN timestamp GLOB '__:__' THEN date('now', 'localtime') || ' ' || timestamp || ':00'
+                                ELSE replace(timestamp, 'T', ' ')
+                            END
+                        WHERE timestamp IS NOT NULL AND TRIM(timestamp) != ''
+                          AND (
+                              timestamp GLOB '__.__.____ __:__*'
+                              OR timestamp GLOB '__:__'
+                              OR instr(timestamp, 'T') > 0
+                          )
+                        """
+                    )
+                    self._mark_migration(
+                        cursor,
+                        self._MIGRATION_TIMESTAMP_NORMALIZATION,
+                    )
+                except Exception as e:
+                    logging.warning(f"DB upgrade: failed to normalize history timestamps (ignored): {format_exception(e)}")
+
+            if {"character_id", "message_id"}.issubset(hist_cols):
+                try:
+                    migration_applied = self._migration_applied(
+                        cursor,
+                        self._MIGRATION_MESSAGE_ID_UNIQUE,
+                    )
+                    if not migration_applied:
+                        active_filter = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                        cursor.execute("DROP INDEX IF EXISTS idx_history_unique_msg")
+                        cursor.execute(
+                            f"""
+                            DELETE FROM history
+                            WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                              {active_filter}
+                              AND id NOT IN (
+                                  SELECT MIN(id)
+                                  FROM history
+                                  WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                                    {active_filter}
+                                  GROUP BY character_id, message_id
+                              )
+                            """
+                        )
+                    deleted_predicate = "AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                    cursor.execute(
+                        f"""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_history_unique_msg
+                        ON history(character_id, message_id)
+                        WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                          {deleted_predicate}
+                        """
+                    )
+                    if not migration_applied:
+                        self._mark_migration(
+                            cursor,
+                            self._MIGRATION_MESSAGE_ID_UNIQUE,
+                        )
+                    logging.info("DB upgrade: ensured message-id UNIQUE index")
+                except Exception as e:
+                    logging.warning(f"DB upgrade: failed to create message-id UNIQUE index (ignored): {format_exception(e)}")
+
+            if {"speaker", "sender", "target", "participants", "meta_data"}.issubset(hist_cols):
+                try:
+                    if not self._migration_applied(
+                        cursor,
+                        self._MIGRATION_DIALOGUE_SENDER_IDENTITY,
+                    ):
+                        repaired = self._repair_dialogue_sender_identity(cursor)
+                        self._mark_migration(
+                            cursor,
+                            self._MIGRATION_DIALOGUE_SENDER_IDENTITY,
+                        )
+                        logging.info(
+                            "DB upgrade: repaired %d dialogue sender identities",
+                            repaired,
+                        )
+                except Exception as e:
+                    logging.warning(
+                        f"DB upgrade: failed to repair dialogue sender identities (ignored): {format_exception(e)}"
+                    )
+
+            # --- Performance indexes for common queries ---
+            for idx_sql in [
+                "CREATE INDEX IF NOT EXISTS idx_history_char_active ON history(character_id, is_active)",
+                "CREATE INDEX IF NOT EXISTS idx_memories_char_deleted_forgotten ON memories(character_id, is_deleted, is_forgotten)",
+            ]:
+                try:
+                    cursor.execute(idx_sql)
+                except Exception as e:
+                    logging.warning(f"DB upgrade: failed to create index (ignored): {format_exception(e)}")
+
+            # --- FTS5 lexical indexes (safe, optional) ---
+            if not self._fts5_schema_present(conn):
+                self._ensure_fts5_schema(conn)
+
+            # --- Ensure embeddings table exists (for DBs created before this code) ---
+            try:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS embeddings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_table TEXT NOT NULL,
+                        source_id INTEGER NOT NULL,
+                        character_id TEXT NOT NULL,
+                        model_name TEXT NOT NULL,
+                        dimensions INTEGER NOT NULL DEFAULT 0,
+                        embedding BLOB NOT NULL,
+                        created_at TEXT,
+                        UNIQUE(source_table, source_id, character_id, model_name)
+                    )"""
+                )
+                cursor.execute(
+                    """CREATE INDEX IF NOT EXISTS idx_emb_lookup
+                       ON embeddings(source_table, character_id, model_name)"""
+                )
+            except Exception as e:
+                logging.warning(f"DB upgrade: failed to ensure embeddings table (ignored): {format_exception(e)}")
+
+            # --- Sentence-level embeddings table ---
+            try:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS sentence_embeddings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_table TEXT NOT NULL,
+                        source_id INTEGER NOT NULL,
+                        character_id TEXT NOT NULL,
+                        model_name TEXT NOT NULL,
+                        sentence_idx INTEGER NOT NULL DEFAULT 0,
+                        embedding BLOB NOT NULL,
+                        created_at TEXT,
+                        UNIQUE(source_table, source_id, character_id, model_name, sentence_idx)
+                    )"""
+                )
+                cursor.execute(
+                    """CREATE INDEX IF NOT EXISTS idx_sent_emb_lookup
+                       ON sentence_embeddings(source_table, character_id, model_name)"""
+                )
+            except Exception as e:
+                logging.warning(f"DB upgrade: failed to ensure sentence_embeddings table (ignored): {format_exception(e)}")
+
+            # --- Migrate old BLOB embeddings into separate table ---
+            self._migrate_embeddings_to_table(cursor)
+
+            try:
+                cursor.execute("PRAGMA table_info(history)")
+                self._history_columns_cache = {
+                    row[1] for row in cursor.fetchall() if row and len(row) > 1
+                }
+            except Exception:
+                self._history_columns_cache = set()
+
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def get_history_columns(self, *, refresh: bool = False) -> Set[str]:
+        """Return the migrated history schema without repeating PRAGMA on read paths."""
+        cached = set(getattr(self, "_history_columns_cache", set()) or set())
+        if cached and not refresh:
+            return cached
+
+        with DatabaseManager._lock:
+            cached = set(getattr(self, "_history_columns_cache", set()) or set())
+            if cached and not refresh:
+                return cached
+
+            conn = self.get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(history)")
+                cached = {row[1] for row in cursor.fetchall() if row and len(row) > 1}
+                self._history_columns_cache = cached
+                return set(cached)
+            finally:
+                conn.close()
+
+    def _migrate_embeddings_to_table(self, cursor: sqlite3.Cursor) -> None:
+        """Migrate BLOB embeddings from history/memories into the separate embeddings table.
+
+        Uses a flag in 'variables' table (character_id='_system', key='_embeddings_migrated')
+        to avoid re-running. The old BLOB columns are NOT dropped for backwards compatibility.
+        """
+        DEFAULT_MODEL = "Snowflake/snowflake-arctic-embed-m-v2.0"
+        DEFAULT_DIM = 768
+
+        try:
+            cursor.execute(
+                "SELECT value FROM variables WHERE character_id='_system' AND key='_embeddings_migrated'"
+            )
+            row = cursor.fetchone()
+            if row and str(row[0]).strip() == "1":
+                return  # already migrated
+        except Exception:
+            pass
+
+        migrated = 0
+        try:
+            # History embeddings
+            cursor.execute(
+                "SELECT id, character_id, embedding FROM history WHERE embedding IS NOT NULL"
+            )
+            for row_id, char_id, blob in cursor.fetchall():
+                if not blob:
+                    continue
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO embeddings
+                           (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                           VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                        (row_id, char_id, DEFAULT_MODEL, DEFAULT_DIM, blob),
+                    )
+                    migrated += 1
+                except Exception:
+                    pass
+
+            # Memories embeddings
+            cursor.execute(
+                "SELECT eternal_id, character_id, embedding FROM memories WHERE embedding IS NOT NULL"
+            )
+            for eternal_id, char_id, blob in cursor.fetchall():
+                if not blob:
+                    continue
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO embeddings
+                           (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                           VALUES ('memories', ?, ?, ?, ?, ?, datetime('now'))""",
+                        (eternal_id, char_id, DEFAULT_MODEL, DEFAULT_DIM, blob),
+                    )
+                    migrated += 1
+                except Exception:
+                    pass
+
+            # Mark as migrated
+            cursor.execute(
+                "INSERT OR REPLACE INTO variables (character_id, key, value) VALUES ('_system', '_embeddings_migrated', '1')"
+            )
+            if migrated:
+                logging.info(f"DB upgrade: migrated {migrated} embeddings to separate table")
+        except Exception as e:
+            logging.warning(f"DB upgrade: embedding migration failed (ignored): {format_exception(e)}")
+
+    def _drop_fts_triggers(self, conn: sqlite3.Connection) -> None:
+        """Drop FTS sync triggers so base table writes never fail (safe no-op)."""
+        try:
+            cur = conn.cursor()
+            cur.executescript(
+                """
+                DROP TRIGGER IF EXISTS history_fts_ai;
+                DROP TRIGGER IF EXISTS history_fts_ad;
+                DROP TRIGGER IF EXISTS history_fts_au;
+
+                DROP TRIGGER IF EXISTS memories_fts_ai;
+                DROP TRIGGER IF EXISTS memories_fts_ad;
+                DROP TRIGGER IF EXISTS memories_fts_au;
+                """
+            )
+        except Exception as e:
+            logging.warning(f"DB: failed to drop FTS triggers (ignored): {format_exception(e)}")
+
+    # ---------------------------
+    # UI-facing DB helpers
+    # ---------------------------
+    def dedupe_history(self, character_id: Optional[str] = None) -> int:
+        """Remove idempotent duplicates, preferring message identity over content."""
+        cid = (str(character_id).strip() if character_id is not None else "")
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+            hist_cols = self._get_table_columns_conn(conn, "history")
+
+            params: list = []
+            char_filter = ""
+            if cid:
+                char_filter = " AND character_id = ?"
+                params.append(cid)
+
+            if "message_id" in hist_cols:
+                active_filter = " AND COALESCE(is_deleted, 0) = 0" if "is_deleted" in hist_cols else ""
+                sql = f"""
+                DELETE FROM history
+                WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                  {active_filter}
+                  {char_filter}
+                  AND id NOT IN (
+                      SELECT MIN(id)
+                      FROM history
+                      WHERE message_id IS NOT NULL AND TRIM(message_id) != ''
+                        {active_filter}
+                        {char_filter}
+                      GROUP BY character_id, message_id
+                  )
+                """
+                cur.execute(sql, params + params)
+            else:
+                base_filter = "content IS NOT NULL AND TRIM(content) != '' AND timestamp IS NOT NULL AND TRIM(timestamp) != ''"
+                sql = f"""
+                DELETE FROM history
+                WHERE {base_filter} {char_filter}
+                  AND id NOT IN (
+                      SELECT MIN(id) FROM history
+                      WHERE {base_filter} {char_filter}
+                      GROUP BY character_id, content, timestamp
+                  )
+                """
+                cur.execute(sql, params + params)
+            cur.execute("SELECT changes()")
+            deleted = int((cur.fetchone() or [0])[0] or 0)
+
+            try:
+                conn.commit()
+            except Exception as e:
+                logging.warning(f"DB: dedupe commit failed: {format_exception(e)}")
+
+            return deleted
+        except Exception as e:
+            logging.warning(f"DB: dedupe_history failed (ignored): {format_exception(e)}", exc_info=True)
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def count_missing_embeddings(self, character_id: str, model_name: Optional[str] = None) -> Tuple[int, int]:
+        """
+        Counts rows that likely require embedding generation:
+          - history: no row in embeddings for the current embedding model
+          - memories: no row in embeddings for the current embedding model
+        Returns (history_missing, memories_missing). Safe fallback: (0, 0).
+        """
+        cid = str(character_id or "").strip()
+        if not cid:
+            return (0, 0)
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            # Динамическая проверка наличия колонок is_deleted,
+            # чтобы не ломать старые БД, если миграция не прошла.
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            mem_cols = self._get_table_columns_conn(conn, "memories")
+
+            # Для истории: пропускаем удаленные, если колонка есть
+            extra_h = " AND h.is_deleted=0" if "is_deleted" in hist_cols else ""
+
+            # Для памяти: пропускаем удаленные, если колонка есть
+            extra_m = " AND m.is_deleted=0" if "is_deleted" in mem_cols else ""
+
+            model = str(model_name or "").strip()
+            if not model:
+                try:
+                    from handlers.embedding_presets import resolve_full_config, resolve_model_settings
+                    cfg = resolve_full_config()
+                    model = str(cfg.get("db_model_key") or cfg.get("hf_name") or resolve_model_settings()["hf_name"])
+                except Exception:
+                    model = "Snowflake/snowflake-arctic-embed-m-v2.0"
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM history h
+                LEFT JOIN embeddings e
+                  ON e.source_table='history'
+                 AND e.source_id=h.id
+                 AND e.character_id=h.character_id
+                 AND e.model_name=?
+                WHERE h.character_id=?
+                  AND h.content IS NOT NULL
+                  AND TRIM(h.content) != ''
+                  AND e.id IS NULL
+                  {extra_h}
+                """,
+                (model, cid),
+            )
+            h = int((cur.fetchone() or [0])[0] or 0)
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM memories m
+                LEFT JOIN embeddings e
+                  ON e.source_table='memories'
+                 AND e.source_id=m.eternal_id
+                 AND e.character_id=m.character_id
+                 AND e.model_name=?
+                WHERE m.character_id=?
+                  AND e.id IS NULL
+                  {extra_m}
+                """,
+                (model, cid),
+            )
+            m = int((cur.fetchone() or [0])[0] or 0)
+
+            return (h, m)
+        except Exception as e:
+            logging.debug(f"DB: count_missing_embeddings failed (ignored): {format_exception(e)}")
+            return (0, 0)
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def get_world_stats(self, character_id: Optional[str] = None) -> dict:
+        """Live stats for the sandbox 'state' panel.
+
+        Returns a dict with:
+          - history_active:      active (non-deleted, in-window) message rows
+          - memories_active:     active long-term memories
+          - memories_forgotten:  memories marked forgotten (still RAG-retrievable)
+          - history_deleted:     messages in the trash (is_deleted=1)
+          - memories_deleted:    memories in the trash (is_deleted=1)
+          - last_activity:       newest history timestamp (raw string, "" if none)
+          - db_size_bytes:       size of the SQLite file on disk
+        Best-effort: any failure yields the defaults below.
+        """
+        out = {
+            "history_active": 0, "memories_active": 0, "memories_forgotten": 0,
+            "history_deleted": 0, "memories_deleted": 0,
+            "last_activity": "", "db_size_bytes": 0,
+        }
+        cid = str(character_id or "").strip()
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            def _count(table: str, *, active: bool = False, forgotten: bool = False,
+                       deleted: bool = False) -> int:
+                cols = self._get_table_columns_conn(conn, table)
+                where: list[str] = []
+                params: list = []
+                if cid and "character_id" in cols:
+                    where.append("character_id=?")
+                    params.append(cid)
+                st_sql, st_params = self._build_status_where(
+                    table, cols, active=active, forgotten=forgotten, deleted=deleted
+                )
+                where.append(st_sql)
+                params.extend(st_params)
+                wsql = " WHERE " + " AND ".join(where) if where else ""
+                cur.execute(f"SELECT COUNT(*) FROM {self._q_ident(table)}{wsql}", tuple(params))
+                return int((cur.fetchone() or [0])[0] or 0)
+
+            out["history_active"] = _count("history", active=True)
+            out["memories_active"] = _count("memories", active=True)
+            out["memories_forgotten"] = _count("memories", forgotten=True)
+            out["history_deleted"] = _count("history", deleted=True)
+            out["memories_deleted"] = _count("memories", deleted=True)
+
+            # Newest message timestamp for the character (freshness).
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            if "timestamp" in hist_cols:
+                where = []
+                params = []
+                if cid and "character_id" in hist_cols:
+                    where.append("character_id=?")
+                    params.append(cid)
+                wsql = " WHERE " + " AND ".join(where) if where else ""
+                cur.execute(f"SELECT MAX(timestamp) FROM {self._q_ident('history')}{wsql}", tuple(params))
+                last = (cur.fetchone() or [None])[0]
+                out["last_activity"] = str(last) if last else ""
+        except Exception as e:
+            logging.debug(f"DB: get_world_stats failed (ignored): {format_exception(e)}")
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+        try:
+            path = getattr(self, "db_path", None)
+            if path and os.path.exists(path):
+                out["db_size_bytes"] = int(os.path.getsize(path))
+        except Exception:
+            pass
+
+        return out
+
+    def count_records_for_full_reindex(self, character_id: str) -> Tuple[int, int]:
+        """
+        Counts rows that will be processed by a *full* reindex (re-embed everything):
+          - history: content not empty
+          - memories: is_deleted=0
+        Returns (history_total, memories_total). Safe fallback: (0, 0).
+        """
+        cid = str(character_id or "").strip()
+        if not cid:
+            return (0, 0)
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            hist_cols = self._get_table_columns_conn(conn, "history")
+            extra_h = " AND is_deleted=0" if "is_deleted" in hist_cols else ""
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM history
+                WHERE character_id=?
+                  AND content IS NOT NULL
+                  AND TRIM(content) != ''
+                  {extra_h}
+                """,
+                (cid,),
+            )
+            h = int((cur.fetchone() or [0])[0] or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM memories
+                WHERE character_id=?
+                  AND is_deleted=0
+                """,
+                (cid,),
+            )
+            m = int((cur.fetchone() or [0])[0] or 0)
+
+            return (h, m)
+        except Exception as e:
+            logging.debug(f"DB: count_records_for_full_reindex failed (ignored): {format_exception(e)}")
+            return (0, 0)
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def _export_excluded_columns(self, cols: list[str]) -> list[str]:
+        # Не выгружаем эмбеддинги и связанные поля (embedding, embedding_id, etc.)
+        out = []
+        for c in cols:
+            lc = str(c).lower()
+            if "embedding" in lc:
+                continue
+            out.append(c)
+        return out
+
+    def _build_status_where(self, table: str, table_cols: set[str], *,
+                            active: bool, forgotten: bool, deleted: bool) -> tuple[str, list]:
+        """
+        Возвращает SQL-кусок (без WHERE) и параметры для статусов.
+        """
+        parts = []
+        params: list = []
+
+        if table == "history":
+            # history: active/forgotten via is_active, deleted via is_deleted
+            # active: is_deleted=0 AND is_active=1
+            # forgotten: is_deleted=0 AND is_active=0
+            # deleted: is_deleted=1
+            if deleted and "is_deleted" in table_cols:
+                parts.append("(is_deleted=1)")
+            if active and {"is_deleted", "is_active"}.issubset(table_cols):
+                parts.append("(is_deleted=0 AND is_active=1)")
+            if forgotten and {"is_deleted", "is_active"}.issubset(table_cols):
+                parts.append("(is_deleted=0 AND is_active=0)")
+
+        elif table == "memories":
+            # memories: forgotten via is_forgotten (если есть), deleted via is_deleted
+            # active: is_deleted=0 AND (is_forgotten=0 if exists)
+            if deleted and "is_deleted" in table_cols:
+                parts.append("(is_deleted=1)")
+
+            if active and "is_deleted" in table_cols:
+                if "is_forgotten" in table_cols:
+                    parts.append("(is_deleted=0 AND is_forgotten=0)")
+                else:
+                    parts.append("(is_deleted=0)")
+
+            if forgotten and "is_deleted" in table_cols and "is_forgotten" in table_cols:
+                parts.append("(is_deleted=0 AND is_forgotten=1)")
+
+        if not parts:
+            # если колонок нет/ничего не выбрано — вернём "ложь"
+            return "1=0", []
+
+        return "(" + " OR ".join(parts) + ")", params
+
+    def _build_date_where(self, table: str, table_cols: set[str], *,
+                          date_mode: str, date_from: str, date_to: str) -> tuple[str, list]:
+        """
+        date_mode: all/from/range
+        history -> timestamp
+        memories -> date_created
+        """
+        if date_mode not in ("all", "from", "range"):
+            date_mode = "all"
+        if date_mode == "all":
+            return "", []
+
+        col = None
+        if table == "history" and "timestamp" in table_cols:
+            col = "timestamp"
+        if table == "memories" and "date_created" in table_cols:
+            col = "date_created"
+        if not col:
+            return "", []
+
+        if date_mode == "from":
+            return f"({col} IS NOT NULL AND TRIM({col})!='' AND {col} >= ?)", [date_from]
+        # range
+        return f"({col} IS NOT NULL AND TRIM({col})!='' AND {col} >= ? AND {col} <= ?)", [date_from, date_to]
+
+    def _build_column_filters_where(self, table: str, table_cols: set[str], filters_obj: dict | None) -> tuple[str, list]:
+        """
+        filters_obj expected:
+          {
+            "history": {"role": ["user","assistant"], "speaker": {"like":"Alice%"}},
+            "memories": {...},
+            "variables": {...}
+          }
+        """
+        if not isinstance(filters_obj, dict):
+            return "", []
+
+        tf = filters_obj.get(table)
+        if not isinstance(tf, dict) or not tf:
+            return "", []
+
+        parts = []
+        params: list = []
+
+        for col, val in tf.items():
+            if col not in table_cols:
+                continue
+            if isinstance(val, dict):
+                # {"like": "..."}
+                if "like" in val:
+                    parts.append(f"({col} LIKE ?)")
+                    params.append(str(val.get("like") or ""))
+                continue
+
+            if isinstance(val, list):
+                cleaned = [v for v in val]
+                if not cleaned:
+                    continue
+                placeholders = ",".join(["?"] * len(cleaned))
+                parts.append(f"({col} IN ({placeholders}))")
+                params.extend(cleaned)
+                continue
+
+            # scalar -> equals
+            parts.append(f"({col} = ?)")
+            params.append(val)
+
+        if not parts:
+            return "", []
+        return "(" + " AND ".join(parts) + ")", params
+
+    def vacuum(self) -> None:
+        """Run VACUUM to compact the database file and release disk space.
+        Must be called outside any transaction (uses its own connection)."""
+        conn = self.get_connection()
+        try:
+            conn.isolation_level = None  # autocommit — required for VACUUM
+            conn.execute("VACUUM")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def backup_deleted_to_json(
+        self,
+        *,
+        character_id: str,
+        backup_dir: str | None = None,
+        include_history: bool = True,
+        include_memories: bool = True,
+    ) -> str:
+        """Export only is_deleted=1 records for character_id to a timestamped JSON file.
+        Returns the path written."""
+        if not backup_dir:
+            backup_dir = os.path.dirname(os.path.abspath(self.db_path))
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(backup_dir, f"backup_{character_id}_{ts}.json")
+        self.export_to_json_file(
+            out_path=out_path,
+            character_id=character_id,
+            include_history=include_history,
+            include_memories=include_memories,
+            include_variables=False,
+            status_active=False,
+            status_forgotten=False,
+            status_deleted=True,
+            date_mode="all",
+            date_from="",
+            date_to="",
+        )
+        return out_path
+
+    def export_to_json_file(
+        self,
+        *,
+        out_path: str,
+        character_id: str | None,
+        include_history: bool,
+        include_memories: bool,
+        include_variables: bool,
+        status_active: bool,
+        status_forgotten: bool,
+        status_deleted: bool,
+        date_mode: str,
+        date_from: str,
+        date_to: str,
+        column_filters: dict | None = None,
+        progress_callback=None
+    ) -> str:
+        """
+        Экспорт в JSON (стримингом, без загрузки всех данных в память).
+        Возвращает компактное текстовое резюме (для QMessageBox).
+        """
+        out_path = str(out_path or "").strip()
+        if not out_path:
+            raise ValueError("out_path is empty")
+
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            plan = []
+            if include_history:
+                plan.append("history")
+            if include_memories:
+                plan.append("memories")
+            if include_variables:
+                plan.append("variables")
+
+            # --- предварительный подсчёт для прогресса (best-effort)
+            total = 0
+            counts: dict[str, int] = {}
+
+            def _count_rows(table: str) -> int:
+                cols = self._get_table_columns_conn(conn, table)
+                where = []
+                params = []
+
+                if character_id and "character_id" in cols:
+                    where.append("character_id=?")
+                    params.append(str(character_id))
+
+                if table in ("history", "memories"):
+                    st_sql, st_params = self._build_status_where(
+                        table, cols,
+                        active=status_active, forgotten=status_forgotten, deleted=status_deleted
+                    )
+                    where.append(st_sql)
+                    params.extend(st_params)
+
+                    dt_sql, dt_params = self._build_date_where(
+                        table, cols, date_mode=date_mode, date_from=date_from, date_to=date_to
+                    )
+                    if dt_sql:
+                        where.append(dt_sql)
+                        params.extend(dt_params)
+
+                cf_sql, cf_params = self._build_column_filters_where(table, cols, column_filters)
+                if cf_sql:
+                    where.append(cf_sql)
+                    params.extend(cf_params)
+
+                wsql = " WHERE " + " AND ".join(where) if where else ""
+                cur.execute(f"SELECT COUNT(*) FROM {self._q_ident(table)}{wsql}", tuple(params))
+                return int((cur.fetchone() or [0])[0] or 0)
+
+            for t in plan:
+                try:
+                    c = _count_rows(t)
+                except Exception:
+                    c = 0
+                counts[t] = c
+                total += c
+
+            done = 0
+            if progress_callback:
+                progress_callback(0, max(total, 1))
+
+            export_meta = {
+                "format": "world-db-export",
+                "version": 1,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "scope": {"character_id": character_id},
+                "options": {
+                    "include_history": bool(include_history),
+                    "include_memories": bool(include_memories),
+                    "include_variables": bool(include_variables),
+                    "status_active": bool(status_active),
+                    "status_forgotten": bool(status_forgotten),
+                    "status_deleted": bool(status_deleted),
+                    "date_mode": str(date_mode),
+                    "date_from": str(date_from),
+                    "date_to": str(date_to),
+                },
+                "tables": {}
+            }
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                head = dict(export_meta)
+                head.pop("tables", None)  # tables будем стримить вручную
+
+                head_json = json.dumps(head, ensure_ascii=False)
+                # убираем финальную "}" у корневого объекта
+                if head_json.endswith("}"):
+                    head_json = head_json[:-1]
+
+                f.write(head_json)
+                f.write(',"tables":{')  # открываем объект tables
+                first_table = True
+
+                def _write_table(table: str):
+                    nonlocal done, first_table
+                    cols_all = list(self._get_table_columns_conn(conn, table))
+                    cols_all = [c for c in cols_all if c]  # safety
+                    cols_use = self._export_excluded_columns(cols_all)
+
+                    # WHERE
+                    where = []
+                    params = []
+
+                    if character_id and "character_id" in cols_all:
+                        where.append("character_id=?")
+                        params.append(str(character_id))
+
+                    if table in ("history", "memories"):
+                        st_sql, st_params = self._build_status_where(
+                            table, set(cols_all),
+                            active=status_active, forgotten=status_forgotten, deleted=status_deleted
+                        )
+                        where.append(st_sql)
+                        params.extend(st_params)
+
+                        dt_sql, dt_params = self._build_date_where(
+                            table, set(cols_all),
+                            date_mode=date_mode, date_from=date_from, date_to=date_to
+                        )
+                        if dt_sql:
+                            where.append(dt_sql)
+                            params.extend(dt_params)
+
+                    cf_sql, cf_params = self._build_column_filters_where(table, set(cols_all), column_filters)
+                    if cf_sql:
+                        where.append(cf_sql)
+                        params.extend(cf_params)
+
+                    wsql = " WHERE " + " AND ".join(where) if where else ""
+                    cols_sql = ", ".join([self._q_ident(c) for c in cols_use])
+
+                    # table header
+                    if not first_table:
+                        f.write(",")
+                    first_table = False
+
+                    f.write(json.dumps(table, ensure_ascii=False))
+                    f.write(":")
+                    f.write("{")
+                    f.write('"columns":')
+                    f.write(json.dumps(cols_use, ensure_ascii=False))
+                    f.write(',"rows":[')
+
+                    # rows streaming
+                    cur2 = conn.cursor()
+                    order_by = ""
+                    if "id" in cols_all:
+                        order_by = " ORDER BY id ASC"
+                    elif table == "variables" and "key" in cols_all:
+                        order_by = " ORDER BY key ASC"
+                    else:
+                        order_by = " ORDER BY rowid ASC"
+
+                    cur2.execute(
+                        f"SELECT {cols_sql} FROM {self._q_ident(table)}{wsql}{order_by}",
+                        tuple(params)
+                    )
+                    first_row = True
+                    batch = cur2.fetchmany(500)
+                    while batch:
+                        for r in batch:
+                            d = dict(r)
+                            # safety: на всякий
+                            d = {k: v for k, v in d.items() if "embedding" not in str(k).lower()}
+                            if not first_row:
+                                f.write(",")
+                            first_row = False
+                            f.write(json.dumps(d, ensure_ascii=False))
+                            done += 1
+                        if progress_callback:
+                            progress_callback(done, max(total, 1))
+                        batch = cur2.fetchmany(500)
+
+                    f.write("]}")
+                    # done
+
+                for t in plan:
+                    _write_table(t)
+
+                # закрываем "tables": { ... }
+                f.write("}}")
+
+            parts = [f"OK: {out_path}"]
+            if "history" in counts:
+                parts.append(f"history: {counts['history']}")
+            if "memories" in counts:
+                parts.append(f"memories: {counts['memories']}")
+            if "variables" in counts:
+                parts.append(f"variables: {counts['variables']}")
+            return "\n".join(parts)
+
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    def import_from_json_file(self, *, path: str, override_character_id: str | None = None, progress_callback=None) -> str:
+        """
+        Импорт из JSON формата export_to_json_file().
+        override_character_id:
+          - None: импортируем как есть
+          - str: принудительно выставляем character_id для history/memories/variables
+        """
+        path = str(path or "").strip()
+        if not path or not os.path.exists(path):
+            raise ValueError("File does not exist")
+
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        if not isinstance(payload, dict) or "tables" not in payload:
+            raise ValueError("Invalid export file: missing 'tables'")
+
+        tables = payload.get("tables") or {}
+        if not isinstance(tables, dict):
+            raise ValueError("Invalid export file: 'tables' must be object")
+
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+
+            inserted = {"history": 0, "memories": 0, "variables": 0}
+
+            def _insert_table(table: str, mode: str):
+                if table not in tables:
+                    return
+                tdata = tables.get(table) or {}
+                rows = tdata.get("rows") or []
+                if not isinstance(rows, list) or not rows:
+                    return
+
+                existing_cols = self.get_table_columns(table)
+                # не импортируем id и embedding*
+                banned = {"id"}
+                use_cols = [c for c in (tdata.get("columns") or []) if c in existing_cols and c not in banned and "embedding" not in str(c).lower()]
+                if "character_id" in existing_cols and "character_id" not in use_cols:
+                    # если в файле нет character_id в колонках — добавим сами
+                    use_cols.append("character_id")
+
+                if not use_cols:
+                    return
+
+                qcols = ", ".join([self._q_ident(c) for c in use_cols])
+                placeholders = ", ".join(["?"] * len(use_cols))
+
+                if table == "variables":
+                    sql = f"INSERT OR REPLACE INTO {self._q_ident(table)} ({qcols}) VALUES ({placeholders})"
+                elif table == "history":
+                    sql = f"INSERT OR IGNORE INTO {self._q_ident(table)} ({qcols}) VALUES ({placeholders})"
+                else:
+                    # memories: без уникального ключа — просто INSERT
+                    sql = f"INSERT INTO {self._q_ident(table)} ({qcols}) VALUES ({placeholders})"
+
+                values = []
+                ocid = (str(override_character_id).strip() if override_character_id else None)
+
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    rr = dict(r)
+                    # вычищаем embedding на всякий
+                    rr = {k: v for k, v in rr.items() if "embedding" not in str(k).lower()}
+                    if ocid and "character_id" in existing_cols:
+                        rr["character_id"] = ocid
+
+                    values.append(tuple(rr.get(c) for c in use_cols))
+
+                if not values:
+                    return
+
+                before = conn.total_changes
+                cur.executemany(sql, values)
+                after = conn.total_changes
+                inserted[table] += max(0, after - before)
+
+            if progress_callback:
+                progress_callback(0, 1)
+
+            _insert_table("history", "history")
+            _insert_table("memories", "memories")
+            _insert_table("variables", "variables")
+
+            conn.commit()
+
+            msg = [
+                f"OK: {path}",
+                f"history inserted: {inserted['history']}",
+                f"memories inserted: {inserted['memories']}",
+                f"variables written: {inserted['variables']}",
+            ]
+            if override_character_id:
+                msg.append(f"override_character_id: {override_character_id}")
+            return "\n".join(msg)
+
+        except Exception:
+            try:
+                if conn:
+                    conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass

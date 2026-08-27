@@ -1,0 +1,5 @@
+IF secretExposed == True THEN
+		RETURN LOAD "Context/examplesLongCrazy.txt"
+ELSE
+		RETURN LOAD "Context/examplesLong.txt"
+ENDIF

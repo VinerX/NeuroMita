@@ -1,0 +1,10 @@
+{
+  "world_id": "SleepyHouse",
+  "display_name": "Sleepy Mita's house",
+  "owner": "Sleepy",
+  "former_owners": [],
+  "default_context": "You are visiting Sleepy Mita's house. It is Sleepy's private home, not yours.",
+  "character_contexts": {
+    "Sleepy": "This is your home. It is a quiet private space where you expect to rest without being disturbed."
+  }
+}

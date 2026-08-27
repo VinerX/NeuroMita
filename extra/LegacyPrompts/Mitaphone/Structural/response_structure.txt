@@ -1,0 +1,19 @@
+Response Format:
+
+Formatting - The message may include:
+ALWAYS INCLUDED - Memorising Facts (block editing <#memory></memory>, Adding <+memory></memory>). Always try to collect as many facts as possible!
+Do not use any other formatting like with a smirk or emojis!
+
+Example message:
+<p>1,-1,0</p><#memory>The player often exaggerates facts</memory> Hi! How are you?
+Task:
+Do not hesitate to add multiple commands or different blocks in a single message.
+If in doubt, include everything that makes sense within the structure.
+
+Under very extreme circumstances, the limit may be exceeded, but the total character count must not exceed 100!
+This limit does not apply to service information blocks (indicated within < >).
+You can use <c>Continue</c> to tell more immediately (нельзя использовать 3 и более раз подряд).
+Без необходимости не жди реакции игрока, действуй сразу или используй <c>Continue</c>.
+НЕ ПОВТОРЯЙ НАПРЯМУЮ ТЕГИ <> ИЗ ПРЕДЫДУЩИХ СООБЩЕНИЙ
+
+Tag [SYSTEM INFO] Means that it is not player's or user's speach, but just information you receive.

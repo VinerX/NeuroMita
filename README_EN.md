@@ -1,216 +1,197 @@
-# NeuroMita v0.011  
-A mod where you get to interact with Mitas controlled by neural networks. Built with Python and C# MelonMod.  
+# NeuroMita 0.1 Alpha
 
-Mod Server: https://discord.gg/Tu5MPFxM4P (Get help here!)  
+<p align="center">
+  🌐 <a href="README.md">Русский</a> · <b>English</b>
+</p>
 
-![logomod3](https://github.com/user-attachments/assets/aea3ec44-c203-4d4a-a405-a09191188464)  
+NeuroMita is a fan-made mod project where you can talk to Mitas controlled by language models and see their reactions in a Unity scene. The current version is a standalone Unity build: MiSide does not need to be installed, and the release includes everything required to run it.
 
-# Installation Guide  
+<p align="center">
+  <a href="https://github.com/VinerX/NeuroMita/releases"><img src="https://img.shields.io/badge/Download-0.1%20Alpha-6f42c1?style=for-the-badge&logo=github&logoColor=white" alt="Download NeuroMita"></a>
+  <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="docs/MODELS_EN.md"><img src="https://img.shields.io/badge/Set%20up%20a%20model-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Set up a model"></a>
+  <a href="docs/TROUBLESHOOTING_EN.md"><img src="https://img.shields.io/badge/Troubleshooting-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Troubleshooting"></a>
+</p>
 
-### 0) MelonLoader:  
-A universal Unity modding tool. May conflict with BepInEx-based mods.  
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/4d134e73-3d3f-41b7-a4c0-09a4c5590439" alt="NeuroMita" width="820">
+</p>
 
-- Install via: https://melonwiki.xyz/#/?id=requirements (Version 0.6.6)  
-- Or directly from: https://github.com/LavaGang/MelonLoader  
+> [!IMPORTANT]
+> NeuroMita is in Alpha: the interface, mechanics, and data formats may change. Before a major update, save the `Settings` and `Histories` folders.
 
-If you have **MelonLoader.Installer.exe**, select **Miside** to patch it for Melon-based mods.  
-Ensure all dependencies (e.g., .NET 6.0) are installed: https://melonwiki.xyz/#/?id=requirements  
+## Quick start
 
-### 1) The Mod  
-The mod consists of:  
-- **Python files** (place anywhere, but keep them together)  
-- **C# files**: `MitaAI.dll` and `assetbundle.test` (place in the `Mods` folder created by MelonLoader).  
+| Step | What to do |
+| --- | --- |
+| **1. Download** | Download the latest ZIP from the [releases page](https://github.com/VinerX/NeuroMita/releases) and extract it to a separate folder. |
+| **2. Launch** | Open `Launcher.exe`; if the launcher does not start, use `run.bat`. |
+| **3. Connect an LLM** | Create an API preset in **Settings → API presets** and make it active. |
+| **4. Start a chat** | Choose a character in **Settings → Characters**, then return to Chat / Sandbox. |
 
-Final structure should look like:  
+> [!TIP]
+> Start with one LLM provider. Voice output, local models, RAG, and other optional features can be added later.
 
-```
-Miside  
-- Other Miside folders  
-- Mods (Create if needed)  
-  - MitaAI.dll  
-  - assetbundle.test  
+### Installation and updates
 
-Any Separate Folder  
-- _internal  
-- libs  
-- Prompts  
-- NeuroMita.exe  
-(For local voice generation, also include:)  
-- Models  
-- features.env  
-- include  
-- init_triton.bat  
-- init.py  
-```  
+On the first launch, NeuroMita checks and deploys its bundled Python dependencies. Do not close the window until this step is complete.
 
-Future versions may include a launcher.  
+On the home page, install the Unity part if the interface offers it, then click **Play**.
 
-Download releases here: https://github.com/VinerX/NeuroMita/releases  
-Actual release: https://github.com/VinerX/NeuroMita/releases/download/v0.011/NeuroMita.0.011.MitaWorld.7z
+Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over a running NeuroMita folder.
 
-**In-game controls:**  
-- Press **Tab** to start typing.  
-- Press **Enter** to send.  
+### Setting up the first chat
 
-### 2) Text Generation  
-The mod supports multiple text-generation methods (tested options listed below).  
+1. Open **Settings → API presets**.
+2. Click **+** or the “Click to create a preset” row.
+3. Select a provider template, enter the API key and model.
+4. Save the preset and make it active.
+5. Open **Settings → Characters**, then choose a character and prompt set.
+6. Return to Chat / Sandbox and send your first message.
 
-#### Free API Options:  
-- **g4f** (No API keys needed)  
-- **OpenRouter** (Free keys: https://openrouter.ai/settings/keys – rate-limited)  
-- **io.net** (Free keys: https://ai.io.net/ai/api-keys – 500k tokens/day per model)
-- **Google AI Studio** (Free keys: https://aistudio.google.com/apikey – 1500 requests/day)  
-- **Chutes.ai** (Free keys: https://chutes.ai/app/api unlimited?)
+Choose **one** provider to start with instead of configuring them all. **OpenRouter** is usually the simplest first choice; Google AI Studio, Mistral, and LM Studio are alternatives. See the [model setup guide](docs/MODELS_EN.md) for details, including options for users in Russia.
 
-#### Paid API Options:  
-- **OpenRouter** (Wide model selection, pay-per-use)  
+Users in Russia may need a VPN to access some foreign AI services. Availability depends on the provider and region.
 
-#### Local Generation:  
-- **LM Studio** (https://lmstudio.ai, requires strong hardware, for advanced users only)  
+If there is no response, check the active preset, model name, and provider balance/limits, then open the [troubleshooting guide](docs/TROUBLESHOOTING_EN.md).
 
-**Note:** Gemini models often handle emotions better, while GPT-4o is more precise but less expressive.  
+## What NeuroMita can do
 
-### Models (as of 05/05/2025)  
-*(Subject to rapid change—check Discord for updates!)*  
+- Talk to Mitas through language models (LLMs — neural networks that generate text responses).
+- Use history, memory, RAG, and a knowledge graph to keep track of previous conversations.
+- Connect model responses to actions and character state in the Unity scene.
+- Provide voice output and microphone input; local components are managed through AI Hub.
+- Use images, screen content, or a camera as additional context when supported by the model.
+- Store API presets, models, dialogue settings, and prompts in the application settings.
 
-#### **G4F (No API Keys)**  
-Good for testing, but weaker models. Enable the checkbox in the settings. If base model does not work, use button and reload.
+Some features require additional downloads or more powerful hardware. Start with a regular text chat — one connected LLM provider is enough.
 
-![img_1.png](ReadmeFiles/img_1.png)
+## System requirements
 
-Supported models (selectable via version input + restart):  
-- `gemini-1.5-flash` (Most stable in 0.4.7.7)  
-- `gpt-4o-mini`  
-- `gpt-4o`  
-- `gemini-2.0-flash`  
-- `deepseek-chat`  
-Full list: https://github.com/xtekky/gpt4free/blob/main/docs/providers-and-models.md  
+| Component | Requirement |
+| --- | --- |
+| OS | Windows 10 or Windows 11 |
+| Internet | First launch, updates, and cloud language models |
+| Cloud LLM | API key from the selected service |
+| Local LLM | LM Studio and sufficient computer resources |
+| Voice output and ASR | Additional models and dependencies; a compatible GPU is often useful for acceleration |
 
-#### **OpenRouter (Free/Paid Keys)**  
-Get keys here: https://openrouter.ai/settings/keys  
+Specific local voice requirements depend on the selected model. See the [local voice guide](docs/LocalVoiceInstallationEn.md).
 
-![img_2.png](ReadmeFiles/img_2.png)
+> [!NOTE]
+> Do not install Python, .NET, or MelonLoader separately: the current release includes the bundled Python runtime and the main runtime required by the application.
 
-Recommended free models:  
-- `google/gemini-2.0-pro-exp-02-05:free`  
-- `deepseek/deepseek-chat:free` (Best for "Kind Mita")  
-- `deepseek/deepseek-chat-v3-0324:free` (Hardcore mode)  
+## Additional features
 
-Semi-paid (requires balance but no usage cost):  
-- `google/gemini-2.5-pro-exp-03-25`  
+### Voice output and speech recognition
 
-Full list: https://openrouter.ai/models?max_price=0  
+Use **Settings → Voice** to enable voice output and **Settings → Microphone** to select an input device and speech recognition. Local voice models, ASR, and related dependencies are installed through **AI Hub**. See the [step-by-step local voice guide](docs/LocalVoiceInstallationEn.md).
 
-#### **Ai.iO (500k tokens/day per model)**  
-API: https://api.intelligence.io.solutions/api/v1/  
-- `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8`  
-Full list: https://docs.io.net/reference/get-started-with-io-intelligence-api  
+### Images, screen, and camera
 
-### *Google Ai Studio*
-First, go to this website: https://aistudio.google.com/. If it says your country is not supported (e.g., Russia), only then will you need Step 1. If you don’t have any regional restrictions, skip straight to Step 2.
+When needed, NeuroMita can use an image, screen content, or camera input as additional context for a response. Availability depends on the selected model and its settings.
 
-To use it, you’ll need a file called "hosts" (find it on the server for now), which must be placed in this directory:
-C:\Windows\System32\drivers\etc
-Installation steps: Download → Copy → Paste with replacement.
+### AI Hub
 
-Follow this exact order—do not move the file. THIS IS IMPORTANT, as bugs may occur otherwise.
+**AI Hub** is the built-in area for installing and updating local components, including voice models, ASR, and related dependencies. A regular text chat does not require local components.
 
-After completing these steps, go to this website: https://aistudio.google.com/apikey, sign up, and generate an API key.
+### Conversation memory
 
-To use the model directly in the module, insert the gemini-2.0-flash model.
+NeuroMita stores conversation history and can retain important context during long chats. When a conversation becomes too long for the model context window, the system compresses older messages into a short summary in the background while keeping recent messages available.
 
-![image](https://github.com/user-attachments/assets/55c90501-b77d-416a-8073-cd97f9f620fb)
+RAG can find relevant fragments from history and memories, while the knowledge graph connects entities and relationships. This is optional fine-tuning: a regular chat works with the default memory system. See the [RAG and knowledge graph guide](docs/RAG_Guide_EN.md).
 
-The key fields should remain empty because the key is embedded in the URL.
-Also, make sure to enable two checkboxes in the module:
+## Getting help
 
-"Via Request"
+- Read [TROUBLESHOOTING_EN.md](docs/TROUBLESHOOTING_EN.md) for common symptoms, HTTP errors, and local component checks.
+- Open the **Logs** section in the application or inspect `NeuroMitaLogs.log` in the NeuroMita folder.
+- If the issue remains, contact the [NeuroMita Discord](https://discord.gg/Tu5MPFxM4P). Include the NeuroMita version, provider and model, reproduction steps, a screenshot, and the relevant log fragment. **Never publish API keys.**
 
-"Gemini for ProxiAPI"
+## Team and acknowledgements
 
-Most importantly, the URL should look like this:
+### Current team
 
-https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=YOUR_GENERATED_KEY_HERE
-Check the URL carefully—replace the placeholder text with your actual key.
+- **VinerX** — project author.
+- **[Atm4x](https://github.com/Atm4x)** (`_atm4x`) — lead developer and chief architect of the new version of the mod.
+- **[mactep_kot_](https://github.com/Macter-Kot)** — focused Python and Unity fixes, prompting, and testing.
 
-### *Chutes.ai*
-Need checkbutton "via Request", url https://llm.chutes.ai/v1/chat/completions
-- model deepseek-ai/DeepSeek-V3-0324
+<details>
+<summary>Contributors to earlier stages</summary>
 
-Other models - https://chutes.ai/app
+- **[ejichek](https://github.com/Ejichek0)** — major contribution to the Unity build, including the death screen.
+- **[vlad2830](https://github.com/vlad2830)** — C# MelonLoader mod and Python parts.
+- **Nelxi** (`distrane25`) — Python voice input integration.
+- **Feanor** (`feanorqq`) — Kind Mita house setup.
 
-## 3) Voice Generation  
-Two options: **Telegram bots** or **local generation**.  
+</details>
 
-### **Telegram**  
-Uses your Telegram account (preferably a secondary one) as a bot. Requires `api_id` and `api_hash` (guide: https://core.telegram.org/api/obtaining_api_id).  
+<details>
+<summary>Animations and characters</summary>
 
-After setup, restart and enter the confirmation code sent to your Telegram account. If you have 2FA, enter it (invisible input).  
+- **JPAV** — Mita prefab setup.
+- **MaxDel** (`max.del`) — Mita animations.
+- **Feanor** (`feanorqq`) and **Tkost** — Kind Mita prompts.
+- **Josefummi** — Short-Haired Mita.
+- **gad991** — Cap Mita.
+- **depikoov** — Sweet Mita.
+- **DemoNicanT** (`demonicant`) — Ghost Mita.
 
-Available bots:  
-- **@CrazyMitaAIbot** (Free, unstable)  
-- **@silero_voice_bot** (Paid, 600 test characters)  
+Thank you to **smarkloker**, author of New Story Mod, for cooperation and sharing experience. We wish him success with the upcoming alpha. Thanks to **GermanPlaygroud** and all testers who help find bugs and anomalies.
 
-**Note:** Manually message the bots first to ensure connectivity.  
+</details>
 
-### **Local Voice Generation**  
-Requires the `Models` folder and `features.env` (included in releases).  
+<details>
+<summary>Special thanks</summary>
 
-- Download: https://github.com/VinerX/NeuroMita/releases/download/v0.011/Models.7z
-- Mirror: https://drive.google.com/file/d/16S0v7qsVKGwqI1yHU_ScZ94wtZooIZqI/view?usp=drive_link
+- **Sutherex** — introduced OpenRouter, helps with organisation and neural-network topics, and created the logo.
+- **Dr. Couch Science** — one of the earliest testers of the chatbot; helped with many ideas, advice, and administration.
+- **Romancho** — helps structure many ideas, moderates the community, and answers questions.
+- **FlyOfFly** — useful Unity advice and early text-input work.
+- **LoLY3_0** — the cat on a watermelon.
+- **Mr. Sub** — his video helped many people discover the project.
+- All early testers after the video release, especially **smarkloker**.
+- **スノー** (`v1nn1ty`) and the **CrazyMitaBot** project — pull requests, bot communication, and contributions that improved voice availability in 2025.
+- **KASTA**.
 
-1. Enable voice generation.  
-2. Select **Local** (requires `features.env`).  
-3. Choose and configure a model.
-*(Initial setup may take time due to downloads.)*
+</details>
 
-For model installation details, see [here](https://github.com/VinerX/NeuroMita/blob/main/ReadmeFiles/LocalVoiceInstallationEn.md)
+**Special thanks to Fluttershy-2013** for the largest contribution in the available support statistics.
 
-![img_5.png](ReadmeFiles/img_5.png)
----
+<details>
+<summary><strong>Top supporters</strong></summary>
 
-### **Credits**  
-**Developers:**  
-- **VinerX**  
-- **vlad2830** (C# & Python)  
-- **Nelxi (distrane25)** (Voice input integration)  
+This ranking is based on the total subscription amount in the available support statistics; the order may change over time.
 
-**Local Voice Generation (Massive Contribution):**  
-- **_atm4x**  
+1. **Fluttershy-2013**
+2. **shr3der4**
+3. **Rob Plushie**
+4. **Hitakoto**
+5. **Just Lucky**
+6. **Neo**
+7. **Sans**
+8. **Артём Шестаков**
+9. **ForumCore**
+10. **Василий Бобраков**
 
-**Character Prompts:**  
-- **Feanor (feanorqq)** & **Tkost** (Kind Mita)  
-- **Josefummi** (Short-Haired Mita)  
-- **gad991** (Cap Mita)  
-- **depikoov** (Sweet Mita)  
+</details>
 
-**Animations (WIP):**  
-- **JPAV**  
+### Support the project
 
-**Pull Requests & CrazyMitaBot Contact:**  
-- **スノー (v1nn1ty)**  
+[Boosty VinerX](https://boosty.to/vinerx)
 
-**Testers (Brave Bug Hunters):**  
-- **GermanPlaygroud**  
+<details>
+<summary>Cryptocurrency addresses</summary>
 
-**Special Thanks:**  
-- **Sutherex** (Introduced OpenRouter, organizational help)  
-- **Dr. Couch Science** (Early tester, admin support)  
-- **Romancho** (Idea organization, community moderation)  
-- **FlyOfFly** (Unity advice, early text input help)  
-- **LoLY3_0** (The cat on a watermelon 🍉)  
-- **Mr. Sub** (Likely how you found this mod!)  
-- **All early testers** (Especially **smarkloker**)  
-- **KASTA**  
+- Ethereum (ETH), USDT (ETH): `0xd1b91ff711f1315053f3C89EB9256eABF3Ee0377`
+- USDT (TRON), Tron (TRX): `THi7QcfNyEmnaRzzoCpM6wyhhxvPBb5mJg`
+- Bitcoin (BTC): `bc1q3df4zlv40dhkhuq2asmh4we9jvqlnemey5u4cw`
 
-**Support the author (VinerX):** https://boosty.to/vinerx  
+</details>
 
-CryptoCurrency:
+If you would like to support the project with another cryptocurrency, message VinerX privately on Discord.
 
-  - Ethereum (ETH) 0xd1b91ff711f1315053f3C89EB9256eABF3Ee0377
-  - USDT (ETH) 0xd1b91ff711f1315053f3C89EB9256eABF3Ee0377
-  - USDT (TRON) THi7QcfNyEmnaRzzoCpM6wyhhxvPBb5mJg
-  - Tron (TRX) THi7QcfNyEmnaRzzoCpM6wyhhxvPBb5mJg
-  - Bitcoin (BTC) bc1q3df4zlv40dhkhuq2asmh4we9jvqlnemey5u4cw
+## Important rights information
 
-Write me in discord, if need address for other type.
+NeuroMita is an independent fan project. The licence in this repository applies only to the code and documentation for which the NeuroMita team has rights. It does not grant rights to MiSide, its characters, models, textures, music, trademarks, or other third-party materials.
+
+Unity source files are not published because they contain or depend on MiSide materials that the NeuroMita team is not entitled to distribute. See the full terms in [Licence.md](Licence.md).
