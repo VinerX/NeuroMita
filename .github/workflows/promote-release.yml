@@ -1,0 +1,426 @@
+name: Promote tested Atm4x release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: "Tested Atm4x release tag (for example v2026.08.27)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: Atm4x/NeuroMita
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.source_tag }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout VinerX repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve tested Atm4x release
+        id: source
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          source_repo = os.environ["SOURCE_REPO"].strip()
+          source_tag = os.environ["SOURCE_TAG"].strip()
+          if not re.fullmatch(r"v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?", source_tag):
+              raise SystemExit(
+                  f"Unsupported source tag {source_tag!r}; expected vYYYY.MM.DD or vYYYY.MM.DD.N"
+              )
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "NeuroMita-promote-workflow",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get_json(url: str):
+              request = urllib.request.Request(url, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", errors="replace")
+                  raise SystemExit(f"GitHub API failed: HTTP {exc.code} for {url}: {body[:500]}") from exc
+
+          encoded_tag = urllib.parse.quote(source_tag, safe="")
+          release = get_json(
+              f"https://api.github.com/repos/{source_repo}/releases/tags/{encoded_tag}"
+          )
+          if release.get("draft"):
+              raise SystemExit(f"Source release {source_tag} is still a draft")
+          if release.get("prerelease"):
+              raise SystemExit(
+                  f"Source release {source_tag} is marked as prerelease; "
+                  "the two-repository contour expects ordinary Atm4x releases"
+              )
+          commit = get_json(
+              f"https://api.github.com/repos/{source_repo}/commits/{encoded_tag}"
+          )
+          source_commit = str(commit.get("sha") or "").strip()
+          if not re.fullmatch(r"[0-9a-fA-F]{40}", source_commit):
+              raise SystemExit(f"Could not resolve source commit for {source_tag}: {source_commit!r}")
+
+          assets = [
+              asset for asset in (release.get("assets") or [])
+              if str(asset.get("name") or "").startswith("PythonBuild-")
+              and str(asset.get("name") or "").lower().endswith(".zip")
+          ]
+          if len(assets) != 1:
+              names = [str(asset.get("name") or "") for asset in (release.get("assets") or [])]
+              raise SystemExit(
+                  f"Expected exactly one PythonBuild-*.zip asset in {source_repo} {source_tag}; "
+                  f"found {len(assets)}. Assets: {names}"
+              )
+
+          asset = assets[0]
+          asset_name = str(asset["name"])
+          asset_url = str(asset["browser_download_url"])
+          if not asset_url.startswith("https://github.com/"):
+              raise SystemExit(f"Unexpected release asset URL: {asset_url}")
+
+          Path("source-release.json").write_text(
+              json.dumps(
+                  {
+                      "tag": source_tag,
+                      "name": release.get("name") or f"NeuroMita {source_tag}",
+                      "body": release.get("body") or "",
+                      "source_commit": source_commit,
+                      "asset_name": asset_name,
+                      "asset_url": asset_url,
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          with github_output.open("a", encoding="utf-8") as out:
+              out.write(f"source_tag={source_tag}\n")
+              out.write(f"source_commit={source_commit}\n")
+              out.write(f"asset_name={asset_name}\n")
+              out.write(f"asset_url={asset_url}\n")
+
+          print(f"Source release: {source_repo} {source_tag}")
+          print(f"Source commit:  {source_commit}")
+          print(f"Source asset:   {asset_name}")
+          PY
+
+      - name: Refuse duplicate VinerX tag or release
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git show-ref --verify --quiet "refs/tags/$SOURCE_TAG"; then
+            echo "Tag $SOURCE_TAG already exists in VinerX/NeuroMita. Refusing to overwrite it."
+            exit 1
+          fi
+          if gh release view "$SOURCE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $SOURCE_TAG already exists in VinerX/NeuroMita. Refusing to overwrite it."
+            exit 1
+          fi
+
+      - name: Download tested artifact from Atm4x
+        shell: bash
+        env:
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          ASSET_URL: ${{ steps.source.outputs.asset_url }}
+        run: |
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output "$ASSET_NAME" \
+            "$ASSET_URL"
+          test -s "$ASSET_NAME"
+
+      - name: Verify source artifact provenance
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          archive_path = Path(os.environ["ASSET_NAME"])
+          source_tag = os.environ["SOURCE_TAG"]
+          source_commit = os.environ["SOURCE_COMMIT"].lower()
+          source_repo = os.environ["SOURCE_REPO"]
+
+          def is_marker(name: str) -> bool:
+              normalized = name.replace("\\", "/").strip("/").casefold()
+              marker = "settings/distribution.json"
+              return normalized == marker or normalized.endswith("/" + marker)
+
+          with zipfile.ZipFile(archive_path, "r") as archive:
+              marker_names = [
+                  info.filename for info in archive.infolist()
+                  if not info.is_dir() and is_marker(info.filename)
+              ]
+              if len(marker_names) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one Settings/distribution.json; found {marker_names}"
+                  )
+              marker = json.loads(archive.read(marker_names[0]).decode("utf-8"))
+
+              expected = {
+                  "schema": 1,
+                  "contour": "test",
+                  "source_repo": source_repo,
+                  "source_tag": source_tag,
+                  "source_commit": source_commit,
+              }
+              actual = {
+                  "schema": marker.get("schema"),
+                  "contour": str(marker.get("contour") or "").strip().casefold(),
+                  "source_repo": str(marker.get("source_repo") or "").strip(),
+                  "source_tag": str(marker.get("source_tag") or "").strip(),
+                  "source_commit": str(marker.get("source_commit") or "").strip().lower(),
+              }
+              if actual != expected:
+                  raise SystemExit(
+                      "Source distribution marker does not match tested Atm4x release:\n"
+                      + json.dumps({"expected": expected, "actual": actual}, indent=2)
+                  )
+
+              pyz_hashes = {}
+              for info in archive.infolist():
+                  if info.is_dir() or not info.filename.casefold().endswith(".pyz"):
+                      continue
+                  digest = hashlib.sha256()
+                  with archive.open(info, "r") as stream:
+                      while True:
+                          chunk = stream.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          digest.update(chunk)
+                  pyz_hashes[info.filename] = digest.hexdigest()
+
+              if not pyz_hashes:
+                  raise SystemExit("No .pyz artifact found in tested release ZIP")
+
+          Path("pyz-before.json").write_text(
+              json.dumps(pyz_hashes, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("Verified source marker: contour=test")
+          for name, digest in pyz_hashes.items():
+              print(f"Source .pyz: {name} sha256={digest}")
+          PY
+
+      - name: Verify tested commit is merged into VinerX
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+        run: |
+          if ! git cat-file -e "$SOURCE_COMMIT^{commit}" 2>/dev/null; then
+            echo "Tested Atm4x commit $SOURCE_COMMIT is not present in VinerX history."
+            echo "Merge the tested Atm4x branch/commit into VinerX without squash/rebase, then rerun Promote."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD; then
+            echo "Tested Atm4x commit $SOURCE_COMMIT is not an ancestor of VinerX HEAD."
+            echo "Merge that tested commit into VinerX before promoting it."
+            exit 1
+          fi
+          echo "Verified: tested commit is contained in VinerX HEAD."
+
+      - name: Stamp production distribution metadata
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+        run: |
+          test -f scripts/stamp_distribution_metadata.py || {
+            echo "scripts/stamp_distribution_metadata.py is missing. Merge the contour/distribution code into VinerX first."
+            exit 1
+          }
+          python scripts/stamp_distribution_metadata.py \
+            --archive "$ASSET_NAME" \
+            --contour release \
+            --source-repo "$SOURCE_REPO" \
+            --source-tag "$SOURCE_TAG" \
+            --source-commit "$SOURCE_COMMIT"
+
+      - name: Verify production artifact and unchanged pyz
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          archive_path = Path(os.environ["ASSET_NAME"])
+          source_tag = os.environ["SOURCE_TAG"]
+          source_commit = os.environ["SOURCE_COMMIT"].lower()
+          source_repo = os.environ["SOURCE_REPO"]
+          before = json.loads(Path("pyz-before.json").read_text(encoding="utf-8"))
+
+          def is_marker(name: str) -> bool:
+              normalized = name.replace("\\", "/").strip("/").casefold()
+              marker = "settings/distribution.json"
+              return normalized == marker or normalized.endswith("/" + marker)
+
+          with zipfile.ZipFile(archive_path, "r") as archive:
+              marker_names = [
+                  info.filename for info in archive.infolist()
+                  if not info.is_dir() and is_marker(info.filename)
+              ]
+              if len(marker_names) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one final Settings/distribution.json; found {marker_names}"
+                  )
+              marker = json.loads(archive.read(marker_names[0]).decode("utf-8"))
+              expected_marker = {
+                  "schema": 1,
+                  "contour": "release",
+                  "source_repo": source_repo,
+                  "source_tag": source_tag,
+                  "source_commit": source_commit,
+              }
+              actual_marker = {
+                  "schema": marker.get("schema"),
+                  "contour": str(marker.get("contour") or "").strip().casefold(),
+                  "source_repo": str(marker.get("source_repo") or "").strip(),
+                  "source_tag": str(marker.get("source_tag") or "").strip(),
+                  "source_commit": str(marker.get("source_commit") or "").strip().lower(),
+              }
+              if actual_marker != expected_marker:
+                  raise SystemExit(
+                      "Final distribution marker is invalid:\n"
+                      + json.dumps(
+                          {"expected": expected_marker, "actual": actual_marker},
+                          indent=2,
+                      )
+                  )
+
+              after = {}
+              for info in archive.infolist():
+                  if info.is_dir() or not info.filename.casefold().endswith(".pyz"):
+                      continue
+                  digest = hashlib.sha256()
+                  with archive.open(info, "r") as stream:
+                      while True:
+                          chunk = stream.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          digest.update(chunk)
+                  after[info.filename] = digest.hexdigest()
+
+          if before != after:
+              raise SystemExit(
+                  "Embedded .pyz changed during Promote:\n"
+                  + json.dumps({"before": before, "after": after}, indent=2)
+              )
+
+          archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+          Path("promoted-archive.sha256").write_text(
+              f"{archive_sha}  {archive_path.name}\n",
+              encoding="utf-8",
+          )
+          print("Verified final marker: contour=release")
+          for name, digest in after.items():
+              print(f"Unchanged .pyz: {name} sha256={digest}")
+          print(f"Promoted ZIP sha256={archive_sha}")
+          PY
+
+      - name: Validate final release contract
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+        run: |
+          test -f scripts/validate_release_contract.py || {
+            echo "scripts/validate_release_contract.py is missing. Merge current release tooling into VinerX first."
+            exit 1
+          }
+          python scripts/validate_release_contract.py \
+            --tag "$SOURCE_TAG" \
+            --asset "$ASSET_NAME"
+
+      - name: Build production release notes
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = json.loads(Path("source-release.json").read_text(encoding="utf-8"))
+          hashes = json.loads(Path("pyz-before.json").read_text(encoding="utf-8"))
+          lines = [
+              "Promoted from the tested Atm4x release artifact.",
+              "",
+              f"- Source repository: `{os.environ['SOURCE_REPO']}`",
+              f"- Source tag: `{os.environ['SOURCE_TAG']}`",
+              f"- Tested source commit: `{os.environ['SOURCE_COMMIT']}`",
+              "- Embedded Python artifact: byte-identical to the tested Atm4x build",
+              "",
+              "Embedded `.pyz` SHA256:",
+          ]
+          for name, digest in sorted(hashes.items()):
+              lines.append(f"- `{name}`: `{digest}`")
+          body = str(source.get("body") or "").strip()
+          if body:
+              lines.extend(["", "---", "", body])
+          Path("RELEASE_BODY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Create VinerX production release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.source.outputs.source_tag }}
+          target_commitish: ${{ steps.source.outputs.source_commit }}
+          name: NeuroMita ${{ steps.source.outputs.source_tag }}
+          body_path: RELEASE_BODY.md
+          files: |
+            ${{ steps.source.outputs.asset_name }}
+            promoted-archive.sha256
+          fail_on_unmatched_files: true
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
