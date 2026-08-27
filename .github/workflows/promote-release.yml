@@ -89,23 +89,44 @@ jobs:
           if not re.fullmatch(r"[0-9a-fA-F]{40}", source_commit):
               raise SystemExit(f"Could not resolve source commit for {source_tag}: {source_commit!r}")
 
-          assets = [
-              asset for asset in (release.get("assets") or [])
+          release_assets = list(release.get("assets") or [])
+          python_assets = [
+              asset for asset in release_assets
               if str(asset.get("name") or "").startswith("PythonBuild-")
               and str(asset.get("name") or "").lower().endswith(".zip")
           ]
-          if len(assets) != 1:
-              names = [str(asset.get("name") or "") for asset in (release.get("assets") or [])]
+          unity_assets = [
+              asset for asset in release_assets
+              if str(asset.get("name") or "").startswith("UnityBuild-")
+              and str(asset.get("name") or "").lower().endswith(".zip")
+          ]
+
+          names = [str(asset.get("name") or "") for asset in release_assets]
+          if len(python_assets) != 1:
               raise SystemExit(
                   f"Expected exactly one PythonBuild-*.zip asset in {source_repo} {source_tag}; "
-                  f"found {len(assets)}. Assets: {names}"
+                  f"found {len(python_assets)}. Assets: {names}"
+              )
+          if len(unity_assets) > 1:
+              raise SystemExit(
+                  f"Expected zero or one UnityBuild-*.zip asset in {source_repo} {source_tag}; "
+                  f"found {len(unity_assets)}. Assets: {names}"
               )
 
-          asset = assets[0]
+          asset = python_assets[0]
           asset_name = str(asset["name"])
           asset_url = str(asset["browser_download_url"])
           if not asset_url.startswith("https://github.com/"):
-              raise SystemExit(f"Unexpected release asset URL: {asset_url}")
+              raise SystemExit(f"Unexpected Python release asset URL: {asset_url}")
+
+          unity_asset_name = ""
+          unity_asset_url = ""
+          if unity_assets:
+              unity_asset = unity_assets[0]
+              unity_asset_name = str(unity_asset["name"])
+              unity_asset_url = str(unity_asset["browser_download_url"])
+              if not unity_asset_url.startswith("https://github.com/"):
+                  raise SystemExit(f"Unexpected Unity release asset URL: {unity_asset_url}")
 
           Path("source-release.json").write_text(
               json.dumps(
@@ -116,6 +137,8 @@ jobs:
                       "source_commit": source_commit,
                       "asset_name": asset_name,
                       "asset_url": asset_url,
+                      "unity_asset_name": unity_asset_name,
+                      "unity_asset_url": unity_asset_url,
                   },
                   ensure_ascii=False,
                   indent=2,
@@ -129,10 +152,13 @@ jobs:
               out.write(f"source_commit={source_commit}\n")
               out.write(f"asset_name={asset_name}\n")
               out.write(f"asset_url={asset_url}\n")
+              out.write(f"unity_asset_name={unity_asset_name}\n")
+              out.write(f"unity_asset_url={unity_asset_url}\n")
 
           print(f"Source release: {source_repo} {source_tag}")
           print(f"Source commit:  {source_commit}")
-          print(f"Source asset:   {asset_name}")
+          print(f"Python asset:   {asset_name}")
+          print(f"Unity asset:    {unity_asset_name or '(none)'}")
           PY
 
       - name: Refuse duplicate VinerX tag or release
@@ -150,16 +176,27 @@ jobs:
             exit 1
           fi
 
-      - name: Download tested artifact from Atm4x
+      - name: Download tested artifacts from Atm4x
         shell: bash
         env:
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
           ASSET_URL: ${{ steps.source.outputs.asset_url }}
+          UNITY_ASSET_NAME: ${{ steps.source.outputs.unity_asset_name }}
+          UNITY_ASSET_URL: ${{ steps.source.outputs.unity_asset_url }}
         run: |
           curl --fail --location --retry 3 --retry-all-errors \
             --output "$ASSET_NAME" \
             "$ASSET_URL"
           test -s "$ASSET_NAME"
+
+          if [ -n "$UNITY_ASSET_NAME" ]; then
+            curl --fail --location --retry 3 --retry-all-errors \
+              --output "$UNITY_ASSET_NAME" \
+              "$UNITY_ASSET_URL"
+            test -s "$UNITY_ASSET_NAME"
+          else
+            echo "No UnityBuild-*.zip in source release; promoting Python only."
+          fi
 
       - name: Verify source artifact provenance
         shell: bash
@@ -240,6 +277,17 @@ jobs:
           for name, digest in pyz_hashes.items():
               print(f"Source .pyz: {name} sha256={digest}")
           PY
+
+      - name: Record optional Unity artifact hash
+        shell: bash
+        env:
+          UNITY_ASSET_NAME: ${{ steps.source.outputs.unity_asset_name }}
+        run: |
+          if [ -z "$UNITY_ASSET_NAME" ]; then
+            echo "No Unity artifact to hash."
+            exit 0
+          fi
+          sha256sum "$UNITY_ASSET_NAME" | tee unity-before.sha256
 
       - name: Verify tested commit is merged into VinerX
         shell: bash
@@ -354,15 +402,39 @@ jobs:
               )
 
           archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-          Path("promoted-archive.sha256").write_text(
-              f"{archive_sha}  {archive_path.name}\n",
-              encoding="utf-8",
-          )
           print("Verified final marker: contour=release")
           for name, digest in after.items():
               print(f"Unchanged .pyz: {name} sha256={digest}")
-          print(f"Promoted ZIP sha256={archive_sha}")
+          print(f"Promoted Python ZIP sha256={archive_sha}")
           PY
+
+      - name: Verify optional Unity artifact unchanged
+        shell: bash
+        env:
+          UNITY_ASSET_NAME: ${{ steps.source.outputs.unity_asset_name }}
+        run: |
+          if [ -z "$UNITY_ASSET_NAME" ]; then
+            echo "No Unity artifact to verify."
+            exit 0
+          fi
+          sha256sum "$UNITY_ASSET_NAME" | tee unity-after.sha256
+          diff -u unity-before.sha256 unity-after.sha256
+          echo "Unity artifact is byte-identical to the tested Atm4x asset."
+
+      - name: Prepare production release assets
+        shell: bash
+        env:
+          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          UNITY_ASSET_NAME: ${{ steps.source.outputs.unity_asset_name }}
+        run: |
+          rm -rf release-assets
+          mkdir -p release-assets
+          cp -- "$ASSET_NAME" release-assets/
+          if [ -n "$UNITY_ASSET_NAME" ]; then
+            cp -- "$UNITY_ASSET_NAME" release-assets/
+          fi
+          echo "Assets to publish:"
+          ls -lah release-assets/
 
       - name: Validate final release contract
         shell: bash
@@ -403,6 +475,14 @@ jobs:
           ]
           for name, digest in sorted(hashes.items()):
               lines.append(f"- `{name}`: `{digest}`")
+          unity_name = str(source.get("unity_asset_name") or "").strip()
+          if unity_name and Path("unity-before.sha256").exists():
+              unity_sha = Path("unity-before.sha256").read_text(encoding="utf-8").split()[0]
+              lines.extend([
+                  "",
+                  f"Unity artifact copied byte-identically: `{unity_name}`",
+                  f"- SHA256: `{unity_sha}`",
+              ])
           body = str(source.get("body") or "").strip()
           if body:
               lines.extend(["", "---", "", body])
@@ -416,9 +496,7 @@ jobs:
           target_commitish: ${{ steps.source.outputs.source_commit }}
           name: NeuroMita ${{ steps.source.outputs.source_tag }}
           body_path: RELEASE_BODY.md
-          files: |
-            ${{ steps.source.outputs.asset_name }}
-            promoted-archive.sha256
+          files: release-assets/*
           fail_on_unmatched_files: true
           prerelease: false
           make_latest: true
