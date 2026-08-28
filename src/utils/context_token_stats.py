@@ -20,6 +20,7 @@ _SECTION_MARKERS = (
     ("[Current State]", "System State"),
     ("[Pending Reminders]", "reminders"),
     ("[HISTORY SUMMARY]", "history"),
+    ("[Runtime Core Directive", "runtime directives"),
     ("[Core Memory", "core memories"),
     ("<memory_islands>", "memories"),
     ("<active_memory>", "memories"),

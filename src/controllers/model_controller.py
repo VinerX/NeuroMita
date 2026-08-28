@@ -368,6 +368,7 @@ class ModelController(GenerationService, ModelStateService):
                 "user_input": prompt_request.user_input,
                 "system_input": prompt_request.system_input,
                 "rag_context": prompt_request.rag_context,
+                "core_memory_context": prompt_request.core_memory_context,
                 "hidden_user_context": prompt_request.hidden_user_context,
                 "memory_limit": prompt_request.memory_limit,
                 "is_game_master": prompt_request.is_game_master,
@@ -1324,6 +1325,7 @@ class ModelController(GenerationService, ModelStateService):
         is_game_master = char_id.casefold() == "gamemaster"
 
         rag_context = ""
+        core_memory_context_text = ""
         if request.cancellation is not None:
             request.cancellation.raise_if_cancelled()
         if (
@@ -1343,9 +1345,7 @@ class ModelController(GenerationService, ModelStateService):
         if not is_game_master:
             try:
                 from managers.core_memory_triggers import core_memory_context
-                _core_ctx = core_memory_context(user_input, character_id=char_id)
-                if _core_ctx:
-                    rag_context = f"{_core_ctx}\n\n{rag_context}" if rag_context else _core_ctx
+                core_memory_context_text = core_memory_context(user_input, character_id=char_id)
             except Exception as _core_err:
                 logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {format_exception(_core_err)}")
 
@@ -1558,6 +1558,7 @@ class ModelController(GenerationService, ModelStateService):
             user_input=user_input,
             system_input=system_input,
             rag_context=rag_context,
+            core_memory_context=core_memory_context_text,
             hidden_user_context=hidden_user_context,
             image_data=image_data,
             memory_limit=memory_limit,

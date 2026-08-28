@@ -24,7 +24,7 @@ class SectionClassifierTests(unittest.TestCase):
         self.assertEqual(_classify_message_section(_sys("[System State]\nfoo"), False), "System State")
         self.assertEqual(_classify_message_section(_sys("<active_memory>\nN:1 ..."), False), "memories")
         self.assertEqual(_classify_message_section(_sys("<relevant_memories>\n..."), False), "memories")
-        self.assertEqual(_classify_message_section(_sys("[Core Memory: obedience code]\n..."), False), "core memories")
+        self.assertEqual(_classify_message_section(_sys("[Runtime Core Directive: Code 23 — ACTIVE]\n..."), False), "runtime directives")
         self.assertEqual(_classify_message_section(_sys("[Available Tools]\n- memory_search(...)"), False), "tools")
         self.assertEqual(_classify_message_section(_sys("You are a cute doll."), False), "character prompts")
 

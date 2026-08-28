@@ -854,6 +854,7 @@ class PromptController(PromptBuilderService):
         game_state = request.game_state or {}
         capabilities = request.capabilities or {}
         rag_context = request.rag_context or ""
+        core_memory_context = request.core_memory_context or ""
         policy = request.policy
 
         game_state_prompt_content: Optional[str] = None
@@ -948,6 +949,9 @@ class PromptController(PromptBuilderService):
         # Статический Unity-контракт (Rules/Intent) — конец статической части
         # промпта, перед [HISTORY SUMMARY] и историей.
         messages.extend(unity_static_messages)
+
+        if core_memory_context:
+            messages.append({"role": "system", "content": core_memory_context})
 
         if history_summary:
             messages.append({

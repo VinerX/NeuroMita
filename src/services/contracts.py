@@ -703,6 +703,7 @@ class PromptBuildRequest:
     player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     previous_player_message_source: PlayerMessageSource = PlayerMessageSource.NONE
     gm_instruction_override: Optional[str] = None
+    core_memory_context: str = ""
 
 
 @dataclass(frozen=True)
