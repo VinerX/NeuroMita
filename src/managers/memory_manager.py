@@ -4,7 +4,7 @@ import logging
 import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-from typing import Optional, Tuple, List, Set, ClassVar
+from typing import Callable, Optional, Tuple, List, Set, ClassVar
 
 from managers.database_manager import DatabaseManager
 from managers.settings_manager import SettingsManager
@@ -48,6 +48,7 @@ class MemoryManager(CharacterScopedService):
     # max_workers=1: сохраняем порядок и не устраиваем параллельный инференс.
     _EMBED_EXECUTOR: ClassVar[Optional[ThreadPoolExecutor]] = None
     _EMBED_EXECUTOR_LOCK: ClassVar[Lock] = Lock()
+    _EMBED_EXECUTOR_SHUTDOWN: ClassVar[bool] = False
 
     def __init__(self, character_name: str = ""):
         super().__init__(
@@ -103,6 +104,7 @@ class MemoryManager(CharacterScopedService):
     @classmethod
     def shutdown_executor(cls) -> None:
         with cls._EMBED_EXECUTOR_LOCK:
+            cls._EMBED_EXECUTOR_SHUTDOWN = True
             executor = cls._EMBED_EXECUTOR
             cls._EMBED_EXECUTOR = None
         if executor is not None:
@@ -110,10 +112,9 @@ class MemoryManager(CharacterScopedService):
 
     @classmethod
     def _get_embed_executor(cls) -> ThreadPoolExecutor:
-        ex = cls._EMBED_EXECUTOR
-        if ex is not None:
-            return ex
         with cls._EMBED_EXECUTOR_LOCK:
+            if cls._EMBED_EXECUTOR_SHUTDOWN:
+                raise RuntimeError("memory embedding executor is shutting down")
             ex = cls._EMBED_EXECUTOR
             if ex is None:
                 cls._EMBED_EXECUTOR = ThreadPoolExecutor(
@@ -121,6 +122,21 @@ class MemoryManager(CharacterScopedService):
                     thread_name_prefix="rag-embed-mem",
                 )
             return cls._EMBED_EXECUTOR
+
+    @classmethod
+    def _submit_embed_job(cls, job: Callable[[], None]) -> bool:
+        with cls._EMBED_EXECUTOR_LOCK:
+            if cls._EMBED_EXECUTOR_SHUTDOWN:
+                return False
+            executor = cls._EMBED_EXECUTOR
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="rag-embed-mem",
+                )
+                cls._EMBED_EXECUTOR = executor
+            executor.submit(job)
+            return True
 
     # ------------------------------------------------------------------
     # Schema helpers (never crash)
@@ -646,6 +662,8 @@ class MemoryManager(CharacterScopedService):
 
     def _schedule_embed(self, eternal_id, content) -> None:
         """Schedule a background RAG (re)embedding for a memory. No-op without RAG."""
+        if type(self)._EMBED_EXECUTOR_SHUTDOWN:
+            return
         if not self.rag:
             return
         try:
@@ -659,7 +677,7 @@ class MemoryManager(CharacterScopedService):
                 except Exception as e:
                     logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
-            self._get_embed_executor().submit(_embed_job)
+            self._submit_embed_job(_embed_job)
         except Exception as e:
             logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
 
@@ -942,22 +960,8 @@ class MemoryManager(CharacterScopedService):
             except Exception:
                 pass
 
-        if (not is_island(memory_type)) and self.rag:
-            try:
-                rag = self.rag
-                eid = int(number)
-                txt = str(content or "")
-
-                def _embed_job():
-                    try:
-                        rag.update_memory_embedding(eid, txt)
-                    except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
-
-                # В фон: не блокируем UI/генерацию ответа
-                self._get_embed_executor().submit(_embed_job)
-            except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
+        if not is_island(memory_type):
+            self._schedule_embed(number, content)
 
         return True
 
@@ -1113,21 +1117,8 @@ class MemoryManager(CharacterScopedService):
         self._calculate_total_characters()
 
         # Re-embed target in background
-        if (not is_island(target_type)) and self.rag and final_content is not None:
-            try:
-                rag = self.rag
-                eid = int(target_id)
-                txt = str(final_content)
-
-                def _embed_job():
-                    try:
-                        rag.update_memory_embedding(eid, txt)
-                    except Exception as e:
-                        logging.warning(f"RAG failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
-
-                self._get_embed_executor().submit(_embed_job)
-            except Exception as e:
-                logging.warning(f"RAG failed to schedule memory embedding (ignored): {format_exception(e)}", exc_info=True)
+        if (not is_island(target_type)) and final_content is not None:
+            self._schedule_embed(target_id, final_content)
 
         logging.info(f"[MemoryManager] Merged memory #{source_id} into #{target_id}")
         return True
