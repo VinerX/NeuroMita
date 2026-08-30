@@ -694,11 +694,6 @@ class ModelController(GenerationService, ModelStateService):
 
             # Проекция для UI (цвета, мета-теги)
             prepared = self.ui_projector.project_for_ui(raw_messages)
-            if isinstance(prepared, list):
-                prepared = [
-                    self._fix_projected_ui_message(r, m)
-                    for r, m in zip(raw_messages, prepared)
-                ]
 
             self.event_bus.emit("history_loaded", {
                 "messages": prepared,
@@ -712,15 +707,9 @@ class ModelController(GenerationService, ModelStateService):
             self.total_messages_in_history = len(all_messages)
 
             prepared_all = self.ui_projector.project_for_ui(all_messages)
-            if isinstance(prepared_all, list):
-                prepared_all = [
-                    self._fix_projected_ui_message(r, m)
-                    for r, m in zip(all_messages, prepared_all)
-                ]
             # Берем хвост списка
             max_display = self.lazy_load_batch_size
-            start_index = max(0, self.total_messages_in_history - max_display)
-            messages_to_load = prepared_all[start_index:]
+            messages_to_load = prepared_all[-max_display:] if max_display > 0 else []
 
             self.loaded_messages_offset = len(messages_to_load)
 
