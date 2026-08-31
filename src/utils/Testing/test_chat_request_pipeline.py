@@ -138,6 +138,19 @@ class _ImmediateGeneration(GenerationService):
         raise AssertionError("не используется")
 
 
+class _ThinkingGeneration(GenerationService):
+    def generate_chat(self, request: ChatGenerationRequest):
+        return ChatGenerationResult(
+            text="visible answer",
+            character_id="Crazy",
+            think="private reasoning",
+            message_id="out:thinking-task",
+        )
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
 class ChatRequestPipelineTests(unittest.TestCase):
     def setUp(self):
         services().register(CharacterRegistry, _StubRegistry(), replace=True)
@@ -363,6 +376,28 @@ class ChatRequestPipelineTests(unittest.TestCase):
             result = self.controller._run_request("hi", character_id="Crazy")
 
         self.assertEqual(result, "ok")
+
+    def test_non_stream_thinking_uses_assistant_message_identity(self):
+        services().register(GenerationService, _ThinkingGeneration(), replace=True)
+        self.controller.settings = _StubSettings({
+            "ENABLE_STREAMING": False,
+            "SHOW_THINK_IN_GUI": True,
+        })
+
+        with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+            result = self.controller._run_request("hi", character_id="Crazy")
+
+        self.assertEqual(result, "visible answer")
+        think_payloads = [
+            call.args[1]
+            for call in emit.call_args_list
+            if len(call.args) >= 2
+            and call.args[0] == Events.GUI.UPDATE_CHAT_UI
+            and isinstance(call.args[1], dict)
+            and call.args[1].get("role") == "think"
+        ]
+        self.assertEqual(len(think_payloads), 1)
+        self.assertEqual(think_payloads[0].get("message_id"), "out:thinking-task")
 
 
 if __name__ == "__main__":

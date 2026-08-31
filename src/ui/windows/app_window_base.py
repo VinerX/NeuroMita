@@ -887,6 +887,8 @@ class AppWindowBase(QMainWindow):
             self._chat_presentation.reset()
             self._history_load_inflight = False
             self._history_load_request_id = ""
+        else:
+            self._chat_presentation.mark_streams_unmounted()
         self._chat_render_context.reset_transient_state()
         logger.debug("[Clear] chat_window.message_count: %s", chat_window.message_count())
         chat_window.clear_messages()
@@ -1637,10 +1639,16 @@ class AppWindowBase(QMainWindow):
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
         character_id = str(payload.get("character_id") or "")
+        role = str(payload.get("role") or "assistant").strip() or "assistant"
         current_character_id = str(self._shell_actions.current_character_id() or "")
         presentation = getattr(self, "_chat_presentation", None)
         if presentation is not None:
-            presentation.begin_stream(stream_id, character_id=character_id)
+            presentation.begin_stream(
+                stream_id,
+                character_id=character_id,
+                role=role,
+                speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+            )
             if not presentation.should_render_stream(
                 stream_id,
                 current_character_id=current_character_id,
@@ -1650,20 +1658,32 @@ class AppWindowBase(QMainWindow):
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
-        return message_renderer.prepare_stream_slot(
+        if presentation is not None and not presentation.is_stream_mounted(stream_id):
+            return self._mount_stream_replay(stream_id)
+        result = message_renderer.prepare_stream_slot(
             self._chat_render_context,
-            role=payload.get("role", "assistant"),
+            role=role,
             stream_id=stream_id,
             speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
         )
+        if presentation is not None:
+            presentation.mark_stream_mounted(stream_id)
+        return result
 
     def _append_stream_chunk_slot(self, data):
-        if not self._chat_render_context.is_bound:
-            return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
         stream_id = str(payload.get("stream_id") or "default")
         character_id = str(payload.get("character_id") or "")
+        role = str(payload.get("role") or "assistant").strip() or "assistant"
+        self._chat_presentation.record_stream_chunk(
+            stream_id,
+            payload.get("chunk"),
+            role=role,
+            character_id=character_id,
+        )
+        if not self._chat_render_context.is_bound:
+            return False
         current_character_id = str(self._shell_actions.current_character_id() or "")
         if not self._chat_presentation.should_render_stream(
             stream_id,
@@ -1671,12 +1691,37 @@ class AppWindowBase(QMainWindow):
             character_id=character_id,
         ):
             return False
+        if not self._chat_presentation.is_stream_mounted(stream_id):
+            return self._mount_stream_replay(stream_id)
         return message_renderer.append_stream_chunk_slot(
             self._chat_render_context,
             payload.get("chunk"),
-            role=payload.get("role", "assistant"),
+            role=role,
             stream_id=stream_id,
         )
+
+    def _mount_stream_replay(self, stream_id: str) -> bool:
+        replay = self._chat_presentation.stream_replay(stream_id)
+        if replay is None or not self._chat_render_context.is_bound:
+            return False
+        from ui.chat import message_renderer
+
+        for phase in replay.phases:
+            message_renderer.prepare_stream_slot(
+                self._chat_render_context,
+                role=phase.role,
+                stream_id=replay.stream_id,
+                speaker_name=phase.speaker_name,
+            )
+            if phase.text:
+                message_renderer.append_stream_chunk_slot(
+                    self._chat_render_context,
+                    phase.text,
+                    role=phase.role,
+                    stream_id=replay.stream_id,
+                )
+        self._chat_presentation.mark_stream_mounted(replay.stream_id)
+        return True
 
     def _finish_stream_slot(self, data=None):
         if not self._chat_render_context.is_bound:
@@ -1691,6 +1736,9 @@ class AppWindowBase(QMainWindow):
             current_character_id=current_character_id,
             character_id=character_id,
         ):
+            message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
+            return False
+        if not self._chat_presentation.is_stream_mounted(stream_id):
             message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
             return False
         structured = payload.get("structured_data")

@@ -48,10 +48,39 @@ class HistoryProjectionPlan:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class StreamPresentationPhase:
+    role: str
+    speaker_name: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamPresentationReplay:
+    stream_id: str
+    character_id: str
+    phases: tuple[StreamPresentationPhase, ...]
+
+
 @dataclass(slots=True)
 class _StableLiveMessage:
     commands: list[tuple[int, ChatRenderCommand]] = field(default_factory=list)
     persisted_revision: int | None = None
+
+
+@dataclass(slots=True)
+class _StreamPhaseBuffer:
+    role: str
+    speaker_name: str = ""
+    chunks: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ActiveStream:
+    character_id: str = ""
+    character_key: str = ""
+    phases: list[_StreamPhaseBuffer] = field(default_factory=list)
+    mounted: bool = False
 
 
 class ChatPresentationCoordinator:
@@ -75,7 +104,7 @@ class ChatPresentationCoordinator:
         )
         self._history_projected: dict[tuple[str, str], set[tuple[Any, ...]]] = {}
         self._active_history_load: HistoryLoadTicket | None = None
-        self._active_streams: dict[str, str] = {}
+        self._active_streams: dict[str, _ActiveStream] = {}
         self._reload_after_stream: set[str] = set()
 
     @staticmethod
@@ -256,11 +285,113 @@ class ChatPresentationCoordinator:
         self._active_streams.clear()
         self._reload_after_stream.clear()
 
-    def begin_stream(self, stream_id: str, *, character_id: str = "") -> None:
-        self._active_streams[str(stream_id or "default")] = self._character_key(character_id)
+    @staticmethod
+    def _stream_key(stream_id: str | None) -> str:
+        return str(stream_id or "default")
+
+    def _stream_state(
+        self,
+        stream_id: str,
+        *,
+        character_id: str = "",
+    ) -> _ActiveStream:
+        stream_key = self._stream_key(stream_id)
+        incoming_character_id = str(character_id or "").strip()
+        incoming_character_key = self._character_key(incoming_character_id)
+        state = self._active_streams.get(stream_key)
+        if state is None or (
+            incoming_character_key
+            and state.character_key
+            and state.character_key != incoming_character_key
+        ):
+            state = _ActiveStream(
+                character_id=incoming_character_id,
+                character_key=incoming_character_key,
+            )
+            self._active_streams[stream_key] = state
+        elif incoming_character_key:
+            state.character_id = incoming_character_id
+            if not state.character_key:
+                state.character_key = incoming_character_key
+        return state
+
+    @staticmethod
+    def _prepare_stream_phase(
+        state: _ActiveStream,
+        *,
+        role: str,
+        speaker_name: str = "",
+    ) -> None:
+        role_key = str(role or "assistant").strip() or "assistant"
+        speaker = str(speaker_name or "").strip()
+        if state.phases and state.phases[-1].role == role_key:
+            if speaker and not state.phases[-1].speaker_name:
+                state.phases[-1].speaker_name = speaker
+            return
+        state.phases.append(_StreamPhaseBuffer(role=role_key, speaker_name=speaker))
+
+    def begin_stream(
+        self,
+        stream_id: str,
+        *,
+        character_id: str = "",
+        role: str = "assistant",
+        speaker_name: str = "",
+    ) -> None:
+        state = self._stream_state(stream_id, character_id=character_id)
+        self._prepare_stream_phase(state, role=role, speaker_name=speaker_name)
+
+    def record_stream_chunk(
+        self,
+        stream_id: str,
+        chunk: Any,
+        *,
+        role: str = "assistant",
+        character_id: str = "",
+    ) -> None:
+        if chunk is None:
+            return
+        text = str(chunk)
+        if not text:
+            return
+        state = self._stream_state(stream_id, character_id=character_id)
+        self._prepare_stream_phase(state, role=role)
+        state.phases[-1].chunks.append(text)
+
+    def stream_replay(self, stream_id: str) -> StreamPresentationReplay | None:
+        stream_key = self._stream_key(stream_id)
+        state = self._active_streams.get(stream_key)
+        if state is None:
+            return None
+        return StreamPresentationReplay(
+            stream_id=stream_key,
+            character_id=state.character_id,
+            phases=tuple(
+                StreamPresentationPhase(
+                    role=phase.role,
+                    speaker_name=phase.speaker_name,
+                    text="".join(phase.chunks),
+                )
+                for phase in state.phases
+            ),
+        )
+
+    def mark_stream_mounted(self, stream_id: str) -> None:
+        state = self._active_streams.get(self._stream_key(stream_id))
+        if state is not None:
+            state.mounted = True
+
+    def mark_streams_unmounted(self) -> None:
+        for state in self._active_streams.values():
+            state.mounted = False
+
+    def is_stream_mounted(self, stream_id: str) -> bool:
+        state = self._active_streams.get(self._stream_key(stream_id))
+        return bool(state and state.mounted)
 
     def stream_character_key(self, stream_id: str) -> str:
-        return self._active_streams.get(str(stream_id or "default"), "")
+        state = self._active_streams.get(self._stream_key(stream_id))
+        return state.character_key if state is not None else ""
 
     def should_render_stream(
         self,
@@ -278,13 +409,28 @@ class ChatPresentationCoordinator:
             return False
         if not character_key:
             return True
-        return any(not owner_key or owner_key == character_key for owner_key in self._active_streams.values())
+        return any(
+            not state.character_key or state.character_key == character_key
+            for state in self._active_streams.values()
+        )
+
+    def _has_mounted_stream_for(self, character_key: str) -> bool:
+        if not self._active_streams:
+            return False
+        if not character_key:
+            return any(state.mounted for state in self._active_streams.values())
+        return any(
+            state.mounted
+            and (not state.character_key or state.character_key == character_key)
+            for state in self._active_streams.values()
+        )
 
     def finish_stream(self, stream_id: str, *, current_character_id: str | None = None) -> bool:
-        stream_key = str(stream_id or "default")
-        owner_key = self._active_streams.pop(stream_key, None)
-        if owner_key is None:
+        stream_key = self._stream_key(stream_id)
+        state = self._active_streams.pop(stream_key, None)
+        if state is None:
             return False
+        owner_key = state.character_key
         if not owner_key:
             current_key = self._character_key(current_character_id)
             ready_keys = {
@@ -328,16 +474,18 @@ class ChatPresentationCoordinator:
             self._active_history_load = None
             return HistoryProjectionPlan(False, reason="inactive_character")
 
-        if self._has_active_stream_for(projection_key or current_key):
-            self._active_history_load = None
-            self._reload_after_stream.add(projection_key or current_key)
-            return HistoryProjectionPlan(
-                False,
-                retry_after_stream=True,
-                reason="active_stream",
-            )
-
         target_key = projection_key or current_key
+        refresh_after_stream = self._has_active_stream_for(target_key)
+        if refresh_after_stream:
+            self._reload_after_stream.add(target_key)
+            if self._has_mounted_stream_for(target_key):
+                self._active_history_load = None
+                return HistoryProjectionPlan(
+                    False,
+                    retry_after_stream=True,
+                    reason="active_stream",
+                )
+
         history_rows = [message for message in history_messages if isinstance(message, dict)]
         snapshot_signatures: dict[tuple[str, str], set[tuple[Any, ...]]] = {}
         for message in history_rows:
@@ -351,6 +499,9 @@ class ChatPresentationCoordinator:
                     message.get("content", ""),
                 )
             )
+            thinking = str(message.get("thinking") or "").strip()
+            if thinking:
+                snapshot_signatures[key].add(self._content_signature("think", thinking))
 
         replay: list[tuple[int, ChatRenderCommand]] = []
         keys_to_remove: list[tuple[str, str]] = []
@@ -410,4 +561,5 @@ class ChatPresentationCoordinator:
         return HistoryProjectionPlan(
             True,
             replay=tuple(command.clone() for _, command in replay),
+            retry_after_stream=refresh_after_stream,
         )

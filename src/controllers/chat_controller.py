@@ -819,7 +819,8 @@ class ChatController(GenerationActivityService):
                         "emotion": "",
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
-                        "speaker_name": effective_character_name or ""
+                        "speaker_name": effective_character_name or "",
+                        "message_id": assistant_message_id or "",
                     }, delivery=EventDelivery.ORDERED)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
