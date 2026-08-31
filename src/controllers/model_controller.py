@@ -1787,7 +1787,7 @@ class ModelController(GenerationService, ModelStateService):
             assistant_message_id = ""
             if policy.write_to_history:
                 with perf_span(trace_id, "generation.history_write"):
-                    assistant_message_id = self.event_writer.write_turn(
+                    history_write = self.event_writer.write_turn(
                         responder_character_id=char_id,
                         sender=sender,
                         participants=participants,
@@ -1806,6 +1806,7 @@ class ModelController(GenerationService, ModelStateService):
                         sample_id=sample_id,
                         dialogue=request.dialogue,
                     )
+                    assistant_message_id = history_write.assistant_message_id
 
             self._store_last_usage(
                 llm_response.usage,
@@ -2174,7 +2175,7 @@ class ModelController(GenerationService, ModelStateService):
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
             with perf_span(trace_id, "generation.history_write"):
-                assistant_message_id = self.event_writer.write_turn(
+                history_write = self.event_writer.write_turn(
                     responder_character_id=char_id,
                     sender=sender,
                     participants=participants,
@@ -2194,6 +2195,7 @@ class ModelController(GenerationService, ModelStateService):
                     sample_id=sample_id,
                     dialogue=dialogue,
                 )
+                assistant_message_id = history_write.assistant_message_id
 
         self._store_last_usage(
             usage,
@@ -2313,7 +2315,7 @@ class ModelController(GenerationService, ModelStateService):
 
         first_assistant_message_id = ""
         if policy.write_to_history:
-            first_assistant_message_id = self.event_writer.write_turn(
+            history_write = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -2333,6 +2335,7 @@ class ModelController(GenerationService, ModelStateService):
                 sample_id=sample_id,
                 dialogue=dialogue,
             )
+            first_assistant_message_id = history_write.assistant_message_id
 
         # Emit first response to UI (shows "I'll check that" message)
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)

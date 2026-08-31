@@ -1,5 +1,6 @@
 import logging
 from .character import Character 
+from domain.dialogue_identity import DialogueActorKind
 from typing import Dict, Any, Optional
 import re
 
@@ -205,6 +206,7 @@ class SleepyMita(Character):
         
 
 class GameMaster(Character):
+    dialogue_actor_kind = DialogueActorKind.GAME_MASTER
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 100.0,
         "boredom": 0.0,

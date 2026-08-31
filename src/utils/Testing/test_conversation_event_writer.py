@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from managers.conversation_event_writer import ConversationEventWriter
+from managers.history_manager import HistoryBatchWriteError
 
 
 class _Character:
@@ -15,13 +16,19 @@ class _Character:
         return list(range(1, len(messages) + 1))
 
 
+class _FailingCharacter(_Character):
+    def add_messages_to_history(self, messages: list[dict]):
+        self.batches.append([dict(message) for message in messages])
+        raise HistoryBatchWriteError("simulated rollback")
+
+
 def test_write_turn_fans_out_user_and_assistant_as_one_batch() -> None:
     character = _Character("Mita")
     writer = ConversationEventWriter(
         character_ref_resolver=lambda character_id: character if character_id == "Mita" else None
     )
 
-    assistant_message_id = writer.write_turn(
+    result = writer.write_turn(
         responder_character_id="Mita",
         sender="Player",
         participants=["Player", "Mita"],
@@ -35,7 +42,10 @@ def test_write_turn_fans_out_user_and_assistant_as_one_batch() -> None:
         task_uid="task-1",
     )
 
-    assert assistant_message_id == "out:task-1"
+    assert result.assistant_message_id == "out:task-1"
+    assert result.history_committed
+    assert result.committed_recipient_ids == ("Mita",)
+    assert result.failed_recipient_ids == ()
     assert len(character.batches) == 1
     assert [message["role"] for message in character.batches[0]] == ["user", "assistant"]
     assert [message["content"] for message in character.batches[0]] == [
@@ -157,3 +167,28 @@ def test_write_turn_uses_unity_roster_to_fan_out_group_history() -> None:
     assert len(crazy.batches) == 1
     assert [message["role"] for message in kind.batches[0]] == ["user", "assistant"]
     assert [message["role"] for message in crazy.batches[0]] == ["user", "user"]
+
+
+def test_write_turn_reports_partial_fanout_rollback() -> None:
+    kind = _Character("Kind")
+    crazy = _FailingCharacter("Crazy")
+    characters = {"Kind": kind, "Crazy": crazy}
+    writer = ConversationEventWriter(character_ref_resolver=characters.get)
+
+    result = writer.write_turn(
+        responder_character_id="Kind",
+        sender="Player",
+        participants=["Player", "Kind", "Crazy"],
+        user_input="Question",
+        image_data=[],
+        req_id="request-partial-failure",
+        origin_message_id=None,
+        assistant_text="Answer",
+        assistant_target="Player",
+        event_type="chat",
+        task_uid="task-partial-failure",
+    )
+
+    assert not result.history_committed
+    assert result.committed_recipient_ids == ("Kind",)
+    assert result.failed_recipient_ids == ("Crazy",)

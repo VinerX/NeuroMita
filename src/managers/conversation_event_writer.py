@@ -5,14 +5,29 @@ import base64
 import datetime
 import os
 import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from main_logger import logger
+from domain.dialogue_identity import DialogueActorKind
+from services.dialogue_identity_resolver import DialogueIdentityResolver
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationWriteResult:
+    assistant_message_id: str
+    committed_recipient_ids: tuple[str, ...]
+    failed_recipient_ids: tuple[str, ...]
+
+    @property
+    def history_committed(self) -> bool:
+        return bool(self.committed_recipient_ids) and not self.failed_recipient_ids
 
 
 class ConversationEventWriter:
     def __init__(self, character_ref_resolver: Callable[[str], Any]):
         self._get_character_ref = character_ref_resolver
+        self._identity_resolver = DialogueIdentityResolver(character_ref_resolver)
 
     def normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
@@ -28,7 +43,7 @@ class ConversationEventWriter:
             s = str(p or "").strip()
             if not s:
                 continue
-            s = self._canonical_actor_id(s)
+            s = self._identity_resolver.canonical_id(s)
             key = s.casefold()
             if key in seen:
                 continue
@@ -41,36 +56,6 @@ class ConversationEventWriter:
         if isinstance(value, dict):
             return value.get(key, default)
         return getattr(value, key, default)
-
-    @staticmethod
-    def _canonical_actor_id(value: Any) -> str:
-        actor_id = str(value or "").strip()
-        if actor_id.casefold() == "player":
-            return "Player"
-        return actor_id
-
-    def _resolve_dialogue_sender(self, sender: Any, dialogue: Any) -> str:
-        declared_sender = self._canonical_actor_id(sender or "Player") or "Player"
-        speaker_actor_id = self._canonical_actor_id(
-            self._dialogue_value(dialogue, "speaker_actor_id", "")
-        )
-        if not speaker_actor_id or speaker_actor_id.casefold() == "player":
-            return declared_sender
-
-        for participant in self._dialogue_value(dialogue, "participants", []) or []:
-            participant_actor_id = self._canonical_actor_id(
-                self._dialogue_value(participant, "actor_id", "")
-            )
-            if participant_actor_id.casefold() != speaker_actor_id.casefold():
-                continue
-
-            character_id = self._canonical_actor_id(
-                self._dialogue_value(participant, "character_id", "")
-            )
-            if character_id and character_id.casefold() not in {"player", "gamemaster"}:
-                return character_id
-
-        return declared_sender
 
     def _history_recipient_ids(
         self,
@@ -92,7 +77,10 @@ class ConversationEventWriter:
         seen: set[str] = set()
         for participant_id in [*source_ids, responder_character_id]:
             character_id = str(participant_id or "").strip()
-            if not character_id or character_id.casefold() in {"player", "gamemaster"}:
+            if not character_id:
+                continue
+            actor_kind = self._identity_resolver.classify_sender(character_id)
+            if actor_kind in {DialogueActorKind.PLAYER, DialogueActorKind.GAME_MASTER}:
                 continue
 
             character = self._get_character_ref(character_id)
@@ -154,7 +142,15 @@ class ConversationEventWriter:
                 return False
 
             # Never split a completed turn into independent row commits.
-            batch_append(payload)
+            row_ids = batch_append(payload)
+            if not isinstance(row_ids, (list, tuple)) or len(row_ids) != len(payload):
+                logger.error(
+                    f"[ConversationEventWriter] atomic history API did not commit the complete "
+                    f"turn for {getattr(ch_ref, 'char_id', '?')}: "
+                    f"expected {len(payload)} rows, got "
+                    f"{len(row_ids) if isinstance(row_ids, (list, tuple)) else 'no result'}"
+                )
+                return False
             return True
         except Exception as exc:
             logger.warning(
@@ -170,7 +166,7 @@ class ConversationEventWriter:
             return
 
         for pid in participants:
-            if not pid or pid == "Player":
+            if not pid or self._identity_resolver.classify_sender(pid) is DialogueActorKind.PLAYER:
                 continue
 
             ch = self._get_character_ref(pid)
@@ -178,7 +174,7 @@ class ConversationEventWriter:
                 continue
 
             local = dict(event_msg)
-            local["role"] = "assistant" if pid == speaker else "user"
+            local["role"] = "assistant" if self._identity_resolver.same_id(pid, speaker) else "user"
             local.setdefault("sender", speaker)
 
             self._append_history_message(ch, local)
@@ -188,14 +184,17 @@ class ConversationEventWriter:
         user_event: dict | None,
         assistant_event: dict,
         participants: list[str],
-    ) -> None:
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Persist both sides of the completed turn in one batch per recipient."""
+        committed: list[str] = []
+        failed: list[str] = []
         for pid in participants:
-            if not pid or pid == "Player":
+            if not pid or self._identity_resolver.classify_sender(pid) is DialogueActorKind.PLAYER:
                 continue
 
             ch = self._get_character_ref(pid)
             if ch is None:
+                failed.append(pid)
                 continue
 
             local_messages: list[dict] = []
@@ -204,11 +203,16 @@ class ConversationEventWriter:
                     continue
                 local = dict(event_msg)
                 speaker = str(local.get("speaker") or "")
-                local["role"] = "assistant" if pid == speaker else "user"
+                local["role"] = "assistant" if self._identity_resolver.same_id(pid, speaker) else "user"
                 local.setdefault("sender", speaker)
                 local_messages.append(local)
 
-            self._append_history_messages(ch, local_messages)
+            if self._append_history_messages(ch, local_messages):
+                committed.append(pid)
+            else:
+                failed.append(pid)
+
+        return tuple(committed), tuple(failed)
 
     def _build_user_event_message(
         self,
@@ -368,8 +372,9 @@ class ConversationEventWriter:
         llm_usage: dict | None = None,
         sample_id: str | None = None,
         dialogue: Any = None,
-    ) -> str:
-        sender = self._resolve_dialogue_sender(sender, dialogue)
+    ) -> ConversationWriteResult:
+        resolved_speaker = self._identity_resolver.resolve(sender, dialogue)
+        sender = resolved_speaker.sender_id
         responder_character_id = str(responder_character_id or "").strip()
         assistant_target = str(assistant_target or "Player")
         image_source = str(image_source or "").strip().lower()
@@ -392,7 +397,7 @@ class ConversationEventWriter:
         turn_id = self._make_message_id("turn", task_uid or req_id)
 
         user_event = None
-        if not (sender != "Player" and origin_message_id):
+        if resolved_speaker.kind is DialogueActorKind.PLAYER or not origin_message_id:
             user_event = self._build_user_event_message(
                 speaker=sender,
                 target=responder_character_id,
@@ -440,5 +445,9 @@ class ConversationEventWriter:
             )
             assistant_event.update(assistant_metadata)
 
-        self._fanout_turn(user_event, assistant_event, history_recipients)
-        return str(assistant_event.get("message_id") or "")
+        committed, failed = self._fanout_turn(user_event, assistant_event, history_recipients)
+        return ConversationWriteResult(
+            assistant_message_id=str(assistant_event.get("message_id") or ""),
+            committed_recipient_ids=committed,
+            failed_recipient_ids=failed,
+        )
