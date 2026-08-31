@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 from core.events import Events
 from core.services import use
 from services.contracts import CharacterRegistry, PlayerMessageSource, SettingsService, TaskService
+from domain.dialogue_identity import DialogueActorKind
+from domain.conversation_message_ids import ConversationMessageIds
+from services.dialogue_identity_resolver import DialogueIdentityResolver
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -38,34 +41,6 @@ def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
     if event_type in ("camera_snapshot_result", "easel_drawing", "tv_reaction"):
         return False
     return event_type in ("answer", "react")
-
-
-def _resolve_dialogue_sender(sender: Any, dialogue: Dict[str, Any]) -> str:
-    """Resolve an automated dialogue speaker from its authoritative actor id."""
-    declared_sender = str(sender or "Player").strip() or "Player"
-    if not isinstance(dialogue, dict):
-        return declared_sender
-
-    speaker_actor_id = str(dialogue.get("speaker_actor_id") or "").strip()
-    if not speaker_actor_id or speaker_actor_id.casefold() == "player":
-        return declared_sender
-
-    participants = dialogue.get("participants")
-    if not isinstance(participants, list):
-        return declared_sender
-
-    for participant in participants:
-        if not isinstance(participant, dict):
-            continue
-        actor_id = str(participant.get("actor_id") or "").strip()
-        if actor_id != speaker_actor_id:
-            continue
-        character_id = str(participant.get("character_id") or "").strip()
-        if character_id:
-            return character_id
-        break
-
-    return declared_sender
 
 
 def _normalise_reaction_events(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -248,10 +223,12 @@ class CreateTaskAction:
         req_id = request.get("req_id", None)
         dialogue_payload = context.get("dialogue") if isinstance(context.get("dialogue"), dict) else {}
 
-        sender = _resolve_dialogue_sender(
+        identity_resolver = DialogueIdentityResolver(use(CharacterRegistry).get)
+        resolved_speaker = identity_resolver.resolve(
             request.get("sender") or data.get("sender") or "Player",
             dialogue_payload,
         )
+        sender = resolved_speaker.sender_id
         origin_message_id = request.get("origin_message_id") or data.get("origin_message_id")
 
         participants = request.get("participants")
@@ -388,13 +365,16 @@ class CreateTaskAction:
             # a visible generated answer; echoing their internal relay prompt
             # produces a redundant English service bubble such as
             # "kind_mita: Kind Mita asks Cappie …".
-            if user_input and sender == "Player":
+            if user_input and resolved_speaker.kind is DialogueActorKind.PLAYER:
                 event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
                     "client_id": ctx.client_id,
                     "sender": sender,
+                    "sender_kind": resolved_speaker.kind,
                     "text": str(user_input),
                     "message_id": req_id,
+                    "presentation_message_id": ConversationMessageIds.incoming(req_id),
                     "origin_message_id": origin_message_id,
+                    "character_id": character_id,
                 })
 
             system_input = ""
@@ -417,7 +397,7 @@ class CreateTaskAction:
                 image_source=effective_image_source,
                 player_message_source=(
                     PlayerMessageSource.GAME.value
-                    if user_input and sender == "Player"
+                    if user_input and resolved_speaker.kind is DialogueActorKind.PLAYER
                     else ""
                 ),
                 abort_reason="Failed to create task",

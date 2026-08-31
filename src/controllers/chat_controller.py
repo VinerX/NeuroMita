@@ -12,6 +12,7 @@ from main_logger import logger
 from handlers.llm_providers.base import StreamChannel
 from core.cancellation import CancellationToken, OperationCancelledError
 from core.events import Event, EventDelivery, Events, get_event_bus
+from domain.conversation_message_ids import ConversationMessageIds
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from managers.task_manager import TaskStatus
@@ -425,6 +426,7 @@ class ChatController(GenerationActivityService):
                         "stream_id": stream_id,
                         "chunk": text,
                         "role": role,
+                        "character_id": character_id or "",
                     }, delivery=EventDelivery.ORDERED)
 
             stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
@@ -520,12 +522,13 @@ class ChatController(GenerationActivityService):
                 image_data = prepared if prepared else None
 
             if system_input and eff_policy.echo_to_ui and image_source != "mita_camera":
+                system_message_id = ConversationMessageIds.system()
                 ch = self._get_character_ref(character_id)
                 if ch and hasattr(ch, "history_manager"):
                     ch.history_manager.append_message({
                         "role": "system",
                         "content": system_input,
-                        "message_id": f"sys:{uuid.uuid4().hex}",
+                        "message_id": system_message_id,
                         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
@@ -534,6 +537,7 @@ class ChatController(GenerationActivityService):
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
+                    "message_id": system_message_id,
                 }, delivery=EventDelivery.ORDERED)
 
             if image_data and eff_policy.echo_to_ui and not images_shown:
@@ -552,6 +556,7 @@ class ChatController(GenerationActivityService):
                     "is_initial": False,
                     "emotion": "",
                     "character_id": character_id or "",
+                    "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
                 }, delivery=EventDelivery.ORDERED)
 
             result: ChatGenerationResult | None = use(GenerationService).generate_chat(
@@ -814,7 +819,8 @@ class ChatController(GenerationActivityService):
                         "emotion": "",
                         "character_id": effective_character_id or "",
                         "character_name": effective_character_name or "",
-                        "speaker_name": effective_character_name or ""
+                        "speaker_name": effective_character_name or "",
+                        "message_id": assistant_message_id or "",
                     }, delivery=EventDelivery.ORDERED)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
@@ -868,7 +874,11 @@ class ChatController(GenerationActivityService):
                 try:
                     self.event_bus.emit(
                         Events.GUI.FINISH_STREAM_UI,
-                        {"stream_id": stream_id, "aborted": True},
+                        {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "aborted": True,
+                        },
                         delivery=EventDelivery.ORDERED,
                     )
                 except Exception:
@@ -1431,7 +1441,7 @@ class ChatController(GenerationActivityService):
         message = {
             "role": role,
             "content": content,
-            "message_id": f"sys:{uuid.uuid4().hex}",
+            "message_id": ConversationMessageIds.system(),
             "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         character.history_manager.append_message(message)

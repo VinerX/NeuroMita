@@ -249,6 +249,10 @@ class HomePageViewModel(IntentViewModel[HomeState]):
 
     def refresh_news(self) -> None:
         try:
+            target = target_for_contour(
+                self._settings.get("UPDATE_CONTOUR", "release")
+            )
+            self._news.set_repository(target.repo)
             self._news.load_async(self._host, self._on_news_ready)
         except Exception as exc:
             logger.debug("Home release feed refresh failed: %s", format_exception(exc))

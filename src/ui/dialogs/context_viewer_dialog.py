@@ -180,6 +180,7 @@ _SECTION_TO_GROUP = {
     "System State": "context",
     "reminders": "context",
     "core memories": "context",
+    "runtime directives": "prompt",
     "memories": "context",
 }
 
@@ -1388,6 +1389,8 @@ class ContextViewerDialog(QDialog):
         text = self._content_plain(msg.get("content"))
         first = next((line.strip() for line in text.split("\n") if line.strip()), "")
         first = re.sub(r"^\[\s*RUNTIME EVENT\s*\]\s*", "", first)
+        if first.startswith("[Runtime Core Directive:"):
+            return "fa6s.book-open"
         match = _RE_TAG_RAW.match(first) or _RE_HDR_RAW.match(first)
         if first.startswith("[GAME_MASTER_DIRECTIVE]"):
             return _SECTION_STYLE["game"][0]
@@ -1417,6 +1420,9 @@ class ContextViewerDialog(QDialog):
                 "GAME_MASTER_DIRECTIVE"
             )
             return s_label, s_color
+
+        if first.startswith("[Runtime Core Directive:"):
+            return "Code 23 runtime directive", _ROLE_COLORS.get("system", _TEXT)
 
         if idx is not None and role in ("user", "assistant", "event"):
             if _RE_SPEAKER_PREFIX.match(first):

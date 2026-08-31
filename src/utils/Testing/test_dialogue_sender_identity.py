@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import ast
 import json
 import sqlite3
 import sys
-import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
@@ -14,24 +13,25 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 
-def _load_sender_resolver():
-    path = PROJECT_SRC / "game_connections" / "handlers" / "actions" / "create_task.py"
-    code = path.read_text(encoding="utf-8")
-    module = ast.parse(code)
-    for node in module.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_resolve_dialogue_sender":
-            namespace = {"Any": object, "Dict": dict}
-            exec(textwrap.dedent(ast.get_source_segment(code, node) or ""), namespace)
-            return namespace["_resolve_dialogue_sender"]
-    raise RuntimeError("_resolve_dialogue_sender not found")
+
+from domain.dialogue_identity import DialogueActorKind
+from services.dialogue_identity_resolver import DialogueIdentityResolver
 
 
 class DialogueSenderIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.resolve_sender = _load_sender_resolver()
+        characters = {
+            "Crazy": SimpleNamespace(char_id="Crazy", dialogue_actor_kind=DialogueActorKind.CHARACTER),
+            "Kind": SimpleNamespace(char_id="Kind", dialogue_actor_kind=DialogueActorKind.CHARACTER),
+            "GameMaster": SimpleNamespace(
+                char_id="GameMaster",
+                dialogue_actor_kind=DialogueActorKind.GAME_MASTER,
+            ),
+        }
+        self.resolver = DialogueIdentityResolver(characters.get)
 
     def test_auto_turn_uses_character_mapped_from_dialogue_actor(self):
-        sender = self.resolve_sender(
+        speaker = self.resolver.resolve(
             "Player",
             {
                 "speaker_actor_id": "actor-crazy-1",
@@ -42,26 +42,52 @@ class DialogueSenderIdentityTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(sender, "Crazy")
+        self.assertEqual(speaker.sender_id, "Crazy")
+        self.assertIs(speaker.kind, DialogueActorKind.CHARACTER)
+        self.assertTrue(speaker.authoritative)
 
-    def test_real_player_turn_keeps_player_sender(self):
-        sender = self.resolve_sender(
+    def test_actor_id_matching_is_case_insensitive(self):
+        speaker = self.resolver.resolve(
             "Player",
             {
-                "speaker_actor_id": "Player",
+                "speaker_actor_id": "ACTOR-CRAZY-1",
+                "participants": [
+                    {"actor_id": "actor-crazy-1", "character_id": "Crazy"},
+                ],
+            },
+        )
+
+        self.assertEqual(speaker.sender_id, "Crazy")
+        self.assertIs(speaker.kind, DialogueActorKind.CHARACTER)
+
+    def test_real_player_turn_uses_authoritative_player_identity(self):
+        speaker = self.resolver.resolve(
+            "Crazy",
+            {
+                "speaker_actor_id": "player",
                 "participants": [{"actor_id": "actor-kind-1", "character_id": "Kind"}],
             },
         )
 
-        self.assertEqual(sender, "Player")
+        self.assertEqual(speaker.sender_id, "Player")
+        self.assertIs(speaker.kind, DialogueActorKind.PLAYER)
+        self.assertTrue(speaker.authoritative)
 
-    def test_unmapped_actor_preserves_declared_sender_for_compatibility(self):
-        sender = self.resolve_sender(
-            "Crazy",
+    def test_unmapped_non_player_actor_never_inherits_player_semantics(self):
+        speaker = self.resolver.resolve(
+            "Player",
             {"speaker_actor_id": "actor-missing", "participants": []},
         )
 
-        self.assertEqual(sender, "Crazy")
+        self.assertEqual(speaker.sender_id, "Player")
+        self.assertIs(speaker.kind, DialogueActorKind.UNKNOWN)
+        self.assertFalse(speaker.authoritative)
+
+    def test_declared_character_is_classified_through_registry_without_dialogue(self):
+        speaker = self.resolver.resolve("Crazy", None)
+
+        self.assertEqual(speaker.sender_id, "Crazy")
+        self.assertIs(speaker.kind, DialogueActorKind.CHARACTER)
 
     def test_database_migration_repairs_existing_dialogue_sender(self):
         from managers.database_manager import DatabaseManager

@@ -18,6 +18,10 @@ from managers.database_manager import DatabaseManager
 from managers.character_scoped_service import CharacterScopedService
 
 
+class HistoryBatchWriteError(RuntimeError):
+    """Raised after a completed history batch has been fully rolled back."""
+
+
 # TODO: Decompose — this class is 1100+ lines. Consider splitting into:
 #   history_reader.py (load_history, get_messages, pagination)
 #   history_writer.py (add_message, save_history, _insert_history_row)
@@ -1250,15 +1254,13 @@ class HistoryManager(CharacterScopedService):
                         committed.append((int(row_id), msg))
                 conn.commit()
             except Exception as exc:
-                committed.clear()
-                logger.error(
-                    f"History batch INSERT failed; the complete turn was rolled back: {format_exception(exc)}",
-                    exc_info=True,
-                )
                 try:
                     conn.rollback()
                 except Exception:
                     pass
+                raise HistoryBatchWriteError(
+                    f"Failed to append a complete history batch for {self.storage_key}"
+                ) from exc
             finally:
                 try:
                     conn.close()

@@ -120,6 +120,38 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(contents.index("[active memory]"), contents.index("[relevant memories]"))
         self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
 
+    def test_core_memory_directive_precedes_summary_history_and_rag(self):
+        class _Character:
+            char_id = "Test"
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: (
+            [{"role": "system", "content": "[stable prompt]"}],
+            [],
+            [],
+        )
+        controller._build_system_state_message = lambda: {
+            "role": "system",
+            "content": "[system state]",
+        }
+
+        result = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            core_memory_context="[Runtime Core Directive: Code 23 — ACTIVE]",
+            rag_context="[relevant memories]",
+            system_input="[event]",
+        ))
+        contents = [message.get("content") for message in result.messages]
+
+        self.assertLess(contents.index("[stable prompt]"), contents.index("[Runtime Core Directive: Code 23 — ACTIVE]"))
+        self.assertLess(contents.index("[Runtime Core Directive: Code 23 — ACTIVE]"), contents.index("[relevant memories]"))
+        self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
+
     def test_character_environment_is_common_dynamic_context_before_input(self):
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])

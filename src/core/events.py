@@ -806,6 +806,7 @@ class Events:
         """Работа с историей диалога (подготовка промпта — HistoryService)"""
         SAVE_AFTER_RESPONSE = "save_history_after_response"
         MESSAGE_COMPLETED = "history_message_completed"
+        MESSAGES_COMMITTED = "history_messages_committed"
         # Эмитится ПОСЛЕ фактического применения сжатия (история подрезана,
         # summary_count обновлён). Для обновления живых счётчиков в UI.
         COMPRESSED = "history_compressed"

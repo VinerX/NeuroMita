@@ -18,10 +18,11 @@ class ChatController(BaseController):
         # старте первый пересчёт (из _on_chat_ui_ready) случается ДО готовности
         # персонажа/модели, поэтому окно контекста залипало на дефолтных 32к, а
         # оценка — на 0. Смена персонажа тоже меняет и контекст, и окно модели.
-        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_update_token_count, weak=False)
+        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_changed, weak=False)
         self.event_bus.subscribe(Events.GUI.INSERT_TEXT_TO_INPUT, self._on_insert_text_to_input, weak=False)
         self.event_bus.subscribe(Events.GUI.SEND_TEXT_MESSAGE, self._on_send_text_message, weak=False)
         self.event_bus.subscribe(Events.GUI.CHECK_USER_ENTRY_EXISTS, self._on_check_user_entry_exists, weak=False)
+        self.event_bus.subscribe(Events.History.MESSAGES_COMMITTED, self._on_history_messages_committed, weak=False)
 
     def clear_user_input(self):
         logger.debug("ChatController: clear_user_input")
@@ -31,13 +32,20 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view или user_entry не найден!")
 
-    def stream_callback_handler(self, chunk: str, role: str = "assistant", stream_id: str = "default"):
+    def stream_callback_handler(
+        self,
+        chunk: str,
+        role: str = "assistant",
+        stream_id: str = "default",
+        character_id: str = "",
+    ):
         logger.debug(f"ChatController: stream_callback_handler [{role}/{stream_id}]: {chunk[:50]}...")
         if self.view:
             self.view.append_stream_chunk_signal.emit({
                 "stream_id": stream_id,
                 "chunk": chunk,
                 "role": role,
+                "character_id": str(character_id or ""),
             })
         else:
             logger.error("ChatController: view не найден!")
@@ -83,34 +91,52 @@ class ChatController(BaseController):
 
     def _on_update_chat_ui(self, event: Event):
         data = event.data or {}
-        role = data.get('role', '')
-        response = data.get('response', '')
-        is_initial = data.get('is_initial', False)
-        emotion = data.get('emotion', '')
-        structured_data = data.get('structured_data')
+        role = str(data.get("role") or "")
+        response = data.get("response", "")
+        structured_data = data.get("structured_data")
 
         speaker_name = str(data.get("speaker_name") or data.get("character_name") or "")
         target = str(data.get("target") or "")
-
         speaker_label = speaker_name
         if role == "assistant" and speaker_name and target and target != "Player":
-            # Don't add → when there are multiple distinct segment targets:
-            # message_renderer splits those into separate bubbles and adds arrows itself.
             segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
             distinct_targets = {str(s.get("target") or "") for s in segments if isinstance(s, dict)}
             if len(distinct_targets) <= 1:
                 speaker_label = f"{speaker_name} → {target}"
 
-        # Attach structured_data and message_id to the view for the next insert_message call
-        if self.view and structured_data:
-            self.view._pending_structured_data = structured_data
-        message_id = str(data.get("message_id") or "")
-        if self.view:
-            self.view._pending_message_id = message_id
-            if role == "assistant":
-                self.view._pending_sample_id = str(data.get("sample_id") or "")
-                self.view._pending_context_snapshot_id = str(data.get("context_snapshot_id") or "")
-        self.update_chat(role, response, is_initial, emotion, speaker_label=speaker_label)
+        payload = response
+        if speaker_label:
+            if isinstance(payload, list):
+                payload = [{"type": "meta", "speaker": speaker_label}] + payload
+            else:
+                payload = [
+                    {"type": "meta", "speaker": speaker_label},
+                    {"type": "text", "text": str(payload)},
+                ]
+
+        render_event = {
+            "role": role,
+            "content": payload,
+            "insert_at_start": bool(data.get("is_initial", False)),
+            "message_time": str(data.get("message_time") or ""),
+            "structured_data": structured_data,
+            "message_id": str(data.get("message_id") or ""),
+            "character_id": str(data.get("character_id") or ""),
+            "sample_id": str(data.get("sample_id") or ""),
+            "context_snapshot_id": str(data.get("context_snapshot_id") or ""),
+        }
+
+        if self.view and hasattr(self.view, "render_chat_event_signal"):
+            self.view.render_chat_event_signal.emit(render_event)
+            return
+
+        self.update_chat(role, payload, bool(data.get("is_initial", False)), str(data.get("emotion") or ""))
+
+    def _on_history_messages_committed(self, event: Event):
+        if not self.view or not hasattr(self.view, "history_messages_committed_signal"):
+            return
+        payload = event.data if isinstance(event.data, dict) else {}
+        self.view.history_messages_committed_signal.emit(dict(payload))
 
     def _on_prepare_stream_ui(self, event: Event):
         self.prepare_stream(event.data or {})
@@ -120,13 +146,20 @@ class ChatController(BaseController):
         chunk = data.get('chunk', '')
         role = data.get('role', 'assistant')
         stream_id = str(data.get('stream_id') or 'default')
-        self.stream_callback_handler(chunk, role, stream_id)
+        character_id = str(data.get('character_id') or '')
+        self.stream_callback_handler(chunk, role, stream_id, character_id)
 
     def _on_finish_stream_ui(self, event: Event):
         self.finish_stream(event.data or {})
 
     def _on_update_token_count(self, event: Event):
         self.update_token_count()
+
+    def _on_character_changed(self, event: Event):
+        self.update_token_count()
+        signal = getattr(self.view, "load_chat_history_signal", None) if self.view else None
+        if signal is not None:
+            signal.emit()
 
     def _on_update_token_count_ui(self, event: Event):
         self.update_token_count()

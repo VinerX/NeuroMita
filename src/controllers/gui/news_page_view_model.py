@@ -4,6 +4,7 @@ from core.error_utils import format_exception
 from typing import Any
 
 from controllers.gui.intent_view_model import IntentViewModel
+from services.update_contour import target_for_contour
 from ui.mvvm import immutable_payload
 from ui.pages.news_presentation import (
     ActivateNewsPage,
@@ -14,10 +15,13 @@ from ui.pages.news_presentation import (
 
 
 class NewsPageViewModel(IntentViewModel[NewsPageState]):
-    def __init__(self, *, host: Any, news, parent=None) -> None:
-        super().__init__(NewsPageState(repository=str(news.repository)), parent)
+    def __init__(self, *, host: Any, news, settings, parent=None) -> None:
+        target = target_for_contour(settings.get("UPDATE_CONTOUR", "release"))
+        news.set_repository(target.repo)
+        super().__init__(NewsPageState(repository=target.repo), parent)
         self._host = host
         self._news = news
+        self._settings = settings
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, ActivateNewsPage):
@@ -28,7 +32,11 @@ class NewsPageViewModel(IntentViewModel[NewsPageState]):
             self.refresh(force=bool(intent.force))
 
     def refresh(self, *, force: bool) -> None:
-        if force:
+        target = target_for_contour(self._settings.get("UPDATE_CONTOUR", "release"))
+        repository_changed = self._news.set_repository(target.repo)
+        if self.state.repository != target.repo:
+            self.update_state(repository=target.repo)
+        if force and not repository_changed:
             self._news.invalidate()
         self.update_state(loading=True, error=None)
 
