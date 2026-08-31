@@ -7,6 +7,7 @@ from core.events import Events
 from core.services import use
 from services.contracts import CharacterRegistry, PlayerMessageSource, SettingsService, TaskService
 from domain.dialogue_identity import DialogueActorKind
+from domain.conversation_message_ids import ConversationMessageIds
 from services.dialogue_identity_resolver import DialogueIdentityResolver
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
@@ -371,7 +372,9 @@ class CreateTaskAction:
                     "sender_kind": resolved_speaker.kind,
                     "text": str(user_input),
                     "message_id": req_id,
+                    "presentation_message_id": ConversationMessageIds.incoming(req_id),
                     "origin_message_id": origin_message_id,
+                    "character_id": character_id,
                 })
 
             system_input = ""

@@ -546,6 +546,11 @@ def _stream_state(gui, stream_id: str, *, create: bool = False) -> dict | None:
     return state
 
 
+def discard_stream_slot(gui, stream_id="default") -> None:
+    """Forget renderer-only state for a stream without touching chat widgets."""
+    _stream_states(gui).pop(str(stream_id or "default"), None)
+
+
 def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name=""):
     state = _stream_state(gui, stream_id, create=True)
     prev_role = state.get("role")

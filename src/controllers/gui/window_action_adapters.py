@@ -16,10 +16,10 @@ class ShellActionsAdapter(_BoundActions):
     def is_closing(self) -> bool:
         return bool(self._target and self._target.is_closing)
 
-    def load_history(self) -> None:
+    def load_history(self, *, request_id: str = "", character_id: str = "") -> None:
         if self._target is None:
             raise RuntimeError("Shell actions are not bound")
-        self._target.load_history()
+        self._target.load_history(request_id=request_id, character_id=character_id)
 
     def request_debug_info(self, callback: Callable[[Any], None]) -> None:
         if self._target is not None:
@@ -44,9 +44,9 @@ class ShellActionsAdapter(_BoundActions):
             return False
         return self._target.send_message(**kwargs)
 
-    def load_more_history(self) -> None:
+    def load_more_history(self, *, character_id: str = "") -> None:
         if self._target is not None:
-            self._target.load_more_history()
+            self._target.load_more_history(character_id=character_id)
 
     def close_application(self) -> None:
         if self._target is not None:

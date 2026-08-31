@@ -30,6 +30,7 @@ from main_logger import logger
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.render_context import ChatRenderContext
+from ui.chat.presentation_coordinator import ChatPresentationCoordinator, ChatRenderCommand
 from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
 from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
 from ui.widgets.image_viewer_widget import ImageViewerWidget
@@ -43,6 +44,8 @@ _UNSET = object()
 
 class AppWindowBase(QMainWindow):
     update_chat_signal = pyqtSignal(str, object, bool, str)
+    render_chat_event_signal = pyqtSignal(dict)
+    history_messages_committed_signal = pyqtSignal(dict)
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
 
@@ -150,6 +153,8 @@ class AppWindowBase(QMainWindow):
         self._pending_history_payload = None
         self._token_refresh_pending = False
         self._history_load_inflight = False
+        self._history_load_request_id = ""
+        self._chat_presentation = ChatPresentationCoordinator()
         self._pending_chat_error = None
 
         # Отложенная автоотправка голоса: копим распознанное в поле ввода и
@@ -174,6 +179,8 @@ class AppWindowBase(QMainWindow):
         self._voice_model_init_in_progress_model_id = None
 
         self.update_chat_signal.connect(self._on_update_chat_signal)
+        self.render_chat_event_signal.connect(self._on_render_chat_event_signal)
+        self.history_messages_committed_signal.connect(self._on_history_messages_committed)
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
@@ -503,33 +510,77 @@ class AppWindowBase(QMainWindow):
             return False
 
         self._chat_history_load_pending = False
+        character_id = str(self._shell_actions.current_character_id() or "")
+        ticket = self._chat_presentation.begin_history_load(character_id)
+        self._history_load_request_id = ticket.request_id
         self._history_load_inflight = True
-        logger.debug("[Load] load_chat_history: начало")
-        logger.debug("[Load] Отключаем updates в chat_window")
-        chat_window.setUpdatesEnabled(False)
-        logger.debug("[Load] Вызываем clear_chat_display()")
+        logger.debug(
+            "[Load] history snapshot requested id=%s character=%s revision=%s",
+            ticket.request_id,
+            character_id,
+            ticket.start_revision,
+        )
         try:
-            self.clear_chat_display()
-            logger.debug("[Load] Эмитим LOAD_HISTORY")
-            self._shell_actions.load_history()
-            QTimer.singleShot(15000, self._recover_stalled_history_load)
-            logger.debug("[Load] load_chat_history: конец")
+            self._shell_actions.load_history(
+                request_id=ticket.request_id,
+                character_id=character_id,
+            )
+            QTimer.singleShot(
+                15000,
+                lambda request_id=ticket.request_id: self._recover_stalled_history_load(request_id),
+            )
             return True
         except Exception:
-            self._history_load_inflight = False
-            chat_window.setUpdatesEnabled(True)
-            chat_window.update()
+            self._chat_presentation.cancel_history_load(ticket.request_id)
+            if self._history_load_request_id == ticket.request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
             raise
 
-    def _recover_stalled_history_load(self):
+    def _recover_stalled_history_load(self, request_id: str = ""):
         if not self._history_load_inflight:
             return
-        chat_window = getattr(self, "chat_window", None)
-        if chat_window is not None:
-            logger.warning("History UI load timed out; restoring chat repaint")
-            chat_window.setUpdatesEnabled(True)
-            chat_window.update()
+        if request_id and request_id != self._history_load_request_id:
+            return
+        logger.warning("History UI load timed out; keeping the live presentation intact")
+        self._chat_presentation.cancel_history_load(request_id or None)
         self._history_load_inflight = False
+        self._history_load_request_id = ""
+
+    def _render_history_entry(self, entry: dict, *, character_id: str) -> None:
+        role = entry["role"]
+        content = entry["content"]
+        message_time = entry.get("time", "???")
+        structured_data = entry.get("structured_data")
+        message_id = entry.get("message_id")
+        sample_id = entry.get("sample_id")
+        context_snapshot_id = entry.get("context_snapshot_id")
+        thinking_text = entry.get("thinking")
+        show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
+        if role == "assistant" and thinking_text and show_think_in_gui:
+            speaker = entry.get("speaker", "")
+            message_renderer.insert_message(
+                self._chat_render_context,
+                "think",
+                [
+                    {"type": "meta", "speaker": speaker},
+                    {"type": "text", "text": thinking_text.strip()},
+                ],
+                message_time=message_time,
+                character_id=character_id,
+            )
+        message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            message_time=message_time,
+            structured_data=structured_data,
+            message_id=message_id,
+            character_id=character_id,
+            ui_images=entry.get("_ui_images") or [],
+            sample_id=sample_id,
+            context_snapshot_id=context_snapshot_id,
+        )
 
     def _on_history_loaded(self, data: dict):
         chat_window = getattr(self, "chat_window", None)
@@ -537,39 +588,50 @@ class AppWindowBase(QMainWindow):
             self._pending_history_payload = dict(data or {})
             return
 
-        messages = data.get('messages', [])
-        character_id = data.get('character_id', '')
-        logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
+        payload = dict(data or {})
+        messages = payload.get("messages", []) or []
+        response_character_id = str(payload.get("character_id") or "")
+        request_id = str(payload.get("request_id") or self._history_load_request_id or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        plan = self._chat_presentation.plan_history_projection(
+            request_id=request_id,
+            response_character_id=response_character_id,
+            current_character_id=current_character_id,
+            history_messages=messages,
+        )
+
+        if not plan.accepted:
+            if request_id == self._history_load_request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
+            logger.debug(
+                "[HistoryLoaded] snapshot ignored id=%s reason=%s retry_after_stream=%s",
+                request_id,
+                plan.reason,
+                plan.retry_after_stream,
+            )
+            return
+
+        logger.info(
+            "[HistoryLoaded] Загружено %s сообщений для отображения; replay=%s",
+            len(messages),
+            len(plan.replay),
+        )
+        chat_window.setUpdatesEnabled(False)
         try:
+            self.render_chat_cleared(reset_presentation=False)
             for entry in messages:
-                role = entry["role"]
-                content = entry["content"]
-                message_time = entry.get("time", "???")
-                structured_data = entry.get("structured_data")
-                message_id = entry.get("message_id")
-                sample_id = entry.get("sample_id")
-                thinking_text = entry.get("thinking")
-                show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
-                if role == "assistant" and thinking_text and show_think_in_gui:
-                    speaker = entry.get("speaker", "")
-                    message_renderer.insert_message(
-                        self._chat_render_context, "think",
-                        [{"type": "meta", "speaker": speaker},
-                         {"type": "text", "text": thinking_text.strip()}],
-                        message_time=message_time,
-                        character_id=character_id,
-                    )
-                message_renderer.insert_message(self._chat_render_context, role, content, message_time=message_time,
-                                                structured_data=structured_data,
-                                                message_id=message_id, character_id=character_id,
-                                                ui_images=entry.get("_ui_images") or [],
-                                                sample_id=sample_id)
+                self._render_history_entry(entry, character_id=response_character_id)
+            for command in plan.replay:
+                self._render_chat_command(command)
             self.update_debug_info()
             chat_window.scroll_to_bottom()
         except Exception as exc:
             logger.error(f"Failed to project loaded history: {format_exception(exc)}", exc_info=True)
         finally:
-            self._history_load_inflight = False
+            if request_id == self._history_load_request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
             chat_window.setUpdatesEnabled(True)
             chat_window.update()
 
@@ -817,10 +879,15 @@ class AppWindowBase(QMainWindow):
     def clear_chat_display(self):
         return self._shell_actions.clear_chat()
 
-    def render_chat_cleared(self) -> None:
+    def render_chat_cleared(self, *, reset_presentation: bool = True) -> None:
         chat_window = getattr(self, "chat_window", None)
         if chat_window is None:
             return
+        if reset_presentation:
+            self._chat_presentation.reset()
+            self._history_load_inflight = False
+            self._history_load_request_id = ""
+        self._chat_render_context.reset_transient_state()
         logger.debug("[Clear] chat_window.message_count: %s", chat_window.message_count())
         chat_window.clear_messages()
 
@@ -846,10 +913,25 @@ class AppWindowBase(QMainWindow):
         message_id: str,
         clear_entry: bool,
     ) -> None:
+        character_id = str(self._shell_actions.current_character_id() or "")
         if user_input:
-            message_renderer.insert_message(self._chat_render_context, "user", user_input, message_id=message_id)
+            text_command = ChatRenderCommand(
+                role="user",
+                content=user_input,
+                character_id=character_id,
+                message_id=str(message_id or ""),
+            )
+            if self._chat_presentation.record_live(text_command):
+                self._render_chat_command(text_command)
         if image_content:
-            message_renderer.insert_message(self._chat_render_context, "user", image_content, message_id=message_id)
+            image_command = ChatRenderCommand(
+                role="user",
+                content=image_content,
+                character_id=character_id,
+                message_id=str(message_id or ""),
+            )
+            if self._chat_presentation.record_live(image_command):
+                self._render_chat_command(image_command)
         if clear_entry and self.user_entry is not None:
             self.user_entry.clear()
 
@@ -888,7 +970,9 @@ class AppWindowBase(QMainWindow):
     def load_more_history(self):
         if getattr(self, "chat_window", None) is None:
             return False
-        self._shell_actions.load_more_history()
+        self._shell_actions.load_more_history(
+            character_id=str(self._shell_actions.current_character_id() or ""),
+        )
         return True
 
     def _on_more_history_loaded(self, data: dict):
@@ -897,7 +981,10 @@ class AppWindowBase(QMainWindow):
         messages_to_prepend = data.get('messages', [])
         if not messages_to_prepend:
             return
-        character_id = data.get('character_id', '')
+        character_id = str(data.get('character_id') or '')
+        current_character_id = str(self._shell_actions.current_character_id() or '')
+        if character_id and current_character_id and character_id.casefold() != current_character_id.casefold():
+            return
         scrollbar = self.chat_window.verticalScrollBar()
         old_value = scrollbar.value()
         old_max = scrollbar.maximum()
@@ -912,7 +999,8 @@ class AppWindowBase(QMainWindow):
                                             message_time=message_time, structured_data=structured_data,
                                             message_id=message_id, character_id=character_id,
                                             ui_images=entry.get("_ui_images") or [],
-                                            sample_id=sample_id)
+                                            sample_id=sample_id,
+                                            context_snapshot_id=entry.get("context_snapshot_id"))
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
@@ -1110,8 +1198,15 @@ class AppWindowBase(QMainWindow):
     def _on_stream_start(self, _data=None):
         pass
 
-    def _on_stream_finish(self, _data=None):
-        pass
+    def _on_stream_finish(self, data=None):
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if self._chat_presentation.finish_stream(
+            stream_id,
+            current_character_id=current_character_id,
+        ):
+            QTimer.singleShot(0, self.load_chat_history)
 
     def _on_reload_prompts_success(self):
         QMessageBox.information(self, _("Успешно", "Success"),
@@ -1448,37 +1543,84 @@ class AppWindowBase(QMainWindow):
         self._shell_actions.request_status(apply)
 
     # ===== Рендер сообщений и streaming-слоты =====
-    def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
-        """Slot for update_chat_signal — picks up pending structured_data and message_id if available."""
-        # Only assistant messages consume _pending_structured_data / _pending_message_id.
-        # Think/system messages must not steal it from the following assistant message.
-        structured_data = None
-        message_id = None
-        sample_id = None
-        context_snapshot_id = None
-        if role == "assistant":
-            structured_data = getattr(self, '_pending_structured_data', None)
-            self._pending_structured_data = None
-            message_id = getattr(self, '_pending_message_id', None) or None
-            self._pending_message_id = None
-            sample_id = getattr(self, '_pending_sample_id', None) or None
-            self._pending_sample_id = None
-            context_snapshot_id = getattr(self, '_pending_context_snapshot_id', None) or None
-            self._pending_context_snapshot_id = None
+    def _render_chat_command(self, command: ChatRenderCommand):
         if not self._chat_render_context.is_bound:
             return False
-        from ui.chat import message_renderer
         return message_renderer.insert_message(
             self._chat_render_context,
-            role,
-            content,
-            insert_at_start,
-            message_time,
-            structured_data=structured_data,
-            message_id=message_id,
-            sample_id=sample_id,
-            context_snapshot_id=context_snapshot_id,
+            command.role,
+            command.content,
+            command.insert_at_start,
+            command.message_time,
+            structured_data=command.structured_data,
+            message_id=command.message_id or None,
+            character_id=command.character_id or None,
+            sample_id=command.sample_id or None,
+            context_snapshot_id=command.context_snapshot_id or None,
         )
+
+    def _command_from_render_payload(self, data: dict) -> ChatRenderCommand:
+        character_id = str(data.get("character_id") or self._shell_actions.current_character_id() or "")
+        return ChatRenderCommand(
+            role=str(data.get("role") or ""),
+            content=data.get("content", ""),
+            character_id=character_id,
+            message_id=str(data.get("message_id") or ""),
+            message_time=str(data.get("message_time") or ""),
+            structured_data=data.get("structured_data"),
+            sample_id=str(data.get("sample_id") or ""),
+            context_snapshot_id=str(data.get("context_snapshot_id") or ""),
+            insert_at_start=bool(data.get("insert_at_start", False)),
+        )
+
+    def _on_render_chat_event_signal(self, data: dict):
+        command = self._command_from_render_payload(data if isinstance(data, dict) else {})
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=current_character_id,
+        ):
+            return False
+        return self._render_chat_command(command)
+
+    def _on_history_messages_committed(self, data: dict) -> None:
+        payload = data if isinstance(data, dict) else {}
+        character_ids = payload.get("character_ids") or []
+        if not character_ids and payload.get("character_id"):
+            character_ids = [payload.get("character_id")]
+        self._chat_presentation.acknowledge_persisted(
+            message_ids=payload.get("message_ids") or [],
+            character_ids=character_ids,
+        )
+
+    def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
+        # Legacy signal path has no stable message identity.  Do not enqueue an
+        # unaddressable presentation event before the lazy Sandbox view exists;
+        # persisted history will project it when the view is materialized.
+        if not self._chat_render_context.is_bound:
+            for attr in (
+                "_pending_structured_data",
+                "_pending_message_id",
+                "_pending_sample_id",
+                "_pending_context_snapshot_id",
+            ):
+                if hasattr(self, attr):
+                    setattr(self, attr, None)
+            return False
+
+        command = ChatRenderCommand(
+            role=str(role or ""),
+            content=content,
+            character_id=str(self._shell_actions.current_character_id() or ""),
+            message_time=str(message_time or ""),
+            insert_at_start=bool(insert_at_start),
+        )
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=command.character_id,
+        ):
+            return False
+        return self._render_chat_command(command)
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
         if not self._chat_render_context.is_bound:
@@ -1492,14 +1634,26 @@ class AppWindowBase(QMainWindow):
         )
 
     def _on_prepare_stream_signal(self, data=None):
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        presentation = getattr(self, "_chat_presentation", None)
+        if presentation is not None:
+            presentation.begin_stream(stream_id, character_id=character_id)
+            if not presentation.should_render_stream(
+                stream_id,
+                current_character_id=current_character_id,
+                character_id=character_id,
+            ):
+                return False
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
-        payload = data if isinstance(data, dict) else {}
         return message_renderer.prepare_stream_slot(
             self._chat_render_context,
             role=payload.get("role", "assistant"),
-            stream_id=str(payload.get("stream_id") or "default"),
+            stream_id=stream_id,
             speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
         )
 
@@ -1508,11 +1662,20 @@ class AppWindowBase(QMainWindow):
             return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            return False
         return message_renderer.append_stream_chunk_slot(
             self._chat_render_context,
             payload.get("chunk"),
             role=payload.get("role", "assistant"),
-            stream_id=str(payload.get("stream_id") or "default"),
+            stream_id=stream_id,
         )
 
     def _finish_stream_slot(self, data=None):
@@ -1521,6 +1684,15 @@ class AppWindowBase(QMainWindow):
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
+            return False
         structured = payload.get("structured_data")
         if structured:
             message_renderer.attach_structured_to_stream(
@@ -1532,7 +1704,7 @@ class AppWindowBase(QMainWindow):
             self._chat_render_context,
             stream_id=stream_id,
             message_id=str(payload.get("message_id") or ""),
-            character_id=str(payload.get("character_id") or ""),
+            character_id=character_id,
             sample_id=str(payload.get("sample_id") or ""),
             context_snapshot_id=str(payload.get("context_snapshot_id") or ""),
         )

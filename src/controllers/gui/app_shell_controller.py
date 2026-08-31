@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Callable
 
 from core.events import Events, get_event_bus
+from domain.conversation_message_ids import ConversationMessageIds
 from core.services import services, use
 from main_logger import logger
 from services.contracts import (
@@ -103,11 +104,16 @@ class AppShellController:
             self._main_controller = None
             self._presentation.app.detach_backend()
 
-    def load_history(self) -> None:
-        self._event_bus.emit(Events.Model.LOAD_HISTORY)
+    def load_history(self, *, request_id: str = "", character_id: str = "") -> None:
+        self._event_bus.emit(Events.Model.LOAD_HISTORY, {
+            "request_id": str(request_id or ""),
+            "character_id": str(character_id or ""),
+        })
 
-    def load_more_history(self) -> None:
-        self._event_bus.emit(Events.Model.LOAD_MORE_HISTORY)
+    def load_more_history(self, *, character_id: str = "") -> None:
+        self._event_bus.emit(Events.Model.LOAD_MORE_HISTORY, {
+            "character_id": str(character_id or ""),
+        })
 
     def clear_chat(self) -> None:
         self._view.render_chat_cleared()
@@ -242,7 +248,7 @@ class AppShellController:
             return
 
         req_id = uuid.uuid4().hex
-        user_message_id = f"in:{req_id}"
+        user_message_id = ConversationMessageIds.incoming(req_id)
         image_content = []
         if all_image_data:
             image_content = [
