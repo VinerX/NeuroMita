@@ -18,7 +18,7 @@ NeuroMita is a fan-made mod project where you can talk to Mitas controlled by la
 </p>
 
 > [!IMPORTANT]
-> NeuroMita is in Alpha: the interface, mechanics, and data formats may change. Before a major update, save the `Settings` and `Histories` folders.
+> NeuroMita is in Alpha: the interface, mechanics, and data formats may change. Before a major update, it is a good idea to back up the `Settings` and `Histories` folders.
 
 ## Quick start
 
@@ -30,38 +30,38 @@ NeuroMita is a fan-made mod project where you can talk to Mitas controlled by la
 | **4. Start a chat** | Choose a character in **Settings → Characters**, then return to Chat / Sandbox. |
 
 > [!TIP]
-> Start with one LLM provider. Voice output, local models, RAG, and other optional features can be added later.
+> Start by configuring just one LLM provider. Voice output, local models, RAG, and other optional features can be added later.
 
 ### Installation and updates
 
-On the first launch, NeuroMita checks and deploys its bundled Python dependencies. Do not close the window until this step is complete.
+On the first launch, NeuroMita automatically checks and deploys the required Python dependencies. Do not close the window until this step is complete.
 
 On the home page, install the Unity part if the interface offers it, then click **Play**.
 
-Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over a running NeuroMita folder.
+Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over an existing working NeuroMita folder.
 
 ### Setting up the first chat
 
 1. Open **Settings → API presets**.
 2. Click **+** or the “Click to create a preset” row.
-3. Select a provider template, enter the API key and model.
+3. Select a provider template, enter the API key, and specify the model.
 4. Save the preset and make it active.
 5. Open **Settings → Characters**, then choose a character and prompt set.
 6. Return to Chat / Sandbox and send your first message.
 
-Choose **one** provider to start with instead of configuring them all. **OpenRouter** is usually the simplest first choice; Google AI Studio, Mistral, and LM Studio are alternatives. See the [model setup guide](docs/MODELS_EN.md) for details, including options for users in Russia.
+Choose **one** provider to start with instead of configuring them one by one. **OpenRouter** is usually the simplest first choice; Google AI Studio, Mistral, and LM Studio are alternatives. See [docs/MODELS_EN.md](docs/MODELS_EN.md) for detailed setup instructions, including options for users in Russia.
 
 Users in Russia may need a VPN to access some foreign AI services. Availability depends on the provider and region.
 
-If there is no response, check the active preset, model name, and provider balance/limits, then open the [troubleshooting guide](docs/TROUBLESHOOTING_EN.md).
+If there is no response, first check the active preset, model name, and provider balance/limits, then open the [troubleshooting guide](docs/TROUBLESHOOTING_EN.md).
 
 ## What NeuroMita can do
 
 - Talk to Mitas through language models (LLMs — neural networks that generate text responses).
 - Use history, memory, RAG, and a knowledge graph to keep track of previous conversations.
 - Connect model responses to actions and character state in the Unity scene.
-- Provide voice output and microphone input; local components are managed through AI Hub.
-- Use images, screen content, or a camera as additional context when supported by the model.
+- Provide voice output and microphone input; local models are managed through AI Hub.
+- Use images, screen content, or a camera as additional context when needed.
 - Store API presets, models, dialogue settings, and prompts in the application settings.
 
 Some features require additional downloads or more powerful hardware. Start with a regular text chat — one connected LLM provider is enough.
@@ -85,7 +85,7 @@ Specific local voice requirements depend on the selected model. See the [local v
 
 ### Voice output and speech recognition
 
-Use **Settings → Voice** to enable voice output and **Settings → Microphone** to select an input device and speech recognition. Local voice models, ASR, and related dependencies are installed through **AI Hub**. See the [step-by-step local voice guide](docs/LocalVoiceInstallationEn.md).
+Use **Settings → Voice** to enable voice output and **Settings → Microphone** to select an input device and speech recognition. Local voice models, ASR, and related dependencies are installed through **AI Hub**. For local voice setup, use the [step-by-step guide](docs/LocalVoiceInstallationEn.md).
 
 ### Images, screen, and camera
 
@@ -93,13 +93,13 @@ When needed, NeuroMita can use an image, screen content, or camera input as addi
 
 ### AI Hub
 
-**AI Hub** is the built-in area for installing and updating local components, including voice models, ASR, and related dependencies. A regular text chat does not require local components.
+**AI Hub** is the built-in area for installing and updating local components, including voice models, ASR, and related dependencies. A regular text chat can be started without any local components.
 
 ### Conversation memory
 
-NeuroMita stores conversation history and can retain important context during long chats. When a conversation becomes too long for the model context window, the system compresses older messages into a short summary in the background while keeping recent messages available.
+NeuroMita stores conversation history and can retain important context during long chats. When a conversation becomes too long for the model context window, the system compresses older messages into a short summary in the background while keeping recent messages available for the conversation.
 
-RAG can find relevant fragments from history and memories, while the knowledge graph connects entities and relationships. This is optional fine-tuning: a regular chat works with the default memory system. See the [RAG and knowledge graph guide](docs/RAG_Guide_EN.md).
+RAG can additionally find relevant fragments from history and memories, while the knowledge graph connects entities and relationships. This is optional fine-tuning: a regular chat works with the default memory system. See the [RAG Guide](docs/RAG_Guide_EN.md) for details.
 
 ## Getting help
 
@@ -115,8 +115,11 @@ RAG can find relevant fragments from history and memories, while the knowledge g
 - **[Atm4x](https://github.com/Atm4x)** (`_atm4x`) — lead developer and chief architect of the new version of the mod.
 - **[mactep_kot_](https://github.com/Macter-Kot)** — focused Python and Unity fixes, prompting, and testing.
 
+---
+
 <details>
-<summary>Contributors to earlier stages</summary>
+<summary><b>Contributors to earlier stages</b></summary>
+⠀
 
 - **[ejichek](https://github.com/Ejichek0)** — major contribution to the Unity build, including the death screen.
 - **[vlad2830](https://github.com/vlad2830)** — C# MelonLoader mod and Python parts.
@@ -125,42 +128,70 @@ RAG can find relevant fragments from history and memories, while the knowledge g
 
 </details>
 
+---
+
 <details>
-<summary>Animations and characters</summary>
+<summary><b>Animations and characters</b></summary>
+⠀
 
 - **JPAV** — Mita prefab setup.
 - **MaxDel** (`max.del`) — Mita animations.
-- **Feanor** (`feanorqq`) and **Tkost** — Kind Mita prompts.
-- **Josefummi** — Short-Haired Mita.
-- **gad991** — Cap Mita.
-- **depikoov** — Sweet Mita.
-- **DemoNicanT** (`demonicant`) — Ghost Mita.
-
-Thank you to **smarkloker**, author of New Story Mod, for cooperation and sharing experience. We wish him success with the upcoming alpha. Thanks to **GermanPlaygroud** and all testers who help find bugs and anomalies.
-
+- **Alex Sh.** (`alexxdream`) — Mita animations.
+  
 </details>
 
+---
+
 <details>
-<summary>Special thanks</summary>
+<summary><b>Prompt writers</b></summary>
+⠀
+
+- **Feanor** (`feanorqq`) and **Tkost** — Kind Mita prompts.
+- **Josefumo** (`josefummi`) — Short-Haired Mita.
+- **Gad** (`gad991`) — Cap Mita.
+- **! Depikoov** (`depikoov`) — Mila, Sleepy Mita.
+- **DemoNicanT** (`demonicant`) — Ghost Mita.
+  
+</details>
+
+---
+
+<details>
+<summary><b>Testers</b></summary>
+⠀
+
+- **Nazarlo** (`nazarlo`)
+- **SuperAngel** (`superangel25`)
+- **#1 crazy Mita hater** (`valtiata`)
+- **Unaligneds** (`fiery_crotch_669`)
+</details>
+
+---
+
+<details>
+<summary><b>Special thanks</b></summary>
+⠀
 
 - **Sutherex** — introduced OpenRouter, helps with organisation and neural-network topics, and created the logo.
 - **Dr. Couch Science** — one of the earliest testers of the chatbot; helped with many ideas, advice, and administration.
 - **Romancho** — helps structure many ideas, moderates the community, and answers questions.
-- **FlyOfFly** — useful Unity advice and early text-input work.
+- **FlyOfFly** — useful Unity advice and development work, including help with the early text-input implementation.
 - **LoLY3_0** — the cat on a watermelon.
 - **Mr. Sub** — his video helped many people discover the project.
-- All early testers after the video release, especially **smarkloker**.
-- **スノー** (`v1nn1ty`) and the **CrazyMitaBot** project — pull requests, bot communication, and contributions that improved voice availability in 2025.
+- All testers from the first days after the video release, especially **smarkloker**.
+- **スノー** (`v1nn1ty`) and the **CrazyMitaBot** project — for pull requests, bot communication, and contributions to voice availability in 2025.
 - **KASTA**.
 
 </details>
 
-**Special thanks to Fluttershy-2013** for the largest contribution in the available support statistics.
+---
 
 <details>
-<summary><strong>Top supporters</strong></summary>
-
+<summary><strong>Top donors</strong></summary>
+⠀
+  
 This ranking is based on the total subscription amount in the available support statistics; the order may change over time.
+⠀
 
 1. **Fluttershy-2013**
 2. **shr3der4**
@@ -175,12 +206,18 @@ This ranking is based on the total subscription amount in the available support 
 
 </details>
 
+---
+**Special thanks to Fluttershy-2013** for the largest contribution to supporting the project.
+
+Thank you to **smarkloker**, author of New Story Mod, for cooperation and sharing experience. We wish him success with the upcoming alpha. Thanks to **GermanPlaygroud** and all testers who help find bugs and anomalies.
+
 ### Support the project
 
 [Boosty VinerX](https://boosty.to/vinerx)
 
 <details>
 <summary>Cryptocurrency addresses</summary>
+⠀
 
 - Ethereum (ETH), USDT (ETH): `0xd1b91ff711f1315053f3C89EB9256eABF3Ee0377`
 - USDT (TRON), Tron (TRX): `THi7QcfNyEmnaRzzoCpM6wyhhxvPBb5mJg`
