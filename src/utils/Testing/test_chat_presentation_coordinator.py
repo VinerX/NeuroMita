@@ -145,6 +145,7 @@ def test_history_projection_waits_for_active_stream_and_requests_fresh_snapshot_
     coordinator = ChatPresentationCoordinator()
     ticket = coordinator.begin_history_load("Crazy")
     coordinator.begin_stream("stream-1")
+    coordinator.mark_stream_mounted("stream-1")
 
     plan = coordinator.plan_history_projection(
         request_id=ticket.request_id,
@@ -351,6 +352,8 @@ def test_scoped_stream_blocks_own_history_until_last_stream_finishes() -> None:
     coordinator = ChatPresentationCoordinator()
     coordinator.begin_stream("crazy-stream-1", character_id="Crazy")
     coordinator.begin_stream("crazy-stream-2", character_id="Crazy")
+    coordinator.mark_stream_mounted("crazy-stream-1")
+    coordinator.mark_stream_mounted("crazy-stream-2")
 
     ticket = coordinator.begin_history_load("Crazy")
     plan = coordinator.plan_history_projection(
@@ -369,6 +372,7 @@ def test_scoped_stream_blocks_own_history_until_last_stream_finishes() -> None:
 def test_finishing_inactive_character_stream_does_not_reload_active_character() -> None:
     coordinator = ChatPresentationCoordinator()
     coordinator.begin_stream("crazy-stream", character_id="Crazy")
+    coordinator.mark_stream_mounted("crazy-stream")
 
     ticket = coordinator.begin_history_load("Crazy")
     plan = coordinator.plan_history_projection(
@@ -399,6 +403,7 @@ def test_stream_rendering_is_isolated_by_character() -> None:
 def test_unscoped_stream_conservatively_blocks_history_projection() -> None:
     coordinator = ChatPresentationCoordinator()
     coordinator.begin_stream("legacy-stream")
+    coordinator.mark_stream_mounted("legacy-stream")
 
     ticket = coordinator.begin_history_load("Kind")
     plan = coordinator.plan_history_projection(
@@ -417,6 +422,8 @@ def test_multiple_unscoped_streams_reload_only_after_last_one_finishes() -> None
     coordinator = ChatPresentationCoordinator()
     coordinator.begin_stream("legacy-1")
     coordinator.begin_stream("legacy-2")
+    coordinator.mark_stream_mounted("legacy-1")
+    coordinator.mark_stream_mounted("legacy-2")
 
     ticket = coordinator.begin_history_load("Kind")
     plan = coordinator.plan_history_projection(
@@ -429,3 +436,94 @@ def test_multiple_unscoped_streams_reload_only_after_last_one_finishes() -> None
 
     assert coordinator.finish_stream("legacy-1", current_character_id="Kind") is False
     assert coordinator.finish_stream("legacy-2", current_character_id="Kind") is True
+
+
+def test_unmounted_stream_allows_switch_back_snapshot_and_keeps_full_transcript() -> None:
+    coordinator = ChatPresentationCoordinator()
+    coordinator.begin_stream(
+        "crazy-stream",
+        character_id="Crazy",
+        role="think",
+        speaker_name="Crazy Mita",
+    )
+    coordinator.record_stream_chunk(
+        "crazy-stream",
+        "first thought ",
+        role="think",
+        character_id="Crazy",
+    )
+    coordinator.mark_stream_mounted("crazy-stream")
+
+    coordinator.mark_streams_unmounted()
+    coordinator.begin_stream(
+        "crazy-stream",
+        character_id="Crazy",
+        role="assistant",
+        speaker_name="Crazy Mita",
+    )
+    coordinator.record_stream_chunk(
+        "crazy-stream",
+        "first answer ",
+        role="assistant",
+        character_id="Crazy",
+    )
+    coordinator.record_stream_chunk(
+        "crazy-stream",
+        "second answer",
+        role="assistant",
+        character_id="Crazy",
+    )
+
+    ticket = coordinator.begin_history_load("Crazy")
+    plan = coordinator.plan_history_projection(
+        request_id=ticket.request_id,
+        response_character_id="Crazy",
+        current_character_id="Crazy",
+        history_messages=[
+            {"role": "assistant", "content": "older", "message_id": "out:older"},
+        ],
+    )
+
+    assert plan.accepted is True
+    assert plan.retry_after_stream is True
+    replay = coordinator.stream_replay("crazy-stream")
+    assert replay is not None
+    assert [(phase.role, phase.text) for phase in replay.phases] == [
+        ("think", "first thought "),
+        ("assistant", "first answer second answer"),
+    ]
+    assert coordinator.is_stream_mounted("crazy-stream") is False
+    assert coordinator.finish_stream("crazy-stream", current_character_id="Crazy") is True
+
+
+def test_history_snapshot_deduplicates_persisted_thinking_for_same_message_id() -> None:
+    coordinator = ChatPresentationCoordinator()
+    ticket = coordinator.begin_history_load("Crazy")
+    think = ChatRenderCommand(
+        role="think",
+        content=[
+            {"type": "meta", "speaker": "Crazy Mita"},
+            {"type": "text", "text": "private reasoning"},
+        ],
+        character_id="Crazy",
+        message_id="out:task-1",
+    )
+    assert coordinator.record_live(think, current_character_id="Crazy") is True
+
+    plan = coordinator.plan_history_projection(
+        request_id=ticket.request_id,
+        response_character_id="Crazy",
+        current_character_id="Crazy",
+        history_messages=[
+            {
+                "role": "assistant",
+                "content": "visible answer",
+                "thinking": "private reasoning",
+                "message_id": "out:task-1",
+            }
+        ],
+    )
+
+    assert plan.accepted is True
+    assert plan.replay == ()
+    assert coordinator.record_live(think, current_character_id="Crazy") is False
