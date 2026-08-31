@@ -272,6 +272,41 @@ class ChatRequestPipelineTests(unittest.TestCase):
         self.assertIsNone(generation.request.stream_callback)
         self.assertTrue(callable(generation.request.stream_event_callback))
 
+    def test_stream_ui_events_keep_character_scope(self):
+        generation = _StreamingGeneration()
+        services().register(GenerationService, generation, replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": True})
+        seen: list[tuple[str, dict]] = []
+        subscriptions = [
+            self.bus.subscribe(
+                event_name,
+                lambda event, name=event_name: seen.append((name, dict(event.data or {}))),
+                weak=False,
+            )
+            for event_name in (
+                Events.GUI.PREPARE_STREAM_UI,
+                Events.GUI.APPEND_STREAM_CHUNK_UI,
+                Events.GUI.FINISH_STREAM_UI,
+            )
+        ]
+        try:
+            result = self.controller._run_request("hi", character_id="Crazy")
+            self.bus.flush(2)
+        finally:
+            for subscription in subscriptions:
+                subscription.close()
+
+        self.assertEqual(result, "hello")
+        self.assertEqual(
+            [name for name, _payload in seen],
+            [
+                Events.GUI.PREPARE_STREAM_UI,
+                Events.GUI.APPEND_STREAM_CHUNK_UI,
+                Events.GUI.FINISH_STREAM_UI,
+            ],
+        )
+        self.assertTrue(all(payload.get("character_id") == "Crazy" for _, payload in seen))
+
     def test_request_keeps_its_own_unity_context_snapshot(self):
         generation = _StreamingGeneration()
         services().register(GenerationService, generation, replace=True)

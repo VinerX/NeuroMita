@@ -18,7 +18,7 @@ class ChatController(BaseController):
         # старте первый пересчёт (из _on_chat_ui_ready) случается ДО готовности
         # персонажа/модели, поэтому окно контекста залипало на дефолтных 32к, а
         # оценка — на 0. Смена персонажа тоже меняет и контекст, и окно модели.
-        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_update_token_count, weak=False)
+        self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_changed, weak=False)
         self.event_bus.subscribe(Events.GUI.INSERT_TEXT_TO_INPUT, self._on_insert_text_to_input, weak=False)
         self.event_bus.subscribe(Events.GUI.SEND_TEXT_MESSAGE, self._on_send_text_message, weak=False)
         self.event_bus.subscribe(Events.GUI.CHECK_USER_ENTRY_EXISTS, self._on_check_user_entry_exists, weak=False)
@@ -32,13 +32,20 @@ class ChatController(BaseController):
         else:
             logger.error("ChatController: view или user_entry не найден!")
 
-    def stream_callback_handler(self, chunk: str, role: str = "assistant", stream_id: str = "default"):
+    def stream_callback_handler(
+        self,
+        chunk: str,
+        role: str = "assistant",
+        stream_id: str = "default",
+        character_id: str = "",
+    ):
         logger.debug(f"ChatController: stream_callback_handler [{role}/{stream_id}]: {chunk[:50]}...")
         if self.view:
             self.view.append_stream_chunk_signal.emit({
                 "stream_id": stream_id,
                 "chunk": chunk,
                 "role": role,
+                "character_id": str(character_id or ""),
             })
         else:
             logger.error("ChatController: view не найден!")
@@ -139,13 +146,20 @@ class ChatController(BaseController):
         chunk = data.get('chunk', '')
         role = data.get('role', 'assistant')
         stream_id = str(data.get('stream_id') or 'default')
-        self.stream_callback_handler(chunk, role, stream_id)
+        character_id = str(data.get('character_id') or '')
+        self.stream_callback_handler(chunk, role, stream_id, character_id)
 
     def _on_finish_stream_ui(self, event: Event):
         self.finish_stream(event.data or {})
 
     def _on_update_token_count(self, event: Event):
         self.update_token_count()
+
+    def _on_character_changed(self, event: Event):
+        self.update_token_count()
+        signal = getattr(self.view, "load_chat_history_signal", None) if self.view else None
+        if signal is not None:
+            signal.emit()
 
     def _on_update_token_count_ui(self, event: Event):
         self.update_token_count()

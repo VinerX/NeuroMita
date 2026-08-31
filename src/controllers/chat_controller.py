@@ -426,6 +426,7 @@ class ChatController(GenerationActivityService):
                         "stream_id": stream_id,
                         "chunk": text,
                         "role": role,
+                        "character_id": character_id or "",
                     }, delivery=EventDelivery.ORDERED)
 
             stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
@@ -872,7 +873,11 @@ class ChatController(GenerationActivityService):
                 try:
                     self.event_bus.emit(
                         Events.GUI.FINISH_STREAM_UI,
-                        {"stream_id": stream_id, "aborted": True},
+                        {
+                            "stream_id": stream_id,
+                            "character_id": character_id or "",
+                            "aborted": True,
+                        },
                         delivery=EventDelivery.ORDERED,
                     )
                 except Exception:

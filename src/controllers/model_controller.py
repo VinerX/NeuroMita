@@ -2405,7 +2405,7 @@ class ModelController(GenerationService, ModelStateService):
             "response": f"[Tool: {tool_name}]\n{tool_result}",
             "is_initial": False,
             "emotion": "",
-            "character_id": "",
+            "character_id": char_id or "",
             "character_name": "",
             "speaker_name": "",
         }, delivery=EventDelivery.ORDERED)

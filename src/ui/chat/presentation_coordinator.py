@@ -75,8 +75,8 @@ class ChatPresentationCoordinator:
         )
         self._history_projected: dict[tuple[str, str], set[tuple[Any, ...]]] = {}
         self._active_history_load: HistoryLoadTicket | None = None
-        self._active_streams: set[str] = set()
-        self._reload_after_stream = False
+        self._active_streams: dict[str, str] = {}
+        self._reload_after_stream: set[str] = set()
 
     @staticmethod
     def _character_key(character_id: str | None) -> str:
@@ -145,14 +145,39 @@ class ChatPresentationCoordinator:
     def has_active_streams(self) -> bool:
         return bool(self._active_streams)
 
-    def record_live(self, command: ChatRenderCommand) -> bool:
-        """Record a live render command and return whether the widget should render it."""
+    @classmethod
+    def belongs_to_surface(cls, character_id: str | None, current_character_id: str | None) -> bool:
+        """Return whether an event belongs to the currently projected chat surface.
+
+        Empty ids are intentionally treated as unscoped for compatibility with
+        legacy/global UI events. Stable conversation events should carry a
+        character id, so a concrete mismatch is never allowed to leak into the
+        active character's widget tree.
+        """
+        event_key = cls._character_key(character_id)
+        current_key = cls._character_key(current_character_id)
+        return not (event_key and current_key and event_key != current_key)
+
+    def record_live(
+        self,
+        command: ChatRenderCommand,
+        *,
+        current_character_id: str | None = None,
+    ) -> bool:
+        """Record a live command and decide whether the active widget should render it.
+
+        Inactive-character events are still retained for reconciliation. This is
+        important when a response completes after the user switches characters:
+        it must not appear in the new chat, but it still has to be available for
+        replay if persistence/history has not caught up when the user switches
+        back.
+        """
         revision = self._next_revision()
         command = command.clone()
         message_id = self._message_key(command.message_id)
         if not message_id:
             self._ephemeral.append((revision, command))
-            return True
+            return self.belongs_to_surface(command.character_id, current_character_id)
 
         key = (self._character_key(command.character_id), message_id)
         projected_signatures = self._history_projected.get(key)
@@ -172,7 +197,7 @@ class ChatPresentationCoordinator:
         state.commands.append((revision, command))
         while len(self._stable) > self._max_stable_messages:
             self._stable.popitem(last=False)
-        return True
+        return self.belongs_to_surface(command.character_id, current_character_id)
 
     def acknowledge_persisted(self, *, message_ids: Iterable[str], character_ids: Iterable[str]) -> None:
         ids = {self._message_key(value) for value in message_ids if self._message_key(value)}
@@ -229,17 +254,55 @@ class ChatPresentationCoordinator:
         self._history_projected.clear()
         self._active_history_load = None
         self._active_streams.clear()
-        self._reload_after_stream = False
+        self._reload_after_stream.clear()
 
-    def begin_stream(self, stream_id: str) -> None:
-        self._active_streams.add(str(stream_id or "default"))
+    def begin_stream(self, stream_id: str, *, character_id: str = "") -> None:
+        self._active_streams[str(stream_id or "default")] = self._character_key(character_id)
 
-    def finish_stream(self, stream_id: str) -> bool:
-        self._active_streams.discard(str(stream_id or "default"))
-        if self._active_streams or not self._reload_after_stream:
+    def stream_character_key(self, stream_id: str) -> str:
+        return self._active_streams.get(str(stream_id or "default"), "")
+
+    def should_render_stream(
+        self,
+        stream_id: str,
+        *,
+        current_character_id: str | None,
+        character_id: str | None = None,
+    ) -> bool:
+        owner_key = self.stream_character_key(stream_id) or self._character_key(character_id)
+        current_key = self._character_key(current_character_id)
+        return not (owner_key and current_key and owner_key != current_key)
+
+    def _has_active_stream_for(self, character_key: str) -> bool:
+        if not self._active_streams:
             return False
-        self._reload_after_stream = False
-        return True
+        if not character_key:
+            return True
+        return any(not owner_key or owner_key == character_key for owner_key in self._active_streams.values())
+
+    def finish_stream(self, stream_id: str, *, current_character_id: str | None = None) -> bool:
+        stream_key = str(stream_id or "default")
+        owner_key = self._active_streams.pop(stream_key, None)
+        if owner_key is None:
+            return False
+        if not owner_key:
+            current_key = self._character_key(current_character_id)
+            ready_keys = {
+                key
+                for key in self._reload_after_stream
+                if not self._has_active_stream_for(key)
+            }
+            self._reload_after_stream.difference_update(ready_keys)
+            return bool(ready_keys and (not current_key or current_key in ready_keys or "" in ready_keys))
+
+        if owner_key not in self._reload_after_stream:
+            return False
+        if self._has_active_stream_for(owner_key):
+            return False
+
+        self._reload_after_stream.discard(owner_key)
+        current_key = self._character_key(current_character_id)
+        return not current_key or current_key == owner_key
 
     def plan_history_projection(
         self,
@@ -265,9 +328,9 @@ class ChatPresentationCoordinator:
             self._active_history_load = None
             return HistoryProjectionPlan(False, reason="inactive_character")
 
-        if self._active_streams:
+        if self._has_active_stream_for(projection_key or current_key):
             self._active_history_load = None
-            self._reload_after_stream = True
+            self._reload_after_stream.add(projection_key or current_key)
             return HistoryProjectionPlan(
                 False,
                 retry_after_stream=True,

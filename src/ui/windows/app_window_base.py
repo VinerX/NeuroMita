@@ -1201,7 +1201,11 @@ class AppWindowBase(QMainWindow):
     def _on_stream_finish(self, data=None):
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
-        if self._chat_presentation.finish_stream(stream_id):
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if self._chat_presentation.finish_stream(
+            stream_id,
+            current_character_id=current_character_id,
+        ):
             QTimer.singleShot(0, self.load_chat_history)
 
     def _on_reload_prompts_success(self):
@@ -1571,7 +1575,11 @@ class AppWindowBase(QMainWindow):
 
     def _on_render_chat_event_signal(self, data: dict):
         command = self._command_from_render_payload(data if isinstance(data, dict) else {})
-        if not self._chat_presentation.record_live(command):
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=current_character_id,
+        ):
             return False
         return self._render_chat_command(command)
 
@@ -1607,7 +1615,10 @@ class AppWindowBase(QMainWindow):
             message_time=str(message_time or ""),
             insert_at_start=bool(insert_at_start),
         )
-        if not self._chat_presentation.record_live(command):
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=command.character_id,
+        ):
             return False
         return self._render_chat_command(command)
 
@@ -1625,9 +1636,17 @@ class AppWindowBase(QMainWindow):
     def _on_prepare_stream_signal(self, data=None):
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
         presentation = getattr(self, "_chat_presentation", None)
         if presentation is not None:
-            presentation.begin_stream(stream_id)
+            presentation.begin_stream(stream_id, character_id=character_id)
+            if not presentation.should_render_stream(
+                stream_id,
+                current_character_id=current_character_id,
+                character_id=character_id,
+            ):
+                return False
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
@@ -1643,11 +1662,20 @@ class AppWindowBase(QMainWindow):
             return False
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {"chunk": data}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            return False
         return message_renderer.append_stream_chunk_slot(
             self._chat_render_context,
             payload.get("chunk"),
             role=payload.get("role", "assistant"),
-            stream_id=str(payload.get("stream_id") or "default"),
+            stream_id=stream_id,
         )
 
     def _finish_stream_slot(self, data=None):
@@ -1656,6 +1684,15 @@ class AppWindowBase(QMainWindow):
         from ui.chat import message_renderer
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
+            return False
         structured = payload.get("structured_data")
         if structured:
             message_renderer.attach_structured_to_stream(
@@ -1667,7 +1704,7 @@ class AppWindowBase(QMainWindow):
             self._chat_render_context,
             stream_id=stream_id,
             message_id=str(payload.get("message_id") or ""),
-            character_id=str(payload.get("character_id") or ""),
+            character_id=character_id,
             sample_id=str(payload.get("sample_id") or ""),
             context_snapshot_id=str(payload.get("context_snapshot_id") or ""),
         )
