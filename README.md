@@ -115,8 +115,11 @@ RAG помогает дополнительно находить релеван�
 - **[Atm4x](https://github.com/Atm4x)** (`_atm4x`) — ведущий разработчик и главный архитектор новой версии мода.
 - **[mactep_kot_](https://github.com/Macter-Kot)** — точечные правки в Python и Unity, промптинг и тестирование.
 
+---
+
 <details>
-<summary>Участники предыдущих этапов</summary>
+<summary><b>Участники предыдущих этапов</b></summary>
+⠀
 
 - **[ejichek](https://github.com/Ejichek0)** — большой вклад в Unity-билд, включая экран смерти.
 - **[vlad2830](https://github.com/vlad2830)** — C#-часть MelonLoader-мода и Python-часть.
@@ -125,24 +128,49 @@ RAG помогает дополнительно находить релеван�
 
 </details>
 
+---
+
 <details>
-<summary>Анимации и персонажи</summary>
+<summary><b>Анимации и персонажи</b></summary>
+⠀
 
 - **JPAV** — настройка префабов Мит.
 - **MaxDel** (`max.del`) — анимации Миты.
 - **Alex Sh.** (`alexxdream`) — анимации Миты.
-- **Feanor** (`feanorqq`) и **Tkost** — промпты Доброй Миты.
-- **Josefummi** — Коротковолосая Мита.
-- **gad991** — Кепочка.
-- **depikoov** — Мила.
-- **DemoNicanT** (`demonicant`) — Призрачная Мита.
-
-Спасибо **smarkloker**, автору New Story Mod, за сотрудничество и обмен опытом. Желаем успеха его грядущей альфе. Спасибо **GermanPlaygroud** и всем тестировщикам, которые помогают находить баги и аномалии.
-
+  
 </details>
 
+---
+
 <details>
-<summary>Особая благодарность</summary>
+<summary><b>Промптеры</b></summary>
+⠀
+
+- **Feanor** (`feanorqq`) и **Tkost** — промпты Доброй Миты.
+- **Josefumo** (`josefummi`) — Коротковолосая Мита.
+- **Gad** (`gad991`) — Кепочка.
+- **! Depikoov** (`depikoov`) — Мила, Сонная Мита.
+- **DemoNicanT** (`demonicant`) — Призрачная Мита.
+  
+</details>
+
+---
+
+<details>
+<summary><b>Тестировщики</b></summary>
+⠀
+
+- **Nazarlo** (`nazarlo`)
+- **SuperAngel** (`superangel25`)
+- **#1 crazy Mita hater** (`valtiata`)
+- **Unaligneds** (`fiery_crotch_669`)
+</details>
+
+---
+
+<details>
+<summary><b>Особая благодарность</b></summary>
+⠀
 
 - **Sutherex** — показал OpenRouter, помогает организационно и с темой нейросетей, а также сделал логотип.
 - **Доктор Диванных Наук** — один из первых тестеров ещё чат-бота; помог множеством советов, идей и администрированием.
@@ -156,12 +184,14 @@ RAG помогает дополнительно находить релеван�
 
 </details>
 
-**Особая благодарность Fluttershy-2013** за крупнейшую поддержку проекта.
+---
 
 <details>
 <summary><strong>Топ-донатеры</strong></summary>
-
+⠀
+  
 Рейтинг составлен по общей сумме подписок в доступной статистике поддержки; порядок может меняться.
+⠀
 
 1. **Fluttershy-2013**
 2. **shr3der4**
@@ -176,12 +206,18 @@ RAG помогает дополнительно находить релеван�
 
 </details>
 
+---
+**Особая благодарность Fluttershy-2013** за крупнейшую поддержку проекта.
+
+Спасибо **smarkloker**, автору New Story Mod, за сотрудничество и обмен опытом. Желаем успеха его грядущей альфе. Спасибо **GermanPlaygroud** и всем тестировщикам, которые помогают находить баги и аномалии.
+
 ### Поддержать проект
 
 [Boosty VinerX](https://boosty.to/vinerx)
 
 <details>
 <summary>Криптовалютные адреса</summary>
+⠀
 
 - Ethereum (ETH), USDT (ETH): `0xd1b91ff711f1315053f3C89EB9256eABF3Ee0377`
 - USDT (TRON), Tron (TRX): `THi7QcfNyEmnaRzzoCpM6wyhhxvPBb5mJg`
