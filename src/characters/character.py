@@ -13,6 +13,7 @@ from core.character_locks import character_lock
 from core.events import get_event_bus, Events
 from core.safe_eval import safe_eval_expression
 from core.services import use
+from domain.dialogue_identity import DialogueActorKind
 from services.contracts import AppVarsService, HistoryService, SettingsService
 
 from managers.game_manager import GameManager
@@ -56,6 +57,7 @@ def _evaluate_custom_param_formula(
 
 
 class Character:
+    dialogue_actor_kind = DialogueActorKind.CHARACTER
     BASE_DEFAULTS: Dict[str, Any] = {
         "attitude": 60.0,
         "boredom": 10.0,

@@ -8,6 +8,7 @@ from collections import deque
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
+from domain.dialogue_identity import DialogueActorKind
 from services.contracts import CharacterRegistry, SettingsService
 
 from managers.task_manager import TaskStatus
@@ -68,6 +69,7 @@ class ServerEchoSuppressor:
         *,
         client_id: str,
         sender: str,
+        sender_kind: DialogueActorKind,
         text: str,
         incoming_message_id: Optional[str] = None,
         origin_message_id: Optional[str] = None,
@@ -86,7 +88,7 @@ class ServerEchoSuppressor:
                     return False
                 seen.append(incoming_message_id)
 
-            if sender == "Player":
+            if sender_kind is DialogueActorKind.PLAYER:
                 return True
 
             if origin_message_id:
@@ -600,29 +602,30 @@ class ServerController:
         p = event.data or {}
         client_id = str(p.get("client_id") or "")
         sender = str(p.get("sender") or "Player")
+        sender_kind = p.get("sender_kind")
         text = str(p.get("text") or "")
         incoming_message_id = p.get("message_id")
         origin_message_id = p.get("origin_message_id")
 
-        if not text.strip():
+        if not text.strip() or sender_kind is not DialogueActorKind.PLAYER:
             return
 
         if not self.echo_suppressor.should_echo_incoming(
             client_id=client_id,
             sender=sender,
+            sender_kind=sender_kind,
             text=text,
             incoming_message_id=str(incoming_message_id) if incoming_message_id else None,
             origin_message_id=str(origin_message_id) if origin_message_id else None,
         ):
             return
 
-        ui_role = "user" if sender == "Player" else "assistant"
         self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
-            "role": ui_role,
+            "role": "user",
             "response": text,
             "is_initial": False,
             "emotion": "",
-            "speaker_name": ("" if sender == "Player" else sender),
+            "speaker_name": "",
         })
 
 

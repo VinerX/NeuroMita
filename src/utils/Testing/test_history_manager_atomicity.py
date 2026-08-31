@@ -12,7 +12,7 @@ if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
 from managers.database_manager import DatabaseManager
-from managers.history_manager import HistoryManager
+from managers.history_manager import HistoryBatchWriteError, HistoryManager
 
 
 class _FakeExecutor:
@@ -354,26 +354,26 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
             return original_insert(cursor, msg=msg, is_active=is_active, dedupe=dedupe)
 
         with patch.object(self.hm, "_insert_history_row_tx", side_effect=failing_rich):
-            row_ids = self.hm.add_messages(
-                [
-                    {
-                        "message_id": "in:failed-turn",
-                        "turn_id": "turn:failed-turn",
-                        "role": "user",
-                        "content": "question",
-                        "time": "01.01.2026 12:01:00",
-                    },
-                    {
-                        "message_id": "out:failed-turn",
-                        "turn_id": "turn:failed-turn",
-                        "role": "assistant",
-                        "content": "answer",
-                        "time": "01.01.2026 12:01:01",
-                    },
-                ]
-            )
+            with self.assertRaises(HistoryBatchWriteError):
+                self.hm.add_messages(
+                    [
+                        {
+                            "message_id": "in:failed-turn",
+                            "turn_id": "turn:failed-turn",
+                            "role": "user",
+                            "content": "question",
+                            "time": "01.01.2026 12:01:00",
+                        },
+                        {
+                            "message_id": "out:failed-turn",
+                            "turn_id": "turn:failed-turn",
+                            "role": "assistant",
+                            "content": "answer",
+                            "time": "01.01.2026 12:01:01",
+                        },
+                    ]
+                )
 
-        self.assertEqual(row_ids, [])
         loaded = self.hm.load_history()["messages"]
         self.assertEqual([item["content"] for item in loaded], ["existing"])
 
