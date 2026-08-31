@@ -83,6 +83,8 @@ def test_live_echo_boundary_projects_resolved_player_as_user() -> None:
                 "sender_kind": DialogueActorKind.PLAYER,
                 "text": "Actual player line",
                 "message_id": "request-1",
+                "presentation_message_id": "in:request-1",
+                "character_id": "Crazy",
             },
         )
     )
@@ -96,6 +98,8 @@ def test_live_echo_boundary_projects_resolved_player_as_user() -> None:
                 "is_initial": False,
                 "emotion": "",
                 "speaker_name": "",
+                "message_id": "in:request-1",
+                "character_id": "Crazy",
             },
         )
     ]

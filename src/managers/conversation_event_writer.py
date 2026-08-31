@@ -4,17 +4,18 @@ from core.error_utils import format_exception
 import base64
 import datetime
 import os
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from main_logger import logger
 from domain.dialogue_identity import DialogueActorKind
+from domain.conversation_message_ids import ConversationMessageIds
 from services.dialogue_identity_resolver import DialogueIdentityResolver
 
 
 @dataclass(frozen=True, slots=True)
 class ConversationWriteResult:
+    user_message_id: str
     assistant_message_id: str
     committed_recipient_ids: tuple[str, ...]
     failed_recipient_ids: tuple[str, ...]
@@ -94,12 +95,6 @@ class ConversationEventWriter:
             seen.add(key)
             resolved.append(canonical_id)
         return resolved
-
-    def _make_message_id(self, prefix: str, base: str | None = None) -> str:
-        base_s = str(base or "").strip()
-        if base_s:
-            return f"{prefix}:{base_s}"
-        return f"{prefix}:{uuid.uuid4().hex}"
 
     def _append_history_message(self, ch_ref, msg: dict) -> bool:
         if ch_ref is None or not isinstance(msg, dict):
@@ -255,7 +250,7 @@ class ConversationEventWriter:
             chunks.append(image_chunk)
 
         msg = {
-            "message_id": self._make_message_id("in", req_id),
+            "message_id": ConversationMessageIds.incoming(req_id),
             "role": "user",
             "speaker": speaker,
             "sender": speaker,
@@ -288,7 +283,7 @@ class ConversationEventWriter:
         turn_id: str,
     ) -> dict:
         msg = {
-            "message_id": self._make_message_id("out", task_uid),
+            "message_id": ConversationMessageIds.assistant(task_uid),
             "role": "assistant",
             "speaker": speaker,
             "sender": speaker,
@@ -394,7 +389,7 @@ class ConversationEventWriter:
             responder_character_id=responder_character_id,
         )
 
-        turn_id = self._make_message_id("turn", task_uid or req_id)
+        turn_id = ConversationMessageIds.turn(task_uid or req_id)
 
         user_event = None
         if resolved_speaker.kind is DialogueActorKind.PLAYER or not origin_message_id:
@@ -447,6 +442,7 @@ class ConversationEventWriter:
 
         committed, failed = self._fanout_turn(user_event, assistant_event, history_recipients)
         return ConversationWriteResult(
+            user_message_id=str((user_event or {}).get("message_id") or ""),
             assistant_message_id=str(assistant_event.get("message_id") or ""),
             committed_recipient_ids=committed,
             failed_recipient_ids=failed,

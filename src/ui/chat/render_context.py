@@ -39,6 +39,11 @@ class ChatRenderContext:
     def set_font_size(self, font_size: int) -> None:
         self._chat_font_size = int(font_size)
 
+    def reset_transient_state(self) -> None:
+        self._think_block_widgets.clear()
+        self._think_block_counter = 0
+        self._stream_render_states.clear()
+
     def _get_setting(self, key: str, default: Any = None) -> Any:
         return self._settings_getter(str(key), default)
 

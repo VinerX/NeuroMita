@@ -606,6 +606,8 @@ class ServerController:
         text = str(p.get("text") or "")
         incoming_message_id = p.get("message_id")
         origin_message_id = p.get("origin_message_id")
+        presentation_message_id = str(p.get("presentation_message_id") or "")
+        character_id = str(p.get("character_id") or "")
 
         if not text.strip() or sender_kind is not DialogueActorKind.PLAYER:
             return
@@ -626,6 +628,8 @@ class ServerController:
             "is_initial": False,
             "emotion": "",
             "speaker_name": "",
+            "message_id": presentation_message_id,
+            "character_id": character_id,
         })
 
 
