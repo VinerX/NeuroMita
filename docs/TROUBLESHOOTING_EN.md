@@ -21,10 +21,41 @@ If this does not help, attach the beginning of `NeuroMitaLogs.log` and the text 
 
 On the **Home** page, NeuroMita shows the status of the backend and Unity components separately.
 
+### Should I keep the launcher open while Unity is running?
+
+Yes. Keep the NeuroMita launcher open while playing: it runs the backend and maintains Unity's connection to the AI. You can minimize the window.
+
 - If Unity is missing, select its installation and click the main button.
 - If an update is available, select the required component and click **Update**.
 - Close an already running Unity game before updating.
 - Do not extract a new version over a running program.
+
+### Manual Unity installation
+
+Use this fallback if the built-in Unity download ends with an error. Download archives only from the [NeuroMita releases page](https://github.com/VinerX/NeuroMita/releases).
+
+Unity and the Python/backend files must stay under one shared NeuroMita folder, but they must not be merged together. The default layout is:
+
+```text
+NeuroMita\
+├─ Launcher.exe
+├─ NeuroMita.pyz
+├─ libs\python\python.exe
+└─ NeuroMita-Unity\
+   ├─ <game>.exe
+   └─ <game>_Data\
+```
+
+Do not move `Launcher.exe`, `NeuroMita.pyz`, or `libs` into `NeuroMita-Unity`, and do not extract Unity over the Python/backend files.
+
+1. Close Unity and the NeuroMita launcher. If **Settings → Updates** already has a **Unity folder** configured, note that path. By default, the folder is `NeuroMita-Unity` next to `Launcher.exe`.
+2. On the release page, download the asset named `UnityBuild-<version>.zip`. Choose the release the launcher offers to install; do not download `PythonBuild-...` or a `Source code` archive.
+3. Extract the archive into an empty temporary folder. Do not run the game from the archive or extract it into the NeuroMita root folder.
+4. If the destination folder contains a failed installation, rename it, for example to `NeuroMita-Unity.backup`, so it can be restored if needed. Do not merge the new files into the old folder.
+5. Copy the contents of the extracted archive into the destination folder. Its root must contain the game executable (`.exe`) and the adjacent `*_Data` folder. If the archive extracts into one extra top-level folder, move that folder's contents instead.
+6. Start `Launcher.exe`. If you used a custom folder, set it in **Settings → Updates → Unity folder**, then click **Play** on the **Home** page.
+
+If the app still shows Unity as not installed, check that the selected folder is the one containing the `.exe` and `*_Data`, not a parent or child folder. Keep the launcher open while playing.
 
 Installation verifies the archive and can recover after an interruption. If the operation repeats after a restart, wait for it to finish or attach the log instead of deleting temporary service folders manually.
 
