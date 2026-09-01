@@ -17,6 +17,8 @@ from services.update_transaction import (
     verify_install_manifest,
     write_install_manifest,
 )
+from services.release_catalog import ReleaseCatalogError
+from services.update_contour import UpdateTarget
 from updater import (
     UpdateCancelled,
     _archive_meta_path,
@@ -33,6 +35,7 @@ from updater import (
     _python_installation_id,
     _python_workspace,
     _install_full_archive,
+    get_unity_update_info,
     note_locked_restart_attempt,
     resume_pending_python_update,
 )
@@ -60,6 +63,33 @@ def test_python_update_workspace_stays_outside_install_parent(tmp_path: Path) ->
     assert workspace.is_relative_to(tmp_path / "update-cache")
     assert not workspace.is_relative_to(base.parent)
     assert _python_installation_id(base) != _python_installation_id(other)
+
+
+def test_unity_check_distinguishes_catalog_failure_from_missing_asset(tmp_path: Path) -> None:
+    target = UpdateTarget("release", "VinerX/NeuroMita", "stable")
+    with (
+        patch("updater._get_update_target", return_value=target),
+        patch("updater._find_unity_executable", return_value=None),
+        patch(
+            "updater._fetch_latest_unity_release_asset",
+            side_effect=ReleaseCatalogError("manifest and API unavailable"),
+        ),
+    ):
+        unavailable = get_unity_update_info(base_dir=str(tmp_path))
+
+    assert unavailable["ok"] is False
+    assert "Could not load release catalog" in unavailable["error"]
+    assert "Could not find a Unity release asset" not in unavailable["error"]
+
+    with (
+        patch("updater._get_update_target", return_value=target),
+        patch("updater._find_unity_executable", return_value=None),
+        patch("updater._fetch_latest_unity_release_asset", return_value=(None, None)),
+    ):
+        missing = get_unity_update_info(base_dir=str(tmp_path))
+
+    assert missing["ok"] is False
+    assert "Could not find a Unity release asset" in missing["error"]
 
 
 def test_new_python_operation_records_cache_paths(tmp_path: Path) -> None:

@@ -14,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      should_release: ${{ steps.release_meta.outputs.should_release }}
 
     steps:
       - name: Checkout
@@ -272,3 +274,10 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  rebuild-release-manifest:
+    needs: build
+    if: needs.build.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-manifest.yml
