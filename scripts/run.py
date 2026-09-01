@@ -43,6 +43,8 @@ EFFECTIVE_REQ_FILE = BOOTSTRAP_DIR / "effective-requirements.txt"
 SETTINGS_FILE = ROOT / "Settings" / "settings.json"
 STATE_VERSION = 6
 
+_AUDITED_NO_DEPS_REQUIREMENTS = ("num2words==0.5.14",)
+
 os.environ.setdefault("UV_LINK_MODE", "copy")
 
 _RUNTIME_RESERVED_NAMES = frozenset({
@@ -296,13 +298,44 @@ def _effective_requirements_hash() -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _write_effective_requirements() -> tuple[Path, str | None]:
+def _split_audited_no_deps_requirements(text: str) -> tuple[str, tuple[str, ...]]:
+    audited_by_name = {
+        re.split(r"[<>=!~@\s]", spec, maxsplit=1)[0].lower(): spec
+        for spec in _AUDITED_NO_DEPS_REQUIREMENTS
+    }
+    output: list[str] = []
+    found: list[str] = []
+
+    for raw_line in text.splitlines(keepends=True):
+        requirement = raw_line.split(" #", 1)[0].strip()
+        name = re.split(r"[<>=!~@\s]", requirement, maxsplit=1)[0].lower()
+        audited_spec = audited_by_name.get(name)
+        if audited_spec is None:
+            output.append(raw_line)
+            continue
+        if requirement.lower() != audited_spec.lower():
+            raise RuntimeError(
+                f"{name} разрешён с --no-deps только как {audited_spec}; "
+                "новую версию необходимо повторно проверить"
+            )
+        found.append(audited_spec)
+
+    missing = [spec for spec in _AUDITED_NO_DEPS_REQUIREMENTS if spec not in found]
+    if missing:
+        raise RuntimeError(
+            "В requirements.txt отсутствуют проверенные зависимости: " + ", ".join(missing)
+        )
+    return "".join(output), tuple(found)
+
+
+def _write_effective_requirements() -> tuple[Path, str | None, tuple[str, ...]]:
     text, desired = _effective_requirements_text()
+    text, no_deps_requirements = _split_audited_no_deps_requirements(text)
     BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
     temp = EFFECTIVE_REQ_FILE.with_name(f".{EFFECTIVE_REQ_FILE.name}.{os.getpid()}.tmp")
     temp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(temp, EFFECTIVE_REQ_FILE)
-    return EFFECTIVE_REQ_FILE, desired
+    return EFFECTIVE_REQ_FILE, desired, no_deps_requirements
 
 
 def _mark_pending_g4f_update_applied() -> None:
@@ -583,7 +616,7 @@ def install_requirements(target: Path | None = None) -> bool:
     log(f"Core зависимости: {install_target}")
     log(f"Приватный uv: {UV_TARGET}")
 
-    effective_requirements, desired_g4f = _write_effective_requirements()
+    effective_requirements, desired_g4f, no_deps_requirements = _write_effective_requirements()
     if desired_g4f:
         log(f"Версия g4f для core: {desired_g4f}")
 
@@ -593,16 +626,31 @@ def install_requirements(target: Path | None = None) -> bool:
             "--python", str(PYTHON), "--target", str(install_target),
             "--no-cache-dir",
         ])
+        if code == 0 and no_deps_requirements:
+            code = run([
+                str(UV_EXE), "pip", "install", *no_deps_requirements,
+                "--python", str(PYTHON), "--target", str(install_target),
+                "--no-deps", "--no-cache-dir",
+            ])
         if code == 0:
             return True
         log("\nuv не справился, пробую обычный pip...")
 
     ensure_pip()
-    return run([
+    code = run([
         str(PYTHON), "-m", "pip", "--isolated", "install",
         "-r", str(effective_requirements), "--target", str(install_target),
         "--upgrade", "--no-cache-dir",
-    ]) == 0
+    ])
+    if code != 0:
+        return False
+    if no_deps_requirements:
+        code = run([
+            str(PYTHON), "-m", "pip", "--isolated", "install",
+            *no_deps_requirements, "--target", str(install_target),
+            "--upgrade", "--no-deps", "--no-cache-dir",
+        ])
+    return code == 0
 
 
 def _activate_core(staging: Path) -> None:
