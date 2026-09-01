@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -119,6 +120,94 @@ def test_num2words_no_deps_version_must_be_reaudited() -> None:
 
     with pytest.raises(RuntimeError, match="повторно проверить"):
         launcher._split_audited_no_deps_requirements("num2words==0.5.15\n")
+
+
+def test_ensure_pip_probe_uses_60_second_timeout(monkeypatch) -> None:
+    launcher = _load_launcher()
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        return subprocess.CompletedProcess(cmd, 0, stdout="pip 26.0\n", stderr="")
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    launcher.ensure_pip()
+
+    assert calls[0][0][-3:] == ["-m", "pip", "--version"]
+    assert calls[0][1]["timeout"] == 60.0
+
+
+def test_ensure_pip_recovers_and_verifies(monkeypatch) -> None:
+    launcher = _load_launcher()
+    results = iter([
+        subprocess.CompletedProcess([], 1, stdout="", stderr="pip broken"),
+        subprocess.CompletedProcess([], 0, stdout="ensurepip ok", stderr=""),
+        subprocess.CompletedProcess([], 0, stdout="pip 26.0\n", stderr=""),
+    ])
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return next(results)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    launcher.ensure_pip()
+
+    assert calls[1][-3:] == ["-m", "ensurepip", "--upgrade"]
+    assert calls[2][-3:] == ["-m", "pip", "--version"]
+
+
+def test_ensure_pip_reports_probe_timeout(monkeypatch) -> None:
+    launcher = _load_launcher()
+
+    def fake_run(cmd, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd, 60.0)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="60 секунд"):
+        launcher.ensure_pip()
+
+
+def test_core_activation_retries_transient_windows_lock(tmp_path, monkeypatch) -> None:
+    launcher = _load_launcher()
+    source = tmp_path / "core-staging"
+    target = tmp_path / "core"
+    source.mkdir()
+    (source / "package.py").write_text("value = 1\n", encoding="utf-8")
+    original_replace = launcher.Path.replace
+    attempts = 0
+
+    def flaky_replace(path, destination):
+        nonlocal attempts
+        if path == source and attempts < 2:
+            attempts += 1
+            raise PermissionError(13, "temporarily blocked", str(path))
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(launcher.Path, "replace", flaky_replace)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+
+    launcher._replace_directory_with_retry(source, target)
+
+    assert attempts == 2
+    assert (target / "package.py").is_file()
+
+
+def test_core_activation_timeout_is_60_seconds(monkeypatch) -> None:
+    launcher = _load_launcher()
+
+    class BlockedDirectory:
+        def replace(self, _target):
+            raise PermissionError(13, "blocked")
+
+    timestamps = iter((0.0, 61.0))
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(timestamps))
+
+    with pytest.raises(TimeoutError, match="60 секунд"):
+        launcher._replace_directory_with_retry(BlockedDirectory(), object())
 
 
 def test_uv_bootstrap_installs_only_into_private_target(tmp_path, monkeypatch) -> None:
