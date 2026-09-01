@@ -11,13 +11,17 @@ from PyQt6.QtGui import QDesktopServices
 
 from main_logger import logger
 from core.networking import shared_http_client_registry
+from services.release_catalog import discover_release_catalog
 from utils.release_assets import raw_release_has_launcher_assets
 from ui.widgets.launcher_dashboard_helpers import DashboardAction, NewsItem
 from utils import _
 
 
 NEWS_REPO = "Atm4x/NeuroMita"
-_HTTP_CLIENT = shared_http_client_registry().acquire("news")
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "news",
+    client_options={"follow_redirects": True},
+)
 
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -61,7 +65,7 @@ def load_news_releases_async(
     target,
     on_ready: Callable[[list[dict[str, Any]]], None],
 ) -> None:
-    """Неблокирующая загрузка ленты релизов с GitHub.
+    """Неблокирующая загрузка ленты из release manifest с API fallback.
 
     `on_ready(releases)` вызывается ВСЕГДА:
       - сразу и синхронно, если данные уже в кэше;
@@ -115,19 +119,20 @@ def get_news_releases(store: NewsReleasesStore) -> list[dict[str, Any]]:
 
     repository = store.repository
     try:
-        response = _HTTP_CLIENT.get(
-            f"https://api.github.com/repos/{repository}/releases",
+        catalog = discover_release_catalog(
+            repository,
+            client=_HTTP_CLIENT,
             timeout=10,
-            headers={"Accept": "application/vnd.github+json"},
+            allow_api_fallback=True,
         )
-        if response.status_code != 200:
-            logger.info(f"[news] Failed to fetch releases: HTTP {response.status_code}")
-            store.releases = []
-            store.cards = []
-            return []
-
-        raw_data = response.json() or []
-        data = [item for item in raw_data if raw_release_has_launcher_assets(item)]
+        data = [
+            item for item in catalog.releases
+            if raw_release_has_launcher_assets(item)
+        ]
+        logger.info(
+            f"[news] Loaded {len(data)} launcher releases from {catalog.source} "
+            f"for {repository}"
+        )
         store.releases = data
         store.cards = _prepare_release_cards(data, repository=repository)
         return data

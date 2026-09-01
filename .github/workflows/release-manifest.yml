@@ -1,0 +1,64 @@
+name: Rebuild release manifest
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+      - edited
+      - deleted
+      - prereleased
+      - released
+      - unpublished
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-manifest-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  rebuild:
+    name: Rebuild catalog for ${{ github.repository }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository tooling
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build manifest from current repository releases
+        id: manifest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >
+          python scripts/build_release_manifest.py
+          --repository "${{ github.repository }}"
+          --api-base "${{ github.api_url }}"
+          --output releases-manifest.json
+
+      - name: Upload manifest to the latest stable release
+        if: steps.manifest.outputs.stable_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_TAG: ${{ steps.manifest.outputs.stable_tag }}
+        shell: bash
+        run: |
+          gh release upload "$STABLE_TAG" releases-manifest.json \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+      - name: Report an empty release catalog
+        if: steps.manifest.outputs.stable_tag == ''
+        run: echo "No published stable release exists; there is nowhere to attach the manifest yet."
