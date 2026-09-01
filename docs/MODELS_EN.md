@@ -1,6 +1,6 @@
 # Model setup for NeuroMita
 
-> **Checked: August 15, 2026.** Models, prices, free quotas, and regional availability change frequently. Always check the provider page and the model list inside NeuroMita before choosing a service.
+> **Checked: September 1, 2026.** Models, prices, free quotas, and regional availability change frequently. Always check the provider page and the model list inside NeuroMita before choosing a service.
 
 **LLM (Large Language Model)** is a neural network that reads your text and generates a response. In NeuroMita, you connect an LLM through a provider or a local server.
 
@@ -8,8 +8,8 @@
 
 Choose **one** of these paths — they do not need to be configured in sequence:
 
-1. **OpenRouter** — the simplest starting point when you want to choose between many model families with one key.
-2. **Google AI Studio** — direct access to Gemini models when the service is available for your country and account.
+1. **Google AI Studio** — the recommended first option: direct access to Gemini models when the service is available for your country and account. Gemini 3.1 Flash-Lite and Gemini 3.5 Flash-Lite are good free starting choices.
+2. **OpenRouter** — one key and a catalogue of many model families, including [free text models](https://openrouter.ai/models?max_price=0&output_modalities=text/).
 3. **Mistral** — direct Mistral API with a separate key.
 4. **LM Studio** — a fully local option: no key is required, but the model must be downloaded and running on your PC.
 
@@ -31,18 +31,6 @@ Choose the service that fits you and create only that provider preset:
 - **ProxyAPI** — a paid Russian API preset in NeuroMita. The old project documentation mentioned the one-time 25% promo code `NeuroMita26`; before paying, check in the [ProxyAPI dashboard](https://console.proxyapi.ru/) whether the offer is still valid.
 - **KodikRouter** — a Russian OpenAI-compatible gateway with rouble payments and one API key. The app includes a **KodikRouter** template; check current [models](https://kodikrouter.ru/models) and [prices](https://kodikrouter.ru/pricing) on the service website.
 
-## OpenRouter
-
-OpenRouter combines many models and providers behind one OpenAI-compatible API. NeuroMita includes a dedicated template with routing settings.
-
-1. Register at [OpenRouter](https://openrouter.ai/).
-2. Create a key on the [Keys page](https://openrouter.ai/keys). The key is shown only when it is created, so store it safely.
-3. In NeuroMita, create an API preset from the **OpenRouter** template.
-4. Paste the key and choose a model from the [OpenRouter catalogue](https://openrouter.ai/models), or use the model name suggested by the template.
-5. Save the preset and send a test message.
-
-Some models have free access, but the list and limits change. Prices, availability, and restrictions are shown in the OpenRouter catalogue and account. See the [official Quickstart](https://openrouter.ai/docs/quickstart) and [limits FAQ](https://openrouter.ai/docs/faq).
-
 ## Google AI Studio
 
 This path uses the Gemini API directly.
@@ -52,7 +40,26 @@ This path uses the Gemini API directly.
 3. Paste the key into the API key field and choose a model from the preset list or the [official Gemini model list](https://ai.google.dev/gemini-api/docs/models).
 4. Save the settings and test the connection in chat.
 
+For a free start, we recommend:
+
+- `gemini-3.1-flash-lite` — Gemini 3.1 Flash-Lite;
+- `gemini-3.5-flash-lite` — Gemini 3.5 Flash-Lite.
+
+The free tier currently allows up to 500 requests per day for each of these models. Quotas apply to the project, reset at midnight Pacific time, and can differ by account or region, so check them in [Google AI Studio](https://aistudio.google.com/) and the [official rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits).
+
 New Google AI Studio keys may have current limits and authorisation requirements. Do not use old instructions that edit the system `hosts` file; that is not part of the current NeuroMita setup. See the [official API key documentation](https://ai.google.dev/gemini-api/docs/api-key).
+
+## OpenRouter
+
+OpenRouter combines many models and providers behind one OpenAI-compatible API. NeuroMita includes a dedicated template with routing settings.
+
+1. Register at [OpenRouter](https://openrouter.ai/).
+2. Create a key on the [Keys page](https://openrouter.ai/keys). The key is shown only when it is created, so store it safely.
+3. In NeuroMita, create an API preset from the **OpenRouter** template.
+4. Paste the key and choose a model from the [free text-model catalogue](https://openrouter.ai/models?max_price=0&output_modalities=text/), or use the model name suggested by the template.
+5. Save the preset and send a test message.
+
+Some models have free access, but the list and limits change. Prices, availability, and restrictions are shown in the OpenRouter catalogue and account. See the [official Quickstart](https://openrouter.ai/docs/quickstart) and [limits FAQ](https://openrouter.ai/docs/faq).
 
 ## Mistral
 
