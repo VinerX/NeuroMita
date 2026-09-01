@@ -11,6 +11,7 @@ NeuroMita — фанатский мод-проект, в котором можн
   <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="docs/MODELS.md"><img src="https://img.shields.io/badge/%D0%9D%D0%B0%D1%81%D1%82%D1%80%D0%BE%D0%B8%D1%82%D1%8C_%D0%BC%D0%BE%D0%B4%D0%B5%D0%BB%D1%8C-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Настроить модель"></a>
   <a href="docs/TROUBLESHOOTING.md"><img src="https://img.shields.io/badge/%D0%A0%D0%B5%D1%88%D0%B8%D1%82%D1%8C_%D0%BF%D1%80%D0%BE%D0%B1%D0%BB%D0%B5%D0%BC%D1%83-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Решить проблему"></a>
+  <a href="#стать-частью-разработки"><img src="https://img.shields.io/badge/%D0%A1%D1%82%D0%B0%D1%82%D1%8C_%D1%80%D0%B0%D0%B7%D1%80%D0%B0%D0%B1%D0%BE%D0%BC-16a34a?style=for-the-badge&logo=github&logoColor=white" alt="Стать разработчиком"></a>
 </p>
 
 <p align="center">
@@ -110,6 +111,16 @@ RAG помогает дополнительно находить релеван�
 - Посмотрите [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): там собраны симптомы, частые HTTP-ошибки и проверка локальных компонентов.
 - Откройте раздел **Логи** в приложении или файл `NeuroMitaLogs.log` в папке NeuroMita.
 - Если проблема не решена, обратитесь в [Discord](https://discord.gg/Tu5MPFxM4P). Приложите версию NeuroMita, провайдера и модель, шаги воспроизведения, скриншот и релевантный фрагмент лога. **Никогда не публикуйте API keys.**
+
+## Стать частью разработки
+
+NeuroMita развивается силами сообщества. Сейчас особенно нужны:
+
+- **Unity-разработчики** — C#, игровые механики, интеграция и интерактивные сцены.
+- **Unity level-дизайнеры** — наполнение игры на основе готовых механик: сборка сцен, расстановка объектов, свет, триггеры и атмосфера.
+- **Python-разработчики** — помощь с отдельными задачами backend, AI-интеграций и стабильности.
+
+Также будем рады **3D-моделерам и аниматорам**. Задачи для них появляются точечно — для конкретных сцен, персонажей, предметов или реакций. Если хотите помочь, напишите VinerX в [Discord](https://discord.gg/Tu5MPFxM4P).
 
 ## Команда и благодарности
 

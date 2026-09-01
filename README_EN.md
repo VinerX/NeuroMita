@@ -11,6 +11,7 @@ NeuroMita is a fan-made mod project where you can talk to Mitas controlled by la
   <a href="https://discord.gg/Tu5MPFxM4P"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="docs/MODELS_EN.md"><img src="https://img.shields.io/badge/Set%20up%20a%20model-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Set up a model"></a>
   <a href="docs/TROUBLESHOOTING_EN.md"><img src="https://img.shields.io/badge/Troubleshooting-d97706?style=for-the-badge&logo=discourse&logoColor=white" alt="Troubleshooting"></a>
+  <a href="#join-the-team"><img src="https://img.shields.io/badge/Join%20the%20team-16a34a?style=for-the-badge&logo=github&logoColor=white" alt="Join the team"></a>
 </p>
 
 <p align="center">
@@ -110,6 +111,16 @@ RAG can additionally find relevant fragments from history and memories, while th
 - Read [TROUBLESHOOTING_EN.md](docs/TROUBLESHOOTING_EN.md) for common symptoms, HTTP errors, and local component checks.
 - Open the **Logs** section in the application or inspect `NeuroMitaLogs.log` in the NeuroMita folder.
 - If the issue remains, contact the [NeuroMita Discord](https://discord.gg/Tu5MPFxM4P). Include the NeuroMita version, provider and model, reproduction steps, a screenshot, and the relevant log fragment. **Never publish API keys.**
+
+## Join the team
+
+NeuroMita is developed by the community. We are currently looking for:
+
+- **Unity developers** — C#, gameplay mechanics, integration, and interactive scenes.
+- **Unity level designers** — filling out the game after mechanics are ready: building scenes, placing objects, lighting, triggers, and atmosphere.
+- **Python developers** — help with focused backend, AI integration, and stability tasks.
+
+We also welcome **3D modelers and animators**. Their work comes up as focused tasks for particular scenes, characters, props, or reactions. If you would like to help, message VinerX in [Discord](https://discord.gg/Tu5MPFxM4P).
 
 ## Team and acknowledgements
 
