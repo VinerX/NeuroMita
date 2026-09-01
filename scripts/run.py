@@ -43,6 +43,9 @@ EFFECTIVE_REQ_FILE = BOOTSTRAP_DIR / "effective-requirements.txt"
 SETTINGS_FILE = ROOT / "Settings" / "settings.json"
 STATE_VERSION = 6
 
+_AUDITED_NO_DEPS_REQUIREMENTS = ("num2words==0.5.14",)
+_CORE_ACTIVATION_TIMEOUT_SECONDS = 60.0
+
 os.environ.setdefault("UV_LINK_MODE", "copy")
 
 _RUNTIME_RESERVED_NAMES = frozenset({
@@ -174,7 +177,7 @@ def run_quiet(
     cmd: list[Any],
     *,
     env: dict[str, str] | None = None,
-    timeout: float = 8.0,
+    timeout: float = 60.0,
 ) -> bool:
     try:
         result = subprocess.run(
@@ -191,11 +194,122 @@ def run_quiet(
 
 
 def ensure_pip() -> None:
-    if run_quiet([str(PYTHON), "-m", "pip", "--version"], timeout=5.0):
+    pip_command = [str(PYTHON), "-m", "pip", "--version"]
+    env = _base_env()
+
+    try:
+        result = subprocess.run(
+            pip_command,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Проверка pip во встроенном Python не завершилась за 60 секунд.\n"
+            f"Python: {PYTHON}\n"
+            "Возможные причины: медленный диск, антивирус/Windows Defender "
+            "или зависание встроенного Python."
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "Не удалось запустить встроенный Python для проверки pip.\n"
+            f"Python: {PYTHON}\n"
+            f"Системная ошибка: {exc}"
+        ) from exc
+
+    if result.returncode == 0:
+        version = (result.stdout or "").strip()
+        if version:
+            log(f"pip доступен: {version}")
         return
-    log("pip не найден во встроенном питоне, включаю ensurepip...")
-    if run([str(PYTHON), "-m", "ensurepip", "--upgrade"]) != 0:
-        raise RuntimeError("Не удалось включить pip во встроенном Python")
+
+    pip_error = (result.stderr or result.stdout or "").strip()
+    log("pip не прошёл проверку во встроенном Python. Восстанавливаю через ensurepip...")
+
+    try:
+        ensurepip_result = subprocess.run(
+            [str(PYTHON), "-m", "ensurepip", "--upgrade"],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "pip недоступен, а ensurepip не завершился за 60 секунд.\n"
+            f"Python: {PYTHON}\n"
+            f"Ошибка первоначальной проверки pip: {pip_error or '<нет вывода>'}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "pip недоступен и не удалось запустить ensurepip.\n"
+            f"Python: {PYTHON}\n"
+            f"Ошибка первоначальной проверки pip: {pip_error or '<нет вывода>'}\n"
+            f"Системная ошибка: {exc}"
+        ) from exc
+
+    if ensurepip_result.returncode != 0:
+        ensurepip_error = (ensurepip_result.stderr or ensurepip_result.stdout or "").strip()
+        raise RuntimeError(
+            "pip не удалось подготовить во встроенном Python.\n"
+            f"Python: {PYTHON}\n"
+            f"`python -m pip --version` завершился кодом {result.returncode}.\n"
+            f"Ошибка pip: {pip_error or '<нет вывода>'}\n"
+            f"`python -m ensurepip --upgrade` завершился кодом "
+            f"{ensurepip_result.returncode}.\n"
+            f"Ошибка ensurepip: {ensurepip_error or '<нет вывода>'}\n"
+            "Если указано `No module named ensurepip`, embedded Python "
+            "не содержит модуль ensurepip."
+        )
+
+    try:
+        verify_result = subprocess.run(
+            pip_command,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "ensurepip завершился успешно, но повторная проверка pip "
+            "не завершилась за 60 секунд.\n"
+            f"Python: {PYTHON}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "ensurepip завершился успешно, но повторно запустить pip не удалось.\n"
+            f"Python: {PYTHON}\n"
+            f"Системная ошибка: {exc}"
+        ) from exc
+
+    if verify_result.returncode != 0:
+        verify_error = (verify_result.stderr or verify_result.stdout or "").strip()
+        raise RuntimeError(
+            "ensurepip завершился успешно, но pip после восстановления "
+            "по-прежнему не запускается.\n"
+            f"Python: {PYTHON}\n"
+            f"Код завершения: {verify_result.returncode}\n"
+            f"Ошибка: {verify_error or '<нет вывода>'}"
+        )
+
+    version = (verify_result.stdout or "").strip()
+    if version:
+        log(f"pip восстановлен: {version}")
 
 
 def ensure_uv() -> bool:
@@ -296,13 +410,44 @@ def _effective_requirements_hash() -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _write_effective_requirements() -> tuple[Path, str | None]:
+def _split_audited_no_deps_requirements(text: str) -> tuple[str, tuple[str, ...]]:
+    audited_by_name = {
+        re.split(r"[<>=!~@\s]", spec, maxsplit=1)[0].lower(): spec
+        for spec in _AUDITED_NO_DEPS_REQUIREMENTS
+    }
+    output: list[str] = []
+    found: list[str] = []
+
+    for raw_line in text.splitlines(keepends=True):
+        requirement = raw_line.split(" #", 1)[0].strip()
+        name = re.split(r"[<>=!~@\s]", requirement, maxsplit=1)[0].lower()
+        audited_spec = audited_by_name.get(name)
+        if audited_spec is None:
+            output.append(raw_line)
+            continue
+        if requirement.lower() != audited_spec.lower():
+            raise RuntimeError(
+                f"{name} разрешён с --no-deps только как {audited_spec}; "
+                "новую версию необходимо повторно проверить"
+            )
+        found.append(audited_spec)
+
+    missing = [spec for spec in _AUDITED_NO_DEPS_REQUIREMENTS if spec not in found]
+    if missing:
+        raise RuntimeError(
+            "В requirements.txt отсутствуют проверенные зависимости: " + ", ".join(missing)
+        )
+    return "".join(output), tuple(found)
+
+
+def _write_effective_requirements() -> tuple[Path, str | None, tuple[str, ...]]:
     text, desired = _effective_requirements_text()
+    text, no_deps_requirements = _split_audited_no_deps_requirements(text)
     BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
     temp = EFFECTIVE_REQ_FILE.with_name(f".{EFFECTIVE_REQ_FILE.name}.{os.getpid()}.tmp")
     temp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(temp, EFFECTIVE_REQ_FILE)
-    return EFFECTIVE_REQ_FILE, desired
+    return EFFECTIVE_REQ_FILE, desired, no_deps_requirements
 
 
 def _mark_pending_g4f_update_applied() -> None:
@@ -583,7 +728,7 @@ def install_requirements(target: Path | None = None) -> bool:
     log(f"Core зависимости: {install_target}")
     log(f"Приватный uv: {UV_TARGET}")
 
-    effective_requirements, desired_g4f = _write_effective_requirements()
+    effective_requirements, desired_g4f, no_deps_requirements = _write_effective_requirements()
     if desired_g4f:
         log(f"Версия g4f для core: {desired_g4f}")
 
@@ -593,29 +738,81 @@ def install_requirements(target: Path | None = None) -> bool:
             "--python", str(PYTHON), "--target", str(install_target),
             "--no-cache-dir",
         ])
+        if code == 0 and no_deps_requirements:
+            code = run([
+                str(UV_EXE), "pip", "install", *no_deps_requirements,
+                "--python", str(PYTHON), "--target", str(install_target),
+                "--no-deps", "--no-cache-dir",
+            ])
         if code == 0:
             return True
         log("\nuv не справился, пробую обычный pip...")
 
     ensure_pip()
-    return run([
+    code = run([
         str(PYTHON), "-m", "pip", "--isolated", "install",
         "-r", str(effective_requirements), "--target", str(install_target),
         "--upgrade", "--no-cache-dir",
-    ]) == 0
+    ])
+    if code != 0:
+        return False
+    if no_deps_requirements:
+        code = run([
+            str(PYTHON), "-m", "pip", "--isolated", "install",
+            *no_deps_requirements, "--target", str(install_target),
+            "--upgrade", "--no-deps", "--no-cache-dir",
+        ])
+    return code == 0
+
+
+def _replace_directory_with_retry(
+    source: Path,
+    target: Path,
+    *,
+    timeout: float = _CORE_ACTIVATION_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    first_error: OSError | None = None
+    while True:
+        try:
+            source.replace(target)
+            return
+        except OSError as exc:
+            transient = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {
+                5,
+                32,
+                33,
+            }
+            if not transient:
+                raise
+            if first_error is None:
+                first_error = exc
+                log(
+                    "Windows временно блокирует активацию core. "
+                    f"Повторяю до {timeout:g} секунд: {exc}"
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Не удалось активировать core за {timeout:g} секунд: {exc}"
+                ) from first_error
+            time.sleep(min(0.25, remaining))
 
 
 def _activate_core(staging: Path) -> None:
-    backup = RUNTIME_ROOT / f".core-backup-{os.getpid()}"
+    backup = RUNTIME_ROOT / f".core-backup-{os.getpid()}-{uuid.uuid4().hex}"
     if backup.exists():
         shutil.rmtree(backup, ignore_errors=True)
     try:
         if CORE_DIR.exists():
-            CORE_DIR.replace(backup)
-        staging.replace(CORE_DIR)
+            _replace_directory_with_retry(CORE_DIR, backup)
+        _replace_directory_with_retry(staging, CORE_DIR)
     except BaseException:
         if not CORE_DIR.exists() and backup.exists():
-            backup.replace(CORE_DIR)
+            try:
+                _replace_directory_with_retry(backup, CORE_DIR)
+            except OSError as rollback_error:
+                log(f"Не удалось вернуть предыдущий core после ошибки: {rollback_error}")
         raise
     shutil.rmtree(backup, ignore_errors=True)
 

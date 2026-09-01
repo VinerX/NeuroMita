@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +62,7 @@ def test_launcher_normalizes_unsigned_windows_negative_exit_code() -> None:
 def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text("example-package\n", encoding="utf-8")
+    requirements.write_text("example-package\nnum2words==0.5.14\n", encoding="utf-8")
     python = tmp_path / "embedded" / "python.exe"
     target = tmp_path / "Lib" / "core"
     uv = tmp_path / ".bootstrap" / "uv" / "bin" / "uv.exe"
@@ -80,12 +83,15 @@ def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) ->
     assert command[:3] == [str(uv), "pip", "install"]
     assert command[command.index("--python") + 1] == str(python)
     assert command[command.index("--target") + 1] == str(target)
+    assert "num2words==0.5.14" not in command
+    assert "num2words==0.5.14" in commands[1]
+    assert "--no-deps" in commands[1]
 
 
 def test_pip_fallback_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text("example-package\n", encoding="utf-8")
+    requirements.write_text("example-package\nnum2words==0.5.14\n", encoding="utf-8")
     python = tmp_path / "embedded" / "python.exe"
     target = tmp_path / "Lib" / "core"
     commands: list[list[str]] = []
@@ -104,6 +110,104 @@ def test_pip_fallback_targets_explicit_core(tmp_path, monkeypatch) -> None:
     command = commands[0]
     assert command[:5] == [str(python), "-m", "pip", "--isolated", "install"]
     assert command[command.index("--target") + 1] == str(target)
+    assert "num2words==0.5.14" not in command
+    assert "num2words==0.5.14" in commands[1]
+    assert "--no-deps" in commands[1]
+
+
+def test_num2words_no_deps_version_must_be_reaudited() -> None:
+    launcher = _load_launcher()
+
+    with pytest.raises(RuntimeError, match="повторно проверить"):
+        launcher._split_audited_no_deps_requirements("num2words==0.5.15\n")
+
+
+def test_ensure_pip_probe_uses_60_second_timeout(monkeypatch) -> None:
+    launcher = _load_launcher()
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        return subprocess.CompletedProcess(cmd, 0, stdout="pip 26.0\n", stderr="")
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    launcher.ensure_pip()
+
+    assert calls[0][0][-3:] == ["-m", "pip", "--version"]
+    assert calls[0][1]["timeout"] == 60.0
+
+
+def test_ensure_pip_recovers_and_verifies(monkeypatch) -> None:
+    launcher = _load_launcher()
+    results = iter([
+        subprocess.CompletedProcess([], 1, stdout="", stderr="pip broken"),
+        subprocess.CompletedProcess([], 0, stdout="ensurepip ok", stderr=""),
+        subprocess.CompletedProcess([], 0, stdout="pip 26.0\n", stderr=""),
+    ])
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return next(results)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    launcher.ensure_pip()
+
+    assert calls[1][-3:] == ["-m", "ensurepip", "--upgrade"]
+    assert calls[2][-3:] == ["-m", "pip", "--version"]
+
+
+def test_ensure_pip_reports_probe_timeout(monkeypatch) -> None:
+    launcher = _load_launcher()
+
+    def fake_run(cmd, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd, 60.0)
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="60 секунд"):
+        launcher.ensure_pip()
+
+
+def test_core_activation_retries_transient_windows_lock(tmp_path, monkeypatch) -> None:
+    launcher = _load_launcher()
+    source = tmp_path / "core-staging"
+    target = tmp_path / "core"
+    source.mkdir()
+    (source / "package.py").write_text("value = 1\n", encoding="utf-8")
+    original_replace = launcher.Path.replace
+    attempts = 0
+
+    def flaky_replace(path, destination):
+        nonlocal attempts
+        if path == source and attempts < 2:
+            attempts += 1
+            raise PermissionError(13, "temporarily blocked", str(path))
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(launcher.Path, "replace", flaky_replace)
+    monkeypatch.setattr(launcher.time, "sleep", lambda _seconds: None)
+
+    launcher._replace_directory_with_retry(source, target)
+
+    assert attempts == 2
+    assert (target / "package.py").is_file()
+
+
+def test_core_activation_timeout_is_60_seconds(monkeypatch) -> None:
+    launcher = _load_launcher()
+
+    class BlockedDirectory:
+        def replace(self, _target):
+            raise PermissionError(13, "blocked")
+
+    timestamps = iter((0.0, 61.0))
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(timestamps))
+
+    with pytest.raises(TimeoutError, match="60 секунд"):
+        launcher._replace_directory_with_retry(BlockedDirectory(), object())
 
 
 def test_uv_bootstrap_installs_only_into_private_target(tmp_path, monkeypatch) -> None:

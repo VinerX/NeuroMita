@@ -1,12 +1,12 @@
-"""Auto-update from GitHub Releases.
+"""Auto-update from the CI-generated release manifest with GitHub API fallback.
 
 Controlled via features.env or Settings/settings.json:
   AUTO_UPDATE=0|1          — notify only / auto-apply Python part (default 0)
   AUTO_UPDATE_UNITY=0|1    — same for Unity part (default 0)
   UPDATE_CONTOUR           — test|release; persisted in Settings/settings.json
                             fresh installs bootstrap from Settings/distribution.json
-                            test -> Atm4x/NeuroMita releases
-                            release -> VinerX/NeuroMita releases
+                            test -> Atm4x/NeuroMita release catalog
+                            release -> VinerX/NeuroMita release catalog
   TESTER_CODE              — password for encrypted test archives
 
 Exit code 42 is the ordinary run.py restart. Self-updates that stage a new
@@ -25,8 +25,6 @@ import shutil
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import httpx
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +63,10 @@ from services.update_contour import (
     infer_initial_contour,
     normalize_contour,
     target_for_contour,
+)
+from services.release_catalog import (
+    ReleaseCatalogError,
+    discover_release_catalog,
 )
 from utils.release_assets import (
     Release,
@@ -504,27 +506,20 @@ def _find_unity_executable(unity_dir: Path) -> Optional[Path]:
     return find_unity_executable(unity_dir)
 
 
-# ── GitHub API ────────────────────────────────────────────────────────────────
+# ── Release discovery ────────────────────────────────────────────────────────
 
-def _api_get(url: str):
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.github+json"},
+def _fetch_releases(repo: str) -> list[dict]:
+    catalog = discover_release_catalog(
+        repo,
+        client=_UPDATE_HTTP_CLIENT,
+        timeout=8,
+        allow_api_fallback=True,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return json.loads(resp.read())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return None
+    return catalog.releases
 
 
-def _fetch_latest_release(repo: str) -> Optional[dict]:
-    return _api_get(f"https://api.github.com/repos/{repo}/releases/latest")
-
-
-def _fetch_releases(repo: str, per_page: int = 20) -> list[dict]:
-    data = _api_get(f"https://api.github.com/repos/{repo}/releases?per_page={per_page}")
-    return data if isinstance(data, list) else []
+def _release_catalog_error(repo: str, error: Exception) -> str:
+    return f"Could not load release catalog for {repo}: {format_exception(error)}"
 
 
 def _published_sort_key(release: dict) -> str:
@@ -1115,13 +1110,21 @@ def get_python_update_info(
     local_version = _get_current_version()
     channel = target.channel
 
-    release = _select_python_release(repo, channel)
+    try:
+        release = _select_python_release(repo, channel)
+    except ReleaseCatalogError as error:
+        return {
+            "ok": False,
+            "component": "python",
+            "current_version": local_version,
+            "error": _release_catalog_error(repo, error),
+        }
     if release is None:
         return {
             "ok": False,
             "component": "python",
             "current_version": local_version,
-            "error": "Could not reach GitHub to check for updates",
+            "error": f"No Python release asset is available for {channel} channel",
         }
 
     remote_tag = str(release.tag or "")
@@ -1169,7 +1172,15 @@ def get_unity_update_info(
         else "0.0.0.0"
     )
 
-    release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
+    try:
+        release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
+    except ReleaseCatalogError as error:
+        return {
+            "ok": False,
+            "component": "unity",
+            "current_version": local_version,
+            "error": _release_catalog_error(repo, error),
+        }
     if release is None:
         return {
             "ok": False,
@@ -1236,9 +1247,14 @@ def check_for_updates(
     log(f"Update contour: {target.contour} ({repo}, {channel})")
     log(f"Checking for updates ({repo}, channel={channel}, mode={update_mode}) ...")
 
-    release = _select_python_release(repo, channel)
+    try:
+        release = _select_python_release(repo, channel)
+    except ReleaseCatalogError as error:
+        message = _release_catalog_error(repo, error)
+        log(message, "warning")
+        return UpdateResult(component="python", ok=False, status="check_failed", error=message)
     if release is None:
-        message = "Could not reach GitHub to check for updates"
+        message = f"No Python release asset is available for {channel} channel"
         log(message, "warning")
         return UpdateResult(component="python", ok=False, status="check_failed", error=message)
 
@@ -2156,7 +2172,12 @@ def check_for_unity_updates(
 
     log(f"Update contour: {target.contour} ({repo}, {channel})")
     log(f"Checking Unity updates ({repo}, channel={channel}) ...")
-    release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
+    try:
+        release, unity_asset = _fetch_latest_unity_release_asset(repo, channel)
+    except ReleaseCatalogError as error:
+        message = _release_catalog_error(repo, error)
+        log(message, "warning")
+        return UpdateResult(component="unity", ok=False, status="check_failed", error=message)
     if release is None or unity_asset is None:
         message = "Could not find a Unity release asset to check for updates"
         log(message, "warning")

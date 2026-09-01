@@ -20,6 +20,7 @@ from controllers.gui.news_controller import (
 from controllers.gui import news_controller
 from controllers.gui.news_page_view_model import NewsPageViewModel
 from services.update_contour import target_for_contour
+from services.release_catalog import build_release_manifest, manifest_download_url
 from ui.pages.news_page import NewsPage
 
 
@@ -94,7 +95,12 @@ def test_news_store_fetches_a_distinct_release_feed_for_each_contour(monkeypatch
     class Client:
         def get(self, url, **_kwargs):
             requested_urls.append(url)
-            return SimpleNamespace(status_code=200, json=lambda: [])
+            repository = next(
+                repo for repo in ("Atm4x/NeuroMita", "VinerX/NeuroMita")
+                if f"/{repo}/" in url
+            )
+            payload = build_release_manifest(repository, [])
+            return SimpleNamespace(status_code=200, json=lambda: payload)
 
     monkeypatch.setattr(news_controller, "_HTTP_CLIENT", Client())
     store = NewsReleasesStore()
@@ -104,8 +110,8 @@ def test_news_store_fetches_a_distinct_release_feed_for_each_contour(monkeypatch
         assert get_news_releases(store) == []
 
     assert requested_urls == [
-        "https://api.github.com/repos/Atm4x/NeuroMita/releases",
-        "https://api.github.com/repos/VinerX/NeuroMita/releases",
+        manifest_download_url("Atm4x/NeuroMita"),
+        manifest_download_url("VinerX/NeuroMita"),
     ]
 
 
