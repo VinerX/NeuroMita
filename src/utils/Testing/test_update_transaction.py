@@ -19,6 +19,7 @@ from services.update_transaction import (
 )
 from services.release_catalog import ReleaseCatalogError
 from services.update_contour import UpdateTarget
+from core.unity_installation import UnsafeUnityInstallPath, validate_unity_update_target
 from updater import (
     UpdateCancelled,
     _archive_meta_path,
@@ -38,6 +39,7 @@ from updater import (
     get_unity_update_info,
     note_locked_restart_attempt,
     resume_pending_python_update,
+    resume_pending_unity_update,
 )
 from services.update_activation import (
     activation_marker_path,
@@ -292,6 +294,42 @@ def test_directory_commit_replaces_target_and_removes_backup(tmp_path: Path) -> 
     assert transaction.phase == "completed"
 
 
+def test_directory_transaction_rejects_root_and_overlapping_state(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="filesystem root"):
+        DirectoryInstallTransaction(
+            component="unity",
+            target=Path(tmp_path.anchor),
+            state_root=tmp_path / "state",
+        )
+
+    target = tmp_path / "Unity"
+    with pytest.raises(RuntimeError, match="inside its target"):
+        DirectoryInstallTransaction(
+            component="unity",
+            target=target,
+            state_root=target / "state",
+        )
+
+
+def test_directory_transaction_preserves_unowned_artifact_collision(tmp_path: Path) -> None:
+    target = tmp_path / "Unity"
+    target.mkdir()
+    transaction = DirectoryInstallTransaction(
+        component="unity",
+        target=target,
+        state_root=tmp_path / "state",
+    )
+    transaction.paths.backup.mkdir()
+    sentinel = transaction.paths.backup / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not owned"):
+        transaction.begin({"version": "v1", "archive_url": "https://example/update.zip"})
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert target.is_dir()
+
+
 def test_failed_verification_rolls_back_original_target(tmp_path: Path) -> None:
     target = tmp_path / "Unity"
     target.mkdir()
@@ -450,9 +488,115 @@ def _unity_asset(base: Path, files: dict[str, bytes]) -> ReleaseAsset:
     )
 
 
+def test_unity_target_validation_rejects_parent_and_unowned_directory(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+
+    with pytest.raises(UnsafeUnityInstallPath, match="parent"):
+        validate_unity_update_target(base, tmp_path)
+
+    personal = tmp_path / "Personal"
+    personal.mkdir()
+    sentinel = personal / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    with pytest.raises(UnsafeUnityInstallPath, match="not a recognized"):
+        validate_unity_update_target(base, personal)
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_unity_install_refuses_unowned_nonempty_target(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    target = tmp_path / "Personal"
+    target.mkdir()
+    sentinel = target / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    asset = _unity_asset(base, {"Build/Unity.exe": b"binary"})
+
+    result = _install_unity_asset(
+        base_path=base,
+        unity_path=target,
+        version="v1",
+        asset=asset,
+        tester_code=None,
+        logger=None,
+        on_progress=None,
+        on_extract_progress=None,
+        on_verify_progress=None,
+        on_stage=None,
+        stop_event=None,
+    )
+
+    assert not result.ok
+    assert "Unsafe Unity update target" in result.error
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (tmp_path / ".Personal.unity.backup").exists()
+
+
+def test_unity_recovery_refuses_unowned_recorded_target(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    target = tmp_path / "Personal"
+    target.mkdir()
+    sentinel = target / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    atomic_write_json(
+        base / "_update_state" / "unity" / "operation.json",
+        {
+            "schema": 1,
+            "component": "unity",
+            "target": str(target),
+            "phase": "target_backed_up",
+            "authorized": True,
+            "version": "v1",
+            "archive_name": "UnityBuild-v1.zip",
+            "archive_url": "https://example/UnityBuild-v1.zip",
+        },
+    )
+
+    result = resume_pending_unity_update(base_dir=str(base))
+
+    assert not result.ok
+    assert "Unsafe Unity recovery target" in result.error
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_unity_recovery_refuses_unrecognized_backup(tmp_path: Path) -> None:
+    base = tmp_path / "NeuroMita"
+    base.mkdir()
+    target = tmp_path / "NeuroMita-Unity"
+    backup = tmp_path / ".NeuroMita-Unity.unity.backup"
+    backup.mkdir()
+    sentinel = backup / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    atomic_write_json(
+        base / "_update_state" / "unity" / "operation.json",
+        {
+            "schema": 1,
+            "component": "unity",
+            "target": str(target),
+            "stage": str(tmp_path / ".NeuroMita-Unity.unity.stage"),
+            "backup": str(backup),
+            "phase": "target_backed_up",
+            "authorized": True,
+            "version": "v1",
+            "archive_name": "UnityBuild-v1.zip",
+            "archive_url": "https://example/UnityBuild-v1.zip",
+        },
+    )
+
+    result = resume_pending_unity_update(base_dir=str(base))
+
+    assert not result.ok
+    assert "Unsafe Unity recovery target" in result.error
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not target.exists()
+
+
 def test_unity_install_activates_only_a_verified_staging_tree(tmp_path: Path) -> None:
     target = tmp_path / "NeuroMita-Unity"
     target.mkdir()
+    (target / "Unity.exe").write_bytes(b"old-binary")
     (target / "old.txt").write_text("old", encoding="utf-8")
     asset = _unity_asset(
         tmp_path,
