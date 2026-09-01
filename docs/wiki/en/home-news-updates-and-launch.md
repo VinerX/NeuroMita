@@ -34,6 +34,8 @@ The primary button changes meaning depending on state:
 - `Unity is required to play` when Unity is missing and its install checkbox is not selected.
 - `Unity is running — close` while the launcher-owned or recovered Unity process is alive.
 
+After clicking `Play`, keep the NeuroMita launcher open: it runs the backend and maintains Unity's connection to the AI. You can minimize the window.
+
 The right side of the split button opens contextual maintenance actions while idle. During cancellable download or extraction stages it becomes a direct cancel action; verification and commit stages disable cancellation because interrupting them would be misleading.
 
 ## Recoverable Installation

@@ -21,6 +21,10 @@ If this does not help, attach the beginning of `NeuroMitaLogs.log` and the text 
 
 On the **Home** page, NeuroMita shows the status of the backend and Unity components separately.
 
+### Should I keep the launcher open while Unity is running?
+
+Yes. Keep the NeuroMita launcher open while playing: it runs the backend and maintains Unity's connection to the AI. You can minimize the window.
+
 - If Unity is missing, select its installation and click the main button.
 - If an update is available, select the required component and click **Update**.
 - Close an already running Unity game before updating.

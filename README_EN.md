@@ -38,6 +38,8 @@ On the first launch, NeuroMita automatically checks and deploys the required Pyt
 
 On the home page, install the Unity part if the interface offers it, then click **Play**.
 
+After Unity starts, keep the NeuroMita launcher open: it maintains the connection between the game and the AI. You can minimize the window.
+
 Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over an existing working NeuroMita folder.
 
 ### Setting up the first chat
