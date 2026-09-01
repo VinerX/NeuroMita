@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import sys
 import json
@@ -36,6 +37,19 @@ except Exception:
 from utils.gpu_utils import check_gpu_provider
 
 
+_SENSITIVE_PARAM_RE = re.compile(r'((?:api[_-]?)?key|access_token|token)=([^&\s#"\']+)', re.IGNORECASE)
+_BEARER_RE = re.compile(r'(Bearer\s+)([A-Za-z0-9._\-]+)', re.IGNORECASE)
+
+
+def mask_sensitive(text):
+    if not text:
+        return text
+    s = str(text)
+    s = _SENSITIVE_PARAM_RE.sub(lambda m: f"{m.group(1)}=***", s)
+    s = _BEARER_RE.sub(lambda m: f"{m.group(1)}***", s)
+    return s
+
+
 # =============================== Базовые утилиты ===============================
 
 def clamp(value, min_value, max_value):
@@ -43,12 +57,50 @@ def clamp(value, min_value, max_value):
 
 
 def getTranslationVariant(ru_str, en_str=""):
-    if en_str and SettingsManager.get("LANGUAGE") == "EN":
-        return en_str
-    return ru_str
+    # Маршрутизация через JSON-каталоги локализации (см. src/localization).
+    # Ключ перевода — русская строка; для RU возвращается исходная строка,
+    # для прочих языков: catalog[lang] -> инлайн en -> ru. Делегируем, сохраняя
+    # старую сигнатуру _(ru, en), чтобы не править ~1600 UI call-site.
+    try:
+        from localization import translate as _translate
+        return _translate(ru_str, en_str)
+    except Exception:
+        # Фолбэк на старое поведение, если модуль локализации недоступен
+        # (например, на очень раннем bootstrap).
+        if en_str and SettingsManager.get("LANGUAGE") == "EN":
+            return en_str
+        return ru_str
 
 
-_ = getTranslationVariant  # Временно, мб
+_ = getTranslationVariant
+
+
+def default_installed_voice(models_dir=None, preferred="Mila", ext=None):
+    """Short name of a voice that is actually installed — used as the default
+    when no character is resolved (e.g. a voiceover test outside a chat) or when
+    picking a base model for RVC init.
+
+    Prefers `preferred` (Mila) if its model is present, otherwise the first other
+    installed voice. Falls back to `preferred` if nothing is installed, so callers
+    still get well-formed paths instead of an empty name.
+
+    ext: restrict to a specific model extension ("pth"/"onnx"); None = either.
+    """
+    if models_dir is None:
+        models_dir = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
+    exts = (ext,) if ext else ("pth", "onnx")
+
+    for e in exts:
+        if os.path.exists(os.path.join(models_dir, f"{preferred}.{e}")):
+            return preferred
+    try:
+        for fn in sorted(os.listdir(models_dir)):
+            stem, dot, e = fn.rpartition(".")
+            if dot and e in exts and stem:
+                return stem
+    except OSError:
+        pass
+    return preferred
 
 
 def get_character_voice_paths(character=None, provider=None):
@@ -76,15 +128,20 @@ def get_character_voice_paths(character=None, provider=None):
     model_ext = 'pth' if is_nvidia else 'onnx'
     clone_voice_folder = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
 
-    short_name = "Mila"  # значение по умолчанию
-
+    short_name = ""
     if character:
         # Проверяем, является ли character словарем
         if isinstance(character, dict):
-            short_name = str(character.get('short_name', 'Mila'))
+            short_name = str(character.get('short_name') or "").strip()
         # Иначе пробуем как объект с атрибутом
         elif hasattr(character, 'short_name'):
-            short_name = str(character.short_name)
+            short_name = str(character.short_name or "").strip()
+
+    if not short_name:
+        # Персонаж не определён (например тест озвучки вне чата). Раньше тут жёстко
+        # подставлялась "Mila", которой при поштучной установке голосов может не
+        # быть — берём любой установленный голос (предпочитая Mila).
+        short_name = default_installed_voice(clone_voice_folder, ext=model_ext)
 
     return {
         'pth_path': os.path.join(clone_voice_folder, f"{short_name}.{model_ext}"),
@@ -111,7 +168,7 @@ def load_text_from_file(filename):
         with open(filepath, 'r', encoding='utf-8') as file:
             return file.read()
     except Exception as e:
-        logger.info(f"Ошибка при чтении файла {filename}: {e}")
+        logger.info(f"Ошибка при чтении файла {filename}: {format_exception(e)}")
         return ""
 
 
@@ -135,13 +192,45 @@ def load_json_file(filepath):
         return {}
 
 
+def redact_image_payloads(messages):
+    """Заменить base64-картинки заглушкой перед записью дампа на диск.
+
+    Дебаг-дампы писались вместе с полным base64: мегабайты JSON на каждый запрос
+    и на каждую попытку, синхронно, прямо в hot path.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    def _redact_chunk(chunk):
+        if not isinstance(chunk, dict) or chunk.get("type") != "image_url":
+            return chunk
+        url = str((chunk.get("image_url") or {}).get("url") or "")
+        if not url.startswith("data:"):
+            return chunk
+        out = dict(chunk)
+        out["image_url"] = {"url": f"<image redacted: {len(url)} chars>"}
+        return out
+
+    redacted = []
+    for message in messages:
+        if not isinstance(message, dict):
+            redacted.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            message = dict(message)
+            message["content"] = [_redact_chunk(c) for c in content]
+        redacted.append(message)
+    return redacted
+
+
 def save_combined_messages(combined_messages, output_folder="SavedMessages"):
     os.makedirs(output_folder, exist_ok=True)
     file_name = "combined_messages.json"
     file_path = os.path.join(output_folder, file_name)
     with open(file_path, 'w', encoding='utf-8') as file:
-        json.dump(combined_messages, file, ensure_ascii=False, indent=4)
-    logger.info(f"Сообщения сохранены в файл: {file_path}")
+        json.dump(redact_image_payloads(combined_messages), file, ensure_ascii=False, indent=4)
+    logger.debug(f"Сообщения сохранены в файл: {file_path}")
 
 
 def calculate_cost_for_combined_messages(self, combined_messages, cost_input_per_1000):
@@ -302,7 +391,7 @@ def guess_lang_statistically(text: str) -> str | None:
     except LangDetectException:
         return None
     except Exception as e:
-        logger.debug(f"langdetect error: {e}")
+        logger.debug(f"langdetect error: {format_exception(e)}")
         return None
 
 

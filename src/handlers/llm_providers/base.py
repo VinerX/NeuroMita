@@ -1,7 +1,62 @@
 # src/handlers/llm_providers/base.py
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Dict, Callable, Optional, Any, Mapping
 from abc import ABC, abstractmethod
+
+from main_logger import logger
+
+from .errors import LLMProviderError
+
+
+class StreamChannel(str, Enum):
+    """Канал стрим-чанка.
+
+    Провайдер обязан различать текст ответа и размышления модели: разные
+    модели отдают мысли по-разному (reasoning_content, thought-части Gemini,
+    <think>-теги внутри content), но выше по стеку это один контракт.
+    """
+
+    CONTENT = "content"
+    REASONING = "reasoning"
+
+
+# Второй аргумент всегда передаётся явно — молчаливого дефолта нет, иначе
+# мысли снова утекут в текст ответа.
+StreamCallback = Callable[[str, StreamChannel], None]
+
+
+def resolve_content_and_reasoning(
+    content: str, reasoning: str, *, provider_name: str = ""
+) -> tuple[str, str]:
+    """Развести текст ответа и размышления.
+
+    Норма: content — ответ, reasoning — мысли, и они не смешиваются.
+    Аварийный случай (часть сборок Qwen3): модель кладёт весь ответ в
+    reasoning-канал, оставляя content пустым — тогда мысли и есть ответ,
+    иначе пользователь получит пустоту.
+    """
+    if content:
+        return content, reasoning
+    if reasoning:
+        logger.warning(
+            f"[{provider_name or '?'}] Empty content with non-empty reasoning — "
+            f"using reasoning as the answer (model ignores the content channel)."
+        )
+        return reasoning, ""
+    return "", ""
+
+
+from .request_lifecycle import (
+    RequestCancellation,
+    RequestCancelledError,
+    check_request_cancelled,
+    get_request_cancellation,
+    record_response_body_started,
+    record_response_headers_received,
+    register_cancellable_resource,
+    resolve_total_timeout,
+)
 
 
 @dataclass
@@ -22,7 +77,8 @@ class LLMRequest:
     capabilities: Dict[str, Any] = field(default_factory=dict)
 
     stream: bool = False
-    stream_cb: Optional[Callable[[str], None]] = None
+    stream_cb: Optional[StreamCallback] = None
+    stream_event_cb: Optional[Callable[[Any], None]] = None
 
     tools_on: bool = False
     tools_mode: str = "native"
@@ -84,6 +140,21 @@ class LLMUsage:
 
         return merged
 
+    def to_payload(self) -> Dict[str, Any]:
+        """Плоский dict для дампов, JSONL-выборок и просмотра контекста."""
+        return {
+            "prompt_tokens": int(self.prompt_tokens or 0),
+            "completion_tokens": int(self.completion_tokens or 0),
+            "total_tokens": int(self.total_tokens or 0),
+            "reasoning_tokens": int(self.reasoning_tokens or 0),
+            "cached_prompt_tokens": int(self.cached_prompt_tokens or 0),
+            "cache_write_tokens": int(self.cache_write_tokens or 0),
+            "cost": self.cost,
+            "cost_currency": self.cost_currency,
+            "cost_source": self.cost_source,
+            "raw": self.raw or {},
+        }
+
 
 @dataclass
 class LLMResponse:
@@ -93,7 +164,12 @@ class LLMResponse:
     provider_name: Optional[str] = None
     finish_reason: Optional[str] = None
     error_message: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+
+    # Размышления, которые провайдер отдал отдельным каналом. В text их быть
+    # не должно: text — только то, что видит игрок.
+    reasoning: Optional[str] = None
 
 
 def _to_int(value: Any) -> int:
@@ -165,7 +241,18 @@ class BaseProvider(ABC):
     supports_tools_native: bool = False
     supports_streaming: bool = True
     supports_streaming_with_tools: bool = False
+    supports_stream_usage: bool = False
     uses_custom_messages_handler: bool = False
+
+    def __init__(self, *, http_transport: Any = None) -> None:
+        if http_transport is None:
+            from .http_transport import LLMHttpClient
+
+            http_transport = LLMHttpClient()
+            self._owns_http_transport = True
+        else:
+            self._owns_http_transport = False
+        self.http_transport = http_transport
 
     @abstractmethod
     def is_applicable(self, req: LLMRequest) -> bool:
@@ -174,3 +261,41 @@ class BaseProvider(ABC):
     @abstractmethod
     def generate(self, req: LLMRequest) -> LLMResponse:
         pass
+
+    def _resolve_content_and_reasoning(self, content: str, reasoning: str) -> tuple[str, str]:
+        return resolve_content_and_reasoning(
+            content, reasoning, provider_name=getattr(self, "name", "")
+        )
+
+    def should_request_stream_usage(self, req: LLMRequest) -> bool:
+        capabilities = req.capabilities or {}
+        capability = capabilities.get("supports_stream_usage")
+        if capability is None:
+            capability = capabilities.get("stream_usage")
+        if capability is not None:
+            return bool(capability)
+        return bool(self.supports_stream_usage)
+
+    def close(self) -> None:
+        if self._owns_http_transport:
+            self.http_transport.close()
+
+
+__all__ = [
+    "LLMRequest",
+    "LLMUsage",
+    "LLMResponse",
+    "BaseProvider",
+    "RequestCancellation",
+    "RequestCancelledError",
+    "StreamCallback",
+    "StreamChannel",
+    "check_request_cancelled",
+    "get_request_cancellation",
+    "record_response_body_started",
+    "record_response_headers_received",
+    "register_cancellable_resource",
+    "resolve_total_timeout",
+    "normalize_usage_payload",
+    "LLMProviderError",
+]

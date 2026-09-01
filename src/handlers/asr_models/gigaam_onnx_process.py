@@ -1,4 +1,5 @@
-﻿import os
+from core.error_utils import format_exception
+import os
 import asyncio
 import traceback
 import time
@@ -17,7 +18,7 @@ def run_gigaam_onnx_process(command_queue: Queue, result_queue: Queue, log_queue
         worker = GigaAMOnnxProcessWorker(command_queue, result_queue, log_queue)
         loop.run_until_complete(worker.process_commands())
     except Exception as e:
-        log_queue.put(("error", f"Критическая ошибка в процессе GigaAM ONNX: {e}\n{traceback.format_exc()}"))
+        log_queue.put(("error", f"Критическая ошибка в процессе GigaAM ONNX: {format_exception(e)}\n{traceback.format_exc()}"))
     finally:
         try:
             loop.close()
@@ -145,8 +146,8 @@ class GigaAMOnnxProcessWorker:
             self.result_queue.put(("init_success", True))
             self.info("GigaAM ONNX успешно инициализирован.")
         except Exception as e:
-            self.error(f"Ошибка инициализации GigaAM ONNX: {e}", exc_info=True)
-            self.result_queue.put(("init_error", str(e)))
+            self.error(f"Ошибка инициализации GigaAM ONNX: {format_exception(e)}", exc_info=True)
+            self.result_queue.put(("init_error", format_exception(e)))
 
     async def transcribe_audio(self, audio_data: np.ndarray, sample_rate: int):
         try:
@@ -192,8 +193,8 @@ class GigaAMOnnxProcessWorker:
                     pass
 
         except Exception as e:
-            self.error(f"Ошибка транскрибации ONNX: {e}", exc_info=True)
-            self.result_queue.put(("transcription_error", str(e)))
+            self.error(f"Ошибка транскрибации ONNX: {format_exception(e)}", exc_info=True)
+            self.result_queue.put(("transcription_error", format_exception(e)))
 
     async def process_commands(self):
         while True:
@@ -213,7 +214,7 @@ class GigaAMOnnxProcessWorker:
 
                 await asyncio.sleep(0.01)
             except Exception as e:
-                self.error(f"Ошибка в цикле команд: {e}\n{traceback.format_exc()}")
+                self.error(f"Ошибка в цикле команд: {format_exception(e)}\n{traceback.format_exc()}")
 
         self._sessions = None
         self._model_cfg = None

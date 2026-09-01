@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import sys
@@ -11,6 +12,10 @@ from typing import Any, Optional
 
 def run_ai_engine_process(cmd_queue, res_queue, log_queue) -> None:
     try:
+        # torch/MKL (libiomp5md) + onnxruntime (libomp140) в одном процессе дают
+        # OMP Error #15 → abort. Ставим до любых тяжёлых импортов. См. __main__.py.
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
         _ensure_lib_on_path()
 
         try:
@@ -105,15 +110,15 @@ async def _engine_loop(cmd_queue, res_queue, log_queue) -> None:
             result = await _handle_action(st, action, payload, log_queue=log_queue)
             res_queue.put({"type": "response", "req_id": req_id, "ok": True, "result": result})
         except Exception as e:
-            err = f"{e}"
-            _log(log_queue, "error", f"Action '{action}' failed: {err}\n{traceback.format_exc()}")
+            err = f"{format_exception(e)}"
+            _log(log_queue, "error", f"Action '{action}' failed: {format_exception(err)}\n{traceback.format_exc()}")
             try:
                 res_queue.put({"type": "response", "req_id": req_id, "ok": False, "error": err})
             except Exception:
                 pass
 
 
-def _has_f5_reference_audio(lv) -> bool:
+def _has_clone_reference_audio(lv) -> bool:
     try:
         from utils import get_character_voice_paths
         paths = get_character_voice_paths(None, getattr(lv, "provider", None))
@@ -127,8 +132,8 @@ def _has_f5_reference_audio(lv) -> bool:
 
 
 async def _warmup_voice_model(lv, model_id: str, voice_language: str) -> bool:
-    if model_id in ("high", "high+low"):
-        if not _has_f5_reference_audio(lv):
+    if model_id in ("omnivoice", "high", "high+low"):
+        if not _has_clone_reference_audio(lv):
             return True
 
     init_text = f"Инициализация модели {model_id}" if voice_language == "ru" else f"{model_id} Model Initialization"
@@ -164,8 +169,6 @@ async def _handle_action(st: EngineState, action: str, payload: dict, *, log_que
         if warm_torch:
             import importlib
             importlib.invalidate_caches()
-            from handlers.embedding_handler import _ensure_torch_and_transformers
-            _ensure_torch_and_transformers()
             import torch  # noqa: F401
 
         if warm_tf:

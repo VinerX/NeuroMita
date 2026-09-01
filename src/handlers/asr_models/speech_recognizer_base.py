@@ -1,5 +1,5 @@
+from core.error_utils import format_exception
 from abc import ABC, abstractmethod
-import json
 import os
 from typing import Any, List, Optional
 
@@ -7,63 +7,28 @@ import numpy as np
 
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
-from core.install_types import InstallAction, InstallPlan
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC, InstallAction, InstallPlan
 from core.installables import (
     ComponentCategory,
     ComponentMetadata,
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, noop_plan, status_from_installed
-
-
-def _asr_settings_path() -> str:
-    return os.path.join("Settings", "asr_settings.json")
+from services.asr_settings_service import ensure_asr_settings_service
+from utils import _
 
 
 def load_asr_model_settings(engine_id: str) -> dict:
-    path = _asr_settings_path()
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if isinstance(payload, dict):
-                models = payload.get("models", {})
-                if isinstance(models, dict):
-                    value = models.get(str(engine_id or "").strip(), {})
-                    return dict(value) if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-    return {}
+    return ensure_asr_settings_service().model_settings(engine_id)
 
 
 def save_asr_model_settings(engine_id: str, values: dict) -> None:
-    path = _asr_settings_path()
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-    payload: dict[str, Any] = {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                payload = raw
-    except Exception:
-        payload = {}
-
-    models = payload.get("models")
-    if not isinstance(models, dict):
-        models = {}
-    models[str(engine_id or "").strip()] = dict(values or {})
-    payload["models"] = models
-
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    ensure_asr_settings_service().set_model_settings(engine_id, values)
 
 
 def validate_asr_model_settings(schema: List[dict], values: dict) -> ValidationResult:
@@ -129,7 +94,13 @@ class SpeechRecognizerInterface(ABC):
             self.apply_settings(settings)
         except Exception:
             pass
-        backend = coerce_backend(self.required_backend(run_ctx))
+        # Каталожный backend — статичное свойство компонента из карточки модели.
+        # required_backend остаётся для install/status: он может зависеть от машины.
+        declared_backend = cfg.get("backend")
+        if declared_backend:
+            backend = coerce_backend(declared_backend)
+        else:
+            backend = coerce_backend(self.required_backend(run_ctx))
         return ComponentMetadata(
             id=self.id,
             item_id=self.item_id,
@@ -140,10 +111,33 @@ class SpeechRecognizerInterface(ABC):
             legacy_kind=self.legacy_kind,
             tags=tuple(str(item) for item in (cfg.get("tags") or []) if str(item).strip()),
             languages=tuple(str(item) for item in (cfg.get("languages") or []) if str(item).strip()),
+            compatibility=coerce_compatibility_spec(cfg.get("compatibility")),
         )
 
     def status(self, ctx: dict | None = None) -> ComponentStatus:
         run_ctx = build_runtime_ctx(ctx)
+        # Глоссарий движков (список моделей в UI) считается в основном GUI-процессе,
+        # где зависимости движка (faster_whisper, torch, ctranslate2, …) лежат в
+        # изолированном оверлее resolved-среды и НЕ видны через sys.path. Без путей
+        # среды is_installed()/бэкенд-проверка ложно считают установленный движок
+        # «не установленным», и он пропадает из выбора. Подставляем пути закоммиченной
+        # среды этого компонента. В AI-воркере пути уже приходят через
+        # NEUROMITA_RUNTIME_* (python_paths заполнен) — там ничего не трогаем.
+        if not run_ctx.get("python_paths"):
+            try:
+                from core.runtime_environments import runtime_environments
+
+                mgr = runtime_environments()
+                category = getattr(self.category, "value", self.category)
+                record = mgr.active_for(category=str(category), item_id=self.item_id)
+                env_paths = mgr.runtime_paths(record) if record is not None else ()
+                if env_paths:
+                    run_ctx["python_paths"] = list(env_paths)
+                    run_ctx.setdefault("target_dir", env_paths[0])
+                    run_ctx["strict_target"] = True
+            except Exception:
+                pass
+
         settings = run_ctx.get("engine_settings") if isinstance(run_ctx.get("engine_settings"), dict) else self.load_settings()
         try:
             self.apply_settings(settings)
@@ -152,14 +146,14 @@ class SpeechRecognizerInterface(ABC):
 
         backend = coerce_backend(self.required_backend(run_ctx))
         try:
-            installed = bool(self.is_installed())
+            installed = bool(self.is_installed(run_ctx))
         except Exception as exc:
             return ComponentStatus(
                 id=self.id,
                 code=ComponentStatusCode.FAILED,
                 installed=False,
                 ready=False,
-                message=str(exc),
+                message=format_exception(exc),
                 backend=backend,
                 backend_ok=False,
             )
@@ -182,14 +176,14 @@ class SpeechRecognizerInterface(ABC):
         try:
             # Clean reinstall skips this shortcut so a broken/partial install
             # is actually re-fetched instead of being reported "already installed".
-            if self.is_installed() and not run_ctx.get("clean"):
+            if self.status(run_ctx).ready and not run_ctx.get("clean"):
                 return InstallPlan(actions=[], already_installed=True, already_installed_status="Already installed")
         except Exception:
             pass
 
         steps = self.pip_install_steps(run_ctx) or []
         required_backend = coerce_backend(self.required_backend(run_ctx))
-        timeout_sec = float(run_ctx.get("timeout_sec", 3600.0) or 3600.0)
+        timeout_sec = float(run_ctx.get("timeout_sec", DEFAULT_INSTALL_TIMEOUT_SEC) or DEFAULT_INSTALL_TIMEOUT_SEC)
 
         actions: list[InstallAction] = []
         for step in steps:
@@ -241,10 +235,28 @@ class SpeechRecognizerInterface(ABC):
             )
 
         def _final_check(**_kwargs) -> bool:
+            callbacks = _kwargs.get("callbacks")
+            check_ctx = build_runtime_ctx(_kwargs.get("ctx") or run_ctx)
             try:
-                return bool(self.is_installed())
-            except Exception:
-                return True
+                installed = bool(self.is_installed(check_ctx))
+            except Exception as exc:
+                if callbacks is not None and hasattr(callbacks, "log"):
+                    callbacks.log(f"Post-install validation crashed: {format_exception(exc)}")
+                return False
+            if not installed:
+                # Раньше шаг просто возвращал False и пользователь видел только
+                # «call step returned False: Finalizing...» без причины (фидбэк Артёма
+                # «даже не понял что произошло»). Теперь пишем, чего не хватает.
+                reason = self._diagnose_install_failure(check_ctx)
+                if callbacks is not None and hasattr(callbacks, "log"):
+                    try:
+                        callbacks.log(
+                            _("Проверка после установки не пройдена — не хватает: {reason}",
+                              "Post-install check failed — missing: {reason}").format(reason=reason)
+                        )
+                    except Exception:
+                        pass
+            return installed
 
         actions.append(
             InstallAction(
@@ -263,8 +275,102 @@ class SpeechRecognizerInterface(ABC):
             backend_context=dict(run_ctx),
         )
 
+    def _diagnose_install_failure(self, ctx: dict | None = None) -> str:
+        """Человекочитаемая причина, почему is_installed() == False после установки:
+        недостающие python-модули/бэкенд из requirements() + отсутствующие файлы
+        модели из install_manifest()."""
+        parts: list[str] = []
+        try:
+            run_ctx = build_runtime_ctx(ctx)
+            run_ctx.setdefault(
+                "device",
+                getattr(self, "gigaam_device", None) or getattr(self, "device", None),
+            )
+            run_ctx.setdefault("gpu_vendor", getattr(self, "_current_gpu", None) or "CPU")
+            st = check_requirements(self.requirements(), ctx=run_ctx)
+            for missing in (st.get("missing_required") or []):
+                parts.append(str(missing))
+        except Exception:
+            pass
+        try:
+            for item in (self.install_manifest() or []):
+                dest = str(item.get("dest") or "").strip()
+                if dest and (not os.path.exists(dest) or os.path.getsize(dest) <= 0):
+                    parts.append(os.path.basename(dest) or dest)
+        except Exception:
+            pass
+        if not parts:
+            return _("неизвестно (см. строки лога выше)", "unknown (see log lines above)")
+        return "; ".join(dict.fromkeys(parts))  # dedup, сохраняя порядок
+
+    def uninstall_pip_packages(self) -> list[str]:
+        """Pip-пакеты для удаления при uninstall — ТОЛЬКО эксклюзивные для этого
+        движка. Общие (transformers/pyyaml/sounddevice/silero-vad и т.п.) не
+        перечисляем: они нужны другим компонентам. Удаляются некаскадно."""
+        return []
+
+    def uninstall_paths(self) -> list[str]:
+        """Каталоги/файлы модели (кэш весов) для удаления при uninstall."""
+        return []
+
     def build_uninstall_plan(self, ctx: dict | None = None) -> InstallPlan:
-        return noop_plan("ASR uninstall is not implemented yet.")
+        import shutil
+
+        pkgs = [str(p).strip() for p in (self.uninstall_pip_packages() or []) if str(p).strip()]
+        paths = [str(p).strip() for p in (self.uninstall_paths() or []) if str(p).strip()]
+
+        actions: List[InstallAction] = []
+
+        if pkgs:
+            def _do_uninstall_pkgs(*, pip_installer=None, callbacks=None, **_kwargs) -> bool:
+                if pip_installer is None:
+                    return True
+                try:
+                    # include_dependencies=False: сносим только эти пакеты, без их
+                    # дерева зависимостей — иначе снесли бы общие с transformers/RAG.
+                    return bool(pip_installer.uninstall_packages(
+                        pkgs,
+                        _("Удаление пакетов движка...", "Removing engine packages..."),
+                        include_dependencies=False,
+                    ))
+                except Exception as exc:
+                    if callbacks is not None:
+                        try:
+                            callbacks.log(format_exception(exc))
+                        except Exception:
+                            pass
+                    return False
+
+            actions.append(InstallAction(
+                type="call",
+                description=_("Удаление пакетов движка...", "Removing engine packages..."),
+                progress=20,
+                fn=_do_uninstall_pkgs,
+                environment_mutation=True,
+            ))
+
+        if paths:
+            def _do_remove_paths(*, callbacks=None, **_kwargs) -> bool:
+                for p in paths:
+                    try:
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        elif os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+                return True
+
+            actions.append(InstallAction(
+                type="call",
+                description=_("Удаление файлов модели...", "Removing model files..."),
+                progress=85,
+                fn=_do_remove_paths,
+            ))
+
+        if not actions:
+            return noop_plan("Nothing to uninstall for this ASR engine.")
+        return InstallPlan(actions=actions, ok_status=_("Удалено", "Uninstalled"))
 
     def build_initialize_plan(self, ctx: dict | None = None) -> InstallPlan | None:
         return None
@@ -282,16 +388,11 @@ class SpeechRecognizerInterface(ABC):
         pass
 
     @abstractmethod
-    async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                               vad_model, active_flag, **kwargs) -> None:
-        pass
-
-    @abstractmethod
     def cleanup(self) -> None:
         pass
 
     @abstractmethod
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
         pass
 
     def settings_spec(self) -> List[dict]:

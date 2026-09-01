@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
 from ui.widgets.launcher_shell_theme import PALETTE
+from utils import getTranslationVariant as _
 
 
 _DIALOG_STYLE = f"""
@@ -88,12 +89,13 @@ def create_ffmpeg_install_popup(parent):
     eyebrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(eyebrow)
 
-    title = QLabel("Установка FFmpeg")
+    title = QLabel(_("Установка FFmpeg", "Installing FFmpeg"))
     title.setObjectName("LauncherShellTitle")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(title)
 
-    label = QLabel("Идет установка FFmpeg...\nПожалуйста, подождите.")
+    label = QLabel(_("Идет установка FFmpeg...\nПожалуйста, подождите.",
+                     "Installing FFmpeg...\nPlease wait."))
     label.setObjectName("LauncherShellBody")
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     label.setWordWrap(True)
@@ -104,22 +106,26 @@ def create_ffmpeg_install_popup(parent):
 
 
 def show_ffmpeg_error_popup(parent):
-    error_dialog, layout = _build_shell_dialog(parent, "Ошибка установки FFmpeg", (560, 340))
+    error_dialog, layout = _build_shell_dialog(
+        parent, _("Ошибка установки FFmpeg", "FFmpeg installation error"), (560, 340))
     error_dialog.setModal(True)
 
     eyebrow = QLabel("MANUAL SETUP REQUIRED")
     eyebrow.setObjectName("LauncherShellEyebrow")
     layout.addWidget(eyebrow)
 
-    title = QLabel("Не удалось автоматически установить FFmpeg")
+    title = QLabel(_("Не удалось автоматически установить FFmpeg",
+                     "Could not install FFmpeg automatically"))
     title.setObjectName("LauncherShellTitle")
     title.setWordWrap(True)
     layout.addWidget(title)
 
-    message = QLabel(
+    message = QLabel(_(
         "FFmpeg нужен для отдельных функций программы, например для обработки аудио.\n\n"
-        "Скачайте его с официального сайта и распакуйте `ffmpeg.exe` в папку программы."
-    )
+        "Скачайте его с официального сайта и распакуйте `ffmpeg.exe` в папку программы.",
+        "FFmpeg is required for some features of the app, e.g. audio processing.\n\n"
+        "Download it from the official site and extract `ffmpeg.exe` into the program folder."
+    ))
     message.setObjectName("LauncherShellBody")
     message.setWordWrap(True)
     message.setTextFormat(Qt.TextFormat.MarkdownText)

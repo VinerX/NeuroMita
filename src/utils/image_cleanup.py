@@ -7,6 +7,7 @@ Provides:
   - delete_orphaned_images()  — remove those orphans
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -71,7 +72,7 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
                 pass
         conn.close()
     except Exception as e:
-        logger.warning(f"[image_cleanup] Failed to scan DB {db_path}: {e}")
+        logger.warning(f"[image_cleanup] Failed to scan DB {db_path}: {format_exception(e)}")
     return referenced
 
 
@@ -158,7 +159,7 @@ def delete_orphaned_images(dry_run: bool = False) -> tuple[int, int]:
                 f"[image_cleanup] {'[dry-run] would delete' if dry_run else 'Deleted'} orphan: {f}"
             )
         except Exception as e:
-            logger.warning(f"[image_cleanup] Failed to delete {f}: {e}")
+            logger.warning(f"[image_cleanup] Failed to delete {f}: {format_exception(e)}")
     return count, freed
 
 

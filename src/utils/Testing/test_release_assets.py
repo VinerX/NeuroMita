@@ -14,9 +14,14 @@ from utils.release_assets import (  # noqa: E402
     Release,
     ReleaseAsset,
     find_latest_python_full,
+    find_latest_unity_asset,
+    has_launcher_release_assets,
+    has_python_release_assets,
     parse_release,
     pick_from_release,
     pick_latest,
+    raw_release_has_launcher_assets,
+    raw_release_has_python_assets,
 )
 
 
@@ -110,6 +115,13 @@ def test_pick_latest_beta_accepts_prerelease():
     assert r is beta
 
 
+def test_pick_latest_skips_non_launcher_release_even_if_newer():
+    voice_assets = _r("voice-assets", "Voice Assets", [_a("CrazyMita.zip")], prerelease=True)
+    beta = _r("v1.2.0", "beta", [_a("PythonBuild-v1.2.0.zip")], prerelease=True)
+    r, _ = pick_latest([voice_assets, beta], "beta")
+    assert r is beta
+
+
 def test_pick_latest_empty_list():
     r, p = pick_latest([], "stable")
     assert r is None
@@ -139,6 +151,14 @@ def test_find_latest_full_returns_none_if_all_patches():
     ]
     r, a = find_latest_python_full(releases, "stable")
     assert r is None and a is None
+
+
+def test_find_latest_unity_asset_skips_python_only_releases():
+    python_only = _r("v1.2.0", "v1.2.0", [_a("PythonBuild-v1.2.0.zip")])
+    unity_release = _r("v1.1.0", "v1.1.0", [_a("UnityBuild-v1.1.0.7z")])
+    r, a = find_latest_unity_asset([python_only, unity_release], "stable")
+    assert r is unity_release
+    assert a is not None and a.name == "UnityBuild-v1.1.0.7z"
 
 
 # ── parse_release ─────────────────────────────────────────────────────────────
@@ -171,3 +191,51 @@ def test_parse_release_missing_name_falls_back_to_tag():
     raw = {"tag_name": "v1.0.0", "name": None, "prerelease": False, "body": "", "published_at": "", "assets": []}
     r = parse_release(raw)
     assert r.name == "v1.0.0"
+
+
+def test_has_launcher_release_assets_rejects_voice_bundle_release():
+    release = _r("voice-assets", "Voice Assets", [_a("CrazyMita.zip")], prerelease=True)
+    assert not has_launcher_release_assets(release)
+
+
+def test_has_python_release_assets_rejects_unity_only_release():
+    # v2026.07.12: единственный UnityBuild — это НЕ доступное Python-обновление.
+    release = _r("v2026.07.12", "NeuroMita v2026.07.12", [_a("UnityBuild-v2026.07.12.zip")])
+    assert has_launcher_release_assets(release)  # launcher-ассет есть (Unity)
+    assert not has_python_release_assets(release)  # но Python-файла нет
+
+
+def test_has_python_release_assets_accepts_python_full_and_patch():
+    full = _r("v1.0.0", "v1.0.0", [_a("PythonBuild-v1.0.0.zip")])
+    patch = _r("v1.1.0", "v1.1.0 Patch", [_a("PythonBuild-v1.1.0.7z")])
+    assert has_python_release_assets(full)
+    assert has_python_release_assets(patch)
+
+
+def test_raw_release_has_python_assets_rejects_unity_only():
+    raw = {
+        "tag_name": "v2026.07.12",
+        "name": "NeuroMita v2026.07.12",
+        "prerelease": False,
+        "body": "",
+        "published_at": "2026-07-12T00:00:00Z",
+        "assets": [
+            {"name": "UnityBuild-v2026.07.12.zip", "browser_download_url": "https://x/u.zip", "size": 346406515},
+        ],
+    }
+    assert raw_release_has_launcher_assets(raw)
+    assert not raw_release_has_python_assets(raw)
+
+
+def test_raw_release_has_launcher_assets_accepts_python_release():
+    raw = {
+        "tag_name": "v2.0.0",
+        "name": "Release v2.0.0",
+        "prerelease": False,
+        "body": "",
+        "published_at": "2026-01-01T00:00:00Z",
+        "assets": [
+            {"name": "PythonBuild-v2.0.0.zip", "browser_download_url": "https://x/a.zip", "size": 500, "content_type": "application/zip"},
+        ],
+    }
+    assert raw_release_has_launcher_assets(raw)

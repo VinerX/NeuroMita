@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import hashlib
@@ -9,9 +10,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterable, List, Optional
 
-from game_connections.services.beat_backend_spec import BACKEND_AUTO, normalize_backend_choice
+from core.runtime_environments import runtime_environments
+from core.services import use
+from game_connections.services.beat_backend_spec import (
+    BACKEND_AUTO,
+    BACKEND_BEAT_THIS,
+    normalize_backend_choice,
+)
 from game_connections.services.beat_worker_client import call_beats_worker_async, call_beats_worker_sync
 from main_logger import logger
+from services.contracts import AIEngineService
 
 try:
     from managers.settings_manager import SettingsManager
@@ -87,6 +95,41 @@ class BeatService:
         self._project_root = Path(__file__).resolve().parents[3]
         self._cache_dir = str(self._project_root / "beat_sync_cache")
 
+    def _activate_managed_runtime(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> bool | None:
+        preference = normalize_backend_choice(payload.get("backend_preference"))
+        if preference not in (BACKEND_AUTO, BACKEND_BEAT_THIS):
+            return None
+
+        record = runtime_environments().active_for(
+            category="beats",
+            item_id=BACKEND_BEAT_THIS,
+        )
+        if record is None:
+            return False if preference == BACKEND_BEAT_THIS else None
+
+        engine = use(AIEngineService).get_engine()
+        activate = getattr(engine, "activate_environment", None)
+        if not callable(activate):
+            return False
+        return bool(
+            activate(
+                "beats",
+                BACKEND_BEAT_THIS,
+                category="beats",
+                runtime_slot="beats",
+                timeout=min(30.0, max(1.0, float(timeout))),
+                validation_method=method,
+                validation_payload=dict(payload),
+                validation_timeout=max(1.0, float(timeout)),
+            )
+        )
+
     async def warmup(self, auto_install: bool = False) -> None:
         if self._warmup_done:
             return
@@ -94,26 +137,46 @@ class BeatService:
             if self._warmup_done:
                 return
             try:
-                await call_beats_worker_async(
+                payload = self._worker_payload(auto_install=auto_install)
+                managed = await asyncio.to_thread(
+                    self._activate_managed_runtime,
                     "warmup",
-                    self._worker_payload(auto_install=auto_install),
+                    payload,
                     timeout=120.0,
                 )
+                if managed is False:
+                    raise RuntimeError("Managed Beat This environment could not be initialized")
+                if managed is None:
+                    await call_beats_worker_async(
+                        "warmup",
+                        payload,
+                        timeout=120.0,
+                    )
                 self._warmup_done = True
             except Exception as exc:
-                logger.error(f"[BeatSync] worker warmup failed: {exc}", exc_info=True)
+                logger.error(f"[BeatSync] worker warmup failed: {format_exception(exc)}", exc_info=True)
 
     def reset_runtime_state(self) -> None:
         self._warmup_done = False
 
     def initialize_backend(self, *, backend_preference: str | None = None) -> bool:
         payload = self._worker_payload(auto_install=False, backend_preference=backend_preference)
+        payload["strict"] = True
         try:
-            result = call_beats_worker_sync("initialize_backend", payload, timeout=180.0)
-            self._warmup_done = True
+            managed = self._activate_managed_runtime(
+                "initialize_backend",
+                payload,
+                timeout=180.0,
+            )
+            result = (
+                managed
+                if managed is not None
+                else call_beats_worker_sync("initialize_backend", payload, timeout=180.0)
+            )
+            self._warmup_done = bool(result)
             return bool(result)
         except Exception as exc:
-            logger.error(f"[BeatSync] backend initialization failed: {exc}", exc_info=True)
+            logger.error(f"[BeatSync] backend initialization failed: {format_exception(exc)}", exc_info=True)
             return False
 
     async def extract_beats(
@@ -168,6 +231,8 @@ class BeatService:
         )
 
     async def _extract_uncached_async(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
+        if not self._warmup_done:
+            await self.warmup(auto_install=False)
         try:
             payload = await call_beats_worker_async(
                 "extract_beats",
@@ -180,10 +245,12 @@ class BeatService:
             )
             return _coerce_track_result(payload)
         except Exception as exc:
-            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}", exc_info=True)
+            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {format_exception(exc)}", exc_info=True)
             raise RuntimeError(f"Beat worker request failed for '{_short_path(audio_path)}'") from exc
 
     def _extract_uncached_sync(self, audio_path: str, min_confidence: float) -> BeatTrackResult:
+        if not self._warmup_done:
+            self.initialize_backend()
         try:
             payload = call_beats_worker_sync(
                 "extract_beats",
@@ -196,7 +263,7 @@ class BeatService:
             )
             return _coerce_track_result(payload)
         except Exception as exc:
-            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {exc}", exc_info=True)
+            logger.error(f"[BeatSync] worker backend failed for '{_short_path(audio_path)}': {format_exception(exc)}", exc_info=True)
             raise RuntimeError(f"Beat worker request failed for '{_short_path(audio_path)}'") from exc
 
     def get_backend_status(self) -> BeatBackendStatus:
@@ -246,7 +313,7 @@ class BeatService:
             active_backend = "engine_warming"
             resolved_backend = active_backend
         except Exception as exc:
-            logger.error(f"[BeatSync] backend status unavailable: {exc}", exc_info=True)
+            logger.error(f"[BeatSync] backend status unavailable: {format_exception(exc)}", exc_info=True)
 
         return BeatBackendStatus(
             beat_this_installed=beat_this_installed,
@@ -295,15 +362,8 @@ class BeatService:
         if not root.is_dir():
             raise NotADirectoryError(f"Not a directory: {root}")
 
-        try:
-            call_beats_worker_sync(
-                "warmup",
-                self._worker_payload(auto_install=auto_install),
-                timeout=120.0,
-            )
-            self._warmup_done = True
-        except Exception as exc:
-            logger.error(f"[BeatSync] worker warmup failed for cache build: {exc}", exc_info=True)
+        if not self._warmup_done and not self.initialize_backend():
+            logger.error("[BeatSync] worker warmup failed for cache build")
 
         scanned_files = 0
         cache_hits = 0
@@ -322,8 +382,8 @@ class BeatService:
                 generated += 1
             except Exception as exc:
                 failed += 1
-                failed_files.append(f"{audio_file.name}: {exc}")
-                logger.error(f"[BeatSync] cache build failed for '{audio_file}': {exc}", exc_info=True)
+                failed_files.append(f"{audio_file.name}: {format_exception(exc)}")
+                logger.error(f"[BeatSync] cache build failed for '{audio_file}': {format_exception(exc)}", exc_info=True)
 
         return BeatCacheBuildSummary(
             root_dir=str(root),
@@ -370,7 +430,7 @@ class BeatService:
                 bpm_estimate=float(data.get("bpm_estimate", 0.0) or 0.0),
             )
         except Exception as exc:
-            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {exc}")
+            logger.debug(f"[BeatSync] cache read skipped for '{_short_path(audio_path)}': {format_exception(exc)}")
             return None
 
     def _save_cached_result(self, audio_path: str, result: BeatTrackResult, *, track_name: str = "") -> None:
@@ -407,7 +467,7 @@ class BeatService:
                     pass
             logger.info(f"[BeatSync] cache-save track='{_short_path(audio_path)}' method={method} beats={len(result.beats)}")
         except Exception as exc:
-            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {exc}")
+            logger.debug(f"[BeatSync] cache save skipped for '{_short_path(audio_path)}': {format_exception(exc)}")
 
     def _cache_path_for_hash(self, source_hash: str) -> str:
         return os.path.join(self._cache_dir, f"{source_hash}.json")

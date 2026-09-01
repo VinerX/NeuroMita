@@ -1,18 +1,40 @@
+from __future__ import annotations
+
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 
 from styles.main_styles import get_stylesheet
-from ui.pages.home_page import build_home_page
-from ui.pages.logs_page import build_logs_page
-from ui.pages.main_page_registry import MAIN_PAGE_ORDER, build_main_pages
-from ui.pages.news_page import build_news_page
-from ui.pages.news_support import get_news_content as load_news_content
-from ui.pages.news_support import get_news_releases as load_news_releases
 from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
-from ui.widgets.settings_panel import apply_section_visibility
 from ui.windows.app_window_base import AppWindowBase
 
 
 class MainWindow(AppWindowBase):
+    """Passive launcher shell.
+
+    Page construction and navigation live in ``MainWindowCoordinator``. The
+    window only exposes stable rendering/navigation ports used by child views.
+    """
+
+    def __init__(
+        self,
+        settings,
+        *,
+        telegram_auth_actions,
+        chat_message_actions,
+        shell_actions,
+        window_actions,
+        page_actions,
+        pending_restart_version,
+    ):
+        self._page_actions = page_actions
+        self._pending_restart_version = pending_restart_version
+        super().__init__(
+            settings,
+            telegram_auth_actions=telegram_auth_actions,
+            chat_message_actions=chat_message_actions,
+            shell_actions=shell_actions,
+            window_actions=window_actions,
+        )
+
     def setup_ui(self):
         central_widget = QWidget()
         central_widget.setObjectName("LauncherRoot")
@@ -24,8 +46,9 @@ class MainWindow(AppWindowBase):
         main_layout.setSpacing(0)
 
         self.shell_sidebar = LauncherSidebarWidget(
-            initial_page="sandbox",
+            initial_page="home",
             on_page_requested=self.switch_main_page,
+            version_provider=self._pending_restart_version,
         )
         self.shell_sidebar.social_requested.connect(self._on_shell_social_requested)
         self.shell_sidebar.utility_requested.connect(self._on_shell_utility_requested)
@@ -48,118 +71,79 @@ class MainWindow(AppWindowBase):
         content_layout.addWidget(self.page_stack)
         main_layout.addWidget(content_host, 1)
 
-        self.page_map = build_main_pages(self)
-        for key in MAIN_PAGE_ORDER:
-            self.page_stack.addWidget(self.page_map[key])
+    def initialize_pages(self) -> None:
+        self._page_actions.initialize()
 
+    def apply_initial_geometry(self, design_w: int, design_h: int) -> None:
         try:
-            apply_section_visibility(self)
+            screen = self.screen()
+            if screen is None:
+                from PyQt6.QtWidgets import QApplication
+
+                screen = QApplication.primaryScreen()
+            available = screen.availableGeometry()
+            width = min(design_w, int(available.width() * 0.92))
+            height = min(design_h, int(available.height() * 0.92))
+            self.resize(width, height)
+            frame = self.frameGeometry()
+            frame.moveCenter(available.center())
+            self.move(frame.topLeft())
         except Exception:
-            pass
+            self.resize(design_w, design_h)
 
-        self.switch_main_page("sandbox")
-        self.resize(1560, 920)
+    def show_settings_category(self, category, *, force: bool = False, subsection=None):
+        self._page_actions.show_settings_category(
+            category,
+            force=force,
+            subsection=subsection,
+        )
 
-    def _init_settings_containers(self):
-        page = getattr(self, "settings_page", None)
-        if page is None:
-            return {}
-        return page.settings_containers
+    def switch_main_page(self, page_key, *, activate: bool = True):
+        self._page_actions.switch_page(page_key, activate=activate)
 
-    def _on_hide_animation_finished(self):
-        page = getattr(self, "settings_page", None)
-        if page is not None:
-            page.show_overview()
-        try:
-            self.settings_animation.finished.disconnect(self._on_hide_animation_finished)
-        except TypeError:
-            pass
+    def activate_current_main_page(self):
+        return self._page_actions.activate_current_page()
 
-    def show_settings_category(self, category):
-        page = getattr(self, "settings_page", None)
-        if page is not None:
-            page.show_category(category)
-
-    def switch_main_page(self, page_key):
-        page = getattr(self, "page_map", {}).get(page_key)
-        if page is None or not hasattr(self, "page_stack"):
-            return
-        current_page = self.page_stack.currentWidget()
-
-        if current_page is not None and current_page is not page and hasattr(current_page, "on_deactivated"):
-            current_page.on_deactivated()
-
-        self.page_stack.setCurrentWidget(page)
-        self.current_main_page = page_key
-
-        if hasattr(self, "shell_sidebar"):
-            self.shell_sidebar.set_active_page(page_key)
-
-        if hasattr(page, "on_activated"):
-            page.on_activated()
-
-    def _build_home_page(self):
-        return build_home_page(self)
-
-    def _build_news_page(self):
-        return build_news_page(self)
-
-    def _build_logs_page(self):
-        return build_logs_page(self)
+    def open_release_page(self, release_id: str = ""):
+        self._page_actions.open_release_page(release_id)
 
     def _refresh_logs_view(self):
-        page = getattr(self, "logs_page", None)
-        if page is not None:
-            page.refresh_logs()
+        self._page_actions.refresh_logs()
 
     def _refresh_news_page(self):
-        page = getattr(self, "news_page", None)
-        if page is not None:
-            page.refresh_content()
+        self._page_actions.refresh_news()
 
     def get_news_content(self):
-        return load_news_content(self)
+        return self._page_actions.news_content()
 
     def get_news_releases(self):
-        return load_news_releases(self)
+        return self._page_actions.news_releases()
 
     def _refresh_home_primary_label(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.refresh_primary_label()
+        self._page_actions.refresh_home_primary_label()
 
     def _set_home_progress(self, text: str, value: int, maximum: int, busy: bool = False):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.set_progress(text, value, maximum, busy=busy)
+        self._page_actions.set_home_progress(
+            text,
+            value,
+            maximum,
+            busy=busy,
+        )
 
     def _hide_home_progress(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.hide_progress()
+        self._page_actions.hide_home_progress()
 
     def _run_home_primary_action(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.run_primary_action()
+        self._page_actions.run_home_primary_action()
 
     def _run_home_install_unity(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.run_install_unity()
+        self._page_actions.run_home_install_unity()
 
     def _run_home_verify_action(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.run_verify_action()
+        self._page_actions.run_home_verify_action()
 
     def _show_home_extra_menu(self, anchor_widget):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            page.show_extra_menu(anchor_widget)
+        self._page_actions.show_home_extra_menu(anchor_widget)
 
     def _find_unity_executable(self):
-        page = getattr(self, "home_page", None)
-        if page is not None:
-            return page.find_unity_executable()
-        return None
+        return self._page_actions.find_unity_executable()

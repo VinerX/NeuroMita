@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, pyqtProperty
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QCheckBox
 
 
@@ -14,6 +14,11 @@ class ToggleSwitch(QCheckBox):
     _OFF_TRACK = QColor(255, 255, 255, 30)
     _ON_TRACK = QColor(121, 231, 140, 235)  # #79e78c, matches the status dots
     _KNOB = QColor(255, 255, 255, 240)
+    _KNOB_BORDER = QColor(15, 17, 33, 46)  # rgba(15, 17, 33, 0.18)
+    _KNOB_SHADOW = QColor(15, 17, 33, 71)  # rgba(15, 17, 33, 0.28)
+    _DISABLED_TRACK = QColor(9, 10, 18, 220)
+    _DISABLED_KNOB = QColor(132, 134, 146, 190)
+    _DISABLED_BORDER = QColor(255, 255, 255, 18)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +62,11 @@ class ToggleSwitch(QCheckBox):
         if hasattr(self, "_anim"):
             self._animate_to(bool(self.isChecked()))
 
+    def setEnabled(self, enabled: bool):
+        super().setEnabled(enabled)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ForbiddenCursor)
+        self.update()
+
     @staticmethod
     def _lerp(a: QColor, b: QColor, t: float) -> QColor:
         return QColor(
@@ -74,7 +84,8 @@ class ToggleSwitch(QCheckBox):
         r = self.rect().adjusted(1, 1, -1, -1)
         radius = r.height() / 2.0
 
-        track = self._lerp(self._OFF_TRACK, self._ON_TRACK, self._pos)
+        enabled = self.isEnabled()
+        track = self._lerp(self._OFF_TRACK, self._ON_TRACK, self._pos) if enabled else self._DISABLED_TRACK
         p.setBrush(track)
         p.drawRoundedRect(r, radius, radius)
 
@@ -82,6 +93,14 @@ class ToggleSwitch(QCheckBox):
         travel = r.width() - d - 4
         x = r.left() + 2 + travel * self._pos
         y = r.top() + 2
-        p.setBrush(self._KNOB)
+
+        # Approximate the requested CSS shadow with a soft, slightly offset
+        # ellipse behind the knob; Qt's painter has no direct box-shadow here.
+        if enabled:
+            p.setBrush(self._KNOB_SHADOW)
+            p.drawEllipse(int(round(x)), int(round(y + 1)), int(d), int(d))
+
+        p.setPen(QPen(self._KNOB_BORDER if enabled else self._DISABLED_BORDER, 1))
+        p.setBrush(self._KNOB if enabled else self._DISABLED_KNOB)
         p.drawEllipse(int(round(x)), int(round(y)), int(d), int(d))
         p.end()

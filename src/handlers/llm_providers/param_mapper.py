@@ -1,4 +1,4 @@
-﻿# src/handlers/llm_providers/param_mapper.py
+# src/handlers/llm_providers/param_mapper.py
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -31,6 +31,7 @@ def build_unified_generation_params(
     top_p: float | None,
     thinking_budget: float | None,
     enable_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     gemini_thinking_budget: int | None = None,
     force_params: frozenset = frozenset(),
 ) -> Dict[str, Any]:
@@ -43,7 +44,7 @@ def build_unified_generation_params(
     if (bool(settings.get("USE_MODEL_TEMPERATURE", True)) or "temperature" in force_params) and temperature is not None:
         params["temperature"] = float(temperature)
 
-    if (bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS")) or "max_tokens" in force_params) and max_response_tokens is not None:
+    if (bool(settings.get("USE_MODEL_MAX_RESPONSE_TOKENS", True)) or "max_tokens" in force_params) and max_response_tokens is not None:
         params["max_tokens"] = int(max_response_tokens)
 
     if (bool(settings.get("USE_MODEL_PRESENCE_PENALTY")) or "presence_penalty" in force_params) and presence_penalty is not None:
@@ -68,6 +69,11 @@ def build_unified_generation_params(
 
     if enable_thinking is not None:
         params["enable_thinking"] = enable_thinking
+
+    # Глубина размышлений имеет смысл только вместе с включённым thinking; провайдер
+    # применит её, только если протокол объявил reasoning_effort-транспорт.
+    if enable_thinking and reasoning_effort:
+        params["reasoning_effort"] = str(reasoning_effort)
 
     if (bool(settings.get("USE_GEMINI_THINKING_BUDGET")) or "gemini_thinking_budget" in force_params) and gemini_thinking_budget is not None:
         params["gemini_thinking_budget"] = int(gemini_thinking_budget)

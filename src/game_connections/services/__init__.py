@@ -1,1 +1,1 @@
-﻿from .beat_service import BeatService, BeatTrackResult, get_beat_service
+from .beat_service import BeatService, BeatTrackResult, get_beat_service

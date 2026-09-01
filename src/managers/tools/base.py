@@ -1,4 +1,4 @@
-﻿# src/managers/tools/base.py
+# src/managers/tools/base.py
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 

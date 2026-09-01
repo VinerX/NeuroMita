@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import logging
 import math
 import sqlite3
@@ -12,20 +13,16 @@ import time as _time
 from typing import List, Dict, Any, Optional, Tuple
 
 from managers.database_manager import DatabaseManager
-from handlers.embedding_handler import EmbeddingModelHandler, QUERY_PREFIX
-from handlers.embedding_presets import resolve_model_settings, resolve_full_config
 from managers.rag.pipeline.retrievers.faiss_index import invalidate as _faiss_invalidate
-from core.events import get_event_bus, Events
+from core.events import get_event_bus
 from main_logger import logger
-from ui.task_worker import TaskWorker
+from core.cancellation import TaskCancelledError
 
 
 from managers.rag.rag_utils import rag_clean_text, make_reindex_progress_logger, extract_keywords, keyword_score
 from managers.settings_manager import SettingsManager
 
 
-EMBED_EVENT_NAME = Events.RAG.GET_EMBEDDING
-EMBEDS_EVENT_NAME = Events.RAG.GET_EMBEDDINGS
 
 # --- Default configuration constants ---
 DEFAULT_QUERY_WEIGHT_USER = 0.7
@@ -37,12 +34,37 @@ DEFAULT_EXPANDED_QUERY_MAX_CHARS = 4000
 DEFAULT_RECENT_TAIL_MAX_CHARS = 1200
 
 class RAGManager:
-    _fallback_handler: Optional[EmbeddingModelHandler] = None
-    _fallback_lock: Lock = Lock()
-    _fallback_failed: bool = False  # avoid retrying after permanent load failure
+    """Поиск по памяти/истории. Тяжёлые ML-модели живут за границей AI engine —
+    в main-процессе torch/transformers не импортируются вовсе."""
 
     _ACCESS_EXECUTOR: Optional[ThreadPoolExecutor] = None
     _ACCESS_EXECUTOR_LOCK: Lock = Lock()
+
+    # Схема БД в рантайме не меняется, а построение RAGManager на каждый запрос
+    # стоило двух PRAGMA table_info в hot path.
+    _INSTANCES: dict[str, "RAGManager"] = {}
+    _INSTANCES_LOCK: Lock = Lock()
+
+    @classmethod
+    def for_character(cls, character_id: str) -> "RAGManager":
+        key = str(character_id or "")
+        instance = cls._INSTANCES.get(key)
+        if instance is not None:
+            return instance
+        with cls._INSTANCES_LOCK:
+            instance = cls._INSTANCES.get(key)
+            if instance is None:
+                instance = cls(key)
+                cls._INSTANCES[key] = instance
+            return instance
+
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        with cls._ACCESS_EXECUTOR_LOCK:
+            executor = cls._ACCESS_EXECUTOR
+            cls._ACCESS_EXECUTOR = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     @classmethod
     def _get_access_executor(cls) -> ThreadPoolExecutor:
@@ -51,28 +73,6 @@ class RAGManager:
                 if cls._ACCESS_EXECUTOR is None:
                     cls._ACCESS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rag_access")
         return cls._ACCESS_EXECUTOR
-
-    @classmethod
-    def _get_fallback_handler(cls) -> EmbeddingModelHandler:
-        """
-        Fallback handler создаём лениво и один раз на процесс.
-        ВАЖНО: используем EmbeddingModelHandler.shared(), чтобы не грузить модель второй раз.
-        """
-        if cls._fallback_failed:
-            raise RuntimeError("Embedding model unavailable (failed to load; restart required)")
-        if cls._fallback_handler is None:
-            with cls._fallback_lock:
-                if cls._fallback_handler is None and not cls._fallback_failed:
-                    try:
-                        ms = resolve_model_settings()
-                        cls._fallback_handler = EmbeddingModelHandler.shared(
-                            model_name=ms["hf_name"],
-                            query_prefix=ms["query_prefix"],
-                        )
-                    except Exception:
-                        cls._fallback_failed = True
-                        raise
-        return cls._fallback_handler
 
     def __init__(self, character_id: str):
         self.character_id = character_id
@@ -89,6 +89,9 @@ class RAGManager:
         )
         self.history_repo = HistoryRepository(self.db, character_id, self._schema)
         self.memory_repo = MemoryRepository(self.db, character_id, self._schema)
+
+        from managers.rag.embedding import RagEmbedder
+        self._embedder = RagEmbedder()
 
         self._embed_failed_warned: bool = False  # warn once when embed model unavailable
 
@@ -127,14 +130,14 @@ class RAGManager:
     def _mem_cols(self):
         return self._schema.mem_cols
 
+    # Эмбеддинг-слой вынесен в RagEmbedder (managers/rag/embedding.py);
+    # ниже — тонкие делегаторы ради обратной совместимости внутренних вызовов.
     def _current_model_name(self) -> str:
         """Returns the DB key used to tag embedding rows (provider:model or bare hf_name)."""
-        cfg = resolve_full_config()
-        return str(cfg.get("db_model_key") or cfg.get("hf_name") or cfg.get("model") or "")
+        return self._embedder.current_model_name()
 
     def _current_dimensions(self) -> int:
-        cfg = resolve_full_config()
-        return int(cfg.get("dimensions") or 0)
+        return self._embedder.current_dimensions()
 
     def _embed_via_provider(
         self,
@@ -143,15 +146,7 @@ class RAGManager:
         prefix: str = "",
     ) -> List[Optional[np.ndarray]]:
         """Embed texts through the configured embedding provider."""
-        from handlers.embedding_providers.registry import get_provider_for, build_request
-
-        cfg = resolve_full_config()
-        if prefix:
-            cfg = dict(cfg)
-            cfg["query_prefix"] = prefix
-        provider = get_provider_for(cfg)
-        req = build_request(cfg, texts=texts, is_query=is_query)
-        return provider.embed(req)
+        return self._embedder.embed_via_provider(texts, is_query=is_query, prefix=prefix)
 
     def _get_bool_setting(self, key: str, default: bool) -> bool:
         try:
@@ -253,6 +248,12 @@ class RAGManager:
             params: list[Any] = [self.character_id]
             if "is_deleted" in self._history_cols:
                 where += " AND is_deleted=0"
+            if rf == "user_only":
+                where += " AND role='user'"
+            elif rf == "assistant_only":
+                where += " AND role='assistant'"
+            else:
+                where += " AND role IN ('user', 'assistant')"
 
             cur.execute(
                 f"""
@@ -267,12 +268,7 @@ class RAGManager:
             rows = cur.fetchall() or []
 
             max_chars = int(SettingsManager.get("RAG_QUERY_TAIL_MAX_CHARS", DEFAULT_RECENT_TAIL_MAX_CHARS) or DEFAULT_RECENT_TAIL_MAX_CHARS)
-            for role, content in rows:
-                r = str(role or "").strip().lower()
-                if rf == "user_only" and r != "user":
-                    continue
-                if rf == "assistant_only" and r != "assistant":
-                    continue
+            for _role, content in rows:
                 c = rag_clean_text(self._clip_text(content, max_chars))
                 if c:
                     out.append(c)
@@ -417,53 +413,35 @@ class RAGManager:
         return out or uq
 
     def _blob_to_array(self, blob) -> Optional[np.ndarray]:
-        """Конвертирует BLOB из SQLite обратно в numpy array"""
+        """Конвертирует BLOB из SQLite обратно в проверенный numpy array."""
         if not blob:
             return None
-        # float32 занимает 4 байта.
-        return np.frombuffer(blob, dtype=np.float32)
+        try:
+            if len(blob) % np.dtype(np.float32).itemsize != 0:
+                logger.warning("RAGManager: повреждённый embedding BLOB (размер не кратен float32)")
+                return None
+            vector = np.frombuffer(blob, dtype=np.float32).copy()
+            expected_dim = self._current_dimensions()
+            if expected_dim > 0 and vector.size != expected_dim:
+                logger.warning(
+                    f"RAGManager: пропущен embedding неверной размерности: "
+                    f"получено {vector.size}, ожидалось {expected_dim}"
+                )
+                return None
+            if vector.size == 0 or not np.all(np.isfinite(vector)):
+                logger.warning("RAGManager: пропущен пустой или нечисловой embedding")
+                return None
+            return vector
+        except Exception as e:
+            logger.warning(f"RAGManager: не удалось декодировать embedding BLOB: {format_exception(e)}")
+            return None
 
     def _array_to_blob(self, array: np.ndarray) -> bytes:
         """Конвертирует numpy array в байты для сохранения"""
-        return array.astype(np.float32).tobytes()
+        return self._embedder.array_to_blob(array)
 
     def _get_embedding(self, text: str, prefix: str = "", use_event_bus: bool = True) -> Optional[np.ndarray]:
-        """
-        1) Пытаемся получить эмбеддинг через EventBus (EmbeddingController).
-        2) Если не вышло — fallback на Singleton EmbeddingModelHandler().
-        """
-        if not text or not SettingsManager.get("RAG_ENABLED", False):
-            return None
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
-            return None
-
-        # Очистка от тегов
-        text = rag_clean_text(text)
-        cfg = resolve_full_config()
-        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_event_bus = bool(use_event_bus and provider_name == "local")
-        logger.debug(
-            f"[RAG][embed_one] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')}"
-        )
-
-        if can_use_event_bus:
-            try:
-                logger.debug(f"RAGManager: Запрашиваю embedding через EventBus: {EMBED_EVENT_NAME}")
-                results = self.event_bus.emit_and_wait(EMBED_EVENT_NAME, {"text": text, "prefix": prefix})
-                if results:
-                    vec = results[0]
-                    if vec is not None:
-                        return vec
-            except Exception as e:
-                # Не валим RAG из-за EventBus — просто откатываемся на прямой вызов singleton
-                logger.warning(f"RAGManager: EventBus embedding не сработал, fallback на singleton. Причина: {e}")
-
-        try:
-            results = self._embed_via_provider([text], is_query=bool(prefix), prefix=prefix)
-            return results[0] if results else None
-        except Exception as e:
-            logger.error(f"RAGManager: ошибка провайдера эмбеддинга: {e}", exc_info=True)
-            return None
+        return self._embedder.get_embedding(text, prefix=prefix, use_event_bus=use_event_bus)
 
     def _get_embeddings(
         self,
@@ -472,107 +450,27 @@ class RAGManager:
         use_event_bus: bool = True,
         batch_size: Optional[int] = None,
         allow_when_rag_disabled: bool = False,
+        priority: str = "hot",
     ) -> List[Optional[np.ndarray]]:
-        """
-        Массовое получение эмбеддингов:
-        1) EventBus batch (rag.get_embeddings) — меньше overhead и lock'ов.
-        2) Fallback на ленивый singleton EmbeddingModelHandler, если EventBus недоступен.
-        """
-        if not texts:
-            return []
-        if (not allow_when_rag_disabled) and (not SettingsManager.get("RAG_ENABLED", False)):
-            return []
-        if not SettingsManager.get("RAG_VECTOR_SEARCH_ENABLED", False):
-            return [None] * len(texts)
-
-        cleaned: List[str] = []
-        for t in texts:
-            if not t:
-                cleaned.append("")
-            else:
-                cleaned.append(rag_clean_text(str(t)))
-
-        cfg = resolve_full_config()
-        cfg_extra = dict(cfg.get("extra") or {})
-        bs = int(batch_size or cfg_extra.get("batch_size") or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
-        if bs <= 0:
-            bs = len(cleaned)
-
-        out: List[Optional[np.ndarray]] = []
-        provider_name = str(cfg.get("provider_name") or "local").strip().lower()
-        can_use_event_bus = bool(use_event_bus and provider_name == "local")
-        req_delay_sec = float(cfg_extra.get("request_delay_sec") or self._get_float_setting("RAG_EMBED_REQUEST_DELAY_SEC", 0.0))
-        if req_delay_sec < 0.0:
-            req_delay_sec = 0.0
-        logger.debug(
-            f"[RAG][embed_batch] provider={provider_name} | model={cfg.get('db_model_key') or cfg.get('model') or cfg.get('hf_name')} | "
-            f"texts={len(cleaned)} | batch_size={bs} | delay={req_delay_sec:.3f}s | event_bus={can_use_event_bus}"
+        return self._embedder.get_embeddings(
+            texts,
+            prefix=prefix,
+            use_event_bus=use_event_bus,
+            batch_size=batch_size,
+            allow_when_rag_disabled=allow_when_rag_disabled,
+            priority=priority,
         )
 
-        if can_use_event_bus:
-            try:
-                _eventbus_ok = False
-                for i in range(0, len(cleaned), bs):
-                    chunk = cleaned[i:i + bs]
-                    results = self.event_bus.emit_and_wait(
-                        EMBEDS_EVENT_NAME,
-                        {"texts": chunk, "prefix": prefix, "batch_size": bs},
-                    )
-                    if not results:
-                        # No subscribers — fall through to fallback handler
-                        out.clear()
-                        _eventbus_ok = False
-                        break
-                    vecs = results[0]
-                    if not isinstance(vecs, list):
-                        vecs = []
-                    # выравниваем длину под входной chunk
-                    if len(vecs) != len(chunk):
-                        vecs = (vecs + [None] * len(chunk))[:len(chunk)]
-                    # EventBus local-путь иногда возвращает только None/[] (например handler не инициализировался).
-                    # В этом случае считаем батч неуспешным и падаем в provider fallback.
-                    if not vecs or all(v is None for v in vecs):
-                        logger.warning(
-                            "[RAG][embed_batch] EventBus returned empty/None-only batch; switching to provider fallback"
-                        )
-                        out.clear()
-                        _eventbus_ok = False
-                        break
-                    out.extend(vecs)
-                    _eventbus_ok = True
-                    if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
-                        try:
-                            _time.sleep(req_delay_sec)
-                        except Exception:
-                            pass
-                if _eventbus_ok:
-                    return out
-            except Exception as e:
-                logger.warning(
-                    f"RAGManager: EventBus batch embedding не сработал, fallback на singleton. Причина: {e}"
-                )
-                out.clear()
-
-        # Fallback: через провайдер-систему
+    def _get_reindex_batch_size(self) -> int:
+        """Use the active embedding preset batch size during bulk indexing."""
         try:
-            merged: List[Optional[np.ndarray]] = []
-            for i in range(0, len(cleaned), bs):
-                chunk = cleaned[i:i + bs]
-                vecs = self._embed_via_provider(chunk, is_query=False, prefix=prefix)
-                if not isinstance(vecs, list):
-                    vecs = []
-                if len(vecs) != len(chunk):
-                    vecs = (vecs + [None] * len(chunk))[:len(chunk)]
-                merged.extend(vecs)
-                if req_delay_sec > 0.0 and (i + bs) < len(cleaned):
-                    try:
-                        _time.sleep(req_delay_sec)
-                    except Exception:
-                        pass
-            return merged
-        except Exception as e:
-            logger.error(f"RAGManager: ошибка fallback batch эмбеддингов: {e}", exc_info=True)
-            return [None] * len(cleaned)
+            from handlers.embedding_presets import resolve_full_config
+
+            configured = (resolve_full_config().get("extra") or {}).get("batch_size")
+            batch_size = int(configured or self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16))
+        except Exception:
+            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
+        return batch_size if batch_size > 0 else 16
 
     # ------------------------------------------------------------------ #
     #  Sentence-level indexing helpers                                    #
@@ -608,9 +506,20 @@ class RAGManager:
         if not sentences:
             return 0
 
-        vecs = self._get_embeddings(sentences, batch_size=batch_size)
+        vecs = list(self._get_embeddings(sentences, batch_size=batch_size, priority="bulk") or [])
+        if len(vecs) != len(sentences):
+            logger.error(
+                f"RAGManager: sentence embedding count mismatch: "
+                f"texts={len(sentences)}, vectors={len(vecs)}"
+            )
+            if len(vecs) < len(sentences):
+                vecs.extend([None] * (len(sentences) - len(vecs)))
+            else:
+                vecs = vecs[:len(sentences)]
+
         stored = 0
-        for idx, (sent, vec) in enumerate(zip(sentences, vecs)):
+        for idx, sent in enumerate(sentences):
+            vec = vecs[idx]
             if vec is None:
                 continue
             blob = self._array_to_blob(vec)
@@ -649,7 +558,7 @@ class RAGManager:
             )
             hist_rows = cursor.fetchall() or []
         except Exception as e:
-            logger.warning(f"RAGManager: sentence index query failed (history): {e}")
+            logger.warning(f"RAGManager: sentence index query failed (history): {format_exception(e)}")
             hist_rows = []
 
         for row_id, content in hist_rows:
@@ -680,7 +589,7 @@ class RAGManager:
             )
             mem_rows = cursor.fetchall() or []
         except Exception as e:
-            logger.warning(f"RAGManager: sentence index query failed (memories): {e}")
+            logger.warning(f"RAGManager: sentence index query failed (memories): {format_exception(e)}")
             mem_rows = []
 
         for eternal_id, content in mem_rows:
@@ -710,7 +619,7 @@ class RAGManager:
                 return 0
             model = self._current_model_name()
             names = [e["name"] for e in entities]
-            vecs = self._get_embeddings(names)
+            vecs = self._get_embeddings(names, priority="bulk")
             if not vecs:
                 return 0
             count = 0
@@ -726,7 +635,7 @@ class RAGManager:
                 logger.info(f"RAGManager: embedded {count} graph entities (model={model})")
             return count
         except Exception as e:
-            logger.warning(f"RAGManager: index_graph_entity_embeddings failed: {e}")
+            logger.warning(f"RAGManager: index_graph_entity_embeddings failed: {format_exception(e)}")
             return 0
 
     def update_memory_embedding(self, eternal_id: int, text: str):
@@ -734,7 +643,7 @@ class RAGManager:
         try:
             vector = self._get_embedding(text)
         except Exception as e:
-            logger.warning(f"RAGManager: embedding generation failed (memory) - ignored: {e}", exc_info=True)
+            logger.warning(f"RAGManager: embedding generation failed (memory) - ignored: {format_exception(e)}", exc_info=True)
             return
 
         if vector is None:
@@ -764,9 +673,9 @@ class RAGManager:
                 self._index_sentences(conn, "memories", eternal_id, text, model=model, min_len=min_len)
             conn.commit()
         except sqlite3.OperationalError as e:
-            logger.warning(f"RAGManager: sqlite operational error while updating memory embedding (ignored): {e}")
+            logger.warning(f"RAGManager: sqlite operational error while updating memory embedding (ignored): {format_exception(e)}")
         except Exception as e:
-            logger.warning(f"RAGManager: failed to update memory embedding (ignored): {e}", exc_info=True)
+            logger.warning(f"RAGManager: failed to update memory embedding (ignored): {format_exception(e)}", exc_info=True)
         finally:
             try:
                 if conn:
@@ -774,12 +683,102 @@ class RAGManager:
             except Exception:
                 pass
 
+    def update_history_embeddings(
+        self,
+        items: List[Tuple[int, str]],
+        *,
+        priority: str = "bulk",
+    ) -> int:
+        """Generate and persist history embeddings in a single batch."""
+        normalized: List[Tuple[int, str]] = []
+        for msg_id, text in items or []:
+            clean_text = str(text or "").strip()
+            if msg_id and clean_text:
+                normalized.append((int(msg_id), clean_text))
+        if not normalized:
+            return 0
+
+        try:
+            vectors = list(
+                self._get_embeddings(
+                    [text for _msg_id, text in normalized],
+                    priority=priority,
+                )
+                or []
+            )
+        except Exception as e:
+            logger.warning(
+                f"RAGManager: batch embedding generation failed (history) - ignored: {format_exception(e)}",
+                exc_info=True,
+            )
+            return 0
+
+        if len(vectors) != len(normalized):
+            logger.warning(
+                "RAGManager: history batch embedding count mismatch: texts=%s, vectors=%s",
+                len(normalized),
+                len(vectors),
+            )
+            vectors = (vectors + [None] * len(normalized))[:len(normalized)]
+
+        model = self._current_model_name()
+        configured_dims = self._current_dimensions()
+        sentence_level = bool(SettingsManager.get("RAG_SENTENCE_LEVEL", False))
+        min_len = int(SettingsManager.get("RAG_SENTENCE_MIN_LEN", 20) or 20)
+        conn = None
+        stored = 0
+        try:
+            conn = self.db.get_connection()
+            for (msg_id, text), vector in zip(normalized, vectors):
+                if vector is None:
+                    continue
+                blob = self._array_to_blob(vector)
+                dims = configured_dims or int(vector.shape[0])
+                conn.execute(
+                    "UPDATE history SET embedding = ? WHERE id = ?",
+                    (blob, msg_id),
+                )
+                conn.execute(
+                    """INSERT OR REPLACE INTO embeddings
+                       (source_table, source_id, character_id, model_name, dimensions, embedding, created_at)
+                       VALUES ('history', ?, ?, ?, ?, ?, datetime('now'))""",
+                    (msg_id, self.character_id, model, dims, blob),
+                )
+                if sentence_level:
+                    self._index_sentences(
+                        conn,
+                        "history",
+                        msg_id,
+                        text,
+                        model=model,
+                        min_len=min_len,
+                    )
+                stored += 1
+            conn.commit()
+            return stored
+        except sqlite3.OperationalError as e:
+            logger.warning(
+                f"RAGManager: sqlite operational error while updating history embeddings (ignored): {format_exception(e)}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"RAGManager: failed to update history embeddings (ignored): {format_exception(e)}",
+                exc_info=True,
+            )
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        return 0
+
     def update_history_embedding(self, msg_id: int, text: str):
         """Создает и сохраняет эмбеддинг для сообщения истории (без падений, RAG опционален)."""
         try:
             vector = self._get_embedding(text)
         except Exception as e:
-            logger.warning(f"RAGManager: embedding generation failed (history) - ignored: {e}", exc_info=True)
+            logger.warning(f"RAGManager: embedding generation failed (history) - ignored: {format_exception(e)}", exc_info=True)
             return
 
         if vector is None:
@@ -809,9 +808,9 @@ class RAGManager:
                 self._index_sentences(conn, "history", msg_id, text, model=model, min_len=min_len)
             conn.commit()
         except sqlite3.OperationalError as e:
-            logger.warning(f"RAGManager: sqlite operational error while updating history embedding (ignored): {e}")
+            logger.warning(f"RAGManager: sqlite operational error while updating history embedding (ignored): {format_exception(e)}")
         except Exception as e:
-            logger.warning(f"RAGManager: failed to update history embedding (ignored): {e}", exc_info=True)
+            logger.warning(f"RAGManager: failed to update history embedding (ignored): {format_exception(e)}", exc_info=True)
         finally:
             try:
                 if conn:
@@ -931,7 +930,7 @@ class RAGManager:
                 from managers.rag.pipeline.retrievers.graph import GraphRetriever
                 retrievers.append(GraphRetriever(graph_store=gs, cfg=cfg))
             except Exception as e:
-                logger.debug(f"[RAG][PIPE] GraphRetriever init failed (ignored): {e}", exc_info=True)
+                logger.debug(f"[RAG][PIPE] GraphRetriever init failed (ignored): {format_exception(e)}", exc_info=True)
 
         # Fast path: vector_only mode -> don't even run other retrievers
         if cfg.combine_mode == "vector_only":
@@ -942,7 +941,7 @@ class RAGManager:
             try:
                 buckets[r.name] = r.retrieve(qs)
             except Exception as e:
-                logger.debug(f"[RAG][PIPE] retriever \'{r.name}\' failed (ignored): {e}", exc_info=True)
+                logger.debug(f"[RAG][PIPE] retriever \'{r.name}\' failed (ignored): {format_exception(e)}", exc_info=True)
                 buckets[r.name] = []
 
         # --- choose combiner ---
@@ -981,7 +980,7 @@ class RAGManager:
             try:
                 enr.enrich(qs, cands)
             except Exception as e:
-                logger.debug(f"[RAG][PIPE] enricher \'{enr.name}\' failed (ignored): {e}", exc_info=True)
+                logger.debug(f"[RAG][PIPE] enricher \'{enr.name}\' failed (ignored): {format_exception(e)}", exc_info=True)
 
         # --- final rerank ---
         reranker = LinearReranker(cfg=cfg)
@@ -1013,7 +1012,7 @@ class RAGManager:
                 self._last_query_timing["rerank_ms"] = (_time.perf_counter() - _t_ce0) * 1000
                 cands.sort(key=lambda c: float(c.score or 0.0), reverse=True)
             except Exception as _ce_err:
-                logger.debug(f"[RAG][cross_encoder] skipped: {_ce_err}", exc_info=True)
+                logger.debug(f"[RAG][cross_encoder] skipped: {format_exception(_ce_err)}", exc_info=True)
 
         if cfg.detailed_logs:
             RagDebugLogger(rag=self, cfg=cfg).log(qs, buckets, cands)
@@ -1095,7 +1094,7 @@ class RAGManager:
                         )
                     conn.commit()
             except Exception as e:
-                logger.debug(f"[RAG] access tracking failed: {e}")
+                logger.debug(f"[RAG] access tracking failed: {format_exception(e)}")
 
         try:
             self._get_access_executor().submit(_do_track)
@@ -1143,9 +1142,7 @@ class RAGManager:
             if total == 0:
                 return 0
 
-            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
-            if batch_size <= 0:
-                batch_size = 16
+            batch_size = self._get_reindex_batch_size()
 
             processed = 0
             updated_count = 0
@@ -1165,6 +1162,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (row_id, _), vec in zip(chunk, vecs):
@@ -1184,7 +1182,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1200,6 +1198,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):
@@ -1222,7 +1221,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1247,10 +1246,10 @@ class RAGManager:
 
             return updated_count
 
-        except TaskWorker.CancelledError:
+        except TaskCancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error during re-indexing: {e}", exc_info=True)
+            logger.error(f"Error during re-indexing: {format_exception(e)}", exc_info=True)
             return 0
         finally:
             try:
@@ -1292,9 +1291,7 @@ class RAGManager:
             if total == 0:
                 return 0
 
-            batch_size = self._get_int_setting("RAG_EMBED_BATCH_SIZE", 16)
-            if batch_size <= 0:
-                batch_size = 16
+            batch_size = self._get_reindex_batch_size()
 
             processed = 0
             updated_count = 0
@@ -1315,6 +1312,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (row_id, _), vec in zip(chunk, vecs):
@@ -1334,7 +1332,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1350,6 +1348,7 @@ class RAGManager:
                     texts,
                     batch_size=batch_size,
                     allow_when_rag_disabled=True,
+                    priority="bulk",
                 )
 
                 for (eternal_id, _), vec in zip(chunk, vecs):
@@ -1372,7 +1371,7 @@ class RAGManager:
                     if progress_callback:
                         try:
                             progress_callback(processed, total)
-                        except TaskWorker.CancelledError:
+                        except TaskCancelledError:
                             raise
                         except Exception:
                             pass
@@ -1383,10 +1382,10 @@ class RAGManager:
             prog.done(processed=processed, updated=updated_count)
             return updated_count
 
-        except TaskWorker.CancelledError:
+        except TaskCancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error during full re-indexing: {e}", exc_info=True)
+            logger.error(f"Error during full re-indexing: {format_exception(e)}", exc_info=True)
             return 0
         finally:
             try:

@@ -1,12 +1,16 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
+import gc
 import os
 import traceback
 from typing import Dict, Optional, Any, List
 
 import ffmpeg
+from core.app_paths import settings_path
+from core.installables.helpers import build_runtime_ctx
 from main_logger import logger
-from utils import getTranslationVariant as _, get_character_voice_paths
+from utils import get_character_voice_paths
 from utils.gpu_utils import check_gpu_provider
 
 from handlers.voice_models.base_model import IVoiceModel
@@ -20,6 +24,7 @@ from handlers.voice_models.edge_tts_rvc_model import (
 )
 from handlers.voice_models.fish_speech_model import FishSpeechModel
 from handlers.voice_models.f5_tts_model import F5TTSModel
+from handlers.voice_models.omnivoice_model import OmniVoiceModel
 
 
 class LocalVoice:
@@ -51,9 +56,16 @@ class LocalVoice:
         rvc_handler = edge_rvc_cuda_handler if self.provider == "NVIDIA" else edge_rvc_onnx_handler
         fish_handler = FishSpeechModel(self, "fish_handler", rvc_handler=rvc_handler)
         f5_handler = F5TTSModel(self, "f5_handler", rvc_handler=rvc_handler)
+        omnivoice_handler = OmniVoiceModel(self, "omnivoice_handler")
 
         self._registry: Dict[str, IVoiceModel] = self._build_registry_from_handlers(
-            [edge_rvc_cuda_handler, edge_rvc_onnx_handler, fish_handler, f5_handler]
+            [
+                edge_rvc_cuda_handler,
+                edge_rvc_onnx_handler,
+                omnivoice_handler,
+                fish_handler,
+                f5_handler,
+            ]
         )
 
         if not self._registry:
@@ -62,6 +74,7 @@ class LocalVoice:
                 EDGE_TTS_RVC_ONNX_ID: edge_rvc_onnx_handler,
                 SILERO_RVC_CUDA_ID: edge_rvc_cuda_handler,
                 SILERO_RVC_ONNX_ID: edge_rvc_onnx_handler,
+                "omnivoice": omnivoice_handler,
                 "medium": fish_handler,
                 "medium+": fish_handler,
                 "medium+low": fish_handler,
@@ -119,7 +132,7 @@ class LocalVoice:
                     configs.append(cfg)
                     seen.add(cid)
             except Exception as e:
-                logger.warning(f"LocalVoice.get_all_model_configs error: {e}")
+                logger.warning(f"LocalVoice.get_all_model_configs error: {format_exception(e)}")
         return configs
 
     def is_model_installed(self, model_id: str) -> bool:
@@ -132,7 +145,7 @@ class LocalVoice:
             if model is None:
                 return False
 
-            ctx = {"gpu_vendor": self.provider or "CPU"}
+            ctx = build_runtime_ctx({"gpu_vendor": self.provider or "CPU"})
             return bool(model.__class__.is_model_installed(model_id, ctx))
         except Exception:
             return False
@@ -170,13 +183,26 @@ class LocalVoice:
         self.current_model_id = model_id
         ok = False
         try:
+            logger.info(
+                f"initialize_model start: model_id='{model_id}', "
+                f"handler='{type(model).__name__}', init={bool(init)}"
+            )
             ok = bool(model.initialize(init=init))
         except Exception as e:
-            logger.error(f"initialize_model failed for {model_id}: {e}", exc_info=True)
+            logger.error(f"initialize_model failed for {model_id}: {format_exception(e)}", exc_info=True)
             ok = False
 
         if ok:
             self.active_model_instance = model
+            logger.info(
+                f"initialize_model done: model_id='{model_id}', "
+                f"handler='{type(model).__name__}', initialized_for='{getattr(model, 'initialized_for', None)}'"
+            )
+        else:
+            logger.error(
+                f"initialize_model returned False: model_id='{model_id}', "
+                f"handler='{type(model).__name__}'"
+            )
         return ok
 
     def change_voice_language(self, new_voice_language: str):
@@ -188,9 +214,32 @@ class LocalVoice:
                 pass
         self.active_model_instance = None
 
+    def shutdown(self) -> None:
+        seen: set[int] = set()
+        for model in self._registry.values():
+            marker = id(model)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                model.cleanup_state()
+            except Exception as exc:
+                logger.warning(f"Voice model cleanup failed for {type(model).__name__}: {format_exception(exc)}")
+
+        self.active_model_instance = None
+        self.current_model_id = None
+        self.first_compiled = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def load_model_settings(self, model_id: str) -> Dict[str, Any]:
         try:
-            settings_file = os.path.join("Settings", "voice_model_settings.json")
+            settings_file = str(settings_path("voice_model_settings.json", create_parent=True))
             if os.path.exists(settings_file):
                 import json
                 with open(settings_file, "r", encoding="utf-8") as f:
@@ -198,15 +247,8 @@ class LocalVoice:
                     return all_settings.get(model_id, {}) if isinstance(all_settings, dict) else {}
             return {}
         except Exception as e:
-            logger.info(f"load_model_settings error for {model_id}: {e}")
+            logger.info(f"load_model_settings error for {model_id}: {format_exception(e)}")
             return {}
-
-    def is_cuda_available(self) -> bool:
-        try:
-            import torch
-            return bool(torch.cuda.is_available())
-        except Exception:
-            return False
 
     def convert_wav_to_stereo(
         self,
@@ -234,7 +276,7 @@ class LocalVoice:
             return output_path
         except ffmpeg.Error as fe:
             err = fe.stderr.decode(errors="ignore") if getattr(fe, "stderr", None) else ""
-            logger.error(f"FFmpeg error:\n{err}\n{traceback.format_exc()}")
+            logger.error(f"FFmpeg error:\n{format_exception(err)}\n{traceback.format_exc()}")
             return None
         except Exception:
             logger.error(f"convert_wav_to_stereo error:\n{traceback.format_exc()}")
@@ -246,9 +288,10 @@ class LocalVoice:
 
         mid = self.current_model_id
         if not self.is_model_initialized(mid):
-            ok = self.initialize_model(mid, init=False)
-            if not ok:
-                raise RuntimeError(f"Failed to initialize model '{mid}'")
+            raise RuntimeError(
+                f"Voice model '{mid}' is not initialized. "
+                "Initialize it explicitly before requesting synthesis."
+            )
 
         os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
 

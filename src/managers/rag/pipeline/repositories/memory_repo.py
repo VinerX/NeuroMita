@@ -32,7 +32,7 @@ class MemoryRepository:
 
     def _base_where(self, memory_mode: str) -> tuple[str, list]:
         """Build the WHERE clause and params for memory queries."""
-        where = "m.character_id=? AND m.is_deleted=0"
+        where = "m.character_id=? AND m.is_deleted=0 AND (m.type IS NULL OR m.type NOT LIKE 'island:%')"
         params: list = [self.character_id]
         if self._has_forgotten:
             if memory_mode == "forgotten":
@@ -89,7 +89,7 @@ class MemoryRepository:
         if self._has_entities:
             cols.append("m.entities")
 
-        where = "m.character_id=? AND m.is_deleted=0"
+        where = "m.character_id=? AND m.is_deleted=0 AND (m.type IS NULL OR m.type NOT LIKE 'island:%')"
         params: list = [self.character_id]
         if self._has_forgotten:
             if memory_mode == "forgotten":
@@ -247,7 +247,7 @@ class MemoryRepository:
         if (not has_forgotten) and memory_mode == "forgotten":
             return []
 
-        where = "character_id=? AND is_deleted=0 AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
+        where = "character_id=? AND is_deleted=0 AND (type IS NULL OR type NOT LIKE 'island:%') AND (embedding IS NULL) AND content IS NOT NULL AND TRIM(content) != ''"
         params: list[Any] = [self.character_id]
         if has_forgotten:
             if memory_mode == "forgotten":

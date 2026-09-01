@@ -1,10 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 import os
 import time
 from typing import Any, Dict, List
 
 from core.events import Events
+from core.services import use
+from services.contracts import SettingsService
 from game_connections.handlers.registry import RequestContext
 from game_connections.services.beat_service import get_beat_service
 from main_logger import logger
@@ -29,12 +32,7 @@ class GetMusicBeatsAction:
         except Exception:
             min_confidence = 0.2
 
-        enabled_res = ctx.event_bus.emit_and_wait(
-            Events.Settings.GET_SETTING,
-            {"key": "BEAT_SYNC_ENABLED", "default": False},
-            timeout=0.8,
-        )
-        beat_enabled = bool(enabled_res and enabled_res[0])
+        beat_enabled = bool(use(SettingsService).get("BEAT_SYNC_ENABLED", False))
 
         req_tag = request_id[:8] if request_id else "-"
         track_for_log = track_name or os.path.basename(audio_path) or "unknown"
@@ -180,13 +178,13 @@ class GetMusicBeatsAction:
             )
         except Exception as e:
             elapsed = time.perf_counter() - t0
-            logger.error(f"[BeatSync] failed req={req_tag} after {elapsed:.2f}s: {e}", exc_info=True)
+            logger.error(f"[BeatSync] failed req={req_tag} after {elapsed:.2f}s: {format_exception(e)}", exc_info=True)
             await ctx.server.send_json(ctx.writer, {
                 "type": "music_beats_error",
                 "body": {
                     "track_name": track_name,
                     "audio_path": audio_path,
                     "request_id": request_id,
-                    "error": str(e),
+                    "error": format_exception(e),
                 },
             })

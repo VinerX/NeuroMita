@@ -6,6 +6,7 @@ build.env
 .req_hash
 /Lib
 /Histories
+/src/Histories
 /lc0_engine_files
 /Prompts
 /PromptsCatalogue
@@ -30,7 +31,27 @@ vec-768-layer-12.onnx
 /.claude
 extra/Prompts/CLAUDE.md
 CLAUDE.md
+# Local agent state and instruction files.
+.agents/
+.codex/
+AGENTS.md
 /FineTuneData
 /beat_sync_cache
 /.tmp_test_beat_service
 /.tmp_test_beat_service_runtime
+/.tmp_test_backend_service_runtime
+/api_artifacts
+/temp
+_voice_bundles/
+/.tmp_pycache_check
+# Generated build and review artifacts.
+/archive/legacy_mitaai_csharp/MitaAI/bin/
+/archive/legacy_mitaai_csharp/MitaAI/obj/
+*_review.diff
+/extra/Testing/rag_tester/Histories/*.db*
+# Одноразовый тулинг перевода локалей (batch/check/fix-скрипты). В locales/
+# легитимны только .json-каталоги; постоянный тулинг живёт в scripts/.
+src/localization/locales/*.py
+# Артефакты прогонов generation_tester (песочницы и раны) — локальные, не в git.
+.generation_tester_sandboxes/
+.generation_tester_runs/

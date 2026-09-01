@@ -1,6 +1,5 @@
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
-from main_logger import logger
 from core.events import Events, Event
 from .base_controller import BaseController
 
@@ -30,12 +29,18 @@ class DialogController(BaseController):
             QTimer.singleShot(0, lambda: QMessageBox.critical(self.view, title, message))
             
     def _on_prompt_for_tg_code(self, event: Event):
-        code_future = event.data.get('future')    
-        self.view.show_tg_code_dialog_signal.emit({'future': code_future})
+        data = event.data if isinstance(event.data, dict) else {}
+        self.view.show_tg_code_dialog_signal.emit({
+            "request_id": str(data.get("request_id") or ""),
+            "error": data.get("error", ""),
+        })
 
     def _on_prompt_for_tg_password(self, event: Event):
-        password_future = event.data.get('future')
-        self.view.show_tg_password_dialog_signal.emit({'future': password_future})
+        data = event.data if isinstance(event.data, dict) else {}
+        self.view.show_tg_password_dialog_signal.emit({
+            "request_id": str(data.get("request_id") or ""),
+            "error": data.get("error", ""),
+        })
 
     def _on_show_eula_dialog(self, event: Event):
         if self.view and hasattr(self.view, '_show_eula_dialog'):

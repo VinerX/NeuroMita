@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 import re
 from typing import Any
@@ -7,22 +8,75 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFontMetrics
 
 from core.events import Events, Event
+from core.services import services
+from services.contracts import InstallableCatalogService, SpeechService
 from main_logger import logger
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
 
 
 class MicrophoneSettingsController(BaseController):
+    # Значения VAD-параметров по умолчанию (ключ настройки -> дефолт).
+    VAD_DEFAULTS: dict[str, Any] = {
+        "VOSK_SAMPLE_RATE": 16000,
+        "CHUNK_SIZE": 512,
+        "VAD_THRESHOLD": 0.5,
+        "VAD_SILENCE_TIMEOUT_SEC": 0.6,
+        "VAD_PRE_BUFFER_DURATION_SEC": 0.4,
+        "MAX_SPEECH_DURATION_SEC": 30.0,
+        "MIN_SPEECH_DURATION_SEC": 0.35,
+    }
+
     def __init__(self, main_controller, view):
         self._bound_sig: tuple[int, int, int, int, int, int] | None = None
         super().__init__(main_controller, view)
+
+    # Настройки-переключатели микрофона, которые могут меняться извне (например,
+    # тумблерами на странице песочницы) → атрибут чекбокса в UI.
+    _EXTERNAL_TOGGLES: dict[str, str] = {
+        "MIC_ACTIVE": "mic_active_checkbox",
+        "MIC_INSTANT_SENT": "mic_instant_checkbox",
+        "MIC_INSTANT_SEND_DELAY_ENABLED": "mic_instant_delay_checkbox",
+        "MIC_INSTANT_MERGE_CHAT_INPUT": "mic_instant_merge_input_checkbox",
+        "MIC_MUTE_WHILE_SPEAKING": "mic_mute_while_speaking_checkbox",
+    }
 
     def subscribe_to_events(self):
         eb = self.event_bus
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
+        eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_catalog_changed, weak=False)
+
+        # Живая синхронизация: если MIC_* поменяли не на этой странице (песочница,
+        # другой контрол), подтягиваем чекбоксы, а не показываем устаревшее значение.
+        self._subscribe_settings(
+            self._reflect_external_setting,
+            keys=tuple(self._EXTERNAL_TOGGLES),
+        )
 
         self._ui(self._bind_if_ready)
+
+    def _reflect_external_setting(self, change) -> None:
+        v = self.view
+        if not v:
+            return
+        attr = self._EXTERNAL_TOGGLES.get(str(getattr(change, "key", "") or ""))
+        if not attr or not hasattr(v, attr):
+            return
+        checkbox = getattr(v, attr)
+        value = bool(getattr(change, "value", False))
+        if checkbox is None or checkbox.isChecked() == value:
+            return
+        checkbox.blockSignals(True)
+        try:
+            checkbox.setChecked(value)
+        finally:
+            checkbox.blockSignals(False)
+
+        # Сигналы гасим, чтобы значение не ушло обратно в настройки, но вид
+        # зависит от галки (скрытые строки) — его обновляем явно. Слоты
+        # контроллера сидят на stateChanged, петли не будет.
+        checkbox.toggled.emit(value)
 
     def _widgets_signature(self) -> tuple[int, ...] | None:
         v = self.view
@@ -35,6 +89,10 @@ class MicrophoneSettingsController(BaseController):
             "asr_refresh_button",
             "mic_active_checkbox",
             "mic_instant_checkbox",
+            "mic_instant_delay_checkbox",
+            "mic_instant_delay_spin",
+            "mic_instant_merge_input_checkbox",
+            "mic_mute_while_speaking_checkbox",
             "vad_apply_button",
         )
         for n in need:
@@ -58,8 +116,8 @@ class MicrophoneSettingsController(BaseController):
         def safe_disconnect(qt_signal, slot):
             try:
                 qt_signal.disconnect(slot)
-            except Exception:
-                pass
+            except TypeError:
+                return
 
         safe_disconnect(v.mic_refresh_button.clicked, self.refresh_microphones)
         v.mic_refresh_button.clicked.connect(self.refresh_microphones)
@@ -79,13 +137,29 @@ class MicrophoneSettingsController(BaseController):
         safe_disconnect(v.mic_instant_checkbox.stateChanged, self._on_instant_toggled)
         v.mic_instant_checkbox.stateChanged.connect(self._on_instant_toggled)
 
+        safe_disconnect(v.mic_instant_delay_checkbox.stateChanged, self._on_instant_delay_toggled)
+        v.mic_instant_delay_checkbox.stateChanged.connect(self._on_instant_delay_toggled)
+
+        safe_disconnect(v.mic_instant_delay_spin.valueChanged, self._on_instant_delay_changed)
+        v.mic_instant_delay_spin.valueChanged.connect(self._on_instant_delay_changed)
+
+        safe_disconnect(v.mic_instant_merge_input_checkbox.stateChanged, self._on_instant_merge_input_toggled)
+        v.mic_instant_merge_input_checkbox.stateChanged.connect(self._on_instant_merge_input_toggled)
+
+        safe_disconnect(v.mic_mute_while_speaking_checkbox.stateChanged, self._on_mute_while_speaking_toggled)
+        v.mic_mute_while_speaking_checkbox.stateChanged.connect(self._on_mute_while_speaking_toggled)
+
         if hasattr(v, "asr_manage_button") and v.asr_manage_button:
-            safe_disconnect(v.asr_manage_button.clicked, self._open_asr_glossary)
-            v.asr_manage_button.clicked.connect(self._open_asr_glossary)
+            safe_disconnect(v.asr_manage_button.clicked, self._open_ai_engine_settings)
+            v.asr_manage_button.clicked.connect(self._open_ai_engine_settings)
 
         if hasattr(v, "vad_apply_button") and v.vad_apply_button:
             safe_disconnect(v.vad_apply_button.clicked, self._on_apply_vad_params)
             v.vad_apply_button.clicked.connect(self._on_apply_vad_params)
+
+        if hasattr(v, "vad_reset_button") and v.vad_reset_button:
+            safe_disconnect(v.vad_reset_button.clicked, self._on_reset_vad_params)
+            v.vad_reset_button.clicked.connect(self._on_reset_vad_params)
 
         self._load_vad_params()
 
@@ -108,13 +182,15 @@ class MicrophoneSettingsController(BaseController):
             if hasattr(v, "vad_threshold_spinbox"):
                 v.vad_threshold_spinbox.setValue(float(settings.get("VAD_THRESHOLD", 0.5)))
             if hasattr(v, "vad_silence_timeout_spinbox"):
-                v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.15)))
+                v.vad_silence_timeout_spinbox.setValue(float(settings.get("VAD_SILENCE_TIMEOUT_SEC", 0.6)))
             if hasattr(v, "vad_pre_buffer_spinbox"):
-                v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.3)))
+                v.vad_pre_buffer_spinbox.setValue(float(settings.get("VAD_PRE_BUFFER_DURATION_SEC", 0.4)))
             if hasattr(v, "vad_max_speech_duration_spinbox"):
                 v.vad_max_speech_duration_spinbox.setValue(float(settings.get("MAX_SPEECH_DURATION_SEC", 30.0)))
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                v.vad_min_speech_duration_spinbox.setValue(float(settings.get("MIN_SPEECH_DURATION_SEC", 0.35)))
         except Exception as e:
-            logger.debug(f"VAD params load error: {e}")
+            logger.debug(f"VAD params load error: {format_exception(e)}")
 
     def _on_apply_vad_params(self):
         v = self.view
@@ -133,13 +209,42 @@ class MicrophoneSettingsController(BaseController):
                 self._save_setting("VAD_PRE_BUFFER_DURATION_SEC", v.vad_pre_buffer_spinbox.value())
             if hasattr(v, "vad_max_speech_duration_spinbox"):
                 self._save_setting("MAX_SPEECH_DURATION_SEC", v.vad_max_speech_duration_spinbox.value())
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                self._save_setting("MIN_SPEECH_DURATION_SEC", v.vad_min_speech_duration_spinbox.value())
             logger.info("VAD параметры применены")
         except Exception as e:
-            logger.error(f"VAD params apply error: {e}")
+            logger.error(f"VAD params apply error: {format_exception(e)}")
 
-    def _open_asr_glossary(self):
+    def _on_reset_vad_params(self):
+        """Сброс параметров распознавания к значениям по умолчанию: ставим
+        дефолты в спинбоксы и сразу сохраняем (как «Применить»)."""
+        v = self.view
+        if not v:
+            return
+        d = self.VAD_DEFAULTS
         try:
-            self.event_bus.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "asr"}})
+            if hasattr(v, "vad_sample_rate_spinbox"):
+                v.vad_sample_rate_spinbox.setValue(int(d["VOSK_SAMPLE_RATE"]))
+            if hasattr(v, "vad_chunk_size_spinbox"):
+                v.vad_chunk_size_spinbox.setValue(int(d["CHUNK_SIZE"]))
+            if hasattr(v, "vad_threshold_spinbox"):
+                v.vad_threshold_spinbox.setValue(float(d["VAD_THRESHOLD"]))
+            if hasattr(v, "vad_silence_timeout_spinbox"):
+                v.vad_silence_timeout_spinbox.setValue(float(d["VAD_SILENCE_TIMEOUT_SEC"]))
+            if hasattr(v, "vad_pre_buffer_spinbox"):
+                v.vad_pre_buffer_spinbox.setValue(float(d["VAD_PRE_BUFFER_DURATION_SEC"]))
+            if hasattr(v, "vad_max_speech_duration_spinbox"):
+                v.vad_max_speech_duration_spinbox.setValue(float(d["MAX_SPEECH_DURATION_SEC"]))
+            if hasattr(v, "vad_min_speech_duration_spinbox"):
+                v.vad_min_speech_duration_spinbox.setValue(float(d["MIN_SPEECH_DURATION_SEC"]))
+            self._on_apply_vad_params()
+            logger.info("VAD параметры сброшены к значениям по умолчанию")
+        except Exception as e:
+            logger.error(f"VAD params reset error: {format_exception(e)}")
+
+    def _open_ai_engine_settings(self):
+        try:
+            self.view.show_settings_category("ai_engine", force=True)
         except Exception:
             pass
 
@@ -152,10 +257,7 @@ class MicrophoneSettingsController(BaseController):
             except Exception:
                 pass
 
-        try:
-            self.event_bus.emit(Events.Core.SETTING_CHANGED, {"key": key, "value": value})
-        except Exception:
-            pass
+        super()._save_setting(key, value)
 
     def _reset_init_status(self):
         v = self.view
@@ -188,6 +290,28 @@ class MicrophoneSettingsController(BaseController):
                 right = mid - 1
 
         return (result + ellipsis) if result else ellipsis
+
+    # SpeechService — ленивая optional-фича: если открыть настройки микрофона
+    # раньше, чем она поднялась, список залипал на «микрофоны не найдены» и не
+    # обновлялся сам (микрофон физически есть, распознавание потом работает).
+    # Пока сервис не появился — коротко повторяем запрос.
+    _SPEECH_WAIT_MAX = 25            # ~15 c при 600 мс
+    _SPEECH_WAIT_INTERVAL_MS = 600
+
+    def _speech_service_or_retry(self, retry_fn, counter_attr: str):
+        """Возвращает (service, gave_up). Если сервиса ещё нет — планирует
+        повтор retry_fn и возвращает (None, False); при исчерпании попыток —
+        (None, True), чтобы вызывающий показал финальную заглушку."""
+        speech = services().get_optional(SpeechService)
+        if speech is not None:
+            setattr(self, counter_attr, 0)
+            return speech, False
+        ticks = int(getattr(self, counter_attr, 0))
+        if ticks < self._SPEECH_WAIT_MAX:
+            setattr(self, counter_attr, ticks + 1)
+            QTimer.singleShot(self._SPEECH_WAIT_INTERVAL_MS, lambda: self._ui(retry_fn))
+            return None, False
+        return None, True
 
     def refresh_microphones(self):
         v = self.view
@@ -251,10 +375,17 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        speech, gave_up = self._speech_service_or_retry(self.refresh_microphones, "_mic_speech_wait")
+        if speech is None:
+            if gave_up:
+                cb([_("Микрофоны не найдены", "No microphones found")], RuntimeError("Speech service is unavailable"))
+            # иначе оставляем «Загрузка...» до следующей попытки
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_MICROPHONE_LIST, {"callback": cb})
+            speech.microphone_list_async(cb)
         except Exception as e:
-            logger.error(f"GET_MICROPHONE_LIST emit error: {e}")
+            logger.error(f"Microphone list request failed: {format_exception(e)}")
+            cb([_("Ошибка загрузки", "Loading error")], e)
 
     def refresh_engines(self, select_engine: str | None = None):
         v = self.view
@@ -270,6 +401,10 @@ class MicrophoneSettingsController(BaseController):
             prev_engine = ""
 
         def show_loading():
+            v.recognizer_combobox.setVisible(True)
+            empty_status = getattr(v, "asr_models_empty_status", None)
+            if empty_status is not None:
+                empty_status.setVisible(False)
             v.recognizer_combobox.blockSignals(True)
             try:
                 v.recognizer_combobox.clear()
@@ -295,8 +430,15 @@ class MicrophoneSettingsController(BaseController):
                 engines: list[str] = []
                 for item in glossary:
                     try:
-                        if item.get("installed", False) and item.get("id"):
-                            engines.append(str(item["id"]))
+                        metadata = item.get("metadata") if isinstance(item, dict) else None
+                        status = item.get("status") if isinstance(item, dict) else None
+                        if (
+                            isinstance(metadata, dict)
+                            and isinstance(status, dict)
+                            and bool(status.get("ready", False))
+                            and metadata.get("item_id")
+                        ):
+                            engines.append(str(metadata["item_id"]))
                     except Exception:
                         pass
 
@@ -304,6 +446,10 @@ class MicrophoneSettingsController(BaseController):
                 try:
                     v.recognizer_combobox.clear()
                     if engines:
+                        v.recognizer_combobox.setVisible(True)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(False)
                         v.recognizer_combobox.setEnabled(True)
                         v.recognizer_combobox.addItems(engines)
 
@@ -315,7 +461,10 @@ class MicrophoneSettingsController(BaseController):
                             self._save_setting("RECOGNIZER_TYPE", v.recognizer_combobox.currentText())
                     else:
                         v.recognizer_combobox.setEnabled(False)
-                        v.recognizer_combobox.addItem(_("Нет установленных моделей", "No installed models"))
+                        v.recognizer_combobox.setVisible(False)
+                        empty_status = getattr(v, "asr_models_empty_status", None)
+                        if empty_status is not None:
+                            empty_status.setVisible(True)
                 finally:
                     v.recognizer_combobox.blockSignals(False)
 
@@ -331,10 +480,20 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb([], RuntimeError("Installable catalog service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_ASR_MODELS_GLOSSARY, {"callback": cb})
+            catalog.list_rows_async(
+                cb,
+                include_status=True,
+                category="asr",
+                status_category="asr",
+            )
         except Exception as e:
-            logger.error(f"GET_ASR_MODELS_GLOSSARY emit error: {e}")
+            logger.error(f"ASR component catalog request failed: {format_exception(e)}")
+            cb([], e)
 
     def _apply_asr_install_status(self, engine: str):
         v = self.view
@@ -368,7 +527,11 @@ class MicrophoneSettingsController(BaseController):
                 if int(getattr(v, "_asr_installed_req_id", 0)) != req_id:
                     return
 
-                installed = bool(result) if error is None else False
+                installed = (
+                    bool(result.get("ready", False))
+                    if error is None and isinstance(result, dict)
+                    else False
+                )
                 try:
                     v.mic_active_checkbox.setEnabled(bool(installed))
                     if not installed:
@@ -378,10 +541,14 @@ class MicrophoneSettingsController(BaseController):
 
             self._ui(apply)
 
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {"model": engine, "callback": cb})
-        except Exception:
-            self._ui(lambda: v.mic_active_checkbox.setEnabled(False))
+            catalog.get_status_async(f"asr:{engine}", cb)
+        except Exception as exc:
+            cb({}, exc)
 
     def _on_mic_changed(self, index: int):
         v = self.view
@@ -422,7 +589,7 @@ class MicrophoneSettingsController(BaseController):
             if active:
                 self.event_bus.emit(Events.Speech.RESTART_SPEECH_RECOGNITION, {"device_id": device_id})
         except Exception as e:
-            logger.error(f"Mic change error: {e}")
+            logger.error(f"Mic change error: {format_exception(e)}")
 
     def _on_engine_changed(self, engine: str):
         v = self.view
@@ -441,6 +608,18 @@ class MicrophoneSettingsController(BaseController):
     def _on_instant_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_SENT", bool(state))
 
+    def _on_instant_delay_toggled(self, state: int):
+        self._save_setting("MIC_INSTANT_SEND_DELAY_ENABLED", bool(state))
+
+    def _on_instant_delay_changed(self, value: float):
+        self._save_setting("MIC_INSTANT_SEND_DELAY_SEC", float(value))
+
+    def _on_instant_merge_input_toggled(self, state: int):
+        self._save_setting("MIC_INSTANT_MERGE_CHAT_INPUT", bool(state))
+
+    def _on_mute_while_speaking_toggled(self, state: int):
+        self._save_setting("MIC_MUTE_WHILE_SPEAKING", bool(state))
+
     def _is_asr_task(self, data: dict) -> bool:
         if not isinstance(data, dict):
             return False
@@ -453,6 +632,9 @@ class MicrophoneSettingsController(BaseController):
         data = event.data or {}
         if not self._is_asr_task(data):
             return
+        self._ui(self.refresh_engines)
+
+    def _on_catalog_changed(self, _event: Event):
         self._ui(self.refresh_engines)
 
     def _on_install_failed(self, event: Event):

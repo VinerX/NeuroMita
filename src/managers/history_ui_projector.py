@@ -1,6 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Callable, Optional
+
+from core.message_content import MessageContentCodec
 
 
 class HistoryUiProjector:
@@ -8,21 +10,7 @@ class HistoryUiProjector:
         self._resolve_name = resolve_name
 
     def _has_visible_user_text(self, content: Any) -> bool:
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            for it in content:
-                if not isinstance(it, dict):
-                    continue
-                if it.get("type") == "text":
-                    txt = it.get("text")
-                    if txt is None:
-                        txt = it.get("content", "")
-                    if str(txt or "").strip():
-                        return True
-                if it.get("type") == "image_url":
-                    return True
-        return False
+        return MessageContentCodec.has_visible_content(content)
 
     def _name(self, cid: str) -> str:
         cid = str(cid or "")
@@ -36,6 +24,10 @@ class HistoryUiProjector:
             except Exception:
                 pass
         return cid
+
+    @staticmethod
+    def _is_player_actor(value: Any) -> bool:
+        return str(value or "").strip().casefold() == "player"
 
     def _decorate_for_ui(self, role: str, content: Any, speaker_label: str) -> Any:
         if not speaker_label:
@@ -62,7 +54,17 @@ class HistoryUiProjector:
             if role not in ("user", "assistant", "system", "event"):
                 continue
 
-            speaker = str(m.get("speaker") or m.get("sender") or "")
+            speaker = str(m.get("speaker") or "").strip()
+            sender = str(m.get("sender") or "").strip()
+            actors = (speaker, sender)
+            has_player_actor = any(self._is_player_actor(actor) for actor in actors)
+            has_non_player_actor = any(
+                actor and not self._is_player_actor(actor) for actor in actors
+            )
+            display_speaker = next(
+                (actor for actor in actors if actor and not self._is_player_actor(actor)),
+                speaker or sender,
+            )
             target = str(m.get("target") or "")
 
             content = m.get("content")
@@ -90,14 +92,17 @@ class HistoryUiProjector:
                     is_system_as_user = True
 
             if role in ("user", "assistant"):
-                if speaker == "Player":
+                if has_player_actor and not has_non_player_actor:
                     ui_role = "user"
                     speaker_label = ""
+                elif role == "user" and not has_non_player_actor:
+                    # Preserve legacy user rows that have no actor identity.
+                    ui_role = "user"
                 elif not is_system_as_user:
                     # Only convert non-system-as-user to assistant
                     ui_role = "assistant"
-                    speaker_label = self._name(speaker)
-                    if target and target != "Player":
+                    speaker_label = self._name(display_speaker)
+                    if target and not self._is_player_actor(target):
                         # Don't add → target when there are multiple distinct segment targets:
                         # message_renderer splits those into separate bubbles and adds arrows itself.
                         structured = m.get("structured_data") or {}

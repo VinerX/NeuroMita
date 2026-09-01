@@ -1,0 +1,6 @@
+[<../../Structural/response_format_json.script>]
+
+[<../../Structural/unity_effects.script>]
+
+# Task for the player
+The hint field is a short task text shown to the player (limit 45 characters), for example «Побудь рядом со мной».

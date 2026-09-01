@@ -3,6 +3,8 @@ from main_logger import logger
 from modules.available_games import get_available_games
 from modules.game_interface import GameInterface
 from core.events import Events
+from core.services import use
+from services.contracts import GameLinkService, SettingsService
 
 
 class GameManager:
@@ -17,47 +19,39 @@ class GameManager:
         game_name = parts[0].lower()
         params = {}
         if len(parts) > 1:
-            param_str = parts[1]
+            remaining = parts[1:]
             if game_name == "chess":
-                if param_str in self.available_games["chess"](self.character, "chess").elo_mapping:
-                    params["difficulty"] = param_str
-                elif param_str == "resign":
-                    params["resign"] = True
+                elo_map = {"easy": 1100, "medium": 1500, "hard": 1900}
+                for part in remaining:
+                    part = part.lower()
+                    if part in elo_map:
+                        params["difficulty"] = part
+                    elif part == "auto":
+                        params["is_auto"] = True
+                    elif part == "cheat":
+                        params["is_cheat"] = True
+                    elif part == "resign":
+                        params["resign"] = True
+                    elif part == "white":
+                        params["player_is_white"] = True
+                    elif part == "black":
+                        params["player_is_white"] = False
+            elif game_name == "seabattle":
+                for part in remaining:
+                    part = part.lower()
+                    if part == "resign":
+                        params["resign"] = True
         return game_name, params
 
     def _setting_bool(self, key: str, default: bool = False) -> bool:
-        try:
-            av = getattr(self.character, "app_vars", None)
-            if isinstance(av, dict) and key in av:
-                return bool(av.get(key))
-        except Exception:
-            pass
+        av = getattr(self.character, "app_vars", None)
+        if isinstance(av, dict) and key in av:
+            return bool(av.get(key))
 
         if key == "GAME_CONNECTED":
-            try:
-                bus = getattr(self.character, "event_bus", None)
-                if bus:
-                    res = bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-                    if res:
-                        return bool(res[0])
-            except Exception:
-                pass
-            return bool(default)
+            return bool(use(GameLinkService).is_connected())
 
-        try:
-            bus = getattr(self.character, "event_bus", None)
-            if bus:
-                res = bus.emit_and_wait(
-                    Events.Settings.GET_SETTING,
-                    {"key": key, "default": default},
-                    timeout=0.5,
-                )
-                if res:
-                    return bool(res[0])
-        except Exception:
-            pass
-
-        return bool(default)
+        return bool(use(SettingsService).get(key, default))
 
     def _is_game_launch_allowed(self, game_name: str) -> bool:
         if not self._setting_bool("ENABLE_GAMES", False):
@@ -116,6 +110,10 @@ class GameManager:
         if self.active_game:
             return self.active_game.process_llm_tags(response)
         return response
+
+    def process_active_game_structured_commands(self, commands: list):
+        if self.active_game:
+            self.active_game.process_structured_commands(commands)
 
     def get_active_game_state_prompt(self) -> Optional[str]:
         if self.active_game:

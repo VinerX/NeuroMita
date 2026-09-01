@@ -4,49 +4,65 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+import qtawesome as qta
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSizePolicy, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
-from core.events import get_event_bus, Events
-from managers.settings_manager import InnerCollapsibleSection, SettingsManager
+from ui.widgets.settings_sections import InnerCollapsibleSection
 from ui.gui_templates import SettingsBodyWidget
+from ui.mvvm import immutable_payload, mutable_payload
+from ui.settings.embed_provider_presentation import (
+    ActivateEmbedProvider,
+    AddEmbedPreset,
+    DeleteEmbedPreset,
+    DownloadEmbedModel,
+    EmbedProviderShowError,
+    EmbedProviderState,
+    RefreshEmbedPresets,
+    ReorderEmbedPresets,
+    SaveEmbedPreset,
+    SelectEmbedPreset,
+    TestEmbedPreset,
+)
 from utils import getTranslationVariant as _
+from localization.live import tr_set
 
 
-def build_embed_provider_inner_section(gui) -> InnerCollapsibleSection:
+def build_embed_provider_inner_section(gui, view_model) -> InnerCollapsibleSection:
     section = InnerCollapsibleSection(
         _("Провайдер эмбеддингов", "Embedding Provider"), gui
     )
-    ctrl = _EmbedProviderWidget(gui)
+    ctrl = _EmbedProviderWidget(gui, view_model)
     section.add_widget(ctrl)
     return section
 
 
-def build_embed_provider_widget(gui) -> QWidget:
-    return _EmbedProviderWidget(gui)
+def build_embed_provider_widget(gui, view_model) -> QWidget:
+    return _EmbedProviderWidget(gui, view_model)
 
 
 class _EmbedProviderWidget(QWidget):
-    def __init__(self, gui):
+    def __init__(self, gui, view_model):
         super().__init__()
         self._gui = gui
-        self._bus = get_event_bus()
         self._current_preset_id: Optional[Any] = None
         self._is_loading = False
-        self._test_timer: Optional[QTimer] = None
         self._key_url: str = ""
+        self._known_local_models: tuple[str, ...] = ()
+        self._items_revision = -1
+        self._config_revision = -1
 
         self._setup_ui()
-        self._load_presets()
-
-        saved = SettingsManager.get("RAG_EMBED_PRESET_ID", None)
-        self._select_preset(saved if saved is not None else "local_hf")
-
-        self._bus.subscribe(Events.EmbeddingPresets.TEST_RESULT, self._on_test_result, weak=False)
+        self._view_model = view_model
+        self._view_model.setParent(self)
+        self._view_model.state_changed.connect(self.render)
+        self._view_model.effect_emitted.connect(self.handle_effect)
+        self.destroyed.connect(lambda _obj=None: self._view_model.close())
+        self.dispatch_intent(ActivateEmbedProvider())
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -68,22 +84,22 @@ class _EmbedProviderWidget(QWidget):
         self._add_btn = QToolButton()
         self._add_btn.setText("+")
         self._add_btn.setFixedWidth(24)
-        self._add_btn.setToolTip(_("Добавить пресет", "Add preset"))
+        tr_set(self._add_btn, "Добавить пресет", "Add preset", "setToolTip")
         self._add_btn.clicked.connect(self._on_add)
         self._del_btn = QToolButton()
         self._del_btn.setText("−")
         self._del_btn.setFixedWidth(24)
-        self._del_btn.setToolTip(_("Удалить пресет", "Delete preset"))
+        tr_set(self._del_btn, "Удалить пресет", "Delete preset", "setToolTip")
         self._del_btn.clicked.connect(self._on_delete)
         self._up_btn = QToolButton()
         self._up_btn.setText("↑")
         self._up_btn.setFixedWidth(24)
-        self._up_btn.setToolTip(_("Вверх", "Move up"))
+        tr_set(self._up_btn, "Вверх", "Move up", "setToolTip")
         self._up_btn.clicked.connect(lambda: self._move_current_custom(-1))
         self._down_btn = QToolButton()
         self._down_btn.setText("↓")
         self._down_btn.setFixedWidth(24)
-        self._down_btn.setToolTip(_("Вниз", "Move down"))
+        tr_set(self._down_btn, "Вниз", "Move down", "setToolTip")
         self._down_btn.clicked.connect(lambda: self._move_current_custom(1))
         preset_row.addWidget(self._add_btn)
         preset_row.addWidget(self._del_btn)
@@ -112,7 +128,7 @@ class _EmbedProviderWidget(QWidget):
         # Row: model
         model_row = QHBoxLayout()
         model_row.setSpacing(4)
-        self._model_label = QLabel(_("Модель:", "Model:"))
+        self._model_label = tr_set(QLabel(), "Модель:", "Model:")
         model_row.addWidget(self._model_label)
         self._model_combo = QComboBox()
         self._model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -122,13 +138,11 @@ class _EmbedProviderWidget(QWidget):
         model_row.addWidget(self._model_combo, 1)
         root.addLayout(model_row)
 
-        self._manual_path_check = QCheckBox(_("Ручное указание пути", "Manual path"))
-        self._manual_path_check.setToolTip(_(
-            "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
+        self._manual_path_check = tr_set(QCheckBox(), "Ручное указание пути", "Manual path")
+        tr_set(self._manual_path_check, "Выключено: выберите стандартную HuggingFace-модель, она хранится в папке checkpoints. "
             "Включено: поле модели становится ручным HF id или полным путем к папке модели.",
             "Off: choose a standard HuggingFace model stored under checkpoints. "
-            "On: the model field becomes a manual HF id or full model directory path.",
-        ))
+            "On: the model field becomes a manual HF id or full model directory path.", "setToolTip")
         self._manual_path_check.toggled.connect(self._on_manual_path_toggled)
         root.addWidget(self._manual_path_check)
 
@@ -155,7 +169,7 @@ class _EmbedProviderWidget(QWidget):
         self._key_edit.setPlaceholderText("sk-...")
         self._key_edit.textChanged.connect(self._mark_dirty)
         self._key_eye = QToolButton()
-        self._key_eye.setText("👁")
+        self._key_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
         self._key_eye.setCheckable(True)
         self._key_eye.setFixedWidth(24)
         self._key_eye.toggled.connect(
@@ -172,11 +186,45 @@ class _EmbedProviderWidget(QWidget):
         rv = QVBoxLayout(self._reserve_widget)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(2)
-        rv.addWidget(QLabel(_("Резервные ключи (по строке):", "Reserve keys (one per line):")))
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+        header_row.addWidget(QLabel(_("Резервные ключи (по строке):", "Reserve keys (one per line):")))
+        self._reserve_eye = QToolButton()
+        self._reserve_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
+        self._reserve_eye.setCheckable(True)
+        self._reserve_eye.setFixedWidth(24)
+        tr_set(self._reserve_eye, "Показать/скрыть все ключи", "Show/hide all keys", "setToolTip")
+        self._reserve_eye.toggled.connect(self._on_reserve_eye_toggled)
+        header_row.addWidget(self._reserve_eye)
+        header_row.addStretch()
+        rv.addLayout(header_row)
         self._reserve_edit = QTextEdit()
         self._reserve_edit.setFixedHeight(48)
-        self._reserve_edit.textChanged.connect(self._mark_dirty)
+        self._reserve_masked = True
+        self._reserve_original = ""
+        self._reserve_edit.setReadOnly(True)
+        tr_set(
+            self._reserve_edit,
+            "Нажмите значок глаза, чтобы показать и изменить резервные ключи.",
+            "Click the eye icon to show and edit reserve keys.",
+            "setToolTip",
+        )
+        self._reserve_edit.textChanged.connect(self._on_reserve_text_changed)
         rv.addWidget(self._reserve_edit)
+        self._reserve_distribute_check = tr_set(
+            QCheckBox(),
+            "Равномерно распределять по ключам",
+            "Always distribute across keys",
+        )
+        tr_set(
+            self._reserve_distribute_check,
+            "Чередовать основной и резервные ключи для каждого запроса, а не только при ошибке.",
+            "Use the main and reserve keys in round-robin for every request, not only after an error.",
+            "setToolTip",
+        )
+        self._reserve_distribute_check.toggled.connect(self._mark_dirty)
+        rv.addWidget(self._reserve_distribute_check)
         root.addWidget(self._reserve_widget)
 
         # HF token + download (local only)
@@ -189,7 +237,7 @@ class _EmbedProviderWidget(QWidget):
         self._hf_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._hf_edit.textChanged.connect(self._mark_dirty)
         self._hf_eye = QToolButton()
-        self._hf_eye.setText("👁")
+        self._hf_eye.setIcon(qta.icon("fa6s.eye", color="#bca9bb"))
         self._hf_eye.setCheckable(True)
         self._hf_eye.setFixedWidth(24)
         self._hf_eye.toggled.connect(
@@ -197,7 +245,7 @@ class _EmbedProviderWidget(QWidget):
                 QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
             )
         )
-        self._download_btn = QPushButton(_("Скачать модель", "Download model"))
+        self._download_btn = tr_set(QPushButton(), "Скачать модель", "Download model")
         self._download_btn.clicked.connect(self._on_download_local_model)
         hf_row.addWidget(self._hf_edit, 1)
         hf_row.addWidget(self._hf_eye)
@@ -262,11 +310,11 @@ class _EmbedProviderWidget(QWidget):
         # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
-        self._save_btn = QPushButton(_("Сохранить", "Save"))
+        self._save_btn = tr_set(QPushButton(), "Сохранить", "Save")
         self._save_btn.clicked.connect(self._on_save)
-        self._test_btn = QPushButton(_("Тест", "Test"))
+        self._test_btn = tr_set(QPushButton(), "Тест", "Test")
         self._test_btn.clicked.connect(self._on_test)
-        self._key_url_btn = QPushButton(_("Получить ключ ↗", "Get key ↗"))
+        self._key_url_btn = tr_set(QPushButton(), "Получить ключ ↗", "Get key ↗")
         self._key_url_btn.setVisible(False)
         self._key_url_btn.clicked.connect(self._on_open_key_url)
         btn_row.addWidget(self._save_btn)
@@ -277,36 +325,24 @@ class _EmbedProviderWidget(QWidget):
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
-    def _load_presets(self):
-        self._preset_combo.blockSignals(True)
-        self._preset_combo.clear()
-        try:
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_LIST, {}, timeout=2.0
+    def _load_presets(self, select_id: Any = None, *, force: bool = False):
+        self.dispatch_intent(
+            RefreshEmbedPresets(
+                selected_preset_id=select_id,
+                force=bool(force),
             )
-            meta = results[0] if results else {}
-        except Exception:
-            meta = {}
-
-        if not meta:
-            from presets.embedding_provider_presets import list_builtin_presets
-            for bp in list_builtin_presets():
-                if bp.get("id") == "custom_local":
-                    continue
-                self._preset_combo.addItem(bp["name"], userData=bp["id"])
-        else:
-            for b in meta.get("builtin", []):
-                if b.get("id") == "custom_local":
-                    continue
-                self._preset_combo.addItem(b["name"], userData=b["id"])
-            for c in meta.get("custom", []):
-                self._preset_combo.addItem("✎ " + c["name"], userData=c["id"])
-        self._preset_combo.blockSignals(False)
+        )
 
     def _select_preset(self, preset_id: Any):
         idx = self._find_combo_index(preset_id)
         if idx >= 0:
-            self._preset_combo.setCurrentIndex(idx)
+            if self._preset_combo.currentIndex() == idx:
+                # setCurrentIndex не эмитит сигнал при совпадении индекса — а после
+                # _load_presets текущий индекс уже 0. Для первого пресета (local_hf/Qwen)
+                # это значило, что редактор не подгружался и поле модели оставалось пустым.
+                self._load_into_editor(preset_id)
+            else:
+                self._preset_combo.setCurrentIndex(idx)
         else:
             self._load_into_editor(preset_id)
 
@@ -322,13 +358,13 @@ class _EmbedProviderWidget(QWidget):
             self._load_into_editor(pid)
 
     def _load_into_editor(self, preset_id: Any):
-        self._is_loading = True
+        self.dispatch_intent(SelectEmbedPreset(preset_id))
+
+    def _apply_loaded_cfg(self, preset_id: Any, cfg: Optional[Dict[str, Any]]):
         try:
-            cfg = self._fetch_cfg(preset_id)
             if not cfg:
                 return
             self._current_preset_id = preset_id
-            SettingsManager.set("RAG_EMBED_PRESET_ID", preset_id)
 
             provider = cfg.get("provider_name") or "local"
             idx = self._provider_combo.findData(provider)
@@ -342,12 +378,7 @@ class _EmbedProviderWidget(QWidget):
 
             model = cfg.get("model") or ""
             known = list(cfg.get("known_models") or [])
-            if is_local:
-                try:
-                    from handlers.embedding_presets import list_preset_names
-                    known = [x for x in list_preset_names() if x != "Custom"]
-                except Exception:
-                    pass
+            self._known_local_models = tuple(str(item) for item in known)
             manual_path = bool((cfg.get("extra") or {}).get("manual_path"))
             if is_local and model and model not in known:
                 manual_path = True
@@ -377,8 +408,14 @@ class _EmbedProviderWidget(QWidget):
             self._key_edit.setText(cfg.get("api_key") or "")
             rk = cfg.get("reserve_keys") or []
             self._reserve_edit.blockSignals(True)
-            self._reserve_edit.setPlainText("\n".join(rk))
+            self._reserve_original = "\n".join(rk)
+            self._reserve_edit.setPlainText(self._reserve_original)
             self._reserve_edit.blockSignals(False)
+            if self._reserve_masked:
+                self._apply_masking()
+            self._reserve_distribute_check.setChecked(
+                bool(cfg.get("reserve_keys_distribute", False))
+            )
             self._prefix_edit.setText(cfg.get("query_prefix") or "")
             extra = dict(cfg.get("extra") or {})
             self._batch_edit.setText(str(extra["batch_size"]) if "batch_size" in extra else "")
@@ -389,7 +426,7 @@ class _EmbedProviderWidget(QWidget):
 
             self._key_url = cfg.get("key_url") or ""
             self._key_url_btn.setVisible(bool(self._key_url) and not is_local)
-            self._hf_edit.setText(str(SettingsManager.get("HF_TOKEN", "") or ""))
+            self._hf_edit.setText(str(cfg.get("hf_token") or ""))
             self._refresh_download_btn()
 
             self._provider_combo.setEnabled(not is_builtin)
@@ -399,44 +436,9 @@ class _EmbedProviderWidget(QWidget):
             self._down_btn.setEnabled(not is_builtin)
 
             self._apply_visibility(is_local)
-            self._refresh_index_status()
             self._save_btn.setStyleSheet("")
         finally:
             self._is_loading = False
-
-    def _fetch_cfg(self, preset_id: Any) -> Optional[Dict[str, Any]]:
-        try:
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.GET_PRESET_FULL, {"id": preset_id}, timeout=2.0
-            )
-            cfg = results[0] if results else None
-            if cfg and isinstance(cfg, dict):
-                return cfg
-        except Exception:
-            pass
-        try:
-            from presets.embedding_provider_presets import get_builtin_preset
-            bp = get_builtin_preset(str(preset_id))
-            if bp:
-                provider = bp["provider"]
-                model = bp["default_model"]
-                return {
-                    "id": bp["id"], "name": bp["name"],
-                    "provider_name": provider, "model": model,
-                    "hf_name": model if provider == "local" else "",
-                    "api_url": bp.get("default_url") or "",
-                    "api_key": None, "reserve_keys": [],
-                    "headers": dict(bp.get("default_headers") or {}),
-                    "query_prefix": "",
-                    "dimensions": int(bp.get("default_dimensions") or 0),
-                    "extra": dict(bp.get("default_extra") or {}),
-                    "key_url": bp.get("key_url") or "",
-                    "known_models": list(bp.get("known_models") or []),
-                    "is_builtin": True,
-                }
-        except Exception:
-            pass
-        return None
 
     def _apply_visibility(self, is_local: bool):
         self._url_widget.setVisible(not is_local)
@@ -465,11 +467,7 @@ class _EmbedProviderWidget(QWidget):
             self._model_combo.addItem(current)
             self._model_label.setText(_("Модель / путь:", "Model / path:"))
         else:
-            try:
-                from handlers.embedding_presets import list_preset_names
-                names = [x for x in list_preset_names() if x != "Custom"]
-            except Exception:
-                names = []
+            names = list(self._known_local_models)
             self._model_combo.addItems(names)
             if current in names:
                 self._model_combo.setCurrentText(current)
@@ -489,17 +487,54 @@ class _EmbedProviderWidget(QWidget):
                 "Unsaved changes. Press Save, otherwise the previous preset will be used.",
             ))
 
+    def _on_reserve_text_changed(self):
+        if self._reserve_masked:
+            return
+        text = self._reserve_edit.toPlainText()
+        if text != self._reserve_original:
+            self._reserve_original = text
+            self._mark_dirty()
+
+    def _on_reserve_eye_toggled(self, checked: bool):
+        current = self._reserve_edit.toPlainText()
+        if not self._reserve_masked:
+            self._reserve_original = current
+        self._reserve_masked = not checked
+        self._reserve_edit.setReadOnly(not checked)
+        self._reserve_edit.blockSignals(True)
+        if self._reserve_masked:
+            self._apply_masking()
+        else:
+            self._reserve_edit.setPlainText(self._reserve_original)
+        self._reserve_edit.blockSignals(False)
+
+    def _apply_masking(self):
+        masked = "\n".join("\u2022" * len(ln) for ln in self._reserve_original.splitlines())
+        self._reserve_edit.setPlainText(masked)
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_save(self):
+        payload, hf_token = self._collect_payload()
+        if payload is None:
+            return
+        self.dispatch_intent(
+            SaveEmbedPreset(
+                immutable_payload(payload),
+                hf_token,
+            )
+        )
+
+    def _collect_payload(self) -> tuple[dict[str, Any] | None, str]:
         pid = self._current_preset_id
         if pid is None:
-            return
+            return None, ""
         provider = self._provider_combo.currentData() or "local"
         model = self._model_combo.currentText().strip()
         url = self._url_edit.text().strip()
         key = self._key_edit.text().strip()
-        reserve_keys = [l.strip() for l in self._reserve_edit.toPlainText().splitlines() if l.strip()]
+        reserve_keys_text = self._reserve_original if self._reserve_masked else self._reserve_edit.toPlainText()
+        reserve_keys = [l.strip() for l in reserve_keys_text.splitlines() if l.strip()]
         prefix = self._prefix_edit.text()
         hf_token = self._hf_edit.text().strip()
         extra: Dict[str, Any] = {}
@@ -538,24 +573,11 @@ class _EmbedProviderWidget(QWidget):
             "url": url,
             "key": key,
             "reserve_keys": reserve_keys,
+            "reserve_keys_distribute": bool(self._reserve_distribute_check.isChecked()),
             "query_prefix": prefix,
             "extra": extra,
         }
-        SettingsManager.set("HF_TOKEN", hf_token)
-
-        try:
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
-            )
-            saved_id = results[0] if results else None
-            if saved_id is not None:
-                SettingsManager.set("RAG_EMBED_PRESET_ID", saved_id)
-                self._current_preset_id = saved_id
-                self._save_btn.setStyleSheet("")
-                self._load_presets()
-                self._select_preset(saved_id)
-        except Exception as e:
-            self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
+        return data, hf_token
 
     def _on_add(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -564,32 +586,13 @@ class _EmbedProviderWidget(QWidget):
         )
         if not ok or not name.strip():
             return
-        data = {"id": None, "name": name.strip(), "provider_name": "local",
-                "model": "", "url": "", "key": "", "reserve_keys": [], "query_prefix": ""}
-        try:
-            results = self._bus.emit_and_wait(
-                Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": data}, timeout=2.0
-            )
-            new_id = results[0] if results else None
-            if new_id is not None:
-                self._load_presets()
-                self._select_preset(new_id)
-        except Exception as e:
-            self._status_label.setText(str(e))
+        self.dispatch_intent(AddEmbedPreset(name.strip()))
 
     def _on_delete(self):
         pid = self._current_preset_id
         if pid is None or isinstance(pid, str):
             return
-        try:
-            self._bus.emit_and_wait(
-                Events.EmbeddingPresets.DELETE_CUSTOM_PRESET, {"id": pid}, timeout=2.0
-            )
-        except Exception:
-            pass
-        self._load_presets()
-        if self._preset_combo.count() > 0:
-            self._preset_combo.setCurrentIndex(0)
+        self.dispatch_intent(DeleteEmbedPreset(pid))
 
     def _move_current_custom(self, delta: int):
         pid = self._current_preset_id
@@ -609,41 +612,10 @@ class _EmbedProviderWidget(QWidget):
         if new_idx < 0 or new_idx >= len(custom_ids):
             return
         custom_ids[cur_idx], custom_ids[new_idx] = custom_ids[new_idx], custom_ids[cur_idx]
-        try:
-            self._bus.emit_and_wait(
-                Events.EmbeddingPresets.REORDER_PRESETS,
-                {"order": custom_ids},
-                timeout=2.0,
-            )
-        except Exception:
-            return
-        self._load_presets()
-        self._select_preset(pid)
+        self.dispatch_intent(ReorderEmbedPresets(tuple(custom_ids)))
 
     def _on_test(self):
-        self._status_label.setStyleSheet("")
-        self._status_label.setText(_("Тестирование...", "Testing..."))
-        self._test_btn.setEnabled(False)
-        self._bus.emit(Events.EmbeddingPresets.TEST_PRESET, {"id": self._current_preset_id})
-        if self._test_timer:
-            self._test_timer.stop()
-        self._test_timer = QTimer(singleShot=True)
-        self._test_timer.timeout.connect(lambda: self._test_btn.setEnabled(True))
-        self._test_timer.start(30000)
-
-    def _on_test_result(self, event):
-        data = event.data or {}
-        if data.get("id") != self._current_preset_id:
-            return
-        if self._test_timer:
-            self._test_timer.stop()
-        self._test_btn.setEnabled(True)
-        if data.get("success"):
-            self._status_label.setText("✓ " + (data.get("message") or "OK"))
-            self._status_label.setStyleSheet("color: #7fe38c;")
-        else:
-            self._status_label.setText("✗ " + (data.get("message") or "Error"))
-            self._status_label.setStyleSheet("color: red;")
+        self.dispatch_intent(TestEmbedPreset(self._current_preset_id))
 
     def _on_open_key_url(self):
         import webbrowser
@@ -651,14 +623,15 @@ class _EmbedProviderWidget(QWidget):
             webbrowser.open(self._key_url)
 
     def _on_download_local_model(self):
-        try:
-            self._on_save()
-            from ui.settings.rag_memory_settings import _download_embed_model
-            _download_embed_model(self._gui)
-        except Exception as e:
-            self._status_label.setStyleSheet("color: red;")
-            self._status_label.setText(_("Ошибка: ", "Error: ") + str(e))
-        self._refresh_download_btn()
+        payload, hf_token = self._collect_payload()
+        if payload is None:
+            return
+        self.dispatch_intent(
+            DownloadEmbedModel(
+                immutable_payload(payload),
+                hf_token,
+            )
+        )
 
     def _refresh_download_btn(self):
         is_local = (self._provider_combo.currentData() == "local")
@@ -667,22 +640,79 @@ class _EmbedProviderWidget(QWidget):
         self._download_btn.setEnabled(is_local and not manual)
         if not is_local or manual:
             return
-        try:
-            from ui.settings.rag_memory_settings import _is_embed_model_downloaded
-            if _is_embed_model_downloaded():
-                self._download_btn.setText(_("Скачать заново", "Download again"))
-            else:
-                self._download_btn.setText(_("Скачать модель", "Download model"))
-        except Exception:
+        if self._view_model.state.downloaded:
+            self._download_btn.setText(_("Скачать заново", "Download again"))
+        else:
             self._download_btn.setText(_("Скачать модель", "Download model"))
 
     def _get_current_display_name(self) -> str:
-        return self._preset_combo.currentText().lstrip("✎ ").strip()
+        return self._preset_combo.currentText().strip()
+
+    def _refresh_index_status_async(self):
+        if self._current_preset_id is not None:
+            self.dispatch_intent(SelectEmbedPreset(self._current_preset_id))
 
     def _refresh_index_status(self):
-        try:
-            from ui.settings.rag_memory_settings import _get_embed_status_text
+        self._refresh_index_status_async()
+
+    def dispatch_intent(self, intent) -> None:
+        self._view_model.dispatch(intent)
+
+    def render(self, state: EmbedProviderState) -> None:
+        self._is_loading = bool(state.loading_presets or state.loading_config)
+        if state.items_revision != self._items_revision:
+            self._items_revision = state.items_revision
+            self._preset_combo.blockSignals(True)
+            try:
+                self._preset_combo.clear()
+                for label, item_id in state.preset_items:
+                    self._preset_combo.addItem(str(label), userData=item_id)
+                index = self._find_combo_index(state.selected_preset_id)
+                if index >= 0:
+                    self._preset_combo.setCurrentIndex(index)
+            finally:
+                self._preset_combo.blockSignals(False)
+
+        if state.config_revision != self._config_revision and state.config is not None:
+            self._config_revision = state.config_revision
+            cfg = mutable_payload(state.config)
+            self._apply_loaded_cfg(state.selected_preset_id, dict(cfg or {}))
+
+        busy = bool(
+            state.loading_presets
+            or state.loading_config
+            or state.operation is not None
+        )
+        self._preset_combo.setEnabled(not busy)
+        self._add_btn.setEnabled(not busy)
+        custom_selected = (
+            state.selected_preset_id is not None
+            and not isinstance(state.selected_preset_id, str)
+        )
+        self._del_btn.setEnabled(not busy and custom_selected)
+        self._up_btn.setEnabled(not busy and custom_selected)
+        self._down_btn.setEnabled(not busy and custom_selected)
+        self._save_btn.setEnabled(not busy)
+        self._test_btn.setEnabled(not busy and not state.testing)
+        self._download_btn.setEnabled(
+            not busy
+            and self._provider_combo.currentData() == "local"
+            and not self._manual_path_check.isChecked()
+        )
+        self._refresh_download_btn()
+
+        if state.status_kind == "error":
+            self._status_label.setStyleSheet("color: red;")
+        elif state.status_kind == "success":
+            self._status_label.setStyleSheet("color: #7fe38c;")
+        else:
             self._status_label.setStyleSheet("")
-            self._status_label.setText(_get_embed_status_text())
-        except Exception:
-            pass
+        if state.status_text:
+            self._status_label.setText(state.status_text)
+        elif state.error:
+            self._status_label.setText(state.error)
+
+    def handle_effect(self, effect) -> None:
+        if isinstance(effect, EmbedProviderShowError):
+            self._status_label.setStyleSheet("color: red;")
+            self._status_label.setText(effect.message)

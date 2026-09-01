@@ -34,29 +34,19 @@ def _panel_key(key: str) -> str:
     return f"SANDBOX_PANEL_{key.upper()}_ENABLED"
 
 
-def is_panel_enabled(key: str) -> bool:
+def is_panel_enabled(key: str, settings) -> bool:
     """Whether the sandbox inspector panel should be shown. Unknown keys stay
     visible; everything defaults to ON."""
     if key not in SANDBOX_PANEL_DEFAULTS:
         return True
     default = SANDBOX_PANEL_DEFAULTS[key]
-    try:
-        from managers.settings_manager import SettingsManager
-
-        return bool(SettingsManager.get(_panel_key(key), default))
-    except Exception:
-        return default
+    return bool(settings.get(_panel_key(key), default))
 
 
-def set_panel_enabled(key: str, enabled: bool) -> None:
+def set_panel_enabled(key: str, enabled: bool, settings) -> None:
     if key not in SANDBOX_PANEL_DEFAULTS:
         return
-    try:
-        from managers.settings_manager import SettingsManager
-
-        SettingsManager.set(_panel_key(key), bool(enabled))
-    except Exception:
-        pass
+    settings.set(_panel_key(key), bool(enabled))
 
 
 def apply_sandbox_panel_visibility(gui) -> None:

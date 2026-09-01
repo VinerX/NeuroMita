@@ -51,7 +51,7 @@ class SettingsIconButton(QPushButton):
 
     def set_indicator_state(self, state: str | None, tooltip_text: str | None = None):
         st = (str(state).strip().lower() if state is not None else None)
-        if st not in (None, "red", "green", "loading"):
+        if st not in (None, "red", "green", "loading", "warn"):
             st = None
 
         self._indicator_state = st
@@ -96,6 +96,11 @@ class SettingsIconButton(QPushButton):
             self._badge.show()
         elif st == "loading":
             self._badge.setStyleSheet(self._badge_stylesheet("#ffd60a"))
+            self._badge.show()
+        elif st == "warn":
+            # Настроено, но не инициализировано — статичный янтарный бейдж
+            # (без спиннера, в отличие от loading).
+            self._badge.setStyleSheet(self._badge_stylesheet("#ffb340"))
             self._badge.show()
 
         self._reposition_badge()
@@ -158,54 +163,48 @@ class SettingsIconButton(QPushButton):
         accent_rgb = self._theme["accent_rgb"]
         accent_rgb_alt = self._theme["accent_rgb_alt"]
         slider_progress_rgb = self._theme["slider_progress_rgb"]
+        panel_border = self._theme["panel_border"]
         icon_color = "#ffffff" if self.is_active else self._theme["muted"]
         self.setIcon(qta.icon(self._icon_name, color=icon_color))
 
         if self.is_active:
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: qlineargradient(
-                        x1: 0, y1: 0, x2: 1, y2: 0,
-                        stop: 0 rgba({accent_rgb_alt}, 0.22),
-                        stop: 1 rgba({slider_progress_rgb}, 0.48)
-                    );
+                    background-color: transparent;
                     color: #ffffff;
-                    border: 1px solid rgba({accent_rgb}, 0.46);
-                    padding: 6px 14px;
-                    border-radius: 12px;
+                    border: none;
+                    border-bottom: 2px solid rgba({accent_rgb_alt}, 0.98);
+                    padding: 8px 10px 10px 10px;
+                    border-radius: 0px;
                     text-align: center;
                     font-size: 9pt;
                     font-weight: 700;
                 }}
                 QPushButton:hover {{
-                    background-color: qlineargradient(
-                        x1: 0, y1: 0, x2: 1, y2: 0,
-                        stop: 0 rgba({accent_rgb_alt}, 0.28),
-                        stop: 1 rgba({slider_progress_rgb}, 0.56)
-                    );
+                    background-color: rgba({accent_rgb}, 0.08);
                 }}
                 QPushButton:pressed {{
-                    background-color: rgba({slider_progress_rgb}, 0.64);
+                    background-color: rgba({slider_progress_rgb}, 0.14);
                 }}
             """)
         else:
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: rgba(255, 255, 255, 0.035);
+                    background-color: transparent;
                     color: {self._theme["muted"]};
-                    border: 1px solid rgba(255, 255, 255, 0.07);
-                    padding: 6px 14px;
-                    border-radius: 12px;
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    padding: 8px 10px 10px 10px;
+                    border-radius: 0px;
                     text-align: center;
                     font-size: 9pt;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: rgba({accent_rgb}, 0.12);
-                    border: 1px solid rgba({accent_rgb}, 0.24);
+                    background-color: rgba({accent_rgb}, 0.06);
                     color: {self._theme["text"]};
                 }}
                 QPushButton:pressed {{
-                    background-color: rgba({accent_rgb}, 0.18);
+                    background-color: rgba({accent_rgb}, 0.10);
                 }}
             """)

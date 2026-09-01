@@ -1,5 +1,13 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QProgressBar, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ui.widgets.launcher_shell_theme import PALETTE
 from utils import _
@@ -56,15 +64,19 @@ QPushButton#LauncherShellGhostButton:hover {{
     background-color: {PALETTE.accent_soft};
     border: 1px solid {PALETTE.border};
 }}
+QLabel#LauncherShellHint {{
+    color: {PALETTE.muted};
+    font-size: 11px;
+}}
 """
 
 
-def create_model_loading_dialog(parent, model_name, cancel_callback):
+def create_model_loading_dialog(parent, model_name, cancel_callback, hide_callback=None):
     dialog = QDialog(parent)
     dialog.setObjectName("LauncherShellDialog")
     dialog.setStyleSheet(_MODEL_LOADING_STYLE)
     dialog.setWindowTitle(_("Загрузка модели", "Loading model") + f" {model_name}")
-    dialog.setFixedSize(460, 280)
+    dialog.setFixedSize(460, 320)
     dialog.setModal(True)
     dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
@@ -107,9 +119,34 @@ def create_model_loading_dialog(parent, model_name, cancel_callback):
 
     layout.addStretch()
 
+    if hide_callback is not None:
+        hint_label = QLabel(_(
+            "Окно можно скрыть — инициализация продолжится в фоне, "
+            "её состояние видно в настройках озвучки.",
+            "You can hide this window — initialization keeps running in the "
+            "background, its state is shown in the voice settings.",
+        ))
+        hint_label.setObjectName("LauncherShellHint")
+        hint_label.setWordWrap(True)
+        hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint_label)
+
+    buttons_layout = QHBoxLayout()
+    buttons_layout.setSpacing(10)
+    buttons_layout.addStretch()
+
+    if hide_callback is not None:
+        hide_button = QPushButton(_("Скрыть", "Hide"))
+        hide_button.setObjectName("LauncherShellGhostButton")
+        hide_button.clicked.connect(hide_callback)
+        buttons_layout.addWidget(hide_button)
+
     cancel_button = QPushButton(_("Отменить", "Cancel"))
     cancel_button.setObjectName("LauncherShellGhostButton")
     cancel_button.clicked.connect(cancel_callback)
-    layout.addWidget(cancel_button, alignment=Qt.AlignmentFlag.AlignCenter)
+    buttons_layout.addWidget(cancel_button)
+
+    buttons_layout.addStretch()
+    layout.addLayout(buttons_layout)
 
     return dialog, loading_progress, loading_status_label

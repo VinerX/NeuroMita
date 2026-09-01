@@ -1,0 +1,41 @@
+{
+    "attitude": 50.0,
+    "boredom": 20.0,
+    "stress": 8.0,
+    "secretExposed": false,
+    "current_fsm_state": "Hello",
+    "available_action_level": 1,
+    "PlayingFirst": false,
+    "secretExposedFirst": false,
+    "secret_exposed_event_text_shown": false,
+    "LongMemoryRememberCount": 0,
+    "player_name": "Игрок",
+    "player_name_known": false,
+    "attitude_min": 0.0,
+    "attitude_max": 100.0,
+    "boredom_min": 0.0,
+    "boredom_max": 100.0,
+    "stress_min": 0.0,
+    "stress_max": 100.0,
+    "custom_params": [
+        {
+            "name": "Love",
+            "change_command": "love_change",
+            "type": "float",
+            "change_min": -5,
+            "change_max": 5,
+            "required": true,
+            "initial": 1,
+            "formula": "max(1, min(Love + love_change, 300))",
+            "description": "Change in Love relationship. Set this EVERY message to reflect the emotional tone of your reply: use +1..+5 for warm, flirtatious or tender moments; -1..-5 for cold, hostile or dismissive ones; 0 only if the interaction is completely neutral."
+        },
+        {
+            "name": "secret_trial",
+            "type": "bool",
+            "required": false,
+            "nullable": true,
+            "op": "set",
+            "description": "Activate secret quest mode"
+        }
+    ]
+}

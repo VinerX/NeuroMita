@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Dict
 
-from core.events import Events
+from core.services import use
+from services.contracts import SettingsService, TaskService, TelegramService
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
 
@@ -14,8 +15,7 @@ class GetTaskStatusAction:
             await ctx.server.send_error(ctx.writer, "Missing task_uid")
             return
 
-        task_result = ctx.event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": task_uid}, timeout=1.0)
-        task = task_result[0] if task_result else None
+        task = use(TaskService).get_task(task_uid)
         if not task:
             await ctx.server.send_error(ctx.writer, f"Task {task_uid} not found")
             return
@@ -27,23 +27,24 @@ class GetTaskStatusAction:
             if audio_path:
                 response.setdefault("result", {})["audio_path"] = audio_path
 
-            silero_result = ctx.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=1.0)
-            response["silero_connected"] = silero_result[0] if silero_result else False
+            response["silero_connected"] = use(TelegramService).is_silero_connected()
+            # GameMaster is an optional moderator, not the selected active Mita.
+            # The previous implementation looked at CharacterRegistry.current_id(),
+            # making GM_ON/GM_REPEAT UI settings ineffective for normal dialogues.
+            settings = use(SettingsService)
+            gm_enabled = bool(settings.get("GM_ON", False))
+            try:
+                gm_repeat = int(settings.get("GM_REPEAT", 2) or 2)
+            except (TypeError, ValueError):
+                gm_repeat = 2
+            # The legacy Unity controller treats this as a number of NPC turns.
+            # Keep a bounded positive interval even if settings were edited manually.
+            gm_repeat = max(1, min(gm_repeat, 100))
 
-            current_profile_res = ctx.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-            current_profile = current_profile_res[0] if current_profile_res else {}
-            current_character_id = current_profile.get("character_id", "") if isinstance(current_profile, dict) else ""
-            is_gm = (current_character_id == "GameMaster")
-
-            response["GM_ON"] = is_gm
-            response["GM_READ"] = is_gm
-
-            gm_voice_res = ctx.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": "GM_VOICE", "default": False},
-                timeout=1.0
-            )
-            gm_voice = bool(gm_voice_res[0]) if gm_voice_res else False
-            response["GM_VOICE"] = bool(is_gm and gm_voice)
-
+            response["GM_ON"] = gm_enabled
+            # Hidden moderator plans are executed by Unity as intents, never
+            # rendered as a visible GameMaster chat reply.
+            response["GM_READ"] = False
+            response["GM_VOICE"] = bool(gm_enabled and settings.get("GM_VOICE", False))
+            response["GM_REPEAT"] = gm_repeat
         await ctx.server.send_json(ctx.writer, response)

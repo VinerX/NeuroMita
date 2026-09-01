@@ -1,0 +1,14 @@
+{
+  "world_id": "KindHouse",
+  "display_name": "Kind Mita's house",
+  "owner": "Kind",
+  "former_owners": [],
+  "default_context": "You are visiting Kind Mita's house. It is Kind's private home, not yours.",
+  "character_relations": {
+    "Crazy": "foreign_home"
+  },
+  "character_contexts": {
+    "Kind": "This is your home. You feel responsible for the people and things kept here.",
+    "Crazy": "This is Kind Mita's house. You suspect she keeps something important here."
+  }
+}

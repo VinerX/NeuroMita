@@ -3,18 +3,38 @@ from __future__ import annotations
 BASE_QSS = r"""
 /* ========= Base ========= */
 QWidget {
-    background-color: {bg_root};
+    background-color: transparent;
     color: {text};
     font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
     font-size: 9pt;
     border-radius: 0px;
 }
+QWidget:window { background-color: {bg_root}; }
 QMainWindow { background-color: {bg_window}; }
 QWidget#LauncherRoot {
     background-color: {app_bg};
 }
 QDialog { background-color: {bg_root}; }
 QFrame { border: none; background: transparent; }
+
+QMenu {
+    background-color: {card_bg};
+    color: {text};
+    border: 1px solid {card_border};
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    padding: 6px 20px;
+    border-radius: 4px;
+}
+QMenu::item:selected { background-color: {chip_hover}; }
+QMenu::separator {
+    background-color: {border_soft};
+    height: 1px;
+    margin: 4px 8px;
+}
 
 /* ========= Inputs ========= */
 QTextEdit, QLineEdit {
@@ -157,6 +177,31 @@ QLabel#SeparatorLabel {
 QLabel#WarningIcon { color: #ffcc00; }
 QLabel#LinkLabel { color: {link}; }
 
+/* ===== Статус локальной модели озвучки (чип + кнопка действия) ===== */
+QLabel#VoiceModelStatusChip {
+    font-weight: 600;
+    padding: 2px 2px;
+    color: {muted};
+}
+QLabel#VoiceModelStatusChip[state="green"]   { color: #6fd66f; }
+QLabel#VoiceModelStatusChip[state="red"]     { color: #ff6b61; }
+QLabel#VoiceModelStatusChip[state="orange"]  { color: #ffb340; }
+QLabel#VoiceModelStatusChip[state="loading"] { color: #ffd60a; }
+QPushButton#VoiceModelActionButton {
+    padding: 4px 12px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: {accent};
+    border: 1px solid {accent};
+}
+QPushButton#VoiceModelActionButton:hover { background-color: {accent_hover}; }
+QPushButton#VoiceModelActionButton[action="install"] {
+    background-color: transparent;
+    color: {accent};
+    border: 1px solid {accent};
+}
+
 QFrame#SeparatorH {
     background-color: {border_soft};
     max-height: 1px;
@@ -176,7 +221,9 @@ QFrame#SeparatorH {
 /* ========= CheckBox ========= */
 QCheckBox { spacing: 8px; color: {text}; padding: 2px 0; }
 QCheckBox::indicator {
-    width: 16px; height: 16px; border-radius: 5px;
+    width: 16px; height: 16px;
+    min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px;
+    border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.18);
     background-color: rgba({sidebar_panel_rgb}, 0.96);
 }

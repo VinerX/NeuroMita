@@ -41,7 +41,7 @@ def get_dialog_stylesheet():
         }
 
         QDialog#ActionDialog QProgressBar::chunk {
-            background-color: #db6596;
+            background-color: #b74b7d;
             border-radius: 2px;
         }
 
@@ -66,18 +66,18 @@ def get_dialog_stylesheet():
         }
         
         QDialog#ActionDialog QPushButton#RetryButton {
-            background-color: #db6596;
+            background-color: #b74b7d;
             font-weight: bold;
         }
         QDialog#ActionDialog QPushButton#RetryButton:hover {
-            background-color: #e26e9e;
+            background-color: #c04c80;
         }
 
         QDialog#ActionDialog QPushButton#ContinueButton {
-            background-color: #db6596;
+            background-color: #b74b7d;
             font-weight: bold;
         }
         QDialog#ActionDialog QPushButton#ContinueButton:hover {
-            background-color: #e26e9e;
+            background-color: #c04c80;
         }
     """

@@ -1,24 +1,24 @@
-﻿import os
+from core.error_utils import format_exception
+import os
 import time
-import wave
-import asyncio
 import gc
 import multiprocessing as mp
 from multiprocessing import Queue, Process
 from threading import Thread, Event
 import queue
 from typing import Optional, List
-from collections import deque
 import numpy as np
 import urllib.request
 import urllib.error
 
 from handlers.asr_models.speech_recognizer_base import SpeechRecognizerInterface
+from core.installables.helpers import build_runtime_ctx
+from core.events import Events, get_event_bus
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
+from core.task_supervisor import task_supervisor
 
 from utils import getTranslationVariant as _
-from utils.gpu_utils import check_gpu_provider
 
 
 class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
@@ -33,13 +33,13 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             "id": "gigaam_onnx",
             "name": "GigaAM ONNX",
             "description": _(
-                "Офлайн-распознавание речи на базе GigaAM через ONNXRuntime. "
-                "Запускается в отдельном процессе. Подходит для CPU/DirectML.",
+                "Офлайн-распознавание речи на базе GigaAM через ONNXRuntime DirectML на Windows "
+                "с CPU fallback. Запускается в отдельном процессе.",
                 "Offline speech recognition based on GigaAM via ONNXRuntime. "
-                "Runs in a separate process. Suitable for CPU/DirectML."
+                "Uses DirectML on Windows with CPU fallback and runs in a separate process."
             ),
             "languages": ["Russian"],
-            "gpu_vendor": ["AMD", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "tags": [
                 _("ONNX", "ONNX"),
                 _("Отдельный процесс", "Separate process"),
@@ -49,21 +49,23 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         }
     ]
 
+    # Единственный источник истины по допустимым моделям и дефолту
+    # (SSL/Emo-чекпоинты распознавать речь не умеют и сюда не входят).
+    VALID_MODELS = ("v2_rnnt", "v2_ctc", "v3_rnnt", "v3_ctc", "v3_e2e_ctc", "v3_e2e_rnnt")
+    DEFAULT_MODEL = "v2_rnnt"
+
     def __init__(self, pip_installer, logger):
         super().__init__(pip_installer, logger)
 
         self._torch = None
-        self._sd = None
         self._np = None
 
         self._current_gpu = None
 
-        self.gigaam_model = "v2_rnnt"
+        self.gigaam_model = self.DEFAULT_MODEL
         self.gigaam_device = "auto"  # auto/cpu/dml
         self.gigaam_onnx_export_path = "SpeechRecognitionModels/GigaAM_ONNX"
         self.gigaam_model_path = "SpeechRecognitionModels/GigaAM"
-
-        self.FAILED_AUDIO_DIR = "FailedAudios"
 
         self._process: Optional[Process] = None
         self._command_queue: Optional[Queue] = None
@@ -79,11 +81,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
         self._url_dir = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 
-        self._model_names = [
-            "v2_rnnt", "v2_ctc",
-            "v3_rnnt", "v3_ctc",
-            "v3_e2e_ctc", "v3_e2e_rnnt"
-        ]
+        self._model_names = list(self.VALID_MODELS)
 
     # ---------- UI schema ----------
     def settings_spec(self):
@@ -92,16 +90,12 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
              "type": "combobox", "options": ["auto", "cpu", "dml"], "default": "auto"},
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
              "type": "combobox",
-             "options": [
-                "v2_rnnt", "v2_ctc",
-                "v3_rnnt", "v3_ctc",
-                "v3_e2e_ctc", "v3_e2e_rnnt"
-             ],
-             "default": "v2_rnnt"}
+             "options": list(self.VALID_MODELS),
+             "default": self.DEFAULT_MODEL}
         ]
 
     def get_default_settings(self):
-        return {"device": "auto", "model": "v2_rnnt"}
+        return {"device": "auto", "model": self.DEFAULT_MODEL}
 
     def apply_settings(self, settings: dict):
         dev = settings.get("device")
@@ -113,7 +107,14 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         old_device = self.gigaam_device
         self.gigaam_device = (device or self.gigaam_device).strip().lower()
         if model:
-            self.gigaam_model = str(model).strip()
+            new_model = str(model).strip()
+            if new_model not in self.VALID_MODELS:
+                self.logger.warning(
+                    f"GigaAM ONNX: model '{new_model}' is not a valid ASR checkpoint — "
+                    f"falling back to '{self.DEFAULT_MODEL}'."
+                )
+                new_model = self.DEFAULT_MODEL
+            self.gigaam_model = new_model
         if onnx_path:
             self.gigaam_onnx_export_path = str(onnx_path)
         if model_path:
@@ -126,7 +127,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
     # ---------- naming / paths ----------
     def _normalized_ckpt_name(self) -> str:
-        name = (self.gigaam_model or "v2_rnnt").strip()
+        name = (self.gigaam_model or self.DEFAULT_MODEL).strip()
         if name in ("ctc", "rnnt"):
             name = f"v2_{name}"
         return name
@@ -189,15 +190,13 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
     def required_backend(self, ctx: dict) -> BackendKind:
         return BackendKind.ONNX
 
-    def is_installed(self) -> bool:
+    def is_installed(self, ctx: dict | None = None) -> bool:
+        run_ctx = build_runtime_ctx(ctx)
+        run_ctx.setdefault("device", self.gigaam_device)
         if self._current_gpu is None:
-            try:
-                self._current_gpu = check_gpu_provider() or "CPU"
-            except Exception:
-                self._current_gpu = "CPU"
-
-        ctx = {"device": self.gigaam_device, "gpu_vendor": self._current_gpu}
-        st = check_requirements(self.requirements(), ctx=ctx)
+            self._current_gpu = str(run_ctx.get("gpu_vendor") or "CPU")
+        run_ctx.setdefault("gpu_vendor", self._current_gpu)
+        st = check_requirements(self.requirements(), ctx=run_ctx)
         return bool(st.get("ok"))
     
     def install_manifest(self) -> list[dict]:
@@ -281,7 +280,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
             self.logger.error(f"GigaAM ONNX download failed: HTTP {e.code} {e.reason}", exc_info=True)
             return False
         except Exception as e:
-            self.logger.error(f"GigaAM ONNX install failed: {e}", exc_info=True)
+            self.logger.error(f"GigaAM ONNX install failed: {format_exception(e)}", exc_info=True)
             return False
 
     def _download_file_with_progress(self, url: str, dest: str, start_prog: int, end_prog: int) -> bool:
@@ -315,7 +314,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
                         pct = (min(done * 100.0 / total, 100.0) if total > 0 else 0.0)
                         prog = start_prog + int((end_prog - start_prog) * (pct / 100.0))
-                        self._event_bus.emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
+                        get_event_bus().emit(Events.Speech.ASR_MODEL_INSTALL_PROGRESS, {
                             "model": "gigaam_onnx",
                             "progress": int(max(0, min(99, prog))),
                             "status": _(f"Загрузка: {pct:.1f}%", f"Downloading: {pct:.1f}%")
@@ -348,13 +347,11 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
         try:
             import torch
-            import sounddevice as sd
             import numpy as np
             self._torch = torch
-            self._sd = sd
             self._np = np
         except Exception as e:
-            self.logger.error(f"GigaAMOnnx init imports failed: {e}")
+            self.logger.error(f"GigaAMOnnx init imports failed: {format_exception(e)}")
             return False
 
         if self._start_process():
@@ -378,111 +375,6 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         self.logger.error("Таймаут при ожидании транскрибации (ONNX)")
         return None
 
-    async def live_recognition(self, microphone_index: int, handle_voice_callback,
-                              vad_model, active_flag, **kwargs) -> None:
-        if not self._is_initialized or not self._process or not self._process.is_alive():
-            self.logger.error("GigaAM ONNX процесс не инициализирован")
-            return
-
-        sample_rate = kwargs.get("sample_rate", 16000)
-        chunk_size = kwargs.get("chunk_size", 512)
-        vad_threshold = kwargs.get("vad_threshold", 0.5)
-        silence_timeout = kwargs.get("silence_timeout", 1.0)
-        pre_buffer_duration = kwargs.get("pre_buffer_duration", 0.3)
-        max_speech_duration = float(kwargs.get("max_speech_duration", 30.0))
-
-        silence_chunks_needed = int(silence_timeout * sample_rate / chunk_size)
-        pre_buffer_size = max(0, int(pre_buffer_duration * sample_rate / chunk_size))
-        max_speech_chunks = max(1, int(max_speech_duration * sample_rate / chunk_size))
-
-        pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size > 0 else None
-        speech_buffer = []
-        is_speaking = False
-        silence_counter = 0
-        overflow_count = 0
-        loop = asyncio.get_running_loop()
-
-        try:
-            with self._sd.InputStream(
-                samplerate=sample_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=chunk_size,
-                device=microphone_index,
-            ) as stream:
-                while active_flag():
-                    try:
-                        audio_chunk, overflowed = await loop.run_in_executor(None, stream.read, chunk_size)
-                    except Exception as e:
-                        if not active_flag():
-                            break
-                        self.logger.warning(f"Input stream read aborted: {e}")
-                        break
-
-                    if not active_flag():
-                        break
-
-                    if overflowed:
-                        overflow_count += 1
-                        self.logger.warning("Переполнение буфера аудиопотока!")
-                        if overflow_count % 20 == 0:
-                            self.logger.warning(f"ASR overflow count: {overflow_count}")
-
-                    audio_tensor = self._torch.from_numpy(audio_chunk.flatten())
-                    speech_prob = vad_model(audio_tensor, sample_rate).item()
-
-                    should_finalize = False
-                    if speech_prob > vad_threshold:
-                        if not is_speaking:
-                            is_speaking = True
-                            speech_buffer.clear()
-                            if pre_speech_buffer is not None:
-                                speech_buffer.extend(list(pre_speech_buffer))
-                        speech_buffer.append(audio_chunk)
-                        silence_counter = 0
-                        if len(speech_buffer) >= max_speech_chunks:
-                            should_finalize = True
-                    elif is_speaking:
-                        speech_buffer.append(audio_chunk)
-                        silence_counter += 1
-                        if silence_counter > silence_chunks_needed or len(speech_buffer) >= max_speech_chunks:
-                            should_finalize = True
-                    elif pre_speech_buffer is not None:
-                        pre_speech_buffer.append(audio_chunk)
-
-                    if should_finalize and speech_buffer:
-                        audio_to_process = self._np.concatenate(speech_buffer)
-                        is_speaking = False
-                        speech_buffer.clear()
-                        silence_counter = 0
-
-                        text = await self.transcribe(audio_to_process, sample_rate)
-                        if text:
-                            await handle_voice_callback(text)
-                        else:
-                            await self._save_failed_audio(audio_to_process, sample_rate)
-        finally:
-            if overflow_count:
-                self.logger.warning(f"ASR stream overflows total: {overflow_count}")
-
-    async def _save_failed_audio(self, audio_data: np.ndarray, sample_rate: int):
-        try:
-            os.makedirs(self.FAILED_AUDIO_DIR, exist_ok=True)
-            timestamp = int(time.time())
-            filename = os.path.join(self.FAILED_AUDIO_DIR, f"failed_{timestamp}.wav")
-
-            audio_data_int16 = (audio_data.reshape(-1) * 32767).astype(self._np.int16)
-
-            with wave.open(filename, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio_data_int16.tobytes())
-
-            self.logger.info(f"Фрагмент сохранен в: {filename}")
-        except Exception as e:
-            self.logger.error(f"Не удалось сохранить аудиофрагмент: {e}")
-
     def cleanup(self) -> None:
         self._stop_process()
         gc.collect()
@@ -492,7 +384,6 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         except Exception:
             pass
         self._torch = None
-        self._sd = None
         self._np = None
         self._is_initialized = False
 
@@ -535,7 +426,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
                     except queue.Empty:
                         break
             except Exception as e:
-                self.logger.error(f"Ошибка в мониторе GigaAM ONNX процесса: {e}")
+                self.logger.error(f"Ошибка в мониторе GigaAM ONNX процесса: {format_exception(e)}")
 
     def _start_process(self):
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -560,8 +451,9 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         self._process.start()
 
         self._stop_monitor.clear()
-        self._monitor_thread = Thread(target=self._monitor_process, daemon=True)
-        self._monitor_thread.start()
+        self._monitor_thread = task_supervisor().start_thread(
+            self, "gigaam-onnx-monitor", self._monitor_process, replace=True
+        )
 
         init_options = {
             "device": self.gigaam_device,

@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QScrollArea
 from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
-from managers.settings_manager import SettingsManager
 from styles.theme import get_theme
+from ui.settings.settings_access import set_setting
 
 
 class SettingsResizeHandle(QWidget):
@@ -107,7 +107,10 @@ class SettingsOverlay(QWidget):
         parent = self.parentWidget()
         if parent is not None and hasattr(parent, "SETTINGS_PANEL_WIDTH"):
             parent.SETTINGS_PANEL_WIDTH = int(new_width)
-        SettingsManager.set("SETTINGS_PANEL_WIDTH", int(new_width))
+        parent = self.parentWidget()
+        if parent is None:
+            raise RuntimeError("SettingsOverlay requires an owning settings view")
+        set_setting(parent, "SETTINGS_PANEL_WIDTH", int(new_width))
 
     def finish_resizing(self):
         self.setMinimumWidth(0)
@@ -169,17 +172,17 @@ class SettingsOverlay(QWidget):
 
         painter.save()
         painter.setClipPath(panel_path)
-        painter.setPen(QPen(QColor(219, 101, 150, 18), 1))
+        painter.setPen(QPen(QColor(183, 75, 125, 18), 1))
         step = 26
         rl, rt, rr, rb, rh = int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom()), int(rect.height())
         for x in range(rl - rh, rr + rh, step):
             painter.drawLine(x, rt, x + rh, rb)
-        painter.setPen(QPen(QColor(219, 101, 150, 10), 1))
+        painter.setPen(QPen(QColor(183, 75, 125, 10), 1))
         for y in range(rt, rb, step):
             painter.drawLine(rl, y, rr, y)
         painter.restore()
 
-        painter.setPen(QPen(QColor(219, 101, 150, 88), 1.2))
+        painter.setPen(QPen(QColor(183, 75, 125, 88), 1.2))
         painter.drawPath(panel_path)
 
         inner = rect.adjusted(10, 10, -10, -10)

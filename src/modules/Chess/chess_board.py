@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: Modules/Chess/chess_board.py
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -14,32 +15,51 @@ import sys
 from .engine_handler import ChessGameController, MAIA_ELO as DEFAULT_MAIA_ELO # DEFAULT_MAIA_ELO если не передан ELO
 from .board_logic import PureBoardLogic # Не используется напрямую здесь, но контроллер его использует
 
-# --- Константы для GUI (остаются как были) ---
+try:
+    from styles.theme import THEME
+except ImportError:
+    THEME = {
+        "bg_root": "#0a0a18", "text": "#f3edf6", "muted": "#bca9bb",
+        "sidebar_bg": "#0e101f", "accent": "#b74b7d", "accent_hover": "#c04c80",
+        "accent_pressed": "#a0436c", "accent_border": "rgba(130, 56, 88, 0.55)",
+        "panel_border": "rgba(37, 34, 54, 0.9)", "card_border": "rgba(40, 38, 54, 0.85)",
+        "btn_disabled_bg": "#2b2230", "btn_disabled_fg": "#7c687a",
+    }
+
+# --- Константы для GUI ---
 SQUARE_SIZE = 70
 BOARD_BORDER_WIDTH = 2
 DEFAULT_PIECE_FONT_SIZE = int(SQUARE_SIZE * 0.6)
 
 class ChessGameModelTkStyles:
+    # Board colors — kept functional for chess readability
     COLOR_BOARD_LIGHT = "#EDE0C8"
     COLOR_BOARD_DARK = "#779556"
     COLOR_HIGHLIGHT_SELECTED = "#F5F57E"
     COLOR_HIGHLIGHT_POSSIBLE = "#A0D87E"
     COLOR_HIGHLIGHT_LAST_MOVE = "#FF8C8C"
-    COLOR_BUTTON_BG = "#5C85D6"
-    COLOR_BUTTON_HOVER_BG = "#4A6BAD"
-    COLOR_BUTTON_PRESSED_BG = "#3A558C"
-    COLOR_BUTTON_TEXT = "white"
-    COLOR_WINDOW_BG = "#2E2E2E"
-    COLOR_PANEL_BG = "#3C3C3C"
-    COLOR_TEXT_LIGHT = "#E0E0E0"
     COLOR_BOARD_OUTER_BORDER = "#5F7745"
+
+    # App theme colors
+    COLOR_WINDOW_BG = THEME["bg_root"]
+    COLOR_PANEL_BG = THEME["sidebar_bg"]
+    COLOR_TEXT_LIGHT = THEME["text"]
+    COLOR_MUTED = THEME["muted"]
+    COLOR_BUTTON_BG = THEME["accent"]
+    COLOR_BUTTON_HOVER_BG = THEME["accent_hover"]
+    COLOR_BUTTON_PRESSED_BG = THEME["accent_pressed"]
+    COLOR_BUTTON_TEXT = "#ffffff"
+    COLOR_BORDER = THEME["panel_border"]
+    COLOR_CARD_BORDER = THEME["card_border"]
+
     PIECE_FONT_FAMILY = "DejaVu Sans"
     PIECE_FONT = (PIECE_FONT_FAMILY, DEFAULT_PIECE_FONT_SIZE, "bold")
-    BUTTON_FONT = ("Arial", 11)
-    STATUS_FONT = ("Arial", 9)
-    COORDINATE_LABEL_FONT_TUPLE = ("Arial", 9, "bold") 
-    COORDINATE_LABEL_FG = "#C0C0C0"
-    COORDINATE_LABEL_BG = COLOR_WINDOW_BG
+    UI_FONT_FAMILY = "Segoe UI"
+    BUTTON_FONT = (UI_FONT_FAMILY, 11)
+    STATUS_FONT = (UI_FONT_FAMILY, 9)
+    COORDINATE_LABEL_FONT_TUPLE = (UI_FONT_FAMILY, 9, "bold")
+    COORDINATE_LABEL_FG = THEME.get("muted", "#bca9bb")
+    COORDINATE_LABEL_BG = THEME["bg_root"]
     LABEL_AREA_PADDING = 4
 
     @staticmethod
@@ -123,14 +143,29 @@ class PromotionDialog(QDialog):
         self.item_keys = list(items_dict.keys())
         self.result_value = None
         self.setWindowTitle(title)
-        self.setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG}")
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
+                border: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
+                border-radius: 12px;
+            }}
+        """)
         self._init_ui()
     
     def _init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
         
         label = QLabel("Выберите фигуру:")
-        label.setStyleSheet(f"color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT}")
+        label.setStyleSheet(f"""
+            color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+            font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+            font-size: 12pt;
+            font-weight: 600;
+            background: transparent;
+            border: none;
+        """)
         layout.addWidget(label)
         
         self.radio_group = QButtonGroup()
@@ -141,10 +176,23 @@ class PromotionDialog(QDialog):
             rb.setStyleSheet(f"""
                 QRadioButton {{
                     color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
-                    background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
+                    background: transparent;
+                    border: none;
+                    font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                    font-size: 11pt;
+                    spacing: 8px;
+                    padding: 4px 0;
                 }}
                 QRadioButton::indicator {{
-                    background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG};
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    border: 1px solid {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                    background: transparent;
+                }}
+                QRadioButton::indicator:checked {{
+                    background: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                    border-color: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
                 }}
             """)
             self.radio_buttons[key_text] = rb
@@ -154,6 +202,7 @@ class PromotionDialog(QDialog):
                 rb.setChecked(True)
         
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(self.accept)
@@ -161,10 +210,11 @@ class PromotionDialog(QDialog):
         
         cancel_btn = QPushButton("Отмена")
         cancel_btn.clicked.connect(self.reject)
-        self._apply_button_style(cancel_btn)
+        self._apply_button_secondary_style(cancel_btn)
         
-        button_layout.addWidget(ok_btn)
+        button_layout.addStretch()
         button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(ok_btn)
         
         layout.addLayout(button_layout)
         self.setLayout(layout)
@@ -175,8 +225,9 @@ class PromotionDialog(QDialog):
                 background-color: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
                 color: {ChessGameModelTkStyles.COLOR_BUTTON_TEXT};
                 border: none;
-                padding: 5px 10px;
-                font-family: Arial;
+                border-radius: 8px;
+                padding: 6px 16px;
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
                 font-size: 10pt;
             }}
             QPushButton:hover {{
@@ -184,6 +235,26 @@ class PromotionDialog(QDialog):
             }}
             QPushButton:pressed {{
                 background-color: {ChessGameModelTkStyles.COLOR_BUTTON_PRESSED_BG};
+            }}
+        """)
+    
+    def _apply_button_secondary_style(self, button):
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+                border: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
+                border-radius: 8px;
+                padding: 6px 16px;
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 10pt;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,0.05);
+                border-color: {ChessGameModelTkStyles.COLOR_MUTED};
+            }}
+            QPushButton:pressed {{
+                background: rgba(255,255,255,0.08);
             }}
         """)
     
@@ -203,8 +274,9 @@ class ChessGuiTkinter(QMainWindow):
     def __init__(self, game_controller: ChessGameController): 
         super().__init__()
         self.game_controller = game_controller
+        self.is_auto = game_controller.is_auto if game_controller else False
         self.setWindowTitle(f"Шахматы против Maia ELO {self.game_controller.current_maia_elo if self.game_controller else DEFAULT_MAIA_ELO}")
-        self.setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}")
+        self.setStyleSheet(f"QMainWindow {{ background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}; }}")
 
         coord_font_tuple = ChessGameModelTkStyles.COORDINATE_LABEL_FONT_TUPLE
         self.app_coord_font = QFont(coord_font_tuple[0], coord_font_tuple[1])
@@ -232,7 +304,6 @@ class ChessGuiTkinter(QMainWindow):
         
         self.is_closing = False 
 
-        # Подключаем сигналы к слотам
         self.status_update_signal.connect(self.update_status_bar_slot)
         self.board_update_signal.connect(self.update_board_display_slot)
         self.game_over_signal.connect(self.show_game_over_message_slot)
@@ -243,9 +314,11 @@ class ChessGuiTkinter(QMainWindow):
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        central_widget.setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}")
         
         main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(16)
         
         # Board area
         board_area_widget = QWidget()
@@ -261,7 +334,7 @@ class ChessGuiTkinter(QMainWindow):
         for r_gui in range(8):
             lbl = QLabel("")
             lbl.setFont(_label_font_obj_for_ui)
-            lbl.setStyleSheet(f"color: {_label_fg}; background-color: {_label_bg}")
+            lbl.setStyleSheet(f"color: {_label_fg}; background-color: {_label_bg}; border: none;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             board_area_layout.addWidget(lbl, r_gui, 0)
             self.rank_labels_gui[r_gui] = lbl
@@ -270,14 +343,14 @@ class ChessGuiTkinter(QMainWindow):
         for c_gui in range(8):
             lbl = QLabel("")
             lbl.setFont(_label_font_obj_for_ui)
-            lbl.setStyleSheet(f"color: {_label_fg}; background-color: {_label_bg}")
+            lbl.setStyleSheet(f"color: {_label_fg}; background-color: {_label_bg}; border: none;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             board_area_layout.addWidget(lbl, 8, c_gui + 1)
             self.file_labels_gui[c_gui] = lbl
         
         # Corner label
         corner_lbl = QLabel("")
-        corner_lbl.setStyleSheet(f"background-color: {_label_bg}")
+        corner_lbl.setStyleSheet(f"background-color: {_label_bg}; border: none;")
         board_area_layout.addWidget(corner_lbl, 8, 0)
         
         # Chess board canvas
@@ -287,54 +360,84 @@ class ChessGuiTkinter(QMainWindow):
         board_area_widget.setLayout(board_area_layout)
         main_layout.addWidget(board_area_widget)
         
-        # Control panel
-        control_panel_widget = QWidget()
-        control_panel_widget.setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG}")
-        control_panel_layout = QVBoxLayout()
-        control_panel_layout.setContentsMargins(15, 15, 15, 15)
-        
-        self.btn_new_game_white = self._create_button(control_panel_widget, "Новая игра (Белыми)",
-                                                      lambda: self.game_controller.new_game(player_is_white_gui_override=True) if self.game_controller else None)
-        control_panel_layout.addWidget(self.btn_new_game_white)
-        
-        self.btn_new_game_black = self._create_button(control_panel_widget, "Новая игра (Черными)",
-                                                      lambda: self.game_controller.new_game(player_is_white_gui_override=False) if self.game_controller else None)
-        control_panel_layout.addWidget(self.btn_new_game_black)
-        
-        control_panel_layout.addStretch()
-        
-        control_panel_widget.setLayout(control_panel_layout)
-        main_layout.addWidget(control_panel_widget)
+        # Control panel — скрыта в авто-режиме
+        if not self.is_auto:
+            control_panel_widget = QWidget()
+            control_panel_widget.setStyleSheet(f"""
+                QWidget {{
+                    background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
+                    border: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
+                    border-radius: 12px;
+                }}
+            """)
+            control_panel_widget.setFixedWidth(220)
+            control_panel_layout = QVBoxLayout()
+            control_panel_layout.setContentsMargins(16, 16, 16, 16)
+            control_panel_layout.setSpacing(10)
+            
+            panel_title = QLabel("Управление")
+            panel_title.setStyleSheet(f"""
+                color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 14pt;
+                font-weight: 700;
+                background: transparent;
+                border: none;
+            """)
+            control_panel_layout.addWidget(panel_title)
+            
+            self.btn_new_game_white = self._create_button(control_panel_widget, "Новая игра (Белыми)",
+                                                           lambda: self.game_controller.new_game(player_is_white_gui_override=True) if self.game_controller else None)
+            control_panel_layout.addWidget(self.btn_new_game_white)
+            
+            self.btn_new_game_black = self._create_button(control_panel_widget, "Новая игра (Черными)",
+                                                           lambda: self.game_controller.new_game(player_is_white_gui_override=False) if self.game_controller else None)
+            control_panel_layout.addWidget(self.btn_new_game_black)
+            
+            control_panel_layout.addStretch()
+            
+            control_panel_widget.setLayout(control_panel_layout)
+            main_layout.addWidget(control_panel_widget)
+        else:
+            self.btn_new_game_white = None
+            self.btn_new_game_black = None
         
         central_widget.setLayout(main_layout)
         
         # Status bar
         self.status_bar_label = QLabel("Инициализация GUI...")
         self.status_bar_label.setStyleSheet(f"""
-            color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
-            background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
-            padding: 3px 5px;
+            color: {ChessGameModelTkStyles.COLOR_MUTED};
+            background: transparent;
+            border: none;
+            font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+            font-size: 9pt;
+            padding: 4px 12px;
         """)
-        self.status_bar_label.setFont(QFont("Arial", 9))
         self.statusBar().addPermanentWidget(self.status_bar_label, 1)
-        self.statusBar().setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG}")
+        self.statusBar().setStyleSheet(f"""
+            QStatusBar {{
+                background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG};
+                border-top: 1px solid {ChessGameModelTkStyles.COLOR_BORDER};
+            }}
+        """)
         
         self._update_board_coordinates_labels()
 
     def _create_button(self, parent, text, command): 
         button = QPushButton(text)
         button.clicked.connect(command)
-        button.setFixedWidth(200)
+        button.setFixedWidth(188)
         
-        normal_style = ChessGameModelTkStyles.get_button_normal_style()
         button.setStyleSheet(f"""
             QPushButton {{
-                background-color: {normal_style['bg']};
-                color: {normal_style['fg']};
+                background-color: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                color: {ChessGameModelTkStyles.COLOR_BUTTON_TEXT};
                 border: none;
-                padding: {normal_style['pady']}px {normal_style['padx']}px;
-                font-family: {normal_style['font'][0]};
-                font-size: {normal_style['font'][1]}pt;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 11pt;
             }}
             QPushButton:hover {{
                 background-color: {ChessGameModelTkStyles.COLOR_BUTTON_HOVER_BG};
@@ -501,9 +604,35 @@ class ChessGuiTkinter(QMainWindow):
         self.update_board_display_slot()
 
     def closeEvent(self, event):
-        reply = QMessageBox.question(self, "Выход", "Вы уверены, что хотите выйти из шахмат?",
-                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                            QMessageBox.StandardButton.No)
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Выход")
+        msg_box.setText("Вы уверены, что хотите выйти из шахмат?")
+        msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg_box.setDefaultButton(QMessageBox.StandardButton.No)
+        msg_box.setStyleSheet(f"""
+            QMessageBox {{
+                background-color: {ChessGameModelTkStyles.COLOR_PANEL_BG};
+            }}
+            QMessageBox QLabel {{
+                color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 11pt;
+            }}
+            QPushButton {{
+                background-color: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                color: {ChessGameModelTkStyles.COLOR_BUTTON_TEXT};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                font-size: 10pt;
+                min-width: 60px;
+            }}
+            QPushButton:hover {{
+                background-color: {ChessGameModelTkStyles.COLOR_BUTTON_HOVER_BG};
+            }}
+        """)
+        reply = msg_box.exec()
         if reply == QMessageBox.StandardButton.Yes:
             self.is_closing = True
             print("CONSOLE (chess_board GUI): Окно GUI закрывается пользователем.")
@@ -512,8 +641,8 @@ class ChessGuiTkinter(QMainWindow):
             event.ignore()
 
 def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiprocessing.Queue,
-                          initial_elo: int, player_is_white_gui: bool):
-    print(f"CONSOLE (chess_board_process): >>> ЗАПУСК ПРОЦЕССА GUI. ELO: {initial_elo}, Игрок GUI белый: {player_is_white_gui}")
+                          initial_elo: int, player_is_white_gui: bool, is_auto: bool = False, is_cheat: bool = False):
+    print(f"CONSOLE (chess_board_process): >>> ЗАПУСК. ELO: {initial_elo}, Белый: {player_is_white_gui}, auto={is_auto}, cheat={is_cheat}")
     
     app_instance_ref = {"instance": None} 
     logged_command_q_none_warning_for_this_run = False
@@ -563,7 +692,9 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             state_q=state_q,
             status_update_cb_gui=_proxy_update_status,
             board_update_cb_gui=_proxy_update_board,
-            game_over_cb_gui=_proxy_game_over
+            game_over_cb_gui=_proxy_game_over,
+            is_auto=is_auto,
+            is_cheat=is_cheat
         )
         print(f"CONSOLE (chess_board_process): [STAGE 1] ChessGameController создан.")
 
@@ -579,6 +710,11 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         app = ChessGuiTkinter(game_controller)
         app_instance_ref["instance"] = app
         app.show()
+        try:
+            from utils.win_titlebar import apply_dark_titlebar
+            apply_dark_titlebar(app, True)
+        except Exception:
+            pass
         print(f"CONSOLE (chess_board_process): [STAGE 3] ChessGuiTkinter (окно) СОЗДАНО.")
 
         print(f"CONSOLE (chess_board_process): [STAGE 4] Вызов game_controller.new_game()...")
@@ -588,6 +724,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         timer = QTimer()
         
         def process_queues():
+            nonlocal logged_command_q_none_warning_for_this_run
             if app_instance_ref["instance"] and app_instance_ref["instance"].is_closing:
                 _send_gui_closed("user_closed")
                 timer.stop()
@@ -625,7 +762,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             except queue.Empty:
                 pass 
             except Exception as e_loop_command:
-                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки команд: {e_loop_command}")
+                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки команд: {format_exception(e_loop_command)}")
                 traceback.print_exc() 
 
             try:
@@ -642,7 +779,7 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
             except queue.Empty:
                 pass
             except Exception as e_gui_event_loop:
-                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки GUI событий: {e_gui_event_loop}")
+                print(f"CONSOLE (chess_board_process): [LOOP] Ошибка в цикле обработки GUI событий: {format_exception(e_gui_event_loop)}")
                 traceback.print_exc()
 
         timer.timeout.connect(process_queues)
@@ -653,13 +790,13 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         print(f"CONSOLE (chess_board_process): [STAGE 5] <<< ВЫХОД ИЗ ГЛАВНОГО ЦИКЛА GUI.")
 
     except Exception as e_main_run_try:
-        print(f"CONSOLE (chess_board_process): КРИТИЧЕСКАЯ ОШИБКА В ОСНОВНОМ TRY-EXCEPT ПРОЦЕССА GUI: {e_main_run_try}")
+        print(f"CONSOLE (chess_board_process): КРИТИЧЕСКАЯ ОШИБКА В ОСНОВНОМ TRY-EXCEPT ПРОЦЕССА GUI: {format_exception(e_main_run_try)}")
         traceback.print_exc() 
         if state_q: 
             try:
-                state_q.put({"error": f"Critical unhandled error in GUI process: {str(e_main_run_try)}", "critical_process_failure": True})
+                state_q.put({"error": f"Critical unhandled error in GUI process: {format_exception(e_main_run_try)}", "critical_process_failure": True})
             except Exception as e_queue_put:
-                print(f"CONSOLE (chess_board_process): Не удалось отправить критическую ошибку (основной try) в state_q: {e_queue_put}")
+                print(f"CONSOLE (chess_board_process): Не удалось отправить критическую ошибку (основной try) в state_q: {format_exception(e_queue_put)}")
         _send_gui_closed("crash")
     finally:
         print(f"CONSOLE (chess_board_process): [FINALLY] Блок finally процесса GUI.")
@@ -675,14 +812,14 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
                  app.close()
                  print(f"CONSOLE (chess_board_process): [FINALLY] app.close() вызван.")
             except Exception as e_destroy_generic_app:
-                print(f"CONSOLE (chess_board_process): [FINALLY] Непредвиденная ошибка при app.close(): {e_destroy_generic_app}")
+                print(f"CONSOLE (chess_board_process): [FINALLY] Непредвиденная ошибка при app.close(): {format_exception(e_destroy_generic_app)}")
                 traceback.print_exc()
         elif app_instance_ref.get("instance"): 
             print(f"CONSOLE (chess_board_process): [FINALLY] app не был присвоен в try, но app_instance_ref['instance'] существует. Попытка close() для instance.")
             try:
                  app_instance_ref["instance"].close()
             except Exception as e_destroy_instance_alt:
-                 print(f"CONSOLE (chess_board_process): [FINALLY] Ошибка при app_instance_ref['instance'].close(): {e_destroy_instance_alt}")
+                 print(f"CONSOLE (chess_board_process): [FINALLY] Ошибка при app_instance_ref['instance'].close(): {format_exception(e_destroy_instance_alt)}")
                  traceback.print_exc()
 
         print(f"CONSOLE (chess_board_process): >>> ПРОЦЕСС GUI ЗАВЕРШЕН.")
@@ -705,7 +842,7 @@ if __name__ == '__main__':
                     break
             except queue.Empty: pass
             except Exception as e_monitor: 
-                print(f"[MAIN TEST] Ошибка чтения из state_queue: {e_monitor}")
+                print(f"[MAIN TEST] Ошибка чтения из state_queue: {format_exception(e_monitor)}")
                 traceback.print_exc()
                 break
             time.sleep(0.1)

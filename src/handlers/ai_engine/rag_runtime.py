@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import gc
 import os
@@ -31,23 +32,17 @@ def _checkpoints_dir() -> str:
 
 
 def shutdown_rag_runtime() -> None:
-    try:
-        from handlers.embedding_handler import EmbeddingModelHandler
-
-        EmbeddingModelHandler._unload_shared()
-    except Exception:
-        pass
+    embedding_module = sys.modules.get("handlers.embedding_handler")
+    embedding_handler = getattr(embedding_module, "EmbeddingModelHandler", None)
+    if embedding_handler is not None:
+        embedding_handler._unload_shared()
 
     WorkerCrossEncoderReranker.clear_all()
 
     gc.collect()
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 class WorkerCrossEncoderReranker:
@@ -105,13 +100,10 @@ class WorkerCrossEncoderReranker:
                 return False
 
             try:
-                from handlers.embedding_handler import _ensure_torch_and_transformers
                 from managers.rag.install_spec import TARGET_RERANKER, ensure_runtime_ready
                 from managers.settings_manager import SettingsManager
 
                 ensure_runtime_ready(TARGET_RERANKER)
-                _ensure_torch_and_transformers()
-
                 import torch
 
                 cache_dir = _checkpoints_dir()
@@ -210,7 +202,7 @@ class WorkerCrossEncoderReranker:
                 return True
             except Exception as exc:
                 logger.warning(
-                    f"[RAG][CrossEncoder] Failed to load '{self.model_name}': {exc} "
+                    f"[RAG][CrossEncoder] Failed to load '{self.model_name}': {format_exception(exc)} "
                     "(cross-encoder disabled)"
                 )
                 self._failed = True

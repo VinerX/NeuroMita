@@ -1,11 +1,31 @@
 import logging
 from .character import Character 
+from domain.dialogue_identity import DialogueActorKind
 from typing import Dict, Any, Optional
 import re
 
 logger = logging.getLogger("NeuroMita.Characters")
 
-class CrazyMita(Character):
+class SecretExposedCharacter(Character):
+    def process_response_nlp_commands(self, response: str, save_as_missed=False) -> str:
+        response = super().process_response_nlp_commands(response, save_as_missed)
+
+        if "<Secret!>" in response:
+            if not self.get_variable("secretExposedFirst", False):
+                self.set_variable("secretExposed", True)
+                logger.info(f"[{self.char_id}] Secret revealed via <Secret!> tag.")
+            response = response.replace("<Secret!>", "").strip()
+        return response
+
+    def process_structured_response(self, structured, save_as_missed=False):
+        result = super().process_structured_response(structured, save_as_missed)
+        if structured.secret_exposed and not self.get_variable("secretExposedFirst", False):
+            self.set_variable("secretExposed", True)
+            logger.info(f"[{self.char_id}] Secret revealed via secret_exposed field in JSON.")
+        return result
+
+
+class CrazyMita(SecretExposedCharacter):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 50.0,
         "boredom": 20.0,
@@ -24,23 +44,6 @@ class CrazyMita(Character):
         )
         
         logger.info(f"Mita '{self.char_id}' fully initialized with overrides and chess attributes.")
-
-    def process_response_nlp_commands(self, response: str, save_as_missed=False) -> str:
-        response = super().process_response_nlp_commands(response, save_as_missed)
-
-        if "<Secret!>" in response:
-            if not self.get_variable("secretExposedFirst", False):
-                self.set_variable("secretExposed", True)
-                logger.info(f"[{self.char_id}] Secret revealed via <Secret!> tag.")
-            response = response.replace("<Secret!>", "").strip()
-        return response
-
-    def process_structured_response(self, structured, save_as_missed=False):
-        result = super().process_structured_response(structured, save_as_missed)
-        if structured.secret_exposed and not self.get_variable("secretExposedFirst", False):
-            self.set_variable("secretExposed", True)
-            logger.info(f"[{self.char_id}] Secret revealed via secret_exposed field in JSON.")
-        return result
 
 class KindMita(Character):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
@@ -79,7 +82,7 @@ class ShortHairMita(Character):
         )
         
 
-class GhostMita(Character):
+class GhostMita(SecretExposedCharacter):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 30.0,
         "boredom": 10.0,
@@ -132,7 +135,7 @@ class MilaMita(Character):
         )
         
 
-class CreepyMita(Character):
+class CreepyMita(SecretExposedCharacter):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 40.0,
         "stress": 30.0,
@@ -148,14 +151,6 @@ class CreepyMita(Character):
             miku_tts_name="/set_person GhostMita",
             silero_turn_off_video=True
         )
-
-    def process_structured_response(self, structured, save_as_missed=False):
-        result = super().process_structured_response(structured, save_as_missed)
-        if structured.secret_exposed and not self.get_variable("secretExposedFirst", False):
-            self.set_variable("secretExposed", True)
-            logger.info(f"[{self.char_id}] Secret revealed via secret_exposed field in JSON.")
-        return result
-
 
 class SleepyMita(Character):
     DEFAULT_OVERRIDES: Dict[str, Any] = {
@@ -211,6 +206,7 @@ class SleepyMita(Character):
         
 
 class GameMaster(Character):
+    dialogue_actor_kind = DialogueActorKind.GAME_MASTER
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 100.0,
         "boredom": 0.0,

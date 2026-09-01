@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+
+from controllers.gui.news_controller import (
+    NewsReleasesStore,
+    _build_release_preview,
+    build_release_news_items,
+    get_news_releases,
+)
+from controllers.gui import news_controller
+from controllers.gui.news_page_view_model import NewsPageViewModel
+from services.update_contour import target_for_contour
+from services.release_catalog import build_release_manifest, manifest_download_url
+from ui.pages.news_page import NewsPage
+
+
+def _app() -> QApplication:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app
+
+
+def test_build_release_preview_keeps_summary_short():
+    summary, has_details = _build_release_preview(
+        """
+        ## Changes
+        - Fixed startup freeze
+        - Added better loading state
+        - Tweaked release card rendering
+        Installation: unchanged
+        """,
+        limit=280,
+    )
+
+    assert "Fixed startup freeze" in summary
+    assert "Added better loading state" in summary
+    assert has_details is True
+    assert summary.endswith("…")
+
+
+def test_build_release_news_items_uses_prepared_cache():
+    store = NewsReleasesStore()
+    store.cards = [
+        {
+            "name": "v1.2.3",
+            "tag_name": "v1.2.3",
+            "summary": "Fast release summary",
+            "published": "2026-07-04",
+            "tag": "RELEASE",
+            "url": "https://example.com/release",
+        }
+    ]
+
+    items = build_release_news_items(store, limit=None)
+
+    assert len(items) == 1
+    assert items[0].title == "v1.2.3"
+    assert items[0].summary == "Fast release summary"
+    assert items[0].full_text == ""
+
+
+def test_build_release_news_items_keeps_full_text_for_expandable_card():
+    store = NewsReleasesStore()
+    store.cards = [
+        {
+            "name": "v1.2.3",
+            "tag_name": "v1.2.3",
+            "summary": "Short preview …",
+            "full_text": "Short preview\n\nFull release notes",
+            "published": "2026-07-04",
+            "tag": "RELEASE",
+            "url": "https://example.com/release",
+        }
+    ]
+
+    items = build_release_news_items(store, limit=None)
+
+    assert items[0].full_text == "Short preview\n\nFull release notes"
+
+
+def test_news_store_fetches_a_distinct_release_feed_for_each_contour(monkeypatch):
+    requested_urls: list[str] = []
+
+    class Client:
+        def get(self, url, **_kwargs):
+            requested_urls.append(url)
+            repository = next(
+                repo for repo in ("Atm4x/NeuroMita", "VinerX/NeuroMita")
+                if f"/{repo}/" in url
+            )
+            payload = build_release_manifest(repository, [])
+            return SimpleNamespace(status_code=200, json=lambda: payload)
+
+    monkeypatch.setattr(news_controller, "_HTTP_CLIENT", Client())
+    store = NewsReleasesStore()
+
+    for contour in ("test", "release"):
+        store.set_repository(target_for_contour(contour).repo)
+        assert get_news_releases(store) == []
+
+    assert requested_urls == [
+        manifest_download_url("Atm4x/NeuroMita"),
+        manifest_download_url("VinerX/NeuroMita"),
+    ]
+
+
+def test_news_page_shows_loading_message_while_background_fetch_runs(monkeypatch):
+    app = _app()
+    host = QWidget()
+
+    stub_news = SimpleNamespace(
+        repository="Atm4x/NeuroMita",
+        set_repository=lambda _repository: False,
+    )
+    settings = SimpleNamespace(get=lambda _key, default=None: default)
+    view_model_box = {}
+
+    def _make_view_model(_host, parent=None):
+        view_model = NewsPageViewModel(
+            host=_host,
+            news=stub_news,
+            settings=settings,
+            parent=parent,
+        )
+        # Фоновая загрузка «никогда не завершается» — страница обязана
+        # показывать состояние загрузки, а не пустую ленту.
+        monkeypatch.setattr(view_model, "run_coalesced", lambda *a, **k: True)
+        view_model_box["vm"] = view_model
+        return view_model
+
+    view_model = _make_view_model(host)
+    actions = SimpleNamespace(refresh_home_news=lambda: None)
+    page = NewsPage(host, view_model, actions)
+    app.processEvents()
+
+    assert view_model_box["vm"].state.loading is True
+    texts = [label.text() for label in page.findChildren(QLabel)]
+    assert any("Релизы ещё загружаются" in text for text in texts)

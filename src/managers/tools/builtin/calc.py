@@ -1,5 +1,7 @@
-﻿# src/managers/tools/builtin/calc.py
+from core.error_utils import format_exception
+# src/managers/tools/builtin/calc.py
 from typing import Any
+from core.safe_eval import SafeEvalError, safe_eval_arithmetic
 from managers.tools.base import Tool
 
 
@@ -19,7 +21,9 @@ class CalculatorTool(Tool):
 
     def run(self, expression: str, **_) -> Any:
         try:
-            result = eval(expression, {"__builtins__": {}})
+            result = safe_eval_arithmetic(expression)
             return str(result)
+        except SafeEvalError as e:
+            return f"Ошибка калькулятора: {format_exception(e)}"
         except Exception as e:
-            return f"Ошибка калькулятора: {e}"
+            return f"Ошибка калькулятора: {format_exception(e)}"

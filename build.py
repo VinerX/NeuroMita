@@ -1,9 +1,11 @@
-import pathlib
-import zipfile
 import os
+import json
+import pathlib
 import shutil
 import stat
+import subprocess
 import time
+import zipfile
 from pathlib import Path
 from typing import List, Tuple
 
@@ -38,21 +40,26 @@ for _k, _v in os.environ.items():
     if _k.startswith("BUILD_") or _k in ("NEUROMITA_BACKEND", "LAUNCH_PYTHON"):
         env[_k] = _v
 
+
 OUTPUT_DIR = Path(env.get("BUILD_OUTPUT_DIR", str(PROJECT_DIR / "build_output")))
 BUILD_MODE = env.get("BUILD_MODE", "full").lower()
+REBUILD_NATIVE_LAUNCHER = env.get("BUILD_REBUILD_LAUNCHER", "1") == "1"
+STRIP_EMBEDDED_UV = env.get("BUILD_STRIP_EMBEDDED_UV", "1") == "1"
+BUILD_IS_TEST = env.get("BUILD_IS_TEST", "1") == "1"
+UPDATE_CONTOUR = "test" if BUILD_IS_TEST else "release"
 
 # Фильтровать dot-папки (.cache, .git и т.п.) при копировании папок
 EXCLUDE_DOT_DIRS = env.get("BUILD_EXCLUDE_DOT_DIRS", "1") == "1"
 
 # Папки для full-режима: поддержка абсолютных путей
-_copy_dirs_raw = env.get("BUILD_COPY_DIRS", "Prompts")
+_copy_dirs_raw = env.get("BUILD_COPY_DIRS", "extra/Prompts")
 DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _copy_dirs_raw.split(",") if d.strip()
 ]
 
 # Папки для fast-режима
-_fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "Prompts")
+_fast_dirs_raw = env.get("BUILD_FAST_COPY_DIRS", "extra/Prompts")
 FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(d.strip(), PROJECT_DIR), OUTPUT_DIR / Path(d.strip()).name)
     for d in _fast_dirs_raw.split(",") if d.strip()
@@ -60,26 +67,84 @@ FAST_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
 
 ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
     (PROJECT_DIR / "assets" / "launcher_ui", OUTPUT_DIR / "assets" / "launcher_ui"),
+    (PROJECT_DIR / "assets" / "guide", OUTPUT_DIR / "assets" / "guide"),
+    (PROJECT_DIR / "docs" / "wiki", OUTPUT_DIR / "docs" / "wiki"),
 ]
 
-# Файлы: поддержка абсолютных путей
-_copy_files_raw = env.get("BUILD_COPY_FILES", "extra/init.py,extra/Icon.png")
+# Дополнительные файлы, нужные в рантайме в любом режиме сборки.
+_always_files_raw = env.get("BUILD_ALWAYS_COPY_FILES", "")
+ALWAYS_FILES_TO_COPY: List[Tuple[Path, Path]] = [
+    (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
+    for f in _always_files_raw.split(",") if f.strip()
+]
+
+# Файлы только для full-режима: поддержка абсолютных путей
+_copy_files_raw = env.get(
+    "BUILD_COPY_FILES",
+    "assets/launcher_ui/NM_Logo.ico,assets/launcher_ui/NM_Logo.png",
+)
 FILES_TO_COPY: List[Tuple[Path, Path]] = [
     (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _copy_files_raw.split(",") if f.strip()
 ]
 
-# Скрипты запуска/установки для копирования в корень билда
-_root_scripts_raw = env.get("BUILD_ROOT_SCRIPTS", "")
+# Launch and install scripts copied into the build root.
+# Launcher.exe delegates to run.bat and immediately releases its installed
+# image for auto-update (see scripts/launcher.c). All install/start behavior
+# remains in run.py, and both user entry points share the same batch contract.
+_root_scripts_raw = env.get(
+    "BUILD_ROOT_SCRIPTS",
+    "scripts/Launcher.exe,scripts/run.bat,scripts/run.py",
+)
 ROOT_SCRIPTS: List[Tuple[Path, Path]] = [
     (resolve_path(s.strip(), PROJECT_DIR), OUTPUT_DIR / Path(s.strip()).name)
     for s in _root_scripts_raw.split(",") if s.strip()
 ]
 
+
+def rebuild_native_launcher() -> None:
+    """Compile the native launcher before copying it into a full build."""
+    source = PROJECT_DIR / "scripts" / "launcher.c"
+    resource = PROJECT_DIR / "scripts" / "launcher.rc"
+    output = PROJECT_DIR / "scripts" / "Launcher.exe"
+    if not source.exists() or not resource.exists():
+        raise FileNotFoundError("Native launcher sources are missing.")
+
+    vswhere = Path(os.environ.get(
+        "VSWHERE_PATH",
+        r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+    ))
+    if not vswhere.exists():
+        raise RuntimeError("Visual Studio vswhere.exe was not found; cannot rebuild Launcher.exe.")
+
+    installation = subprocess.check_output(
+        [str(vswhere), "-latest", "-products", "*",
+         "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+         "-property", "installationPath"],
+        text=True,
+        encoding="utf-8",
+    ).strip()
+    if not installation:
+        raise RuntimeError("No Visual Studio C++ toolchain was found; cannot rebuild Launcher.exe.")
+
+    vcvars = Path(installation) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+    if not vcvars.exists():
+        raise RuntimeError(f"Visual Studio environment script is missing: {vcvars}")
+
+    print("\nRebuilding native Launcher.exe...")
+    resource_object = PROJECT_DIR / "scripts" / "launcher.res"
+    command = (
+        f'call "{vcvars}" && '
+        f'rc.exe /nologo /fo "{resource_object}" "{resource}" && '
+        f'cl.exe /nologo /W4 /O2 /utf-8 /Fe:"{output}" "{source}" '
+        f'"{resource_object}"'
+    )
+    subprocess.run(command, cwd=PROJECT_DIR, check=True, shell=True)
+
 # Части пути, исключаемые из pyz
 EXCLUDED_PARTS = {
     "include", "Prompts", "PromptsCatalogue", "ReadmeFiles",
-    "MitaAiC#", "__pycache__", "Testing",
+    "MitaAiC#", "archive", "__pycache__", "Testing",
 }
 
 
@@ -142,6 +207,21 @@ def clean_output_dir() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
 
+def write_distribution_metadata() -> Path:
+    """Write the update-contour marker consumed on a fresh installation."""
+    metadata_path = OUTPUT_DIR / "Settings" / "distribution.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema": 1,
+        "contour": UPDATE_CONTOUR,
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return metadata_path
+
+
 def _clear_readonly_and_retry(func, path, _exc):
     """onexc/onerror-обработчик: снимает read-only и повторяет операцию.
 
@@ -187,7 +267,7 @@ def make_copy_ignore():
                 ignored.append(name)
             elif EXCLUDE_CHECKPOINTS and name == "checkpoints":
                 ignored.append(name)
-            elif EXCLUDE_MANAGED_BACKENDS and dir_name == "lib":
+            elif EXCLUDE_MANAGED_BACKENDS and dir_name in ("lib", "libs"):
                 lower = name.lower()
                 if (
                     lower in MANAGED_BACKEND_NAMES
@@ -221,17 +301,112 @@ def copy_entries(entries: List[Tuple[Path, Path]]) -> None:
             print(f"Предупреждение: {src} не существует, пропускаю")
 
 
+def _remove_file_if_exists(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    path.unlink(missing_ok=True)
+    return True
+
+
+def _remove_tree_if_exists(path: Path) -> bool:
+    if not path.exists():
+        return False
+    _rmtree_robust(path)
+    return True
+
+
+def strip_embedded_uv_runtime() -> None:
+    """Drop uv artifacts from the copied embedded runtime.
+
+    Build output must not contain a half-installed uv state where Scripts/uv.exe
+    exists but the Python module/dist-info is missing. That combination makes the
+    runtime try to self-heal via pip and often fails on Windows with Access
+    Denied while uv.exe is locked. We either ship uv fully or not at all; for
+    release builds the safer default is to strip it and let pip handle installs.
+    """
+    py_root = OUTPUT_DIR / "libs" / "python"
+    if not py_root.exists():
+        print("embedded python не найден — пропускаю очистку uv runtime.")
+        return
+
+    removed: list[str] = []
+
+    scripts_dir = py_root / "Scripts"
+    for name in ("uv.exe", "uvx.exe", "uv", "uvx"):
+        path = scripts_dir / name
+        if _remove_file_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    site_packages = py_root / "Lib" / "site-packages"
+    exact_paths = [
+        site_packages / "uv",
+        site_packages / "uv.py",
+    ]
+    for path in exact_paths:
+        if path.is_dir() and _remove_tree_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+        elif path.is_file() and _remove_file_if_exists(path):
+            removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    if site_packages.exists():
+        for pattern in ("uv-*.dist-info", "uv-*.data"):
+            for path in sorted(site_packages.glob(pattern)):
+                if path.is_dir() and _remove_tree_if_exists(path):
+                    removed.append(str(path.relative_to(OUTPUT_DIR)))
+                elif path.is_file() and _remove_file_if_exists(path):
+                    removed.append(str(path.relative_to(OUTPUT_DIR)))
+
+    if removed:
+        print("Удалены uv-артефакты из embedded runtime:")
+        for item in removed:
+            print(f"  - {item}")
+    else:
+        print("uv-артефакты в embedded runtime не найдены.")
+
+
+def create_flat_zip_from_directory(source_dir: Path, archive_base: Path) -> Path:
+    """Create a zip archive whose root contains source_dir contents, not source_dir itself.
+
+    This matches launcher update expectations: extracting the archive over an
+    existing install should replace runtime files in-place instead of creating
+    an extra top-level folder such as `neuromita_ci_build/`.
+    """
+    archive_path = archive_base.parent / f"{archive_base.name}.zip"
+    if archive_path.exists():
+        archive_path.unlink()
+
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for path in sorted(source_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            arcname = path.relative_to(source_dir)
+            zf.write(path, arcname.as_posix())
+    return archive_path
+
+
 if __name__ == "__main__":
     print(f"Режим сборки        : {BUILD_MODE}")
     print(f"Выходная папка      : {OUTPUT_DIR}")
     print(f"Фильтр dot-папок    : {'вкл' if EXCLUDE_DOT_DIRS else 'выкл'}")
     print(f"Фильтр checkpoints  : {'вкл' if EXCLUDE_CHECKPOINTS else 'выкл'}")
     print(f"Фильтр backend Lib  : {'вкл' if EXCLUDE_MANAGED_BACKENDS else 'выкл'}")
+    print(f"Очистка embedded uv : {'вкл' if STRIP_EMBEDDED_UV else 'выкл'}")
     print(f"Очистка output      : {'вкл' if CLEAN_OUTPUT else 'выкл'}")
+    print(f"Контур обновлений   : {UPDATE_CONTOUR}")
 
     if CLEAN_OUTPUT:
         clean_output_dir()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+if BUILD_MODE in ("full", "fast"):
+    # Rebuilding the native launcher is optional and must not disable the rest
+    # of the build when the existing Launcher.exe is intentionally reused.
+    if REBUILD_NATIVE_LAUNCHER:
+        rebuild_native_launcher()
 
     pyz_filename = "NeuroMita.pyz"
     pyz_temp = PROJECT_DIR / pyz_filename
@@ -270,10 +445,18 @@ if __name__ == "__main__":
 
     print("\nКопирую обязательные launcher assets...")
     copy_entries(ALWAYS_DIRS_TO_COPY)
+    copy_entries(ALWAYS_FILES_TO_COPY)
 
     if ROOT_SCRIPTS:
         print("\nКопирую скрипты запуска...")
         copy_entries(ROOT_SCRIPTS)
+
+    metadata_path = write_distribution_metadata()
+    print(f"\nМетка контура обновлений: {metadata_path}")
+
+    if STRIP_EMBEDDED_UV:
+        print("\nОчищаю uv из embedded Python...")
+        strip_embedded_uv_runtime()
 
     if env.get("BUILD_ARCHIVE", "0") == "1":
         archive_path = env.get("BUILD_ARCHIVE_PATH")
@@ -283,7 +466,7 @@ if __name__ == "__main__":
             archive_base = Path(archive_path)
             archive_base.parent.mkdir(parents=True, exist_ok=True)
             print(f"\nУпаковываю {OUTPUT_DIR} -> {archive_base}.zip ...")
-            shutil.make_archive(str(archive_base), "zip", root_dir=OUTPUT_DIR.parent, base_dir=OUTPUT_DIR.name)
-            print(f"Архив готов: {archive_base}.zip")
+            archive_file = create_flat_zip_from_directory(OUTPUT_DIR, archive_base)
+            print(f"Архив готов: {archive_file}")
 
     print(f"\nСборка завершена! Результат: {OUTPUT_DIR}")

@@ -1,0 +1,2 @@
+
+Use only exact emotion and animation IDs from Common/react_actions.txt. A facial emotion alone is usually enough; body animation is optional.

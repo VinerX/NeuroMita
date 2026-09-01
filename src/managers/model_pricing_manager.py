@@ -1,16 +1,67 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
+from core.task_supervisor import task_supervisor
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-import requests
-
 from main_logger import logger
 from managers.api_preset_resolver import PresetSettings
 from handlers.llm_providers.base import LLMUsage
+from handlers.llm_providers.http_transport import LLMHttpClient
+from presets.provider_host_metadata import infer_provider_currency
+
+
+# Приблизительные окна контекста известных семейств моделей — по подстроке имени
+# (регистронезависимо, первый матч выигрывает, порядок: специфичное → общее).
+# Нужны как fallback только для метрики/бара «сколько занято окна», когда
+# провайдер не отдаёт context_length (напр. Google AI Studio Gemini — иначе бар
+# показывал бы дефолтные 32k вместо реального 1M). Это не влияет на обрезку
+# истории (у неё свой лимит) — только на отображаемую верхнюю границу.
+_KNOWN_MODEL_CONTEXT: tuple[tuple[str, int], ...] = (
+    ("gemini-1.5-pro", 2_000_000),
+    ("gemini-2.5-pro", 1_000_000),
+    ("gemini-2.5", 1_000_000),
+    ("gemini-2.0", 1_000_000),
+    ("gemini-1.5", 1_000_000),
+    ("gemini-exp", 1_000_000),
+    ("gemini", 1_000_000),           # общий дефолт: у актуальных Gemini окно ≥1M
+    ("gpt-4.1", 1_000_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4", 8_192),
+    ("gpt-3.5", 16_385),
+    ("o1", 200_000),
+    ("o3", 200_000),
+    ("o4", 200_000),
+    ("claude", 200_000),
+    ("deepseek", 128_000),
+    ("qwen", 128_000),
+    ("llama-3.1", 128_000),
+    ("llama-4", 1_000_000),
+    ("mistral", 32_000),
+    ("mixtral", 32_000),
+    ("gemma", 8_192),
+    ("grok", 131_072),
+)
+
+
+def known_model_context_length(model: str) -> Optional[int]:
+    """Известное окно контекста по имени модели, либо None.
+
+    Только приблизительная оценка для UI-метрики, когда провайдер не сообщает
+    точный context_length. Матчинг по подстроке имени модели.
+    """
+    name = str(model or "").strip().lower()
+    if not name:
+        return None
+    for needle, length in _KNOWN_MODEL_CONTEXT:
+        if needle in name:
+            return length
+    return None
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -20,6 +71,26 @@ def _to_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _normalize_openai_compat_pricing_units(pricing: Dict[str, Any], api_url: str) -> Dict[str, Any]:
+    if not pricing:
+        return {}
+
+    host = urlparse(str(api_url or "")).netloc.lower()
+    if "chutes.ai" not in host:
+        return pricing
+
+    normalized: Dict[str, Any] = {}
+    for key, value in pricing.items():
+        if isinstance(value, bool) or value in (None, ""):
+            normalized[key] = value
+            continue
+        try:
+            normalized[key] = float(value) / 1_000_000
+        except Exception:
+            normalized[key] = value
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -88,10 +159,17 @@ class ModelPricingManager:
     # transient network blip does not disable cost estimation for the whole hour.
     _NEGATIVE_TTL_SECONDS = 30
 
-    def __init__(self):
+    def __init__(self, http_transport: LLMHttpClient | None = None):
         self._cache: Dict[tuple[str, str], tuple[float, Optional[ModelPricingInfo]]] = {}
         self._lock = threading.Lock()
         self._inflight: set[tuple[str, str]] = set()
+        self._http_transport = http_transport or LLMHttpClient(service_id="model-pricing")
+        self._owns_http_transport = http_transport is None
+
+    def close(self) -> None:
+        task_supervisor().cancel_owner(self, timeout=2.0)
+        if self._owns_http_transport:
+            self._http_transport.close()
 
     def resolve_for_preset(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         """Return cached pricing immediately and refresh in the background.
@@ -132,14 +210,21 @@ class ModelPricingManager:
             try:
                 if protocol_id == "openrouter_default":
                     info = self._fetch_openrouter_model_info(preset)
+                elif protocol_id == "openai_compatible_default":
+                    info = self._fetch_openai_compatible_model_info(preset)
             except Exception as e:
-                logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {e}")
+                logger.debug(f"[ModelPricingManager] metadata fetch failed for {protocol_id}/{model}: {format_exception(e)}")
             finally:
                 with self._lock:
                     self._cache[cache_key] = (time.time(), info)
                     self._inflight.discard(cache_key)
 
-        threading.Thread(target=_run, name="pricing-fetch", daemon=True).start()
+        task_supervisor().start_thread(
+            self,
+            f"pricing-fetch-{protocol_id}-{model}",
+            _run,
+            replace=True,
+        )
 
     def _fetch_openrouter_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
         models_url = self._build_openrouter_models_url(preset.api_url)
@@ -150,27 +235,75 @@ class ModelPricingManager:
         if preset.api_key and "Authorization" not in headers:
             headers["Authorization"] = f"Bearer {preset.api_key}"
 
-        resp = requests.get(models_url, headers=headers, timeout=3)
-        if resp.status_code != 200:
-            logger.debug(f"[ModelPricingManager] OpenRouter models HTTP {resp.status_code}")
+        resp = self._http_transport.get(models_url, headers=headers, timeout=3)
+        try:
+            if resp.status_code != 200:
+                logger.debug(f"[ModelPricingManager] OpenRouter models HTTP {resp.status_code}")
+                return None
+
+            return self._extract_pricing_info_from_models_payload(
+                resp.json(),
+                wanted_model=str(preset.api_model or ""),
+                api_url=str(preset.api_url or ""),
+                source="openrouter_models_api",
+            )
+        finally:
+            resp.close()
+
+    def _fetch_openai_compatible_model_info(self, preset: PresetSettings) -> Optional[ModelPricingInfo]:
+        models_url = self._build_models_url(preset.api_url)
+        if not models_url:
             return None
 
-        data = resp.json()
-        models = data.get("data") if isinstance(data, dict) else None
+        headers = dict(getattr(preset, "headers", {}) or {})
+        if preset.api_key and "Authorization" not in headers:
+            headers["Authorization"] = f"Bearer {preset.api_key}"
+
+        resp = self._http_transport.get(models_url, headers=headers, timeout=3)
+        try:
+            if resp.status_code != 200:
+                logger.debug(f"[ModelPricingManager] generic models HTTP {resp.status_code} for {models_url}")
+                return None
+
+            return self._extract_pricing_info_from_models_payload(
+                resp.json(),
+                wanted_model=str(preset.api_model or ""),
+                api_url=str(preset.api_url or ""),
+                source="openai_compatible_models_api",
+            )
+        finally:
+            resp.close()
+
+    def _extract_pricing_info_from_models_payload(
+        self,
+        payload: Any,
+        *,
+        wanted_model: str,
+        api_url: str = "",
+        source: str,
+    ) -> Optional[ModelPricingInfo]:
+        models = None
+        if isinstance(payload, dict):
+            if isinstance(payload.get("data"), list):
+                models = payload.get("data")
+            elif isinstance(payload.get("models"), list):
+                models = payload.get("models")
         if not isinstance(models, list):
             return None
 
-        wanted = str(preset.api_model or "")
-        entry = next((m for m in models if isinstance(m, dict) and str(m.get("id") or "") == wanted), None)
+        entry = next((m for m in models if isinstance(m, dict) and str(m.get("id") or "") == wanted_model), None)
         if not isinstance(entry, dict):
             return None
 
-        pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
         top_provider = entry.get("top_provider") if isinstance(entry.get("top_provider"), dict) else {}
+        pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
+        if not pricing:
+            pricing = self._build_flat_pricing(entry, top_provider)
+        pricing = _normalize_openai_compat_pricing_units(pricing, api_url)
 
         return ModelPricingInfo(
-            model=wanted,
-            currency="USD",
+            model=wanted_model,
+            currency=self._resolve_currency(entry, api_url),
             context_length=int(entry.get("context_length")) if entry.get("context_length") not in (None, "") else None,
             max_completion_tokens=int(top_provider.get("max_completion_tokens")) if top_provider.get("max_completion_tokens") not in (None, "") else None,
             prompt_cost_per_token=_to_float(pricing.get("prompt")),
@@ -179,14 +312,48 @@ class ModelPricingManager:
             internal_reasoning_cost_per_token=_to_float(pricing.get("internal_reasoning")),
             cache_read_cost_per_token=_to_float(pricing.get("input_cache_read")),
             cache_write_cost_per_token=_to_float(pricing.get("input_cache_write")),
-            source="openrouter_models_api",
+            source=source,
         )
 
+    @staticmethod
+    def _resolve_currency(entry: dict, api_url: str) -> str:
+        return infer_provider_currency(api_url, str(entry.get("currency") or "")) or "USD"
+
+    @staticmethod
+    def _build_flat_pricing(entry: dict, top_provider: dict) -> Dict[str, Any]:
+        alias_map = {
+            "prompt": ("prompt", "input", "input_price", "input_cost", "prompt_price", "prompt_cost", "input_token_price"),
+            "completion": ("completion", "output", "output_price", "output_cost", "completion_price", "completion_cost", "output_token_price"),
+            "request": ("request", "request_price", "request_cost"),
+            "internal_reasoning": ("internal_reasoning", "reasoning", "reasoning_price", "reasoning_cost"),
+            "input_cache_read": ("input_cache_read", "cache_read", "cache_read_price", "cache_read_cost", "cache_read_token_price"),
+            "input_cache_write": ("input_cache_write", "cache_write", "cache_write_price", "cache_write_cost", "cache_write_token_price"),
+        }
+        extracted: Dict[str, Any] = {}
+        for target_key, aliases in alias_map.items():
+            for source in (entry, top_provider):
+                if not isinstance(source, dict):
+                    continue
+                for alias in aliases:
+                    if alias in source and source.get(alias) not in (None, ""):
+                        extracted[target_key] = source.get(alias)
+                        break
+                if target_key in extracted:
+                    break
+        return extracted
+
     def _build_openrouter_models_url(self, api_url: str) -> Optional[str]:
+        return self._build_models_url(api_url)
+
+    def _build_models_url(self, api_url: str) -> Optional[str]:
         try:
             parsed = urlparse(str(api_url or ""))
             if not parsed.scheme or not parsed.netloc:
                 return None
-            return f"{parsed.scheme}://{parsed.netloc}/api/v1/models"
+            path = str(parsed.path or "")
+            if "/v1/" in path:
+                prefix = path.split("/v1/", 1)[0]
+                return f"{parsed.scheme}://{parsed.netloc}{prefix}/v1/models"
+            return f"{parsed.scheme}://{parsed.netloc}/v1/models"
         except Exception:
             return None

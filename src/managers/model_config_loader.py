@@ -1,5 +1,6 @@
-﻿# src/managers/model_config_loader.py
+# src/managers/model_config_loader.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -7,22 +8,22 @@ from typing import Any, Optional
 from main_logger import logger
 
 
-def _to_int(v: Any, default: int) -> int:
+def _to_int(v: Any, default: Optional[int]) -> Optional[int]:
     try:
         if v == "" or v is None:
-            return int(default)
+            return int(default) if default is not None else None
         return int(v)
     except Exception:
-        return int(default)
+        return int(default) if default is not None else None
 
 
-def _to_float(v: Any, default: float) -> float:
+def _to_float(v: Any, default: Optional[float]) -> Optional[float]:
     try:
         if v == "" or v is None:
-            return float(default)
+            return float(default) if default is not None else None
         return float(v)
     except Exception:
-        return float(default)
+        return float(default) if default is not None else None
 
 
 def _to_bool(v: Any, default: bool) -> bool:
@@ -38,23 +39,50 @@ def _to_bool(v: Any, default: bool) -> bool:
         return bool(default)
 
 
+def _to_optional_bool(v: Any, default: Optional[bool] = None) -> Optional[bool]:
+    """Convert a tri-state setting to None/False/True."""
+    if v is None:
+        return default
+
+    if isinstance(v, str):
+        value = v.strip().lower()
+        if value in ("", "none", "null", "undefined", "auto", "default", "не определять", "do not specify"):
+            return default
+        if value in ("false", "0", "no", "off", "нет"):
+            return False
+        if value in ("true", "1", "yes", "on", "да"):
+            return True
+        return default
+
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
+
+
 @dataclass
 class ModelRuntimeConfig:
     # generation params
-    max_response_tokens: int = 3000
-    temperature: float = 0.5
+    max_response_tokens: int = 2500
+    temperature: Optional[float] = None
     presence_penalty: float = 0.0
     frequency_penalty: float = 0.0
-    top_k: int = 0
-    top_p: float = 1.0
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
     thinking_budget: float = 0.0
     log_probability: float = 0.0
     enable_thinking: bool | None = None  # None = не передавать параметр
+    reasoning_effort: str | None = None  # low/medium/high, только для reasoning_effort-транспорта
     gemini_thinking_budget: int | None = None  # -1=dynamic, 0=off, >0=token limit
 
     # costs/limits
-    token_cost_input: float = 0.0432
-    token_cost_output: float = 0.1728
+    # 0 = «цена неизвестна» (напр. бесплатный Google AI Studio). Раньше дефолт
+    # был ненулевым, и приложение выдумывало стоимость в рублях даже на
+    # бесплатном лимите. Цену за 1000 токенов задаёт сам пользователь в
+    # настройках — тогда и только тогда показываем ручную оценку.
+    token_cost_input: float = 0.0
+    token_cost_output: float = 0.0
     max_model_tokens: int = 128000
 
     # context/history
@@ -76,7 +104,7 @@ class ModelRuntimeConfig:
 
     def apply_setting(self, key: str, value: Any) -> None:
         """
-        Централизованно обновляем runtime-конфиг при Events.Core.SETTING_CHANGED.
+        Централизованно обновляем runtime-конфиг из SettingsRegistry.
         Это уменьшает ModelController и не раздувает ChatModel.
         """
         try:
@@ -97,7 +125,9 @@ class ModelRuntimeConfig:
             elif key == "MODEL_THOUGHT_PROCESS" or key == "MODEL_THINKING_BUDGET":
                 self.thinking_budget = _to_float(value, self.thinking_budget)
             elif key == "ENABLE_THINKING":
-                self.enable_thinking = _to_bool(value, True) if value != "" and value is not None else None
+                self.enable_thinking = _to_optional_bool(value)
+            elif key == "MODEL_REASONING_EFFORT":
+                self.reasoning_effort = str(value).strip().lower() or None if value else None
             elif key == "GEMINI_THINKING_BUDGET":
                 self.gemini_thinking_budget = _to_int(value, 8192) if value != "" and value is not None else None
 
@@ -127,7 +157,7 @@ class ModelRuntimeConfig:
                 self.max_model_tokens = _to_int(value, self.max_model_tokens)
 
         except Exception as e:
-            logger.warning(f"[ModelRuntimeConfig] Failed to apply setting {key}={value}: {e}")
+            logger.warning(f"[ModelRuntimeConfig] Failed to apply setting {key}={value}: {format_exception(e)}")
 
 
 class ModelConfigLoader:
@@ -144,19 +174,20 @@ class ModelConfigLoader:
     def load(self) -> ModelRuntimeConfig:
         s = self.settings
         cfg = ModelRuntimeConfig(
-            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS", 3000), 3000),
-            temperature=_to_float(s.get("MODEL_TEMPERATURE", 0.5), 0.5),
+            max_response_tokens=_to_int(s.get("MODEL_MAX_RESPONSE_TOKENS"), 2500) or 2500,
+            temperature=_to_float(s.get("MODEL_TEMPERATURE"), None),
             presence_penalty=_to_float(s.get("MODEL_PRESENCE_PENALTY", 0.0), 0.0),
             frequency_penalty=_to_float(s.get("MODEL_FREQUENCY_PENALTY", 0.0), 0.0),
-            top_k=_to_int(s.get("MODEL_TOP_K", 0), 0),
-            top_p=_to_float(s.get("MODEL_TOP_P", 1.0), 1.0),
+            top_k=_to_int(s.get("MODEL_TOP_K"), None),
+            top_p=_to_float(s.get("MODEL_TOP_P"), None),
             thinking_budget=_to_float(s.get("MODEL_THINKING_BUDGET", 0.0), 0.0),
             log_probability=_to_float(s.get("MODEL_LOG_PROBABILITY", 0.0), 0.0),
-            enable_thinking=_to_bool(s.get("ENABLE_THINKING"), True) if s.get("ENABLE_THINKING") is not None else None,
+            enable_thinking=_to_optional_bool(s.get("ENABLE_THINKING")),
+            reasoning_effort=(str(s.get("MODEL_REASONING_EFFORT")).strip().lower() or None) if s.get("MODEL_REASONING_EFFORT") else None,
             gemini_thinking_budget=_to_int(s.get("GEMINI_THINKING_BUDGET", 8192), 8192) if s.get("GEMINI_THINKING_BUDGET") is not None else None,
 
-            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0432), 0.0432),
-            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.1728), 0.1728),
+            token_cost_input=_to_float(s.get("TOKEN_COST_INPUT", 0.0), 0.0),
+            token_cost_output=_to_float(s.get("TOKEN_COST_OUTPUT", 0.0), 0.0),
             max_model_tokens=_to_int(s.get("MAX_MODEL_TOKENS", 128000), 128000),
 
             memory_limit=_to_int(s.get("MODEL_MESSAGE_LIMIT", 40), 40),
@@ -204,7 +235,7 @@ class ModelConfigLoader:
                     forced.add(key)
                     applied.append(f"{key}={new_val}")
                 except Exception as e:
-                    logger.warning(f"[ModelConfigLoader] Failed to apply preset override {key}={spec['value']}: {e}")
+                    logger.warning(f"[ModelConfigLoader] Failed to apply preset override {key}={spec['value']}: {format_exception(e)}")
 
         # enable_thinking: boolean or None (None = don't send the param)
         et_spec = overrides.get("enable_thinking") or {}
@@ -214,6 +245,15 @@ class ModelConfigLoader:
             forced.add("enable_thinking")
             applied.append(f"enable_thinking={cfg.enable_thinking}")
 
+        # reasoning_effort: строка low/medium/high, пустая = не переопределять
+        re_spec = overrides.get("reasoning_effort") or {}
+        if re_spec.get("enabled"):
+            val = str(re_spec.get("value") or "").strip().lower()
+            if val:
+                cfg.reasoning_effort = val
+                forced.add("reasoning_effort")
+                applied.append(f"reasoning_effort={val}")
+
         if applied:
             preset_name = getattr(preset_settings, "preset_name", "?")
             logger.info(f"[ModelConfigLoader] Preset '{preset_name}' overrides applied: {', '.join(applied)}")
@@ -221,7 +261,8 @@ class ModelConfigLoader:
                 f"[ModelConfigLoader] Effective config — temperature={cfg.temperature}, "
                 f"max_response_tokens={cfg.max_response_tokens}, top_p={cfg.top_p}, "
                 f"top_k={cfg.top_k}, presence_penalty={cfg.presence_penalty}, "
-                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}"
+                f"frequency_penalty={cfg.frequency_penalty}, enable_thinking={cfg.enable_thinking}, "
+                f"reasoning_effort={cfg.reasoning_effort}"
             )
 
         cfg.preset_forced_params = frozenset(forced)

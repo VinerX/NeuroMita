@@ -570,11 +570,17 @@ class RagTesterService:
             except Exception:
                 pass
 
-        # Форсируем загрузку embedding-модели, чтобы fallback заработал
+        # Standalone-тестер не поднимает отдельный engine-процесс, поэтому
+        # LocalEmbeddingProvider -> rag_client -> AIEngineService падал бы с
+        # "AI engine not available". Регистрируем синхронный in-process движок:
+        # эмбеддинги/реранк считаются прямо в текущем процессе (Venv с torch),
+        # тем же кодом, что и worker.
         try:
-            RAGManager._get_fallback_handler()
-        except Exception:
-            pass
+            from handlers.ai_engine.inprocess_engine import register_inprocess_engine
+            register_inprocess_engine()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"InProcessAIEngine registration failed: {e}")
 
     # -------------------------
     # Scenario file helpers

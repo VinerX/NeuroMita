@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils import _
+from localization.live import register_if_tr
 
 from ui.widgets.launcher_shell_theme import apply_launcher_shell_theme
 
@@ -54,7 +55,9 @@ class NewsItem:
     title: str
     summary: str
     tag: str = "Update"
+    item_id: str = ""
     timestamp: str = ""
+    full_text: str = ""
     action: DashboardAction | None = None
 
 
@@ -134,11 +137,84 @@ def create_news_page(
     root, layout = create_shell_page_container()
     layout.addWidget(_create_hero_card("NEWS", page_title, page_subtitle, header_actions))
 
-    for item in items:
-        layout.addWidget(_create_news_card(item))
+    _append_release_feed(layout, list(items))
 
     layout.addStretch(1)
     return root
+
+
+def _create_section_block(header_text: str, items: list[NewsItem]) -> QWidget:
+    block = QWidget()
+    block.setObjectName("LauncherShellPage")
+    block_layout = QVBoxLayout(block)
+    block_layout.setContentsMargins(2, 6, 2, 0)
+    block_layout.setSpacing(12)
+
+    header = QLabel(header_text)
+    register_if_tr(header, header_text)
+    header.setObjectName("LauncherShellSectionHeader")
+    block_layout.addWidget(header)
+
+    for item in items:
+        block_layout.addWidget(_create_news_card(item))
+
+    return block
+
+
+def _append_release_feed(layout: QVBoxLayout, items: list[NewsItem]) -> None:
+    """Делит ленту на секции PRE-RELEASES / RELEASES с заголовками и добавляет
+    фильтр-табы (Все / Релизы / Пререлизы). Прочие записи (offline/news) идут
+    отдельной секцией и показываются только в режиме «Все»."""
+    pre_items = [it for it in items if _news_item_kind(it) == "pre"]
+    rel_items = [it for it in items if _news_item_kind(it) == "release"]
+    other_items = [it for it in items if _news_item_kind(it) == "other"]
+
+    # Секции в порядке мокапа: сначала пререлизы, затем релизы, затем прочее.
+    sections: list[tuple[str, QWidget]] = []
+    if pre_items:
+        sections.append(("pre", _create_section_block(_("ПРЕРЕЛИЗЫ", "PRE-RELEASES"), pre_items)))
+    if rel_items:
+        sections.append(("release", _create_section_block(_("РЕЛИЗЫ", "RELEASES"), rel_items)))
+    if other_items:
+        sections.append(("other", _create_section_block(_("ПРОЧЕЕ", "OTHER"), other_items)))
+
+    # Фильтр-табы показываем только когда есть что фильтровать (оба типа релизов).
+    if pre_items and rel_items:
+        tab_row = QHBoxLayout()
+        tab_row.setContentsMargins(2, 4, 2, 0)
+        tab_row.setSpacing(8)
+
+        tabs: list[tuple[QPushButton, str]] = []
+
+        def _apply_filter(mode: str) -> None:
+            for kind, widget in sections:
+                # «Все» показывает всё; конкретный фильтр — только свою секцию
+                # (секция «Прочее» видна лишь в режиме «Все»).
+                widget.setVisible((mode == "all") or (kind == mode))
+            for button, button_mode in tabs:
+                button.setProperty("active", button_mode == mode)
+                # перерисовать стиль под новое значение свойства
+                button.style().unpolish(button)
+                button.style().polish(button)
+
+        for label, mode in (
+            (_("Все", "All"), "all"),
+            (_("Релизы", "Releases"), "release"),
+            (_("Пререлизы", "Pre-releases"), "pre"),
+        ):
+            btn = QPushButton(label)
+            register_if_tr(btn, label)
+            btn.setObjectName("LauncherShellFilterTab")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setProperty("active", mode == "all")
+            btn.clicked.connect(lambda _checked=False, m=mode: _apply_filter(m))
+            tabs.append((btn, mode))
+            tab_row.addWidget(btn)
+        tab_row.addStretch(1)
+        layout.addLayout(tab_row)
+
+    for _kind, widget in sections:
+        layout.addWidget(widget)
 
 
 def create_logs_page(
@@ -173,15 +249,18 @@ def _create_hero_card(
     layout.setSpacing(12)
 
     eyebrow = QLabel(eyebrow_text)
+    register_if_tr(eyebrow, eyebrow_text)  # как и title ниже — иначе live-смена не обновит
     eyebrow.setObjectName("LauncherShellEyebrow")
     layout.addWidget(eyebrow)
 
     title = QLabel(title_text)
+    register_if_tr(title, title_text)
     title.setObjectName("LauncherShellTitle")
     title.setWordWrap(True)
     layout.addWidget(title)
 
     subtitle = QLabel(subtitle_text)
+    register_if_tr(subtitle, subtitle_text)
     subtitle.setObjectName("LauncherShellSubtitle")
     subtitle.setWordWrap(True)
     layout.addWidget(subtitle)
@@ -281,26 +360,103 @@ def _create_card_grid(cards: list[DashboardCard]) -> QGridLayout:
     return grid
 
 
+def _news_item_kind(item: NewsItem) -> str:
+    """Категория для группировки/фильтрации: pre | release | other."""
+    tag = str(item.tag or "").strip().upper()
+    if tag == "PRE-RELEASE":
+        return "pre"
+    if tag == "RELEASE":
+        return "release"
+    return "other"
+
+
+def _badge_kind(item: NewsItem) -> str:
+    kind = _news_item_kind(item)
+    if kind == "pre":
+        return "pre"
+    if kind == "release":
+        return "release"
+    return "offline"
+
+
 def _create_news_card(item: NewsItem) -> QFrame:
     card = QFrame()
     card.setObjectName("LauncherShellNewsCard")
+    card.setProperty("newsKind", _news_item_kind(item))
+    if item.item_id:
+        card.setProperty("itemId", item.item_id)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(18, 18, 18, 18)
     layout.setSpacing(10)
 
-    meta = QLabel(" / ".join(part for part in (item.tag, item.timestamp) if part))
-    meta.setObjectName("LauncherShellEyebrow")
-    layout.addWidget(meta)
+    # ── Шапка карточки: цветной бейдж статуса + дата (семантически отдельный блок) ──
+    header = QHBoxLayout()
+    header.setContentsMargins(0, 0, 0, 0)
+    header.setSpacing(8)
+    if item.tag:
+        badge = QLabel(str(item.tag).upper())
+        badge.setObjectName("LauncherShellBadge")
+        badge.setProperty("kind", _badge_kind(item))
+        header.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+    if item.timestamp:
+        date = QLabel(item.timestamp)
+        date.setObjectName("LauncherShellMeta")
+        header.addWidget(date, 0, Qt.AlignmentFlag.AlignVCenter)
+    header.addStretch(1)
+    layout.addLayout(header)
 
     title = QLabel(item.title)
     title.setObjectName("LauncherShellSectionTitle")
     title.setWordWrap(True)
     layout.addWidget(title)
 
+    # Разделитель отделяет название от описания (визуальное деление блоков).
+    divider = QFrame()
+    divider.setObjectName("LauncherShellCardDivider")
+    layout.addWidget(divider)
+
     summary = QLabel(item.summary)
     summary.setObjectName("LauncherShellBody")
     summary.setWordWrap(True)
     layout.addWidget(summary)
+
+    full_text = str(item.full_text or "").strip()
+    if full_text and full_text != str(item.summary or "").strip():
+        details = QLabel(full_text)
+        details.setObjectName("LauncherShellBody")
+        details.setWordWrap(True)
+        details.setContentsMargins(12, 10, 12, 10)
+        details.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        details_scroll = QScrollArea()
+        details_scroll.setObjectName("LauncherShellDetailsScroll")
+        details_scroll.setWidgetResizable(True)
+        details_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        details_scroll.setMaximumHeight(240)
+        details_scroll.setWidget(details)
+        details_scroll.setVisible(False)
+        layout.addWidget(details_scroll)
+
+        def _toggle_details(_event=None, area=details_scroll, preview=summary):
+            if _event is not None and _event.button() != Qt.MouseButton.LeftButton:
+                _event.ignore()
+                return False
+            expanded = area.isHidden()
+            area.setVisible(expanded)
+            preview.setVisible(not expanded)
+            return expanded
+
+        hint = _(
+            "Щёлкните, чтобы прочитать полный changelog.",
+            "Click to read the full changelog.",
+        )
+        summary.setCursor(Qt.CursorShape.PointingHandCursor)
+        summary.setToolTip(hint)
+        details.setCursor(Qt.CursorShape.PointingHandCursor)
+        details.setToolTip(_("Щёлкните, чтобы свернуть changelog.", "Click to collapse the changelog."))
+        summary.mousePressEvent = _toggle_details
+        details.mousePressEvent = _toggle_details
 
     if item.action is not None:
         row = QHBoxLayout()
@@ -358,6 +514,7 @@ def _create_log_card(item: LogItem) -> QFrame:
 
 def _create_action_button(action: DashboardAction) -> QPushButton:
     button = QPushButton(action.label)
+    register_if_tr(button, action.label)
     button.setObjectName("LauncherShellActionButton" if action.accent else "LauncherShellGhostButton")
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setIcon(qta.icon(action.icon_name, color="#ffffff" if action.accent else "#ffd2ec"))

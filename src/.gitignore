@@ -152,6 +152,10 @@ cython_debug/
 
 # Project specific
 *.json
+# но JSON-каталоги локализации UI должны быть в git (и попадать в билд)
+!localization/locales/*.json
+# Domain world-context configs are Python runtime assets and must be tracked.
+!domain/world_contexts/*.json
 *.session
 *.session-journal
 *.wav

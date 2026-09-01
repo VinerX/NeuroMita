@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 # File: src/DSL/dsl_engine.py
 import logging
 from logging.handlers import RotatingFileHandler
@@ -5,8 +6,13 @@ import os
 import re
 import sys
 import traceback
-from typing import List, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, List, Any, Optional, Tuple
 from contextlib import contextmanager
+
+from core.safe_eval import SafeEvalError, UnknownNameError, safe_eval_expression
+
+if TYPE_CHECKING:
+    from character import Character
 
 LOG_DIR = "Logs"
 RED = "\033[91m"
@@ -22,6 +28,13 @@ BACKUP_COUNT = 3
 
 INSERT_PATTERN    = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 MANDATORY_INSERTS: set[str] = {"SYS_INFO"}
+# Prompt features declared at the top of a main template as `name=value` lines.
+# Boolean features (support_intents) resolve to True/False; valued features
+# (behavior_state=custom) keep their bareword value lower-cased.
+PROMPT_FEATURE_PATTERN = re.compile(
+    r"^\s*(support_intents|behavior_state)\s*=\s*([A-Za-z0-9_]+)\s*(?://.*)?$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 dsl_execution_logger = logging.getLogger("dsl_execution")
 dsl_script_logger = logging.getLogger("dsl_script")
@@ -63,7 +76,7 @@ if not dsl_execution_logger.handlers:
         dsl_script_logger.propagate = False
 
     except Exception as e:
-        print(f"{RED}CRITICAL: cannot init DSL loggers: {e}{RST}", file=sys.stderr)
+        print(f"{RED}CRITICAL: cannot init DSL loggers: {format_exception(e)}{RST}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
 
 class CharacterContextFilter(logging.Filter):
@@ -160,14 +173,30 @@ def _split_into_logical_lines(script_text: str) -> list[str]:
 
 class DslInterpreter:
     placeholder_pattern = re.compile(r"\[<([^>]+\.(?:script|txt|system))>\]")
+    # Top-level main-template include with an optional placement marker.
+    # `[<@ path>]` → volatile active context; `[<path>]` → static prompt.
+    _TEMPLATE_INCLUDE_RE = re.compile(r"\[<\s*(@)?\s*([^>@]+\.(?:script|txt|system))\s*>\]")
     _TXT_VAR_RE = re.compile(r"\[\{([A-Za-z_][A-Za-z0-9_]*)\}\]")
 
     def __init__(self, character: "Character", resolver):
         self.character = character
         self.resolver = resolver
         self._insert_values: dict[str, str] = {}
+        self._prompt_features: dict[str, Any] = {}
         self._local_vars: dict[str, Any] = {}
         self._declared_local_vars: set[str] = set()
+        # Third prompt channel: blocks that must land in the volatile (active
+        # context) zone next to the request, not in the cacheable static prompt.
+        # Filled by ADD_CONTEXT_INFO; read by PromptController after the template
+        # is processed. See _build_system_messages.
+        self._context_infos: List[str] = []
+
+    def get_prompt_feature(self, name: str, default: Any = None) -> Any:
+        return self._prompt_features.get(str(name or "").strip().lower(), default)
+
+    def get_context_infos(self) -> List[str]:
+        """Volatile context blocks collected via ADD_CONTEXT_INFO this build."""
+        return list(self._context_infos)
 
     @contextmanager
     def _use_base(self, base_dir_resolved_id: str):
@@ -189,22 +218,22 @@ class DslInterpreter:
         line_content: str,
         sys_msgs: Optional[List[str]] = None,
     ):
-        safe_globals = {
-            "__builtins__": {
-                "str": str,
-                "int": int,
-                "float": float,
-                "len": len,
-                "round": round,
-                "abs": abs,
-                "max": max,
-                "min": min,
-                "True": True,
-                "False": False,
-                "None": None,
-            }
+        allowed_calls = {
+            "str": str,
+            "int": int,
+            "float": float,
+            "len": len,
+            "round": round,
+            "abs": abs,
+            "max": max,
+            "min": min,
         }
-        combined_vars = {**self.character.variables, **getattr(self.character, "app_vars", {}), **self._local_vars}
+        combined_vars = {
+            **self.character.variables,
+            **getattr(self.character, "app_vars", {}),
+            **self._prompt_features,
+            **self._local_vars,
+        }
 
         def _raise_dsl_error(e: Exception, custom_msg: str = ""):
             err_msg = custom_msg or f"Error evaluating '{expr}': {type(e).__name__} - {e}"
@@ -226,21 +255,22 @@ class DslInterpreter:
         while True:
             try:
                 expr_to_eval = self._expand_inline_loads(expr, script_path_for_error=script_path_for_error, line_num=line_num, line_content=line_content, sys_msgs=sys_msgs)
-                if expr_to_eval.lstrip().startswith(("f'", 'f"', 'f"""')):
-                    return eval(expr_to_eval, safe_globals, combined_vars)
-                return eval(expr_to_eval, safe_globals, combined_vars)
-            except NameError as ne:
-                m = re.search(r"name '([^']+)' is not defined", str(ne))
-                if not m or fills >= max_missing_fills:
-                    _raise_dsl_error(ne)
-                var_name = m.group(1)
+                return safe_eval_expression(
+                    expr_to_eval,
+                    names=combined_vars,
+                    allowed_calls=allowed_calls,
+                )
+            except UnknownNameError as unknown_name:
+                if fills >= max_missing_fills:
+                    _raise_dsl_error(unknown_name)
+                var_name = unknown_name.name
                 dsl_execution_logger.debug("Auto-initializing unknown variable '%s' with None in local scope", var_name)
                 self._local_vars[var_name] = None
                 combined_vars[var_name] = None
                 fills += 1
                 continue
             except TypeError as e:
-                msg_lower = str(e).lower()
+                msg_lower = format_exception(e).lower()
                 is_concat_problem = "can only concatenate str" in msg_lower or ("unsupported operand type(s) for +" in msg_lower and "str" in msg_lower)
                 if not is_concat_problem:
                     _raise_dsl_error(e)
@@ -252,11 +282,19 @@ class DslInterpreter:
                 )
                 fixed_locals = {k: (str(v) if isinstance(v, (int, float, bool, type(None))) else v) for k, v in combined_vars.items()}
                 try:
-                    if expr_to_eval.lstrip().startswith(("f'", 'f"', 'f"""')):
-                        return eval(expr_to_eval, safe_globals, fixed_locals)
-                    return eval(expr_to_eval, safe_globals, fixed_locals)
-                except Exception:
-                    _raise_dsl_error(e, f"Error evaluating '{expr_to_eval}' (even after auto-str cast attempt for TypeError): {type(e).__name__} - {e}")
+                    return safe_eval_expression(
+                        expr_to_eval,
+                        names=fixed_locals,
+                        allowed_calls=allowed_calls,
+                    )
+                except Exception as retry_error:
+                    _raise_dsl_error(
+                        retry_error,
+                        f"Error evaluating '{expr_to_eval}' after auto-str cast attempt: "
+                        f"{format_exception(retry_error)}",
+                    )
+            except SafeEvalError as e:
+                _raise_dsl_error(e)
             except Exception as e:
                 _raise_dsl_error(e)
 
@@ -315,7 +353,7 @@ class DslInterpreter:
                 raise
             except Exception as e:
                 raise DslError(
-                    f"Cannot process inline LOAD for '{rel_path_to_load}': {e}",
+                    f"Cannot process inline LOAD for '{rel_path_to_load}': {format_exception(e)}",
                     script_path_for_error, line_num, line_content, e
                 ) from e
 
@@ -325,7 +363,7 @@ class DslInterpreter:
             raise
         except Exception as e:
             raise DslError(
-                f"Cannot expand inline LOADs inside expression '{expr}': {e}",
+                f"Cannot expand inline LOADs inside expression '{expr}': {format_exception(e)}",
                 script_path_for_error,
                 line_num,
                 line_content,
@@ -346,7 +384,7 @@ class DslInterpreter:
                 resolved_script_id = self.resolver.resolve_path(rel_script_path)
             except Exception as pre:
                 raise DslError(
-                    message=f"Cannot resolve script path '{rel_script_path}': {pre}",
+                    message=f"Cannot resolve script path '{rel_script_path}': {format_exception(pre)}",
                     script_path=rel_script_path,
                     original_exception=pre
                 ) from pre
@@ -358,7 +396,7 @@ class DslInterpreter:
                     content = self.resolver.load_text(resolved_script_id, f"script {rel_script_path}")
                 except Exception as pre:
                     raise DslError(
-                        message=f"Cannot load script content for '{rel_script_path}': {pre}",
+                        message=f"Cannot load script content for '{rel_script_path}': {format_exception(pre)}",
                         script_path=resolved_script_id,
                         original_exception=pre
                     ) from pre
@@ -438,7 +476,7 @@ class DslInterpreter:
                         if_stack.pop()
                         continue
 
-                    if skipping: 
+                    if skipping:
                         continue
 
                     parts = command_part_for_log.split(maxsplit=1)
@@ -483,48 +521,23 @@ class DslInterpreter:
 
                         continue
 
-                    if command == "ADD_SYSTEM_INFO":
+                    if command in ("ADD_SYSTEM_INFO", "ADD_CONTEXT_INFO"):
                         if not args:
-                            raise DslError("ADD_SYSTEM_INFO requires an argument (expression or LOAD command).", resolved_script_id, num, raw)
+                            raise DslError(f"{command} requires an argument (expression or LOAD command).", resolved_script_id, num, raw)
 
-                        content_to_add = ""
-                        raw_arg = args.strip()
-
-                        if raw_arg.upper().startswith(("LOAD_REL ", "LOADREL ")):
-                            rel_path_to_load = raw_arg.split(None, 1)[1].strip().strip('"').strip("'")
-                            try:
-                                content_to_add, _ = self.process_file(rel_path_to_load, sys_msgs=sys_msgs)
-                            except DslError as de:
-                                raise DslError(f"Error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
-                            except Exception as e:
-                                raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD_REL '{rel_path_to_load}': {e}", resolved_script_id, num, raw, e) from e
-                        elif raw_arg.upper().startswith("LOAD "):
-                            after_load = raw_arg[5:].strip()
-                            m = re.match(r"([A-Z0-9_]+)\s+FROM\s+(.+)", after_load, re.IGNORECASE)
-                            if m:
-                                tag_name = m.group(1).upper()
-                                path_str = m.group(2).strip().strip('"').strip("'")
-                                try:
-                                    loaded_path_id = self.resolver.resolve_path(path_str)
-                                    raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
-                                    content_to_add = self.process_template_content(raw_tag, f"ADD_SYSTEM_INFO LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}", sys_msgs=sys_msgs)
-                                except DslError as de:
-                                    raise DslError(f"Error resolving/loading for ADD_SYSTEM_INFO LOAD TAG '{path_str}': {de.message}", resolved_script_id, num, raw, de) from de
-                                except Exception as e:
-                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD TAG '{path_str}': {e}", resolved_script_id, num, raw, e) from e
-                            else:
-                                rel_file_to_load = after_load.strip().strip('"').strip("'")
-                                try:
-                                    content_to_add, _ = self.process_file(rel_file_to_load, sys_msgs=sys_msgs)
-                                except DslError as de:
-                                    raise DslError(f"Error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
-                                except Exception as e:
-                                    raise DslError(f"Unexpected error in ADD_SYSTEM_INFO LOAD '{rel_file_to_load}': {e}", resolved_script_id, num, raw, e) from e
-                        else:
-                            content_to_add = str(self._eval_expr(raw_arg, resolved_script_id, num, raw, sys_msgs=sys_msgs))
+                        content_to_add = self._resolve_add_info_arg(
+                            command, args.strip(), resolved_script_id, num, raw,
+                            rel_script_path, sys_msgs,
+                        )
 
                         if content_to_add and content_to_add.strip():
-                            sys_msgs.append(content_to_add)
+                            # ADD_SYSTEM_INFO → static prompt (dsl_system_infos);
+                            # ADD_CONTEXT_INFO → volatile active context, placed
+                            # next to the request by PromptController.
+                            if command == "ADD_CONTEXT_INFO":
+                                self._context_infos.append(content_to_add)
+                            else:
+                                sys_msgs.append(content_to_add)
                         continue
 
                     if command == "LOG":
@@ -547,7 +560,7 @@ class DslInterpreter:
                                 loaded_path_id = self.resolver.resolve_path(rel_path_to_load)
                                 txt = self.resolver.load_text(loaded_path_id, f"LOAD_REL in {rel_script_path}:{num}")
                             except Exception as pre:
-                                raise DslError(f"Error in RETURN LOAD_REL '{rel_path_to_load}': {pre}", resolved_script_id, num, raw, pre) from pre
+                                raise DslError(f"Error in RETURN LOAD_REL '{rel_path_to_load}': {format_exception(pre)}", resolved_script_id, num, raw, pre) from pre
                             txt = self._remove_tag_markers(txt)
                         elif raw_arg.upper().startswith("LOAD "):
                             after_load = raw_arg[5:].strip()
@@ -559,7 +572,7 @@ class DslInterpreter:
                                     loaded_path_id = self.resolver.resolve_path(path_str)
                                     raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
                                 except Exception as pre:
-                                    raise DslError(f"Error resolving/loading for RETURN LOAD TAG '{path_str}': {pre}", resolved_script_id, num, raw, pre) from pre
+                                    raise DslError(f"Error resolving/loading for RETURN LOAD TAG '{path_str}': {format_exception(pre)}", resolved_script_id, num, raw, pre) from pre
                                 txt = self.process_template_content(raw_tag, f"LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}", sys_msgs=sys_msgs)
                             else:
                                 rel_file_to_load = after_load.strip().strip('"').strip("'")
@@ -567,7 +580,7 @@ class DslInterpreter:
                                     loaded_path_id = self.resolver.resolve_path(rel_file_to_load)
                                     txt = self.resolver.load_text(loaded_path_id, f"LOAD in {rel_script_path}:{num}")
                                 except Exception as pre:
-                                    raise DslError(f"Error in RETURN LOAD '{rel_file_to_load}': {pre}", resolved_script_id, num, raw, pre) from pre
+                                    raise DslError(f"Error in RETURN LOAD '{rel_file_to_load}': {format_exception(pre)}", resolved_script_id, num, raw, pre) from pre
                                 txt = self._remove_tag_markers(txt)
                         else:
                             txt = str(self._eval_expr(raw_arg, resolved_script_id, num, raw, sys_msgs=sys_msgs))
@@ -576,9 +589,10 @@ class DslInterpreter:
                         returned_value_for_log = returned is not None
                         return (returned or "", sys_msgs)
 
-                    if command == "SEED_MEMORY":
+                    if command in ("SEED_MEMORY", "SEED_RAG_MEMORY"):
+                        fmt = f"{command} requires format: {command} priority | content [ENTITIES e1, e2]"
                         if not args or "|" not in args:
-                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                            raise DslError(fmt, resolved_script_id, num, raw)
                         entities = []
                         raw_args = args
                         upper_args = args.upper()
@@ -588,15 +602,34 @@ class DslInterpreter:
                             raw_args = args[:ent_idx]
                             entities = [e.strip() for e in entities_str.split(",") if e.strip()]
                         if "|" not in raw_args:
-                            raise DslError("SEED_MEMORY requires format: SEED_MEMORY priority | content [ENTITIES e1, e2]", resolved_script_id, num, raw)
+                            raise DslError(fmt, resolved_script_id, num, raw)
                         parts = raw_args.split("|", 1)
                         priority = parts[0].strip()
                         content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
-                        if content and hasattr(self.character, "memory_system") and self.character.memory_system:
-                            self.character.memory_system.add_memory(
-                                str(content), priority=priority, skip_if_exists=True,
-                                entities=entities if entities else None
-                            )
+                        mem_sys = getattr(self.character, "memory_system", None)
+                        if content and mem_sys:
+                            ents = entities if entities else None
+                            if command == "SEED_RAG_MEMORY":
+                                # RAG-only: indexed and retrievable, but not part of
+                                # the always-on active memory block.
+                                mem_sys.seed_rag_memory(str(content), priority=priority, entities=ents)
+                            else:
+                                mem_sys.add_memory(
+                                    str(content), priority=priority, skip_if_exists=True,
+                                    entities=ents,
+                                )
+                        continue
+
+                    if command == "SEED_ISLAND":
+                        fmt = "SEED_ISLAND requires format: SEED_ISLAND type | content"
+                        if not args or "|" not in args:
+                            raise DslError(fmt, resolved_script_id, num, raw)
+                        parts = args.split("|", 1)
+                        island_type = parts[0].strip()
+                        content = self._eval_expr(f'f"""{parts[1].strip()}"""', resolved_script_id, num, raw, sys_msgs=sys_msgs) if '{' in parts[1] else parts[1].strip()
+                        mem_sys = getattr(self.character, "memory_system", None)
+                        if content and mem_sys and hasattr(mem_sys, "seed_island"):
+                            mem_sys.seed_island(island_type, str(content))
                         continue
 
                     if command == "LINK_ENTITIES":
@@ -615,7 +648,7 @@ class DslInterpreter:
                                 gs.upsert_relation(sid, relation, oid, protected=True)
                             except Exception as _link_err:
                                 import logging as _logging
-                                _logging.warning(f"LINK_ENTITIES failed (ignored): {_link_err}")
+                                _logging.warning(f"LINK_ENTITIES failed (ignored): {format_exception(_link_err)}")
                         continue
 
                     if command == "RUN":
@@ -641,19 +674,70 @@ class DslInterpreter:
                 f"DslError during execution of {rel_script_path} (resolved: {e.script_path or resolved_script_id}): {e.message} at line {e.line_num}",
                 exc_info=False,
             )
-            print(f"{RED}{str(e)}{RST}", file=sys.stderr)
+            print(f"{RED}{format_exception(e)}{RST}", file=sys.stderr)
             return (f"[DSL ERROR IN {os.path.basename(e.script_path or resolved_script_id or rel_script_path)}]", sys_msgs)
         except Exception as e:
             dsl_execution_logger.error(
-                f"Unexpected Python error during execution of {rel_script_path} (resolved: {resolved_script_id}): {e}",
+                f"Unexpected Python error during execution of {rel_script_path} (resolved: {resolved_script_id}): {format_exception(e)}",
                 exc_info=True,
             )
-            print(f"{RED}Unexpected Python error in {rel_script_path}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
+            print(f"{RED}Unexpected Python error in {rel_script_path}: {format_exception(e)}{RST}\n{traceback.format_exc()}", file=sys.stderr)
             return (f"[PY ERROR IN {os.path.basename(resolved_script_id or rel_script_path)}]", sys_msgs)
         finally:
             dsl_execution_logger.info(
                 f"Finished DSL script: {rel_script_path}. Returned value: {returned_value_for_log if returned_value_for_log is not None else False}"
             )
+
+    def _resolve_add_info_arg(
+        self,
+        command: str,
+        raw_arg: str,
+        resolved_script_id: str,
+        num: int,
+        raw: str,
+        rel_script_path: str,
+        sys_msgs: Optional[List[str]],
+    ) -> str:
+        """Resolve the argument of ADD_SYSTEM_INFO / ADD_CONTEXT_INFO to text.
+
+        Supports the same forms as before: ``LOAD_REL <file>``, ``LOAD <TAG>
+        FROM <file>``, ``LOAD <file>`` and a plain expression. ``command`` is
+        only used to make error messages point at the right directive.
+        """
+        if raw_arg.upper().startswith(("LOAD_REL ", "LOADREL ")):
+            rel_path_to_load = raw_arg.split(None, 1)[1].strip().strip('"').strip("'")
+            try:
+                content_to_add, _ = self.process_file(rel_path_to_load, sys_msgs=sys_msgs)
+                return content_to_add
+            except DslError as de:
+                raise DslError(f"Error in {command} LOAD_REL '{rel_path_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+            except Exception as e:
+                raise DslError(f"Unexpected error in {command} LOAD_REL '{rel_path_to_load}': {format_exception(e)}", resolved_script_id, num, raw, e) from e
+
+        if raw_arg.upper().startswith("LOAD "):
+            after_load = raw_arg[5:].strip()
+            m = re.match(r"([A-Z0-9_]+)\s+FROM\s+(.+)", after_load, re.IGNORECASE)
+            if m:
+                tag_name = m.group(1).upper()
+                path_str = m.group(2).strip().strip('"').strip("'")
+                try:
+                    loaded_path_id = self.resolver.resolve_path(path_str)
+                    raw_tag = self._extract_tag_section(loaded_path_id, tag_name, resolved_script_id)
+                    return self.process_template_content(raw_tag, f"{command} LOAD {tag_name} FROM {path_str} in {rel_script_path}:{num}", sys_msgs=sys_msgs)
+                except DslError as de:
+                    raise DslError(f"Error resolving/loading for {command} LOAD TAG '{path_str}': {de.message}", resolved_script_id, num, raw, de) from de
+                except Exception as e:
+                    raise DslError(f"Unexpected error in {command} LOAD TAG '{path_str}': {format_exception(e)}", resolved_script_id, num, raw, e) from e
+            rel_file_to_load = after_load.strip().strip('"').strip("'")
+            try:
+                content_to_add, _ = self.process_file(rel_file_to_load, sys_msgs=sys_msgs)
+                return content_to_add
+            except DslError as de:
+                raise DslError(f"Error in {command} LOAD '{rel_file_to_load}': {de.message}", resolved_script_id, num, raw, de) from de
+            except Exception as e:
+                raise DslError(f"Unexpected error in {command} LOAD '{rel_file_to_load}': {format_exception(e)}", resolved_script_id, num, raw, e) from e
+
+        return str(self._eval_expr(raw_arg, resolved_script_id, num, raw, sys_msgs=sys_msgs))
 
     def process_template_content(self, text: str, ctx: str = "template", sys_msgs: Optional[List[str]] = None) -> str:
         if sys_msgs is None:
@@ -680,12 +764,12 @@ class DslInterpreter:
                             return content
                         raise DslError("Unknown placeholder type", script_path=rel_path_placeholder)
                 except DslError as de:
-                    dsl_execution_logger.error(f"DSL ERROR while processing placeholder {rel_path_placeholder} in {ctx}: {de}")
-                    print(f"{RED}Error processing placeholder {rel_path_placeholder}: {de}{RST}", file=sys.stderr)
+                    dsl_execution_logger.error(f"DSL ERROR while processing placeholder {rel_path_placeholder} in {ctx}: {format_exception(de)}")
+                    print(f"{RED}Error processing placeholder {rel_path_placeholder}: {format_exception(de)}{RST}", file=sys.stderr)
                     return f"[DSL ERROR {rel_path_placeholder}]"
                 except Exception as exc:
-                    dsl_execution_logger.error(f"Unexpected Python error processing placeholder {rel_path_placeholder} in {ctx}: {exc}", exc_info=True)
-                    print(f"{RED}Unexpected Python error in placeholder {rel_path_placeholder}: {exc}{RST}\n{traceback.format_exc()}", file=sys.stderr)
+                    dsl_execution_logger.error(f"Unexpected Python error processing placeholder {rel_path_placeholder} in {ctx}: {format_exception(exc)}", exc_info=True)
+                    print(f"{RED}Unexpected Python error in placeholder {rel_path_placeholder}: {format_exception(exc)}{RST}\n{traceback.format_exc()}", file=sys.stderr)
                     return f"[PY ERROR {rel_path_placeholder}]"
 
             processed_text = self.placeholder_pattern.sub(repl, text)
@@ -709,9 +793,9 @@ class DslInterpreter:
         return text
 
     def set_insert(self, name: str, content: Any | None):
-        if content is None: 
+        if content is None:
             return
-        if isinstance(content, (list, tuple)): 
+        if isinstance(content, (list, tuple)):
             content = "\n".join(map(str, content))
         self._insert_values[name.upper()] = str(content)
 
@@ -739,7 +823,7 @@ class DslInterpreter:
             raw = self.resolver.load_text(resolved_path_id, f"extract tag {tag_name} for {script_path_for_error_context}")
         except Exception as pre:
             raise DslError(
-                f"Cannot load file to extract tag section [#{tag_name}] from '{resolved_path_id}': {pre}",
+                f"Cannot load file to extract tag section [#{tag_name}] from '{resolved_path_id}': {format_exception(pre)}",
                 script_path=script_path_for_error_context,
                 original_exception=pre
             ) from pre
@@ -756,7 +840,7 @@ class DslInterpreter:
                 script_path=resolved_path_id,
             )
         content = m.group(1)
-        if content.startswith("\n"): 
+        if content.startswith("\n"):
             content = content[1:]
         return content
 
@@ -764,6 +848,8 @@ class DslInterpreter:
         blocks: List[str] = []
         sys_msgs: List[str] = []
         resolved_main_template_id: str = ""
+        self._prompt_features.clear()
+        self._context_infos.clear()
 
         try:
             char_ctx_filter.set_character_id(getattr(self.character, "char_id", "NO_CHAR_CTX"))
@@ -773,7 +859,7 @@ class DslInterpreter:
                 resolved_main_template_id = self.resolver.resolve_path(rel_path_main_template)
             except Exception as pre:
                 raise DslError(
-                    message=f"Cannot resolve main template path '{rel_path_main_template}': {pre}",
+                    message=f"Cannot resolve main template path '{rel_path_main_template}': {format_exception(pre)}",
                     script_path=rel_path_main_template,
                     original_exception=pre
                 ) from pre
@@ -782,34 +868,47 @@ class DslInterpreter:
                 raw_template_content = self.resolver.load_text(resolved_main_template_id, f"main template {rel_path_main_template}")
             except Exception as pre:
                  raise DslError(
-                    message=f"Cannot load main template content for '{rel_path_main_template}': {pre}",
+                    message=f"Cannot load main template content for '{rel_path_main_template}': {format_exception(pre)}",
                     script_path=resolved_main_template_id,
                     original_exception=pre
                 ) from pre
 
-            file_paths_in_template = self.placeholder_pattern.findall(raw_template_content)
+            for feature_name, raw_value in PROMPT_FEATURE_PATTERN.findall(raw_template_content):
+                low = raw_value.lower()
+                if low in ("true", "false"):
+                    self._prompt_features[feature_name.lower()] = (low == "true")
+                else:
+                    self._prompt_features[feature_name.lower()] = low
 
-            for rel_file_path in file_paths_in_template:
+            # Top-level includes may carry a placement marker: `[<@ path>]` routes
+            # the whole file into the volatile active context (next to the request),
+            # while a plain `[<path>]` goes into the static, cacheable prompt.
+            for m in self._TEMPLATE_INCLUDE_RE.finditer(raw_template_content):
+                is_context = m.group(1) == "@"
+                rel_file_path = m.group(2).strip()
                 try:
                     content, _ = self.process_file(rel_file_path, sys_msgs=sys_msgs)
                     if content and content.strip():
-                        blocks.append(content)
+                        if is_context:
+                            self._context_infos.append(content)
+                        else:
+                            blocks.append(content)
                 except DslError as de:
                     dsl_execution_logger.error(f"DslError while processing included file '{rel_file_path}' in main template: {de.message}", exc_info=False)
                     blocks.append(f"[DSL ERROR IN {os.path.basename(de.script_path or rel_file_path)}]")
                 except Exception as e:
-                    dsl_execution_logger.error(f"Unexpected Python error processing included file '{rel_file_path}' in main template: {e}", exc_info=True)
+                    dsl_execution_logger.error(f"Unexpected Python error processing included file '{rel_file_path}' in main template: {format_exception(e)}", exc_info=True)
                     blocks.append(f"[PY ERROR IN {os.path.basename(rel_file_path)}]")
 
             dsl_execution_logger.info(f"Successfully processed main template: {rel_path_main_template}")
             return (blocks, sys_msgs)
         except DslError as e:
             dsl_execution_logger.error(f"DslError while processing main template '{rel_path_main_template}' (resolved: {e.script_path or resolved_main_template_id}): {e.message}", exc_info=False)
-            print(f"{RED}{str(e)}{RST}", file=sys.stderr)
+            print(f"{RED}{format_exception(e)}{RST}", file=sys.stderr)
             return ([f"[DSL ERROR IN MAIN TEMPLATE {os.path.basename(e.script_path or resolved_main_template_id or rel_path_main_template)}]"], sys_msgs)
         except Exception as e:
-            dsl_execution_logger.error(f"Unexpected Python error processing main template '{rel_path_main_template}' (resolved: {resolved_main_template_id}): {e}", exc_info=True)
-            print(f"{RED}Unexpected Python error in main template {rel_path_main_template}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
+            dsl_execution_logger.error(f"Unexpected Python error processing main template '{rel_path_main_template}' (resolved: {resolved_main_template_id}): {format_exception(e)}", exc_info=True)
+            print(f"{RED}Unexpected Python error in main template {rel_path_main_template}: {format_exception(e)}{RST}\n{traceback.format_exc()}", file=sys.stderr)
             return ([f"[PY ERROR IN MAIN TEMPLATE {os.path.basename(resolved_main_template_id or rel_path_main_template)}]"], sys_msgs)
 
     def process_file(self, rel_file_path: str, sys_msgs: Optional[List[str]] = None) -> tuple[str, List[str]]:
@@ -825,7 +924,7 @@ class DslInterpreter:
                 resolved_file_id = self.resolver.resolve_path(rel_file_path)
             except Exception as pre:
                 raise DslError(
-                    message=f"Cannot resolve file path '{rel_file_path}': {pre}",
+                    message=f"Cannot resolve file path '{rel_file_path}': {format_exception(pre)}",
                     script_path=rel_file_path,
                     original_exception=pre
                 ) from pre
@@ -837,7 +936,7 @@ class DslInterpreter:
                     _ = self.resolver.load_text(resolved_file_id, f"individual file {rel_file_path}")  # проверка наличия
                 except Exception as pre:
                     raise DslError(
-                        message=f"Cannot load file content for '{rel_file_path}': {pre}",
+                        message=f"Cannot load file content for '{rel_file_path}': {format_exception(pre)}",
                         script_path=resolved_file_id,
                         original_exception=pre
                     ) from pre
@@ -849,11 +948,11 @@ class DslInterpreter:
             return (content, sys_msgs)
         except DslError as e:
             dsl_execution_logger.error(f"DslError while processing individual file '{rel_file_path}' (resolved: {e.script_path or resolved_file_id}): {e.message}", exc_info=False)
-            print(f"{RED}{str(e)}{RST}", file=sys.stderr)
+            print(f"{RED}{format_exception(e)}{RST}", file=sys.stderr)
             return (f"[DSL ERROR IN FILE {os.path.basename(e.script_path or resolved_file_id or rel_file_path)}]", sys_msgs)
         except Exception as e:
-            dsl_execution_logger.error(f"Unexpected Python error processing individual file '{rel_file_path}' (resolved: {resolved_file_id}): {e}", exc_info=True)
-            print(f"{RED}Unexpected Python error in file {rel_file_path}: {e}{RST}\n{traceback.format_exc()}", file=sys.stderr)
+            dsl_execution_logger.error(f"Unexpected Python error processing individual file '{rel_file_path}' (resolved: {resolved_file_id}): {format_exception(e)}", exc_info=True)
+            print(f"{RED}Unexpected Python error in file {rel_file_path}: {format_exception(e)}{RST}\n{traceback.format_exc()}", file=sys.stderr)
             return (f"[PY ERROR IN FILE {os.path.basename(resolved_file_id or rel_file_path)}]", sys_msgs)
 
     def process_txt(self, rel_txt_path: str, sys_msgs: Optional[List[str]] = None) -> tuple[str, List[str]]:
@@ -875,6 +974,9 @@ class DslInterpreter:
 
             def repl(m: re.Match) -> str:
                 name = m.group(1)
+                if name in self._prompt_features:
+                    value = self._prompt_features.get(name)
+                    return "" if value is None else str(value)
                 if name in self.character.variables:
                     return "" if self.character.variables.get(name) is None else str(self.character.variables.get(name))
                 app_vars = getattr(self.character, "app_vars", {}) or {}

@@ -1,0 +1,10 @@
+{
+  "world_id": "CreepyHouse",
+  "display_name": "Creepy Mita's house",
+  "owner": "Creepy",
+  "former_owners": [],
+  "default_context": "You are visiting Creepy Mita's house. It is Creepy Mita's private home, not yours.",
+  "character_contexts": {
+    "Creepy": "This is your home. You know which parts of it should remain unseen by visitors."
+  }
+}

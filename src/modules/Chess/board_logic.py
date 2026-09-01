@@ -1,12 +1,17 @@
 # board_logic.py
 import chess
 
+PIECE_SYMBOLS = {
+    'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚', 'p': '♟',
+    'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔', 'P': '♙',
+}
+
+
 class PureBoardLogic:
     def __init__(self):
         self.board = chess.Board()
 
     def reset_board(self, fen=None):
-        """Сбрасывает доску в начальное состояние или в состояние по FEN."""
         if fen:
             try:
                 self.board.set_fen(fen)
@@ -17,27 +22,22 @@ class PureBoardLogic:
             self.board.reset()
 
     def get_fen(self):
-        """Возвращает текущее состояние доски в формате FEN."""
         return self.board.fen()
 
     def get_turn(self):
-        """Возвращает, чей сейчас ход (chess.WHITE или chess.BLACK)."""
         return self.board.turn
 
     def get_legal_moves_uci(self):
-        """Возвращает список легальных ходов в формате UCI."""
         return [move.uci() for move in self.board.legal_moves]
 
+    def get_legal_moves_uci_short(self, limit: int = 10):
+        return [move.uci() for move in list(self.board.legal_moves)[:limit]]
+
     def make_move(self, uci_move_str):
-        """
-        Делает ход на доске, если он легален.
-        uci_move_str: ход в формате UCI (e.g., "e2e4", "e7e8q").
-        Возвращает: (True, "Ход сделан", san_move) если успешно, иначе (False, "Сообщение об ошибке", None).
-        """
         try:
             move = chess.Move.from_uci(uci_move_str)
             if move in self.board.legal_moves:
-                san_move_str = self.board.san(move) # Получаем SAN до хода
+                san_move_str = self.board.san(move)
                 self.board.push(move)
                 return True, f"Ход {san_move_str} (UCI: {uci_move_str}) сделан.", san_move_str
             else:
@@ -55,11 +55,43 @@ class PureBoardLogic:
         except ValueError:
             return False, f"Некорректный формат хода UCI: {uci_move_str}", None
 
+    def force_move(self, uci_move_str):
+        """Cheat: делает ход без проверки легальности."""
+        try:
+            move = chess.Move.from_uci(uci_move_str)
+            self.board.push(move)
+            san = self.board.san(move)
+            return True, f"Чит-ход {san} (UCI: {uci_move_str}).", san
+        except (ValueError, AssertionError):
+            return False, f"Невозможный чит-ход: {uci_move_str}", None
+
+    def spawn_piece(self, square_str, piece_char):
+        """Cheat: ставит фигуру на клетку (piece_char: K, Q, R, B, N, P / k, q, r, b, n, p)."""
+        try:
+            sq = chess.parse_square(square_str)
+        except ValueError:
+            return False, f"Некорректная клетка: {square_str}"
+        piece = chess.Piece.from_symbol(piece_char)
+        self.board.set_piece_at(sq, piece)
+        color = "белых" if piece.color == chess.WHITE else "чёрных"
+        name = {chess.KING: "король", chess.QUEEN: "ферзь", chess.ROOK: "ладья",
+                chess.BISHOP: "слон", chess.KNIGHT: "конь", chess.PAWN: "пешка"}.get(piece.piece_type, "?")
+        return True, f"Спавн: {name} {color} на {square_str}.", None
+
+    def remove_piece(self, square_str):
+        """Cheat: убирает фигуру с клетки."""
+        try:
+            sq = chess.parse_square(square_str)
+        except ValueError:
+            return False, f"Некорректная клетка: {square_str}"
+        removed = self.board.piece_at(sq)
+        if removed:
+            self.board.remove_piece_at(sq)
+            sym = PIECE_SYMBOLS.get(removed.symbol(), removed.symbol())
+            return True, f"Удалена фигура {sym} с {square_str}.", None
+        return False, f"На клетке {square_str} нет фигуры.", None
+
     def is_game_over(self):
-        """
-        Проверяет, окончена ли игра.
-        Возвращает: (True, "Сообщение о результате") если игра окончена, иначе (False, "Игра продолжается").
-        """
         if self.board.is_checkmate():
             winner = "Черные" if self.board.turn == chess.WHITE else "Белые"
             return True, f"Мат! Победили {winner}."
@@ -76,7 +108,6 @@ class PureBoardLogic:
         return False, "Игра продолжается."
 
     def get_piece_at(self, square_name):
-        """Возвращает фигуру на указанной клетке (например, 'e4')."""
         try:
             square_index = chess.parse_square(square_name)
             return self.board.piece_at(square_index)
@@ -84,8 +115,17 @@ class PureBoardLogic:
             return None
 
     def get_board_for_display(self):
-        """
-        Возвращает объект chess.Board для использования в GUI, если GUI
-        умеет с ним работать напрямую для отрисовки.
-        """
         return self.board
+
+    def ascii_board(self):
+        """ASCII-доска с Unicode-фигурами для промпта LLM."""
+        lines = ["  a b c d e f g h"]
+        for rank in range(7, -1, -1):
+            row = f"{rank + 1} "
+            for file in range(8):
+                piece = self.board.piece_at(chess.square(file, rank))
+                row += (PIECE_SYMBOLS.get(piece.symbol(), '.') if piece else '.') + ' '
+            row += f"{rank + 1}"
+            lines.append(row)
+        lines.append("  a b c d e f g h")
+        return "\n".join(lines)

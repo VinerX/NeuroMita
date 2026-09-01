@@ -1,21 +1,11 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from typing import Callable
 
 from PyQt6.QtWidgets import QVBoxLayout
 
-from ui.settings import (
-    api_settings,
-    character_settings,
-    game_settings,
-    general_settings,
-    microphone_settings,
-    model_interaction_settings,
-    screen_analysis_settings,
-    updates_settings,
-    voiceover_settings,
-)
 from utils import _
 
 TextPair = tuple[str, str]
@@ -31,6 +21,7 @@ class SettingsSectionSpec:
     subtitle: TextPair
     min_mode: str
     builder_ref: str | SectionBuilder
+    preload_key: str | None = None
 
 
 SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
@@ -44,7 +35,19 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Core interface, privacy, memory and language settings.",
         ),
         min_mode="basic",
-        builder_ref=general_settings.setup_general_settings_controls,
+        builder_ref="ui.settings.general_settings:setup_general_settings_controls",
+    ),
+    SettingsSectionSpec(
+        key="language",
+        icon_name="fa6s.globe",
+        nav_label=("Язык", "Language"),
+        title=("Язык интерфейса", "Interface language"),
+        subtitle=(
+            "Выбор языка интерфейса и подключение кастомных переводов.",
+            "Choose the interface language and add custom translations.",
+        ),
+        min_mode="basic",
+        builder_ref="ui.settings.language_settings:setup_language_settings_controls",
     ),
     SettingsSectionSpec(
         key="api",
@@ -56,7 +59,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Providers, presets, keys and generation parameters.",
         ),
         min_mode="basic",
-        builder_ref=api_settings.setup_api_controls,
+        builder_ref="ui.settings.api_settings:setup_api_controls",
     ),
     SettingsSectionSpec(
         key="characters",
@@ -68,7 +71,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Profiles, behavior presets and selected character history.",
         ),
         min_mode="basic",
-        builder_ref=character_settings.setup_mita_controls,
+        builder_ref="ui.settings.character_settings:setup_mita_controls",
     ),
     SettingsSectionSpec(
         key="voice",
@@ -80,7 +83,8 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Speech output, local voices and synthesis settings.",
         ),
         min_mode="advanced",
-        builder_ref=voiceover_settings.setup_voiceover_controls,
+        builder_ref="ui.settings.voiceover_settings:setup_voiceover_controls",
+        preload_key="voice_status",
     ),
     SettingsSectionSpec(
         key="microphone",
@@ -92,7 +96,19 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Input devices, speech recognition and glossary settings.",
         ),
         min_mode="advanced",
-        builder_ref=microphone_settings.setup_microphone_controls,
+        builder_ref="ui.settings.microphone_settings:setup_microphone_controls",
+    ),
+    SettingsSectionSpec(
+        key="ai_engine",
+        icon_name="fa6s.microchip",
+        nav_label=("AI Engine", "AI Engine"),
+        title=("Управление AI Engine", "AI Engine management"),
+        subtitle=(
+            "Аппаратный профиль, модели, режим workers и обслуживание AI-окружений.",
+            "Hardware profile, models, worker topology and AI environment maintenance.",
+        ),
+        min_mode="advanced",
+        builder_ref="ui.settings.ai_engine_settings:setup_ai_engine_settings_controls",
     ),
     SettingsSectionSpec(
         key="game",
@@ -104,7 +120,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Connection settings and data exchange with the game.",
         ),
         min_mode="advanced",
-        builder_ref=game_settings.setup_game_controls,
+        builder_ref="ui.settings.game_settings:setup_game_controls",
     ),
     SettingsSectionSpec(
         key="models",
@@ -116,7 +132,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Control response logic, memory, thinking and RAG.",
         ),
         min_mode="full",
-        builder_ref=model_interaction_settings.setup_model_interaction_controls,
+        builder_ref="ui.settings.model_interaction_settings:setup_model_interaction_controls",
     ),
     SettingsSectionSpec(
         key="screen",
@@ -128,7 +144,7 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Screen capture, camera, image description and storage.",
         ),
         min_mode="full",
-        builder_ref=screen_analysis_settings.setup_screen_analysis_controls,
+        builder_ref="ui.settings.screen_analysis_settings:setup_screen_analysis_controls",
     ),
     SettingsSectionSpec(
         key="updates",
@@ -140,9 +156,34 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
             "Manage client and component updates.",
         ),
         min_mode="advanced",
-        builder_ref=updates_settings.setup_updates_settings_controls,
+        builder_ref="updates",
+    ),
+    SettingsSectionSpec(
+        key="data_collection",
+        icon_name="fa6s.database",
+        nav_label=("Сбор данных", "Data Collection"),
+        title=("Сбор данных", "Data Collection"),
+        subtitle=(
+            "Сохранение, оценка и экспорт данных для дообучения.",
+            "Collect, rate and export data for fine-tuning.",
+        ),
+        min_mode="full",
+        builder_ref="data_collection",
     ),
 )
+
+
+def resolve_settings_builder(builder_ref: str | SectionBuilder) -> SectionBuilder:
+    if callable(builder_ref):
+        return builder_ref
+    module_name, separator, attribute = str(builder_ref).partition(":")
+    if not separator or not module_name or not attribute:
+        raise ValueError(f"Invalid settings builder reference: {builder_ref!r}")
+    module = importlib.import_module(module_name)
+    builder = getattr(module, attribute)
+    if not callable(builder):
+        raise TypeError(f"Settings builder is not callable: {builder_ref!r}")
+    return builder
 
 
 def get_settings_section_specs() -> tuple[SettingsSectionSpec, ...]:

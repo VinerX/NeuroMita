@@ -1,5 +1,6 @@
-﻿# src/managers/tools/dialects/registry.py
+# src/managers/tools/dialects/registry.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import importlib
 import pkgutil
@@ -26,7 +27,7 @@ class ToolDialectRegistry:
         try:
             pkg = importlib.import_module(self._package)
         except Exception as e:
-            logger.error(f"[ToolDialectRegistry] Cannot import {self._package}: {e}", exc_info=True)
+            logger.error(f"[ToolDialectRegistry] Cannot import {self._package}: {format_exception(e)}", exc_info=True)
             return
 
         try:
@@ -39,7 +40,7 @@ class ToolDialectRegistry:
                 try:
                     module = importlib.import_module(full)
                 except Exception as e:
-                    logger.warning(f"[ToolDialectRegistry] Failed to import {full}: {e}")
+                    logger.warning(f"[ToolDialectRegistry] Failed to import {full}: {format_exception(e)}")
                     continue
 
                 dialect: Optional[ToolDialect] = None
@@ -49,7 +50,7 @@ class ToolDialectRegistry:
                     try:
                         dialect = create_fn()
                     except Exception as e:
-                        logger.warning(f"[ToolDialectRegistry] create_dialect() failed in {full}: {e}")
+                        logger.warning(f"[ToolDialectRegistry] create_dialect() failed in {full}: {format_exception(e)}")
                         continue
                 else:
                     DialectCls = getattr(module, "Dialect", None)
@@ -57,14 +58,14 @@ class ToolDialectRegistry:
                         try:
                             dialect = DialectCls()
                         except Exception as e:
-                            logger.warning(f"[ToolDialectRegistry] Dialect() init failed in {full}: {e}")
+                            logger.warning(f"[ToolDialectRegistry] Dialect() init failed in {full}: {format_exception(e)}")
                             continue
 
                 if dialect:
                     self.register(dialect)
 
         except Exception as e:
-            logger.error(f"[ToolDialectRegistry] Discovery failed: {e}", exc_info=True)
+            logger.error(f"[ToolDialectRegistry] Discovery failed: {format_exception(e)}", exc_info=True)
 
     def register(self, dialect: ToolDialect) -> None:
         did = (dialect.id or "").strip()

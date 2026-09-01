@@ -1,104 +1,82 @@
-import io
+from core.error_utils import format_exception
+
 import base64
-import re
-import time
-import uuid
-from pathlib import Path
-import os
-from PyQt6.QtCore import QSize
-from styles.main_styles import get_stylesheet
-from utils import process_text_to_voice
-from utils import getTranslationVariant as _
-from main_logger import logger
-import ui.gui_templates as gui_templates
-from managers.settings_manager import CollapsibleSection
-from ui.settings.voiceover_settings import LOCAL_VOICE_MODELS
-import types
-import json
-import qtawesome as qta
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QBuffer, QIODevice, QEvent, QEasingCurve, QUrl, QRectF
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEventLoop,
+    QPropertyAnimation,
+    QTimer,
+    QUrl,
+    Qt,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPlainTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
-    QMessageBox, QDialog, QProgressBar, QStackedWidget,
-    QLineEdit, QFileDialog, QGraphicsOpacityEffect, QSizePolicy, QCheckBox,
-    QMenu
-)
-from PyQt6.QtGui import QDesktopServices, QFont, QImage, QIcon, QPalette, QKeyEvent, QPixmap, QPainter, QLinearGradient, QColor
-
-from ui.settings import (
-    api_settings, character_settings, game_settings,
-    microphone_settings, screen_analysis_settings, voiceover_settings,
-    model_interaction_settings, general_settings, updates_settings
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ui.widgets import (status_indicators_widget)
-from ui.widgets import chat_panel
-from ui.widgets.overlay_widget import OverlayWidget
-from ui.widgets.image_viewer_widget import ImageViewerWidget
-from ui.widgets.image_preview_widget import ImagePreviewBar
-from ui.widgets.mita_status_widget import MitaStatusWidget
-
-from ui.window_manager import WindowManager
-
-from controllers.voice_model_controller import VoiceModelController
-
-from core.events import get_event_bus, Events, Event
-
-from ui.dialogs.model_loading_dialog import create_model_loading_dialog
-from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
-from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
-from ui.dialogs.voice_model_dialog_manager import handle_voice_model_dialog
-
-from ui.widgets.launcher_dashboard_helpers import (
-    DashboardAction,
-    DashboardCard,
-    DashboardMetric,
-    LogItem,
-    NewsItem,
-    create_shell_page_container,
-    create_home_page,
-    create_logs_page,
-    create_news_page,
-)
-from ui.widgets.launcher_shell_sidebar import LauncherSidebarWidget
-from ui.widgets.settings_panel import create_settings_page
-from ui.widgets.chat_panel import setup_chat_panel, hide_image_preview_bar, update_send_button_state
+import ui.gui_templates as gui_templates
+from localization.live import tr_set
+from main_logger import logger
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
+from ui.chat.render_context import ChatRenderContext
+from ui.chat.presentation_coordinator import ChatPresentationCoordinator, ChatRenderCommand
+from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
+from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
+from ui.widgets.image_viewer_widget import ImageViewerWidget
+from ui.widgets.overlay_widget import OverlayWidget
+from utils import getTranslationVariant as _
 
-from ui.windows.voice_action_windows import VoiceInstallationWindow
+# None — валидное значение индикатора («нет особого состояния»), поэтому
+# «не передан» нужен отдельным сентинелом.
+_UNSET = object()
 
 
 class AppWindowBase(QMainWindow):
     update_chat_signal = pyqtSignal(str, object, bool, str)
+    render_chat_event_signal = pyqtSignal(dict)
+    history_messages_committed_signal = pyqtSignal(dict)
     update_status_signal = pyqtSignal()
     update_debug_signal = pyqtSignal()
 
     prepare_stream_signal = pyqtSignal(object)
     append_stream_chunk_signal = pyqtSignal(object)
-    finish_stream_signal = pyqtSignal()
+    finish_stream_signal = pyqtSignal(object)
 
-    show_thinking_signal = pyqtSignal(str)
+    show_thinking_signal = pyqtSignal(object)
     show_error_signal = pyqtSignal(str)
     hide_status_signal = pyqtSignal()
+    hide_generation_status_signal = pyqtSignal()
     pulse_error_signal = pyqtSignal()
+    show_voicing_signal = pyqtSignal(object)
+    hide_voicing_signal = pyqtSignal()
+    hide_compression_signal = pyqtSignal()
 
-    history_loaded_signal = pyqtSignal(dict)          
-    more_history_loaded_signal = pyqtSignal(dict)     
-    model_initialized_signal = pyqtSignal(dict)       
-    model_init_cancelled_signal = pyqtSignal(dict)    
-    model_init_failed_signal = pyqtSignal(dict)       
-    show_tg_code_dialog_signal = pyqtSignal(dict)     
-    show_tg_password_dialog_signal = pyqtSignal(dict) 
-    reload_prompts_success_signal = pyqtSignal()      
-    reload_prompts_failed_signal = pyqtSignal(dict)   
-    display_loading_popup_signal = pyqtSignal(dict)   
-    hide_loading_popup_signal = pyqtSignal()          
+    history_loaded_signal = pyqtSignal(dict)
+    more_history_loaded_signal = pyqtSignal(dict)
+    model_initialized_signal = pyqtSignal(dict)
+    model_init_cancelled_signal = pyqtSignal(dict)
+    model_init_failed_signal = pyqtSignal(dict)
+    show_tg_code_dialog_signal = pyqtSignal(dict)
+    show_tg_password_dialog_signal = pyqtSignal(dict)
+    reload_prompts_success_signal = pyqtSignal()
+    reload_prompts_failed_signal = pyqtSignal(dict)
+    display_loading_popup_signal = pyqtSignal(dict)
+    hide_loading_popup_signal = pyqtSignal()
 
     clear_user_input_signal = pyqtSignal()
-    insert_user_input_signal = pyqtSignal(str) 
+    insert_user_input_signal = pyqtSignal(dict)
+    send_text_message_signal = pyqtSignal(object)
     update_chat_font_size_signal = pyqtSignal(int)
     switch_voiceover_settings_signal = pyqtSignal()
     load_chat_history_signal = pyqtSignal()
@@ -114,7 +92,7 @@ class AppWindowBase(QMainWindow):
     create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
     close_installation_window_signal = pyqtSignal(object)
     finalize_installation_window_signal = pyqtSignal(object, bool)  # win, close_now
-    
+
     asr_install_progress_signal = pyqtSignal(dict)
     asr_install_finished_signal = pyqtSignal(dict)
     asr_install_failed_signal = pyqtSignal(dict)
@@ -128,20 +106,37 @@ class AppWindowBase(QMainWindow):
     # microphone_settings.py
     asr_set_pill = pyqtSignal(dict)
 
-    def __init__(self, settings):
+    def __init__(
+        self,
+        settings,
+        *,
+        telegram_auth_actions,
+        chat_message_actions,
+        shell_actions,
+        window_actions,
+    ):
         super().__init__()
         self.settings = settings
-        
+        self._telegram_auth_actions = telegram_auth_actions
+        self._chat_message_actions = chat_message_actions
+        self._shell_actions = shell_actions
+        self._window_actions = window_actions
+        self._close_requested = False
+        self._close_finalizing = False
+        self.settings_view_model = None
+        self.settings_binding = None
+
         try:
             self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
         except Exception:
             self.SETTINGS_PANEL_WIDTH = 520
         self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
-        
-        self.event_bus = get_event_bus()
+
         self._connect_signals()
-        self._init_window_manager()
-        
+        self._chat_message_actions.effect_emitted.connect(
+            self._handle_chat_message_effect
+        )
+
         self.voice_language_var = None
         self.local_voice_combobox = None
         self.debug_window = None
@@ -152,9 +147,25 @@ class AppWindowBase(QMainWindow):
         self.attachment_label = None
         self.attach_button = None
         self.send_screen_button = None
+        self._chat_panel_view = None
+        self._chat_ui_ready = False
+        self._chat_history_load_pending = False
+        self._pending_history_payload = None
+        self._token_refresh_pending = False
+        self._history_load_inflight = False
+        self._history_load_request_id = ""
+        self._chat_presentation = ChatPresentationCoordinator()
+        self._pending_chat_error = None
 
-        self.setWindowTitle(_("Чат с NeuroMita", "NeuroMita Chat"))
-        self.setWindowIcon(QIcon('Icon.png'))
+        # Отложенная автоотправка голоса: копим распознанное в поле ввода и
+        # отправляем всё разом, когда речь и печать замолчали на заданную паузу.
+        self._voice_autosend_timer = QTimer(self)
+        self._voice_autosend_timer.setSingleShot(True)
+        self._voice_autosend_timer.timeout.connect(self._on_voice_autosend_timeout)
+
+        tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
+        from ui.app_icon import application_icon
+        self.setWindowIcon(application_icon())
 
         self.staged_image_data = []
 
@@ -168,6 +179,8 @@ class AppWindowBase(QMainWindow):
         self._voice_model_init_in_progress_model_id = None
 
         self.update_chat_signal.connect(self._on_update_chat_signal)
+        self.render_chat_event_signal.connect(self._on_render_chat_event_signal)
+        self.history_messages_committed_signal.connect(self._on_history_messages_committed)
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
@@ -178,75 +191,56 @@ class AppWindowBase(QMainWindow):
         self.show_thinking_signal.connect(self._show_thinking_slot)
         self.show_error_signal.connect(self._show_error_slot)
         self.hide_status_signal.connect(self._hide_status_slot)
+        self.hide_generation_status_signal.connect(self._hide_generation_status_slot)
         self.pulse_error_signal.connect(self._pulse_error_slot)
+        self.show_voicing_signal.connect(self._show_voicing_slot)
+        self.hide_voicing_signal.connect(self._hide_voicing_slot)
+        self.hide_compression_signal.connect(self._hide_compression_slot)
 
+        self.settings_animation = None
         self.setup_ui()
         self.chat_delegate = ChatMessageDelegate()
-        
-        self.settings_animation = QPropertyAnimation(self.settings_overlay, b"maximumWidth")
-        self.settings_animation.setDuration(250)
-        self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._chat_render_context = ChatRenderContext(
+            settings_getter=self._get_setting,
+            character_name_getter=self._get_character_name,
+            chat_message_actions=self._chat_message_actions,
+            chat_delegate=self.chat_delegate,
+        )
+        self._ensure_settings_animation()
 
-        self.chat_window.installEventFilter(self)
+        self._on_chat_ui_ready()
 
         self.overlay = OverlayWidget(self)
         self.image_preview_bar = None
 
-        from ui.widgets.chat_panel import init_image_preview
-        init_image_preview(self)
-
-        try:
-            microphone_settings.load_mic_settings(self)
-        except Exception as e:
-            logger.info(f"Не удалось удачно получить настройки микрофона: {e}")
-
-
         self.prepare_stream_signal.connect(self._on_stream_start)
         self.finish_stream_signal.connect(self._on_stream_finish)
 
-        self.update_status_colors()
+        QTimer.singleShot(0, self.update_status_colors)
         QTimer.singleShot(1000, self._check_eula_and_guide)
 
         self.last_voice_model_selected = None
         self.current_local_voice_id = None
         self.model_loading_cancelled = False
+        self._status_refresh_ticket = 0
+        self._debug_refresh_ticket = 0
+        self._token_refresh_ticket = 0
 
-    def _window_specs(self) -> dict:
-        return {
-            "ai_hub": {
-                "factory": self._factory_ai_hub_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False,
-                "on_ready": self._on_ai_hub_dialog_ready,
-            },
-            "voice_models": {
-                "factory": self._factory_voice_models_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False
-            },
-            "asr_glossary": {
-                "factory": self._factory_asr_glossary_dialog,
-                "singleton": True,
-                "hide_on_close": True,
-                "modal": False,
-            },
+    def _ensure_settings_animation(self):
+        target = getattr(self, "settings_overlay", None) or self.centralWidget()
+        if target is None:
+            return None
 
-            # Blocking dialogs (used by VoiceModelGuiController via show_dialog_blocking)
-            "vc_redist_dialog": {
-                "factory": self._factory_vc_redist_dialog,
-                "singleton": False,
-                "hide_on_close": False,
-                "modal": True,
-            },
-            "triton_deps_dialog": {
-                "factory": self._factory_triton_deps_dialog,
-                "singleton": False,
-                "hide_on_close": False,
-                "modal": True,
-            },
-        }
+        if self.settings_animation is None:
+            self.settings_animation = QPropertyAnimation(target, b"maximumWidth")
+            self.settings_animation.setDuration(250)
+            self.settings_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            return self.settings_animation
+
+        if self.settings_animation.targetObject() is not target:
+            self.settings_animation.stop()
+            self.settings_animation.setTargetObject(target)
+        return self.settings_animation
 
     def _connect_signals(self):
         self.history_loaded_signal.connect(self._on_history_loaded)
@@ -262,194 +256,113 @@ class AppWindowBase(QMainWindow):
         self.remove_last_chat_widgets_signal.connect(self._on_remove_last_chat_widgets)
         self.clear_user_input_signal.connect(self._on_clear_user_input)
         self.insert_user_input_signal.connect(self._on_insert_user_input)
+        self.send_text_message_signal.connect(
+            lambda payload: self.send_message(
+                user_input=payload.get("text", "") if isinstance(payload, dict) else payload,
+                trace_id=payload.get("trace_id") if isinstance(payload, dict) else None,
+                merge_input_from_entry=bool(self._get_setting("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
+            ),
+            type=Qt.ConnectionType.QueuedConnection,
+        )
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
         self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
-
-        self.create_dialog_signal.connect(self._create_dialog_for_voice_model)
-
         self.run_ui_task_signal.connect(
             self._run_ui_task_slot,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
-
-        # Окно установки.
-        self.create_installation_window_signal.connect(
-            self._on_create_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        self.close_installation_window_signal.connect(
-            self._on_close_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        self.finalize_installation_window_signal.connect(
-            self._on_finalize_installation_window,
-            type=Qt.ConnectionType.QueuedConnection
-        )
-
-        # Текущее окно установки (живёт, пока задача не завершена; может быть
-        # свёрнуто пользователем и открыто снова через сайдбар).
-        self._active_install_window = None
-
         self.asr_install_progress_signal.connect(
             self._on_asr_install_progress,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
         self.asr_install_finished_signal.connect(
             self._on_asr_install_finished,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
         self.asr_install_failed_signal.connect(
             self._on_asr_install_failed,
-            type=Qt.ConnectionType.QueuedConnection
+            type=Qt.ConnectionType.QueuedConnection,
         )
 
     def _run_ui_task_slot(self, fn):
         try:
             if callable(fn):
                 fn()
-        except Exception as e:
-            logger.error(f"_run_ui_task_slot error: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(f"_run_ui_task_slot error: {format_exception(exc)}", exc_info=True)
 
-    def _init_window_manager(self):
-        self.window_manager = WindowManager(parent=self)
+    def attach_settings_binding(self, binding) -> None:
+        self.settings_view_model = binding
+        self.settings_binding = binding
 
-        for window_id, spec in self._window_specs().items():
-            self.window_manager.register_dialog(
-                window_id,
-                factory=spec["factory"],
-                singleton=spec.get("singleton", True),
-                hide_on_close=spec.get("hide_on_close", True),
-                modal=spec.get("modal", False),
-                on_ready=spec.get("on_ready", None),
-            )
+    @property
+    def chat_message_actions(self):
+        return self._chat_message_actions
 
-    def _factory_voice_models_dialog(self, parent, payload: dict):
-        dialog = QDialog(parent)
-        dialog.setWindowTitle(_("Управление локальными моделями", "Manage Local Models"))
-        dialog.setModal(False)
-        dialog.resize(875, 800)
+    def _handle_chat_message_effect(self, effect) -> None:
+        from ui.chat.message_actions_presentation import (
+            ShowChatSampleContext,
+            ShowChatSampleContextError,
+        )
+        from ui.dialogs.context_viewer_dialog import ContextViewerDialog
+        from ui.dialogs.styled_message import show_styled_message
 
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(0, 0, 0, 0)
-        dialog_layout.setSpacing(0)
-
-        return dialog
-
-    def _factory_ai_hub_dialog(self, parent, payload: dict):
-        from ui.windows.ai_hub_window import AIHubDialog
-
-        return AIHubDialog(parent)
-
-    def _on_ai_hub_dialog_ready(self, dialog, payload: dict):
-        if hasattr(dialog, "apply_payload"):
-            dialog.apply_payload(payload if isinstance(payload, dict) else {})
-
-    def _factory_asr_glossary_dialog(self, parent, payload: dict):
-        dialog = QDialog(parent)
-        dialog.setWindowTitle(_("ASR модели", "ASR Models"))
-        dialog.setModal(False)
-        dialog.resize(900, 650)
-        lay = QVBoxLayout(dialog)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        return dialog
-    
-    def _factory_vc_redist_dialog(self, parent, payload: dict):
-        from ui.windows.voice_action_windows import VCRedistWarningDialog
-        return VCRedistWarningDialog(parent=parent)
-
-    def _factory_triton_deps_dialog(self, parent, payload: dict):
-        from ui.windows.voice_action_windows import TritonDependenciesDialog
-        deps = payload.get("dependencies_status") or payload.get("deps") or {}
-        return TritonDependenciesDialog(parent=parent, dependencies_status=deps)
-
-    def _create_dialog_for_voice_model(self, data):
-        if not hasattr(self, "window_manager") or self.window_manager is None:
+        if isinstance(effect, ShowChatSampleContextError):
+            if effect.not_found:
+                show_styled_message(
+                    self,
+                    _("Не найдено", "Not found"),
+                    _(
+                        "Данные не найдены. Убедитесь, что хотя бы одно сообщение было отправлено.",
+                        "No data found. Make sure at least one message has been sent.",
+                    ),
+                    level="warning",
+                )
+            else:
+                show_styled_message(
+                    self,
+                    _("Ошибка", "Error"),
+                    effect.message,
+                    level="error",
+                )
             return
-        payload = data if isinstance(data, dict) else {}
-        payload = dict(payload)
-        payload.setdefault("category", "tts")
-        self.window_manager.show_dialog("ai_hub", payload)
+        if not isinstance(effect, ShowChatSampleContext):
+            return
+        if effect.used_fallback:
+            show_styled_message(
+                self,
+                _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
+                _(
+                    "Не удалось найти сохранённый запрос именно для этого сообщения "
+                    "(сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\n"
+                    "Показан последний сохранённый запрос — он может не совпадать с этим сообщением.",
+                    "Couldn't find the saved request for this specific message "
+                    "(fine-tune collection may be off, or the record was trimmed by the history limit).\n"
+                    "Showing the last saved request — it may not match this message.",
+                ),
+                level="info",
+            )
+        dialog = ContextViewerDialog(
+            effect.data,
+            parent=self,
+            initial_tab=effect.initial_tab,
+        )
+        dialog.exec()
 
-    def _on_create_installation_window(self, title: str, initial_status: str, holder: dict):
-        win = VoiceInstallationWindow(self, title, initial_status)
-        self._active_install_window = win
-
-        try:
-            win.minimized.connect(lambda: self._set_install_logs_button_visible(True))
-            win.window_closed.connect(lambda w=win: self._on_install_window_closed(w))
-        except Exception:
-            pass
-
-        # Кнопка «Логи установки» в сайдбаре — чтобы вернуться к окну,
-        # если пользователь его закрыл (свернул).
-        self._set_install_logs_button_visible(True)
-
-        win.show()
-
-        holder["window"] = win
-        if hasattr(win, "get_threadsafe_callbacks"):
-            holder["callbacks"] = win.get_threadsafe_callbacks()
-        else:
-            holder["callbacks"] = (win.update_progress, win.update_status, win.update_log)
-
-        ev = holder.get("ready_event")
-        if ev is not None and hasattr(ev, "set"):
-            try:
-                ev.set()
-            except Exception:
-                pass
-
-    def _on_close_installation_window(self, win_obj: object):
-        try:
-            if win_obj is None:
-                return
-            if hasattr(win_obj, "finalize"):
-                win_obj.finalize()
-            win_obj.close()
-        except Exception:
-            pass
-
-    def _on_finalize_installation_window(self, win_obj: object, close_now: bool):
-        try:
-            if win_obj is None:
-                return
-            if hasattr(win_obj, "finalize"):
-                win_obj.finalize()
-            if close_now:
-                win_obj.close()
-        except Exception:
-            pass
-
-    def _on_install_window_closed(self, win_obj: object):
-        # Окно действительно закрыто (задача завершена) — убираем ссылку и
-        # прячем кнопку повторного открытия.
-        if win_obj is self._active_install_window:
-            self._active_install_window = None
-            self._set_install_logs_button_visible(False)
+    def refresh_backend_state(
+        self,
+        *,
+        backend_ready: bool,
+        startup_error: str | None = None,
+    ) -> None:
+        panel = self._chat_panel_view
+        if panel is not None:
+            panel.refresh_state()
+        if not backend_ready and startup_error and hasattr(self, "_set_home_progress"):
+            self._set_home_progress(str(startup_error), 0, 1, busy=False)
 
     def _on_reopen_install_logs(self):
-        win = getattr(self, "_active_install_window", None)
-        if win is None:
-            self._set_install_logs_button_visible(False)
-            return
-        try:
-            win.show()
-            win.raise_()
-            win.activateWindow()
-        except Exception:
-            pass
-
-    def _set_install_logs_button_visible(self, visible: bool):
-        sidebar = getattr(self, "shell_sidebar", None)
-        if sidebar is not None and hasattr(sidebar, "set_install_logs_visible"):
-            try:
-                sidebar.set_install_logs_visible(bool(visible))
-            except Exception:
-                pass
+        self._window_actions.reopen_install_logs()
 
     def setup_ui(self):
         raise NotImplementedError("AppWindowBase.setup_ui() must be implemented by a concrete window class.")
@@ -457,23 +370,23 @@ class AppWindowBase(QMainWindow):
     def _on_shell_utility_requested(self, action):
         if isinstance(action, str) and action.startswith("language:"):
             code = action.split(":", 1)[1].upper()
+            # Живая смена языка: запись настройки + обновление зарегистрированных
+            # виджетов + сигнал language_changed (без перезапуска приложения).
             try:
-                self.settings.set("LANGUAGE", code)
+                from localization.live import set_language
+                set_language(code)
             except Exception:
                 try:
-                    self.settings["LANGUAGE"] = code
+                    self.settings.set("LANGUAGE", code)
                 except Exception:
-                    pass
+                    try:
+                        self.settings["LANGUAGE"] = code
+                    except Exception:
+                        pass
             self.shell_sidebar.set_active_language(code.lower())
-            QMessageBox.information(
-                self,
-                _("Язык", "Language"),
-                _("Перезапусти программу, чтобы применить язык.",
-                  "Restart the program to apply the language."),
-            )
             return
         if action == "language":
-            self.show_settings_category("general")
+            self.show_settings_category("language")
             return
 
         self.switch_main_page("home")
@@ -495,87 +408,232 @@ class AppWindowBase(QMainWindow):
         for child in self.children():
             if child.__class__.__name__ == 'GuideOverlay':
                 child.resize(self.size())
-        from ui.widgets.chat_panel import position_mita_status
-        QTimer.singleShot(0, lambda: position_mita_status(self))
+        panel = self._chat_panel_view
+        if panel is not None:
+            QTimer.singleShot(0, panel.reposition_status)
 
     def eventFilter(self, obj, event):
-
-        # кнопка "вниз" — на скролле чата
-        if obj == self.chat_window.viewport() and event.type() in (QEvent.Type.Resize, QEvent.Type.Paint):
-            if hasattr(self, 'scroll_to_bottom_btn'):
-                chat_panel.reposition_scroll_button(self)
-
-        # позиционирование статуса при ресайзе чата
-        if obj == self.chat_window and event.type() == QEvent.Type.Resize:
-            QTimer.singleShot(0, lambda: chat_panel.position_mita_status(self))
-
-        # хоткеи в поле ввода
-        if obj == self.user_entry and event.type() == QEvent.Type.KeyPress:
-            if not isinstance(event, QKeyEvent) or not hasattr(event, "key"):
-                return super().eventFilter(obj, event)
-
-            key = event.key()
-            mods = event.modifiers()
-
-            # Ctrl+V (или Meta+V на mac) — попытка вставить картинку из буфера
-            if (key == Qt.Key.Key_V and (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier))) \
-            or (key == Qt.Key.Key_Insert and (mods & Qt.KeyboardModifier.ShiftModifier)):  # Shift+Insert
-                if chat_panel.clipboard_image_to_controller(self):
-                    return True  # съели событие, чтобы не вставлялся текст/эмодзи
-
-            # Enter без Shift — отправить сообщение
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (mods & Qt.KeyboardModifier.ShiftModifier):
-                self.send_message()
-                return True  # не даём вставлять перенос строки
-
         return super().eventFilter(obj, event)
 
+    def bind_chat_panel(self, panel) -> None:
+        """Expose one composed chat surface to legacy render adapters.
+
+        The panel owns all widgets and local staged-image state. The shell only
+        keeps compatibility references for older renderers/controllers that
+        have not yet been converted to a dedicated chat-surface port.
+        """
+        self._chat_panel_view = panel
+        self.chat_panel = panel
+        self.chat_window = panel.chat_window
+        self._chat_render_context.bind_chat_window(panel.chat_window)
+        self.token_count_label = panel.token_count_label
+        self.user_entry = panel.user_entry
+        try:
+            self.user_entry.textChanged.disconnect(self._on_user_entry_edited)
+        except TypeError:
+            pass
+        self.user_entry.textChanged.connect(self._on_user_entry_edited)
+        self.attachment_label = panel.attachment_label
+        self.attach_button = panel.attach_button
+        self.send_screen_button = panel.send_screen_button
+        self.send_button = panel.send_button
+        self.composer_bar = panel.composer_bar
+        self.composer_warning = panel.composer_warning
+        self.composer_warning_label = panel.composer_warning_label
+        self.clear_attach_btn = panel.clear_attach_btn
+        self.image_preview_bar = panel.image_preview_bar
+        self.staged_image_data = panel.staged_images
+        self.scroll_to_bottom_btn = panel.scroll_to_bottom_btn
+        self.scroll_to_bottom_anim = panel.scroll_to_bottom_anim
+        self.mita_status = panel.mita_status
+        self._on_chat_ui_ready()
+        if self._pending_chat_error:
+            pending_error = self._pending_chat_error
+            self._pending_chat_error = None
+            self._show_error_slot(pending_error)
+
+    def bind_sandbox_page(self, page) -> None:
+        """Bind the composed Sandbox surface for legacy controller adapters."""
+        self.sandbox_page = page
+        self.chat_character_combobox = page.chat_character_combobox
+        self.chat_prompt_pack_combobox = page.chat_prompt_pack_combobox
+        self.chat_model_combobox = page.chat_model_combobox
+        self.sandbox_inspector_tabs = page.inspector_stack
+
+    def show_chat_image(self, image_data: bytes) -> None:
+        try:
+            payload = image_data
+            if isinstance(payload, str) and payload.startswith("data:image"):
+                payload = base64.b64decode(payload.split(",", 1)[1])
+            if not isinstance(payload, (bytes, bytearray)):
+                return
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(bytes(payload)):
+                return
+            viewer = ImageViewerWidget(pixmap)
+            viewer.close_requested.connect(self.overlay.hide_animated)
+            self.overlay.set_content(viewer)
+            self.overlay.show_animated()
+        except Exception as exc:
+            logger.error("Failed to show chat image: %s", format_exception(exc), exc_info=True)
+
+    def _on_chat_ui_ready(self):
+        """Flush deferred chat work when the lazy Sandbox page materializes."""
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            return False
+
+        self._chat_ui_ready = True
+
+        pending_payload = self._pending_history_payload
+        self._pending_history_payload = None
+        if pending_payload is not None:
+            QTimer.singleShot(0, lambda data=pending_payload: self._on_history_loaded(data))
+        elif self._chat_history_load_pending:
+            self._chat_history_load_pending = False
+            QTimer.singleShot(0, self.load_chat_history)
+
+        # Первичный показ счётчика токенов, как только чат готов. Раньше апдейт
+        # шёл только если refresh был «отложен» (label ещё не создан) — но при
+        # обычном старте это условие ложно, и счётчик висел на плейсхолдере
+        # «0/0» до первого запроса/смены настроек. Теперь обновляем всегда:
+        # _build_token_stats соберёт базовый контекст на лету (см. warm-путь).
+        self._token_refresh_pending = False
+        QTimer.singleShot(0, self.update_token_count)
+        return True
+
     def load_chat_history(self):
-        logger.debug("[Load] load_chat_history: начало")
-        logger.debug("[Load] Отключаем updates в chat_window")
-        self.chat_window.setUpdatesEnabled(False)
-        logger.debug("[Load] Вызываем clear_chat_display()")
-        self.clear_chat_display()
-        logger.debug("[Load] Эмитим LOAD_HISTORY")
-        self.event_bus.emit(Events.Model.LOAD_HISTORY)
-        logger.debug("[Load] load_chat_history: конец")
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            self._chat_history_load_pending = True
+            logger.debug("[Load] Chat UI is not ready; history load deferred")
+            return False
+
+        self._chat_history_load_pending = False
+        character_id = str(self._shell_actions.current_character_id() or "")
+        ticket = self._chat_presentation.begin_history_load(character_id)
+        self._history_load_request_id = ticket.request_id
+        self._history_load_inflight = True
+        logger.debug(
+            "[Load] history snapshot requested id=%s character=%s revision=%s",
+            ticket.request_id,
+            character_id,
+            ticket.start_revision,
+        )
+        try:
+            self._shell_actions.load_history(
+                request_id=ticket.request_id,
+                character_id=character_id,
+            )
+            QTimer.singleShot(
+                15000,
+                lambda request_id=ticket.request_id: self._recover_stalled_history_load(request_id),
+            )
+            return True
+        except Exception:
+            self._chat_presentation.cancel_history_load(ticket.request_id)
+            if self._history_load_request_id == ticket.request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
+            raise
+
+    def _recover_stalled_history_load(self, request_id: str = ""):
+        if not self._history_load_inflight:
+            return
+        if request_id and request_id != self._history_load_request_id:
+            return
+        logger.warning("History UI load timed out; keeping the live presentation intact")
+        self._chat_presentation.cancel_history_load(request_id or None)
+        self._history_load_inflight = False
+        self._history_load_request_id = ""
+
+    def _render_history_entry(self, entry: dict, *, character_id: str) -> None:
+        role = entry["role"]
+        content = entry["content"]
+        message_time = entry.get("time", "???")
+        structured_data = entry.get("structured_data")
+        message_id = entry.get("message_id")
+        sample_id = entry.get("sample_id")
+        context_snapshot_id = entry.get("context_snapshot_id")
+        thinking_text = entry.get("thinking")
+        show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
+        if role == "assistant" and thinking_text and show_think_in_gui:
+            speaker = entry.get("speaker", "")
+            message_renderer.insert_message(
+                self._chat_render_context,
+                "think",
+                [
+                    {"type": "meta", "speaker": speaker},
+                    {"type": "text", "text": thinking_text.strip()},
+                ],
+                message_time=message_time,
+                character_id=character_id,
+            )
+        message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            message_time=message_time,
+            structured_data=structured_data,
+            message_id=message_id,
+            character_id=character_id,
+            ui_images=entry.get("_ui_images") or [],
+            sample_id=sample_id,
+            context_snapshot_id=context_snapshot_id,
+        )
 
     def _on_history_loaded(self, data: dict):
-        messages = data.get('messages', [])
-        character_id = data.get('character_id', '')
-        logger.info(f"[HistoryLoaded] Загружено {len(messages)} сообщений для отображения")
-        for i, entry in enumerate(messages):
-            msg_role = entry.get("role", "?")
-            msg_content = entry.get("content", "")
-            content_preview = msg_content[:50] if isinstance(msg_content, str) else f"list({len(msg_content)})"
-            logger.info(f"[HistoryLoaded] msg[{i}] role='{msg_role}', preview='{content_preview}'")
-            role = entry["role"]
-            content = entry["content"]
-            message_time = entry.get("time", "???")
-            structured_data = entry.get("structured_data")
-            message_id = entry.get("message_id")
-            thinking_text = entry.get("thinking")
-            try:
-                show_think_in_gui = bool(self._get_setting("SHOW_THINK_IN_GUI", False))
-                if role == "assistant" and thinking_text and show_think_in_gui:
-                    speaker = entry.get("speaker", "")
-                    message_renderer.insert_message(
-                        self, "think",
-                        [{"type": "meta", "speaker": speaker},
-                         {"type": "text", "text": thinking_text.strip()}],
-                        message_time=message_time,
-                        character_id=character_id,
-                    )
-                message_renderer.insert_message(self, role, content, message_time=message_time,
-                                                structured_data=structured_data,
-                                                message_id=message_id, character_id=character_id,
-                                                ui_images=entry.get("_ui_images") or [])
-            except Exception as ex:
-                logger.error(f"_on_history_loaded: НУ Я ПОНЯЛ: {str(ex)}")
-        self.update_debug_info()
-        self.chat_window.scroll_to_bottom()
-        self.chat_window.setUpdatesEnabled(True)
-        self.chat_window.update()
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
+            self._pending_history_payload = dict(data or {})
+            return
+
+        payload = dict(data or {})
+        messages = payload.get("messages", []) or []
+        response_character_id = str(payload.get("character_id") or "")
+        request_id = str(payload.get("request_id") or self._history_load_request_id or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        plan = self._chat_presentation.plan_history_projection(
+            request_id=request_id,
+            response_character_id=response_character_id,
+            current_character_id=current_character_id,
+            history_messages=messages,
+        )
+
+        if not plan.accepted:
+            if request_id == self._history_load_request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
+            logger.debug(
+                "[HistoryLoaded] snapshot ignored id=%s reason=%s retry_after_stream=%s",
+                request_id,
+                plan.reason,
+                plan.retry_after_stream,
+            )
+            return
+
+        logger.info(
+            "[HistoryLoaded] Загружено %s сообщений для отображения; replay=%s",
+            len(messages),
+            len(plan.replay),
+        )
+        chat_window.setUpdatesEnabled(False)
+        try:
+            self.render_chat_cleared(reset_presentation=False)
+            for entry in messages:
+                self._render_history_entry(entry, character_id=response_character_id)
+            for command in plan.replay:
+                self._render_chat_command(command)
+            self.update_debug_info()
+            chat_window.scroll_to_bottom()
+        except Exception as exc:
+            logger.error(f"Failed to project loaded history: {format_exception(exc)}", exc_info=True)
+        finally:
+            if request_id == self._history_load_request_id:
+                self._history_load_inflight = False
+                self._history_load_request_id = ""
+            chat_window.setUpdatesEnabled(True)
+            chat_window.update()
 
     def validate_number_0_60(self, new_value):
         if not new_value.isdigit():
@@ -653,184 +711,282 @@ class AppWindowBase(QMainWindow):
             return False
 
     def update_debug_info(self):
-        debug_info_result = self.event_bus.emit_and_wait(Events.Model.GET_DEBUG_INFO, timeout=0.5)
-        debug_info = debug_info_result[0] if debug_info_result else "Debug info not available"
+        if not (hasattr(self, 'debug_window') and self.debug_window):
+            return
 
-        if hasattr(self, 'debug_window') and self.debug_window:
-            self.debug_window.clear()
-            self.debug_window.insertPlainText(debug_info)
+        self._debug_refresh_ticket += 1
+        ticket = self._debug_refresh_ticket
+
+        def apply(debug_info):
+            if ticket != self._debug_refresh_ticket:
+                return
+            if hasattr(self, 'debug_window') and self.debug_window:
+                self.debug_window.clear()
+                self.debug_window.insertPlainText(str(debug_info or "Debug info not available"))
+
+        self._shell_actions.request_debug_info(apply)
 
         # logs_window больше не дублирует debug_info — в нём показывается tail файла логов,
         # а не "Debug info not available". См. _refresh_logs_view().
 
     @staticmethod
     def _fmt_tokens(n) -> str:
-        """Compact token counts: show in thousands (e.g. 12.3k) once above 10000."""
+        """Компактные счётчики токенов: миллионы как «1.5м»/«1.5M» от 1 000 000,
+        тысячи как «21.3к»/«21.3k» от 10 000. Хвостовой .0 убираем (20041 → «20к»,
+        1 000 000 → «1м», а не «1000к»)."""
         try:
             n = int(n)
         except (TypeError, ValueError):
             return str(n)
-        if n > 10000:
-            return f"{n / 1000:.1f}k"
+        if n >= 1_000_000:
+            s = f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}{_('м', 'M')}"
+        if n >= 10000:
+            s = f"{n / 1000:.1f}".rstrip("0").rstrip(".")
+            return f"{s}{_('к', 'k')}"
         return str(n)
 
-    def update_token_count(self, event=None):
-        show_token_info = self._get_setting("SHOW_TOKEN_INFO", True)
-        if show_token_info:
-            stats_res = self.event_bus.emit_and_wait(Events.Model.GET_TOKEN_STATS, timeout=0.5)
-            stats = stats_res[0] if stats_res and isinstance(stats_res[0], dict) else {}
-            current_context_tokens = int(stats.get("estimated_context_tokens") or 0)
-            max_model_tokens = int(stats.get("max_context_tokens") or self._get_setting("MAX_MODEL_TOKENS", 32000))
-            est_cost = stats.get("estimated_input_cost")
-            est_currency = str(stats.get("estimated_input_cost_currency") or "")
-            est_cost_text = "n/a" if est_cost is None else f"{float(est_cost):.6f} {est_currency}".strip()
-            actual_prompt = stats.get("actual_prompt_tokens")
-            actual_completion = stats.get("actual_completion_tokens")
-            actual_cached = stats.get("actual_cached_prompt_tokens")
-            actual_cost = stats.get("actual_cost")
-            actual_currency = str(stats.get("actual_cost_currency") or "")
-            fmt = self._fmt_tokens
-            cost = float(est_cost or 0.0) if est_cost is not None else 0.0
-            self.token_count_label.setText(
-                _("Токены: {}/{} (Макс. токены: {}) | Ориент. стоимость: {:.4f} ₽",
-                  "Tokens: {}/{} (Max tokens: {}) | Approx. cost: {:.4f} ₽").format(
-                    fmt(current_context_tokens), fmt(max_model_tokens), fmt(max_model_tokens), cost
-                )
-            )
-            if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
-                actual_prompt = int(actual_prompt or 0)
-                actual_completion = int(actual_completion or 0)
-                actual_cached = int(actual_cached or 0)
-                actual_total = int(stats.get("actual_total_tokens") or (actual_prompt + actual_completion))
-                actual_cost_text = "n/a" if actual_cost is None else f"{float(actual_cost):.6f} {actual_currency}".strip()
-                if actual_cached > 0:
-                    self.token_count_label.setText(
-                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}, кеш {}) | Факт: {}",
-                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}, cached {}) | Actual: {}").format(
-                            current_context_tokens, max_model_tokens, est_cost_text,
-                            actual_prompt, actual_completion, actual_total, actual_cached, actual_cost_text
-                        )
-                    )
-                else:
-                    self.token_count_label.setText(
-                        _("Контекст: ~{}/{} | Оценка входа: {} | Последний запрос: {}/{} (всего {}) | Факт: {}",
-                          "Context: ~{}/{} | Est. input: {} | Last request: {}/{} (total {}) | Actual: {}").format(
-                            current_context_tokens, max_model_tokens, est_cost_text,
-                            actual_prompt, actual_completion, actual_total, actual_cost_text
-                        )
-                    )
-            else:
-                self.token_count_label.setText(
-                    _("Контекст: ~{}/{} | Оценка входа: {}",
-                      "Context: ~{}/{} | Est. input: {}").format(
-                        current_context_tokens, max_model_tokens, est_cost_text
-                    )
-                )
-            self.token_count_label.setVisible(True)
+    def _render_token_stats_html(self, stats: dict, max_fallback: int) -> tuple[str, str]:
+        """Строка статистики под чатом → (rich-HTML, tooltip).
+
+        Две смысловые зоны: слева ОЦЕНКА до отправки (заполнение окна контекста
+        с цветной полоской), справа ФАКТ по последнему ответу провайдера
+        (запрос ▸ ответ, Σ). Деньги показываем ТОЛЬКО когда цена известна —
+        на бесплатном тарифе колонок стоимости просто нет (не пишем n/a)."""
+        fmt = self._fmt_tokens
+        MUTED = "#8a8a9a"
+        TEXT = "#cfcfe0"
+        SEP = "#55556a"
+
+        ctx = int(stats.get("estimated_context_tokens") or 0)
+        win = int(stats.get("max_context_tokens") or max_fallback or 32000)
+        pct = (ctx / win * 100.0) if win else 0.0
+
+        # Цвет заполнения окна: зелёный <50%, жёлтый 50–85%, красный >85%.
+        if pct >= 85:
+            fill = "#ff6b61"
+        elif pct >= 50:
+            fill = "#ffd60a"
         else:
-            self.token_count_label.setVisible(False)
-            self.token_count_label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
+            fill = "#79e78c"
+        cells = 5
+        filled = 0 if pct <= 0 else max(1, min(cells, int(round(pct / 100.0 * cells))))
+        bar = (
+            f"<span style='color:{fill};font-family:Consolas,monospace'>"
+            f"{'▰' * filled}{'▱' * (cells - filled)}</span>"
+        )
+        pct_str = f"{pct:.1f}%" if 0 < pct < 10 else f"{pct:.0f}%"
+        ctx_color = fill if pct >= 85 else TEXT  # у предела — подсвечиваем числа
+
+        ctx_label = _("Контекст", "Context")
+        ctx_html = (
+            f"<span style='color:{MUTED}'>≈&nbsp;{ctx_label}</span>&nbsp;{bar}&nbsp;"
+            f"<span style='color:{ctx_color}'>{fmt(ctx)}&nbsp;/&nbsp;{fmt(win)}&nbsp;·&nbsp;{pct_str}</span>"
+        )
+        est_cost = stats.get("estimated_input_cost")
+        if est_cost is not None:
+            cur = str(stats.get("estimated_input_cost_currency") or "").strip()
+            ctx_html += f"<span style='color:{MUTED}'>&nbsp;·&nbsp;~{float(est_cost):.4f}&nbsp;{cur}</span>"
+
+        parts = [ctx_html]
+
+        actual_prompt = stats.get("actual_prompt_tokens")
+        actual_completion = stats.get("actual_completion_tokens")
+        actual_cost = stats.get("actual_cost")
+        if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+            ap = int(actual_prompt or 0)
+            ac = int(actual_completion or 0)
+            at = int(stats.get("actual_total_tokens") or (ap + ac))
+            req_label = _("Прошлый запрос", "Last request")
+            req_html = (
+                f"<span style='color:{MUTED}'>{req_label}:</span>&nbsp;"
+                f"<span style='color:{TEXT}'>{fmt(ap)}&nbsp;▸&nbsp;{fmt(ac)}</span>&nbsp;"
+                f"<span style='color:{MUTED}'>(Σ&nbsp;{fmt(at)})</span>"
+            )
+            if actual_cost is not None:
+                acur = str(stats.get("actual_cost_currency") or "").strip()
+                req_html += f"<span style='color:{TEXT}'>&nbsp;·&nbsp;{float(actual_cost):.4f}&nbsp;{acur}</span>"
+            parts.append(req_html)
+
+        sep = f"<span style='color:{SEP}'>&nbsp;&nbsp;│&nbsp;&nbsp;</span>"
+        html = sep.join(parts)
+
+        tip = _(
+            "Слева — оценка ДО отправки: сколько занято окна контекста (≈ — локальная "
+            "прикидка, полоска и % от лимита модели).\n"
+            "Справа — ФАКТ по последнему ответу провайдера: токены запроса ▸ ответа "
+            "(Σ — всего).\n"
+            "Стоимость показывается только если цена модели известна (на бесплатном "
+            "тарифе её нет).",
+            "Left — estimate BEFORE sending: how much of the context window is used "
+            "(≈ local guess; bar and % of the model limit).\n"
+            "Right — ACTUAL provider usage for the last reply: request ▸ reply tokens "
+            "(Σ total).\n"
+            "Cost is shown only when the model price is known (free tier has none).",
+        )
+        return html, tip
+
+    def update_token_count(self, event=None):
+        # Token UI belongs to the lazy Sandbox page. Backend events may arrive
+        # before that page is created or while it is being destroyed.
+        label = getattr(self, "token_count_label", None)
+        if label is None:
+            self._token_refresh_pending = True
+            return False
+
+        # По умолчанию выключено (#7): строка со статистикой токенов/стоимости
+        # включается галкой «Показывать статистику токенов/стоимости».
+        show_token_info = self._get_setting("SHOW_TOKEN_INFO", False)
+        if show_token_info:
+            self._token_refresh_ticket += 1
+            ticket = self._token_refresh_ticket
+
+            def apply(stats: dict):
+                payload = {
+                    "stats": stats or {},
+                    "max_model_tokens": int(self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000),
+                }
+                if ticket != self._token_refresh_ticket:
+                    return
+
+                current_label = getattr(self, "token_count_label", None)
+                if current_label is None:
+                    self._token_refresh_pending = True
+                    return
+
+                stats = payload.get("stats") or {}
+                html, tip = self._render_token_stats_html(
+                    stats, int(payload.get("max_model_tokens") or 32000)
+                )
+                current_label.setTextFormat(Qt.TextFormat.RichText)
+                current_label.setText(html)
+                current_label.setToolTip(tip)
+                current_label.setVisible(True)
+                self.update_debug_info()
+
+            self._shell_actions.request_token_stats(apply)
+            return
+        else:
+            label.setVisible(False)
+            label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
         self.update_debug_info()
+        return True
 
     def update_chat_font_size(self, font_size):
         self._chat_font_size = font_size
+        self._chat_render_context.set_font_size(font_size)
 
     def clear_chat_display(self):
-        logger.debug("[Clear] clear_chat_display: начало")
-        logger.debug(f"[Clear] chat_window.message_count: {self.chat_window.message_count()}")
-        self.chat_window.clear_messages()
-        logger.debug("[Clear] Сообщения очищены")
-        self.event_bus.emit(Events.Chat.CLEAR_CHAT)
-        logger.debug("[Clear] clear_chat_display: конец")
+        return self._shell_actions.clear_chat()
 
-    def send_message(self, system_input: str = "", image_data: list[bytes] = None):
-        user_input = self.user_entry.toPlainText().strip()
-        current_image_data = []
-        staged_image_data = self.staged_image_data.copy()
-
-        character_id = ""
-        try:
-            prof_res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            prof = prof_res[0] if prof_res else {}
-            if isinstance(prof, dict):
-                character_id = str(prof.get("character_id") or "")
-        except Exception:
-            character_id = ""
-
-        if self._get_setting("AUTO_ATTACH_IMAGES", False):
-            history_limit = int(self._get_setting("SCREEN_CAPTURE_HISTORY_LIMIT", 1))
-            frames = self.event_bus.emit_and_wait(Events.Capture.CAPTURE_SCREEN, {'limit': history_limit}, timeout=0.5)
-            if frames and frames[0]:
-                current_image_data.extend(frames[0])
-            else:
-                logger.info("Авто-прикрепление кадров включено, но кадры не готовы или история пуста.")
-
-        all_image_data = (image_data or []) + current_image_data + staged_image_data
-
-        if self._get_setting("ENABLE_CAMERA_CAPTURE", False):
-            history_limit = int(self._get_setting("CAMERA_CAPTURE_HISTORY_LIMIT", 1))
-            camera_frames = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_FRAMES, {'limit': history_limit}, timeout=0.5)
-            if camera_frames and camera_frames[0]:
-                all_image_data.extend(camera_frames[0])
-                logger.info(f"Добавлено {len(camera_frames[0])} кадров с камеры для отправки.")
-            else:
-                logger.info("Захват с камеры включен, но кадры не готовы или история пуста.")
-
-        if not self._get_setting("ENABLE_IMAGE_ANALYSIS", True):
-            all_image_data = []
-            logger.info("ENABLE_IMAGE_ANALYSIS отключен — изображения не отправляются.")
-
-        if not user_input and not system_input and not all_image_data:
+    def render_chat_cleared(self, *, reset_presentation: bool = True) -> None:
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is None:
             return
+        if reset_presentation:
+            self._chat_presentation.reset()
+            self._history_load_inflight = False
+            self._history_load_request_id = ""
+        else:
+            self._chat_presentation.mark_streams_unmounted()
+        self._chat_render_context.reset_transient_state()
+        logger.debug("[Clear] chat_window.message_count: %s", chat_window.message_count())
+        chat_window.clear_messages()
 
-        # Generate req_id now so we can pre-compute the user message_id for the widget
-        req_id = uuid.uuid4().hex
-        user_message_id = f"in:{req_id}"
+    def user_input_text(self) -> str:
+        entry = getattr(self, "user_entry", None)
+        return entry.toPlainText().strip() if entry is not None else ""
 
+    def staged_images_snapshot(self) -> list:
+        panel = self._chat_panel_view
+        if panel is not None:
+            return panel.staged_images_snapshot()
+        return list(self.staged_image_data)
+
+    def show_send_error(self, message: str) -> None:
+        logger.info(message)
+        self.show_error_signal.emit(str(message))
+
+    def render_outgoing_message(
+        self,
+        *,
+        user_input: str,
+        image_content: list,
+        message_id: str,
+        clear_entry: bool,
+    ) -> None:
+        character_id = str(self._shell_actions.current_character_id() or "")
         if user_input:
-            message_renderer.insert_message(self, "user", user_input, message_id=user_message_id)
+            text_command = ChatRenderCommand(
+                role="user",
+                content=user_input,
+                character_id=character_id,
+                message_id=str(message_id or ""),
+            )
+            if self._chat_presentation.record_live(text_command):
+                self._render_chat_command(text_command)
+        if image_content:
+            image_command = ChatRenderCommand(
+                role="user",
+                content=image_content,
+                character_id=character_id,
+                message_id=str(message_id or ""),
+            )
+            if self._chat_presentation.record_live(image_command):
+                self._render_chat_command(image_command)
+        if clear_entry and self.user_entry is not None:
             self.user_entry.clear()
 
-        if all_image_data:
-            image_content_for_display = [{"type": "image_url", "image_url": {
-                "url": f"data:image/jpeg;base64,{base64.b64encode(img).decode('utf-8')}"}} for img in all_image_data]
+    def show_thinking_now(self) -> None:
+        self.show_thinking_signal.emit(self._get_character_name())
 
-            if not user_input:
-                label = _("<Изображения>", "<Images>")
-                if staged_image_data and not current_image_data and not (image_data or []):
-                    label = _("<Прикрепленные изображения>", "<Attached Images>")
-                elif (current_image_data or (image_data or [])) and not staged_image_data:
-                    label = _("<Изображение экрана>", "<Screen Image>")
+    def clear_staged_images_view(self) -> None:
+        panel = self._chat_panel_view
+        if panel is not None:
+            panel.clear_staged_images_view()
+            return
+        self.staged_image_data.clear()
 
-                image_content_for_display.insert(0, {"type": "text", "content": label + "\n"})
+    def send_message(
+        self,
+        system_input: str = "",
+        image_data: list[bytes] | None = None,
+        user_input: str | None = None,
+        merge_input_from_entry: bool = False,
+        trace_id: str | None = None,
+    ):
+        result = self._shell_actions.send_message(
+            system_input=system_input,
+            image_data=image_data,
+            user_input=user_input,
+            trace_id=trace_id,
+            merge_input_from_entry=merge_input_from_entry,
+        )
+        if result is False:
+            self.show_send_error(_("Backend недоступен.", "Backend is unavailable."))
+        return result
 
-            message_renderer.insert_message(self, "user", image_content_for_display,
-                                            message_id=user_message_id)
-
-        self.event_bus.emit(Events.Chat.SEND_MESSAGE, {
-            "user_input": user_input,
-            "system_input": system_input,
-            "image_data": all_image_data,
-            "character_id": character_id,
-            "sender": "Player",
-            "req_id": req_id,
-        })
-
-        if staged_image_data:
-            self.event_bus.emit(Events.Chat.CLEAR_STAGED_IMAGES)
-            self.staged_image_data.clear()
-            if self.image_preview_bar:
-                self.image_preview_bar.clear()
-                hide_image_preview_bar(self)
+    def cancel_active_generations(self) -> None:
+        self._shell_actions.cancel_active_generations()
 
     def load_more_history(self):
-        self.event_bus.emit(Events.Model.LOAD_MORE_HISTORY)
+        if getattr(self, "chat_window", None) is None:
+            return False
+        self._shell_actions.load_more_history(
+            character_id=str(self._shell_actions.current_character_id() or ""),
+        )
+        return True
 
     def _on_more_history_loaded(self, data: dict):
+        if getattr(self, "chat_window", None) is None:
+            return
         messages_to_prepend = data.get('messages', [])
         if not messages_to_prepend:
             return
-        character_id = data.get('character_id', '')
+        character_id = str(data.get('character_id') or '')
+        current_character_id = str(self._shell_actions.current_character_id() or '')
+        if character_id and current_character_id and character_id.casefold() != current_character_id.casefold():
+            return
         scrollbar = self.chat_window.verticalScrollBar()
         old_value = scrollbar.value()
         old_max = scrollbar.maximum()
@@ -840,51 +996,95 @@ class AppWindowBase(QMainWindow):
             message_time = entry.get("time", "???")
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
-            message_renderer.insert_message(self, role, content, insert_at_start=True,
+            sample_id = entry.get("sample_id")
+            message_renderer.insert_message(self._chat_render_context, role, content, insert_at_start=True,
                                             message_time=message_time, structured_data=structured_data,
                                             message_id=message_id, character_id=character_id,
-                                            ui_images=entry.get("_ui_images") or [])
+                                            ui_images=entry.get("_ui_images") or [],
+                                            sample_id=sample_id,
+                                            context_snapshot_id=entry.get("context_snapshot_id"))
         QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
     def _save_setting(self, key, value):
-        self.event_bus.emit(Events.Settings.SAVE_SETTING, {'key': key, 'value': value})
+        binding = getattr(self, "settings_binding", None)
+        if binding is not None:
+            binding.set(key, value)
+            return
+        self.settings.set(key, value)
 
     def _get_setting(self, key, default=None):
+        view_model = getattr(self, "settings_view_model", None)
+        if view_model is not None:
+            return view_model.get(key, default)
         return self.settings.get(key, default)
 
     def _get_character_name(self):
-        result = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_NAME, timeout=0.5)
-        return result[0] if result else "Assistant"
+        combo = getattr(self, "chat_character_combobox", None)
+        try:
+            text = combo.currentText().strip() if combo is not None else ""
+            if text and text != "...":
+                return text
+        except Exception:
+            pass
+        return str(self._get_setting("CHARACTER_NAME", "Assistant") or "Assistant")
+
+    @property
+    def is_closed(self) -> bool:
+        return self._close_requested
 
     def closeEvent(self, event):
-        self.event_bus.emit(Events.Capture.STOP_SCREEN_CAPTURE)
-        self.event_bus.emit(Events.Capture.STOP_CAMERA_CAPTURE)
-        self.event_bus.emit(Events.Audio.DELETE_SOUND_FILES)
-        self.event_bus.emit(Events.Server.STOP_SERVER)
+        if self._close_finalizing:
+            logger.info("Закрываемся")
+            event.accept()
+            return
+
+        event.ignore()
+        if self._close_requested:
+            return
+
+        self._close_requested = True
+        self._show_shutdown_overlay()
+        logger.info("Закрытие запланировано вне нативного closeEvent")
+        QTimer.singleShot(50, self._finish_deferred_close)
+
+    def _show_shutdown_overlay(self) -> None:
+        from ui.widgets.shutdown_overlay import ShutdownOverlayPanel
+
+        overlay = getattr(self, "overlay", None)
+        if overlay is None:
+            self.setEnabled(False)
+            return
+
+        central_widget = self.centralWidget()
+        if central_widget is not None:
+            central_widget.setEnabled(False)
+        overlay.set_content(ShutdownOverlayPanel(overlay), locked=True)
+        overlay.setGeometry(self.rect())
+        overlay.show_immediate()
+        overlay.repaint()
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _finish_deferred_close(self):
+        logger.info("Начинаем отложенное завершение backend и GUI")
+        try:
+            self._shell_actions.close_application()
+        except Exception as exc:
+            logger.error(f"Ошибка при закрытии приложения: {format_exception(exc)}", exc_info=True)
 
         try:
-            if hasattr(self, "window_manager") and self.window_manager:
-                self.window_manager.close_all(destroy=True)
+            self._window_actions.close()
         except Exception:
             pass
 
-        logger.info("Закрываемся")
-        event.accept()
+        self._close_finalizing = True
+        logger.info("Отложенное завершение выполнено; закрываем главное окно")
+        self.close()
 
     def close_app(self):
         logger.info("Завершение программы...")
         self.close()
 
-    def _open_logs_folder(self):
-        log_path = Path("NeuroMitaLogs.log")
-        target = log_path.resolve().parent if log_path.exists() else Path.cwd()
-        try:
-            os.startfile(str(target))  # noqa: S606 - Windows-only launcher
-        except Exception as exc:
-            logger.info(f"Не удалось открыть папку логов: {exc}")
-
- 
     def _show_ffmpeg_installing_popup(self):
         if hasattr(self, 'ffmpeg_install_popup') and self.ffmpeg_install_popup:
             return
@@ -915,65 +1115,118 @@ class AppWindowBase(QMainWindow):
             pass
 
     def _on_show_tg_code_dialog(self, data: dict):
-        code_future = data.get('future')
-        show_tg_code_dialog(self, code_future, self.event_bus)
+        show_tg_code_dialog(
+            self,
+            self._telegram_auth_actions,
+            str(data.get("request_id") or ""),
+            error=data.get("error", ""),
+        )
 
     def _on_show_tg_password_dialog(self, data: dict):
-        password_future = data.get('future')
-        show_tg_password_dialog(self, password_future, self.event_bus)
+        show_tg_password_dialog(
+            self,
+            self._telegram_auth_actions,
+            str(data.get("request_id") or ""),
+            error=data.get("error", ""),
+        )
 
     def _on_chat_anchor_clicked(self, url):
         href = url.toString()
         if href.startswith("think://toggle/"):
             try:
                 block_id = int(href.split("/")[-1])
-                message_renderer.toggle_think_block(self, block_id)
+                message_renderer.toggle_think_block(self._chat_render_context, block_id)
             except Exception as e:
-                logger.error(f"Error toggling think block {block_id}: {e}")
+                logger.error(f"Error toggling think block {block_id}: {format_exception(e)}")
 
-    def _show_thinking_slot(self, character_name: str):
+    def _show_thinking_slot(self, character_name):
+        # Старт новой генерации (имя персонажа — строка, а не dict сжатия/инструмента):
+        # снимаем пометку «не дошло» с прошлого упавшего пузыря.
+        if isinstance(character_name, str) and self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.clear_message_errors(self._chat_render_context)
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
             self.mita_status.show_thinking(character_name)
 
     def _show_error_slot(self, error_message: str):
+        self._pending_chat_error = str(error_message or "")
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Показываем статус ошибки: %s', error_message)
             self.mita_status.show_error(error_message)
+            self._pending_chat_error = None
+        # Помечаем сам пузырь пользователя: «сообщение не дошло» + отправить снова.
+        if self._chat_render_context.is_bound:
+            from ui.chat import message_renderer
+            message_renderer.mark_last_user_error(
+                self._chat_render_context, str(error_message or "")
+            )
 
     def _hide_status_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             logger.info('Скрываем статус')
             self.mita_status.hide_animated()
-    
+
+    def _hide_generation_status_slot(self):
+        if hasattr(self, 'mita_status') and self.mita_status:
+            self.mita_status.hide_generation()
+
     def _pulse_error_slot(self):
         if hasattr(self, 'mita_status') and self.mita_status:
             self.mita_status.pulse_error_animation()
 
-    def _on_stream_start(self):
+    def _show_voicing_slot(self, payload=None):
+        # Voicing is rendered on the message bubble rather than the global status bar.
+        # Подсветить конкретный пузырь, который сейчас озвучивается.
+        message_id = payload.get("message_id") if isinstance(payload, dict) else None
+        if message_id and getattr(self, "chat_window", None):
+            try:
+                self.chat_window.set_message_voicing(message_id, True)
+            except Exception:
+                pass
+
+    def _hide_voicing_slot(self):
+        # No global voicing status to clear; only the per-message marker.
+        if getattr(self, "chat_window", None):
+            try:
+                self.chat_window.clear_message_voicing()
+            except Exception:
+                pass
+
+    def _hide_compression_slot(self):
+        if hasattr(self, 'mita_status') and self.mita_status:
+            self.mita_status.hide_compression()
+
+    def _on_stream_start(self, _data=None):
         pass
 
-    def _on_stream_finish(self):
-        print("[DEBUG] Стрим завершен, скрываем статус")
-        self.event_bus.emit(Events.GUI.HIDE_MITA_STATUS)
+    def _on_stream_finish(self, data=None):
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if self._chat_presentation.finish_stream(
+            stream_id,
+            current_character_id=current_character_id,
+        ):
+            QTimer.singleShot(0, self.load_chat_history)
 
     def _on_reload_prompts_success(self):
-        QMessageBox.information(self, _("Успешно", "Success"), 
+        QMessageBox.information(self, _("Успешно", "Success"),
             _("Промпты успешно скачаны и перезагружены.", "Prompts successfully downloaded and reloaded."))
-    
+
     def _on_reload_prompts_failed(self, data: dict):
         error = data.get('error', 'Unknown error')
         if error == "Event loop not running":
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
                 _("Не удалось запустить асинхронную загрузку промптов.", "Failed to start asynchronous prompt download."))
         else:
-            QMessageBox.critical(self, _("Ошибка", "Error"), 
-                _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.", 
+            QMessageBox.critical(self, _("Ошибка", "Error"),
+                _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.",
                   "Failed to download prompts from GitHub. Check your internet connection."))
-    
+
     def _show_loading_popup(self, message):
-        self.event_bus.emit(Events.GUI.SHOW_LOADING_POPUP, {"message": message})
-    
+        self._on_display_loading_popup({"message": message})
+
     def _on_display_loading_popup(self, data: dict):
         message = data.get('message', 'Loading...')
         if not hasattr(self, 'loading_popup'):
@@ -986,10 +1239,10 @@ class AppWindowBase(QMainWindow):
         else:
             self.loading_popup.setLabelText(message)
         self.loading_popup.show()
-    
+
     def _close_loading_popup(self):
-        self.event_bus.emit(Events.GUI.CLOSE_LOADING_POPUP)
-    
+        self._on_hide_loading_popup()
+
     def _on_hide_loading_popup(self):
         if hasattr(self, 'loading_popup') and self.loading_popup:
             self.loading_popup.close()
@@ -997,11 +1250,38 @@ class AppWindowBase(QMainWindow):
     def _on_clear_user_input(self):
         if self.user_entry:
             self.user_entry.clear()
-    
-    def _on_insert_user_input(self, text: str):
-        if self.user_entry:
+
+    def _on_insert_user_input(self, data: dict):
+        if not self.user_entry:
+            return
+
+        text = str(data.get("text") or "")
+        if text:
             self.user_entry.insertPlainText(text + " ")
             self.user_entry.ensureCursorVisible()
+
+        # Поле ввода — и есть накопитель голоса: отправляем не отдельную фразу,
+        # а всё, что в нём лежит, включая напечатанное руками.
+        delay = float(data.get("autosend_after") or 0.0)
+        if delay > 0:
+            self._voice_autosend_timer.start(int(delay * 1000))
+        else:
+            self._voice_autosend_timer.stop()
+
+    def _on_user_entry_edited(self):
+        # Пока игрок печатает, отсчёт до автоотправки начинается заново — иначе
+        # таймер обрубил бы фразу на полуслове.
+        if self._voice_autosend_timer.isActive():
+            self._voice_autosend_timer.start()
+
+    def _on_voice_autosend_timeout(self):
+        if not self.user_entry or not self.user_entry.toPlainText().strip():
+            return
+        if not self._shell_actions.voice_autosend_ready():
+            # Ответ ещё генерируется — ждём следующего круга, текст не теряем.
+            self._voice_autosend_timer.start()
+            return
+        self.send_message()
 
     def _on_show_info_message(self, data: dict):
         title = data.get('title', 'Информация')
@@ -1014,7 +1294,9 @@ class AppWindowBase(QMainWindow):
         QMessageBox.critical(self, title, message)
 
     def _on_remove_last_chat_widgets(self, n: int):
-        self.chat_window.remove_last_n_widgets(n)
+        chat_window = getattr(self, "chat_window", None)
+        if chat_window is not None:
+            chat_window.remove_last_n_widgets(n)
 
     def _on_update_model_loading_status(self, status: str):
         if hasattr(self, 'loading_status_label'):
@@ -1030,34 +1312,25 @@ class AppWindowBase(QMainWindow):
         if not text:
             return
         character_id = self._get_current_character_id_for_debug()
-        self.event_bus.emit(Events.Chat.INSERT_SYSTEM_MESSAGE, {
-            "text": text,
-            "character_id": character_id,
-            "as_user": self._debug_as_user_cb.isChecked(),
-        })
+        self._shell_actions.insert_debug_message(
+            text=text,
+            character_id=character_id,
+            as_user=self._debug_as_user_cb.isChecked(),
+        )
         self._debug_system_input.clear()
 
     def _on_debug_save_snapshot(self):
         character_id = self._get_current_character_id_for_debug()
-        self.event_bus.emit(Events.Chat.SAVE_SNAPSHOT, {"character_id": character_id})
-        self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+        self._shell_actions.save_snapshot(character_id)
+        self._on_show_info_message({
             "title": _("Snapshot", "Snapshot"),
             "message": _("Snapshot сохранён в папку Histories/.../Saved/",
                          "Snapshot saved to Histories/.../Saved/"),
         })
 
     def _on_debug_load_snapshot(self):
-        import os
         character_id = self._get_current_character_id_for_debug()
-
-        histories_root = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
-        start_dir = histories_root
-        if character_id:
-            candidate = os.path.join(histories_root, character_id, "Saved")
-            if os.path.isdir(candidate):
-                start_dir = candidate
-        if not os.path.isdir(start_dir):
-            start_dir = "."
+        start_dir = self._shell_actions.snapshot_start_directory(character_id)
 
         # QFileDialog must run in the main thread — do it here in the View
         file_path, __ = QFileDialog.getOpenFileName(
@@ -1073,59 +1346,27 @@ class AppWindowBase(QMainWindow):
         # ChatController reads the JSON and saves history, then emits RELOAD_CHAT_HISTORY.
         # SettingsController catches that and calls load_chat_history_signal.emit(),
         # which safely returns execution to the main thread — no 0xC0000409 crashes.
-        self.event_bus.emit(Events.Chat.LOAD_SNAPSHOT, {
-            "file_path": file_path,
-            "character_id": character_id,
-        })
+        self._shell_actions.load_snapshot(
+            file_path=file_path,
+            character_id=character_id,
+        )
 
     def _on_debug_view_last_context(self, initial_tab: str = "request"):
-        import json
-        import os
-        from ui.dialogs.styled_message import show_styled_message
-        base = os.environ.get("NEUROMITA_BASE_DIR", "")
-        path = (
-            os.path.join(base, "SavedMessages", "last_request_context.json")
-            if base
-            else os.path.join("SavedMessages", "last_request_context.json")
+        from ui.chat.message_actions_presentation import ViewChatSampleContext
+
+        self._chat_message_actions.dispatch(
+            ViewChatSampleContext("", str(initial_tab or "request"))
         )
-        if not os.path.isfile(path):
-            show_styled_message(
-                self,
-                _("Нет данных", "No data"),
-                _("Файл контекста не найден. Сначала отправьте сообщение.",
-                  "Context file not found. Send a message first."),
-                level="warning",
-            )
-            return
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            show_styled_message(self, _("Ошибка", "Error"), str(e), level="error")
-            return
-        try:
-            from ui.dialogs.context_viewer_dialog import ContextViewerDialog
-            ContextViewerDialog(data, parent=self, initial_tab=initial_tab).exec()
-        except Exception as e:
-            import traceback
-            show_styled_message(
-                self, _("Ошибка открытия диалога", "Dialog error"),
-                f"{e}\n\n{traceback.format_exc()}",
-                level="error",
-            )
 
     def _on_debug_view_last_response_context(self):
         self._on_debug_view_last_context(initial_tab="response")
 
     def _get_current_character_id_for_debug(self) -> str:
-        try:
-            res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=0.5)
-            profile = res[0] if res else {}
-            if isinstance(profile, dict):
-                return str(profile.get("character_id") or "")
-        except Exception:
-            pass
-        return ""
+        return self._shell_actions.current_character_id()
+
+    def current_character_id(self) -> str:
+        """Public UI query backed by the injected shell action port."""
+        return self._shell_actions.current_character_id()
 
     def _news_wrapper(self, parent_layout):
         self.setup_news_control(parent_layout)
@@ -1153,7 +1394,7 @@ class AppWindowBase(QMainWindow):
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 10)
         header_layout.setSpacing(5)
-        
+
         title_label = QLabel(title)
         title_label.setObjectName('SectionTitle')
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1161,7 +1402,7 @@ class AppWindowBase(QMainWindow):
             QLabel#SectionTitle { font-size: 14px; font-weight: bold; color: #ffffff; padding: 5px 0; }
         ''')
         header_layout.addWidget(title_label)
-        
+
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
@@ -1178,271 +1419,343 @@ class AppWindowBase(QMainWindow):
     def _check_eula_and_guide(self):
         if not self._get_setting("EULA_ACCEPTED", False):
             self._show_eula_dialog()
-    
+
     def _show_eula_dialog(self):
         from ui.widgets.eula_widget import EULAWidget
-        eula_widget = EULAWidget()
+        eula_widget = EULAWidget(self.settings_binding or self.settings)
         eula_widget.accepted.connect(lambda: self._on_eula_accepted(eula_widget))
         eula_widget.rejected.connect(lambda: self._on_eula_rejected(eula_widget))
         self.overlay.set_content(eula_widget, locked=True)
         self.overlay.show_animated()
-        
+
     def _on_eula_accepted(self, eula_widget):
         self.overlay.hide_animated()
+        # Если на стартовом экране выбрали другой язык — интерфейс уже построен
+        # на старом, поэтому предлагаем перезапуск. При отказе продолжаем как есть.
+        try:
+            if eula_widget.language_changed_on_start():
+                from ui.language_restart import prompt_language_restart
+                if prompt_language_restart(self):
+                    return
+        except Exception:
+            pass
         QTimer.singleShot(500, self._show_guide)
-        
+
     def _on_eula_rejected(self, eula_widget):
-        QMessageBox.critical(self, "Отказ от соглашения / Agreement Rejected", 
+        QMessageBox.critical(self, "Отказ от соглашения / Agreement Rejected",
             "Вы не можете использовать программу без принятия лицензионного соглашения.\n"
             "You cannot use the software without accepting the license agreement.")
         self.close()
-        import sys
-        sys.exit(0)
-        
+
     def _show_guide(self):
-        from ui.widgets.guide_widget import GuideWidget
-        guide_widget = GuideWidget()
-        guide_widget.closed.connect(lambda: self._on_guide_closed(guide_widget))
-        self.overlay.set_content(guide_widget)
-        self.overlay.show_animated()
-        guide_widget.start()
-        
-    def _on_guide_closed(self, guide_widget):
-        self.overlay.hide_animated()
-        
+        window_manager = getattr(self, "window_manager", None)
+        if window_manager is None:
+            logger.error("Guide requested before WindowManager was attached")
+            return
+        window_manager.show_dialog(
+            "guide",
+            {"open_wiki": self._open_guide_wiki},
+        )
+
+    def _open_guide_wiki(self, target: str):
+        page_actions = getattr(self, "_page_actions", None)
+        if page_actions is None or not hasattr(page_actions, "open_wiki_document"):
+            return
+        page_actions.open_wiki_document(target)
+
     def _setup_guide_highlights(self, guide_widget):
-        if len(guide_widget.pages) > 1:
-            guide_widget.pages[1].set_highlight_target(
-                lambda: self.settings_buttons.get("language") if hasattr(self, 'settings_buttons') else None
+        """Bind guide pages to the settings controls they describe."""
+        targets = {
+            1: "api",
+            2: "voice",
+            3: "microphone",
+            4: "models",
+            5: "screen",
+            6: "models",
+            7: "debug",
+        }
+        for page_index, setting_key in targets.items():
+            if page_index >= len(guide_widget.pages):
+                continue
+            guide_widget.pages[page_index].set_highlight_target(
+                lambda key=setting_key: (
+                    self.settings_buttons.get(key)
+                    if hasattr(self, "settings_buttons")
+                    else None
+                )
             )
-        if len(guide_widget.pages) > 2:
-            guide_widget.pages[2].set_highlight_target(
-                lambda: self.settings_buttons.get("api") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 3:
-            guide_widget.pages[3].set_highlight_target(
-                lambda: self.settings_buttons.get("models") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 4:
-            guide_widget.pages[4].set_highlight_target(
-                lambda: self.settings_buttons.get("voice") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 5:
-            guide_widget.pages[5].set_highlight_target(
-                lambda: self.settings_buttons.get("microphone") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 6:
-            guide_widget.pages[6].set_highlight_target(
-                lambda: self.settings_buttons.get("characters") if hasattr(self, 'settings_buttons') else None
-            )
-        if len(guide_widget.pages) > 7:
-            guide_widget.pages[7].set_highlight_target(
-                lambda: self.chat_window if hasattr(self, 'chat_window') else None
-            )
-        if len(guide_widget.pages) > 8:
-            guide_widget.pages[8].set_highlight_target(
-                lambda: self.token_count_label if hasattr(self, 'token_count_label') else None
-            )
-        if len(guide_widget.pages) > 9:
-            guide_widget.pages[9].set_highlight_target(
-                lambda: self.settings_buttons.get("debug") if hasattr(self, 'settings_buttons') else None
-            )
-    
-        # ===== Совместимость: обновление индикаторов статуса =====
+
+        # ===== Обновление индикаторов статуса =====
     def update_status_colors(self):
-        from managers.settings_manager import SettingsManager
-        game_connected = self.event_bus.emit_and_wait(Events.Server.GET_GAME_CONNECTION, timeout=0.5)
-        silero_connected = self.event_bus.emit_and_wait(Events.Telegram.GET_SILERO_STATUS, timeout=0.5)
-        mic_active = self.event_bus.emit_and_wait(Events.Speech.GET_MIC_STATUS, timeout=0.5)
-        screen_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_SCREEN_CAPTURE_STATUS, timeout=0.5)
-        camera_capture_active = self.event_bus.emit_and_wait(Events.Capture.GET_CAMERA_CAPTURE_STATUS, timeout=0.5)
-        rag_enabled = SettingsManager.get("RAG_ENABLED", False)
-
-        use_voice = bool(SettingsManager.get("USE_VOICEOVER", False))
-        method = str(SettingsManager.get("VOICEOVER_METHOD", "TG") or "TG")
-
-        registry = getattr(self, "_status_indicator_registry", {})
-
-        def apply_to(attr_name, checked=None, text=None):
-            widgets = list(registry.get(attr_name, []))
-            fallback = getattr(self, attr_name, None)
-            if fallback is not None and fallback not in widgets:
-                widgets.append(fallback)
-
-            for widget in widgets:
-                if text is not None and hasattr(widget, "setText"):
-                    widget.setText(text)
-                if checked is not None and hasattr(widget, "setChecked"):
-                    widget.setChecked(bool(checked))
-
-        apply_to("game_status_checkbox", checked=bool(game_connected and game_connected[0]))
-
-        if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
-            if method == "Local":
-                voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
-                if use_voice:
-                    model_id = str(SettingsManager.get("NM_CURRENT_VOICEOVER", "") or "")
-                    is_init = self.event_bus.emit_and_wait(
-                        Events.Audio.CHECK_MODEL_INITIALIZED, {'model_id': model_id}, timeout=0.5
-                    ) if model_id else None
-                    voice_active = bool(is_init and is_init[0])
-                else:
-                    voice_active = False
-            else:
-                voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
-                voice_active = bool(use_voice and silero_connected and silero_connected[0])
-            apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
-
-        apply_to("rag_status_checkbox", checked=bool(rag_enabled))
-        apply_to("mic_status_checkbox", checked=bool(mic_active and mic_active[0]))
-        apply_to("screen_capture_status_checkbox", checked=bool(screen_capture_active and screen_capture_active[0]))
-        apply_to("camera_capture_status_checkbox", checked=bool(camera_capture_active and camera_capture_active[0]))
-
-    # ===== Совместимость: диалоги g4f =====
-    def trigger_g4f_reinstall_schedule(self):
-        logger.info("Запрос на планирование обновления g4f...")
-        target_version = None
-        if hasattr(self, 'g4f_version_entry') and self.g4f_version_entry:
-            target_version = self.g4f_version_entry.text().strip()
-            if not target_version:
-                QMessageBox.critical(self, _("Ошибка", "Error"),
-                    _("Пожалуйста, введите версию g4f или 'latest'.", "Please enter a g4f version or 'latest'."))
-                return
-        else:
-            logger.error("Виджет entry для версии g4f не найден.")
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                _("Не найден элемент интерфейса для ввода версии.", "UI element for version input not found."))
+        if self._shell_actions.is_closing:
+            return
+        if QApplication.closingDown():
             return
 
-        success = self.event_bus.emit_and_wait(Events.Model.SCHEDULE_G4F_UPDATE, {'version': target_version}, timeout=1.0)
-        if success and success[0]:
-            QMessageBox.information(self, _("Запланировано", "Scheduled"),
-                _("Версия g4f '{version}' будет установлена/обновлена при следующем запуске программы.",
-                  "g4f version '{version}' will be installed/updated the next time the program starts.").format(
-                    version=target_version))
-        else:
-            QMessageBox.critical(self, _("Ошибка сохранения", "Save Error"),
-                _("Не удалось сохранить настройки для обновления. Пожалуйста, проверьте логи.",
-                  "Failed to save settings for the update. Please check the logs."))
+        self._status_refresh_ticket += 1
+        ticket = self._status_refresh_ticket
 
-    # ===== Совместимость: рендер сообщений (обёртки к message_renderer) =====
+        def apply(state):
+            if ticket != self._status_refresh_ticket:
+                return
+
+            registry = getattr(self, "_status_indicator_registry", {})
+
+            def apply_to(attr_name, checked=None, text=None, indicator=_UNSET):
+                widgets = list(registry.get(attr_name, []))
+                fallback = getattr(self, attr_name, None)
+                if fallback is not None and fallback not in widgets:
+                    widgets.append(fallback)
+
+                for widget in widgets:
+                    if text is not None and hasattr(widget, "setText"):
+                        widget.setText(text)
+                    if checked is not None and hasattr(widget, "setChecked"):
+                        widget.setChecked(bool(checked))
+                    # Плашки статуса умеют больше двух состояний (грузится / ошибка);
+                    # простые индикаторы-точки этого метода не имеют.
+                    if indicator is not _UNSET and hasattr(widget, "set_indicator"):
+                        widget.set_indicator(indicator)
+
+            apply_to("game_status_checkbox", checked=bool(state.get("game_connected")))
+
+            if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
+                method = str(state.get("method") or "Local")
+                use_voice = bool(state.get("use_voice"))
+                if method == "Local":
+                    voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
+                    voice_active = bool(state.get("voice_initialized"))
+                else:
+                    voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
+                    voice_active = bool(use_voice and state.get("silero_connected"))
+                apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
+
+            # RAG «активен» только когда его модели подняты: настройка RAG_ENABLED
+            # включается мгновенно, а веса эмбеддера/реранкера грузятся минутами.
+            rag_state = str(state.get("rag_state") or "off")
+            apply_to(
+                "rag_status_checkbox",
+                checked=(rag_state == "ready"),
+                indicator={"loading": "loading", "error": "red", "ready": "green"}.get(rag_state),
+            )
+            apply_to("mic_status_checkbox", checked=bool(state.get("mic_active")))
+            apply_to("screen_capture_status_checkbox", checked=bool(state.get("screen_capture_active")))
+            apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))
+
+        self._shell_actions.request_status(apply)
+
+    # ===== Рендер сообщений и streaming-слоты =====
+    def _render_chat_command(self, command: ChatRenderCommand):
+        if not self._chat_render_context.is_bound:
+            return False
+        return message_renderer.insert_message(
+            self._chat_render_context,
+            command.role,
+            command.content,
+            command.insert_at_start,
+            command.message_time,
+            structured_data=command.structured_data,
+            message_id=command.message_id or None,
+            character_id=command.character_id or None,
+            sample_id=command.sample_id or None,
+            context_snapshot_id=command.context_snapshot_id or None,
+        )
+
+    def _command_from_render_payload(self, data: dict) -> ChatRenderCommand:
+        character_id = str(data.get("character_id") or self._shell_actions.current_character_id() or "")
+        return ChatRenderCommand(
+            role=str(data.get("role") or ""),
+            content=data.get("content", ""),
+            character_id=character_id,
+            message_id=str(data.get("message_id") or ""),
+            message_time=str(data.get("message_time") or ""),
+            structured_data=data.get("structured_data"),
+            sample_id=str(data.get("sample_id") or ""),
+            context_snapshot_id=str(data.get("context_snapshot_id") or ""),
+            insert_at_start=bool(data.get("insert_at_start", False)),
+        )
+
+    def _on_render_chat_event_signal(self, data: dict):
+        command = self._command_from_render_payload(data if isinstance(data, dict) else {})
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=current_character_id,
+        ):
+            return False
+        return self._render_chat_command(command)
+
+    def _on_history_messages_committed(self, data: dict) -> None:
+        payload = data if isinstance(data, dict) else {}
+        character_ids = payload.get("character_ids") or []
+        if not character_ids and payload.get("character_id"):
+            character_ids = [payload.get("character_id")]
+        self._chat_presentation.acknowledge_persisted(
+            message_ids=payload.get("message_ids") or [],
+            character_ids=character_ids,
+        )
+
     def _on_update_chat_signal(self, role, content, insert_at_start, message_time):
-        """Slot for update_chat_signal — picks up pending structured_data and message_id if available."""
-        # Only assistant messages consume _pending_structured_data / _pending_message_id.
-        # Think/system messages must not steal it from the following assistant message.
-        structured_data = None
-        message_id = None
-        if role == "assistant":
-            structured_data = getattr(self, '_pending_structured_data', None)
-            self._pending_structured_data = None
-            message_id = getattr(self, '_pending_message_id', None) or None
-            self._pending_message_id = None
-        from ui.chat import message_renderer
-        message_renderer.insert_message(self, role, content, insert_at_start, message_time,
-                                        structured_data=structured_data, message_id=message_id)
+        # Legacy signal path has no stable message identity.  Do not enqueue an
+        # unaddressable presentation event before the lazy Sandbox view exists;
+        # persisted history will project it when the view is materialized.
+        if not self._chat_render_context.is_bound:
+            for attr in (
+                "_pending_structured_data",
+                "_pending_message_id",
+                "_pending_sample_id",
+                "_pending_context_snapshot_id",
+            ):
+                if hasattr(self, attr):
+                    setattr(self, attr, None)
+            return False
+
+        command = ChatRenderCommand(
+            role=str(role or ""),
+            content=content,
+            character_id=str(self._shell_actions.current_character_id() or ""),
+            message_time=str(message_time or ""),
+            insert_at_start=bool(insert_at_start),
+        )
+        if not self._chat_presentation.record_live(
+            command,
+            current_character_id=command.character_id,
+        ):
+            return False
+        return self._render_chat_command(command)
 
     def _insert_message_slot(self, role, content, insert_at_start, message_time):
-        return self.insert_message(role, content, insert_at_start, message_time)
-
-    def insert_message(self, role, content, insert_at_start=False, message_time="", structured_data=None):
-        from ui.chat import message_renderer
-        return message_renderer.insert_message(self, role, content, insert_at_start, message_time,
-                                               structured_data=structured_data)
-
-    def insert_message_end(self, cursor=None, role="assistant"):
-        from ui.chat import message_renderer
-        return message_renderer.insert_message_end(self, cursor, role)
-
-    def insert_speaker_name(self, cursor=None, role="assistant"):
-        from ui.chat import message_renderer
-        return message_renderer.insert_speaker_name(self, cursor, role)
-
-    def _insert_formatted_text(self, cursor, text, color=None, bold=False, italic=False):
-        from ui.chat import message_renderer
-        return message_renderer._insert_formatted_text(self, cursor, text, color, bold, italic)
+        if not self._chat_render_context.is_bound:
+            return False
+        return message_renderer.insert_message(
+            self._chat_render_context,
+            role,
+            content,
+            insert_at_start,
+            message_time,
+        )
 
     def _on_prepare_stream_signal(self, data=None):
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        role = str(payload.get("role") or "assistant").strip() or "assistant"
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        presentation = getattr(self, "_chat_presentation", None)
+        if presentation is not None:
+            presentation.begin_stream(
+                stream_id,
+                character_id=character_id,
+                role=role,
+                speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+            )
+            if not presentation.should_render_stream(
+                stream_id,
+                current_character_id=current_character_id,
+                character_id=character_id,
+            ):
+                return False
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
-        
-        # Сохраняем имя спикера, если оно пришло
-        if isinstance(data, dict) and "speaker_name" in data:
-            self._stream_speaker_name = data["speaker_name"]
-            
-        return message_renderer.prepare_stream_slot(self, role=role)
+        if presentation is not None and not presentation.is_stream_mounted(stream_id):
+            return self._mount_stream_replay(stream_id)
+        result = message_renderer.prepare_stream_slot(
+            self._chat_render_context,
+            role=role,
+            stream_id=stream_id,
+            speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+        )
+        if presentation is not None:
+            presentation.mark_stream_mounted(stream_id)
+        return result
 
     def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
-        chunk = data.get("chunk") if isinstance(data, dict) else data
-        role = data.get("role", "assistant") if isinstance(data, dict) else "assistant"
-        return message_renderer.append_stream_chunk_slot(self, chunk, role=role)
+        payload = data if isinstance(data, dict) else {"chunk": data}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        role = str(payload.get("role") or "assistant").strip() or "assistant"
+        self._chat_presentation.record_stream_chunk(
+            stream_id,
+            payload.get("chunk"),
+            role=role,
+            character_id=character_id,
+        )
+        if not self._chat_render_context.is_bound:
+            return False
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            return False
+        if not self._chat_presentation.is_stream_mounted(stream_id):
+            return self._mount_stream_replay(stream_id)
+        return message_renderer.append_stream_chunk_slot(
+            self._chat_render_context,
+            payload.get("chunk"),
+            role=role,
+            stream_id=stream_id,
+        )
 
-    def _finish_stream_slot(self):
+    def _mount_stream_replay(self, stream_id: str) -> bool:
+        replay = self._chat_presentation.stream_replay(stream_id)
+        if replay is None or not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        # Сбрасываем имя спикера после завершения стрима
-        self._stream_speaker_name = ""
-        # Attach structured panel BEFORE finish (finish clears _current_stream_message)
-        pending = getattr(self, '_pending_structured_data', None)
-        if pending:
-            self._pending_structured_data = None
-            message_renderer.attach_structured_to_stream(self, pending)
-        message_renderer.finish_stream_slot(self)
 
-    def process_image_for_chat(self, has_image_content, item, processed_content_parts):
+        for phase in replay.phases:
+            message_renderer.prepare_stream_slot(
+                self._chat_render_context,
+                role=phase.role,
+                stream_id=replay.stream_id,
+                speaker_name=phase.speaker_name,
+            )
+            if phase.text:
+                message_renderer.append_stream_chunk_slot(
+                    self._chat_render_context,
+                    phase.text,
+                    role=phase.role,
+                    stream_id=replay.stream_id,
+                )
+        self._chat_presentation.mark_stream_mounted(replay.stream_id)
+        return True
+
+    def _finish_stream_slot(self, data=None):
+        if not self._chat_render_context.is_bound:
+            return False
         from ui.chat import message_renderer
-        return message_renderer.process_image_for_chat(self, has_image_content, item, processed_content_parts)
-
-    # ===== Совместимость: методы панели чата (обёртки к chat_panel) =====
-    def _create_scroll_to_bottom_button(self):
-        return chat_panel.create_scroll_to_bottom_button(self)
-
-    def _handle_chat_scroll(self):
-        return chat_panel.handle_chat_scroll(self)
-
-    def _fade_in_scroll_button(self):
-        return chat_panel.fade_in_scroll_button(self)
-
-    def _fade_out_scroll_button(self):
-        return chat_panel.fade_out_scroll_button(self)
-
-    def _reposition_scroll_button(self):
-        return chat_panel.reposition_scroll_button(self)
-
-    def _adjust_input_height(self):
-        return chat_panel.adjust_input_height(self)
-
-    def _update_send_button_state(self):
-        return chat_panel.update_send_button_state(self)
-
-    def _init_image_preview(self):
-        return chat_panel.init_image_preview(self)
-
-    def _show_image_preview_bar(self):
-        return chat_panel.show_image_preview_bar(self)
-
-    def _remove_staged_image(self, index):
-        return chat_panel.remove_staged_image(self, index)
-
-    def _hide_image_preview_bar(self):
-        return chat_panel.hide_image_preview_bar(self)
-
-    def _show_full_image(self, image_data):
-        return chat_panel.show_full_image(self, image_data)
-
-    def _clipboard_image_to_controller(self):
-        return chat_panel.clipboard_image_to_controller(self)
-
-    def attach_images(self):
-        return chat_panel.attach_images(self)
-
-    def send_screen_capture(self):
-        return chat_panel.send_screen_capture(self)
-
-    def _clear_staged_images(self):
-        return chat_panel.clear_staged_images(self)
-
-    def _position_mita_status(self):
-        return chat_panel.position_mita_status(self)
+        payload = data if isinstance(data, dict) else {}
+        stream_id = str(payload.get("stream_id") or "default")
+        character_id = str(payload.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if not self._chat_presentation.should_render_stream(
+            stream_id,
+            current_character_id=current_character_id,
+            character_id=character_id,
+        ):
+            message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
+            return False
+        if not self._chat_presentation.is_stream_mounted(stream_id):
+            message_renderer.discard_stream_slot(self._chat_render_context, stream_id)
+            return False
+        structured = payload.get("structured_data")
+        if structured:
+            message_renderer.attach_structured_to_stream(
+                self._chat_render_context,
+                structured,
+                stream_id=stream_id,
+            )
+        message_renderer.finish_stream_slot(
+            self._chat_render_context,
+            stream_id=stream_id,
+            message_id=str(payload.get("message_id") or ""),
+            character_id=character_id,
+            sample_id=str(payload.get("sample_id") or ""),
+            context_snapshot_id=str(payload.get("context_snapshot_id") or ""),
+        )
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====
     def _on_asr_install_progress(self, data: dict):
@@ -1461,16 +1774,6 @@ class AppWindowBase(QMainWindow):
             self.install_model_button.setText(_("Ошибка установки", "Installation failed"))
             self.install_model_button.setEnabled(True)
 
-    # ===== Совместимость: упрощённая вставка диалога =====
-    def insert_dialog(self, input_text="", response="", system_text=""):
-        MitaName = self._get_character_name()
-        if input_text:
-            self.insert_message("user", input_text)
-        if system_text:
-            self.insert_message("system", system_text)
-        if response:
-            self.insert_message("assistant", response)
-
     def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)
         if not btn:
@@ -1486,7 +1789,7 @@ class AppWindowBase(QMainWindow):
 
     def _update_voice_settings_icon_indicator(self) -> None:
         use_voice = bool(self._get_setting("USE_VOICEOVER", False))
-        method = self._get_setting("VOICEOVER_METHOD", "TG")
+        method = self._get_setting("VOICEOVER_METHOD", "Local")
 
         if not use_voice or method != "Local":
             self.set_settings_icon_indicator("voice", None, None)
@@ -1511,12 +1814,8 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        is_installed = self.event_bus.emit_and_wait(
-            Events.Audio.CHECK_MODEL_INSTALLED,
-            {'model_id': model_id},
-            timeout=0.5
-        )
-        if not (is_installed and is_installed[0]):
+        is_installed, is_initialized = self._shell_actions.voice_model_state(model_id)
+        if not is_installed:
             self.set_settings_icon_indicator(
                 "voice",
                 "red",
@@ -1524,12 +1823,7 @@ class AppWindowBase(QMainWindow):
             )
             return
 
-        is_initialized = self.event_bus.emit_and_wait(
-            Events.Audio.CHECK_MODEL_INITIALIZED,
-            {'model_id': model_id},
-            timeout=0.5
-        )
-        if not (is_initialized and is_initialized[0]):
+        if not is_initialized:
             self.set_settings_icon_indicator(
                 "voice",
                 "red",
@@ -1542,5 +1836,3 @@ class AppWindowBase(QMainWindow):
             "green",
             f"Local voice model ready: {model_id}"
         )
-
-

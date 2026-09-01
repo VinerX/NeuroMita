@@ -1,4 +1,4 @@
-﻿# src/ui/settings/api_settings/dialogs/protocol_pipeline_dialog.py
+# src/ui/settings/api_settings/dialogs/protocol_pipeline_dialog.py
 from __future__ import annotations
 
 from typing import List, Dict, Any, Optional

@@ -1,4 +1,4 @@
-﻿from main_logger import logger
+from main_logger import logger
 from core.events import Events, Event
 from .base_controller import BaseController
 

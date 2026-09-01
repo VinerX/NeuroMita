@@ -1,23 +1,53 @@
 # src/utils/structured_response_parser.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
-from schemas.structured_response import StructuredResponse, ResponseSegment
+from schemas.structured_response import (
+    RESPONSE_PROTOCOL_VERSION,
+    StructuredResponse,
+    ResponseSegment,
+)
 
 
 class StructuredResponseParseError(Exception):
     pass
 
 
-def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredResponse] = StructuredResponse) -> StructuredResponse:
+@dataclass(frozen=True, slots=True)
+class StructuredParseOutcome:
+    """Parsed response plus trust metadata for control-plane decisions."""
+
+    response: StructuredResponse
+    parse_level: str
+    schema_coerced: bool = False
+    fallback_kind: str = ""
+    extraction_kind: str = "raw_json"
+
+    @property
+    def control_plane_trusted(self) -> bool:
+        return (
+            self.parse_level == "direct"
+            and not self.schema_coerced
+            and not self.fallback_kind
+            and self.extraction_kind in {"raw_json", "markdown_json_fence"}
+        )
+
+
+def parse_structured_response_with_meta(
+    raw_text: str,
+    *,
+    model_cls: Type[StructuredResponse] = StructuredResponse,
+) -> StructuredParseOutcome:
     if not raw_text or not isinstance(raw_text, str):
         raise StructuredResponseParseError("Empty or non-string response")
 
-    cleaned = _extract_json_string(raw_text)
+    cleaned, extraction_kind = _extract_json_string(raw_text)
 
     data, parse_level = _try_json_loads(cleaned, level="direct")
 
@@ -54,7 +84,13 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
     if parse_level != "direct":
         logger.warning(f"[StructuredResponseParser] JSON repaired via: {parse_level}")
 
-    response = _validate_with_coerce(data, model_cls=model_cls)
+    response, schema_coerced = _validate_with_coerce(data, model_cls=model_cls)
+
+    # Control-plane schemas such as GameMasterResponse intentionally do not
+    # contain character reply segments. They still use this parser so the
+    # direct/repair trust metadata remains identical to Mita responses.
+    if not hasattr(response, "segments"):
+        return StructuredParseOutcome(response, parse_level, schema_coerced, extraction_kind=extraction_kind)
 
     if not response.segments:
         if response.tool_call:
@@ -62,21 +98,39 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
             logger.debug(
                 "[StructuredResponseParser] Tool call with empty segments — created default segment"
             )
-            return response
+            return StructuredParseOutcome(
+                response,
+                parse_level,
+                schema_coerced,
+                "synthetic_empty_tool_segment",
+                extraction_kind,
+            )
 
         converted = _try_convert_legacy_flat_json(data, model_cls=model_cls)
         if converted is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used legacy flat-JSON fallback"
             )
-            return converted
+            return StructuredParseOutcome(
+                response=converted,
+                parse_level=parse_level,
+                schema_coerced=schema_coerced,
+                fallback_kind="legacy_flat",
+                extraction_kind=extraction_kind,
+            )
 
         partial = _extract_partial_response(raw_text, model_cls=model_cls)
         if partial is not None:
             logger.warning(
                 "[StructuredResponseParser] Segments missing — used partial text extraction"
             )
-            return partial
+            return StructuredParseOutcome(
+                response=partial,
+                parse_level=parse_level,
+                schema_coerced=schema_coerced,
+                fallback_kind="partial_extraction",
+                extraction_kind=extraction_kind,
+            )
 
         raise StructuredResponseParseError(
             "StructuredResponse has no segments (segments list is empty)"
@@ -89,7 +143,17 @@ def parse_structured_response(raw_text: str, *, model_cls: Type[StructuredRespon
         f"stress_change={response.stress_change}"
     )
 
-    return response
+    return StructuredParseOutcome(response, parse_level, schema_coerced, extraction_kind=extraction_kind)
+
+
+def parse_structured_response(
+    raw_text: str,
+    *,
+    model_cls: Type[StructuredResponse] = StructuredResponse,
+) -> StructuredResponse:
+    """Compatibility wrapper for callers that only need the response model."""
+
+    return parse_structured_response_with_meta(raw_text, model_cls=model_cls).response
 
 
 def _try_json_loads(text: str, level: str = "direct") -> tuple[Optional[dict], str]:
@@ -195,17 +259,17 @@ def _close_truncated_json(text: str) -> str:
     return text + suffix
 
 
-def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> StructuredResponse:
+def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> tuple[StructuredResponse, bool]:
     try:
-        return model_cls.model_validate(data)
+        return model_cls.model_validate(data), False
     except Exception as first_error:
         try:
             data = _schema_aware_coerce(data, model_cls=model_cls)
-            return model_cls.model_validate(data)
+            return model_cls.model_validate(data), True
         except Exception as second_error:
             raise StructuredResponseParseError(
                 f"JSON does not match StructuredResponse schema "
-                f"(even after coercion): {second_error}"
+                f"(even after coercion): {format_exception(second_error)}"
             ) from first_error
 
 
@@ -478,15 +542,18 @@ def _try_convert_legacy_flat_json(data: dict, *, model_cls: Type[StructuredRespo
         )
 
 
-def _extract_json_string(text: str) -> str:
+def _extract_json_string(text: str) -> tuple[str, str]:
     text = text.strip()
+    extraction_kind = "raw_json"
 
     if text.startswith("\ufeff"):
         text = text[1:]
 
     if text.startswith("```json"):
+        extraction_kind = "markdown_json_fence"
         text = text[len("```json"):]
     elif text.startswith("```"):
+        extraction_kind = "markdown_json_fence"
         text = text[3:]
 
     if text.endswith("```"):
@@ -495,17 +562,20 @@ def _extract_json_string(text: str) -> str:
     text = text.strip()
 
     if not text.startswith("{"):
+        extraction_kind = "embedded_json"
         brace_start = text.find("{")
         if brace_start == -1:
-            return text
+            return text, extraction_kind
         text = text[brace_start:]
 
     if not text.endswith("}"):
         brace_end = text.rfind("}")
         if brace_end != -1:
+            if text[brace_end + 1:].strip():
+                extraction_kind = "embedded_json"
             text = text[:brace_end + 1]
 
-    return text
+    return text, extraction_kind
 
 
 def structured_response_to_result_dict(response: StructuredResponse) -> dict:
@@ -533,6 +603,11 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
             seg_dict["interactions"] = seg.interactions
         if seg.face_params:
             seg_dict["face_params"] = seg.face_params
+        if seg.intents:
+            seg_dict["intents"] = [
+                {"type": intent.type, "payload": dict(intent.payload or {})}
+                for intent in seg.intents
+            ]
         if seg.start_game is not None:
             seg_dict["start_game"] = seg.start_game
         if seg.end_game is not None:
@@ -562,6 +637,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         custom_fields_out = None
 
     return {
+        "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
         "segments": segments_out,
         "response": response.full_text(),
         "attitude_change": response.attitude_change,
@@ -574,6 +650,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "reminder_add": list(response.reminder_add or []),
         "reminder_delete": list(response.reminder_delete or []),
         "tool_call": tool_call_dict,
+        "secret_exposed": response.secret_exposed,
         "custom_fields": custom_fields_out,
         "entities": list(response.entities) if response.entities else [],
         "relations": list(response.relations) if response.relations else [],

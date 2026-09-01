@@ -1,19 +1,21 @@
 # Файл с моделью для эмбеддингов
 from __future__ import annotations
+from core.error_utils import format_exception
 
-import gc
 import os
 import sys
 import time
 from threading import Lock
-from typing import ClassVar, List, Optional, Tuple
+from typing import TYPE_CHECKING, ClassVar, List, Optional, Tuple
 
 import numpy as np
 
 from main_logger import logger
 from managers.settings_manager import SettingsManager
-from core.backends import get_backend_service
-from utils.gpu_utils import check_gpu_provider
+
+if TYPE_CHECKING:
+    import torch
+    from transformers import AutoModel, AutoTokenizer
 
 
 def getTranslationVariant(ru_str, en_str=""):
@@ -42,61 +44,6 @@ def _ensure_checkpoints_dir() -> str:
 
 
 checkpoints_dir = _ensure_checkpoints_dir()
-
-
-def _ensure_lib_on_path():
-    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    lib_path_norm = os.path.normcase(os.path.abspath(lib_path))
-    sys.path = [
-        p for p in sys.path
-        if os.path.normcase(os.path.abspath(p or "")) != lib_path_norm
-    ]
-    sys.path.insert(0, lib_path)
-
-
-def _ensure_torch_and_transformers() -> None:
-    _ensure_lib_on_path()
-
-    try:
-        gpu = check_gpu_provider() or "CPU"
-    except Exception:
-        gpu = "CPU"
-
-    lib_path = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    backend_service = get_backend_service()
-    backend_ctx = {"gpu_vendor": gpu, "libs_dir": lib_path}
-    backend_kind = backend_service.preferred_torch_kind(backend_ctx)
-    status = backend_service.get_status(backend_kind, ctx=backend_ctx)
-    installed_variant = backend_service.get_installed_torch_variant(target_dir=lib_path)
-    logger.info(
-        f"torch bootstrap: gpu={gpu}, required_backend={backend_kind.value}, installed_variant={installed_variant}, "
-        f"action={status.action}, torch_in_sys_modules={'torch' in sys.modules}"
-    )
-
-    if not status.ok:
-        raise RuntimeError(
-            "RAG backend runtime is not installed. Install the RAG component via the installable pipeline first: "
-            + (status.reason or status.action)
-        )
-
-    import torch
-    torch_cuda_ver = getattr(torch.version, "cuda", None)
-    torch_file = getattr(torch, "__file__", "?")
-    logger.info(
-        f"torch loaded: version={torch.__version__}, cuda_version={torch_cuda_ver}, "
-        f"cuda_available={torch.cuda.is_available()}, path={torch_file}"
-    )
-    if backend_kind.value == "cuda" and torch_cuda_ver is None:
-        raise RuntimeError(
-            f"CUDA backend is required, but loaded torch has no CUDA runtime. torch.__file__={torch_file}"
-        )
-
-    try:
-        from transformers import AutoModel, AutoTokenizer  # noqa: F401
-    except Exception as exc:
-        raise RuntimeError(
-            "transformers is not installed. Install the RAG component via the installable pipeline first."
-        ) from exc
 
 
 class EmbeddingModelHandler:
@@ -151,8 +98,8 @@ class EmbeddingModelHandler:
     @classmethod
     def _unload_shared(cls) -> None:
         """Выгружает текущий shared instance и освобождает память."""
-        import torch
         import gc
+        import torch
 
         inst = cls._shared_instance
         if inst is None:
@@ -165,6 +112,7 @@ class EmbeddingModelHandler:
             pass
         del inst
         gc.collect()
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -176,8 +124,6 @@ class EmbeddingModelHandler:
     })
 
     def __init__(self, model_name: str = MODEL_NAME, query_prefix: str = ""):
-        _ensure_torch_and_transformers()
-        import torch  # локальный импорт (ускоряет import модуля)
         self.model_name = model_name
         self.query_prefix = query_prefix if query_prefix else QUERY_PREFIX
         self.device = self._get_device()
@@ -202,12 +148,44 @@ class EmbeddingModelHandler:
         logger.info("CUDA недоступна. Используется CPU.")
         return torch.device('cpu')
 
+    def _model_is_cached(self) -> bool:
+        """Модель уже локально: либо это путь к папке, либо есть HF-кэш
+        `models--<repo>` в checkpoints (туда же качает AI Hub)."""
+        name = str(self.model_name or "")
+        if not name:
+            return False
+        if os.path.isdir(name):
+            return True
+        marker = os.path.join(checkpoints_dir, "models--" + name.replace("/", "--"))
+        return os.path.isdir(marker)
+
     def _load_model(self) -> Tuple["AutoTokenizer", "AutoModel"]:
+        """Загружает модель и токенизатор.
+
+        Если веса уже в кэше — грузим офлайн (`local_files_only=True`), иначе
+        `from_pretrained` каждый раз дёргает HF Hub за метаданными ревизии
+        (то самое `unauthenticated requests to the HF Hub`), что без токена под
+        троттлингом висит и роняет запрос в таймаут даже при скачанной модели.
+        На случай неполного кэша — фоллбэк на онлайн-загрузку."""
+        cached = self._model_is_cached()
+        try:
+            return self._load_model_impl(local_files_only=cached)
+        except Exception as e:
+            if cached:
+                logger.warning(
+                    f"Офлайн-загрузка модели не удалась ({format_exception(e)}); повтор с обращением к HF Hub."
+                )
+                return self._load_model_impl(local_files_only=False)
+            raise
+
+    def _load_model_impl(self, *, local_files_only: bool) -> Tuple["AutoTokenizer", "AutoModel"]:
         """Загружает модель и токенизатор с указанными параметрами."""
-        import torch  # локальный импорт
         from transformers import AutoModel, AutoTokenizer  # локальные импорты
 
-        logger.info(f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()}...")
+        logger.info(
+            f"Загрузка токенизатора и модели '{self.model_name}' на {self.device.type.upper()} "
+            f"(local_files_only={local_files_only})..."
+        )
         logger.info(f"Модель будет сохранена в {checkpoints_dir}")
         start_time = time.time()
 
@@ -219,12 +197,18 @@ class EmbeddingModelHandler:
             self.model_name,
             cache_dir=checkpoints_dir,
             token=hf_token,
+            local_files_only=local_files_only,
         )
 
         # Цепочка загрузки: sdpa+extras → sdpa → eager → базовая
         # use_memory_efficient_attention и add_pooling_layer — специфичны для Snowflake,
         # другие модели (XLMRoberta и т.д.) их не поддерживают.
-        _base = dict(trust_remote_code=True, cache_dir=checkpoints_dir, token=hf_token)
+        _base = dict(
+            trust_remote_code=True,
+            cache_dir=checkpoints_dir,
+            token=hf_token,
+            local_files_only=local_files_only,
+        )
         _load_attempts = [
             {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa", "use_memory_efficient_attention": False},
             {**_base, "add_pooling_layer": False, "attn_implementation": "sdpa"},
@@ -244,7 +228,7 @@ class EmbeddingModelHandler:
                 break
             except (TypeError, ValueError) as e:
                 last_err = e
-                logger.debug(f"Загрузка attempt {i+1} не удалась: {e}")
+                logger.debug(f"Загрузка attempt {i+1} не удалась: {format_exception(e)}")
                 continue
 
         if model is None:
@@ -293,7 +277,7 @@ class EmbeddingModelHandler:
             normalized_embedding = torch.nn.functional.normalize(embedding.to(torch.float32), p=2, dim=1)
             return normalized_embedding.cpu().numpy()[0]
         except Exception as e:
-            logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {e}")
+            logger.error(f"Ошибка при вычислении эмбеддинга для текста '{text}': {format_exception(e)}")
             return None
 
     def get_embeddings(
@@ -335,12 +319,12 @@ class EmbeddingModelHandler:
 
         results: List[Optional[np.ndarray]] = [None] * len(texts)
 
-        try:
-            with torch.no_grad():
-                for start in range(0, len(valid_inputs), batch_size):
-                    chunk_inputs = valid_inputs[start:start + batch_size]
-                    chunk_indices = valid_idx[start:start + batch_size]
+        with torch.no_grad():
+            for start in range(0, len(valid_inputs), batch_size):
+                chunk_inputs = valid_inputs[start:start + batch_size]
+                chunk_indices = valid_idx[start:start + batch_size]
 
+                try:
                     tokens = self.tokenizer(
                         chunk_inputs,
                         padding=True,
@@ -359,12 +343,16 @@ class EmbeddingModelHandler:
 
                     for j, orig_i in enumerate(chunk_indices):
                         results[orig_i] = arr[j]
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка batch-вычисления эмбеддингов для элементов "
+                        f"{start}:{start + len(chunk_inputs)}: {format_exception(e)}",
+                        exc_info=True,
+                    )
+                    # Уже успешно обработанные batch сохраняются; ошибочный остаётся None.
+                    continue
 
-            return results
-        except Exception as e:
-            logger.error(f"Ошибка при batch-вычислении эмбеддингов: {e}", exc_info=True)
-            # В случае ошибки вернём список правильной длины
-            return [None] * len(texts)
+        return results
 
 
 if __name__ == '__main__':
@@ -378,4 +366,4 @@ if __name__ == '__main__':
         else:
             print(f"Не удалось получить эмбеддинг для '{test_text}'.")
     except Exception as e:
-        print(f"Ошибка при тестировании EmbeddingModelHandler: {e}")
+        print(f"Ошибка при тестировании EmbeddingModelHandler: {format_exception(e)}")

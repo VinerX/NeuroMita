@@ -1,19 +1,38 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
+import asyncio
 import gc
+import importlib
 import os
+import ntpath
 import re
-import sys
 import tempfile
+import threading
+import time
 import traceback
 from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from .base_model import IVoiceModel
+from core.app_paths import base_dir
 from core.backends import BackendKind
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
-from handlers.voice_models.install_plan_helpers import pip_uninstall_action
+from handlers.voice_models.context import VoiceRuntimeContext
+
+from handlers.voice_models.install_plan_helpers import (
+    patch_tts_with_rvc_audio,
+    pip_uninstall_action,
+    rvc_python_compat_error,
+    warning_action,
+)
+from handlers.voice_models.rvc_runtime_assets import (
+    CUDA_RVC_RUNTIME_ASSETS,
+    ONNX_RVC_RUNTIME_ASSETS,
+    runtime_asset_download_action,
+    runtime_asset_requirements,
+)
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
 
@@ -31,6 +50,7 @@ SILERO_RVC_ONNX_ID = "silero_rvc_onnx"
 # both NVIDIA and AMD/Intel paths.
 _RVC_F0_METHODS = ("pm", "dio", "crepe", "rmvpe", "harvest", "fcpe")
 _RVC_F0_DEFAULT = "rmvpe"
+_EDGE_TTS_COMPATIBILITY_SPEC = "edge-tts>=6.1.9,<8.0.0"
 _RVC_F0_HELP_RU = (
     "Алгоритм извлечения F0 (высоты тона): rmvpe/crepe — точнее, "
     "pm/harvest/dio — быстрее, fcpe — компромисс."
@@ -125,25 +145,42 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
 
 
 def _onnx_edge_settings() -> list[dict[str, Any]]:
+    device = _setting_combo(
+        "device",
+        "Устройство RVC",
+        "RVC Device",
+        ["dml", "cpu"],
+        "dml",
+        "DirectML для AMD, Intel и NVIDIA или CPU fallback.",
+        "DirectML for AMD, Intel, and NVIDIA or CPU fallback.",
+    )
+    device["options"].update(
+        {
+            "values_nvidia": ["dml", "cpu"],
+            "default_nvidia": "dml",
+            "values_amd": ["dml", "cpu"],
+            "default_amd": "dml",
+            "values_intel": ["dml", "cpu"],
+            "default_intel": "dml",
+            "values_cpu": ["cpu"],
+            "default_cpu": "cpu",
+            "values_other": ["cpu"],
+            "default_other": "cpu",
+        }
+    )
+    f0_method = _setting_combo(
+        "f0method",
+        "Метод F0 (RVC)",
+        "F0 Method (RVC)",
+        list(_RVC_F0_METHODS),
+        _RVC_F0_DEFAULT,
+        _RVC_F0_HELP_RU,
+        _RVC_F0_HELP_EN,
+    )
+    f0_method["options"]["default_amd"] = "pm"
     return [
-        _setting_combo(
-            "device",
-            "Устройство RVC",
-            "RVC Device",
-            ["dml", "cpu"],
-            "dml",
-            "DirectML для AMD/Intel или CPU fallback.",
-            "DirectML for AMD/Intel or CPU fallback.",
-        ),
-        _setting_combo(
-            "f0method",
-            "Метод F0 (RVC)",
-            "F0 Method (RVC)",
-            list(_RVC_F0_METHODS),
-            _RVC_F0_DEFAULT,
-            _RVC_F0_HELP_RU,
-            _RVC_F0_HELP_EN,
-        ),
+        device,
+        f0_method,
         _setting_entry("pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
         _setting_entry("index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -181,18 +218,43 @@ def _cuda_silero_settings() -> list[dict[str, Any]]:
 
 
 def _onnx_silero_settings() -> list[dict[str, Any]]:
+    device = _setting_combo(
+        "silero_rvc_device",
+        "Устройство RVC",
+        "RVC Device",
+        ["dml", "cpu"],
+        "dml",
+        "DirectML для AMD, Intel и NVIDIA или CPU fallback.",
+        "DirectML for AMD, Intel, and NVIDIA or CPU fallback.",
+    )
+    device["options"].update(
+        {
+            "values_nvidia": ["dml", "cpu"],
+            "default_nvidia": "dml",
+            "values_amd": ["dml", "cpu"],
+            "default_amd": "dml",
+            "values_intel": ["dml", "cpu"],
+            "default_intel": "dml",
+            "values_cpu": ["cpu"],
+            "default_cpu": "cpu",
+            "values_other": ["cpu"],
+            "default_other": "cpu",
+        }
+    )
+    f0_method = _setting_combo(
+        "silero_rvc_f0method",
+        "Метод F0 (RVC)",
+        "F0 Method (RVC)",
+        list(_RVC_F0_METHODS),
+        _RVC_F0_DEFAULT,
+        _RVC_F0_HELP_RU,
+        _RVC_F0_HELP_EN,
+    )
+    f0_method["options"]["default_amd"] = "pm"
     return [
-        _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["dml", "cpu"], "dml", "DirectML для RVC или CPU fallback.", "DirectML for RVC or CPU fallback."),
+        device,
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cpu"], "cpu", "Silero в ONNX-сборке запускается на CPU для стабильности.", "Silero runs on CPU in the ONNX build for stability.", locked=True),
-        _setting_combo(
-            "silero_rvc_f0method",
-            "Метод F0 (RVC)",
-            "F0 Method (RVC)",
-            list(_RVC_F0_METHODS),
-            _RVC_F0_DEFAULT,
-            _RVC_F0_HELP_RU,
-            _RVC_F0_HELP_EN,
-        ),
+        f0_method,
         _setting_entry("silero_rvc_pitch", "Высота голоса RVC (пт)", "RVC Pitch (semitones)", "6", "Смещение высоты в полутонах.", "Pitch shift in semitones."),
         _setting_check("silero_rvc_use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Улучшает совпадение тембра.", "Improves timbre matching."),
         _setting_entry("silero_rvc_index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
@@ -205,14 +267,34 @@ def _onnx_silero_settings() -> list[dict[str, Any]]:
 
 
 def _ensure_lib_path() -> None:
-    libs_path_abs = os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib"))
-    if libs_path_abs not in sys.path:
-        sys.path.insert(0, libs_path_abs)
+    """Validate the worker-owned runtime without mutating import precedence."""
+    if os.environ.get("NEUROMITA_AI_WORKER") != "1":
+        return
+    declared = [
+        os.path.normcase(os.path.abspath(item))
+        for item in os.environ.get("NEUROMITA_RUNTIME_PYTHON_PATHS", "").split(os.pathsep)
+        if item
+    ]
+    if not declared:
+        raise RuntimeError("Voice worker started without a managed runtime environment")
+    runtime_root = os.path.normcase(
+        os.path.abspath(os.environ.get("NEUROMITA_RUNTIME_ROOT", ""))
+    )
+    core_root = os.path.normcase(
+        os.path.abspath(os.environ.get("NEUROMITA_CORE_DIR", ""))
+    )
+    if runtime_root and runtime_root in declared:
+        raise RuntimeError("Voice worker runtime contains the mutable Lib root")
+    if core_root and core_root in declared and declared[-1] != core_root:
+        raise RuntimeError(
+            "Voice worker main core fallback must remain behind managed AI layers"
+        )
 
 
 class EdgeTTSRVCBaseModel(IVoiceModel):
     BACKEND_KIND = BackendKind.NONE
     RVC_PACKAGE = ""
+    RVC_IMPORT_CANDIDATES: tuple[str, ...] = ()
     RVC_UNINSTALL_PACKAGES: tuple[str, ...] = ()
     MODEL_EXTENSION = "pth"
     VOICE_PATH_PROVIDER = "NVIDIA"
@@ -223,11 +305,12 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     SUPPORTS_HALF = False
     SUPPORTS_RUNTIME_F0 = False
     PATCH_FAIRSEQ_CONFIGS = False
+    RVC_RUNTIME_ASSETS: tuple[tuple[str, str], ...] = ()
 
     EDGE_MODEL_ID = ""
     SILERO_MODEL_ID = ""
 
-    def __init__(self, parent: "LocalVoice", model_id: str):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str):
         super().__init__(parent, model_id)
         self.tts_rvc_module = None
         self.current_tts_rvc = None
@@ -252,9 +335,25 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             InstallRequirement(id=f"backend_{cls.BACKEND_KIND.value}", kind="backend", backend_kind=cls.BACKEND_KIND, required=True),
             InstallRequirement(id="omegaconf", kind="python_dist", spec="omegaconf", required=True),
             InstallRequirement(id="tts_rvc_pkg", kind="python_dist", spec=cls.RVC_PACKAGE, required=True),
+            InstallRequirement(
+                id="edge_tts_compatible_api",
+                kind="python_dist",
+                spec=_EDGE_TTS_COMPATIBILITY_SPEC,
+                required=True,
+            ),
         ]
+        if cls.RVC_IMPORT_CANDIDATES:
+            req.append(
+                InstallRequirement(
+                    id="tts_rvc_module",
+                    kind="python_module_any",
+                    modules=cls.RVC_IMPORT_CANDIDATES,
+                    required=True,
+                )
+            )
         if cls._is_silero_model(model_id):
             req.append(InstallRequirement(id="silero", kind="python_dist", spec="silero", required=True))
+        req.extend(runtime_asset_requirements(cls.RVC_RUNTIME_ASSETS))
         return req
 
     @classmethod
@@ -290,7 +389,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     log(_("Патч fairseq/dataclass/configs.py применён", "fairseq/dataclass/configs.py patched"))
                 return True
             except Exception as exc:
-                log(str(exc))
+                log(format_exception(exc))
                 log(traceback.format_exc())
                 return False
 
@@ -299,6 +398,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     @classmethod
     def build_install_plan_for_model(cls, model_id: str, ctx: Dict[str, Any]) -> InstallPlan:
         mid = str(model_id)
+        compat_warning = rvc_python_compat_error(cls.RVC_PACKAGE)
         if cls.is_model_installed(mid, ctx):
             return InstallPlan(
                 actions=[],
@@ -308,9 +408,14 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 already_installed_status=_("Уже установлено", "Already installed"),
             )
 
-        pkgs = ["omegaconf", cls.RVC_PACKAGE]
+        pkgs = ["omegaconf", cls.RVC_PACKAGE, _EDGE_TTS_COMPATIBILITY_SPEC]
         if cls._is_silero_model(mid):
             pkgs.append("silero")
+        # Держим scipy на numpy-1.x-совместимой ветке: tts-with-rvc без верхней
+        # границы тянет scipy>=1.13 (а свежий 1.18 использует np.long, удалённый в
+        # numpy 1.26) → при инициализации «module 'numpy' has no attribute 'long'».
+        # Зеркалит пины F5/Fish Speech (numpy сам по себе закреплён бэкендом ==1.26).
+        pkgs.append("scipy<1.13")
 
         actions: list[InstallAction] = [
             InstallAction(
@@ -320,6 +425,18 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 packages=pkgs,
             )
         ]
+        if cls.RVC_RUNTIME_ASSETS:
+            actions.append(
+                runtime_asset_download_action(
+                    cls.RVC_RUNTIME_ASSETS,
+                    description=_(
+                        "Загрузка моделей RVC...",
+                        "Downloading RVC model assets...",
+                    ),
+                    progress=62,
+                    progress_to=88,
+                )
+            )
         if cls.PATCH_FAIRSEQ_CONFIGS:
             actions.append(
                 InstallAction(
@@ -332,11 +449,55 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         actions.append(
             InstallAction(
                 type="call",
-                description=_("Проверка установки...", "Final check..."),
-                progress=99,
-                fn=lambda **_k: cls.is_model_installed(mid, ctx),
+                description=_(
+                    "Применение совместимости TTS/RVC...",
+                    "Applying TTS/RVC compatibility patch...",
+                ),
+                progress=94,
+                fn=patch_tts_with_rvc_audio,
             )
         )
+        def _verify_install(*, callbacks=None, ctx=None, **_kwargs) -> bool:
+            # Контекст действия формируется InstallController уже после создания
+            # плана и содержит точный --target текущего PipInstaller. Он должен
+            # иметь приоритет над ранним snapshot плана, иначе финальная проверка
+            # снова может посмотреть в устаревший каталог.
+            verify_ctx = dict(ctx_outer)
+            verify_ctx.update(dict(ctx or {}))
+            status = check_requirements(cls.requirements(mid, verify_ctx), ctx=verify_ctx)
+            if status.get("ok"):
+                return True
+            if callbacks is not None:
+                callbacks.log("Проверка установки не пройдена. Отсутствуют обязательные компоненты:")
+                for detail in status.get("details", []):
+                    if detail.get("ok") or not detail.get("required", True):
+                        continue
+                    extra = detail.get("extra") or {}
+                    descriptor = (
+                        extra.get("spec")
+                        or extra.get("module")
+                        or ", ".join(extra.get("modules") or [])
+                        or extra.get("path")
+                        or extra.get("backend_kind")
+                        or detail.get("id")
+                    )
+                    reason = extra.get("reason") or extra.get("error") or "не найден после установки"
+                    callbacks.log(f"  - {detail.get('id')}: {descriptor} ({reason})")
+                target = verify_ctx.get("libs_dir") or verify_ctx.get("lib_dir") or os.environ.get("NEUROMITA_LIB_DIR")
+                callbacks.log(f"Каталог проверки Python-пакетов: {target or '<sys.path>'}")
+            return False
+
+        ctx_outer = dict(ctx or {})
+        actions.append(
+            InstallAction(
+                type="call",
+                description=_("Проверка установки...", "Final check..."),
+                progress=99,
+                fn=_verify_install,
+            )
+        )
+        if compat_warning:
+            actions.insert(0, warning_action(compat_warning))
         return InstallPlan(actions=actions, ok_status=_("Готово", "Done"), required_backend=cls.BACKEND_KIND, backend_context=dict(ctx))
 
     @classmethod
@@ -354,6 +515,32 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 
     def _load_rvc_class(self):
         raise NotImplementedError
+
+    @classmethod
+    def _configure_imported_rvc_module(cls, module_name: str, module: Any) -> None:
+        return
+
+    @classmethod
+    def _import_rvc_class(cls):
+        errors: list[str] = []
+        for module_name in cls.RVC_IMPORT_CANDIDATES:
+            try:
+                module = importlib.import_module(module_name)
+                rvc_class = getattr(module, "TTS_RVC")
+                cls._configure_imported_rvc_module(module_name, module)
+                if module_name != cls.RVC_IMPORT_CANDIDATES[0]:
+                    logger.warning(
+                        f"{cls.__name__}: distribution '{cls.RVC_PACKAGE}' exposes "
+                        f"runtime module '{module_name}' instead of "
+                        f"'{cls.RVC_IMPORT_CANDIDATES[0]}'. Using compatible fallback."
+                    )
+                return rvc_class
+            except Exception as exc:
+                errors.append(f"{module_name}: {format_exception(exc)}")
+        raise ImportError(
+            f"Unable to import TTS_RVC for '{cls.RVC_PACKAGE}'. Tried: "
+            + "; ".join(errors)
+        )
 
     def _set_rvc_model_path(self, model_path: str) -> None:
         self.current_tts_rvc.current_model = model_path
@@ -393,18 +580,71 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 
     def _load_settings_for(self, model_id: str) -> dict[str, Any]:
         settings = self.parent.load_model_settings(model_id)
-        if settings:
-            return settings
-        legacy = {"edge": "low", "silero": "low+"}.get(self._runtime_pipeline(model_id))
-        if legacy:
-            return self.parent.load_model_settings(legacy)
-        return {}
+        if not settings:
+            legacy = {"edge": "low", "silero": "low+"}.get(self._runtime_pipeline(model_id))
+            if legacy:
+                settings = self.parent.load_model_settings(legacy)
+        return self.resolve_settings_for_model(model_id, settings)
 
     def _normalize_f0_method(self, value: Optional[str]) -> str:
         method = str(value or self.RVC_DEFAULT_F0_METHOD).strip() or self.RVC_DEFAULT_F0_METHOD
         if self.RVC_F0_METHODS and method not in self.RVC_F0_METHODS:
             return self.RVC_DEFAULT_F0_METHOD
         return method
+
+    def _resolve_runtime_device(self, value: Any) -> str:
+        return str(value or self.RVC_DEFAULT_DEVICE).strip() or self.RVC_DEFAULT_DEVICE
+
+    @staticmethod
+    def _normalize_runtime_path(path: str) -> str:
+        value = str(path or "").strip()
+        if not value:
+            return ""
+        # Embedded/runtime settings can contain Windows paths even when tools
+        # inspect them from another OS. POSIX abspath would prepend cwd and
+        # corrupt values such as C:\RuntimeRoot.
+        if ntpath.isabs(value) or (len(value) >= 2 and value[1] == ":"):
+            return ntpath.normpath(value)
+        return os.path.abspath(value)
+
+    def _hubert_candidate_paths(self) -> list[str]:
+        roots = (
+            str(base_dir()),
+            os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models")),
+            os.environ.get("NEUROMITA_LIB_DIR", os.path.abspath("Lib")),
+        )
+        candidates = [
+            self._normalize_runtime_path(ntpath.join(root, "hubert_base.pt")
+                                         if ntpath.isabs(str(root)) or (len(str(root)) >= 2 and str(root)[1] == ":")
+                                         else os.path.join(str(root), "hubert_base.pt"))
+            for root in roots
+        ]
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in candidates:
+            if not item:
+                continue
+            is_windows_path = ntpath.isabs(item) or (len(item) >= 2 and item[1] == ":")
+            key = ntpath.normcase(item) if is_windows_path else os.path.normcase(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    def _describe_hubert_state(self) -> str:
+        parts: list[str] = []
+        for path in self._hubert_candidate_paths():
+            exists = os.path.exists(path)
+            size = 0
+            if exists:
+                try:
+                    size = int(os.path.getsize(path))
+                except Exception:
+                    size = -1
+            suffix = f"exists size={size}" if exists else "missing"
+            parts.append(f"{path} [{suffix}]")
+        return "; ".join(parts)
 
     def initialize(self, init: bool = False) -> bool:
         current_mode = str(self.parent.current_model_id or "").strip()
@@ -424,9 +664,16 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             if self.current_tts_rvc is None:
                 settings = self._load_settings_for(current_mode)
                 device_key, f0_key = self._settings_keys(current_mode)
-                device = str(settings.get(device_key, self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
+                device = self._resolve_runtime_device(
+                    settings.get(device_key, self.RVC_DEFAULT_DEVICE)
+                )
                 f0_method = self._normalize_f0_method(settings.get(f0_key, self.RVC_DEFAULT_F0_METHOD))
                 model_path_to_use = self._default_model_path()
+                logger.info(
+                    f"RVC init context: base_dir='{base_dir()}', "
+                    f"models_dir='{os.environ.get('NEUROMITA_MODELS_DIR', os.path.abspath('Models'))}', "
+                    f"hubert_candidates={self._describe_hubert_state()}"
+                )
 
                 parent_model_path = getattr(self.parent, "pth_path", None)
                 parent_ext = os.path.splitext(str(parent_model_path or ""))[1].lower().lstrip(".")
@@ -439,9 +686,16 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                     self.initialized_for = None
                     return False
 
+                logger.info(
+                    f"Creating RVC runtime: model_path='{model_path_to_use}', "
+                    f"device='{device}', f0_method='{f0_method}', init={bool(init)}"
+                )
                 self.current_tts_rvc = self.tts_rvc_module(model_path=model_path_to_use, device=device, f0_method=f0_method)
                 self._apply_backend_sampling_policy()
-                logger.info(f"RVC initialized with device={device}, f0_method={f0_method}")
+                logger.info(
+                    f"RVC initialized with device={device}, f0_method={f0_method}, "
+                    f"hubert_candidates_after={self._describe_hubert_state()}"
+                )
 
             self._set_edge_voice()
 
@@ -455,13 +709,25 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             self.initialized_for = current_mode
             return True
         except Exception as exc:
-            logger.error(f"Failed to initialize {self.__class__.__name__}: {exc}", exc_info=True)
+            logger.error(
+                f"Failed to initialize {self.__class__.__name__}: {format_exception(exc)}. "
+                f"mode='{current_mode}', runtime='{runtime_mode}', "
+                f"hubert_candidates={self._describe_hubert_state()}",
+                exc_info=True,
+            )
             self.initialized = False
             self.initialized_for = None
             return False
 
     def _default_model_path(self) -> str:
-        return os.path.join("Models", f"Mila.{self.MODEL_EXTENSION}")
+        # Base model for RVC init when the character's own model isn't available.
+        # Pick any installed voice (preferring Mila) instead of hard-requiring
+        # Mila, which may not be installed under per-voice downloads.
+        from utils import default_installed_voice
+
+        models_dir = os.environ.get("NEUROMITA_MODELS_DIR", os.path.abspath("Models"))
+        name = default_installed_voice(models_dir, ext=self.MODEL_EXTENSION)
+        return os.path.join(models_dir, f"{name}.{self.MODEL_EXTENSION}")
 
     def _set_edge_voice(self) -> None:
         if self.parent.voice_language == "ru":
@@ -615,7 +881,18 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         if not self.initialized or self.initialized_for != current_mode:
             raise Exception(f"Handler is not initialized for mode '{current_mode}'.")
 
-        self._update_parent_paths(character)
+        voice_paths = self._update_parent_paths(character)
+        # Voice asset gate: RVC needs this character's trained model. If the
+        # bundle isn't installed, skip cleanly (no audio for this Mita) instead
+        # of wasting a TTS synthesis and then blowing up inside RVC.
+        pth = voice_paths.get("pth_path")
+        if not pth or not os.path.exists(pth):
+            name = voice_paths.get("character_name") or "?"
+            logger.warning(
+                f"Voice asset for '{name}' is not installed ({pth}) — "
+                f"skipping voiceover; this character will have no audio."
+            )
+            return None
         if self._pipeline_for_model(current_mode) == "edge":
             return await self._voiceover_edge_tts_rvc(
                 text,
@@ -643,10 +920,10 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     ) -> Optional[str]:
         current_mode = str(getattr(self.parent, "current_model_id", "") or "").strip()
         if not self.initialized or self.initialized_for != current_mode:
-            if self.initialized:
-                self.cleanup_state()
-            if not self.initialize(init=False):
-                return None
+            raise RuntimeError(
+                f"RVC voice model is not initialized for mode '{current_mode}'. "
+                "Initialize the selected voice model explicitly before conversion."
+            )
 
         try:
             self._prepare_rvc_target(character, use_index_file)
@@ -665,7 +942,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self._convert_to_stereo(output_file_rvc, volume)
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"RVC file conversion failed: {error}")
+            logger.info(f"RVC file conversion failed: {format_exception(error)}")
             return None
 
     async def _voiceover_edge_tts_rvc(
@@ -701,19 +978,48 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 f0method=settings.get("f0method", None),
             )
 
+            operation_started = time.monotonic()
+            device = str(settings.get("device", self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
+            f0_method = str(inference_params.get("f0method") or self.RVC_DEFAULT_F0_METHOD)
+            logger.info(
+                f"Edge-TTS + RVC synthesis started: device={device}, "
+                f"f0_method={f0_method}, rvc_pitch={pitch}, "
+                f"test_audio={bool(TEST_WITH_DONE_AUDIO)}"
+            )
             if not TEST_WITH_DONE_AUDIO:
                 inference_params["tts_rate"] = int(settings.get("tts_rate", 0)) if config_id != "medium+low" else 0
-                output_file_rvc = self.current_tts_rvc(text=text, **inference_params)
+                output_file_rvc = await asyncio.to_thread(
+                    self.current_tts_rvc,
+                    text=text,
+                    **inference_params,
+                )
             else:
-                output_file_rvc = self.current_tts_rvc.voiceover_file(input_path=TEST_WITH_DONE_AUDIO, **inference_params)
+                output_file_rvc = await asyncio.to_thread(
+                    self.current_tts_rvc.voiceover_file,
+                    input_path=TEST_WITH_DONE_AUDIO,
+                    **inference_params,
+                )
+            logger.info(
+                f"Edge-TTS + RVC synthesis finished in "
+                f"{time.monotonic() - operation_started:.2f}s"
+            )
 
             if not output_file_rvc or not os.path.exists(output_file_rvc) or os.path.getsize(output_file_rvc) == 0:
                 return None
             final_output_path = self._convert_to_stereo(output_file_rvc, str(settings.get("volume", "1.0")))
             return self._maybe_move_to_output(final_output_path, output_file)
+        except TimeoutError as error:
+            traceback.print_exc()
+            logger.error(
+                "Edge-TTS + RVC exceeded the vendor 300-second operation timeout. "
+                "The runtime was initialized successfully; the timeout occurred during synthesis/RVC. "
+                "For DirectML, try the PM F0 method if RMVPE remains too slow. "
+                f"Details: {format_exception(error)}"
+            )
+            return None
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"Edge-TTS + RVC voiceover failed: {error}")
+            logger.info(f"Edge-TTS + RVC voiceover failed: {format_exception(error)}")
             return None
 
     async def _voiceover_silero_rvc(self, text, character=None, output_file: Optional[str] = None):
@@ -764,7 +1070,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             return self._maybe_move_to_output(final_output_path, output_file)
         except Exception as error:
             traceback.print_exc()
-            logger.info(f"Silero + RVC voiceover failed: {error}")
+            logger.info(f"Silero + RVC voiceover failed: {format_exception(error)}")
             return None
         finally:
             if temp_wav and os.path.exists(temp_wav):
@@ -777,6 +1083,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
 class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.CUDA
     RVC_PACKAGE = "tts-with-rvc"
+    RVC_IMPORT_CANDIDATES = ("tts_with_rvc",)
     RVC_UNINSTALL_PACKAGES = ("tts-with-rvc",)
     MODEL_EXTENSION = "pth"
     VOICE_PATH_PROVIDER = "NVIDIA"
@@ -787,6 +1094,7 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
     SUPPORTS_HALF = True
     SUPPORTS_RUNTIME_F0 = True
     PATCH_FAIRSEQ_CONFIGS = True
+    RVC_RUNTIME_ASSETS = CUDA_RVC_RUNTIME_ASSETS
 
     EDGE_MODEL_ID = EDGE_TTS_RVC_CUDA_ID
     SILERO_MODEL_ID = SILERO_RVC_CUDA_ID
@@ -820,16 +1128,27 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
         },
     ]
 
+    def _resolve_runtime_device(self, value: Any) -> str:
+        requested = super()._resolve_runtime_device(value).lower()
+        if requested == "dml":
+            logger.warning(
+                "CUDA RVC received an obsolete DirectML setting; using cuda:0."
+            )
+            return self.RVC_DEFAULT_DEVICE
+        return requested
+
     def _load_rvc_class(self):
         _ensure_lib_path()
-        from tts_with_rvc import TTS_RVC
-
-        return TTS_RVC
+        return self._import_rvc_class()
 
 
 class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.ONNX
     RVC_PACKAGE = "tts-with-rvc-onnx[dml]"
+    # PyPI documentation uses ``tts_with_rvc_onnx``, while the published wheel
+    # has historically also shipped the repository package as ``tts_with_rvc``.
+    # Treat the distribution identity and import package identity separately.
+    RVC_IMPORT_CANDIDATES = ("tts_with_rvc_onnx", "tts_with_rvc")
     RVC_UNINSTALL_PACKAGES = ("tts-with-rvc-onnx",)
     MODEL_EXTENSION = "onnx"
     VOICE_PATH_PROVIDER = "AMD"
@@ -840,6 +1159,7 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     SUPPORTS_HALF = False
     SUPPORTS_RUNTIME_F0 = True
     PATCH_FAIRSEQ_CONFIGS = False
+    RVC_RUNTIME_ASSETS = ONNX_RVC_RUNTIME_ASSETS
 
     EDGE_MODEL_ID = EDGE_TTS_RVC_ONNX_ID
     SILERO_MODEL_ID = SILERO_RVC_ONNX_ID
@@ -851,11 +1171,11 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             "name": "Edge-TTS + RVC (ONNX)",
             "min_vram": 3,
             "rec_vram": 4,
-            "gpu_vendor": ["AMD", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 3,
             "languages": ["Russian", "English"],
             "intents": [_("ONNX", "ONNX"), _("Стабильно", "Stable")],
-            "description": _("Edge-TTS с RVC через ONNX (DirectML / CPU). Ветка для AMD, Intel и CPU без fp16.", "Edge-TTS with RVC via ONNX (DirectML / CPU). Variant for AMD, Intel and CPU without fp16."),
+            "description": _("Edge-TTS с RVC через ONNX/DirectML на AMD, Intel и NVIDIA с CPU fallback. На NVIDIA рекомендуется CUDA-версия.", "Edge-TTS with RVC through ONNX/DirectML on AMD, Intel, and NVIDIA with CPU fallback. The CUDA variant is recommended on NVIDIA."),
             "settings": _onnx_edge_settings(),
         },
         {
@@ -864,20 +1184,148 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             "name": "Silero + RVC (ONNX)",
             "min_vram": 3,
             "rec_vram": 4,
-            "gpu_vendor": ["AMD", "CPU"],
+            "gpu_vendor": ["NVIDIA", "AMD", "INTEL", "CPU"],
             "size_gb": 3,
             "languages": ["Russian", "English"],
             "intents": [_("ONNX", "ONNX"), _("Локальный синтез", "Offline synth")],
-            "description": _("Silero + RVC через ONNX с ограниченными стабильными параметрами.", "Silero + RVC through ONNX with a limited stable parameter set."),
+            "description": _("Silero + RVC через ONNX/DirectML на Windows с CPU fallback. На NVIDIA рекомендуется CUDA-версия.", "Silero + RVC through ONNX/DirectML on Windows with CPU fallback. The CUDA variant is recommended on NVIDIA."),
             "settings": _onnx_silero_settings(),
         },
     ]
 
+    def _resolve_runtime_device(self, value: Any) -> str:
+        requested = super()._resolve_runtime_device(value).lower()
+        if requested != "dml":
+            return requested
+        try:
+            import onnxruntime
+
+            providers = set(onnxruntime.get_available_providers() or ())
+        except Exception:
+            providers = set()
+        if "DmlExecutionProvider" in providers:
+            return "dml"
+        logger.warning(
+            "ONNX RVC requested DirectML, but DmlExecutionProvider is unavailable; "
+            "using CPUExecutionProvider."
+        )
+        return "cpu"
+
+    @classmethod
+    def _configure_imported_rvc_module(cls, module_name: str, module: Any) -> None:
+        try:
+            inference_module = importlib.import_module(
+                f"{module_name}.lib.infer_pack.onnx_inference"
+            )
+        except Exception:
+            return
+        if getattr(inference_module, "_neuromita_f0_cache_patch", False):
+            return
+
+        original = getattr(inference_module, "get_f0_predictor", None)
+        if not callable(original):
+            return
+
+        cache: dict[tuple[Any, ...], Any] = {}
+        lock = threading.RLock()
+
+        def cached_get_f0_predictor(
+            f0_predictor_str,
+            hop_length,
+            sampling_rate,
+            device,
+            cr_threshold=0.05,
+        ):
+            method = str(f0_predictor_str or "").strip().lower()
+            requested_device = str(device or "cpu").strip().lower()
+            # The vendor code creates a new RMVPE ONNX session for every
+            # utterance. Cache it, but preserve the configured execution
+            # provider. The warning about MelSpectrogram means only that the
+            # preprocessing tensor operations stay on CPU; it is not a reason
+            # to move the RMVPE ONNX graph off DirectML.
+            effective_device = device
+            key = (method, int(hop_length), int(sampling_rate), str(effective_device), float(cr_threshold))
+            if method != "rmvpe":
+                return original(
+                    f0_predictor_str,
+                    hop_length=hop_length,
+                    sampling_rate=sampling_rate,
+                    device=effective_device,
+                    cr_threshold=cr_threshold,
+                )
+            with lock:
+                predictor = cache.get(key)
+                if predictor is None:
+                    if requested_device == "dml":
+                        logger.info(
+                            "ONNX RVC compatibility: caching the DirectML RMVPE F0 session; "
+                            "MelSpectrogram preprocessing remains on CPU by vendor design."
+                        )
+                    predictor = original(
+                        f0_predictor_str,
+                        hop_length=hop_length,
+                        sampling_rate=sampling_rate,
+                        device=effective_device,
+                        cr_threshold=cr_threshold,
+                    )
+                    cache[key] = predictor
+                return predictor
+
+        inference_module.get_f0_predictor = cached_get_f0_predictor
+        inference_module._neuromita_f0_cache_patch = True
+
+        # Add stage timings without changing the vendor pipeline. Its public
+        # TimeoutError covers both Edge-TTS download and synchronous ONNX RVC
+        # inference, which otherwise makes a five-minute timeout impossible to
+        # diagnose from the application log.
+        try:
+            runtime_module = importlib.import_module(f"{module_name}.inference_onnx")
+        except Exception:
+            runtime_module = None
+
+        if runtime_module is not None and not getattr(
+            runtime_module, "_neuromita_stage_logging_patch", False
+        ):
+            original_tts_communicate = getattr(runtime_module, "tts_communicate", None)
+            if callable(original_tts_communicate):
+                async def timed_tts_communicate(*args, **kwargs):
+                    started = time.monotonic()
+                    logger.info("Edge-TTS network stage started.")
+                    try:
+                        return await original_tts_communicate(*args, **kwargs)
+                    finally:
+                        logger.info(
+                            f"Edge-TTS network stage finished in "
+                            f"{time.monotonic() - started:.2f}s."
+                        )
+
+                runtime_module.tts_communicate = timed_tts_communicate
+
+            onnx_rvc_class = getattr(inference_module, "OnnxRVC", None)
+            original_onnx_inference = getattr(onnx_rvc_class, "inference", None)
+            if callable(original_onnx_inference):
+                def timed_onnx_inference(instance, *args, **kwargs):
+                    started = time.monotonic()
+                    f0_method = kwargs.get("f0_method", "unknown")
+                    logger.info(
+                        f"ONNX RVC stage started: device={getattr(instance, 'device', 'unknown')}, "
+                        f"f0_method={f0_method}."
+                    )
+                    try:
+                        return original_onnx_inference(instance, *args, **kwargs)
+                    finally:
+                        logger.info(
+                            f"ONNX RVC stage finished in "
+                            f"{time.monotonic() - started:.2f}s."
+                        )
+
+                onnx_rvc_class.inference = timed_onnx_inference
+
+            runtime_module._neuromita_stage_logging_patch = True
+
     def _load_rvc_class(self):
         _ensure_lib_path()
-        from tts_with_rvc_onnx import TTS_RVC
-
-        return TTS_RVC
+        return self._import_rvc_class()
 
     def _set_rvc_model_path(self, model_path: str) -> None:
         self.current_tts_rvc.set_model(model_path)

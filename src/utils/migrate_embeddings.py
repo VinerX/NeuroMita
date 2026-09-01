@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import sys
 import os
 import sqlite3
@@ -31,7 +32,7 @@ def ensure_schema(conn):
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN embedding BLOB")
                 conn.commit()
         except Exception as e:
-            print(f"Ошибка при проверке схемы таблицы {table}: {e}")
+            print(f"Ошибка при проверке схемы таблицы {table}: {format_exception(e)}")
 
     conn.close()
 
@@ -86,7 +87,7 @@ def process_table(db_manager, model_handler, table_name, id_column, content_colu
         print(f"\n✅ Готово! Обработано {count} записей в {table_name} за {time.time() - start_time:.2f} сек.")
 
     except Exception as e:
-        print(f"\n❌ Ошибка при обработке {table_name}: {e}")
+        print(f"\n❌ Ошибка при обработке {table_name}: {format_exception(e)}")
     finally:
         conn.close()
 
@@ -106,7 +107,7 @@ def main():
     try:
         model = EmbeddingModelHandler()
     except Exception as e:
-        print(f"CRITICAL ERROR: Не удалось загрузить модель: {e}")
+        print(f"CRITICAL ERROR: Не удалось загрузить модель: {format_exception(e)}")
         return
 
     # 4. Обработка History

@@ -12,6 +12,7 @@ Detail level is controlled by IMAGE_DESCRIPTION_DETAIL setting:
 """
 
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import base64
 import logging
@@ -157,7 +158,7 @@ class ImageDescriptionHandler:
             result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
             return str(result).strip() if result and str(result).strip() else "[Scene description unavailable]"
         except Exception as exc:
-            logger.warning(f"[ImageDescriptionHandler] Failed to describe sequence of {len(image_data)} images: {exc}")
+            logger.warning(f"[ImageDescriptionHandler] Failed to describe sequence of {len(image_data)} images: {format_exception(exc)}")
             return "[Scene description unavailable]"
 
     def describe(self, image_data: List[bytes], context_hint: str = "") -> List[str]:
@@ -206,7 +207,7 @@ class ImageDescriptionHandler:
                     descriptions.append(f"[Image {i + 1}: description unavailable]")
 
             except Exception as exc:
-                logger.warning(f"[ImageDescriptionHandler] Failed to describe image {i + 1}: {exc}")
+                logger.warning(f"[ImageDescriptionHandler] Failed to describe image {i + 1}: {format_exception(exc)}")
                 descriptions.append(f"[Image {i + 1}: description unavailable]")
 
         return descriptions

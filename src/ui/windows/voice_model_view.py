@@ -1,19 +1,29 @@
 # voice_model_view.py
 
-import os
 import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QLineEdit, QComboBox, QCheckBox,
-    QMessageBox, QListWidget, QListWidgetItem, QSplitter, QTabWidget
+    QListWidget, QListWidgetItem, QSplitter, QTabWidget
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QCursor
 
 from styles.voice_model_styles import get_stylesheet
 from utils import getTranslationVariant as _
-from core.events import get_event_bus, Events
-from ui.windows.voice_action_windows import VCRedistWarningDialog, TritonDependenciesDialog  # NEW
+from ui.windows.voice_model_presentation import (
+    CloseVoiceModels,
+    InstallVoiceModel,
+    OpenVoiceDocumentation,
+    RefreshVoiceModels,
+    RequestVoiceDescription,
+    SaveVoiceSettings,
+    UninstallVoiceModel,
+    VoiceDescriptionEffect,
+    VoiceModelsState,
+    VoiceOperationRejectedEffect,
+)
+from ui.mvvm import mutable_payload
 
 from main_logger import logger
 
@@ -39,7 +49,6 @@ class ModelDetailView(QWidget):
         self.gpu_vendor = None
         self.gpu_name = None
         self.cuda_devices = []
-        self.rtx_check_func = None
 
         self._settings_changed_cb = None
         self.setting_widgets = {}
@@ -144,9 +153,6 @@ class ModelDetailView(QWidget):
         self.gpu_name = name
         self.cuda_devices = list(cuda_devices or [])
 
-    def set_rtx_check_func(self, func):
-        self.rtx_check_func = func
-
     # ---- actions ----
     def _on_install(self):
         if self.current_model_id:
@@ -189,19 +195,15 @@ class ModelDetailView(QWidget):
         self.btn_uninstall.setEnabled(installed)
         self.btn_install.setVisible(not installed)
 
-        # AMD compatibility check
         model = self._find_model(mid)
-        supported = model.get("gpu_vendor", []) or []
-        is_amd_user = (self.gpu_vendor == "AMD")
-        is_amd_supported = ("AMD" in supported)
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
+        is_supported = bool(model.get("compat_supported", True))
 
         can_install = True
         install_text = _("Установить", "Install")
-        if is_amd_user and not is_amd_supported and not allow_unsupported:
+        if not is_supported:
             can_install = False
-            install_text = _("Несовместимо с AMD", "Incompatible with AMD")
-
+            gpu_label = str(self.gpu_vendor or "GPU")
+            install_text = _(f"Несовместимо с {gpu_label}", f"Incompatible with {gpu_label}")
         self.btn_install.setText(install_text)
         self.btn_install.setEnabled(can_install)
 
@@ -378,15 +380,16 @@ class ModelDetailView(QWidget):
         # Meta chips (в одну строку, компактно)
         meta_chips = []
 
-        # RTX 30+/40+ ПЕРВЫМ (если требуется)
-        if model.get("rtx30plus", False):
-            meets = self.rtx_check_func() if callable(self.rtx_check_func) else False
+        compatibility = model.get("compatibility") if isinstance(model.get("compatibility"), dict) else {}
+        for hardware_tag in compatibility.get("hardware_tags") or ():
+            if not isinstance(hardware_tag, dict) or not str(hardware_tag.get("label") or "").strip():
+                continue
             meta_chips.append(
                 self._make_chip(
-                    "RTX 30+",
-                    "ok" if meets else "warn",
+                    str(hardware_tag.get("label")),
+                    "warn" if hardware_tag.get("variant") == "danger" else "info",
                     icon_names=["fa5s.bolt", "mdi.flash"],
-                    icon_color="#f2da6b"
+                    icon_color="#ff7b7b",
                 )
             )
 
@@ -468,19 +471,13 @@ class ModelDetailView(QWidget):
         else:
             self.langs_title.setVisible(False)
 
-        # AMD warning
-        supported = model.get("gpu_vendor", []) or []
-        is_amd_user = (self.gpu_vendor == "AMD")
-        is_amd_supported = ("AMD" in supported)
-        allow_unsupported = os.environ.get("ALLOW_UNSUPPORTED_GPU", "0") == "1"
-        if is_amd_user and not is_amd_supported and allow_unsupported:
-            self.warning_label.setText(_("Может не работать на AMD!", "May not work on AMD!"))
-        elif is_amd_user and not is_amd_supported and not allow_unsupported:
-            self.warning_label.setText(_("Несовместимо с AMD.", "Incompatible with AMD."))
-        else:
-            self.warning_label.setText("")
+        is_supported = bool(model.get("compat_supported", True))
+        warning_text = str(model.get("compat_warning") or "").strip()
+        if not is_supported and not warning_text:
+            gpu_label = str(self.gpu_vendor or "GPU")
+            warning_text = _(f"Несовместимо с {gpu_label}.", f"Incompatible with {gpu_label}.")
+        self.warning_label.setText(warning_text)
 
-        # Описание модели — обычный абзац
         self.profile_desc_label.setText(model_desc_text)
 
         # Кнопки
@@ -619,12 +616,13 @@ class ModelListItemWidget(QWidget):
         self.name_label.setStyleSheet("color: #e6e6eb; font-size: 9pt;")
         main.addWidget(self.name_label)
         
-        # RTX 30+ значок (только если есть)
-        if self.model_data.get("rtx30plus") and qta:
+        compatibility = self.model_data.get("compatibility") if isinstance(self.model_data.get("compatibility"), dict) else {}
+        if compatibility.get("hardware_tags") and qta:
             rtx_icon = QLabel()
-            icon = qta.icon('fa5s.bolt', color='#ffa726')
+            icon = qta.icon('fa5s.bolt', color='#ff7b7b')
             rtx_icon.setPixmap(icon.pixmap(14, 14))
-            rtx_icon.setToolTip("RTX 30+ Required")
+            first_tag = compatibility["hardware_tags"][0]
+            rtx_icon.setToolTip(str(first_tag.get("tooltip") or first_tag.get("label") or ""))
             main.addWidget(rtx_icon)
         
         main.addStretch()
@@ -643,31 +641,17 @@ class ModelListItemWidget(QWidget):
 # ---------- Главное окно настроек ----------
 class VoiceModelSettingsView(QWidget):
 
-    update_description_signal = pyqtSignal(str)
-    clear_description_signal = pyqtSignal()
-    install_started_signal = pyqtSignal(str)
-    install_finished_signal = pyqtSignal(dict)
-    uninstall_started_signal = pyqtSignal(str)
-    uninstall_finished_signal = pyqtSignal(dict)
-    refresh_panels_signal = pyqtSignal()
-    refresh_settings_signal = pyqtSignal()
+    run_ui_task_signal = pyqtSignal(object)
 
-    ask_question_signal = pyqtSignal(str, str, object, object)
-    create_voice_action_window_signal = pyqtSignal(str, str, object, object)
-
-    open_vc_redist_dialog = pyqtSignal(object)            # result_holder
-    open_triton_dialog = pyqtSignal(dict, object)         # deps, result_holder
-
-    def __init__(self, auto_initialize: bool = True):
+    def __init__(self, view_model, *, auto_initialize: bool = True):
         super().__init__()
+        self.view_model = view_model
 
         self.setWindowTitle(_("Настройки и Установка Локальных Моделей", "Settings and Installation of Local Models"))
         self.setMinimumSize(900, 650)
         self.resize(1100, 720)
 
         self.setStyleSheet(get_stylesheet())
-
-        self.event_bus = get_event_bus()
 
         self._cached_dependencies_status = None
         self.models_data = []
@@ -680,6 +664,7 @@ class VoiceModelSettingsView(QWidget):
         self.detail = None
 
         self._initialized = False
+        self._rendered_revision = -1
         self.btn_save = None
         self._baseline_values: dict[str, object] = {}
         self._dirty_keys: set[str] = set()
@@ -687,42 +672,60 @@ class VoiceModelSettingsView(QWidget):
 
         self._build_ui()
 
-        self.update_description_signal.connect(self._on_update_description)
-        self.clear_description_signal.connect(self._on_clear_description)
-        self.install_started_signal.connect(self._on_install_started)
-        self.install_finished_signal.connect(self._on_install_finished)
-        self.uninstall_started_signal.connect(self._on_uninstall_started)
-        self.uninstall_finished_signal.connect(self._on_uninstall_finished)
-        self.refresh_panels_signal.connect(self._on_refresh_panels)
-        self.refresh_settings_signal.connect(self._on_refresh_settings)
-        self.ask_question_signal.connect(self._on_ask_question)
-        self.create_voice_action_window_signal.connect(self._on_create_voice_action_window)
-        self.open_vc_redist_dialog.connect(
-            self._slot_open_vc_redist_dialog,
-            type=Qt.ConnectionType.BlockingQueuedConnection
-        )
-        self.open_triton_dialog.connect(
-            self._slot_open_triton_dialog,
-            type=Qt.ConnectionType.BlockingQueuedConnection
-        )
+        self.run_ui_task_signal.connect(self._run_ui_task, type=Qt.ConnectionType.QueuedConnection)
+        self.view_model.state_changed.connect(self.render)
+        self.view_model.effect_emitted.connect(self.handle_effect)
 
         if auto_initialize:
             self.refresh_all()
 
-    def refresh_all(self):
-        """
-        Вызывай при показе окна:
-        - 1-й раз: полноценная инициализация данных;
-        - далее: обновление данных и UI.
-        """
-        if not self._initialized:
-            self._initialize_data()
-            self._initialized = True
-            return
+    def _run_ui_task(self, fn):
+        if callable(fn):
+            fn()
 
-        self.models_data = self._get_models_data()
-        self.installed_models = self._get_installed_models()
-        self._cached_dependencies_status = self._get_dependencies_status()
+    def refresh_all(self):
+        if self.list is not None and not self.models_data:
+            self.list.clear()
+            self.list.addItem(QListWidgetItem(_("Loading models...", "Loading models...")))
+        self.view_model.dispatch(RefreshVoiceModels())
+
+    def render(self, state: VoiceModelsState) -> None:
+        if state.revision != self._rendered_revision:
+            self._rendered_revision = state.revision
+            if state.revision > 0:
+                self._apply_refresh_snapshot(
+                    {
+                        "models_data": tuple(
+                            mutable_payload(item) for item in state.models
+                        ),
+                        "installed_models": state.installed_models,
+                        "dependencies_status": mutable_payload(
+                            state.dependencies_status
+                        ) or {},
+                    }
+                )
+        busy = state.operation is not None
+        if busy:
+            text = _("Загрузка...", "Downloading...") if state.operation == "install" else _("Удаление...", "Uninstalling...")
+            self.detail.set_button_text(text)
+            self.detail.set_button_enabled(False)
+        elif self._initialized:
+            self._on_selection_changed()
+        if state.error:
+            logger.warning("Voice Models presentation error: %s", state.error)
+
+    def handle_effect(self, effect) -> None:
+        if isinstance(effect, VoiceDescriptionEffect):
+            self._on_update_description(effect.text)
+        elif isinstance(effect, VoiceOperationRejectedEffect):
+            logger.info(effect.message)
+
+    def _apply_refresh_snapshot(self, snapshot: dict):
+        self.models_data = list(snapshot.get("models_data") or [])
+        installed = snapshot.get("installed_models") or set()
+        self.installed_models = set(installed) if isinstance(installed, (set, list, tuple)) else set()
+        self._cached_dependencies_status = snapshot.get("dependencies_status") or {}
+        self._initialized = True
 
         self._on_clear_description()
         self._populate_list()
@@ -730,6 +733,7 @@ class VoiceModelSettingsView(QWidget):
             self.list.setCurrentRow(0)
 
         self.refresh_dependencies_panel()
+        self._apply_gpu_status()
         self._on_selection_changed()
 
     def ensure_initialized(self):
@@ -802,8 +806,8 @@ class VoiceModelSettingsView(QWidget):
         self.detail.set_settings_changed_callback(self._on_current_setting_changed)
         # description hover callbacks
         self.detail.set_description_callbacks(
-            lambda key: self.event_bus.emit(Events.VoiceModel.UPDATE_DESCRIPTION, key),
-            lambda: self.event_bus.emit(Events.VoiceModel.CLEAR_DESCRIPTION)
+            lambda key: self.view_model.dispatch(RequestVoiceDescription(str(key))),
+            lambda: self.view_model.dispatch(RequestVoiceDescription(None)),
         )
         # wiring install/uninstall
         self.detail.install_clicked.connect(self._on_install_clicked)
@@ -866,20 +870,16 @@ class VoiceModelSettingsView(QWidget):
 
         # Pass GPU info and RTX checker to detail
         self._apply_gpu_status()
-        self.detail.set_rtx_check_func(lambda: bool(self._check_gpu_rtx30_40()))
 
-    # ---------- EventBus helpers ----------
+    # ---------- Presentation helpers ----------
     def _get_models_data(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DATA)
-        return results[0] if results else []
+        return [mutable_payload(item) for item in self.view_model.state.models]
 
     def _get_installed_models(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_INSTALLED_MODELS)
-        return results[0] if results else set()
+        return set(self.view_model.state.installed_models)
 
     def _get_dependencies_status(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEPENDENCIES_STATUS)
-        return results[0] if results else {}
+        return dict(mutable_payload(self.view_model.state.dependencies_status) or {})
 
     def _apply_gpu_status(self):
         st = self._cached_dependencies_status or {}
@@ -890,55 +890,29 @@ class VoiceModelSettingsView(QWidget):
         )
 
     def _get_default_description(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_DEFAULT_DESCRIPTION)
-        return results[0] if results else ""
+        return _("Select a model to see details.", "Select a model to see details.")
 
     def _get_model_description(self, model_id):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.GET_MODEL_DESCRIPTION, model_id)
-        return results[0] if results else self._get_default_description()
-
-    def _check_gpu_rtx30_40(self):
-        results = self.event_bus.emit_and_wait(Events.VoiceModel.CHECK_GPU_RTX30_40)
-        return results[0] if results else False
+        for model in self.models_data or []:
+            if str(model.get("id") or "") != str(model_id or ""):
+                continue
+            for key in ("description", "desc", "tooltip", "help"):
+                value = model.get(key)
+                if value:
+                    return str(value)
+        return self._get_default_description()
 
     # ---------- Dependencies tab ----------
     def _build_dependencies_panel(self, layout: QVBoxLayout):
         # Если кэш ещё пуст при первой отрисовке — подтянем статус напрямую
-        st = self._cached_dependencies_status or self._get_dependencies_status() or {}
+        st = self._cached_dependencies_status or {}
+        if not st:
+            info = QLabel(_("Loading dependencies...", "Loading dependencies..."))
+            info.setObjectName("Subtle")
+            layout.addWidget(info)
+            return
 
-        if st.get("show_triton_checks", False):
-            row = QHBoxLayout()
-            row.setSpacing(16)
-            for text, ok in [
-                (_("CUDA Toolkit:", "CUDA Toolkit:"), st.get("cuda_found", False)),
-                (_("Windows SDK:", "Windows SDK:"), st.get("winsdk_found", False)),
-                (_("MSVC:", "MSVC:"), st.get("msvc_found", False))
-            ]:
-                sub = QHBoxLayout()
-                sub.setSpacing(6)
-                lab = QLabel(text)
-                val = QLabel(_("Найден", "Found") if ok else _("Не найден", "Not Found"))
-                val.setStyleSheet(f"color: {'#7fe38c' if ok else '#FF6A6A'};")
-                sub.addWidget(lab)
-                sub.addWidget(val)
-                row.addLayout(sub)
-            row.addStretch()
-            layout.addLayout(row)
-
-            if not (st.get("cuda_found") and st.get("winsdk_found") and st.get("msvc_found")):
-                warn = QHBoxLayout()
-                wlab = QLabel(_("⚠️ Для моделей Fish Speech+ / +RVC могут потребоваться все компоненты.",
-                                "⚠️ Fish Speech+ / +RVC models may require all components."))
-                wlab.setStyleSheet("color: orange; font-weight: bold;")
-                warn.addWidget(wlab)
-                link = QLabel(_("[Документация]", "[Documentation]"))
-                link.setObjectName("Link")
-                link.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                link.mousePressEvent = lambda e: self.event_bus.emit(Events.VoiceModel.OPEN_DOC, "installation_guide.html")
-                warn.addWidget(link)
-                warn.addStretch()
-                layout.addLayout(warn)
-        elif not st.get("triton_installed", False):
+        if not st.get("triton_installed", False):
             warn = QLabel(_("Triton не установлен (нужен для Fish Speech+ / +RVC).",
                             "Triton not installed (required for Fish Speech+ / +RVC)."))
             warn.setStyleSheet("color: orange;")
@@ -1087,74 +1061,20 @@ class VoiceModelSettingsView(QWidget):
         if not model_data:
             return
 
-        self.event_bus.emit(Events.VoiceModel.INSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.view_model.dispatch(InstallVoiceModel(model_id))
 
     def _on_uninstall_clicked(self, model_id: str):
-        self.event_bus.emit(Events.VoiceModel.UNINSTALL_MODEL, {
-            'model_id': model_id,
-            'with_ui': True
-        })
+        self.view_model.dispatch(UninstallVoiceModel(model_id))
 
     def _on_save_clicked(self):
         if not self._dirty_keys:
             return
         logger.info(f"Voice settings changed: {len(self._dirty_keys)} keys: {sorted(self._dirty_keys)}")
-        self.event_bus.emit(Events.VoiceModel.SAVE_SETTINGS)
+        self.view_model.dispatch(SaveVoiceSettings(self.get_all_section_values()))
         QTimer.singleShot(0, self._capture_baseline)
 
     def _on_close_clicked(self):
-        self.event_bus.emit(Events.VoiceModel.CLOSE_DIALOG)
-
-    # ---------- Install/Uninstall UI state ----------
-    def _on_install_started(self, model_id):
-        self.detail.set_button_text(_("Загрузка...", "Downloading..."))
-        self.detail.set_button_enabled(False)
-
-    def _on_install_finished(self, data):
-        self.installed_models = self._get_installed_models()
-        self._refresh_list_visuals()
-        self._on_selection_changed()
-
-    def _on_uninstall_started(self, model_id):
-        self.detail.set_button_text(_("Удаление...", "Uninstalling..."))
-        self.detail.set_button_enabled(False)
-
-    def _on_uninstall_finished(self, data):
-        self.installed_models = self._get_installed_models()
-        self._refresh_list_visuals()
-        self._on_selection_changed()
-
-    def _on_refresh_panels(self):
-        self.models_data = self._get_models_data()
-        self.installed_models = self._get_installed_models()
-        self._populate_list()
-
-    def _on_refresh_settings(self):
-        self._cached_dependencies_status = self._get_dependencies_status()
-        self._apply_gpu_status()
-        # Пересобрать вкладку "Зависимости" с актуальными данными
-        self.refresh_dependencies_panel()
-        self._on_selection_changed()
-
-    # ---------- API for controller compatibility ----------
-    def set_button_text(self, model_id, text):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            self.detail.set_button_text(text)
-
-    def set_button_enabled(self, model_id, enabled):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            self.detail.set_button_enabled(enabled)
-
-    def get_section_values(self, model_id):
-        cur = self.list.currentItem()
-        if cur and cur.data(Qt.ItemDataRole.UserRole) == model_id:
-            return self.detail.get_current_settings_values()
-        return {}
+        self.view_model.dispatch(CloseVoiceModels(self.get_all_section_values()))
 
     def get_all_section_values(self):
         # сохраняем настройки только текущей выбранной модели
@@ -1165,39 +1085,6 @@ class VoiceModelSettingsView(QWidget):
             values[mid] = self.detail.get_current_settings_values()
         return values
 
-    # ---------- Dialog helpers for controller ----------
-    @pyqtSlot(str, str, object, object)
-    def _on_ask_question(self, title, message, result_holder, local_loop):
-        reply = QMessageBox.question(
-            self, title, message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        result_holder["answer"] = (reply == QMessageBox.StandardButton.Yes)
-        local_loop.quit()
-
-    @pyqtSlot(str, str, object, object)
-    def _on_create_voice_action_window(self, title, status, result_holder, local_loop):
-        from ui.windows.voice_action_windows import VoiceActionWindow
-        window = VoiceActionWindow(self.window() or self, title, status)
-        window.show()
-        result_holder["window"] = window
-        local_loop.quit()
-
-    # ---------- Messages ----------
-    def show_warning(self, title, message):
-        QMessageBox.warning(self, title, message)
-
-    def show_critical(self, title, message):
-        QMessageBox.critical(self, title, message)
-
-    def show_question(self, title, message):
-        reply = QMessageBox.question(
-            self, title, message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        return reply == QMessageBox.StandardButton.Yes
-    
     def _clear_layout(self, layout):
         """Утилита для рекурсивной очистки любого QLayout."""
         while layout.count():
@@ -1211,24 +1098,10 @@ class VoiceModelSettingsView(QWidget):
     
     def refresh_dependencies_panel(self):
         """Пересобирает панель зависимостей с актуальным статусом."""
-        self._cached_dependencies_status = self._get_dependencies_status()
         if hasattr(self, 'deps_container') and self.deps_container is not None:
             self._clear_layout(self.deps_container)
             self._build_dependencies_panel(self.deps_container)
 
-    # ---------- Deps Windows ----------
-    @pyqtSlot(object)
-    def _slot_open_vc_redist_dialog(self, result_holder: dict):
-        dlg = VCRedistWarningDialog(parent=self.window() or self)
-        dlg.exec()
-        result_holder["choice"] = dlg.get_choice()  # 'retry' | 'close'
-
-    @pyqtSlot(dict, object)
-    def _slot_open_triton_dialog(self, deps: dict, result_holder: dict):
-        dlg = TritonDependenciesDialog(parent=self.window() or self, dependencies_status=deps)
-        dlg.exec()
-        result_holder["choice"] = dlg.get_choice()  # 'continue' | 'skip'
-        
     # ---- extra ---
     def _current_model_id(self) -> str | None:
         cur = self.list.currentItem() if self.list else None

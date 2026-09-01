@@ -1,5 +1,7 @@
+from core.error_utils import format_exception
 import asyncio
 import threading
+from core.task_supervisor import task_supervisor
 from typing import Optional, List, Callable
 from main_logger import logger
 
@@ -14,8 +16,9 @@ class LifecycleManager:
         
     def start_event_loop(self):
         """Запуск asyncio event loop в отдельном потоке"""
-        self.loop_thread = threading.Thread(target=self._run_event_loop, daemon=True)
-        self.loop_thread.start()
+        self.loop_thread = task_supervisor().start_thread(
+            self, "lifecycle-event-loop", self._run_event_loop, replace=True
+        )
         self.loop_ready_event.wait()
         
     def _run_event_loop(self):
@@ -27,7 +30,7 @@ class LifecycleManager:
             self.loop_ready_event.set()
             self.loop.run_forever()
         except Exception as e:
-            logger.error(f"Error in event loop: {e}", exc_info=True)
+            logger.error(f"Error in event loop: {format_exception(e)}", exc_info=True)
         finally:
             self._cleanup_loop()
             
@@ -54,7 +57,7 @@ class LifecycleManager:
             try:
                 callback()
             except Exception as e:
-                logger.error(f"Error in cleanup callback: {e}", exc_info=True)
+                logger.error(f"Error in cleanup callback: {format_exception(e)}", exc_info=True)
                 
         # Останавливаем event loop
         if self.loop and not self.loop.is_closed():

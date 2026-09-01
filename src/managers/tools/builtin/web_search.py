@@ -1,4 +1,5 @@
-﻿# src/managers/tools/builtin/web_search.py
+from core.error_utils import format_exception
+# src/managers/tools/builtin/web_search.py
 import json
 from ddgs import DDGS
 from managers.tools.base import Tool
@@ -45,7 +46,7 @@ class WebSearchTool(Tool):
             return json.dumps(formatted_results, ensure_ascii=False, indent=2)
 
         except Exception as e:
-            return f"[web_search] Ошибка: {e}"
+            return f"[web_search] Ошибка: {format_exception(e)}"
 
 
 def find_sites_test():

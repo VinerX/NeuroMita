@@ -1,17 +1,26 @@
 from ui.gui_templates import create_settings_section, create_section_header
 from utils import getTranslationVariant as _
-from core.events import get_event_bus, Events
-from ui.settings.rag_memory_settings import (
+
+
+def setup_model_interaction_controls(
+    self,
+    parent,
+    *,
+    runtime_options_view_model,
     build_memory_section,
     build_rag_section,
-    build_rag_memory_section,  # обратная совместимость
-)
+):
+    from ui.settings.runtime_options import attach_runtime_options_view_model
 
-
-def setup_model_interaction_controls(self, parent):
+    attach_runtime_options_view_model(self, runtime_options_view_model)
     create_section_header(parent, _("Настройки взаимодействия с моделью", "Model Interaction Settings"))
 
     general_config = [
+        {
+            'label': _('Параметры генерации ответов моделью и работы инструментов (tools).',
+                       'Parameters for response generation and tool usage.'),
+            'type': 'text',
+        },
         {'label': _('Настройки сообщений', 'Message settings'), 'type': 'subsection'},
         {'label': _('Промты раздельно', 'Separated prompts'), 'key': 'SEPARATE_PROMPTS',
          'type': 'checkbutton', 'default_checkbutton': True},
@@ -32,12 +41,32 @@ def setup_model_interaction_controls(self, parent):
                       'The model "thinks aloud" before filling other fields — improves quality for local models. '
                       'Disable if using native thinking or to save tokens.')},
         {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
-         'type': 'checkbutton',
-         'default_checkbutton': True,
+         'type': 'combobox',
+         'options': [
+             (_('Не определять', 'Do not specify'), ''),
+             (_('Нет', 'No'), False),
+             (_('Да', 'Yes'), True),
+         ],
+         'default': '',
+         'depends_on_value': True,
          'tooltip': _('Для моделей Qwen3 и аналогичных: включает thinking-режим. '
-                      'Выключите если модель кладёт ответ в reasoning_content вместо content.',
+                      'Выберите «Не определять», чтобы не передавать параметр провайдеру; '
+                      '«Нет» и «Да» задают явное значение.',
                       'For Qwen3 and similar models: enables thinking mode. '
-                      'Disable if the model puts the response into reasoning_content instead of content.')},
+                      'Choose "Do not specify" to leave the parameter out of the provider request; '
+                      '"No" and "Yes" set an explicit value.')},
+        {'label': _('Глубина размышлений', 'Reasoning effort'),
+         'key': 'MODEL_REASONING_EFFORT', 'type': 'combobox',
+         'options': ['low', 'medium', 'high'], 'default': 'medium',
+         'depends_on': 'ENABLE_THINKING',
+         'tooltip': _('Глубина размышлений для локальных моделей через LM Studio / llama.cpp '
+                      '(Gemma 4, Qwen3): чем выше, тем длиннее мысли и больше потраченных токенов.\n'
+                      'Работает только при включённом "Режиме размышлений" и только у провайдеров, '
+                      'которые понимают reasoning_effort — на остальных параметр не отправляется.',
+                      'Reasoning depth for local models via LM Studio / llama.cpp (Gemma 4, Qwen3): '
+                      'the higher, the longer the thoughts and the more tokens spent.\n'
+                      'Requires "Enable thinking mode", and only applies to providers that understand '
+                      'reasoning_effort — it is not sent to the others.')},
         {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
          'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
 
@@ -60,13 +89,13 @@ def setup_model_interaction_controls(self, parent):
         'type': 'entry',
         'toggle_key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
         'toggle_default': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
-        'default': 3000,
+        'default': 2500,
         'validation': self.validate_positive_integer,
         'tooltip': _('Максимальное количество токенов в ответе модели',
                     'Maximum number of tokens in the model response')},
 
         {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': 1.0,
+         'type': 'entry', 'default': '',
          'toggle_key': 'USE_MODEL_TEMPERATURE',
          'toggle_default': self.settings.get('USE_MODEL_TEMPERATURE', True),
          'validation': self.validate_float_0_to_2,
@@ -78,7 +107,7 @@ def setup_model_interaction_controls(self, parent):
         'type': 'entry',
         'toggle_key': 'USE_MODEL_TOP_K',
         'toggle_default': self.settings.get('USE_MODEL_TOP_K', True),
-        'default': 0,
+        'default': '',
         'validation': self.validate_positive_integer_or_zero,
         'tooltip': _('Ограничивает выбор токенов K наиболее вероятными (0 = отключено)',
                     'Limits token selection to K most likely (0 = disabled)')},
@@ -88,7 +117,7 @@ def setup_model_interaction_controls(self, parent):
         'type': 'entry',
         'toggle_key': 'USE_MODEL_TOP_P',
         'toggle_default': self.settings.get('USE_MODEL_TOP_P', True),
-        'default': 1.0,
+        'default': '',
         'validation': self.validate_float_0_to_1,
         'tooltip': _('Ограничивает выбор токенов по кумулятивной вероятности (0.0-1.0)',
                     'Limits token selection by cumulative probability (0.0-1.0)')},
@@ -209,9 +238,9 @@ def setup_model_interaction_controls(self, parent):
              'system — system role only (may be ignored by Gemini).\n'
              'user — user role only with [SYSTEM INFO] tag.')},
 
-        {'label': _('GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
+        {'label': _('GOOGLE API KEY', 'GOOGLE API KEY'), 'key': 'GOOGLE_API_KEY', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',
+        {'label': _('GOOGLE CSE ID', 'GOOGLE CSE ID'), 'key': 'GOOGLE_CSE_ID', 'type': 'entry',
          'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
 
         {'type': 'end'},
@@ -224,26 +253,17 @@ def setup_model_interaction_controls(self, parent):
         icon_name='fa5s.cogs'
     )
 
-    event_bus = get_event_bus()
-    presets_meta = event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-    hc_provider_names = [_('Текущий', 'Current')]
-    if presets_meta and presets_meta[0]:
-        for preset in presets_meta[0].get('custom', []):
-            hc_provider_names.append(preset.name)
-    react_provider_names = [_('Текущий', 'Current')]
-    if presets_meta and presets_meta[0]:
-        for preset in presets_meta[0].get('custom', []):
-            react_provider_names.append(preset.name)
+    from ui.settings.runtime_options import register_provider_options
+
+    provider_options = [_("Текущий", "Current")]
 
     react_settings_config = [
         {
             'type': 'text',
             'label': _(
                 'Реакции — это когда триггером генерации служит событие, а не прямой запрос пользователя.\n'
-                'L1 — очень короткий ответ с выбором анимации (для слабых но шустрых моделей, сокращённый контекст).\n'
                 'L2 — полноценный ответ мощной моделью.',
                 'Reactions are triggered by events, not direct user input.\n'
-                'L1 — very short response with animation choice (lightweight fast models, trimmed context).\n'
                 'L2 — full response by a powerful model.'
             ),
         },
@@ -257,25 +277,9 @@ def setup_model_interaction_controls(self, parent):
                 'Disabling completely blocks model calls for react.'
             )
         },
-        {
-            'label': _('Использовать реакции L1 (тихие)', 'Enable react L1 (silent)'),
-            'key': 'REACT_L1_ENABLED', 'type': 'checkbutton', 'default_checkbutton': False,
-            'depends_on': 'REACT_ENABLED',
-            'tooltip': _(
-                'Тихие реакции: мимика/поза/действия без ответа текстом.',
-                'Silent reactions: face/pose/actions without text answer.'
-            )
-        },
-        {
-            'label': _('Провайдер для реакций L1', 'Provider for react L1'),
-            'key': 'REACT_PROVIDER_L1', 'type': 'combobox',
-            'options': react_provider_names, 'default': _('Текущий', 'Current'),
-            'depends_on': 'REACT_L1_ENABLED',
-            'tooltip': _(
-                'Какой API-пресет использовать для тихих react-сообщений (L1).',
-                'Which API preset to use for silent react messages (L1).'
-            )
-        },
+        # Реакции L1 (тихие) временно убраны из интерфейса и выключены по
+        # умолчанию (см. REACT_L1_ENABLED в create_task.py). Ключи в коде
+        # сохранены — фичу можно вернуть, добавив контролы обратно.
         {
             'label': _('Использовать реакции L2 (с ответом)', 'Enable react L2 (with answer)'),
             'key': 'REACT_L2_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
@@ -288,7 +292,7 @@ def setup_model_interaction_controls(self, parent):
         {
             'label': _('Провайдер для реакций L2', 'Provider for react L2'),
             'key': 'REACT_PROVIDER_L2', 'type': 'combobox',
-            'options': react_provider_names, 'default': _('Текущий', 'Current'),
+            'options': provider_options, 'default': _('Текущий', 'Current'),
             'depends_on': 'REACT_L2_ENABLED',
             'tooltip': _(
                 'Какой API-пресет использовать для react-ответов (L2).',
@@ -303,32 +307,13 @@ def setup_model_interaction_controls(self, parent):
         react_settings_config
     )
 
-    build_memory_section(self, parent, hc_provider_names)
-    build_rag_section(self, parent, hc_provider_names)
+    build_memory_section(self, parent, provider_options)
+    build_rag_section(self, parent, provider_options)
+    register_provider_options(
+        self,
+        ("REACT_PROVIDER_L2", "HC_PROVIDER", "GRAPH_PROVIDER"),
+    )
 
-    token_settings_config = [
-        {'label': _('Показывать информацию о токенах', 'Show Token Info'), 'key': 'SHOW_TOKEN_INFO',
-         'type': 'checkbutton', 'default_checkbutton': True,
-         'tooltip': _('Отображать количество токенов и ориентировочную стоимость в интерфейсе чата.',
-                      'Display token count and approximate cost in the chat interface.')},
-        {'label': _('Стоимость токена (вход, ₽)', 'Token Cost (input, ₽)'), 'key': 'TOKEN_COST_INPUT',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000001,
-         'validation': self.validate_float_positive_or_zero,
-         'tooltip': _('Стоимость одного токена для входных данных (например, 0.000001 ₽ за токен).',
-                      'Cost of one token for input data (e.g., 0.000001 ₽ per token).')},
-        {'label': _('Стоимость токена (выход, ₽)', 'Token Cost (output, ₽)'), 'key': 'TOKEN_COST_OUTPUT',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 0.000002,
-         'validation': self.validate_float_positive_or_zero,
-         'tooltip': _('Стоимость одного токена для выходных данных (например, 0.000002 ₽ за токен).',
-                      'Cost of one token for output data (e.g., 0.000002 ₽ per token).')},
-        {'label': _('Максимальное количество токенов модели', 'Max Model Tokens'), 'key': 'MAX_MODEL_TOKENS',
-         'depends_on': 'SHOW_TOKEN_INFO', 'type': 'entry', 'default': 32000,
-         'validation': self.validate_positive_integer,
-         'tooltip': _('Максимальное количество токенов, которое может обработать модель.',
-                      'Maximum number of tokens the model can process.')},
-    ]
-
-    create_settings_section(self, parent,
-                            _("Настройки токенов", "Token Settings"),
-                            token_settings_config)
+    # Token pricing/context limits now come from the selected provider/preset,
+    # so the old manual "Token Settings" subsection is intentionally removed.
 

@@ -5,6 +5,7 @@ Matches query keywords against ``graph_entities.name`` (exact + prefix),
 fetches 1-hop neighborhood, returns Candidates with formatted triples.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import logging
 from typing import Any, Dict, List
@@ -32,7 +33,7 @@ class GraphRetriever:
             try:
                 vec_names = self.gs.find_by_embedding(qs.query_vec, threshold=0.55, top_k=10)
             except Exception as e:
-                logger.debug(f"GraphRetriever: vector search failed: {e}")
+                logger.debug(f"GraphRetriever: vector search failed: {format_exception(e)}")
 
         # Keyword match (always active as fallback / additive).
         kw_names = self._match_entities(qs.keywords)

@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass
 from typing import Callable, Any, Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal, Qt, QEvent
+from PyQt6.QtCore import QCoreApplication, QEvent, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QWidget
 
 from main_logger import logger
@@ -106,9 +107,25 @@ class WindowManager(QObject):
         return holder
 
     def close_dialog(self, window_id: str, *, destroy: bool = False) -> None:
+        if QThread.currentThread() == self.thread():
+            self._on_request_close(window_id, destroy)
+            if destroy:
+                QCoreApplication.sendPostedEvents(
+                    None,
+                    QEvent.Type.DeferredDelete,
+                )
+            return
         self._request_close.emit(window_id, destroy)
 
     def close_all(self, *, destroy: bool = False) -> None:
+        if QThread.currentThread() == self.thread():
+            self._on_request_close_all(destroy)
+            if destroy:
+                QCoreApplication.sendPostedEvents(
+                    None,
+                    QEvent.Type.DeferredDelete,
+                )
+            return
         self._request_close_all.emit(destroy)
 
     def get_dialog(self, window_id: str) -> Optional[QDialog]:
@@ -130,11 +147,11 @@ class WindowManager(QObject):
             try:
                 dialog = spec.factory(self._parent, payload)
             except Exception as e:
-                logger.error(f"WindowManager: ошибка factory для '{window_id}': {e}", exc_info=True)
+                logger.error(f"WindowManager: ошибка factory для '{window_id}': {format_exception(e)}", exc_info=True)
                 err_cb = payload.get("error_callback")
                 if callable(err_cb):
                     try:
-                        err_cb(str(e))
+                        err_cb(format_exception(e))
                     except Exception:
                         pass
                 return None
@@ -185,11 +202,11 @@ class WindowManager(QObject):
             dialog.raise_()
             dialog.activateWindow()
         except Exception as e:
-            logger.error(f"WindowManager: ошибка show '{window_id}': {e}", exc_info=True)
+            logger.error(f"WindowManager: ошибка show '{window_id}': {format_exception(e)}", exc_info=True)
             err_cb = payload.get("error_callback")
             if callable(err_cb):
                 try:
-                    err_cb(str(e))
+                    err_cb(format_exception(e))
                 except Exception:
                     pass
 
@@ -238,8 +255,8 @@ class WindowManager(QObject):
             holder["done"] = True
 
         except Exception as e:
-            logger.error(f"WindowManager: ошибка show_blocking '{window_id}': {e}", exc_info=True)
-            holder["error"] = str(e)
+            logger.error(f"WindowManager: ошибка show_blocking '{window_id}': {format_exception(e)}", exc_info=True)
+            holder["error"] = format_exception(e)
 
         finally:
             if f:

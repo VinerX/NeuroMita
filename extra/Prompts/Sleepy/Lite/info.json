@@ -1,0 +1,7 @@
+{
+  "character": "Sleepy",
+  "variant": "Lite",
+  "author": "Depikoov",
+  "version": "0.0.1",
+  "description": "Lightweight Sleepy Mita for weaker/cheaper models — condensed personality on the same modern runtime (structured output, behavior_state, RAG). Personality by Depikoov."
+}

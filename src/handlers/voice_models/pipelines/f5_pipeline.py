@@ -127,10 +127,14 @@ class F5TTSPipeline:
     def _load_vocoder(self):
         """Загружает вокодер на основе конфигурации."""
         vocoder_name = self.config["vocoder_name"]
-        if vocoder_name == "vocos":
-            vocoder_local_path = "../checkpoints/vocos-mel-24khz"
-        elif vocoder_name == "bigvgan":
-            vocoder_local_path = "../checkpoints/bigvgan_v2_24khz_100band_256x"
+        vocoder_local_path = str(self.config.get("vocoder_local_path") or "").strip()
+        if not vocoder_local_path:
+            if vocoder_name == "vocos":
+                vocoder_local_path = os.path.abspath(os.path.join("checkpoints", "vocos-mel-24khz"))
+            elif vocoder_name == "bigvgan":
+                vocoder_local_path = os.path.abspath(
+                    os.path.join("checkpoints", "bigvgan_v2_24khz_100band_256x")
+                )
         
         return load_vocoder(
             vocoder_name=vocoder_name,

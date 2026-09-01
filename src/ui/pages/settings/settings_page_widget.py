@@ -1,6 +1,7 @@
+from core.error_utils import format_exception
 import qtawesome as qta
 
-from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize, QTimer, Qt
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,12 +13,27 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QWidgetItem,
 )
 
-from ui.pages.settings.section_registry import SettingsSectionSpec, get_settings_section_specs
+from ui.pages.settings.section_registry import (
+    SettingsSectionSpec,
+    get_settings_section_specs,
+)
+from ui.pages.settings.section_access import (
+    is_section_enabled,
+    migrate_legacy_section_settings,
+)
+from ui.pages.settings.settings_presentation import (
+    PrepareSettingsSection,
+    SettingsSectionFailed,
+    SettingsSectionReady,
+)
+from ui.widgets.flow_layout import FlowLayout as _FlowLayout
 from ui.widgets.settings_icon_button import SettingsIconButton
+from main_logger import logger
 from utils import _
+from localization.live import tr_set
+from localization.live import register_if_tr
 
 _MODE_RANK = {"basic": 0, "advanced": 1, "full": 2}
 _MODE_ALIASES = {
@@ -25,6 +41,21 @@ _MODE_ALIASES = {
     "advanced": {"advanced", "продвинутый", "expanded", "расширенный"},
     "full": {"full", "полный", "maximum", "максимальный"},
 }
+
+_SECTION_FEATURES: dict[str, tuple[str, ...]] = {
+    # Model metadata is supplied by LocalVoiceController; the voice catalog is
+    # built only after that provider is ready. Both import and construction run
+    # in the runtime-feature pool, never on the Qt thread.
+    "voice": ("local_voice", "voice_models"),
+    "microphone": ("speech",),
+}
+
+_SECTION_GUI_FEATURES: dict[str, str] = {
+    "voice": "voice",
+    "microphone": "speech",
+}
+
+_BACKEND_REQUIRED_SECTIONS = frozenset({"api", "characters", "models"})
 
 
 def normalize_mode(value):
@@ -53,144 +84,6 @@ def _make_card(name: str) -> QFrame:
     card.setObjectName(name)
     return card
 
-
-class _FlowLayout(QLayout):
-    """Left-to-right layout that wraps items onto new rows when they run out
-    of horizontal space. Used for the settings tab strip so the tabs reflow
-    to a second row instead of producing a horizontal scrollbar.
-
-    When `justify` is set, the items on every row are stretched to fill the
-    full available width (extra space is shared equally between them) instead
-    of hugging the left edge — so the tab strip spans the whole settings page
-    rather than sitting compressed on the left.
-
-    When `center` is set (and `justify` is off), items keep their natural
-    (fixed) width and each row is centered as a group within the available
-    width instead of hugging the left edge."""
-
-    def __init__(self, parent=None, margin=0, hspacing=6, vspacing=6, justify=False, center=False):
-        super().__init__(parent)
-        self._items: list[QWidgetItem] = []
-        self._hspace = hspacing
-        self._vspace = vspacing
-        self._justify = justify
-        self._center = center
-        self.setContentsMargins(margin, margin, margin, margin)
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def addWidget(self, widget):  # type: ignore[override]
-        self.addChildWidget(widget)
-        self.addItem(QWidgetItem(widget))
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def expandingDirections(self):
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        margins = self.contentsMargins()
-        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
-        return size
-
-    def _item_hint(self, item: QWidgetItem) -> QSize:
-        widget = item.widget()
-        hint = item.sizeHint()
-        if widget is not None:
-            hint = QSize(
-                max(hint.width(), widget.minimumWidth()),
-                max(hint.height(), widget.minimumHeight()),
-            )
-        return hint
-
-    def _do_layout(self, rect: QRect, test_only: bool) -> int:
-        margins = self.contentsMargins()
-        x0 = rect.x() + margins.left()
-        right = rect.right() - margins.right()
-        avail = max(0, right - x0)
-        y = rect.y() + margins.top()
-
-        # Skip only tabs that were explicitly toggled off. Using isHidden()
-        # (not isVisible()) keeps sizing correct before the window is shown,
-        # when descendants are not "visible" yet.
-        visible = [
-            item
-            for item in self._items
-            if not (item.widget() is not None and item.widget().isHidden())
-        ]
-
-        # Group visible items into rows the same way in both passes so the
-        # measured height (test_only) matches the placed geometry.
-        rows: list[list[QWidgetItem]] = []
-        current: list[QWidgetItem] = []
-        current_w = 0
-        for item in visible:
-            w = self._item_hint(item).width()
-            add = w if not current else w + self._hspace
-            if current and current_w + add > avail:
-                rows.append(current)
-                current = []
-                current_w = 0
-                add = w
-            current.append(item)
-            current_w += add
-        if current:
-            rows.append(current)
-
-        bottom = y
-        for row in rows:
-            natural = sum(self._item_hint(it).width() for it in row)
-            natural += self._hspace * (len(row) - 1)
-            extra = max(0, avail - natural) if self._justify else 0
-            per = extra // len(row) if row else 0
-            remainder = extra - per * len(row)
-
-            # Center the (natural-width) row as a group when requested.
-            x = x0
-            if self._center and not self._justify:
-                x = x0 + max(0, avail - natural) // 2
-            line_height = 0
-            for i, item in enumerate(row):
-                hint = self._item_hint(item)
-                w = hint.width() + per + (1 if i < remainder else 0)
-                if not test_only:
-                    item.setGeometry(QRect(QPoint(x, y), QSize(w, hint.height())))
-                x += w + self._hspace
-                line_height = max(line_height, hint.height())
-            y += line_height + self._vspace
-            bottom = y - self._vspace
-
-        return bottom - rect.y() + margins.bottom()
-
-
 class SettingsSectionPage(QFrame):
     def __init__(self, spec: SettingsSectionSpec, parent=None):
         super().__init__(parent)
@@ -212,43 +105,8 @@ class SettingsSectionPage(QFrame):
         self.content.setObjectName("SettingsSectionPageContent")
         self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         content_layout = QVBoxLayout(self.content)
-        content_layout.setContentsMargins(2, 2, 6, 2)
-        content_layout.setSpacing(14)
-
-        self.header = QFrame()
-        self.header.setObjectName("SettingsSectionPageHeader")
-        header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(18, 18, 18, 18)
-        header_layout.setSpacing(16)
-
-        self.icon_box = QLabel()
-        self.icon_box.setObjectName("SettingsSectionIcon")
-        self.icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_box.setFixedSize(38, 38)
-        self.icon_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.icon_box.setPixmap(qta.icon(spec.icon_name, color="#ffd7eb").pixmap(18, 18))
-        header_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignTop)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(3)
-
-        self.title_label = QLabel(_(spec.title[0], spec.title[1]))
-        self.title_label.setObjectName("SettingsSectionPageTitle")
-        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.title_label)
-
-        self.subtitle_label = QLabel(_(spec.subtitle[0], spec.subtitle[1]))
-        self.subtitle_label.setObjectName("SettingsSectionSubtitle")
-        self.subtitle_label.setWordWrap(True)
-        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        text_col.addWidget(self.subtitle_label)
-
-        header_layout.addLayout(text_col, 1)
-
-        self.mode_badge = QLabel(get_mode_label(spec.min_mode))
-        self.mode_badge.setObjectName("SettingsSectionBadge")
-        self.mode_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.mode_badge.setVisible(False)
+        content_layout.setContentsMargins(2, 0, 6, 2)
+        content_layout.setSpacing(8)
 
         self.body = QFrame()
         self.body.setObjectName("SettingsSectionPageBody")
@@ -263,7 +121,6 @@ class SettingsSectionPage(QFrame):
         self.body_layout.setSpacing(12)
         body_layout.addWidget(self.body_host)
 
-        content_layout.addWidget(self.header)
         content_layout.addWidget(self.body)
         content_layout.addStretch(1)
         self.scroll.setWidget(self.content)
@@ -287,10 +144,14 @@ class SettingsSectionPage(QFrame):
 
 
 class SettingsPage(QWidget):
-    def __init__(self, gui):
-        super().__init__(gui)
-        self.gui = gui
+    def __init__(self, parent, view_model, page_actions, settings):
+        super().__init__(parent)
+        self._view_model = view_model
+        self._page_actions = page_actions
+        self._settings = settings
         self.setObjectName("SettingsPageRoot")
+
+        migrate_legacy_section_settings(settings)
 
         self.settings_buttons = {}
         self._category_modes = {}
@@ -304,55 +165,47 @@ class SettingsPage(QWidget):
         self._settings_stack = None
         self._page_indexes = {}
         self._tabs_host = None
+        self._loaded_sections = set()
+        self._loading_sections = set()
+        self._pending_section_scroll = {}
 
-        self.SETTINGS_PANEL_WIDTH = max(920, int(getattr(gui, "SETTINGS_PANEL_WIDTH", 980) or 980))
+        width_getter = getattr(settings, "get", None)
+        stored_width = width_getter("SETTINGS_PANEL_WIDTH", 980) if callable(width_getter) else 980
+        self.SETTINGS_PANEL_WIDTH = max(920, int(stored_width or 980))
         self.SETTINGS_SIDEBAR_WIDTH = 0
         self.settings_resize_handle = None
         self.settings_scroll = None
 
         self._build_ui()
         self._build_section_containers()
-        self._sync_host_exports()
+        self._view_model.effect_emitted.connect(self._handle_effect)
+        self.destroyed.connect(lambda *_args: self._view_model.close())
+        # Сразу применяем карту видимости, иначе до первого клика в «Видимых
+        # разделах» показываются все вкладки, включая отключённые.
+        self.apply_section_visibility()
 
-    def _sync_host_exports(self):
-        self.gui.settings_page = self
-        self.gui.settings_buttons = self.settings_buttons
-        self.gui._category_modes = self._category_modes
-        self.gui.settings_containers = self.settings_containers
-        self.gui.settings_overview_container = self.settings_overview_container
-        self.gui.settings_overlay = self.settings_overlay
-        self.gui.current_settings_category = self.current_settings_category
-        self.gui.SETTINGS_PANEL_WIDTH = self.SETTINGS_PANEL_WIDTH
-        self.gui.SETTINGS_SIDEBAR_WIDTH = self.SETTINGS_SIDEBAR_WIDTH
-        self.gui.settings_resize_handle = self.settings_resize_handle
+    def preload_registered_sections(self) -> None:
+        preloads = tuple(
+            (spec.key, spec.preload_key)
+            for spec in get_settings_section_specs()
+            if spec.preload_key
+        )
+        if preloads:
+            self._page_actions.preload_settings_sections(preloads)
 
     def _set_current_category(self, category):
         self.current_settings_category = category
-        self.gui.current_settings_category = category
+
+    @property
+    def category_modes(self):
+        return self._category_modes
 
     def _sync_mode_widgets(self, mode_value):
-        clean_label = get_mode_label(mode_value)
-
-        for attr_name in ("INTERFACE_MODE", "chat_mode_combobox"):
-            widget = getattr(self.gui, attr_name, None)
-            if widget is None or not hasattr(widget, "findText"):
-                continue
-
-            index = widget.findText(clean_label, Qt.MatchFlag.MatchFixedString)
-            if index < 0 or widget.currentIndex() == index:
-                continue
-
-            widget.blockSignals(True)
-            try:
-                widget.setCurrentIndex(index)
-            finally:
-                widget.blockSignals(False)
+        self._page_actions.sync_settings_mode_widgets(mode_value)
 
     def _section_enabled(self, category) -> bool:
         try:
-            from ui.widgets.settings_panel import is_section_enabled
-
-            return is_section_enabled(category)
+            return is_section_enabled(category, self._settings)
         except Exception:
             return True
 
@@ -375,28 +228,14 @@ class SettingsPage(QWidget):
         active = self.current_settings_category
         if active is None or not self._section_enabled(active):
             fallback = self._first_available_category()
-            if fallback is not None:
+            if fallback is not None and self._page_actions.is_current("settings"):
                 self._activate_category(fallback, smooth_scroll=False)
             else:
                 self._set_current_category(None)
 
         self._update_nav_state()
 
-        try:
-            from ui.widgets.status_indicators_widget import apply_capture_visibility
-
-            apply_capture_visibility(self.gui)
-        except Exception:
-            pass
-
-        sidebar = getattr(self.gui, "shell_sidebar", None)
-        if sidebar is not None and hasattr(sidebar, "apply_section_visibility"):
-            try:
-                from ui.widgets.settings_panel import is_section_enabled
-
-                sidebar.apply_section_visibility(is_section_enabled)
-            except Exception:
-                pass
+        self._page_actions.apply_settings_aux_visibility()
 
     def apply_interface_mode(self, mode_value=None):
         # Back-compat: the interface mode dropdown was replaced by per-section
@@ -408,6 +247,8 @@ class SettingsPage(QWidget):
             first_key = self._first_available_category() or "api"
             self._activate_category(first_key, smooth_scroll=False)
 
+        self._page_actions.refresh_tester_code()
+
     def show_overview(self, *, scroll_to_top: bool = False):
         fallback = self._first_available_category()
         if fallback is not None:
@@ -415,30 +256,36 @@ class SettingsPage(QWidget):
             if scroll_to_top:
                 self._scroll_to_top(smooth=False)
 
-    def show_category(self, category, *, smooth_scroll: bool = True):
+    def show_category(self, category, *, smooth_scroll: bool = True, force: bool = False, subsection=None):
+        # force=True — пользователь явно перешёл в конкретный раздел (шестерёнка
+        # подсистемы), показываем его даже если секция скрыта в «Видимых разделах»,
+        # а не уводим в «Общие» (фидбэк #14: «пересылает вникуда»).
+        # subsection — заголовок(и) вложенной CollapsibleSection (например «RAG»):
+        # после перехода она разворачивается и подскролливается к началу, чтобы
+        # сразу попасть в нужное поле, а не в начало длинной страницы (фидбэк Артёма).
         if category not in self.settings_containers:
             return
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None:
                 category = fallback
             else:
                 return
 
-        was_on_settings_page = getattr(self.gui, "current_main_page", None) == "settings"
+        was_on_settings_page = self._page_actions.is_current("settings")
         if not was_on_settings_page:
-            self.gui.switch_main_page("settings")
-            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll: self._activate_category(cat, smooth_scroll=smooth))
+            self._page_actions.switch_page("settings")
+            QTimer.singleShot(0, lambda cat=category, smooth=smooth_scroll, f=force, sub=subsection: self._activate_category(cat, smooth_scroll=smooth, force=f, subsection=sub))
             return
 
-        self._activate_category(category, smooth_scroll=smooth_scroll)
+        self._activate_category(category, smooth_scroll=smooth_scroll, force=force, subsection=subsection)
 
-    def _activate_category(self, category: str, *, smooth_scroll: bool):
+    def _activate_category(self, category: str, *, smooth_scroll: bool, force: bool = False, subsection=None):
         page = self.settings_containers.get(category)
         if page is None:
             return
 
-        if not self._section_enabled(category):
+        if not force and not self._section_enabled(category):
             fallback = self._first_available_category()
             if fallback is not None and fallback != category:
                 self._activate_category(fallback, smooth_scroll=False)
@@ -449,8 +296,69 @@ class SettingsPage(QWidget):
             self._settings_stack.setCurrentWidget(page)
         self.settings_scroll = getattr(page, "scroll", None)
         self._update_nav_state()
-        if smooth_scroll:
+        if category == "updates":
+            self._page_actions.refresh_tester_code()
+
+        if category not in self._loaded_sections:
+            self._ensure_section_loaded(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
+        if subsection:
+            # Разворачиваем целевую подсекцию и скроллим к ней (с задержкой —
+            # дать layout пересобраться после expand).
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
             QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _find_subsection(self, page, candidates):
+        """Найти вложенную CollapsibleSection страницы по заголовку (без учёта
+        регистра, точное совпадение или вхождение). candidates — строка или
+        список вариантов заголовка на разных языках."""
+        if isinstance(candidates, str):
+            candidates = (candidates,)
+        wanted = [str(c).strip().lower() for c in candidates if str(c).strip()]
+        if not wanted:
+            return None
+        for section in page.findChildren(QWidget):
+            if section.objectName() != "CollapsibleSection":
+                continue
+            title_label = getattr(section, "title_label", None)
+            if title_label is None:
+                continue
+            title = title_label.text().strip().lower()
+            if not title:
+                continue
+            if any(title == w or w in title for w in wanted):
+                return section
+        return None
+
+    def _scroll_to_subsection(self, page, candidates, *, smooth: bool):
+        section = self._find_subsection(page, candidates)
+        scroll = getattr(page, "scroll", None)
+        if section is None or scroll is None:
+            # Не нашли подсекцию — хотя бы откроем начало страницы.
+            if hasattr(page, "scroll_to_top"):
+                page.scroll_to_top(smooth=smooth, animate=self._animate_scroll)
+            return
+        try:
+            if getattr(section, "is_collapsed", False) and hasattr(section, "expand"):
+                section.expand()
+        except Exception:
+            pass
+        # После expand геометрия меняется — считаем целевую позицию в следующем тике.
+        QTimer.singleShot(0, lambda s=section, sc=scroll, sm=smooth: self._do_scroll_to_widget(s, sc, smooth=sm))
+
+    def _do_scroll_to_widget(self, widget, scroll, *, smooth: bool):
+        content = scroll.widget()
+        if content is None:
+            return
+        top_left = widget.mapTo(content, widget.rect().topLeft())
+        bar = scroll.verticalScrollBar()
+        target = max(0, min(bar.maximum(), top_left.y() - 12))
+        if smooth:
+            self._animate_scroll(bar, bar.value(), target)
+        else:
+            bar.setValue(target)
 
     def _scroll_to_category(self, category: str, *, smooth: bool):
         page = self.settings_containers.get(category)
@@ -517,7 +425,7 @@ class SettingsPage(QWidget):
     def _build_tabs_row(self) -> QFrame:
         card = _make_card("SettingsTabsCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._tabs_host = QWidget()
@@ -527,12 +435,13 @@ class SettingsPage(QWidget):
         host_policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
         self._tabs_host.setSizePolicy(host_policy)
 
-        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=6, vspacing=6, justify=False, center=True)
+        flow = _FlowLayout(self._tabs_host, margin=0, hspacing=10, vspacing=6, justify=False, center=True)
 
         tab_buttons = []
         for spec in get_settings_section_specs():
             label = _(spec.nav_label[0], spec.nav_label[1])
             button = SettingsIconButton(spec.icon_name, label, category_key=spec.key)
+            register_if_tr(button, label, "setText")
             # Fixed horizontal policy so each tab keeps a uniform width (set
             # below) — no stretching, no empty gaps. The flow centers the row
             # as a group and wraps to a new line instead of scrolling.
@@ -542,14 +451,6 @@ class SettingsPage(QWidget):
             self.settings_buttons[spec.key] = button
             self._category_modes[spec.key] = spec.min_mode
             tab_buttons.append(button)
-
-        # Give every tab the same fixed width (the widest label's natural width,
-        # with a sane floor) so the strip reads as a uniform tab bar instead of
-        # ragged content-sized chips.
-        if tab_buttons:
-            uniform = max([b.sizeHint().width() for b in tab_buttons] + [96])
-            for b in tab_buttons:
-                b.setFixedWidth(uniform)
 
         layout.addWidget(self._tabs_host)
         return card
@@ -582,18 +483,19 @@ class SettingsPage(QWidget):
         icon_label.setPixmap(qta.icon("fa6s.gear", color="#ff6db7").pixmap(22, 22))
         headline_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        title = QLabel(_("Настройки", "Settings"))
+        title = tr_set(QLabel(), "Настройки", "Settings")
+        register_if_tr(title, _("Настройки", "Settings"))
         title.setObjectName("SettingsHeroTitle")
         headline_row.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
         headline_row.addStretch(1)
         title_col.addLayout(headline_row)
 
-        subtitle = QLabel(
-            _(
-                "Центр конфигурации NeuroMita. Сохраняем логику, переводим интерфейс в компактный рабочий формат.",
-                "NeuroMita configuration hub. Same logic, now presented as a compact workspace.",
-            )
+        _subtitle_text = _(
+            "Все параметры NeuroMita в одном месте: персонажи, голос, модели ИИ, память и обновления.",
+            "Every NeuroMita setting in one place: characters, voice, AI models, memory and updates.",
         )
+        subtitle = QLabel(_subtitle_text)
+        register_if_tr(subtitle, _subtitle_text)
         subtitle.setObjectName("SettingsHeroSubtitle")
         subtitle.setWordWrap(True)
         title_col.addWidget(subtitle)
@@ -602,17 +504,25 @@ class SettingsPage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(10)
 
-        guide_button = QPushButton(_("Руководство", "Guide"))
+        guide_button = tr_set(QPushButton(), "Руководство", "Guide")
+        register_if_tr(guide_button, _("Руководство", "Guide"))
         guide_button.setObjectName("SettingsHeaderButton")
-        guide_button.clicked.connect(self.gui._show_guide)
+        guide_button.clicked.connect(self._page_actions.show_guide)
         actions.addWidget(guide_button)
 
-        home_button = QPushButton(_("На главную", "Home"))
+        wiki_button = tr_set(QPushButton(), "Вики", "Wiki")
+        wiki_button.setObjectName("SettingsHeaderButton")
+        wiki_button.clicked.connect(lambda: self._page_actions.switch_page("wiki"))
+        actions.addWidget(wiki_button)
+
+        home_button = tr_set(QPushButton(), "На главную", "Home")
+        register_if_tr(home_button, _("На главную", "Home"))
         home_button.setObjectName("SettingsHeaderButton")
-        home_button.clicked.connect(lambda: self.gui.switch_main_page("home"))
+        home_button.clicked.connect(lambda: self._page_actions.switch_page("home"))
         actions.addWidget(home_button)
 
-        updates_button = QPushButton(_("Открыть обновления", "Open updates"))
+        updates_button = tr_set(QPushButton(), "Открыть обновления", "Open updates")
+        register_if_tr(updates_button, _("Открыть обновления", "Open updates"))
         updates_button.setObjectName("SettingsHeaderPrimaryButton")
         updates_button.clicked.connect(lambda: self.show_category("updates"))
         actions.addWidget(updates_button)
@@ -628,39 +538,188 @@ class SettingsPage(QWidget):
 
         for spec in get_settings_section_specs():
             page = SettingsSectionPage(spec, self._settings_stack)
-
-            builder = spec.builder_ref
-            if isinstance(builder, str):
-                getattr(self.gui, builder)(page.body_layout)
-            else:
-                builder(self.gui, page.body_layout)
-
-            self._prepare_settings_subsections(page)
-
+            self._set_section_placeholder(page, "idle")
             self.settings_containers[spec.key] = page
             index = self._settings_stack.addWidget(page)
             self._page_indexes[spec.key] = index
 
+    def _set_section_placeholder(self, page: SettingsSectionPage, state: str, message: str | None = None):
+        self._clear_layout(page.body_layout)
+        box = QFrame()
+        box.setObjectName("SettingsSectionLoading")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(24, 44, 24, 44)
+        layout.setSpacing(10)
+
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        try:
+            icon.setPixmap(qta.icon("fa6s.circle-notch", color="#ff6db7").pixmap(28, 28))
+        except Exception:
+            icon.setText("...")
+
+        text = message
+        if not text:
+            if state == "loading":
+                text = _("Loading section...", "Loading section...")
+            else:
+                text = _("Section is ready to load.", "Section is ready to load.")
+        label = QLabel(text)
+        label.setObjectName("Subtle")
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch(1)
+        layout.addWidget(icon)
+        layout.addWidget(label)
+        layout.addStretch(1)
+        page.body_layout.addWidget(box)
+
+    def _ensure_section_loaded(self, category: str, *, subsection=None, smooth_scroll: bool = False, background: bool = False):
+        if category in self._loaded_sections:
+            if not background:
+                self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+            return
+
+        if category in self._loading_sections:
+            if not background:
+                self._pending_section_scroll[category] = (subsection, smooth_scroll)
+            return
+
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+
+        self._loading_sections.add(category)
+        if not background:
+            self._pending_section_scroll[category] = (subsection, smooth_scroll)
+        self._set_section_placeholder(page, "loading")
+        required_features = _SECTION_FEATURES.get(category, ())
+        self._view_model.dispatch(
+            PrepareSettingsSection(
+                category=category,
+                feature_names=tuple(required_features),
+                require_backend=category in _BACKEND_REQUIRED_SECTIONS,
+                gui_feature=_SECTION_GUI_FEATURES.get(category),
+            )
+        )
+
+    def _handle_effect(self, effect) -> None:
+        if isinstance(effect, SettingsSectionReady):
+            self._build_section_now(effect.category)
+            return
+        if isinstance(effect, SettingsSectionFailed):
+            self._finish_section_feature_error(effect.category, RuntimeError(effect.message))
+
+    def _finish_section_feature_error(self, category: str, error: BaseException) -> None:
+        logger.error(
+            "Settings section feature preparation failed for '%s': %s",
+            category,
+            error,
+        )
+        page = self.settings_containers.get(category)
+        if page is not None:
+            self._set_section_placeholder(
+                page,
+                "error",
+                _("Компонент недоступен", "Component unavailable") + f": {format_exception(error)}",
+            )
+        self._loading_sections.discard(category)
+
+    def _build_section_now(self, category: str):
+        page = self.settings_containers.get(category)
+        spec = self._section_specs.get(category)
+        if page is None or spec is None:
+            self._loading_sections.discard(category)
+            return
+
+        try:
+            self._clear_layout(page.body_layout)
+            self._page_actions.build_settings_section(category, page.body_layout)
+
+            self._promote_first_subsection_header(page)
+            self._prepare_settings_subsections(page)
+            self._loaded_sections.add(category)
+        except Exception as exc:
+            logger.error(
+                "Failed to build settings section '%s': %s",
+                category,
+                format_exception(exc),
+                exc_info=True,
+            )
+            self._set_section_placeholder(page, "error", f"Failed to load section: {format_exception(exc)}")
+        finally:
+            self._loading_sections.discard(category)
+
+        subsection, smooth_scroll = self._pending_section_scroll.pop(category, (None, False))
+        self._apply_pending_scroll(category, subsection=subsection, smooth_scroll=smooth_scroll)
+
+    def _apply_pending_scroll(self, category: str, *, subsection=None, smooth_scroll: bool = False):
+        page = self.settings_containers.get(category)
+        if page is None:
+            return
+        if subsection:
+            QTimer.singleShot(0, lambda p=page, sub=subsection, smooth=smooth_scroll: self._scroll_to_subsection(p, sub, smooth=smooth))
+        elif smooth_scroll:
+            QTimer.singleShot(0, lambda key=category: self._scroll_to_category(key, smooth=True))
+
+    def _clear_layout(self, layout: QLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+                continue
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout(child_layout)
+
     _COLLAPSE_STATE_KEY = "SETTINGS_COLLAPSED_SECTIONS"
 
-    def _collapsed_state_map(self) -> dict:
-        try:
-            from managers.settings_manager import SettingsManager
+    def _promote_first_subsection_header(self, page: SettingsSectionPage):
+        headers = page.findChildren(QWidget, "SettingsSubsectionHeader")
+        if not headers:
+            return
 
-            value = SettingsManager.get(self._COLLAPSE_STATE_KEY, {})
-            return dict(value) if isinstance(value, dict) else {}
-        except Exception:
-            return {}
+        header = headers[0]
+        header.setProperty("hero", "true")
+
+        layout = header.layout()
+        if layout is not None:
+            layout.setContentsMargins(0, 0, 0, 12)
+            layout.setSpacing(5)
+
+        title_label = header.findChild(QLabel, "SettingsSubsectionTitle")
+        if title_label is not None:
+            title_label.setWordWrap(True)
+
+        if layout is None:
+            return
+
+        subtitle_text = _(page.spec.subtitle[0], page.spec.subtitle[1])
+        subtitle = QLabel(subtitle_text)
+        register_if_tr(subtitle, subtitle_text)
+        subtitle.setObjectName("SettingsSubsectionSubtitle")
+        subtitle.setWordWrap(True)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        insert_at = 1
+        layout.insertWidget(insert_at, subtitle)
+
+        header.style().unpolish(header)
+        header.style().polish(header)
+
+    def _collapsed_state_map(self) -> dict:
+        getter = getattr(self._settings, "get", None)
+        value = getter(self._COLLAPSE_STATE_KEY, {}) if callable(getter) else {}
+        return dict(value) if isinstance(value, dict) else {}
 
     def _persist_collapsed_state(self, section_id: str, collapsed: bool) -> None:
-        try:
-            from managers.settings_manager import SettingsManager
-
-            state = self._collapsed_state_map()
-            state[section_id] = bool(collapsed)
-            SettingsManager.set(self._COLLAPSE_STATE_KEY, state)
-        except Exception:
-            pass
+        state = self._collapsed_state_map()
+        state[section_id] = bool(collapsed)
+        setter = getattr(self._settings, "set", None)
+        if callable(setter):
+            setter(self._COLLAPSE_STATE_KEY, state)
 
     def _prepare_settings_subsections(self, page: SettingsSectionPage):
         """Keep the in-page subsections collapsible so long pages (e.g. Models)

@@ -4,9 +4,8 @@
 Manages built-in presets (defined in code) and user-defined custom presets
 (persisted in Settings/embedding_presets.json).
 
-Event API (all via EventBus):
-    EmbeddingPresets.GET_PRESET_LIST    → list[dict]  (builtin + custom)
-    EmbeddingPresets.GET_PRESET_FULL    → dict | None  (resolved config)
+Read API is exposed through ``EmbeddingPresetService``. EventBus carries only
+mutation commands and resulting facts:
     EmbeddingPresets.SAVE_CUSTOM_PRESET → int | None   (saved preset id)
     EmbeddingPresets.DELETE_CUSTOM_PRESET → bool
     EmbeddingPresets.RENAME_CUSTOM_PRESET → bool
@@ -14,6 +13,7 @@ Event API (all via EventBus):
     EmbeddingPresets.TEST_PRESET        → fires TEST_RESULT async
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -22,7 +22,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.app_paths import settings_path
 from core.events import Event, Events, get_event_bus
+from core.task_supervisor import task_supervisor
+from services.contracts import EmbeddingPresetService
 from main_logger import logger
 
 
@@ -38,6 +41,7 @@ class UserEmbedPreset:
     url: str = ""                       # API endpoint URL (empty for local)
     key: str = ""
     reserve_keys: List[str] = field(default_factory=list)
+    reserve_keys_distribute: bool = False
     query_prefix: str = ""
     dimensions: int = 0
     headers: Dict[str, Any] = field(default_factory=dict)
@@ -46,12 +50,12 @@ class UserEmbedPreset:
 
 # ── Controller ─────────────────────────────────────────────────────────────────
 
-class EmbeddingPresetsController:
+class EmbeddingPresetsController(EmbeddingPresetService):
     _CUSTOM_ID_START = 1001
 
     def __init__(self) -> None:
         self.event_bus = get_event_bus()
-        self.presets_path = Path("Settings/embedding_presets.json")
+        self.presets_path = settings_path("embedding_presets.json", create_parent=True)
         self._io_lock = threading.RLock()
 
         self.custom_presets: Dict[int, UserEmbedPreset] = {}
@@ -86,7 +90,7 @@ class EmbeddingPresetsController:
                         self.builtin_overrides[str(k)] = dict(v)
             logger.info(f"[EmbedPresets] Loaded {len(self.custom_presets)} custom presets")
         except Exception as e:
-            logger.error(f"[EmbedPresets] Failed to load: {e}", exc_info=True)
+            logger.error(f"[EmbedPresets] Failed to load: {format_exception(e)}", exc_info=True)
 
     def _save(self) -> bool:
         try:
@@ -108,7 +112,7 @@ class EmbeddingPresetsController:
                 os.replace(tmp, self.presets_path)
             return True
         except Exception as e:
-            logger.error(f"[EmbedPresets] Failed to save: {e}", exc_info=True)
+            logger.error(f"[EmbedPresets] Failed to save: {format_exception(e)}", exc_info=True)
             return False
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -131,6 +135,7 @@ class EmbeddingPresetsController:
             url=str(raw.get("url") or ""),
             key=str(raw.get("key") or ""),
             reserve_keys=[str(k) for k in rk if str(k).strip()],
+            reserve_keys_distribute=bool(raw.get("reserve_keys_distribute", False)),
             query_prefix=str(raw.get("query_prefix") or ""),
             dimensions=int(raw.get("dimensions") or 0),
             headers=dict(raw.get("headers") or {}),
@@ -202,6 +207,7 @@ class EmbeddingPresetsController:
         url = str(override.get("url") or url)
         query_prefix = str(override.get("query_prefix") or "")
         reserve_keys = list(override.get("reserve_keys") or [])
+        reserve_keys_distribute = bool(override.get("reserve_keys_distribute", False))
         api_key = override.get("key") or None
         dimensions = int(override.get("dimensions") or bp.get("default_dimensions") or 0)
         headers = dict(bp.get("default_headers") or {})
@@ -222,6 +228,7 @@ class EmbeddingPresetsController:
             "api_url": url if provider != "local" else resolved_model,
             "api_key": api_key,
             "reserve_keys": reserve_keys,
+            "reserve_keys_distribute": reserve_keys_distribute,
             "headers": headers,
             "query_prefix": query_prefix,
             "dimensions": dimensions,
@@ -258,6 +265,7 @@ class EmbeddingPresetsController:
             "api_url": url if provider != "local" else resolved_model,
             "api_key": up.key or None,
             "reserve_keys": list(up.reserve_keys),
+            "reserve_keys_distribute": bool(up.reserve_keys_distribute),
             "headers": headers,
             "query_prefix": up.query_prefix,
             "dimensions": up.dimensions,
@@ -273,8 +281,6 @@ class EmbeddingPresetsController:
     def _subscribe(self) -> None:
         E = Events.EmbeddingPresets
         sub = self.event_bus.subscribe
-        sub(E.GET_PRESET_LIST, self._on_get_list, weak=False)
-        sub(E.GET_PRESET_FULL, self._on_get_full, weak=False)
         sub(E.SAVE_CUSTOM_PRESET, self._on_save, weak=False)
         sub(E.DELETE_CUSTOM_PRESET, self._on_delete, weak=False)
         sub(E.RENAME_CUSTOM_PRESET, self._on_rename, weak=False)
@@ -283,22 +289,35 @@ class EmbeddingPresetsController:
 
     # ── Handlers ─────────────────────────────────────────────────────────────
 
-    def _on_get_list(self, event: Event):
+    def list_meta(self) -> Dict[str, Any]:
         from presets.embedding_provider_presets import list_builtin_presets
-        builtins = [{"id": p["id"], "name": p["name"], "is_builtin": True,
-                     "provider": p["provider"], "is_local": p.get("is_local", False)}
-                    for p in list_builtin_presets()]
+
+        builtins = [
+            {
+                "id": preset["id"],
+                "name": preset["name"],
+                "is_builtin": True,
+                "provider": preset["provider"],
+                "is_local": preset.get("is_local", False),
+            }
+            for preset in list_builtin_presets()
+        ]
         custom = []
-        for pid in self.custom_order:
-            up = self.custom_presets.get(pid)
-            if up:
-                custom.append({"id": up.id, "name": up.name,
-                                "is_builtin": False, "provider": up.provider_name,
-                                "is_local": up.provider_name == "local"})
+        for preset_id in self.custom_order:
+            preset = self.custom_presets.get(preset_id)
+            if preset:
+                custom.append(
+                    {
+                        "id": preset.id,
+                        "name": preset.name,
+                        "is_builtin": False,
+                        "provider": preset.provider_name,
+                        "is_local": preset.provider_name == "local",
+                    }
+                )
         return {"builtin": builtins, "custom": custom}
 
-    def _on_get_full(self, event: Event):
-        preset_id = (event.data or {}).get("id")
+    def get_full(self, preset_id: Any) -> Optional[Dict[str, Any]]:
         return self._build_full_config(preset_id)
 
     def _on_save(self, event: Event):
@@ -326,6 +345,8 @@ class EmbeddingPresetsController:
             if "reserve_keys" in data:
                 rk = data.get("reserve_keys") or []
                 ov["reserve_keys"] = [str(k) for k in rk if str(k).strip()]
+            if "reserve_keys_distribute" in data:
+                ov["reserve_keys_distribute"] = bool(data.get("reserve_keys_distribute"))
             self.builtin_overrides[pid] = ov
             if not self._save():
                 return None
@@ -358,6 +379,8 @@ class EmbeddingPresetsController:
         if "reserve_keys" in data:
             rk = data["reserve_keys"] or []
             up.reserve_keys = [str(k) for k in rk if str(k).strip()]
+        if "reserve_keys_distribute" in data:
+            up.reserve_keys_distribute = bool(data.get("reserve_keys_distribute"))
         if "query_prefix" in data:
             up.query_prefix = str(data["query_prefix"] or "")
         if "dimensions" in data:
@@ -381,6 +404,11 @@ class EmbeddingPresetsController:
         logger.info(f"[EmbedPresets] Saved custom preset id={pid} name='{up.name}'")
         return pid
 
+    def save(self, data: Dict[str, Any]) -> Any:
+        return self._on_save(
+            Event(Events.EmbeddingPresets.SAVE_CUSTOM_PRESET, {"data": dict(data or {})})
+        )
+
     def _on_delete(self, event: Event):
         pid = (event.data or {}).get("id")
         if isinstance(pid, str):
@@ -403,6 +431,13 @@ class EmbeddingPresetsController:
             return True
         return False
 
+    def delete(self, preset_id: Any) -> bool:
+        return bool(
+            self._on_delete(
+                Event(Events.EmbeddingPresets.DELETE_CUSTOM_PRESET, {"id": preset_id})
+            )
+        )
+
     def _on_rename(self, event: Event):
         pid = (event.data or {}).get("id")
         new_name = str((event.data or {}).get("name") or "")
@@ -417,19 +452,38 @@ class EmbeddingPresetsController:
         self._save()
         return True
 
+    def rename(self, preset_id: Any, name: str) -> bool:
+        return bool(
+            self._on_rename(
+                Event(
+                    Events.EmbeddingPresets.RENAME_CUSTOM_PRESET,
+                    {"id": preset_id, "name": name},
+                )
+            )
+        )
+
     def _on_reorder(self, event: Event):
         order = (event.data or {}).get("order") or []
         self.custom_order = self._normalize_order(order)
         self._save()
         return True
 
+    def reorder(self, order) -> bool:
+        return bool(
+            self._on_reorder(
+                Event(Events.EmbeddingPresets.REORDER_PRESETS, {"order": list(order or [])})
+            )
+        )
+
     def _on_test(self, event: Event):
         preset_id = (event.data or {}).get("id")
-        threading.Thread(
-            target=self._sync_test,
+        task_supervisor().start_thread(
+            self,
+            "embedding-preset-test",
+            self._sync_test,
             args=(preset_id,),
-            daemon=True,
-        ).start()
+            replace=True,
+        )
 
     def _sync_test(self, preset_id: Any) -> None:
         cfg = self._build_full_config(preset_id)
@@ -456,5 +510,5 @@ class EmbeddingPresetsController:
             })
         except Exception as e:
             self.event_bus.emit(Events.EmbeddingPresets.TEST_RESULT, {
-                "id": preset_id, "success": False, "message": str(e),
+                "id": preset_id, "success": False, "message": format_exception(e),
             })

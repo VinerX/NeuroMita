@@ -1,18 +1,23 @@
+from core.error_utils import format_exception
 import datetime
 import re
 import os
+import threading
 from typing import Dict, List, Any, Optional
 import json
 
 from DSL.path_resolver import LocalPathResolver
 from DSL.post_dsl_engine import PostDslInterpreter
-from managers.memory_manager import MemoryManager
-from managers.history_manager import HistoryManager
 from utils import clamp
+from core.character_locks import character_lock
 from core.events import get_event_bus, Events
-import os
+from core.safe_eval import safe_eval_expression
+from core.services import use
+from domain.dialogue_identity import DialogueActorKind
+from services.contracts import AppVarsService, HistoryService, SettingsService
 
 from managers.game_manager import GameManager
+from managers.memory_manager import is_island
 from schemas.structured_response import StructuredResponse
 
 from main_logger import logger
@@ -20,8 +25,39 @@ from main_logger import logger
 RED_COLOR = "\033[91m"
 RESET_COLOR = "\033[0m"
 
+_CUSTOM_PARAM_FORMULA_CALLS = {
+    "max": max,
+    "min": min,
+    "abs": abs,
+    "int": int,
+    "float": float,
+    "round": round,
+}
+
+
+def _evaluate_custom_param_formula(
+    formula: str,
+    *,
+    variables: Dict[str, Any],
+    current: Any,
+    value: Any,
+    change_command: str,
+    variable_name: str,
+) -> Any:
+    eval_ctx = dict(variables)
+    eval_ctx["current"] = current
+    eval_ctx["value"] = value
+    eval_ctx[change_command] = value
+    eval_ctx[variable_name] = current
+    return safe_eval_expression(
+        formula,
+        names=eval_ctx,
+        allowed_calls=_CUSTOM_PARAM_FORMULA_CALLS,
+    )
+
 
 class Character:
+    dialogue_actor_kind = DialogueActorKind.CHARACTER
     BASE_DEFAULTS: Dict[str, Any] = {
         "attitude": 60.0,
         "boredom": 10.0,
@@ -69,6 +105,10 @@ class Character:
 
         self.variables: Dict[str, Any] = {}
         self._dirty_vars: set = set()
+        # Поколение истории. Растёт при каждом сбросе; всё, что читало историю до
+        # сброса (фоновое сжатие, кандидаты в память), обязано сверить эпоху перед
+        # записью — иначе результат многосекундного LLM-вызова воскрешает удалённое.
+        self.history_epoch: int = 0
         self.is_cartridge = is_cartridge
         self.app_vars: Dict[str, Any] = {}
 
@@ -79,7 +119,7 @@ class Character:
             resolved = self._resolve_prompt_set_name()
             self._apply_prompt_set(resolved)
         except Exception as e:
-            msg = f"[{self.char_id}] Failed to resolve/apply prompt set: {e}"
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set: {format_exception(e)}"
             try:
                 logger.notify(msg)
             except Exception:
@@ -113,16 +153,9 @@ class Character:
             ),
         )
 
-        self._pending_targets: list[str] = []
-
-        self.history_manager = HistoryManager(character_name=self.name, character_id=self.char_id)
-        self.memory_system = MemoryManager(self.char_id)
-        self.memory_system.prompt_set_path = self.base_data_path
-
-        from managers.reminder_manager import ReminderManager
-        self.reminder_system = ReminderManager(self.char_id)
-
-        self.load_history()
+        self._resource_manager = None
+        self._runtime_loaded = False
+        self._runtime_load_lock = threading.RLock()
 
         from managers.dsl_manager import create_dsl_interpreter
         self.dsl_interpreter = create_dsl_interpreter(self)
@@ -142,6 +175,41 @@ class Character:
         self.set_variable("playingGame", False)
         self.set_variable("game_id", None)
         self.game_manager = GameManager(self)
+
+    def bind_resource_manager(self, manager) -> None:
+        self._resource_manager = manager
+        manager.register_character(self.char_id, self.name, self.base_data_path)
+
+    def _resources(self):
+        manager = self._resource_manager
+        if manager is None:
+            from managers.character_resource_manager import get_character_resource_manager
+
+            manager = get_character_resource_manager()
+            self.bind_resource_manager(manager)
+        return manager
+
+    @property
+    def history_manager(self):
+        return self._resources().history_for(self.char_id, self.name)
+
+    @property
+    def memory_system(self):
+        return self._resources().memory_for(self.char_id, self.name)
+
+    @property
+    def reminder_system(self):
+        return self._resources().reminders_for(self.char_id, self.name)
+
+    def ensure_runtime_loaded(self) -> None:
+        if self._runtime_loaded:
+            return
+        with self._runtime_load_lock:
+            if self._runtime_loaded:
+                return
+            self.load_history()
+            self.memory_system.load_memories()
+            self._runtime_loaded = True
 
     def load_config(self):
         from managers.character_config_manager import CharacterConfigManager
@@ -172,7 +240,7 @@ class Character:
                 self.set_variable(str(k), v)
 
         except Exception as e:
-            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {e}", exc_info=True)
+            logger.error(f"[{self.char_id}] Error loading config via CharacterConfigManager: {format_exception(e)}", exc_info=True)
 
     def get_stats_dict(self) -> Dict[str, float]:
         return {
@@ -210,29 +278,12 @@ class Character:
 
     def flush_variables(self):
         """Batch-write all dirty variables to DB in a single transaction."""
-        if not self._dirty_vars or not hasattr(self, "history_manager"):
+        if not self._dirty_vars:
             return
         to_flush = {k: self.variables[k] for k in self._dirty_vars if k in self.variables}
         if to_flush:
             self.history_manager.update_variables_batch(to_flush)
         self._dirty_vars.clear()
-
-    def consume_pending_targets(self) -> list[str]:
-        targets = getattr(self, "_pending_targets", [])
-        self._pending_targets = []
-        return targets
-
-    def _extract_to_tag(self, response: str) -> tuple[str, str | None]:
-        if not isinstance(response, str) or not response:
-            return response, None
-
-        m = re.search(r"<To>\s*([^<]+?)\s*</To>", response, flags=re.IGNORECASE)
-        target = m.group(1).strip() if m else None
-
-        if m:
-            response = re.sub(r"<To>\s*([^<]+?)\s*</To>", "", response, flags=re.IGNORECASE).strip()
-
-        return response, target
 
     def _get_prompt_set_setting_key(self) -> str:
         return f"PROMPT_SET_{self.char_id}"
@@ -259,16 +310,7 @@ class Character:
         key = self._get_prompt_set_setting_key()
         selected = ""
 
-        try:
-            res = self.event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": key, "default": ""},
-                timeout=0.5,
-            )
-            if res:
-                selected = str(res[0] or "").strip()
-        except Exception:
-            selected = ""
+        selected = str(use(SettingsService).get(key, "") or "").strip()
 
         char_root = self._character_prompts_root()
         discovered = self._discover_prompt_set_names()
@@ -325,6 +367,9 @@ class Character:
         self.base_data_path = os.path.join(self._character_prompts_root(), self.prompt_set_name)
         self.set_variable("PROMPT_SET_NAME", self.prompt_set_name)
         self.set_variable("PROMPT_SET_PATH", self.base_data_path)
+        manager = getattr(self, "_resource_manager", None)
+        if manager is not None:
+            manager.update_prompt_set_path(self.char_id, self.base_data_path)
 
     def _log_prompt_set_problems_if_any(self):
         base = str(getattr(self, "base_data_path", "") or "")
@@ -370,27 +415,14 @@ class Character:
             )
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error during Post-DSL processing: {e}", exc_info=True
+                f"[{self.char_id}] Error during Post-DSL processing: {format_exception(e)}", exc_info=True
             )
 
         self.set_variable(
             "LongMemoryRememberCount",
             self.get_variable("LongMemoryRememberCount", 0) + 1,
         )
-        try:
-            results = self.event_bus.emit_and_wait(
-                Events.Settings.GET_APP_VARS, timeout=1.0
-            )
-            app_vars: Dict[str, Any] = {}
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-            self.update_app_vars(app_vars)
-        except Exception as e:
-            logger.warning(
-                f"[{self.char_id}] Не удалось получить app_vars через события: {e}"
-            )
-            self.update_app_vars({})
+        self.update_app_vars(use(AppVarsService).snapshot())
 
         response = self.extract_and_process_memory_data(response, save_as_missed)
 
@@ -398,7 +430,7 @@ class Character:
             response = self._process_behavior_changes_from_llm(response)
         except Exception as e:
             logger.warning(
-                f"Error processing built-in behavior changes from LLM for {self.char_id}: {e}",
+                f"Error processing built-in behavior changes from LLM for {self.char_id}: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -406,11 +438,8 @@ class Character:
             response = self._process_game_tags(response)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error during game tag processing: {e}", exc_info=True
+                f"[{self.char_id}] Error during game tag processing: {format_exception(e)}", exc_info=True
             )
-
-        response, target = self._extract_to_tag(response)
-        self._pending_targets = [target] if target else []
 
         final_response_for_log = (
             response[:200] + "..." if len(response) > 200 else response
@@ -442,20 +471,7 @@ class Character:
             "LongMemoryRememberCount",
             self.get_variable("LongMemoryRememberCount", 0) + 1,
         )
-        try:
-            results = self.event_bus.emit_and_wait(
-                Events.Settings.GET_APP_VARS, timeout=1.0
-            )
-            app_vars: Dict[str, Any] = {}
-            for r in results or []:
-                if isinstance(r, dict):
-                    app_vars.update(r)
-            self.update_app_vars(app_vars)
-        except Exception as e:
-            logger.warning(
-                f"[{self.char_id}] Could not get app_vars via events: {e}"
-            )
-            self.update_app_vars({})
+        self.update_app_vars(use(AppVarsService).snapshot())
 
         # Apply behavior changes from global fields
         try:
@@ -467,7 +483,7 @@ class Character:
                 self.adjust_stress(structured.stress_change)
         except Exception as e:
             logger.warning(
-                f"[{self.char_id}] Error applying behavior changes from structured response: {e}",
+                f"[{self.char_id}] Error applying behavior changes from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -476,7 +492,7 @@ class Character:
             self._apply_structured_memory_ops(structured, save_as_missed)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error applying memory ops from structured response: {e}",
+                f"[{self.char_id}] Error applying memory ops from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -485,7 +501,7 @@ class Character:
             self._apply_structured_reminder_ops(structured)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error applying reminder ops from structured response: {e}",
+                f"[{self.char_id}] Error applying reminder ops from structured response: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -494,18 +510,9 @@ class Character:
             self._process_structured_game_tags(structured)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error processing game tags from structured response: {e}",
+                f"[{self.char_id}] Error processing game tags from structured response: {format_exception(e)}",
                 exc_info=True,
             )
-
-        # Collect all unique targets from all segments (preserving order)
-        seen: set[str] = set()
-        targets: list[str] = []
-        for seg in structured.segments:
-            if seg.target and seg.target not in seen:
-                seen.add(seg.target)
-                targets.append(seg.target)
-        self._pending_targets = targets
 
         # 1. Apply text PostDSL rules (Remove Asterisks etc.) to each segment
         try:
@@ -513,7 +520,7 @@ class Character:
                 seg.text = self.post_dsl_interpreter.process(seg.text)
         except Exception as e:
             logger.error(
-                f"[{self.char_id}] Error in PostDSL text processing for segments: {e}",
+                f"[{self.char_id}] Error in PostDSL text processing for segments: {format_exception(e)}",
                 exc_info=True,
             )
 
@@ -528,10 +535,6 @@ class Character:
         # 2. Apply custom_params from config (порядок по гайду):
         #    1) клам change_min/change_max → 2) клам max_change (add) →
         #    3) formula или op → 4) клам min/max
-        _SAFE_BUILTINS: dict = {
-            "max": max, "min": min, "abs": abs,
-            "int": int, "float": float, "round": round,
-        }
         if _cf_raw:
             for param in self.custom_params:
                 var_name = param.get("name")
@@ -574,13 +577,14 @@ class Character:
 
                     # Шаг 4: применяем формулу или op
                     if formula:
-                        eval_ctx = dict(self.variables)
-                        eval_ctx.update(_SAFE_BUILTINS)
-                        eval_ctx["current"] = current
-                        eval_ctx["value"] = value
-                        eval_ctx[change_cmd] = value
-                        eval_ctx[var_name] = current
-                        new_val = eval(formula, {"__builtins__": {}}, eval_ctx)
+                        new_val = _evaluate_custom_param_formula(
+                            formula,
+                            variables=self.variables,
+                            current=current,
+                            value=value,
+                            change_command=change_cmd,
+                            variable_name=var_name,
+                        )
                     elif op == "add":
                         new_val = current + value
                     elif op == "set":
@@ -606,7 +610,7 @@ class Character:
                     )
                 except Exception as e:
                     logger.error(
-                        f"[{self.char_id}] Error applying custom_param '{var_name}': {e}"
+                        f"[{self.char_id}] Error applying custom_param '{var_name}': {format_exception(e)}"
                     )
 
         # 3. Apply MATCH FIELD PostDSL rules (complex logic with expressions)
@@ -615,7 +619,7 @@ class Character:
                 self.post_dsl_interpreter.process_structured_fields(_cf_raw)
             except Exception as e:
                 logger.error(
-                    f"[{self.char_id}] Error in PostDSL field processing: {e}",
+                    f"[{self.char_id}] Error in PostDSL field processing: {format_exception(e)}",
                     exc_info=True,
                 )
 
@@ -630,6 +634,18 @@ class Character:
                 continue
             # Format: "priority|content" or "priority|content|entity1,entity2,..."
             parts = [p.strip() for p in mem_text.split("|", 2)]
+            # Island upsert: "island:<type>|content" updates the single running
+            # summary of that type instead of adding a duplicate memory.
+            if parts and is_island(parts[0]):
+                island_content = parts[1] if len(parts) >= 2 else ""
+                try:
+                    eid = self.memory_system.upsert_island(parts[0], island_content)
+                    if eid is not None:
+                        self._last_created_memory_ids.append(eid)
+                    logger.info(f"[{self.char_id}] Structured: upserted {parts[0]} island")
+                except Exception as e:
+                    logger.error(f"[{self.char_id}] Structured: error upserting island: {format_exception(e)}")
+                continue
             if len(parts) >= 2 and parts[0] in ("low", "normal", "high", "critical"):
                 priority = parts[0]
                 content = parts[1]
@@ -642,7 +658,7 @@ class Character:
                     self._last_created_memory_ids.append(eid)
                 logger.info(f"[{self.char_id}] Structured: added memory (P: {priority}): {content[:50]}...")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error adding memory: {e}")
+                logger.error(f"[{self.char_id}] Structured: error adding memory: {format_exception(e)}")
 
         for update_str in (structured.memory_update or []):
             update_str = (update_str or "").strip()
@@ -662,7 +678,7 @@ class Character:
                 self.memory_system.update_memory(number=number, priority=priority, content=content)
                 logger.info(f"[{self.char_id}] Structured: updated memory #{number}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {e}")
+                logger.error(f"[{self.char_id}] Structured: error updating memory #{number}: {format_exception(e)}")
 
         for delete_str in (structured.memory_delete or []):
             delete_str = (delete_str or "").strip()
@@ -688,7 +704,7 @@ class Character:
                     self.memory_system.delete_memory(int(delete_str), save_as_missed)
                 logger.info(f"[{self.char_id}] Structured: deleted memory(ies): {delete_str}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {e}")
+                logger.error(f"[{self.char_id}] Structured: error deleting memory '{delete_str}': {format_exception(e)}")
 
         for merge_str in (structured.memory_merge or []):
             merge_str = (merge_str or "").strip()
@@ -716,7 +732,7 @@ class Character:
                     self.memory_system.delete_memory(sid, save_as_missed)
                 logger.info(f"[{self.char_id}] Structured: merged memories {src_ids} → #{tgt_id}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {e}")
+                logger.error(f"[{self.char_id}] Structured: error merging {src_ids}→#{tgt_id}: {format_exception(e)}")
 
     def _apply_structured_reminder_ops(self, structured: StructuredResponse):
         """Apply reminder add/delete operations from a StructuredResponse."""
@@ -732,7 +748,7 @@ class Character:
                 self.reminder_system.add_reminder(text.strip(), due_iso.strip())
                 logger.info(f"[{self.char_id}] Structured: added reminder due={due_iso.strip()}: {text.strip()[:50]}")
             except Exception as e:
-                logger.error(f"[{self.char_id}] Structured: error adding reminder: {e}")
+                logger.error(f"[{self.char_id}] Structured: error adding reminder: {format_exception(e)}")
 
         for delete_str in (structured.reminder_delete or []):
             delete_str = (delete_str or "").strip()
@@ -741,12 +757,12 @@ class Character:
                     self.reminder_system.delete_reminder(int(delete_str))
                     logger.info(f"[{self.char_id}] Structured: deleted reminder #{delete_str}")
                 except Exception as e:
-                    logger.error(f"[{self.char_id}] Structured: error deleting reminder #{delete_str}: {e}")
+                    logger.error(f"[{self.char_id}] Structured: error deleting reminder #{delete_str}: {format_exception(e)}")
             elif delete_str:
                 logger.warning(f"[{self.char_id}] Structured: reminder_delete bad format: {delete_str!r}")
 
     def _process_structured_game_tags(self, structured: StructuredResponse):
-        """Process start_game / end_game from segments."""
+        """Process start_game / end_game from segments, and dispatch commands to active game."""
         for seg in structured.segments:
             if seg.start_game:
                 started = self.game_manager.start_game(seg.start_game)
@@ -758,6 +774,9 @@ class Character:
             if seg.end_game:
                 self.game_manager.stop_game(seg.end_game)
                 logger.info(f"[{self.char_id}] Structured: ended game '{seg.end_game}'")
+
+            if seg.commands and self.get_variable("playingGame", False):
+                self.game_manager.process_active_game_structured_commands(seg.commands)
 
     def _process_game_tags(self, response: str) -> str:
         """
@@ -972,7 +991,7 @@ class Character:
 
             except Exception as e:
                 logger.error(
-                    f"[{self.char_id}] Error processing memory command <{operation}memory>: {content}. Error: {str(e)}",
+                    f"[{self.char_id}] Error processing memory command <{operation}memory>: {content}. Error: {format_exception(e)}",
                     exc_info=True,
                 )
 
@@ -991,7 +1010,7 @@ class Character:
             resolved = self._resolve_prompt_set_name()
             self._apply_prompt_set(resolved)
         except Exception as e:
-            msg = f"[{self.char_id}] Failed to resolve/apply prompt set during reload: {e}"
+            msg = f"[{self.char_id}] Failed to resolve/apply prompt set during reload: {format_exception(e)}"
             try:
                 logger.notify(msg)
             except Exception:
@@ -1001,8 +1020,10 @@ class Character:
         self._log_prompt_set_problems_if_any()
 
         self.load_config()
+        self._resources().update_prompt_set_path(self.char_id, self.base_data_path)
         self.load_history()
         self.memory_system.load_memories()
+        self._runtime_loaded = True
         self.set_variable(
             "SYSTEM_DATETIME", datetime.datetime.now().isoformat(" ", "minutes")
         )
@@ -1011,7 +1032,7 @@ class Character:
             from managers.dsl_manager import create_dsl_interpreter
             self.dsl_interpreter = create_dsl_interpreter(self)
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Failed to recreate DSL interpreter during reload: {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Failed to recreate DSL interpreter during reload: {format_exception(e)}", exc_info=True)
 
         try:
             path_resolver_instance = LocalPathResolver(
@@ -1021,7 +1042,7 @@ class Character:
             self.post_dsl_interpreter = PostDslInterpreter(self, path_resolver_instance)
             logger.info(f"[{self.char_id}] Post-DSL interpreter re-initialized and rules loaded during reload.")
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Failed to recreate Post-DSL interpreter during reload: {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Failed to recreate Post-DSL interpreter during reload: {format_exception(e)}", exc_info=True)
 
         logger.info(f"[{self.char_id}] Character data reloaded.")
 
@@ -1057,16 +1078,46 @@ class Character:
     def clear_history(self):
         logger.info(f"[{self.char_id}] Clearing history and resetting state.")
 
+        # Эпоху двигаем под тем же замком, что держит сжатие при записи результата:
+        # либо сжатие успело записаться до сброса, либо увидит новую эпоху и выбросит
+        # свой результат. Середины, в которой сводка переживает очистку, нет.
+        with character_lock(self.char_id):
+            self.history_epoch = int(getattr(self, "history_epoch", 0)) + 1
+        try:
+            use(HistoryService).on_history_reset(self.char_id)
+        except Exception as e:
+            logger.warning(f"[{self.char_id}] Не удалось снять отложенное сжатие: {format_exception(e)}", exc_info=True)
+
+        # Sticky core-memory triggers (e.g. code 23) are session/chat-scoped.
+        try:
+            from managers.core_memory_triggers import reset as reset_core_triggers
+            reset_core_triggers(self.char_id)
+        except Exception:
+            pass
+
         composed_initials = Character.BASE_DEFAULTS.copy()
         if hasattr(self, "DEFAULT_OVERRIDES"):
             subclass_overrides = getattr(self, "DEFAULT_OVERRIDES", {})
             composed_initials.update(subclass_overrides)
+
+        # Переменные, которых после сброса не останется (сводка истории, её граница,
+        # прогресс сюжета), надо удалить и из БД: чистка только in-memory значила, что
+        # после перезапуска они воскресали поверх пустой истории.
+        previous_keys = set(self.variables.keys())
 
         self.variables.clear()
         for key, value in composed_initials.items():
             self.set_variable(key, value)
 
         self.load_config()
+
+        stale_keys = previous_keys - set(self.variables.keys())
+        if stale_keys:
+            try:
+                self.history_manager.delete_variables(stale_keys)
+            except Exception as e:
+                logger.warning(f"[{self.char_id}] Не удалось удалить переменные при сбросе: {format_exception(e)}", exc_info=True)
+        self.flush_variables()
 
         self.memory_system.clear_memories()
         self.history_manager.clear_history()
@@ -1076,7 +1127,7 @@ class Character:
             from managers.database_manager import DatabaseManager
             GraphStore(DatabaseManager(), self.char_id).clear_for_character()
         except Exception as e:
-            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {e}", exc_info=True)
+            logger.warning(f"[{self.char_id}] Graph clear failed (ignored): {format_exception(e)}", exc_info=True)
 
         logger.info(
             f"[{self.char_id}] History cleared and state reset to initial defaults/overrides."
@@ -1092,6 +1143,10 @@ class Character:
         # или просто не хранить его в классе Character, полагаясь на history_manager.load_history()
         # Но чтобы не ломать старую логику, которая может ожидать messages внутри history_data,
         # оставим всё как есть, просто база обновляется инкрементально.
+
+    def add_messages_to_history(self, messages: List[Dict[str, str]]):
+        """Atomically append one completed dialog turn for this character."""
+        return self.history_manager.add_messages(messages)
 
     # endregion
 
@@ -1134,137 +1189,73 @@ class Character:
         self.app_vars = app_vars.copy()
         logger.debug(f"[{self.char_id}] App vars updated: {list(self.app_vars.keys())}")
 
-    def adjust_attitude(self, amount: float):
-        current = self.get_variable("attitude", 60.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
+    def _stat_change_hard_limit(self) -> float:
+        """Absolute per-response change cap (existing scale, configurable).
 
-        min_bound = self.get_variable("attitude_min", 0.0)
-        max_bound = self.get_variable("attitude_max", 100.0)
+        Defaults to 6.0 — the prior hard-coded bound. A normal reply is expected
+        to stay well within this (about -2..+2, enforced softly through the
+        prompt); larger jumps remain possible for genuinely significant moments.
+        """
+        try:
+            return abs(float(self.get_variable("STAT_CHANGE_HARD_LIMIT", 6.0)))
+        except Exception:
+            return 6.0
 
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
+    def _stat_bound(self, key: str, default: float):
+        value = self.get_variable(key, default)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
 
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
+    def _adjust_bounded_stat(self, name: str, amount: float, default_current: float) -> None:
+        """Apply a per-response delta to a bounded stat.
+
+        A zero delta is a valid, common outcome and leaves the value unchanged.
+        The delta is clamped to the configurable hard limit; the result is
+        clamped to the stat's [min, max] bounds so totals never leave the scale.
+        """
+        current = self.get_variable(name, default_current)
+        try:
+            current = float(current)
+        except Exception:
+            current = float(default_current)
+
+        limit = self._stat_change_hard_limit()
+        amount = clamp(round(float(amount), 2), -limit, limit)
+
+        min_val = self._stat_bound(f"{name}_min", 0.0)
+        max_val = self._stat_bound(f"{name}_max", 100.0)
 
         if (min_val is not None and max_val is not None) and max_val < min_val:
             logger.error(
-                f"[{self.char_id}] Invalid config: attitude_max ({max_val}) is less than attitude_min ({min_val})."
+                f"[{self.char_id}] Invalid config: {name}_max ({max_val}) is less than {name}_min ({min_val})."
             )
             min_val, max_val = None, None
 
         new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
+        if min_val is not None and max_val is not None:
             new_value = clamp(new_value, min_val, max_val)
+        elif min_val is not None:
+            new_value = max(new_value, min_val)
+        elif max_val is not None:
+            new_value = min(new_value, max_val)
 
-        self.set_variable("attitude", new_value)
+        self.set_variable(name, new_value)
         logger.info(
-            f"[{self.char_id}] Attitude changed by {amount:.2f} to {self.get_variable('attitude'):.2f}"
+            f"[{self.char_id}] {name.capitalize()} changed by {amount:.2f} to {float(self.get_variable(name)):.2f}"
         )
+
+    def adjust_attitude(self, amount: float):
+        self._adjust_bounded_stat("attitude", amount, 60.0)
 
     def adjust_boredom(self, amount: float):
-        current = self.get_variable("boredom", 10.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
-
-        min_bound = self.get_variable("boredom_min", 0.0)
-        max_bound = self.get_variable("boredom_max", 100.0)
-
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
-
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
-
-        if (min_val is not None and max_val is not None) and max_val < min_val:
-            logger.error(
-                f"[{self.char_id}] Invalid config: boredom_max ({max_val}) is less than boredom_min ({min_val})."
-            )
-            min_val, max_val = None, None
-
-        new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
-            new_value = clamp(new_value, min_val, max_val)
-
-        self.set_variable("boredom", new_value)
-        logger.info(
-            f"[{self.char_id}] Boredom changed by {amount:.2f} to {self.get_variable('boredom'):.2f}"
-        )
+        self._adjust_bounded_stat("boredom", amount, 10.0)
 
     def adjust_stress(self, amount: float):
-        current = self.get_variable("stress", 5.0)
-        amount = round(amount, 2)
-        amount = clamp(float(amount), -6.0, 6.0)
-
-        min_bound = self.get_variable("stress_min", 0.0)
-        max_bound = self.get_variable("stress_max", 100.0)
-
-        def to_num_or_none(v):
-            if v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return float(v)
-            try:
-                return float(v)
-            except Exception:
-                return None
-
-        min_val = to_num_or_none(min_bound)
-        max_val = to_num_or_none(max_bound)
-
-        if (min_val is not None and max_val is not None) and max_val < min_val:
-            logger.error(
-                f"[{self.char_id}] Invalid config: stress_max ({max_val}) is less than stress_min ({min_val})."
-            )
-            min_val, max_val = None, None
-
-        new_value = current + amount
-        if min_val is None and max_val is None:
-            pass
-        elif min_val is None:
-            if new_value > max_val:
-                new_value = max_val
-        elif max_val is None:
-            if new_value < min_val:
-                new_value = min_val
-        else:
-            new_value = clamp(new_value, min_val, max_val)
-
-        self.set_variable("stress", new_value)
-        logger.info(
-            f"[{self.char_id}] Stress changed by {amount:.2f} to {self.get_variable('stress'):.2f}"
-        )
+        self._adjust_bounded_stat("stress", amount, 5.0)
 
     def to_voice_profile(self) -> Dict[str, Any]:
         """

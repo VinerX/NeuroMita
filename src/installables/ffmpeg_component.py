@@ -91,7 +91,10 @@ class FFmpegInstallableComponent:
                     path.unlink()
                 except OSError:
                     pass
-            ok = bool(install_ffmpeg(target_directory="."))
+            # Pass the install-log sink so the real failure reason (network
+            # reset, bad zip, ...) surfaces in the window, not just "failed".
+            log = cb.log if cb is not None else None
+            ok = bool(install_ffmpeg(target_directory=".", log=log))
             if not ok and cb is not None:
                 try:
                     cb.log("FFmpeg download/extract failed.")

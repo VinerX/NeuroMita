@@ -24,7 +24,7 @@ NeuroMita employs dataclasses, abstract base classes (ABC), and enums for type s
 
 - **Event and EventBus** ([core/events.py](core/events.py:11-250)): 
   - `@dataclass class Event` ([core/events.py](core/events.py:11-20)): Core event type with `name` (str), `data` (Any), `sender` (Any).
-  - `class EventBus` ([core/events.py](core/events.py:23-250)): Thread-safe event hub (max_workers=5 pool). Methods: `subscribe(event_name: str, callback: Callable, weak: bool=True)`, `unsubscribe`, `emit(event_name: str, data: Any=None, sync: bool=False)`, `emit_and_wait(timeout: float=5.0) -> List[Any]`. Supports weak references to prevent memory leaks.
+  - `class EventBus` ([core/events.py](core/events.py:23-250)): Thread-safe notification-only event hub with bounded async delivery. Methods: `subscribe(event_name: str, callback: Callable, weak: bool=True)`, `unsubscribe`, `emit(event_name: str, data: Any=None, sync: bool=False)`. Supports weak references to prevent memory leaks.
   - `class Events` ([core/events.py](core/events.py:298-544)): Nested classes for event names (e.g., `Events.Core`, `Events.GUI`, `Events.Model.Chat.SEND_MESSAGE`, `Events.Audio.VOICEOVER_REQUESTED`, `Events.VoiceModel.INSTALL_MODEL`).
 
 - **Task and TaskStatus** ([managers/task_manager.py](managers/task_manager.py:10-18,21-42)): 

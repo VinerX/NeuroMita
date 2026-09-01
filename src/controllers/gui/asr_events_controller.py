@@ -1,10 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 import threading
 import time
 
 from main_logger import logger
 from core.events import Events, Event
+from core.services import services
+from core.task_supervisor import task_supervisor
+from services.contracts import InstallableCatalogService, SpeechService
 from .base_controller import BaseController
 from utils import getTranslationVariant as _
 
@@ -12,6 +16,9 @@ from utils import getTranslationVariant as _
 class AsrEventsController(BaseController):
     def __init__(self, main_controller, view):
         self._asr_initializing: bool = False
+        self._init_engine: str | None = None
+        self._pill_kind: str | None = None  # "loading" | "ready" | "error" | None
+        self._asr_error: str | None = None
         self._asr_installing: bool = False
         self._install_engine: str | None = None
         self._install_progress: int | None = None
@@ -38,13 +45,24 @@ class AsrEventsController(BaseController):
 
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized, weak=False)
+        eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed, weak=False)
 
         eb.subscribe(Events.Install.TASK_STARTED, self._on_install_started, weak=False)
         eb.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_failed, weak=False)
 
-        eb.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
+        self._subscribe_settings(
+            self._on_setting_changed, keys=("MIC_ACTIVE", "RECOGNIZER_TYPE")
+        )
+
+        # Live-переключение языка интерфейса: перерисовать индикатор/пилюлю ASR
+        # на новом языке без перезапуска (иначе оставался текст прежней локали).
+        try:
+            from localization.live import language_changed_signal
+            language_changed_signal().connect(self._on_language_changed)
+        except Exception as e:
+            logger.debug(f"ASR: language_changed subscribe failed: {format_exception(e)}")
 
         try:
             if self.view and getattr(self.view, "settings", None):
@@ -56,8 +74,9 @@ class AsrEventsController(BaseController):
         mic_active = bool(self._settings_cache.get("MIC_ACTIVE", False))
         if mic_active:
             self._asr_initializing = True
+            self._init_engine = str(self._settings_cache.get("RECOGNIZER_TYPE") or "").strip().lower() or None
             self._arm_init_timeout_guard()
-            self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
+            self._emit_indicator("loading", self._asr_loading_text(self._init_engine))
             self._sync_indicator(force=True)
         else:
             self._emit_indicator(None, None)
@@ -69,50 +88,115 @@ class AsrEventsController(BaseController):
         self._init_token += 1
         tok = self._init_token
 
-        def _timeout_guard():
-            time.sleep(35.0)
-            if self._init_token != tok:
-                return
-            if self._asr_initializing:
-                self._asr_initializing = False
-                self._sync_indicator(force=True)
+        # Локальные модели (Whisper/GigaAM) при первом старте докачивают веса и
+        # инициализируют CUDA — это легко занимает минуты. Даём им больше времени,
+        # чтобы «загрузочная» пилюля не сбрасывалась раньше реальной готовности
+        # (сам init ждёт до 300 c). Для остальных — короткий страховочный порог.
+        grace = 300.0 if (self._init_engine in ("whisper", "gigaam")) else 35.0
 
-        threading.Thread(target=_timeout_guard, daemon=True).start()
+        cancel_event = threading.Event()
+
+        def _timeout_guard():
+            if cancel_event.wait(grace):
+                return
+            self._ui(lambda token=tok: self._expire_init_timeout(token))
+
+        task_supervisor().start_thread(
+            self,
+            "asr-init-timeout",
+            _timeout_guard,
+            cancel_event=cancel_event,
+            replace=True,
+        )
+
+    def _expire_init_timeout(self, token: int) -> None:
+        if self._init_token != token or not self._asr_initializing:
+            return
+        self._asr_initializing = False
+        self._sync_indicator(force=True)
+
+    def _asr_loading_text(self, engine: str | None) -> str:
+        """Понятный текст «что происходит» вместо общего «Инициализация ASR».
+        Для локальных моделей загрузка (+ первичная докачка весов) занимает
+        десятки секунд, поэтому явно называем модель."""
+        eng = str(engine or "").strip().lower()
+        if eng == "whisper":
+            return _("Загрузка модели Whisper...", "Loading Whisper model...")
+        if eng == "gigaam":
+            return _("Загрузка модели GigaAM...", "Loading GigaAM model...")
+        return _("Инициализация ASR...", "Initializing ASR...")
+
+    def _set_pill(self, kind: str | None) -> None:
+        """Единая точка обновления ASR-пилюли. Хранит логическое состояние
+        (а не готовую строку), чтобы уметь перерисовать её на новом языке при
+        live-переключении локали."""
+        self._pill_kind = kind
+        if not (self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status")):
+            return
+
+        if not kind:
+            text, pill_kind = "—", "info"
+        elif kind == "loading":
+            text, pill_kind = self._asr_loading_text(self._init_engine), "progress"
+        elif kind == "ready":
+            text, pill_kind = _("Готово", "Ready"), "ok"
+        elif kind == "error":
+            text, pill_kind = _("Ошибка", "Error"), "warn"
+        else:
+            return
+
+        try:
+            self.view.asr_set_pill.emit({
+                "label": self.view.asr_init_status,
+                "text": text,
+                "kind": pill_kind,
+            })
+        except Exception as e:
+            logger.debug(f"ASR pill update failed: {format_exception(e)}")
 
     # ---------------- UI pills from old logic ----------------
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
+        self._asr_error = None
+        self._init_engine = str((_event.data or {}).get("engine") or "").strip().lower() or None
         self._arm_init_timeout_guard()
 
-        if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
-            try:
-                self.view.asr_set_pill.emit({
-                    "label": self.view.asr_init_status,
-                    "text": _("Инициализация...", "Initializing..."),
-                    "kind": "progress"
-                })
-            except Exception as e:
-                logger.debug(f"ASR init pill update failed: {e}")
-
+        self._set_pill("loading")
         self._sync_indicator()
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     def _on_asr_initialized(self, _event: Event):
         self._asr_initializing = False
+        self._asr_error = None
 
-        if self.view and hasattr(self.view, "asr_set_pill") and hasattr(self.view, "asr_init_status"):
-            try:
-                self.view.asr_set_pill.emit({
-                    "label": self.view.asr_init_status,
-                    "text": _("Готово", "Ready"),
-                    "kind": "ok"
-                })
-            except Exception as e:
-                logger.debug(f"ASR initialized pill update failed: {e}")
-
+        self._set_pill("ready")
         self._sync_indicator(force=True)
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_asr_failed(self, event: Event):
+        data = event.data if isinstance(event.data, dict) else {}
+        self._asr_initializing = False
+        self._asr_error = str(data.get("message") or "").strip() or _(
+            "ASR не удалось запустить", "ASR failed to start"
+        )
+        self._ready_cache = (False, time.time())
+        self._set_pill("error")
+        self._sync_indicator(force=True)
+        self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_language_changed(self, *_args) -> None:
+        """Live-переключение языка: перерисовываем индикатор и пилюлю ASR на
+        новом языке. Индикатор пересобирается из состояния, поэтому сбрасываем
+        dedup-кэш; пилюлю перерисовываем по сохранённому логическому состоянию."""
+        self._last_state = None
+        self._last_tooltip = None
+        try:
+            self._sync_indicator(force=True)
+        except Exception:
+            pass
+        if self._pill_kind:
+            self._set_pill(self._pill_kind)
 
     # ---------------- install events ----------------
     def _is_asr_task(self, data: dict) -> bool:
@@ -230,28 +314,30 @@ class AsrEventsController(BaseController):
         self._sync_indicator(force=True)
 
     # ---------------- settings changes ----------------
-    def _on_setting_changed(self, event: Event):
-        data = event.data or {}
-        key = str(data.get("key") or "").strip()
+    def _on_setting_changed(self, change):
+        key = str(change.key or "").strip()
         if key in ("MIC_ACTIVE", "RECOGNIZER_TYPE"):
-            self._settings_cache[key] = data.get("value")
+            self._settings_cache[key] = change.value
 
             if key == "MIC_ACTIVE":
                 try:
-                    if not bool(data.get("value", False)):
+                    if not bool(change.value):
                         self._asr_initializing = False
                         self._ready_cache = (None, 0.0)
+                        if not self._asr_error:
+                            self._set_pill(None)
                 except Exception:
                     pass
 
             if key == "RECOGNIZER_TYPE":
+                self._asr_error = None
                 self._ready_cache = (None, 0.0)
 
             self._sync_indicator(force=True)
 
     # ---------------- indicator logic ----------------
     def _emit_indicator(self, state: str | None, tooltip: str | None):
-        st = state if state in (None, "red", "green", "loading") else None
+        st = state if state in (None, "red", "green", "loading", "warn") else None
         tt = str(tooltip) if tooltip else None
 
         if st == self._last_state and tt == self._last_tooltip:
@@ -300,20 +386,21 @@ class AsrEventsController(BaseController):
                 if int(self._installed_inflight.get(eng, 0)) != tok:
                     return
                 ok = False
-                if error is None:
-                    ok = bool(result)
+                if error is None and isinstance(result, dict):
+                    ok = bool(result.get("ready", False))
                 self._installed_cache[eng] = (ok, time.time())
                 self._sync_indicator(force=True)
 
             self._ui_safe(apply)
 
+        catalog = services().get_optional(InstallableCatalogService)
+        if catalog is None:
+            cb({}, RuntimeError("Installable catalog service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.CHECK_ASR_MODEL_INSTALLED, {
-                "model": eng,
-                "callback": cb
-            })
-        except Exception:
-            pass
+            catalog.get_status_async(f"asr:{eng}", cb)
+        except Exception as exc:
+            cb({}, exc)
 
     def _get_installed_cached(self, engine: str) -> bool | None:
         eng = str(engine or "").strip()
@@ -343,10 +430,14 @@ class AsrEventsController(BaseController):
 
             self._ui_safe(apply)
 
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            cb(False, RuntimeError("Speech service is unavailable"))
+            return
         try:
-            self.event_bus.emit(Events.Speech.GET_MIC_STATUS, {"callback": cb})
-        except Exception:
-            pass
+            cb(speech.mic_active(), None)
+        except Exception as exc:
+            cb(False, exc)
 
     def _get_ready_cached(self) -> bool | None:
         ok, ts = self._ready_cache
@@ -373,7 +464,14 @@ class AsrEventsController(BaseController):
             return
 
         if not mic_active:
-            self._emit_indicator(None, None)
+            if self._asr_error:
+                self._emit_indicator("red", self._asr_error)
+            else:
+                self._emit_indicator(None, None)
+            return
+
+        if self._asr_error:
+            self._emit_indicator("red", self._asr_error)
             return
 
         installed = self._get_installed_cached(engine)
@@ -387,7 +485,7 @@ class AsrEventsController(BaseController):
             return
 
         if self._asr_initializing:
-            self._emit_indicator("loading", _("Инициализация ASR...", "Initializing ASR..."))
+            self._emit_indicator("loading", self._asr_loading_text(self._init_engine or engine))
             return
 
         ready = self._get_ready_cached()
@@ -399,4 +497,9 @@ class AsrEventsController(BaseController):
         if ready:
             self._emit_indicator("green", _("ASR готов", "ASR ready"))
         else:
-            self._emit_indicator("red", _("ASR не готов", "ASR not ready"))
+            # Не готов ≠ сломан: красное остаётся за настоящей ошибкой (её ловит
+            # ветка _asr_error выше), а «включено, но живой цикл ещё не поднят» —
+            # это жёлтое «Не готово», как у озвучки.
+            self._emit_indicator(
+                "warn", _("ASR ещё не запущен", "ASR is not running yet")
+            )

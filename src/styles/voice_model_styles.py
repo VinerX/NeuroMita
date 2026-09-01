@@ -86,15 +86,23 @@ QFrame#SettingWidget QCheckBox {
     background: transparent;
 }
 QFrame#SettingWidget QCheckBox::indicator {
+    /* Жёстко фиксируем размер (min/max), иначе в некоторых сборках Qt фон
+       индикатора растягивается по ширине и чекбокс выглядит «слайдером»
+       (фидбэк Артёма). Квадрат 16×16 с малым радиусом читается как чекбокс. */
     width: 16px;
     height: 16px;
-    border-radius: 5px;
+    min-width: 16px;
+    max-width: 16px;
+    min-height: 16px;
+    max-height: 16px;
+    border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.18);
     background-color: {chip_bg};
 }
 QFrame#SettingWidget QCheckBox::indicator:checked {
     background-color: {accent};
     border: 1px solid {accent_alt};
+    image: url(assets/launcher_ui/check.svg);
 }
 
 /* Role labels */

@@ -1,4 +1,4 @@
-﻿# src/managers/tools/dialects/openai.py
+# src/managers/tools/dialects/openai.py
 from __future__ import annotations
 
 import json

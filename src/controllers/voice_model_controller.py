@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import platform
 import time
@@ -11,19 +12,19 @@ from main_logger import logger
 from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
-from core.backends import get_backend_service
 from core.events import get_event_bus, Events, Event
+from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
+from core.task_supervisor import task_supervisor
+from core.services import services
+from services.contracts import (
+    InstallableCatalogService,
+    InstallableOperationsService,
+    LocalVoiceService,
+    RuntimeFeatureService,
+    VoiceModelService,
+)
 
-try:
-    from utils.gpu_utils import check_gpu_provider, get_cuda_devices, get_gpu_name_by_id
-except Exception:
-    def check_gpu_provider():
-        return None
-    def get_cuda_devices():
-        return []
-    def get_gpu_name_by_id(_id):
-        return None
-class VoiceModelController:
+class VoiceModelController(VoiceModelService):
     """
     Backend-контроллер локальных голосовых моделей.
     - source of truth for model catalog/settings (GET_MODEL_DATA)
@@ -52,6 +53,7 @@ class VoiceModelController:
         self.detected_gpu_vendor = "CPU"
         self.detected_cuda_devices = []
         self.gpu_name = None
+        self._installable_catalog = services().get_optional(InstallableCatalogService)
         self._refresh_gpu_runtime_info()
 
         self.installed_models: set[str] = set()
@@ -59,27 +61,50 @@ class VoiceModelController:
 
         self.docs_manager = DocsManager()
         self.event_bus = get_event_bus()
-
         self._last_voiceover_refresh_reload_ts: float = 0.0
 
-        self.reload()
         self._subscribe_to_events()
+        self.reload()
 
     def _subscribe_to_events(self):
         eb = self.event_bus
-        eb.subscribe(Events.VoiceModel.GET_MODEL_DATA, self._handle_get_model_data, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_INSTALLED_MODELS, self._handle_get_installed_models, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_DEPENDENCIES_STATUS, self._handle_get_dependencies_status, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_DEFAULT_DESCRIPTION, self._handle_get_default_description, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_MODEL_DESCRIPTION, self._handle_get_model_description, weak=False)
-        eb.subscribe(Events.VoiceModel.GET_SETTING_DESCRIPTION, self._handle_get_setting_description, weak=False)
-        eb.subscribe(Events.VoiceModel.CHECK_GPU_RTX30_40, self._handle_check_gpu_rtx30_40, weak=False)
         eb.subscribe(Events.VoiceModel.OPEN_DOC, self._handle_open_doc, weak=False)
 
         eb.subscribe(Events.Install.TASK_FINISHED, self._on_install_task_finished, weak=False)
         eb.subscribe(Events.Install.TASK_FAILED, self._on_install_task_failed, weak=False)
+        eb.subscribe(Events.Install.COMPONENT_STATUS, self._on_component_status, weak=False)
 
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_voiceover_refresh, weak=False)
+
+    def _on_component_status(self, event: Event) -> None:
+        data = event.data if isinstance(event.data, dict) else {}
+        component_id = str(data.get("component_id") or "").strip()
+        if not component_id.startswith("tts:"):
+            return
+
+        status = data.get("status") if isinstance(data.get("status"), dict) else {}
+        if not status or str(status.get("probe_state") or "").strip():
+            return
+
+        model_id = component_id.split(":", 1)[1].strip()
+        if not model_id:
+            return
+
+        ready = bool(status.get("ready"))
+        with self._lock:
+            if ready:
+                self.installed_models.add(model_id)
+            else:
+                self.installed_models.discard(model_id)
+
+        self.event_bus.emit(
+            Events.VoiceModel.REFRESH_MODEL_PANELS,
+            {
+                "component_id": component_id,
+                "model_id": model_id,
+                "ready": ready,
+            },
+        )
 
     def _on_voiceover_refresh(self, _event: Event):
         with self._lock:
@@ -107,34 +132,34 @@ class VoiceModelController:
 
         self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
 
-    def _ctx(self) -> dict:
-        return {
-            "gpu_vendor": self.detected_gpu_vendor or "CPU",
-            "cuda_devices": list(self.detected_cuda_devices or []),
-            "gpu_name": self.gpu_name,
-            "platform": platform.system(),
-            "libs_dir": os.environ.get("NEUROMITA_LIB_DIR"),
-        }
-
     def _refresh_gpu_runtime_info(self) -> tuple[bool, bool]:
         had_cuda = bool(getattr(self, "detected_cuda_devices", None))
+        old_vendor = str(getattr(self, "detected_gpu_vendor", "") or "").upper()
+        old_name = str(getattr(self, "gpu_name", "") or "").strip()
 
+        catalog = self._installable_catalog or services().get_optional(InstallableCatalogService)
         try:
-            self.detected_gpu_vendor = check_gpu_provider()
+            snapshot = dict(catalog.hardware_snapshot() or {}) if catalog is not None else {}
         except Exception:
-            self.detected_gpu_vendor = "CPU"
+            snapshot = {}
+        primary = snapshot.get("primary") if isinstance(snapshot.get("primary"), dict) else {}
+        cuda = snapshot.get("cuda") if isinstance(snapshot.get("cuda"), dict) else {}
+        self.detected_gpu_vendor = str(snapshot.get("vendor") or "CPU").strip().upper()
+        self.detected_cuda_devices = [
+            f"cuda:{int(device['ordinal'])}"
+            for device in (cuda.get("devices") or ())
+            if isinstance(device, dict) and device.get("ordinal") is not None
+        ]
+        self.gpu_name = str(primary.get("name") or "").strip() or None
 
-        try:
-            self.detected_cuda_devices = list(get_cuda_devices() or [])
-        except Exception:
-            self.detected_cuda_devices = []
-
-        self.gpu_name = None
-        if self.detected_cuda_devices:
-            try:
-                self.gpu_name = get_gpu_name_by_id(self.detected_cuda_devices[0])
-            except Exception:
-                self.gpu_name = None
+        new_vendor = str(self.detected_gpu_vendor or "CPU").upper()
+        new_name = str(self.gpu_name or "").strip()
+        if new_vendor != old_vendor or new_name != old_name:
+            logger.info(
+                "Detected GPU runtime: "
+                f"{self.gpu_name or self.detected_gpu_vendor or 'CPU'} "
+                f"(cuda_devices={list(self.detected_cuda_devices or [])})"
+            )
 
         return had_cuda, bool(self.detected_cuda_devices)
 
@@ -205,7 +230,7 @@ class VoiceModelController:
                 f"Voice model settings auto-switched to CUDA after runtime refresh: {self.detected_cuda_devices}"
             )
         except Exception as e:
-            logger.warning(f"Failed to auto-switch voice model device settings to CUDA: {e}")
+            logger.warning(f"Failed to auto-switch voice model device settings to CUDA: {format_exception(e)}")
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
@@ -227,41 +252,72 @@ class VoiceModelController:
     def _task_op(self, data: dict) -> str:
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         op = str(meta.get("op") or "").strip().lower()
-        if op in ("install", "uninstall"):
+        if op in ("install", "uninstall", "initialize"):
             return op
         tid = str(data.get("task_id") or "")
         if "uninstall" in tid:
             return "uninstall"
         return "install"
 
-    def _handle_get_model_data(self, event: Event):
+    def model_catalog_snapshot(self) -> list[dict]:
         with self._lock:
-            have = bool(self.local_voice_models)
-        if not have:
-            try:
-                self.reload()
-            except Exception:
-                pass
-        with self._lock:
-            return self.local_voice_models
+            return copy.deepcopy(self.local_voice_models)
 
-    def _handle_get_installed_models(self, event: Event):
+    def installed_models_snapshot(self) -> set[str]:
         with self._lock:
             return self.installed_models.copy()
+
+    def _handle_get_model_data(self, _event: Event):
+        # Queries must be O(1). Refresh/import work belongs to reload() and the
+        # install lifecycle, both of which run outside the GUI request path.
+        return self.model_catalog_snapshot()
+
+    def _handle_get_installed_models(self, _event: Event):
+        return self.installed_models_snapshot()
+
+    def dependencies_status(self) -> dict[str, Any]:
+        return dict(self._handle_get_dependencies_status(Event(Events.VoiceModel.GET_DEPENDENCIES_STATUS)) or {})
+
+    def compile_status(self) -> dict[str, Any]:
+        from core.torch_compile_runtime import compile_cache_status
+
+        return dict(compile_cache_status())
+
+    def enable_long_paths(self) -> bool:
+        from core.torch_compile_runtime import enable_long_paths
+
+        return bool(enable_long_paths())
 
     def _handle_get_dependencies_status(self, event: Event):
         with self._lock:
             if self._dependencies_status_cache and (time.time() - self._dependencies_status_ts) < 3.0:
                 return self._dependencies_status_cache
 
-        res = self.event_bus.emit_and_wait(Events.Audio.GET_TRITON_STATUS, timeout=2.0)
-        status = res[0] if res else {}
+        local_voice = services().get_optional(LocalVoiceService)
+        status = local_voice.triton_status() if local_voice is not None else {}
         status = status.copy() if isinstance(status, dict) else {}
         status["show_triton_checks"] = (platform.system() == "Windows")
         status["detected_gpu_vendor"] = self.detected_gpu_vendor
         status["cuda_devices"] = list(self.detected_cuda_devices or [])
         status["gpu_name"] = self.gpu_name
-        status["backend_statuses"] = get_backend_service().status_snapshot(ctx=self._ctx())
+        catalog = services().get_optional(InstallableCatalogService)
+        backend_statuses: dict[str, dict[str, Any]] = {}
+        if catalog is not None:
+            try:
+                for row in catalog.list_rows(
+                    include_status=True,
+                    category="backend",
+                ):
+                    metadata = row.get("metadata") if isinstance(row, dict) else {}
+                    canonical_status = row.get("status") if isinstance(row, dict) else {}
+                    backend_id = str((metadata or {}).get("item_id") or "")
+                    if backend_id:
+                        backend_statuses[backend_id] = dict(
+                            (canonical_status or {}).get("details") or {}
+                        )
+            except Exception as exc:
+                logger.warning(f"Failed to read canonical backend statuses: {format_exception(exc)}")
+        status["backend_statuses"] = backend_statuses
 
         with self._lock:
             self._dependencies_status_cache = status
@@ -280,9 +336,6 @@ class VoiceModelController:
         setting_key = event.data
         with self._lock:
             return self.setting_descriptions.get(setting_key, self.default_description_text)
-
-    def _handle_check_gpu_rtx30_40(self, event: Event):
-        return self.is_gpu_rtx30_or_40()
 
     def _handle_open_doc(self, event: Event):
         self.open_doc(event.data)
@@ -319,13 +372,65 @@ class VoiceModelController:
                     self.setting_descriptions[key] = help_text.strip()
 
     def get_default_model_structure(self):
+        models: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        catalog = services().get_optional(InstallableCatalogService)
+        metadata_by_item: dict[str, dict[str, Any]] = {}
+        catalog_metadata: list[dict[str, Any]] = []
+        if catalog is not None:
+            try:
+                catalog_metadata = [
+                    row["metadata"]
+                    for row in catalog.list_rows(category="tts")
+                    if isinstance(row, dict) and isinstance(row.get("metadata"), dict)
+                ]
+                metadata_by_item = {
+                    str(metadata.get("item_id") or ""): metadata
+                    for metadata in catalog_metadata
+                }
+            except Exception:
+                catalog_metadata = []
+                metadata_by_item = {}
         try:
-            res = self.event_bus.emit_and_wait(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS, timeout=2.0)
-            if res and isinstance(res[0], list):
-                return res[0]
+            if catalog is None:
+                raise RuntimeError("Installable catalog service is unavailable")
+            components = [
+                catalog.require_component(str(metadata.get("id") or ""))
+                for metadata in catalog_metadata
+                if metadata.get("id")
+            ]
+            for component in components:
+                get_configs = getattr(component, "get_model_configs", None)
+                if not callable(get_configs):
+                    continue
+                for config in get_configs() or ():
+                    if not isinstance(config, dict):
+                        continue
+                    model_id = str(config.get("id") or "").strip()
+                    if not model_id or model_id in seen:
+                        continue
+                    model = copy.deepcopy(config)
+                    canonical = metadata_by_item.get(model_id) or {}
+                    if canonical:
+                        model["name"] = str(canonical.get("title") or model.get("name") or model_id)
+                        model["description"] = str(canonical.get("description") or "")
+                        model["tags"] = list(canonical.get("tags") or ())
+                        model["languages"] = list(canonical.get("languages") or ())
+                        model["backend"] = str(canonical.get("backend") or "none")
+                    models.append(model)
+                    seen.add(model_id)
+        except Exception as exc:
+            logger.warning(f"Failed to build local voice catalog from installables: {format_exception(exc)}")
+
+        if models:
+            return models
+
+        try:
+            from presets.local_voice_models import LOCAL_VOICE_MODELS
+
+            return copy.deepcopy(LOCAL_VOICE_MODELS)
         except Exception:
-            pass
-        return []
+            return []
 
     def load_settings(self):
         default_model_structure = self.get_default_model_structure()
@@ -339,7 +444,7 @@ class VoiceModelController:
                 with open(self.settings_values_file, "r", encoding="utf-8") as f:
                     saved_values = json.load(f)
         except Exception as e:
-            logger.info(f"{_('Ошибка загрузки сохраненных значений из', 'Error loading saved values from')} {self.settings_values_file}: {e}")
+            logger.info(f"{_('Ошибка загрузки сохраненных значений из', 'Error loading saved values from')} {self.settings_values_file}: {format_exception(e)}")
             saved_values = {}
 
         merged_model_structure = copy.deepcopy(adapted_default_structure)
@@ -375,7 +480,7 @@ class VoiceModelController:
             if not isinstance(current, dict):
                 current = {}
         except Exception as e:
-            logger.warning(f"Failed to read {self.settings_values_file}: {e}")
+            logger.warning(f"Failed to read {self.settings_values_file}: {format_exception(e)}")
             current = {}
 
         def norm(v):
@@ -421,13 +526,13 @@ class VoiceModelController:
                     pass
             os.replace(tmp_path, self.settings_values_file)
         except Exception as e:
-            logger.error(f"Failed to write {self.settings_values_file}: {e}", exc_info=True)
+            logger.error(f"Failed to write {self.settings_values_file}: {format_exception(e)}", exc_info=True)
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
-            return {"changed": 0, "changed_by_model": {}, "error": str(e)}
+            return {"changed": 0, "changed_by_model": {}, "error": format_exception(e)}
 
         if changed_total:
             logger.info(f"Voice model settings saved: {changed_total} changes ({changed_by_model})")
@@ -435,71 +540,201 @@ class VoiceModelController:
         self.load_settings()
         return {"changed": changed_total, "changed_by_model": changed_by_model}
 
-    def refresh_installed_models(self):
-        ctx_base = self._ctx()
-        vendors = [self.detected_gpu_vendor] if self.detected_gpu_vendor else ["NVIDIA", "AMD", "CPU"]
+    def _normalize_gpu_vendor(self, vendor: Any) -> str:
+        value = str(vendor or "CPU").strip().upper()
+        if value in {"NVIDIA", "AMD", "INTEL", "CPU"}:
+            return value
+        return "CPU"
+
+    def _normalize_gpu_vendor_list(self, vendors: Any) -> list[str]:
+        if not isinstance(vendors, (list, tuple, set)):
+            vendors = [vendors]
+
+        result: list[str] = []
+        for vendor in vendors:
+            normalized = self._normalize_gpu_vendor(vendor)
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _build_model_compatibility(self, model: dict) -> dict[str, Any]:
+        model_id = str(model.get("id") or "").strip()
+        vendors = self._normalize_gpu_vendor_list(model.get("gpu_vendor", []))
         try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
+            catalog = getattr(self, "_installable_catalog", None)
+            if catalog is None:
+                catalog = services().get(InstallableCatalogService)
+            row = catalog.get_row(
+                f"tts:{model_id}",
+                include_status=False,
+            )
+            verdict = dict(row.get("compatibility") or {})
+        except Exception as exc:
+            logger.warning(f"Voice model compatibility is unavailable for '{model_id}': {format_exception(exc)}")
+            verdict = {
+                "supported": False,
+                "recommended": False,
+                "reason_code": "state_unavailable",
+                "warning": _(
+                    "Не удалось проверить совместимость модели. Обновите AI Hub и повторите попытку.",
+                    "Model compatibility could not be verified. Refresh AI Hub and try again.",
+                ),
+            }
 
-            registry = get_installable_registry()
-        except Exception:
-            registry = None
-            ComponentCategory = None
-            make_component_id = None
+        verdict["vendors"] = vendors
+        return verdict
+    def _voice_installable_component(self, model_id: str):
+        catalog = services().get(InstallableCatalogService)
+        return catalog.require_component(f"tts:{str(model_id or '').strip()}")
 
-        installed = set()
-        for m in self.get_default_model_structure():
-            mid = m.get("id")
-            if not mid:
-                continue
+    def get_install_preflight(self, model_id: str) -> dict[str, Any]:
+        mid = str(model_id or "").strip()
+        if not mid:
+            return {"blocked": True}
 
-            component = None
-            if registry is not None and ComponentCategory is not None and make_component_id is not None:
-                try:
-                    component = registry.get(make_component_id(ComponentCategory.TTS, str(mid)))
-                except Exception:
-                    component = None
+        model = next((m for m in (self.local_voice_models or []) if str(m.get("id") or "") == mid), None)
+        if model is None:
+            try:
+                model = next((m for m in self.get_default_model_structure() if str(m.get("id") or "") == mid), None)
+            except Exception:
+                model = None
+        model = model or {"id": mid, "name": mid}
 
-            if component is None:
-                continue
+        compat = self._build_model_compatibility(model)
+        vendor = self._normalize_gpu_vendor(compat.get("gpu_vendor"))
+        vendor_label = str(self.gpu_name or vendor or "CPU")
+        compatibility_warning = str(compat.get("warning") or "").strip()
+        needs_warning = bool(
+            compat.get("supported")
+            and not compat.get("recommended", True)
+            and compatibility_warning
+        )
 
-            ok = False
-            for v in vendors:
-                ctx = dict(ctx_base)
-                ctx["gpu_vendor"] = v
-                try:
-                    if component.status(ctx).installed:
-                        ok = True
-                        break
-                except Exception:
-                    continue
+        if not compat["supported"]:
+            return {
+                "blocked": True,
+                "title": _("Несовместимая модель", "Incompatible model"),
+                "message": compatibility_warning or _(
+                    f"Модель '{model.get('name', mid)}' не поддерживает текущее устройство ({vendor_label}).",
+                    f"The model '{model.get('name', mid)}' does not support the current device ({vendor_label}).",
+                ),
+            }
 
-            if ok:
-                installed.add(mid)
+        try:
+            catalog = services().get(InstallableCatalogService)
+            preview = catalog.install_preview(f"tts:{mid}")
+        except Exception as exc:
+            logger.warning(f"Voice install preflight failed for '{mid}': {format_exception(exc)}")
+            return {"blocked": False}
+
+        backend_kind = str(preview.get("backend_kind") or "none")
+        backend_status = dict(preview.get("backend_status") or {})
+        if bool(preview.get("backend_ready")) or backend_kind in ("", "none"):
+            if needs_warning:
+                return {
+                    "blocked": False,
+                    "ask": True,
+                    "title": _("Предупреждение о совместимости", "Compatibility warning"),
+                    "message": compatibility_warning,
+                }
+            return {"blocked": False}
+
+        model_name = str(model.get("name") or mid)
+        title = _("Backend не установлен", "Backend missing")
+        cancel_message = _(
+            "Установка модели отменена. Нужный backend можно установить вручную в AI Hub, затем повторить установку.",
+            "Model installation was cancelled. You can install the required backend manually in AI Hub and retry.",
+        )
+
+        if backend_kind == "cuda" and vendor == "NVIDIA":
+            message = _(
+                f"Для модели '{model_name}' нужен NVIDIA backend (PyTorch CUDA).\n\n"
+                f"Обнаружена видеокарта: {vendor_label}.\n\n"
+                "Установить NVIDIA backend сейчас и добавить его в план установки?",
+                f"The model '{model_name}' needs the NVIDIA backend (PyTorch CUDA).\n\n"
+                f"Detected GPU: {vendor_label}.\n\n"
+                "Install the NVIDIA backend now and add it to the install plan?",
+            )
+            cancel_message = _(
+                "Установка модели отменена. Если хотите другой путь, можно отдельно поставить ONNX backend в AI Hub и потом вернуться к выбору модели.",
+                "Model installation was cancelled. If you want another path, you can install the ONNX backend manually in AI Hub and return to model setup later.",
+            )
+        elif backend_kind == "onnx":
+            backend_label = "ONNX / DirectML" if vendor in ("AMD", "INTEL") else "ONNX"
+            message = _(
+                f"Для модели '{model_name}' нужен backend {backend_label}.\n\n"
+                f"Текущий GPU: {vendor_label}.\n\n"
+                "Установить backend сейчас и добавить его в план установки?",
+                f"The model '{model_name}' needs the {backend_label} backend.\n\n"
+                f"Current GPU: {vendor_label}.\n\n"
+                "Install this backend now and add it to the install plan?",
+            )
+        else:
+            message = _(
+                f"Для модели '{model_name}' нужен CPU backend (PyTorch).\n\n"
+                "Установить его сейчас и добавить в план установки?",
+                f"The model '{model_name}' needs the CPU backend (PyTorch).\n\n"
+                "Install it now and add it to the install plan?",
+            )
+
+        if needs_warning:
+            message = f"{compatibility_warning}\n\n{message}"
+
+        return {
+            "blocked": False,
+            "ask": True,
+            "title": title,
+            "message": message,
+            "cancel_message": cancel_message,
+            "required_backend": backend_kind,
+            "backend_status": backend_status,
+        }
+
+    def refresh_installed_models(self):
+        try:
+            catalog = services().get(InstallableCatalogService)
+            rows = catalog.list_rows(
+                include_status=True,
+                category="tts",
+                status_category="tts",
+            )
+        except Exception as exc:
+            logger.error(f"Failed to read canonical TTS readiness: {format_exception(exc)}", exc_info=True)
+            return
 
         with self._lock:
-            self.installed_models = installed
+            for row in rows or ():
+                metadata = row.get("metadata") if isinstance(row, dict) else None
+                status = row.get("status") if isinstance(row, dict) else None
+                if not isinstance(metadata, dict) or not isinstance(status, dict):
+                    continue
+                if str(status.get("probe_state") or "").strip():
+                    continue
+                model_id = str(metadata.get("item_id") or "").strip()
+                if not model_id:
+                    continue
+                if bool(status.get("ready")):
+                    self.installed_models.add(model_id)
+                else:
+                    self.installed_models.discard(model_id)
 
-    def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
+    def start_install(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            component_id = make_component_id(ComponentCategory.TTS, mid)
-            component = get_installable_registry().require(component_id)
-            title = component.metadata().title
+            catalog = services().get(InstallableCatalogService)
+            component_id = f"tts:{mid}"
+            metadata = catalog.get_row(component_id, include_status=False)["metadata"]
+            title = str(metadata.get("title") or mid)
         except Exception as exc:
-            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
+            logger.error(f"Unknown voice installable component for '{mid}': {format_exception(exc)}")
             return False
-
-        ctx = self._ctx()
 
         self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_STARTED, {"model_id": mid})
 
-        self.event_bus.emit(
-            Events.Installable.INSTALL,
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            return False
+        admission = operations.install(
             {
                 "component_id": component_id,
                 "kind": "voice",
@@ -507,32 +742,29 @@ class VoiceModelController:
                 "task_id": f"voice:install:{mid}",
                 "title": title,
                 "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or 3600.0),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
-                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-            },
+            }
         )
-        return True
+        return bool(admission.accepted)
 
-    def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = 3600.0) -> bool:
+    def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
         try:
-            from core.installables import ComponentCategory, make_component_id
-            from installables import get_installable_registry
-
-            component_id = make_component_id(ComponentCategory.TTS, mid)
-            get_installable_registry().require(component_id)
+            catalog = services().get(InstallableCatalogService)
+            component_id = f"tts:{mid}"
+            catalog.get_row(component_id, include_status=False)
         except Exception as exc:
-            logger.error(f"Unknown voice installable component for '{mid}': {exc}")
+            logger.error(f"Unknown voice installable component for '{mid}': {format_exception(exc)}")
             return False
-
-        ctx = self._ctx()
 
         self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_STARTED, {"model_id": mid})
 
-        self.event_bus.emit(
-            Events.Installable.UNINSTALL,
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            return False
+        admission = operations.uninstall(
             {
                 "component_id": component_id,
                 "kind": "voice",
@@ -540,57 +772,141 @@ class VoiceModelController:
                 "task_id": f"voice:uninstall:{mid}",
                 "title": _("Удаление локальной модели: ", "Uninstalling local model: ") + mid,
                 "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or 3600.0),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
-                "ctx": ctx,
                 "meta": {"kind": "voice", "item_id": mid, "op": "uninstall"},
-            },
+            }
         )
-        return True
+        return bool(admission.accepted)
+
+    def start_compile(
+        self,
+        model_id: str,
+        *,
+        clear_only: bool = False,
+        with_ui: bool = True,
+        timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC,
+    ) -> bool:
+        mid = str(model_id or "").strip()
+        if mid not in ("medium+", "medium+low"):
+            logger.error(f"Compilation is not supported for voice model '{mid}'")
+            return False
+        operations = services().get_optional(InstallableOperationsService)
+        if operations is None:
+            runtime = services().get_optional(RuntimeFeatureService)
+            feature_state: Any = None
+            if runtime is not None:
+                try:
+                    feature_state = runtime.snapshot().get("installables")
+                except Exception as exc:
+                    feature_state = {
+                        "snapshot_error": format_exception(exc),
+                    }
+            logger.error(
+                "Cannot start Fish Speech+ compilation: "
+                "InstallableOperationsService is not registered; "
+                f"RuntimeFeatureService registered={runtime is not None}; "
+                f"installables feature={feature_state!r}. "
+                "The caller must complete ensure_feature_async('installables') "
+                "before requesting compilation."
+            )
+            return False
+        self.event_bus.emit(
+            Events.VoiceModel.MODEL_COMPILE_STARTED,
+            {"model_id": mid, "clear_only": bool(clear_only)},
+        )
+        admission = operations.initialize(
+            {
+                "component_id": f"tts:{mid}",
+                "kind": "voice",
+                "item_id": mid,
+                "task_id": f"voice:initialize:{'clear' if clear_only else 'compile'}:{mid}",
+                "title": (
+                    _("Удаление компиляции Fish Speech+", "Deleting Fish Speech+ compilation")
+                    if clear_only
+                    else _("Компиляция Fish Speech+", "Compiling Fish Speech+")
+                ),
+                "initial_status": _("Подготовка...", "Preparing..."),
+                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
+                "with_ui": bool(with_ui),
+                "initialize_mode": "clear_cache" if clear_only else "compile",
+                "meta": {"kind": "voice", "item_id": mid, "op": "initialize"},
+            }
+        )
+        if not admission.accepted:
+            logger.error(
+                f"Fish Speech+ compilation request rejected for '{mid}': "
+                f"{admission.error or 'unknown admission error'}"
+            )
+        return bool(admission.accepted)
+
+    def _schedule_install_state_refresh(
+        self,
+        *,
+        data: dict[str, Any],
+        success: bool,
+    ) -> None:
+        model_id = self._task_model_id(data)
+        if not model_id:
+            return
+        operation = self._task_op(data)
+        error = str(data.get("error", "") or "")
+        task_id = str(data.get("task_id") or f"{operation}:{model_id}")
+
+        def refresh_state() -> None:
+            self.reload()
+            payload = {
+                "model_id": str(model_id),
+                "success": bool(success),
+            }
+            if error:
+                payload["error"] = error
+
+            if operation == "uninstall":
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_UNINSTALL_FINISHED,
+                    payload,
+                )
+            elif operation == "initialize":
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_COMPILE_FINISHED,
+                    payload,
+                )
+            else:
+                self.event_bus.emit(
+                    Events.VoiceModel.MODEL_INSTALL_FINISHED,
+                    payload,
+                )
+
+            self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
+            self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+
+        try:
+            task_supervisor().start_thread(
+                self,
+                f"voice-model-state-refresh:{task_id}",
+                refresh_state,
+            )
+        except RuntimeError as exc:
+            logger.debug(f"Voice model state refresh was skipped during shutdown: {format_exception(exc)}")
 
     def _on_install_task_finished(self, event: Event):
-        data = event.data or {}
+        data = event.data if isinstance(event.data, dict) else {}
         if not self._is_voice_task(data):
             return
-        mid = self._task_model_id(data)
-        if not mid:
-            return
-
-        op = self._task_op(data)
-        self.reload()
-
-        if op == "uninstall":
-            self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": True})
-        else:
-            self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": True})
-
-        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
-        self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+        self._schedule_install_state_refresh(data=dict(data), success=True)
 
     def _on_install_task_failed(self, event: Event):
-        data = event.data or {}
+        data = event.data if isinstance(event.data, dict) else {}
         if not self._is_voice_task(data):
             return
-        mid = self._task_model_id(data)
-        if not mid:
-            return
-
-        op = self._task_op(data)
-        self.reload()
-        err = str(data.get("error", "") or "")
-
-        if op == "uninstall":
-            self.event_bus.emit(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
-        else:
-            self.event_bus.emit(Events.VoiceModel.MODEL_INSTALL_FINISHED, {"model_id": str(mid), "success": False, "error": err})
-
-        self.event_bus.emit(Events.VoiceModel.REFRESH_SETTINGS_DISPLAY)
-        self.event_bus.emit(Events.VoiceModel.REFRESH_MODEL_PANELS)
+        self._schedule_install_state_refresh(data=dict(data), success=False)
 
     def finalize_model_settings(self, models_list, detected_vendor, cuda_devices):
         import copy as _copy
         final_models = _copy.deepcopy(models_list)
 
+        detected_vendor = self._normalize_gpu_vendor(detected_vendor)
         gpu_name_upper = self.gpu_name.upper() if self.gpu_name else ""
         force_fp32 = False
 
@@ -604,17 +920,24 @@ class VoiceModelController:
                 or "1080" in gpu_name_upper
             ):
                 force_fp32 = True
-        elif detected_vendor == "AMD":
+        elif detected_vendor in {"AMD", "INTEL"}:
             force_fp32 = True
 
         for model in final_models:
-            model_vendors = model.get("gpu_vendor", [])
+            compat = self._build_model_compatibility(model)
+            model_vendors = compat["vendors"]
+            model["gpu_vendor"] = model_vendors
+            model["compat_supported"] = compat["supported"]
+            model["compat_warning"] = compat["warning"]
+            model["compatibility"] = dict(compat)
             vendor_to_adapt_for = None
 
             if detected_vendor == "NVIDIA" and "NVIDIA" in model_vendors:
                 vendor_to_adapt_for = "NVIDIA"
             elif detected_vendor == "AMD" and "AMD" in model_vendors:
                 vendor_to_adapt_for = "AMD"
+            elif detected_vendor == "INTEL" and "INTEL" in model_vendors:
+                vendor_to_adapt_for = "INTEL"
             elif not detected_vendor or detected_vendor not in model_vendors:
                 vendor_to_adapt_for = "OTHER"
             elif detected_vendor in model_vendors:
@@ -627,25 +950,32 @@ class VoiceModelController:
                 is_device_setting = "device" in str(setting_key).lower()
                 is_half_setting = setting_key in ["is_half", "silero_rvc_is_half", "fsprvc_is_half", "half", "fsprvc_fsp_half"]
 
-                adapt_key_suffix = ""
-                if vendor_to_adapt_for == "NVIDIA":
-                    adapt_key_suffix = "_nvidia"
-                elif vendor_to_adapt_for == "AMD":
-                    adapt_key_suffix = "_amd"
-                elif vendor_to_adapt_for == "OTHER":
-                    adapt_key_suffix = "_other"
-
-                values_key = f"values{adapt_key_suffix}"
-                default_key = f"default{adapt_key_suffix}"
-
                 final_values_list = None
-                if values_key in options:
-                    final_values_list = options[values_key]
-                elif "values" in options:
-                    final_values_list = options["values"]
+                suffix_candidates: list[str]
+                if vendor_to_adapt_for == "NVIDIA":
+                    suffix_candidates = ["_nvidia", ""]
+                elif vendor_to_adapt_for == "AMD":
+                    suffix_candidates = ["_amd", ""]
+                elif vendor_to_adapt_for == "INTEL":
+                    suffix_candidates = ["_intel", "_amd", ""]
+                elif vendor_to_adapt_for == "CPU":
+                    suffix_candidates = ["_cpu", "_other", ""]
+                elif vendor_to_adapt_for == "OTHER":
+                    suffix_candidates = ["_other", ""]
+                else:
+                    suffix_candidates = [""]
 
-                if default_key in options:
-                    options["default"] = options[default_key]
+                for suffix in suffix_candidates:
+                    values_key = f"values{suffix}"
+                    if values_key in options:
+                        final_values_list = options[values_key]
+                        break
+
+                for suffix in suffix_candidates:
+                    default_key = f"default{suffix}"
+                    if default_key in options:
+                        options["default"] = options[default_key]
+                        break
 
                 if is_device_setting:
                     if vendor_to_adapt_for == "NVIDIA":
@@ -653,16 +983,44 @@ class VoiceModelController:
                         base_other_values = options.get("values_other", ["cpu"])
                         base_non_cuda_provider = base_nvidia_values if base_nvidia_values else base_other_values
                         non_cuda_options = [v for v in base_non_cuda_provider if not str(v).startswith("cuda")]
-                        if cuda_devices:
+                        allows_cuda = any(
+                            str(value).startswith("cuda")
+                            for value in (
+                                list(base_nvidia_values)
+                                + list(options.get("values", []))
+                            )
+                        )
+                        if cuda_devices and allows_cuda:
                             final_values_list = list(cuda_devices) + non_cuda_options
+                        elif allows_cuda:
+                            final_values_list = list(base_nvidia_values)
                         else:
-                            final_values_list = [v for v in base_other_values if v in ["cpu", "mps"]] or ["cpu"]
+                            final_values_list = non_cuda_options or [
+                                v for v in base_other_values if v in ["cpu", "mps"]
+                            ] or ["cpu"]
                     else:
                         if platform.system() == "Darwin":
                             base_values = final_values_list or options.get("values_other", options.get("values", [])) or ["cpu"]
                             if "mps" not in base_values:
                                 base_values = list(base_values) + ["mps"]
                             final_values_list = base_values
+
+                if setting_key == "f5rvc_f5_device" and detected_vendor != "NVIDIA":
+                    final_values_list = ["cpu"]
+                    options["default"] = "cpu"
+                    setting["locked"] = True
+
+                if setting_key == "f5rvc_rvc_device":
+                    if detected_vendor in {"AMD", "INTEL"}:
+                        final_values_list = ["dml", "cpu"]
+                        options["default"] = "dml"
+                    elif detected_vendor == "CPU":
+                        final_values_list = ["cpu", "dml"]
+                        options["default"] = "cpu"
+
+                if setting_key == "f5rvc_is_half" and detected_vendor != "NVIDIA":
+                    options["default"] = "False"
+                    setting["locked"] = True
 
                 if final_values_list is not None and widget_type == "combobox":
                     options["values"] = final_values_list
@@ -687,23 +1045,6 @@ class VoiceModelController:
                         options["default"] = ""
 
         return final_models
-
-    def is_gpu_rtx30_or_40(self):
-        force_unsupported_str = os.environ.get("RTX_FORCE_UNSUPPORTED", "0")
-        force_unsupported = force_unsupported_str.lower() in ["true", "1", "t", "y", "yes"]
-        if force_unsupported:
-            return False
-
-        if self.detected_gpu_vendor != "NVIDIA" or not self.gpu_name:
-            return False
-
-        name_upper = self.gpu_name.upper()
-        if "RTX" in name_upper:
-            if any(f" {gen}" in name_upper or name_upper.endswith(gen) or f"-{gen}" in name_upper for gen in ["3050", "3060", "3070", "3080", "3090"]):
-                return True
-            if any(f" {gen}" in name_upper or name_upper.endswith(gen) or f"-{gen}" in name_upper for gen in ["4050", "4060", "4070", "4080", "4090"]):
-                return True
-        return False
 
     def open_doc(self, doc_name: str):
         self.docs_manager.open_doc(doc_name)

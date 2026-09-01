@@ -37,6 +37,7 @@ def build_request(cfg: Dict[str, Any], texts: list, is_query: bool = False) -> E
         api_key=cfg.get("api_key") or cfg.get("key") or None,
         api_url=cfg.get("api_url") or cfg.get("url") or cfg.get("hf_name") or None,
         reserve_keys=list(cfg.get("reserve_keys") or []),
+        reserve_keys_distribute=bool(cfg.get("reserve_keys_distribute", False)),
         headers=dict(cfg.get("headers") or {}),
         query_prefix=str(cfg.get("query_prefix") or ""),
         dimensions=int(cfg.get("dimensions") or 0),

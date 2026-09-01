@@ -1,19 +1,26 @@
+from core.error_utils import format_exception
 # File: Modules/Chess/engine_handler.py
-import chess
-import chess.engine
-import threading
-import requests
 import gzip
-import shutil
 import os
 import platform
-import zipfile
-import tarfile
-import stat # для chmod
 import queue # Для межпроцессного взаимодействия
+import shutil
+import stat # для chmod
+import tarfile
 import time
+import zipfile
 
+import chess
+import chess.engine
+
+from core.networking import NetworkRequestError, shared_http_client_registry
+from core.task_supervisor import task_supervisor
 from .board_logic import PureBoardLogic # Используем относительный импорт
+
+_HTTP_CLIENT = shared_http_client_registry().acquire(
+    "chess-engine-downloader",
+    client_options={"follow_redirects": True},
+)
 
 LC0_VERSION = "v0.31.2" 
 LC0_CPU_BACKEND = "cpu-dnnl"
@@ -34,14 +41,14 @@ def download_file(url, dest_path, desc=""):
     print(f"CONSOLE (engine_handler download_file): Скачивание {desc} ({url})...")
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, stream=True, timeout=60, headers=headers, allow_redirects=True)
-        response.raise_for_status()
-        with open(dest_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
+        with _HTTP_CLIENT.stream("GET", url, timeout=60, headers=headers) as response:
+            _HTTP_CLIENT.raise_for_status(response)
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_bytes(chunk_size=8192): f.write(chunk)
         print(f"CONSOLE (engine_handler download_file): {desc} УСПЕШНО СКАЧАН: {dest_path}")
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {e}", exc_info=True)
+    except NetworkRequestError as e:
+        print(f"CONSOLE (engine_handler download_file): ОШИБКА скачивания {desc}: {format_exception(e)}")
         return False
 
 def extract_archive(archive_path, dest_dir, executable_name_in_archive):
@@ -93,7 +100,7 @@ def extract_archive(archive_path, dest_dir, executable_name_in_archive):
                         with tar_ref.extractfile(member_info) as source, open(target_path, "wb") as target: shutil.copyfileobj(source, target)
                         extracted_something = True
                         if os.path.basename(target_filename) == executable_name_in_archive: main_exe_path = target_path
-                    except Exception as e_extract_file: print(f"CONSOLE (engine_handler extract_archive): Ошибка при извлечении файла {member_info.name}: {e_extract_file}", exc_info=True)
+                    except Exception as e_extract_file: print(f"CONSOLE (engine_handler extract_archive): Ошибка при извлечении файла {member_info.name}: {format_exception(e_extract_file)}", exc_info=True)
         else: print(f"CONSOLE (engine_handler extract_archive): Неподдерживаемый формат архива: {archive_path}"); return None
 
         if main_exe_path and os.path.exists(main_exe_path): print(f"CONSOLE (engine_handler extract_archive): Архив УСПЕШНО РАСПАКОВАН, Lc0 основной файл: {main_exe_path}"); return main_exe_path
@@ -102,11 +109,11 @@ def extract_archive(archive_path, dest_dir, executable_name_in_archive):
             if os.path.exists(potential_main_exe): print(f"CONSOLE (engine_handler extract_archive): Найден {executable_name_in_archive} в {dest_dir} после распаковки (не через main_exe_path)."); return potential_main_exe
             print(f"CONSOLE (engine_handler extract_archive): Извлечены некоторые файлы, но '{executable_name_in_archive}' не идентифицирован как main_exe_path. Проверьте {dest_dir}"); return None
         else: print(f"CONSOLE (engine_handler extract_archive): ОШИБКА: Не удалось найти '{executable_name_in_archive}' или другие файлы в архиве '{archive_path}'."); return None
-    except Exception as e: print(f"CONSOLE (engine_handler extract_archive): КРИТИЧЕСКАЯ ОШИБКА распаковки {archive_path}: {e}", exc_info=True); return None
+    except Exception as e: print(f"CONSOLE (engine_handler extract_archive): КРИТИЧЕСКАЯ ОШИБКА распаковки {archive_path}: {format_exception(e)}", exc_info=True); return None
     finally:
         if os.path.exists(archive_path):
             try: os.remove(archive_path)
-            except Exception as e_del: print(f"CONSOLE (engine_handler extract_archive): Не удалось удалить временный архив {archive_path}: {e_del}")
+            except Exception as e_del: print(f"CONSOLE (engine_handler extract_archive): Не удалось удалить временный архив {archive_path}: {format_exception(e_del)}")
 
 def setup_lc0():
     global LC0_EXECUTABLE_PATH_GLOBAL
@@ -136,7 +143,7 @@ def setup_lc0():
                     print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Chmod НЕ ПОМОГ. Lc0 НЕ ИСПОЛНЯЕМЫЙ.")
                     return False
             except Exception as e_chmod_existing:
-                print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА chmod для существующего Lc0: {e_chmod_existing}", exc_info=True)
+                print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА chmod для существующего Lc0: {format_exception(e_chmod_existing)}", exc_info=True)
                 return False
     else:
         print(f"CONSOLE (engine_handler setup_lc0): Lc0 файл НЕ НАЙДЕН в '{LC0_DIR_BASE}'. Попытка скачивания...")
@@ -166,7 +173,7 @@ def setup_lc0():
                                  print(f"CONSOLE (engine_handler setup_lc0): ВНИМАНИЕ: Права на исполнение НЕ УДАЛОСЬ УСТАНОВИТЬ (os.X_OK=False) для {LC0_EXECUTABLE_PATH_GLOBAL} после chmod.")
                                  # Тем не менее, возвращаем True, т.к. файл извлечен. Проблемы с правами могут быть специфичны для окружения.
                         except Exception as e_chmod:
-                            print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Не удалось установить права на исполнение для Lc0: {e_chmod}", exc_info=True)
+                            print(f"CONSOLE (engine_handler setup_lc0): ОШИБКА: Не удалось установить права на исполнение для Lc0: {format_exception(e_chmod)}", exc_info=True)
                             # Возвращаем True, так как файл извлечен, но с предупреждением о правах.
                     print(f"CONSOLE (engine_handler setup_lc0): Lc0 скачан и настроен: {LC0_EXECUTABLE_PATH_GLOBAL}")
                     return True
@@ -204,16 +211,16 @@ def setup_maia_weights(maia_elo: int):
             print(f"CONSOLE (engine_handler setup_maia_weights): Веса Maia ELO {maia_elo} УСПЕШНО РАСПАКОВАНЫ: {maia_weights_pb_filename}")
             if os.path.exists(maia_weights_gz_filename): 
                 try: os.remove(maia_weights_gz_filename)
-                except Exception as e_del_gz: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить временный .gz файл: {e_del_gz}")
+                except Exception as e_del_gz: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить временный .gz файл: {format_exception(e_del_gz)}")
             return maia_weights_pb_filename
         except Exception as e:
-            print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА распаковки весов Maia ELO {maia_elo} из {maia_weights_gz_filename}: {e}", exc_info=True)
+            print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА распаковки весов Maia ELO {maia_elo} из {maia_weights_gz_filename}: {format_exception(e)}", exc_info=True)
             if os.path.exists(maia_weights_gz_filename): 
                 try: os.remove(maia_weights_gz_filename)
-                except Exception as e_del_gz_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить .gz файл после ошибки распаковки: {e_del_gz_fail}")
+                except Exception as e_del_gz_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить .gz файл после ошибки распаковки: {format_exception(e_del_gz_fail)}")
             if os.path.exists(maia_weights_pb_filename): 
                 try: os.remove(maia_weights_pb_filename)
-                except Exception as e_del_pb_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить частично созданный .pb файл: {e_del_pb_fail}")
+                except Exception as e_del_pb_fail: print(f"CONSOLE (engine_handler setup_maia_weights): Не удалось удалить частично созданный .pb файл: {format_exception(e_del_pb_fail)}")
             return None
     else: # download_file вернул False
         print(f"CONSOLE (engine_handler setup_maia_weights): ОШИБКА скачивания весов Maia ELO {maia_elo} с URL: {maia_weights_url}")
@@ -221,19 +228,22 @@ def setup_maia_weights(maia_elo: int):
 
 class ChessGameController:
     def __init__(self, initial_elo: int, player_is_white_gui: bool,
-                 state_q: queue.Queue, status_update_cb_gui, board_update_cb_gui, game_over_cb_gui):
+                 state_q: queue.Queue, status_update_cb_gui, board_update_cb_gui, game_over_cb_gui,
+                 is_auto: bool = False, is_cheat: bool = False):
         self.board_logic = PureBoardLogic()
         self.engine = None
         self.current_maia_elo = initial_elo
         self.current_maia_weights_path = None
         self.player_is_white_in_gui = player_is_white_gui
         self.engine_is_thinking = False
-        self.is_engine_enabled_for_moves = True # По умолчанию движок (Maia) может делать ходы, когда LLM просит
+        self.is_engine_enabled_for_moves = True
         self.state_queue = state_q
         self.status_update_cb_gui = status_update_cb_gui
         self.board_update_cb_gui = board_update_cb_gui
         self.game_over_cb_gui = game_over_cb_gui
         self.think_time = ENGINE_THINK_TIME_DEFAULT
+        self.is_auto = is_auto    # True = Maia ходит сама, False = LLM выбирает ходы
+        self.is_cheat = is_cheat  # True = разрешены чит-команды
         self._send_status_to_gui_if_possible(f"Контроллер инициализирован. ELO: {self.current_maia_elo}")
 
     def _send_status_to_gui_if_possible(self, message: str):
@@ -306,20 +316,20 @@ class ChessGameController:
                 self.engine = None 
                 raise 
             except Exception as e_ping:
-                 print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА: Движок не ответил на ping: {e_ping}", exc_info=True)
+                 print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА: Движок не ответил на ping: {format_exception(e_ping)}", exc_info=True)
 
             self._send_status_to_gui_if_possible(f"Движок Maia ELO {self.current_maia_elo} запущен.")
             print(f"CONSOLE (engine_handler _start_engine_process_internal): Движок Maia ELO {self.current_maia_elo} УСПЕШНО запущен и настроен.")
             return True
         except Exception as e:
-            msg = f"КРИТИЧЕСКАЯ ОШИБКА запуска движка: {e}. Проверьте консоль."
+            msg = f"КРИТИЧЕСКАЯ ОШИБКА запуска движка: {format_exception(e)}. Проверьте консоль."
             self._send_status_to_gui_if_possible(msg)
-            print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА запуска/конфигурации движка Lc0 ('{LC0_EXECUTABLE_PATH_GLOBAL}'): {e}", exc_info=True)
+            print(f"CONSOLE (engine_handler _start_engine_process_internal): ОШИБКА запуска/конфигурации движка Lc0 ('{LC0_EXECUTABLE_PATH_GLOBAL}'): {format_exception(e)}", exc_info=True)
             if self.engine: 
                 try: self.engine.quit()
                 except: pass
             self.engine = None
-            self._send_state_to_main_process(error=f"Engine start/configure failed: {str(e)}", critical_process_failure=True)
+            self._send_state_to_main_process(error=f"Engine start/configure failed: {format_exception(e)}", critical_process_failure=True)
             return False
 
     def new_game(self, fen=None, player_is_white_gui_override=None):
@@ -329,7 +339,6 @@ class ChessGameController:
             self.player_is_white_in_gui = player_is_white_gui_override
         
         self.engine_is_thinking = False
-        # self.is_engine_enabled_for_moves = True # Already true by default, or set by LLM command logic
         
         current_turn_color = "Белые" if self.board_logic.get_turn() == chess.WHITE else "Черные"
         player_color_str = "белыми" if self.player_is_white_in_gui else "черными"
@@ -337,27 +346,51 @@ class ChessGameController:
         self._send_status_to_gui_if_possible(f"Новая игра. Игрок в GUI {player_color_str}. Ход {current_turn_color}.")
         if self.board_update_cb_gui: self.board_update_cb_gui()
         
-        # Отправляем состояние LLM. LLM решит, если это ее ход, и сделает ход.
-        self._send_state_to_main_process(last_move_san="Новая игра") 
-
-        # УБРАН АВТОМАТИЧЕСКИЙ ХОД ДВИЖКА, ЕСЛИ ОЧЕРЕДЬ ИИ НАЧИНАТЬ ИГРУ
-        # LLM получит состояние от _send_state_to_main_process() и затем выдаст команду
-        # (<RequestBestChessMove!> или <MakeChessMoveAsLLM>), которая будет обработана self.process_command()
-        print("CONSOLE (ChessGameController new_game): Состояние новой игры отправлено. Ожидание решения LLM, если это ход ИИ.")
+        self._send_state_to_main_process(last_move_san="Новая игра")
+        
+        if self.is_auto and self._is_controlled_side_turn():
+            self._make_engine_move_sync()
+        print(f"CONSOLE (ChessGameController new_game): Состояние отправлено. auto={self.is_auto}, cheat={self.is_cheat}.")
 
 
     def _is_controlled_side_turn(self):
         board_turn_is_white = self.board_logic.get_turn() == chess.WHITE
         return board_turn_is_white != self.player_is_white_in_gui
 
+    def _make_engine_move_sync(self):
+        """Авто-ход движка (для auto/cheat режимов). Синхронно, без потоков."""
+        if self.engine_is_thinking or not self.engine:
+            return
+        if not self._is_controlled_side_turn():
+            return
+        self.engine_is_thinking = True
+        self._send_status_to_gui_if_possible(f"Maia (ELO {self.current_maia_elo}) думает...")
+        try:
+            result = self.engine.play(self.board_logic.board, chess.engine.Limit(time=self.think_time))
+            if result.move:
+                uci = result.move.uci()
+                san = self.board_logic.board.san(result.move)
+                success, msg, _ = self.board_logic.make_move(uci)
+                if success:
+                    self._send_status_to_gui_if_possible(f"Maia: {san}")
+                    if self.board_update_cb_gui: self.board_update_cb_gui()
+                    if not self._check_and_handle_game_over(moved_by="Maia", san_move=san):
+                        self._send_state_to_main_process()
+                else:
+                    self._send_status_to_gui_if_possible(f"Maia: ошибка хода {uci}")
+            else:
+                self._send_status_to_gui_if_possible("Maia не смогла сделать ход.")
+        except Exception as e:
+            self._send_status_to_gui_if_possible(f"Ошибка Maia: {format_exception(e)}")
+        finally:
+            self.engine_is_thinking = False
+
     def handle_player_move_from_gui(self, uci_move_str):
         print(f"CONSOLE (ChessGameController handle_player_move_from_gui): UCI: '{uci_move_str}'")
-        if self.engine_is_thinking: # Движок думает над ходом, запрошенным LLM
+        if self.engine_is_thinking:
             self._send_status_to_gui_if_possible("Движок думает, подождите.")
             return False
         
-        # Эта проверка актуальна, чтобы игрок не мог ходить, пока LLM "думает" (т.е. пока ChatModel ждет ответа от LLM API)
-        # или если это действительно ход ИИ по правилам.
         if self._is_controlled_side_turn(): 
              self._send_status_to_gui_if_possible("Сейчас не ваш ход (ожидается ход LLM/Maia).")
              return False
@@ -368,22 +401,16 @@ class ChessGameController:
             if self.board_update_cb_gui: self.board_update_cb_gui()
             
             if self._check_and_handle_game_over(moved_by="Игрок GUI", san_move=san_move):
-                return True # Игра окончена, состояние уже отправлено
+                return True
 
-            # Отправляем состояние LLM, чтобы она знала, что игрок походил, и могла решить свой ход.
-            self._send_state_to_main_process() 
+            self._send_state_to_main_process()
 
-            # УБРАН АВТОМАТИЧЕСКИЙ ОТВЕТ ДВИЖКА
-            # LLM получит состояние от _send_state_to_main_process()
-            # и затем выдаст команду (<RequestBestChessMove!> или <MakeChessMoveAsLLM>),
-            # которая будет обработана self.process_command()
-            print("CONSOLE (ChessGameController handle_player_move_from_gui): Ход игрока обработан, состояние отправлено. Ожидание решения LLM.")
+            if self.is_auto and not self.board_logic.is_game_over()[0]:
+                self._make_engine_move_sync()
+            print(f"CONSOLE (ChessGameController handle_player_move_from_gui): auto={self.is_auto}")
             return True
         else:
             self._send_status_to_gui_if_possible(f"Игрок GUI: {message} (ход {uci_move_str})")
-            # Можно отправить состояние с ошибкой, если ход игрока был нелегален,
-            # хотя GUI обычно этого не допускает для корректных UCI.
-            # self._send_state_to_main_process(error_move=uci_move_str, error_message=message)
             return False
 
     def force_llm_or_engine_move(self, uci_move_str, is_llm_decision=True):
@@ -472,13 +499,13 @@ class ChessGameController:
 
             except chess.engine.EngineTerminatedError as ete:
                 self._send_status_to_gui_if_possible("Критическая ошибка: Движок неожиданно завершил работу.")
-                print(f"CONSOLE (ChessGameController _think): ОШИБКА - Движок Lc0 завершил работу: {ete}", exc_info=True)
+                print(f"CONSOLE (ChessGameController _think): ОШИБКА - Движок Lc0 завершил работу: {format_exception(ete)}", exc_info=True)
                 self.engine = None 
-                error_during_think = f"Engine terminated during thinking: {str(ete)}"
+                error_during_think = f"Engine terminated during thinking: {format_exception(ete)}"
             except Exception as e:
-                self._send_status_to_gui_if_possible(f"Ошибка во время хода движка: {e}. Проверьте консоль.")
-                print(f"CONSOLE (ChessGameController _think): ОШИБКА во время хода движка: {e}", exc_info=True)
-                error_during_think = f"Engine thinking error: {str(e)}"
+                self._send_status_to_gui_if_possible(f"Ошибка во время хода движка: {format_exception(e)}. Проверьте консоль.")
+                print(f"CONSOLE (ChessGameController _think): ОШИБКА во время хода движка: {format_exception(e)}", exc_info=True)
+                error_during_think = f"Engine thinking error: {format_exception(e)}"
             finally:
                 self.engine_is_thinking = False # Сбрасываем флаг в любом случае
                 print(f"CONSOLE (ChessGameController _think): Поток _think завершен. SAN движка: {engine_san_move}, UCI: {engine_uci_move}, Ошибка: {error_during_think}")
@@ -508,8 +535,12 @@ class ChessGameController:
                     if self.board_update_cb_gui: self.board_update_cb_gui()
 
 
-        thread = threading.Thread(target=_think, daemon=True)
-        thread.start()
+        task_supervisor().start_thread(
+            self,
+            "chess-engine-think",
+            _think,
+            replace=True,
+        )
 
     def _check_and_handle_game_over(self, moved_by="", san_move="", error_during_move=None):
         is_over, outcome_message = self.board_logic.is_game_over()
@@ -552,16 +583,20 @@ class ChessGameController:
 
         state_data = {
             "fen": self.board_logic.get_fen(),
+            "board_ascii": self.board_logic.ascii_board(),
             "turn": "white" if self.board_logic.get_turn() == chess.WHITE else "black",
-            "legal_moves_uci": self.board_logic.get_legal_moves_uci() if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [], # Не отправляем ходы, если игра окончена
+            "legal_moves_uci": self.board_logic.get_legal_moves_uci() if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [],
+            "legal_moves_short": self.board_logic.get_legal_moves_uci_short(10) if not (game_over or game_resigned or game_stopped_by_llm or critical_process_failure) else [],
             "is_game_over": game_over or game_resigned or game_stopped_by_llm or critical_process_failure,
             "outcome_message": outcome_msg_board,
             "player_is_white_in_gui": self.player_is_white_in_gui,
             "current_elo": self.current_maia_elo,
+            "is_auto": self.is_auto,
+            "is_cheat": self.is_cheat,
             "last_move_san": current_last_move_san if current_last_move_san else "N/A",
             "timestamp": time.time()
         }
-        if error: state_data["error"] = str(error)
+        if error: state_data["error"] = format_exception(error)
         if error_move: state_data["error_move"] = error_move
         if error_message: state_data["error_message_for_move"] = error_message
         if game_resigned: state_data["game_resigned_by_llm"] = True; state_data["outcome_message"] = "LLM (Maia) сдался."
@@ -573,10 +608,11 @@ class ChessGameController:
             self.state_queue.put(state_data)
             print(f"CONSOLE (ChessGameController _send_state_to_main_process): Состояние отправлено. FEN: {state_data['fen'][:20]}..., Turn: {state_data['turn']}, GameOver: {state_data['is_game_over']}, Outcome: {state_data['outcome_message']}, Error: {state_data.get('error')}, LastSAN: {state_data.get('last_move_san')}")
         except Exception as e:
-            print(f"CONSOLE (ChessGameController _send_state_to_main_process): ОШИБКА отправки состояния в state_queue: {e}", exc_info=True)
+            print(f"CONSOLE (ChessGameController _send_state_to_main_process): ОШИБКА отправки состояния в state_queue: {format_exception(e)}", exc_info=True)
 
     def shutdown_engine_process(self):
         print("CONSOLE (ChessGameController shutdown_engine_process): Запрос на остановку движка.")
+        task_supervisor().cancel_owner(self, timeout=1.0)
         if self.engine:
             print("CONSOLE (ChessGameController shutdown_engine_process): Движок существует, вызываем quit().")
             try:
@@ -585,7 +621,7 @@ class ChessGameController:
             except chess.engine.EngineTerminatedError:
                 print("CONSOLE (ChessGameController shutdown_engine_process): Движок уже был завершен (EngineTerminatedError).")
             except Exception as e:
-                print(f"CONSOLE (ChessGameController shutdown_engine_process): ОШИБКА при engine.quit(): {e}", exc_info=True)
+                print(f"CONSOLE (ChessGameController shutdown_engine_process): ОШИБКА при engine.quit(): {format_exception(e)}", exc_info=True)
             finally:
                 self.engine = None
                 print("CONSOLE (ChessGameController shutdown_engine_process): self.engine установлен в None.")
@@ -637,6 +673,50 @@ class ChessGameController:
             # self.shutdown_engine_process()
             self._send_state_to_main_process(game_stopped_by_llm=True)
         elif action == "get_state":
+            self._send_state_to_main_process()
+        elif action == "cheat_move":
+            move_uci = command_data.get("move")
+            if move_uci:
+                success, msg, san = self.board_logic.force_move(move_uci)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                if not self._check_and_handle_game_over(moved_by="Чит", san_move=san or move_uci):
+                    self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_move без хода")
+        elif action == "cheat_spawn":
+            square = command_data.get("square")
+            piece = command_data.get("piece")
+            if square and piece:
+                success, msg, _ = self.board_logic.spawn_piece(square, piece)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_spawn: нужны square и piece")
+        elif action == "cheat_remove":
+            square = command_data.get("square")
+            if square:
+                success, msg, _ = self.board_logic.remove_piece(square)
+                self._send_status_to_gui_if_possible(f"Чит: {msg}")
+                if self.board_update_cb_gui: self.board_update_cb_gui()
+                self._send_state_to_main_process()
+            else:
+                self._send_state_to_main_process(error="cheat_remove: нужен square")
+        elif action == "switch_auto":
+            enable = command_data.get("enable", True)
+            old = self.is_auto
+            self.is_auto = bool(enable)
+            msg = f"Авто-режим: {'ВКЛ' if self.is_auto else 'ВЫКЛ'}."
+            self._send_status_to_gui_if_possible(msg)
+            if self.is_auto and not old and self._is_controlled_side_turn() and not self.board_logic.is_game_over()[0]:
+                self._make_engine_move_sync()
+            else:
+                self._send_state_to_main_process()
+        elif action == "switch_cheat":
+            self.is_cheat = bool(command_data.get("enable", True))
+            msg = f"Чит-режим: {'ВКЛ' if self.is_cheat else 'ВЫКЛ'}."
+            self._send_status_to_gui_if_possible(msg)
             self._send_state_to_main_process()
         # stop_gui_process обрабатывается в цикле run_chess_gui_process
         else:

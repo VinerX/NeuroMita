@@ -1,4 +1,5 @@
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import asyncio
 import hashlib
@@ -188,7 +189,7 @@ class BeatsService:
             self._beat_this_file2beats = File2Beats(checkpoint_path="final0", device=device, dbn=False)
             return True
         except Exception as ex:
-            logger.exception(f"Error initializing beat_this: {ex}")    
+            logger.exception(f"Error initializing beat_this: {format_exception(ex)}")
             return False
 
     def _warmup_librosa(self) -> bool:
@@ -209,7 +210,7 @@ class BeatsService:
             self._librosa_ready = True
             return True
         except Exception as ex:
-            logger.exception(f"Error initializing librosa backend: {ex}")
+            logger.exception(f"Error initializing librosa backend: {format_exception(ex)}")
             self._librosa_ready = False
             return False
 
@@ -231,7 +232,7 @@ class BeatsService:
                 "bpm_estimate": _estimate_bpm_from_beats([b["time"] for b in beats]),
             }
         except Exception as ex:
-            logger.exception(f"Error in beat_this for {audio_path}: {ex}")
+            logger.exception(f"Error in beat_this for {audio_path}: {format_exception(ex)}")
             return None
 
     def _try_librosa(self, audio_path: str, min_confidence: float) -> Optional[dict]:
@@ -254,7 +255,7 @@ class BeatsService:
                 "bpm_estimate": float(tempo) if tempo else _estimate_bpm_from_beats([b["time"] for b in beats]),
             }
         except Exception as ex:
-            logger.exception(f"Error in librosa for {audio_path}: {ex}")
+            logger.exception(f"Error in librosa for {audio_path}: {format_exception(ex)}")
             return None
 
     def _extract_dsp_fallback(self, audio_path: str, min_confidence: float) -> dict:

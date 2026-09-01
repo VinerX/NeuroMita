@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
 import os
@@ -133,7 +134,7 @@ class CustomParamSpec(BaseModel):
                 elif py_t is str:
                     self.default = str(self.default)
             except Exception as e:
-                raise ValueError(f"custom param {self.name}: default type mismatch: {e}")
+                raise ValueError(f"custom param {self.name}: default type mismatch: {format_exception(e)}")
 
         return self
 
@@ -171,7 +172,7 @@ class CharacterConfigManager:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=4, ensure_ascii=False)
             except Exception as e:
-                self.logger.error(f"[{self.character_id}] Failed to create config.json: {e}", exc_info=True)
+                self.logger.error(f"[{self.character_id}] Failed to create config.json: {format_exception(e)}", exc_info=True)
 
         return self.load()
 
@@ -185,7 +186,7 @@ class CharacterConfigManager:
         except FileNotFoundError:
             return CharacterConfigData(variables={}, custom_params=[])
         except Exception as e:
-            self.logger.error(f"[{self.character_id}] Failed to read config.json: {e}", exc_info=True)
+            self.logger.error(f"[{self.character_id}] Failed to read config.json: {format_exception(e)}", exc_info=True)
             return CharacterConfigData(variables={}, custom_params=[])
 
         custom_params_raw = raw.get("custom_params", []) or []
@@ -198,7 +199,7 @@ class CharacterConfigManager:
                     spec = CustomParamSpec.model_validate(item)
                     custom_params.append(spec.model_dump())
                 except Exception as e:
-                    self.logger.error(f"[{self.character_id}] Invalid custom_param ignored: {e}")
+                    self.logger.error(f"[{self.character_id}] Invalid custom_param ignored: {format_exception(e)}")
 
         self._validate_bounds(raw)
 

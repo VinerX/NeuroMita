@@ -1,0 +1,7 @@
+IF secretExposed THEN
+    LOG "secretExposed = True, loading mainCrazy.txt"
+    RETURN LOAD "Main/mainCrazy.txt"
+ELSE
+    LOG "secretExposed = False, loading mainPlaying.txt"
+    RETURN LOAD "Main/mainPlaying.txt"
+ENDIF

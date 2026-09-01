@@ -2,6 +2,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from utils import _
+from localization.live import register_if_tr
+from ui.pages.settings.section_access import is_section_enabled
+from ui.settings.settings_access import settings_store
 
 
 class StatusIndicatorChip(QWidget):
@@ -21,6 +24,7 @@ class StatusIndicatorChip(QWidget):
         layout.addWidget(self.dot_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.text_label = QLabel(text)
+        register_if_tr(self.text_label, text)
         self.text_label.setObjectName("StatusIndicatorText")
         layout.addWidget(self.text_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -49,9 +53,7 @@ def apply_capture_visibility(gui, mode=None):
     # The capture indicators (screen / camera) live behind the "screen"
     # settings section. `mode` is kept for backward compatibility but ignored.
     try:
-        from ui.widgets.settings_panel import is_section_enabled
-
-        visible = is_section_enabled("screen")
+        visible = is_section_enabled("screen", settings_store(gui))
     except Exception:
         visible = False
 
@@ -95,7 +97,7 @@ def create_status_indicators(gui, parent_layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     status_layout.addWidget(widget)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     status_layout.addWidget(widget)
 
@@ -127,7 +129,7 @@ def create_status_indicators_inline_legacy(gui, layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     layout.addWidget(widget)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     layout.addWidget(widget)
 
@@ -165,7 +167,7 @@ def create_status_indicators_inline(gui, layout):
     _register_indicator(gui, "silero_status_checkbox", widget)
     status_layout.addWidget(widget, 0, 1)
 
-    widget = _create_indicator("RAG")
+    widget = _create_indicator(_("RAG", "RAG"))
     _register_indicator(gui, "rag_status_checkbox", widget)
     status_layout.addWidget(widget, 0, 2)
 

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from utils import getTranslationVariant as _tr
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -146,12 +148,50 @@ class SchemaForm(QWidget):
         self._original.clear()
         self._schema = []
 
+    # ---- schema-dialect tolerance -------------------------------------
+    # Two schema formats coexist in the codebase:
+    #   new (TTS / AI Hub):  {"label": "...", "options": {"values": [...], "default": ...}}
+    #   old (ASR models):    {"label_ru": "...", "label_en": "...",
+    #                         "options": [...], "default": ...}
+    # SchemaForm accepts both so ASR recognizers render correctly here too.
+
+    @staticmethod
+    def _normalize_type(raw: Any) -> str:
+        t = str(raw or "entry").lower()
+        if t == "check":
+            return "checkbutton"
+        return t
+
+    @staticmethod
+    def _normalize_options(entry: dict[str, Any]) -> dict[str, Any]:
+        raw = entry.get("options")
+        if isinstance(raw, dict):
+            opts = dict(raw)
+        elif isinstance(raw, (list, tuple)):
+            opts = {"values": list(raw)}
+        else:
+            opts = {}
+        if "default" not in opts and entry.get("default") is not None:
+            opts["default"] = entry.get("default")
+        return opts
+
+    @staticmethod
+    def _resolve_label(entry: dict[str, Any], key: str) -> str:
+        label = entry.get("label")
+        if label:
+            return str(label)
+        ru = entry.get("label_ru")
+        en = entry.get("label_en")
+        if ru or en:
+            return _tr(str(ru or en), str(en or ru))
+        return key
+
     def _build_row(self, entry: dict[str, Any]) -> None:
         key = str(entry.get("key") or "")
         if not key:
             return
-        type_ = str(entry.get("type") or "entry").lower()
-        opts = entry.get("options") if isinstance(entry.get("options"), dict) else {}
+        type_ = self._normalize_type(entry.get("type"))
+        opts = self._normalize_options(entry)
         locked = bool(entry.get("locked"))
 
         widget = self._build_widget(type_, opts, locked, key)
@@ -159,7 +199,7 @@ class SchemaForm(QWidget):
             return
         self._widgets[key] = widget
 
-        label_text = str(entry.get("label") or key)
+        label_text = self._resolve_label(entry, key)
         help_text = str(entry.get("help") or "")
         label = QLabel(label_text)
         label.setObjectName("AIHubFormLabel")
@@ -174,7 +214,17 @@ class SchemaForm(QWidget):
         widget_wrap = QHBoxLayout()
         widget_wrap.setContentsMargins(0, 0, 0, 0)
         widget_wrap.setSpacing(8)
-        widget_wrap.addWidget(widget, 1)
+        if type_ == "checkbutton" and isinstance(widget, QCheckBox):
+            # Boolean fields should stay compact instead of filling the whole
+            # form column like text inputs.
+            widget_wrap.addWidget(
+                widget,
+                0,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
+            widget_wrap.addStretch(1)
+        else:
+            widget_wrap.addWidget(widget, 1)
         right_col.addLayout(widget_wrap)
 
         if help_text:
@@ -206,6 +256,7 @@ class SchemaForm(QWidget):
         if type_ == "checkbutton":
             w = QCheckBox()
             w.setChecked(bool(default))
+            w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             self._defaults[key] = "True" if default else "False"
             w.toggled.connect(self._fire_change)
             if locked:
@@ -254,7 +305,7 @@ class SchemaForm(QWidget):
 
     @staticmethod
     def _read_widget(entry: dict[str, Any], widget: QWidget) -> str:
-        type_ = str(entry.get("type") or "entry").lower()
+        type_ = SchemaForm._normalize_type(entry.get("type"))
         if type_ == "checkbutton" and isinstance(widget, QCheckBox):
             return "True" if widget.isChecked() else "False"
         if type_ == "combobox" and isinstance(widget, QComboBox):
@@ -267,7 +318,7 @@ class SchemaForm(QWidget):
 
     @staticmethod
     def _write_widget(entry: dict[str, Any], widget: QWidget, value: Any) -> None:
-        type_ = str(entry.get("type") or "entry").lower()
+        type_ = SchemaForm._normalize_type(entry.get("type"))
         try:
             if type_ == "checkbutton" and isinstance(widget, QCheckBox):
                 widget.blockSignals(True)

@@ -1,8 +1,12 @@
+from core.error_utils import format_exception
 # src/handlers/chat_handler.py
 import re
+import threading
+import uuid
 from typing import List, Dict, Any, Optional
 
 from main_logger import logger
+from utils import _, mask_sensitive, redact_image_payloads
 
 from characters.character import Character
 
@@ -19,92 +23,114 @@ from utils.openrouter_routing import (
 from handlers.llm_providers.param_mapper import build_unified_generation_params
 
 from core.events import get_event_bus
+from core.cancellation import OperationCancelledError
+from core.executors import Pools, executors
+from core.services import use
+from services.contracts import GameLinkService
+
+
+def _debug_dumps_enabled(settings: Any) -> bool:
+    import os
+
+    env_value = str(os.environ.get("NEUROMITA_DEBUG_DUMPS", "")).strip().lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return bool(settings.get("DEBUG_SAVE_LLM_DUMPS", False))
+    except Exception:
+        return False
+
+
+from utils.context_token_stats import compute_token_usage as _compute_token_usage
+
+
+_CONTEXT_SNAPSHOT_ID_RE = re.compile(r"^ctx_[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def _context_snapshot_paths(context_snapshot_id: str = "") -> list[str]:
+    """Return the global fallback plus an immutable per-request snapshot path."""
+    import os
+
+    base = os.environ.get("NEUROMITA_BASE_DIR", "")
+    saved = os.path.join(base, "SavedMessages") if base else "SavedMessages"
+    paths = [os.path.join(saved, "last_request_context.json")]
+    snapshot_id = str(context_snapshot_id or "").strip()
+    if _CONTEXT_SNAPSHOT_ID_RE.fullmatch(snapshot_id):
+        paths.append(os.path.join(saved, "request_contexts", f"{snapshot_id}.json"))
+    return paths
+
+
+def _write_context_record(record: Dict[str, Any], context_snapshot_id: str = "") -> None:
+    import json
+    import os
+
+    for path in _context_snapshot_paths(context_snapshot_id):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
 
 
 def _save_last_request_context(req, character_name: str = "") -> None:
-    """Всегда сохраняет последний запрос в SavedMessages/last_request_context.json."""
-    import json
-    import os
+    """Save both the latest diagnostic context and its immutable request snapshot."""
     from datetime import datetime, timezone
 
     _KEEP = {
         "temperature", "max_tokens", "max_response_tokens", "top_p", "top_k",
-        "presence_penalty", "frequency_penalty",
-        "openrouter_routing",
+        "presence_penalty", "frequency_penalty", "openrouter_routing",
         "openrouter_session_id",
     }
     try:
-        base = os.environ.get("NEUROMITA_BASE_DIR", "")
-        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
-        os.makedirs(out_dir, exist_ok=True)
         extra_raw = getattr(req, "extra", {}) or {}
+        context_snapshot_id = str(extra_raw.get("context_snapshot_id") or "").strip()
+        messages = redact_image_payloads(getattr(req, "messages", []))
         record = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "context_snapshot_id": context_snapshot_id,
             "model": getattr(req, "model", None),
             "provider_name": getattr(req, "provider_name", None),
             "protocol_id": getattr(req, "protocol_id", None),
             "dialect_id": getattr(req, "dialect_id", None),
             "character_name": character_name or "",
             "extra": {k: v for k, v in extra_raw.items() if k in _KEEP},
-            "messages": getattr(req, "messages", []),
+            "token_usage": _compute_token_usage(messages),
+            "messages": messages,
         }
-        with open(os.path.join(out_dir, "last_request_context.json"), "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        _write_context_record(record, context_snapshot_id)
     except Exception as _e:
-        logger.debug(f"[ContextSave] {_e}")
-
+        logger.debug(f"[ContextSave] {format_exception(_e)}")
 
 def _save_last_response_context(req, response: LLMResponse, *, raw_response_text: str = "", cleaned_response_text: str = "") -> None:
-    """Дописывает последний ответ и usage в last_request_context.json."""
+    """Attach response data to the exact request snapshot and update the fallback."""
     import json
     import os
     from datetime import datetime, timezone
 
     try:
-        base = os.environ.get("NEUROMITA_BASE_DIR", "")
-        out_dir = os.path.join(base, "SavedMessages") if base else "SavedMessages"
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, "last_request_context.json")
-
+        extra_raw = getattr(req, "extra", {}) or {}
+        context_snapshot_id = str(extra_raw.get("context_snapshot_id") or "").strip()
+        paths = _context_snapshot_paths(context_snapshot_id)
         record: Dict[str, Any] = {}
-        if os.path.isfile(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    record = loaded
-            except Exception:
-                record = {}
-
+        # Prefer the immutable request snapshot; it cannot be overwritten by a
+        # concurrently finishing response from another Mita.
+        preferred = paths[-1] if len(paths) > 1 else paths[0]
+        if os.path.isfile(preferred):
+            with open(preferred, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                record = loaded
         if not record:
-            extra_raw = getattr(req, "extra", {}) or {}
             record = {
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "context_snapshot_id": context_snapshot_id,
                 "model": getattr(req, "model", None),
                 "provider_name": getattr(req, "provider_name", None),
                 "protocol_id": getattr(req, "protocol_id", None),
                 "dialect_id": getattr(req, "dialect_id", None),
                 "character_name": "",
-                "extra": extra_raw,
-                "messages": getattr(req, "messages", []),
+                "extra": {},
+                "messages": redact_image_payloads(getattr(req, "messages", [])),
             }
-
         usage = getattr(response, "usage", None)
-        usage_payload = None
-        if usage is not None:
-            usage_payload = {
-                "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                "reasoning_tokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
-                "cached_prompt_tokens": int(getattr(usage, "cached_prompt_tokens", 0) or 0),
-                "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
-                "cost": getattr(usage, "cost", None),
-                "cost_currency": getattr(usage, "cost_currency", None),
-                "cost_source": getattr(usage, "cost_source", None),
-                "raw": getattr(usage, "raw", {}) or {},
-            }
-
         record.update({
             "response_timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "response": cleaned_response_text or getattr(response, "text", "") or "",
@@ -112,17 +138,18 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
             "response_model": getattr(response, "model", None) or getattr(req, "model", None),
             "response_provider_name": getattr(response, "provider_name", None) or getattr(req, "provider_name", None),
             "finish_reason": getattr(response, "finish_reason", None),
-            "usage": usage_payload,
+            "usage": usage.to_payload() if usage is not None else None,
         })
-
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
+        _write_context_record(record, context_snapshot_id)
     except Exception as _e:
-        logger.debug(f"[ContextSaveResponse] {_e}")
+        logger.debug(f"[ContextSaveResponse] {format_exception(_e)}")
 
 
 class ChatModel:
     def __init__(self, settings):
+        self._error_state = threading.local()
+        self._last_error_global = None
+        self._last_error_lock = threading.Lock()
         self.last_key = 0
         self.settings = settings
         self.event_bus = get_event_bus()
@@ -162,24 +189,51 @@ class ChatModel:
         }
 
         self.HideAiData = True
+        self.last_error = None
+
+    @property
+    def last_error(self):
+        if hasattr(self._error_state, "last_error"):
+            return self._error_state.last_error
+        with self._last_error_lock:
+            return self._last_error_global
+
+    @last_error.setter
+    def last_error(self, value) -> None:
+        self._error_state.last_error = value
+        with self._last_error_lock:
+            self._last_error_global = value
+
+    def close(self) -> None:
+        self.request_runner.close()
 
     def generate(
         self,
         messages: List[Dict[str, Any]],
         stream_callback: callable = None,
+        stream_event_callback: callable = None,
         preset_id: Optional[int] = None,
         *,
+        request_id: str = "",
         capabilities_override: Optional[Dict[str, Any]] = None,
+        request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_id: str = "",
+        context_character_name: str = "",
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
         response, success = self._generate_chat_response(
             combined_messages=messages,
             stream_callback=stream_callback,
+            stream_event_callback=stream_event_callback,
             preset_id=preset_id,
+            request_id=request_id,
             capabilities_override=capabilities_override,
+            request_options_override=request_options_override,
             structured_model=structured_model,
+            context_character_id=context_character_id,
+            context_character_name=context_character_name,
         )
         if not success:
             return None
@@ -189,14 +243,23 @@ class ChatModel:
         self,
         combined_messages,
         stream_callback: callable = None,
+        stream_event_callback: callable = None,
         preset_id: Optional[int] = None,
         *,
+        request_id: str = "",
         capabilities_override: Optional[Dict[str, Any]] = None,
+        request_options_override: Optional[Dict[str, Any]] = None,
         structured_model: Optional[type] = None,
+        context_character_id: str = "",
+        context_character_name: str = "",
     ):
-        max_attempts = self.cfg.max_request_attempts
-        retry_delay = self.cfg.request_delay
-        request_timeout = 45
+        request_options = dict(request_options_override or {})
+        trace_id = str(request_options.get("trace_id") or "").strip() or None
+        max_attempts = int(request_options.get("max_attempts", self.cfg.max_request_attempts) or 1)
+        retry_delay = float(request_options.get("retry_delay", self.cfg.request_delay) or 0.0)
+        request_timeout = float(request_options.get("request_timeout", 240) or 240)
+        suppress_failure_events = bool(request_options.get("suppress_failure_events", False))
+        cancellation = request_options.get("cancellation")
 
         self._log_generation_start(preset_id)
 
@@ -216,9 +279,12 @@ class ChatModel:
                 top_p=cfg.top_p,
                 thinking_budget=cfg.thinking_budget,
                 enable_thinking=cfg.enable_thinking,
+                reasoning_effort=getattr(cfg, "reasoning_effort", None),
                 gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
                 force_params=getattr(cfg, "preset_forced_params", frozenset()),
             )
+            if request_id:
+                params["request_id"] = str(request_id)
 
             caps = dict(preset_settings.capabilities or {})
             if isinstance(capabilities_override, dict):
@@ -237,8 +303,12 @@ class ChatModel:
                 transforms=list(preset_settings.transforms or []),
                 capabilities=caps,
 
-                stream=bool(self.settings.get("ENABLE_STREAMING", False)) and stream_callback is not None,
+                stream=(
+                    bool(self.settings.get("ENABLE_STREAMING", False))
+                    and (stream_callback is not None or stream_event_callback is not None)
+                ),
                 stream_cb=stream_callback,
+                stream_event_cb=stream_event_callback,
                 extra=params,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
@@ -246,20 +316,38 @@ class ChatModel:
             )
 
             req.extra["tool_manager"] = self.tool_manager
+            # UI context inspection must identify this exact request even when
+            # finetune collection is disabled or several Mitas answer at once.
+            req.extra["context_snapshot_id"] = f"ctx_{uuid.uuid4().hex}"
             req.extra["http_timeout_seconds"] = float(request_timeout)
             if preset_settings.protocol_id == "openrouter_default":
                 routing = normalize_openrouter_routing(preset_settings.openrouter_routing)
                 if routing:
                     req.extra["openrouter_routing"] = routing
+                req.extra["openrouter_tail_system_to_user"] = bool(
+                    (preset_settings.openrouter_routing or {}).get("tail_system_to_user", True)
+                )
                 session_id = build_openrouter_session_id(
-                    getattr(getattr(self, "current_character", None), "char_id", "") or "",
-                    getattr(getattr(self, "current_character", None), "name", "") or "",
+                    str(context_character_id or ""),
+                    str(context_character_name or ""),
                 )
                 if session_id:
                     req.extra["openrouter_session_id"] = session_id
             _last_req[0] = req
-            _char = getattr(self, "current_character", None)
-            _save_last_request_context(req, character_name=getattr(_char, "name", "") or "")
+            _char = None
+            # The Sandbox context viewer is a normal user-facing diagnostic,
+            # not a debug-only feature. Its fallback file must therefore be
+            # captured for every request.
+            try:
+                # This is executed on a generation worker, not the UI thread.
+                # Save synchronously so a response cannot race ahead and replace
+                # the immutable request snapshot before it is written.
+                _save_last_request_context(
+                    req,
+                    character_name=str(context_character_name or ""),
+                )
+            except Exception:
+                pass
             return req
 
         try:
@@ -271,35 +359,44 @@ class ChatModel:
                 max_attempts=max_attempts,
                 retry_delay=retry_delay,
                 request_timeout=request_timeout,
+                suppress_failure_events=suppress_failure_events,
+                trace_id=trace_id,
+                cancellation=cancellation,
             )
+        except OperationCancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Runner failed unexpectedly: {e}", exc_info=True)
+            logger.error(f"Runner failed unexpectedly: {format_exception(e)}", exc_info=True)
+            self.last_error = None
             return None, False
 
+        self.last_error = self.request_runner.last_error
+
         if response_text and _last_req[0]:
+            if not isinstance(response_text.raw, dict):
+                response_text.raw = {}
+            response_text.raw["context_snapshot_id"] = str(
+                (_last_req[0].extra or {}).get("context_snapshot_id") or ""
+            )
             try:
                 from managers.finetune_collector import FineTuneCollector
                 fc = FineTuneCollector.instance
                 if fc and fc.is_enabled():
-                    char = self.current_character
-                    game_connected = False
-                    try:
-                        from core.events import Events
-                        res = self.event_bus.emit_and_wait(
-                            Events.Server.GET_GAME_CONNECTION, timeout=0.3
-                        )
-                        game_connected = bool(res[0]) if res else False
-                    except Exception:
-                        game_connected = False
-                    fc.save_sample(
+                    game_connected = bool(use(GameLinkService).is_connected())
+                    sample_id = fc.save_sample(
                         req=_last_req[0],
                         response_text=response_text.text,
-                        character_id=char.char_id if char else "unknown",
-                        character_name=char.name if char else "unknown",
+                        character_id=str(context_character_id or "unknown"),
+                        character_name=str(context_character_name or "unknown"),
                         game_connected=game_connected,
+                        usage=response_text.usage,
                     )
+                    if sample_id:
+                        if not isinstance(response_text.raw, dict):
+                            response_text.raw = {}
+                        response_text.raw["finetune_sample_id"] = sample_id
             except Exception as _ft_err:
-                logger.debug(f"[FinetuneCollector] save_sample skipped: {_ft_err}")
+                logger.debug(f"[FinetuneCollector] save_sample skipped: {format_exception(_ft_err)}")
 
         if response_text:
             raw_response_text = response_text.text or ""
@@ -307,12 +404,15 @@ class ChatModel:
             if cleaned_response:
                 response_text.text = cleaned_response
                 if _last_req[0]:
-                    _save_last_response_context(
-                        _last_req[0],
-                        response_text,
-                        raw_response_text=raw_response_text,
-                        cleaned_response_text=cleaned_response,
-                    )
+                    try:
+                        _save_last_response_context(
+                            _last_req[0],
+                            response_text,
+                            raw_response_text=raw_response_text,
+                            cleaned_response_text=cleaned_response,
+                        )
+                    except Exception:
+                        pass
                 return response_text, True
             logger.warning("Response became empty after cleaning.")
             response_text.text = None
@@ -320,6 +420,14 @@ class ChatModel:
             return response_text, False
 
         return response_text, False
+
+    def get_last_error_message(self) -> str:
+        if self.last_error:
+            try:
+                return self.last_error.to_user_message()
+            except Exception:
+                return str(self.last_error)
+        return _("Не удалось получить ответ.", "Failed to get a response.")
 
     def _log_generation_start(self, preset_id: Optional[int] = None):
         logger.info("Preparing to generate LLM response.")
@@ -332,7 +440,7 @@ class ChatModel:
         logger.info(
             f"Presence Penalty: {self.cfg.presence_penalty} (Used: {bool(self.settings.get('USE_MODEL_PRESENCE_PENALTY'))})"
         )
-        logger.info(f"API URL: {preset_settings.api_url}, API Model: {preset_settings.api_model}")
+        logger.info(f"API URL: {mask_sensitive(preset_settings.api_url)}, API Model: {preset_settings.api_model}")
 
     def try_print_error(self, completion_or_error):
         logger.warning("Attempting to print error details from API response/error object.")

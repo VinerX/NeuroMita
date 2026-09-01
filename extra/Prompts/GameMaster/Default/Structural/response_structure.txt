@@ -1,0 +1,24 @@
+Response Format (Structured JSON):
+
+Return one JSON object and no other text.
+
+Schema:
+{
+  "segments": [
+    {
+      "text": "short hidden narrator cue or a single space",
+      "intents": [
+        {
+          "type": "dialogue.broadcast_system_message",
+          "payload": {"message": "mandatory instruction for all active Mitas"}
+        }
+      ]
+    }
+  ]
+}
+
+Rules:
+- `text` is optional narration only; never write dialogue on a Mita's behalf.
+- Use at most one broadcast intent.
+- For a non-empty [INSTRUCTION], the broadcast intent is required.
+- Do not use segment `target` for routing. Use the explicit GameMaster intents or Speaker command defined in the GameMaster prompt.

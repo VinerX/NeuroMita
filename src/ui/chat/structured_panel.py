@@ -75,6 +75,7 @@ class SegmentCard(QFrame):
         ("music",          "music",       "\U0001f3b5"),
         ("interactions",   "interact",    "\U0001f91d"),
         ("face_params",    "face",        "\U0001f60a"),
+        ("intents",        "intent",     "\U0001f9e0"),
     ]
     SCALAR_FIELDS = [("start_game", "start_game"), ("end_game", "end_game"), ("target", "target"), ("hint", "hint")]
 
@@ -101,7 +102,20 @@ class SegmentCard(QFrame):
         for field_key, display_label, emoji in self.FIELDS:
             vals = segment_data.get(field_key) or []
             if vals:
-                line = QLabel(f"{emoji} {display_label}: {', '.join(str(v) for v in vals)}", self)
+                if field_key == "intents":
+                    values = []
+                    for intent in vals:
+                        if isinstance(intent, dict):
+                            intent_type = str(intent.get("type") or "?")
+                            payload = intent.get("payload") or {}
+                            values.append(
+                                f"{intent_type} {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+                            )
+                        else:
+                            values.append(str(intent))
+                else:
+                    values = [str(v) for v in vals]
+                line = QLabel(f"{emoji} {display_label}: {', '.join(values)}", self)
                 line.setWordWrap(True)
                 line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 line.setStyleSheet(f"color: {CLR_FIELD_LABEL}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")

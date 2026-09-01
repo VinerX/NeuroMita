@@ -1,30 +1,51 @@
 # src/controllers/model_controller.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
-from managers.rag.rag_manager import RAGManager
 import base64
+import dataclasses
 import json
 import datetime
 import re
 import copy
+import threading
 from typing import Optional, Any
-import base64
 
 from handlers.chat_handler import ChatModel
-from utils import _
-from core.events import get_event_bus, Events, Event
+from utils import _, redact_image_payloads
+from core.character_locks import character_generation_lock, character_lock
+from core.cancellation import OperationCancelledError
+from core.events import Event, EventDelivery, Events, get_event_bus
+from core.executors import Pools, executors
+from core.services import services, use
 from main_logger import logger
+from services.contracts import (
+    CharacterRegistry,
+    ChatGenerationRequest,
+    ChatGenerationResult,
+    GenerationService,
+    ModelStateService,
+    PromptBuildRequest,
+    PromptBuilderService,
+    UtilityGenerationRequest,
+    UtilityGenerationResult,
+    SettingsService,
+    parse_dialogue_turn_context,
+)
 
 from managers.api_preset_resolver import ApiPresetResolver
 from managers.game_state_manager import GameState
 from managers.context_counter import ContextCounter
 from managers.conversation_event_writer import ConversationEventWriter
 from managers.history_ui_projector import HistoryUiProjector
-from managers.model_pricing_manager import ModelPricingManager
+from managers.model_pricing_manager import ModelPricingManager, known_model_context_length
 from core.request_policy import RequestPolicy, resolve_policy
+from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
+from services.runtime_capabilities import runtime_capabilities
+from domain.world_character_relations import get_world_context_text
 from utils.structured_response_parser import (
-    parse_structured_response,
+    parse_structured_response_with_meta,
     structured_response_to_result_dict,
     StructuredResponseParseError,
 )
@@ -38,7 +59,6 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
-
 
 def _render_tools_for_prompt(schema: list) -> str:
     """Format tool JSON schema list into a human-readable prompt block."""
@@ -75,21 +95,25 @@ def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
     return clean, json_str
 
 
-class ModelController:
+class ModelController(GenerationService, ModelStateService):
     """
     ModelController:
-    - генерирует ответы (Events.Model.GENERATE_RESPONSE)
+    - реализует GenerationService (generate_chat / generate_utility)
     - хранит game_state + temporary system infos
     - занимается UI-пейджингом истории (LOAD_HISTORY/LOAD_MORE_HISTORY)
     - считает токены/стоимость
 
     Персонажи:
     - НЕ создаются здесь
-    - берутся через Events.Character.* (единый источник истины)
+    - берутся через CharacterRegistry (единый источник истины)
     """
 
     def __init__(self, settings):
         self.settings = settings
+        self._settings_service = use(SettingsService)
+        self._settings_subscription = self._settings_service.subscribe(
+            self._on_setting_changed
+        )
         self.event_bus = get_event_bus()
 
         # UI history paging
@@ -97,6 +121,7 @@ class ModelController:
         self.total_messages_in_history = 0
         self.loaded_messages_offset = 0
         self.loading_more_history = False
+        self._history_character_id = ""
 
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
         self.model = ChatModel(settings)
@@ -112,7 +137,8 @@ class ModelController:
         self._last_token_stats: dict[str, Any] = {}
 
         self.game_state = GameState()
-        self._temporary_system_infos: list[dict] = []
+        self._temporary_system_infos: dict[str, list[dict]] = {}
+        self._temporary_system_infos_lock = threading.Lock()
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
         self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
@@ -122,83 +148,52 @@ class ModelController:
 
         self._refresh_chat_model_character_refs()
 
+        services().register(GenerationService, self, replace=True)
         self._subscribe_to_events()
 
     # ---------------------------------------------------------------------
-    # Character resolution via Events.Character.*
+    # Character resolution via CharacterRegistry
     # ---------------------------------------------------------------------
 
+    @property
+    def _characters(self) -> CharacterRegistry:
+        return use(CharacterRegistry)
+
     def _get_current_character_id(self) -> Optional[str]:
-        res = self.event_bus.emit_and_wait(Events.Character.GET_CURRENT_PROFILE, timeout=1.0)
-        profile = res[0] if res else None
-        if not isinstance(profile, dict):
-            return None
-        cid = profile.get("character_id")
-        return str(cid) if cid else None
+        return self._characters.current_id() or None
 
     def _get_character_ref(self, character_id: str):
-        if not character_id:
-            return None
-        res = self.event_bus.emit_and_wait(
-            Events.Character.GET,
-            {"character_id": str(character_id)},
-            timeout=1.0
-        )
-        return res[0] if res else None
+        return self._characters.get(str(character_id)) if character_id else None
 
     def _get_current_character_ref(self):
-        cid = self._get_current_character_id()
-        if not cid:
-            return None
-        return self._get_character_ref(cid)
+        return self._characters.current()
 
     def _refresh_chat_model_character_refs(self):
-        """
-        Заполняем ссылки в ChatModel для обратной совместимости.
-        Вся логика построена через Events.Character.* (никаких DI).
-        """
-        current = self._get_current_character_ref()
+        """Refresh only the active runtime; do not materialize every character."""
+        current = self._characters.current()
         self.model.current_character = current
-
-        # Попытаемся собрать registry персонажей (только если нужно)
-        chars_map = {}
-        all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        all_ids = all_ids_res[0] if all_ids_res else None
-        if isinstance(all_ids, list):
-            for cid in all_ids:
-                try:
-                    ch = self._get_character_ref(str(cid))
-                    if ch is not None and hasattr(ch, "char_id"):
-                        chars_map[ch.char_id] = ch
-                except Exception:
-                    continue
-
-        self.model.characters = chars_map
-        self.model.GameMaster = chars_map.get("GameMaster")
+        if current is not None and hasattr(current, "char_id"):
+            self.model.characters = {str(current.char_id): current}
+            self.model.GameMaster = current if str(current.char_id) == "GameMaster" else None
+        else:
+            self.model.characters = {}
+            self.model.GameMaster = None
 
     # ---------------------------------------------------------------------
     # Subscriptions
     # ---------------------------------------------------------------------
 
     def _subscribe_to_events(self):
-        self.event_bus.subscribe(Events.Core.SETTING_CHANGED, self._on_setting_changed, weak=False)
-
         self.event_bus.subscribe(Events.Character.CURRENT_CHANGED, self._on_character_current_changed, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_GAME_STATE, self._on_get_game_state, weak=False)
         self.event_bus.subscribe(Events.Server.SET_GAME_DATA, self._on_set_game_data, weak=False)
         self.event_bus.subscribe(Events.Model.ADD_TEMPORARY_SYSTEM_INFO, self._on_add_temporary_system_info, weak=False)
         self.event_bus.subscribe(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, self._on_peek_temporary_system_infos, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GENERATE_RESPONSE, self._on_generate_response, weak=False)
-
         self.event_bus.subscribe(Events.Model.LOAD_HISTORY, self._on_load_history, weak=False)
         self.event_bus.subscribe(Events.Model.LOAD_MORE_HISTORY, self._on_load_more_history, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_DEBUG_INFO, self._on_get_debug_info, weak=False)
 
-        self.event_bus.subscribe(Events.Model.GET_CURRENT_CONTEXT_TOKENS, self._on_get_current_context_tokens, weak=False)
         self.event_bus.subscribe(Events.Model.CALCULATE_COST, self._on_calculate_cost, weak=False)
-        self.event_bus.subscribe(Events.Model.GET_TOKEN_STATS, self._on_get_token_stats, weak=False)
 
         self.event_bus.subscribe(Events.Model.RELOAD_PROMPTS_ASYNC, self._on_reload_prompts_async, weak=False)
 
@@ -206,9 +201,9 @@ class ModelController:
     # Model settings
     # ---------------------------------------------------------------------
 
-    def _on_setting_changed(self, event: Event):
-        key = (event.data or {}).get("key")
-        value = (event.data or {}).get("value")
+    def _on_setting_changed(self, change):
+        key = change.key
+        value = change.value
 
         if key == "CHARACTER":
             self.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": str(value or "")})
@@ -218,6 +213,14 @@ class ModelController:
 
         if hasattr(self.model, "cfg") and self.model.cfg:
             self.model.cfg.apply_setting(key, value)
+
+    def shutdown(self) -> None:
+        subscription = self._settings_subscription
+        self._settings_subscription = None
+        if subscription is not None:
+            subscription.close()
+        self.model_pricing_manager.close()
+        self.model.close()
 
     def _on_character_current_changed(self, event: Event):
         self._refresh_chat_model_character_refs()
@@ -231,17 +234,65 @@ class ModelController:
         self.game_state.update_from_event_data(event.data or {})
 
     def _on_add_temporary_system_info(self, event: Event):
-        content = (event.data or {}).get("content", "")
+        data = event.data or {}
+        content = data.get("content", "")
         if not content:
             return False
-        self._temporary_system_infos.append({"role": "system", "content": str(content)})
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        if not character_id:
+            return False
+        with self._temporary_system_infos_lock:
+            self._temporary_system_infos.setdefault(character_id, []).append(
+                {"role": "system", "content": str(content)}
+            )
         return True
 
     def _on_peek_temporary_system_infos(self, event: Event):
-        return list(self._temporary_system_infos)
+        data = event.data or {}
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        with self._temporary_system_infos_lock:
+            return list(self._temporary_system_infos.get(character_id, ()))
+
+    def _consume_temporary_system_infos(self, character_id: str, reserved: list[dict]) -> None:
+        if not character_id or not reserved:
+            return
+        with self._temporary_system_infos_lock:
+            current = list(self._temporary_system_infos.get(character_id, ()))
+            if not current:
+                return
+            for used in reserved:
+                for index, candidate in enumerate(current):
+                    if candidate is used or candidate == used:
+                        current.pop(index)
+                        break
+            if current:
+                self._temporary_system_infos[character_id] = current
+            else:
+                self._temporary_system_infos.pop(character_id, None)
 
     def _on_get_game_state(self, event: Event):
         return self.game_state.to_prompt_dict()
+
+    def _remote_only_structured_segment_fields(self) -> list[str]:
+        capabilities = runtime_capabilities(settings=self.settings)
+        return list(capabilities.structured_segment_exclude_fields)
+
+    @staticmethod
+    def _sanitize_structured_segment_fields(structured, capabilities: dict) -> None:
+        excluded = {
+            str(name).strip()
+            for name in (capabilities or {}).get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        if not excluded:
+            return
+
+        for segment in getattr(structured, "segments", ()) or ():
+            for field_name in excluded:
+                if not hasattr(segment, field_name):
+                    continue
+                current = getattr(segment, field_name, None)
+                setattr(segment, field_name, [] if isinstance(current, list) else None)
 
     def _summarize_image_data_for_capture(self, image_data: Any) -> dict[str, Any]:
         items = image_data if isinstance(image_data, list) else []
@@ -278,13 +329,11 @@ class ModelController:
     def _capture_generation_input(
         self,
         *,
-        raw_event_data: dict,
+        request: ChatGenerationRequest,
         char_id: str,
         char_name: str,
-        event_type: str,
-        preset_id_override: Any,
         policy: RequestPolicy,
-        build_prompt_payload: dict,
+        prompt_request: PromptBuildRequest,
         original_image_data: Any,
         image_data_after_processing: Any,
         image_descriptions: dict[str, str] | None,
@@ -299,34 +348,56 @@ class ModelController:
             if not collector.is_enabled():
                 return
 
-            incoming_event = copy.deepcopy(raw_event_data or {})
-            if "stream_callback" in incoming_event:
-                incoming_event["stream_callback"] = "<omitted>"
-
-            build_prompt_copy = {
-                key: copy.deepcopy(value)
-                for key, value in (build_prompt_payload or {}).items()
-                if key != "character_ref"
+            incoming = {
+                "user_input": request.user_input,
+                "system_input": request.system_input,
+                "image_source": request.image_source,
+                "event_type": request.event_type,
+                "sender": request.sender,
+                "participants": list(request.participants or []),
+                "req_id": request.req_id,
+                "origin_message_id": request.origin_message_id,
+                "task_uid": request.task_uid,
+                "streaming": (
+                    request.stream_callback is not None
+                    or request.stream_event_callback is not None
+                ),
             }
-            build_prompt_copy["image_data"] = self._summarize_image_data_for_capture(
-                build_prompt_copy.get("image_data")
-            )
+
+            prompt_snapshot = {
+                "event_type": prompt_request.event_type,
+                "user_input": prompt_request.user_input,
+                "system_input": prompt_request.system_input,
+                "rag_context": prompt_request.rag_context,
+                "core_memory_context": prompt_request.core_memory_context,
+                "hidden_user_context": prompt_request.hidden_user_context,
+                "memory_limit": prompt_request.memory_limit,
+                "is_game_master": prompt_request.is_game_master,
+                "save_missed_history": prompt_request.save_missed_history,
+                "separate_prompts": prompt_request.separate_prompts,
+                "image_quality": copy.deepcopy(prompt_request.image_quality),
+                "extra_system_infos": copy.deepcopy(prompt_request.extra_system_infos),
+                "game_state": copy.deepcopy(prompt_request.game_state),
+                "sender": prompt_request.sender,
+                "participants": list(prompt_request.participants or []),
+                "capabilities": copy.deepcopy(prompt_request.capabilities),
+                "image_data": self._summarize_image_data_for_capture(prompt_request.image_data),
+            }
 
             record = {
                 "character_id": char_id,
                 "character_name": char_name,
-                "event_type": event_type,
-                "preset_id_override": preset_id_override,
+                "event_type": request.event_type,
                 "policy": policy.to_dict(),
-                "incoming_event": incoming_event,
+                "incoming_event": incoming,
                 "original_image_data": self._summarize_image_data_for_capture(original_image_data),
                 "processed_image_data": self._summarize_image_data_for_capture(image_data_after_processing),
                 "image_descriptions": copy.deepcopy(image_descriptions or {}),
-                "build_prompt_payload": build_prompt_copy,
+                "build_prompt_payload": prompt_snapshot,
             }
             collector.save_capture(record)
         except Exception as e:
-            logger.warning(f"[ModelController] Failed to capture generation input: {e}")
+            logger.warning(f"[ModelController] Failed to capture generation input: {format_exception(e)}")
 
     # ---------------------------------------------------------------------
     # History UI
@@ -337,7 +408,7 @@ class ModelController:
             return None
         cid = data.get("character_id") or data.get("char_id") or data.get("character")
         return str(cid) if cid else None
-    
+
     def _normalize_participants(self, participants: Any) -> list[str]:
         if not participants:
             return []
@@ -346,9 +417,7 @@ class ModelController:
         if not isinstance(participants, list):
             return []
 
-        all_ids_res = self.event_bus.emit_and_wait(Events.Character.GET_ALL, timeout=1.0)
-        all_ids = all_ids_res[0] if all_ids_res and isinstance(all_ids_res[0], list) else []
-        id_set = set(str(x) for x in all_ids)
+        id_set = set(str(x) for x in self._characters.all_ids())
 
         out: list[str] = []
         seen = set()
@@ -406,7 +475,7 @@ class ModelController:
 
         except Exception as e:
             logger.warning(
-                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {e}",
+                f"[ModelController] append_history_message failed for {getattr(ch_ref, 'char_id', '?')}: {format_exception(e)}",
                 exc_info=True)
             return False
 
@@ -549,8 +618,16 @@ class ModelController:
         sender = _norm_actor(sender_raw or speaker_raw)
         target = _norm_actor(target_raw)
 
-        # IMPORTANT: приоритет Player/role=user (как просили)
-        is_player_msg = (raw_role == "user") or _is_player(speaker) or _is_player(sender)
+        # role=user в локальной истории миты может означать не только Player,
+        # но и реплику другой миты. В UI это нельзя безусловно превращать в Player.
+        has_explicit_non_player_actor = any(
+            actor and not _is_player(actor) for actor in (speaker, sender)
+        )
+        is_player_msg = (
+            ((raw_role == "user") and not has_explicit_non_player_actor)
+            or _is_player(speaker)
+            or _is_player(sender)
+        )
 
         if raw_role == "system":
             ui_role = "system"
@@ -590,121 +667,152 @@ class ModelController:
 
         return mm
 
+    def _publish_history_commit(self, write_result, *, character_id: str) -> None:
+        if write_result is None:
+            return
+        message_ids = [
+            str(getattr(write_result, "user_message_id", "") or ""),
+            str(getattr(write_result, "assistant_message_id", "") or ""),
+        ]
+        message_ids = [message_id for message_id in message_ids if message_id]
+        if not message_ids:
+            return
+        committed = tuple(getattr(write_result, "committed_recipient_ids", ()) or ())
+        if not committed:
+            return
+        self.event_bus.emit(Events.History.MESSAGES_COMMITTED, {
+            "message_ids": message_ids,
+            "character_ids": list(committed),
+            "character_id": str(character_id or ""),
+        })
+
     def _on_load_history(self, event: Event):
-        """
-        Загрузка первой страницы истории (самые свежие сообщения).
-        """
+        """Load the newest history page for the character captured by the UI request."""
+        payload = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        request_id = str(payload.get("request_id") or "")
+        requested_character_id = str(payload.get("character_id") or "").strip()
+
         self.loaded_messages_offset = 0
         self.total_messages_in_history = 0
         self.loading_more_history = False
 
-        ch = self._get_current_character_ref()
+        ch = (
+            self._get_character_ref(requested_character_id)
+            if requested_character_id
+            else self._get_current_character_ref()
+        )
+        character_id = str(getattr(ch, "char_id", "") or requested_character_id) if ch else requested_character_id
+        self._history_character_id = character_id
+        response_base = {
+            "request_id": request_id,
+            "character_id": character_id,
+        }
+
         if not ch:
-            self.event_bus.emit("history_loaded", {"messages": [], "total_messages": 0, "loaded_offset": 0})
+            self.event_bus.emit("history_loaded", {
+                **response_base,
+                "messages": [],
+                "total_messages": 0,
+                "loaded_offset": 0,
+            })
             return
 
-        # [ИСПРАВЛЕНО] Оптимизация SQL
         hm = getattr(ch, "history_manager", None)
-
-        # Проверяем, поддерживает ли HM новые методы пагинации
         if hm and hasattr(hm, "get_total_messages_count") and hasattr(hm, "get_recent_messages"):
             self.total_messages_in_history = hm.get_total_messages_count()
-
-            # Загружаем только последние N сообщений
-            # Offset 0 = самые последние
             raw_messages = hm.get_recent_messages(limit=self.lazy_load_batch_size, offset=0)
-
             self.loaded_messages_offset = len(raw_messages)
-
-            # Проекция для UI (цвета, мета-теги)
             prepared = self.ui_projector.project_for_ui(raw_messages)
-            if isinstance(prepared, list):
-                prepared = [
-                    self._fix_projected_ui_message(r, m)
-                    for r, m in zip(raw_messages, prepared)
-                ]
-
             self.event_bus.emit("history_loaded", {
+                **response_base,
                 "messages": prepared,
                 "total_messages": self.total_messages_in_history,
-                "loaded_offset": self.loaded_messages_offset
+                "loaded_offset": self.loaded_messages_offset,
             })
-        else:
-            # Fallback (Старый метод: грузим всё)
-            chat_history = ch.load_history()
-            all_messages = chat_history.get("messages", []) or []
-            self.total_messages_in_history = len(all_messages)
+            return
 
-            prepared_all = self.ui_projector.project_for_ui(all_messages)
-            if isinstance(prepared_all, list):
-                prepared_all = [
-                    self._fix_projected_ui_message(r, m)
-                    for r, m in zip(all_messages, prepared_all)
-                ]
-            # Берем хвост списка
-            max_display = self.lazy_load_batch_size
-            start_index = max(0, self.total_messages_in_history - max_display)
-            messages_to_load = prepared_all[start_index:]
-
-            self.loaded_messages_offset = len(messages_to_load)
-
-            self.event_bus.emit("history_loaded", {
-                "messages": messages_to_load,
-                "total_messages": self.total_messages_in_history,
-                "loaded_offset": self.loaded_messages_offset
-            })
+        chat_history = ch.load_history()
+        all_messages = chat_history.get("messages", []) or []
+        self.total_messages_in_history = len(all_messages)
+        prepared_all = self.ui_projector.project_for_ui(all_messages)
+        max_display = self.lazy_load_batch_size
+        messages_to_load = prepared_all[-max_display:] if max_display > 0 else []
+        self.loaded_messages_offset = len(messages_to_load)
+        self.event_bus.emit("history_loaded", {
+            **response_base,
+            "messages": messages_to_load,
+            "total_messages": self.total_messages_in_history,
+            "loaded_offset": self.loaded_messages_offset,
+        })
 
     def _on_load_more_history(self, event: Event):
-        """
-        Подгрузка старых сообщений при скролле вверх.
-        """
+        """Load an older page for the same character as the active history projection."""
+        payload = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        requested_character_id = str(payload.get("character_id") or self._history_character_id or "").strip()
         if self.loaded_messages_offset >= self.total_messages_in_history:
             return
 
         self.loading_more_history = True
         try:
-            ch = self._get_current_character_ref()
-            if not ch: return
+            ch = (
+                self._get_character_ref(requested_character_id)
+                if requested_character_id
+                else self._get_current_character_ref()
+            )
+            if not ch:
+                return
+            character_id = str(getattr(ch, "char_id", "") or requested_character_id)
+            if self._history_character_id and character_id.casefold() != self._history_character_id.casefold():
+                return
 
             hm = getattr(ch, "history_manager", None)
-
-            # [ИСПРАВЛЕНО] Оптимизация SQL
             if hm and hasattr(hm, "get_recent_messages"):
-                # offset равен текущему количеству загруженных (мы идем от конца вглубь)
                 raw_messages = hm.get_recent_messages(
                     limit=self.lazy_load_batch_size,
-                    offset=self.loaded_messages_offset
+                    offset=self.loaded_messages_offset,
                 )
-
                 if raw_messages:
                     self.loaded_messages_offset += len(raw_messages)
                     prepared = self.ui_projector.project_for_ui(raw_messages)
-
                     self.event_bus.emit("more_history_loaded", {
                         "messages": prepared,
-                        "loaded_offset": self.loaded_messages_offset
+                        "loaded_offset": self.loaded_messages_offset,
+                        "character_id": character_id,
                     })
-            else:
-                # Fallback
-                chat_history = ch.load_history()
-                all_messages = chat_history.get("messages", []) or []
-                self.total_messages_in_history = len(all_messages)  # Обновляем на всякий случай
+                return
 
-                prepared_all = self.ui_projector.project_for_ui(all_messages)
-
-                end_index = self.total_messages_in_history - self.loaded_messages_offset
-                start_index = max(0, end_index - self.lazy_load_batch_size)
-
-                messages_to_prepend = prepared_all[start_index:end_index]
-
-                if messages_to_prepend:
-                    self.loaded_messages_offset += len(messages_to_prepend)
-                    self.event_bus.emit("more_history_loaded", {
-                        "messages": messages_to_prepend,
-                        "loaded_offset": self.loaded_messages_offset
-                    })
+            chat_history = ch.load_history()
+            all_messages = chat_history.get("messages", []) or []
+            self.total_messages_in_history = len(all_messages)
+            prepared_all = self.ui_projector.project_for_ui(all_messages)
+            end_index = self.total_messages_in_history - self.loaded_messages_offset
+            start_index = max(0, end_index - self.lazy_load_batch_size)
+            messages_to_prepend = prepared_all[start_index:end_index]
+            if messages_to_prepend:
+                self.loaded_messages_offset += len(messages_to_prepend)
+                self.event_bus.emit("more_history_loaded", {
+                    "messages": messages_to_prepend,
+                    "loaded_offset": self.loaded_messages_offset,
+                    "character_id": character_id,
+                })
         finally:
             self.loading_more_history = False
+
+    def debug_info(self, character_id: str | None = None) -> str:
+        ch = self._get_character_ref(character_id) if character_id else self._get_current_character_ref()
+        if ch and hasattr(ch, "current_variables_string"):
+            return ch.current_variables_string()
+        return "Debug info not available"
+
+    def token_stats(self) -> dict[str, Any]:
+        return self._build_token_stats()
+
+    def schedule_g4f_update(self, version: str = "latest") -> bool:
+        logger.warning(
+            "g4f automatic installation and update scheduling are disabled; "
+            "an already installed package may still be used"
+        )
+        return False
 
     def _on_get_debug_info(self, event: Event):
         data = event.data or {}
@@ -720,37 +828,109 @@ class ModelController:
     # ---------------------------------------------------------------------
 
     def _cache_base_prompt(self, character_id: str, event_type: str, messages: list[dict]) -> None:
+        """Кэш промпта для подсчёта токенов.
+
+        Раньше здесь был deepcopy всего промпта — вместе с base64-картинками, на
+        каждый ответ. Картинки в кэше не нужны: ContextCounter считает image_url
+        фиксированной ценой, поэтому редакция url не меняет число токенов.
+        """
         if not character_id or not isinstance(messages, list):
             return
 
-        safe = copy.deepcopy(messages)
+        safe = redact_image_payloads(list(messages))
         if safe and isinstance(safe[-1], dict) and safe[-1].get("role") == "user":
             safe = safe[:-1]
 
         self._base_prompt_cache[(character_id, event_type)] = safe
 
-    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
-        def _is_current_label(label: str | None) -> bool:
-            s = str(label or "").strip()
-            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
+    @staticmethod
+    def _is_current_preset_label(label: str | None) -> bool:
+        s = str(label or "").strip()
+        return s in ("", "Current", "Текущий", _("Текущий", "Current"))
 
-        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
-            if label is None or _is_current_label(label):
-                return None
-            s = str(label).strip()
-            try:
-                return int(s)
-            except ValueError:
-                pass
-            try:
-                return self.preset_resolver.resolve_preset_id_by_name(s)
-            except Exception:
-                return None
+    def _preset_id_from_label(self, label: str | None) -> Optional[int]:
+        if label is None or self._is_current_preset_label(label):
+            return None
+        s = str(label).strip()
+        try:
+            return int(s)
+        except ValueError:
+            pass
+        try:
+            return self.preset_resolver.resolve_preset_id_by_name(s)
+        except Exception:
+            return None
 
+    def _char_provider_label(self, character_id: str, character_name: str) -> str:
         label = self.settings.get(f"CHAR_PROVIDER_{character_id}", None)
         if label is None and character_name:
             label = self.settings.get(f"CHAR_PROVIDER_{character_name}", None)
-        return _resolve_label_to_preset_id(label)
+        return str(label if label is not None else "Current")
+
+    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
+        return self._preset_id_from_label(self._char_provider_label(character_id, character_name))
+
+    def _resolve_preset_id(
+        self, event_type: str, policy: RequestPolicy, char_id: str, char_name: str
+    ) -> Optional[int]:
+        if event_type != "react":
+            return self._resolve_chat_preset_id(char_id, char_name)
+
+        lvl = int(getattr(policy, "react_level", None) or 1)
+        default_label = self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))
+        key = "REACT_PROVIDER_L2" if lvl == 2 else "REACT_PROVIDER_L1"
+        label = str(self.settings.get(key, default_label))
+
+        preset_id = self._preset_id_from_label(label)
+        if preset_id is None:
+            preset_id = self._resolve_chat_preset_id(char_id, char_name)
+
+        logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
+        return preset_id
+
+    def _warm_base_prompt(self, cid: str, event_type: str) -> list[dict] | None:
+        """Собрать базовый промпт БЕЗ запроса — чтобы счётчик токенов под чатом
+        показывал контекст ещё до отправки первого сообщения (#1).
+
+        Используем настоящий PromptBuilderService (единый источник сборки), без
+        user_input/rag — это статическая часть окна (система + память + история).
+        RAG и текст сообщения добавятся сверху при реальном запросе. Всё
+        защищено: любая ошибка → None, счётчик просто останется на 0, как раньше.
+        """
+        try:
+            char = self._get_character_ref(cid)
+            if char is None:
+                return None
+            char_name = str(getattr(char, "name", "") or "")
+            policy = resolve_policy(model_event_type=str(event_type))
+            preset_id = self._resolve_chat_preset_id(cid, char_name)
+            capabilities: Dict[str, Any] = {}
+            try:
+                capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
+            except Exception:
+                capabilities = {}
+            cfg = getattr(self.model, "cfg", None)
+            memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
+            prompt_request = PromptBuildRequest(
+                character=char,
+                event_type=event_type,
+                policy=policy,
+                user_input="",
+                memory_limit=memory_limit,
+                is_game_master=(cid == "GameMaster"),
+                separate_prompts=bool(self.settings.get("SEPARATE_PROMPTS", True)),
+                capabilities=capabilities,
+                game_state=self.game_state.to_prompt_dict(),
+            )
+            with character_lock(cid):
+                built = use(PromptBuilderService).build(prompt_request)
+            # НЕ кладём в _base_prompt_cache: тот кэш — авторитетный слепок
+            # реального запроса. Оценку считаем свежей на каждый вызов (пока не
+            # было запроса), чтобы она отражала текущие настройки, а не залипала.
+            return redact_image_payloads(list(getattr(built, "messages", []) or []))
+        except Exception as e:
+            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {format_exception(e)}")
+            return None
 
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
         cid = self._get_current_character_id()
@@ -760,22 +940,19 @@ class ModelController:
         event_type = "chat"
         base = self._base_prompt_cache.get((cid, event_type))
         if not base:
+            # Кэш ещё не прогрет (не было запросов в этой сессии) — собираем
+            # базовый промпт на лету, чтобы счётчик не висел на нуле до отправки.
+            base = self._warm_base_prompt(cid, event_type)
+        if not base:
             return cid, [], 0
 
-        user_input_res = self.event_bus.emit_and_wait(Events.Speech.GET_USER_INPUT, timeout=1.0)
-        user_text = user_input_res[0] if user_input_res else ""
-
-        try:
-            extra_infos_res = self.event_bus.emit_and_wait(Events.Model.PEEK_TEMPORARY_SYSTEM_INFOS, timeout=1.0)
-            extra_infos = extra_infos_res[0] if extra_infos_res and isinstance(extra_infos_res[0], list) else []
-        except Exception:
-            extra_infos = []
-
+        # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
+        # возвращал "", то есть это был поход на шину за пустой строкой.
         messages = list(base)
-        if extra_infos:
-            messages.extend([x for x in extra_infos if isinstance(x, dict)])
+        with self._temporary_system_infos_lock:
+            temporary = list(self._temporary_system_infos.get(cid, ()))
+        messages.extend([x for x in temporary if isinstance(x, dict)])
 
-        messages = self.context_counter.with_user_text(messages, str(user_text or ""))
         return cid, messages, self.context_counter.count_tokens(messages)
 
     def _build_token_stats(self) -> dict[str, Any]:
@@ -786,9 +963,12 @@ class ModelController:
         preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
 
         pricing_info = None
+        model_name = ""
         if cid:
             try:
-                pricing_info = self.model_pricing_manager.resolve_for_preset(self.preset_resolver.resolve(preset_id))
+                resolved_preset = self.preset_resolver.resolve(preset_id)
+                model_name = str(getattr(resolved_preset, "api_model", "") or "")
+                pricing_info = self.model_pricing_manager.resolve_for_preset(resolved_preset)
             except Exception:
                 pricing_info = None
 
@@ -802,13 +982,18 @@ class ModelController:
                 estimated_currency = pricing_info.currency
                 estimated_source = pricing_info.source
 
+        # Ручная оценка в рублях — только если пользователь ЯВНО задал цену за
+        # 1000 токенов (> 0). Иначе (бесплатный тариф/цена неизвестна) не
+        # выдумываем стоимость, а показываем n/a — не врём про рубли.
         if estimated_cost is None and cfg:
             try:
-                estimated_cost = (float(context_tokens) / 1000.0) * float(cfg.token_cost_input)
+                manual_price = float(cfg.token_cost_input)
+            except Exception:
+                manual_price = 0.0
+            if manual_price > 0:
+                estimated_cost = (float(context_tokens) / 1000.0) * manual_price
                 estimated_currency = "RUB"
                 estimated_source = "manual_settings"
-            except Exception:
-                estimated_cost = None
 
         last = dict(self._last_token_stats or {})
         last.setdefault("actual_cost", None)
@@ -822,9 +1007,18 @@ class ModelController:
             max_completion_tokens = pricing_info.max_completion_tokens
         if max_context_tokens is None:
             try:
-                max_context_tokens = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
+                configured = int(self.settings.get("MAX_MODEL_TOKENS", 32000))
             except Exception:
-                max_context_tokens = 32000
+                configured = 32000
+            # Провайдер не сообщил окно (напр. Google AI Studio Gemini). Если
+            # пользователь не менял дефолт (32000), а модель известна — берём её
+            # реальное окно, иначе Gemini/Claude показывались бы как 32k. Явно
+            # выставленное пользователем значение уважаем.
+            if configured == 32000:
+                known = known_model_context_length(model_name)
+                if known:
+                    configured = known
+            max_context_tokens = configured
 
         return {
             "estimated_context_tokens": int(context_tokens or 0),
@@ -961,6 +1155,33 @@ class ModelController:
         think_text = "\n\n".join(think_parts).strip()
         return visible, think_text
 
+    def _resolve_preset_bool(self, preset, override_key: str, setting_key: str, *, default: bool) -> bool:
+        """Булев флаг пресета поверх глобальной настройки.
+
+        Тот же трёхпозиционный контракт, что у enable_thinking: переопределение
+        существует только когда у него взведён enabled, иначе берётся глобальное
+        значение.
+        """
+        overrides = getattr(preset, "generation_overrides", None) or {}
+        spec = overrides.get(override_key) or {}
+        if spec.get("enabled"):
+            return bool(spec.get("value", default))
+        return bool(self.settings.get(setting_key, default))
+
+    def _split_response_thinking(self, llm_response) -> tuple[str, str]:
+        """Собрать размышления из обоих источников сразу.
+
+        Мысли приходят двумя разными путями: текстовыми <think>-тегами внутри
+        ответа (DeepSeek-R1 и прочие) и отдельным каналом провайдера
+        (reasoning_content у LM Studio, thought-части Gemini). Второй в text не
+        попадает вовсе, поэтому его надо забрать из самого ответа.
+        """
+        visible, think_text = self._extract_think_blocks(str(llm_response.text))
+        native = (getattr(llm_response, "reasoning", None) or "").strip()
+        if native:
+            think_text = f"{native}\n\n{think_text}" if think_text else native
+        return visible, think_text
+
     def _extract_image_description(self, text: str) -> tuple[str, str | None]:
         """
         Extracts <image_description>...</image_description> block from text.
@@ -978,42 +1199,93 @@ class ModelController:
         clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
         return clean, description
 
-    def _on_generate_response(self, event: Event):
-        data = event.data or {}
-        try:
-            original_event_data = copy.deepcopy(data)
-        except Exception:
-            original_event_data = dict(data)
+    # ---------------------------------------------------------------------
+    # GenerationService: служебная одноразовая генерация
+    # ---------------------------------------------------------------------
 
-        user_input = data.get("user_input", "") or ""
-        visible_user_input = user_input
-        system_input = data.get("system_input", "") or ""
-        image_data = data.get("image_data", []) or []
-        image_source = str(data.get("image_source") or "").strip().lower()
-        stream_callback = data.get("stream_callback", None)
-        event_type = (data.get("event_type") or "chat") or "chat"
+    def generate_utility(self, request: UtilityGenerationRequest) -> UtilityGenerationResult:
+        """Сжатие истории / graph extraction: один запрос, без истории и персонажа.
 
-        sender = str(data.get("sender") or "Player")
-        participants = data.get("participants") or []
+        Ни RAG, ни промпт-сборка, ни запись в историю тут не участвуют.
+        """
+        char_ref = self._get_character_ref(request.character_id)
+        char_name = str(getattr(char_ref, "name", "") or "") or request.character_id or "Мита"
 
-        preset_id_override = data.get("preset_id", None)
-        character_id_override = self._normalize_character_id_from_data(data)
+        # Один user-месседж: запрос из одного лишь system-сообщения часть
+        # провайдеров (в т.ч. маршруты OpenRouter) отклоняет с HTTP 400.
+        messages = [{"role": "user", "content": request.prompt}] if request.prompt else []
 
-        req_id = str(data.get("req_id") or "") or None
-        task_uid = str(data.get("message_id") or "") or None
+        if request.kind == "compress":
+            self.event_bus.emit(Events.Model.ON_COMPRESSION_STARTED, {
+                "character_id": request.character_id,
+                "character_name": char_name,
+            })
 
-        policy_dict = data.get("policy")
-        policy = (
-            RequestPolicy.from_dict(policy_dict)
-            if isinstance(policy_dict, dict)
-            else resolve_policy(model_event_type=str(event_type or "chat"))
+        logger.info(
+            f"[ModelController] {request.kind}: sending {len(messages)} messages, "
+            f"preset_id={request.preset_id}, char='{request.character_id}'"
         )
 
-        char = None
-        if character_id_override:
-            char = self._get_character_ref(str(character_id_override))
+        try:
+            # Обычный текст, а не сегментный JSON Миты: иначе провайдер навяжет
+            # response_format схемы StructuredResponse и сводка вернётся пустой.
+            result = self.model.generate(
+                messages,
+                stream_callback=None,
+                preset_id=request.preset_id,
+                capabilities_override={"structured_output": False},
+                request_options_override={
+                    "max_attempts": request.max_attempts,
+                    "retry_delay": request.retry_delay,
+                    "request_timeout": request.request_timeout,
+                    "suppress_failure_events": True,
+                },
+            )
+            if result and result.text:
+                return UtilityGenerationResult(
+                    ok=True,
+                    text=result.text,
+                    provider=getattr(result, "provider_name", None),
+                )
+
+            logger.warning(f"[ModelController] {request.kind}: model.generate() returned empty/None")
+            last_error = getattr(self.model, "last_error", None)
+            fallback_msg = getattr(result, "error_message", "") if result else ""
+            return UtilityGenerationResult(
+                ok=False,
+                error=(
+                    last_error.to_user_message()
+                    if last_error and hasattr(last_error, "to_user_message")
+                    else fallback_msg
+                ),
+                details=(
+                    last_error.to_console_summary()
+                    if last_error and hasattr(last_error, "to_console_summary")
+                    else fallback_msg
+                ),
+                status_code=getattr(last_error, "status_code", None) if last_error else None,
+                retryable=bool(getattr(last_error, "retryable", False)) if last_error else False,
+                retry_after_sec=getattr(last_error, "retry_after_seconds", None) if last_error else None,
+                provider=getattr(last_error, "provider", None) if last_error else None,
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при {request.kind}: {format_exception(e)}", exc_info=True)
+            return UtilityGenerationResult(ok=False, error=format_exception(e), details=format_exception(e))
+        finally:
+            if request.kind == "compress":
+                self.event_bus.emit(Events.Model.ON_COMPRESSION_FINISHED)
+
+    # ---------------------------------------------------------------------
+    # GenerationService: пользовательская генерация
+    # ---------------------------------------------------------------------
+
+    def generate_chat(self, request: ChatGenerationRequest) -> Optional[ChatGenerationResult]:
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
+        if request.character_id:
+            char = self._get_character_ref(str(request.character_id))
             if char is None:
-                logger.error(f"GENERATE_RESPONSE: неизвестный character_id='{character_id_override}' (нет фолбэка на current).")
+                logger.error(f"generate_chat: неизвестный character_id='{request.character_id}'.")
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                     "error": _("Неизвестный персонаж.", "Unknown character.")
                 })
@@ -1028,50 +1300,94 @@ class ModelController:
             })
             return None
 
+        # Полные генерации одной Миты идут последовательно, но этот gate не блокирует
+        # короткие state-lock секции фонового summary/переменных во время сетевого I/O.
+        perf_mark(request.trace_id, "generation.character_lock_wait_started")
+        with character_generation_lock(getattr(char, "char_id", "") or ""):
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
+            perf_mark(request.trace_id, "generation.character_lock_acquired")
+            return self._generate_chat_serialized(request, char)
+
+    def _generate_chat_serialized(self, request: ChatGenerationRequest, char) -> Optional[ChatGenerationResult]:
+        if request.dialogue is not None and not hasattr(request.dialogue, "participants"):
+            request.dialogue = parse_dialogue_turn_context(request.dialogue)
+
+        user_input = request.user_input or ""
+        visible_user_input = user_input
+        system_input = request.system_input or ""
+        image_data = list(request.image_data or [])
+        image_source = str(request.image_source or "").strip().lower()
+        stream_callback = request.stream_callback
+        stream_event_callback = request.stream_event_callback
+        event_type = request.event_type or "chat"
+
+        sender = str(request.sender or "Player")
+        participants = list(request.participants or [])
+
+        req_id = request.req_id or None
+        task_uid = request.task_uid or None
+        origin_message_id = request.origin_message_id or None
+        trace_id = request.trace_id or None
+
+        normalized_event_type = str(event_type or "").strip().lower()
+        if normalized_event_type in {"game_master_observe", "game_master_command"}:
+            policy = resolve_policy(model_event_type=normalized_event_type)
+        else:
+            policy = request.policy or resolve_policy(model_event_type=str(event_type))
+
         char_id = getattr(char, "char_id", "") or ""
         char_name = getattr(char, "name", "") or ""
-        preset_id = preset_id_override
+        is_game_master = char_id.casefold() == "gamemaster"
 
-        _rag_skip = event_type in ("compress", "graph_extract") or policy.react_level == 1
-        if bool(self.settings.get("RAG_ENABLED", False)) and not _rag_skip:
+        rag_context = ""
+        core_memory_context_text = ""
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
+        if (
+            not is_game_master
+            and bool(self.settings.get("RAG_ENABLED", False))
+            and policy.react_level != 1
+        ):
             prompt_set_path = getattr(char, "base_data_path", None)
-            system_input = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+            with perf_span(trace_id, "generation.rag"):
+                rag_context = self.process_rag(char_id, system_input, user_input, prompt_set_path=prompt_set_path)
+        if request.cancellation is not None:
+            request.cancellation.raise_if_cancelled()
 
-        if event_type in ("compress", "graph_extract"):
-            messages = []
-            if system_input:
-                if event_type == "graph_extract":
-                    messages.append({"role": "user", "content": system_input})
-                else:
-                    messages.append({"role": "system", "content": system_input})
-
-            preset_id = preset_id_override
-
-            if event_type == "compress":
-                self.event_bus.emit(Events.Model.ON_STARTED_RESPONSE_GENERATION, {
-                    "character_id": char_id,
-                    "character_name": char_name or char_id or "Мита",
-                })
-
-            logger.info(
-                f"[ModelController] {event_type}: sending {len(messages)} messages, "
-                f"preset_id={preset_id}, char='{char_id}'"
-            )
-
+        # Core-memory triggers (e.g. the code 23 easter egg) are exact hooks:
+        # they fire on precise player input, independent of RAG availability or
+        # embedding similarity of a two-digit message.
+        if not is_game_master:
             try:
-                result = self.model.generate(messages, stream_callback=None, preset_id=preset_id)
-                if not result or not result.text:
-                    logger.warning(f"[ModelController] {event_type}: model.generate() returned empty/None")
-                    return None
-                return result.text
-            except Exception as e:
-                logger.error(f"Ошибка при {event_type}: {e}", exc_info=True)
-                return None
+                from managers.core_memory_triggers import core_memory_context
+                core_memory_context_text = core_memory_context(user_input, character_id=char_id)
+            except Exception as _core_err:
+                logger.warning(f"[{char_id}] core-memory trigger check failed (ignored): {format_exception(_core_err)}")
 
-        game_state = self.game_state.to_prompt_dict()
+        game_state = (
+            copy.deepcopy(request.game_state)
+            if request.game_state
+            else self.game_state.to_prompt_dict()
+        )
 
-        extra_system_infos = list(self._temporary_system_infos or [])
-        self._temporary_system_infos.clear()
+        # World lore is character-specific. Resolve it on this request's
+        # private snapshot so concurrent Mita generations cannot leak one
+        # another's interpretation into global GameState or history.
+        character_world = str(
+            game_state.get("worldMita")
+            or game_state.get("worldPlayer")
+            or ""
+        ).strip()
+        character_world_context = get_world_context_text(
+            character_id=char_id,
+            world_id=character_world,
+        )
+        if character_world_context:
+            game_state["character_world_context"] = character_world_context
+
+        with self._temporary_system_infos_lock:
+            extra_system_infos = list(self._temporary_system_infos.get(char_id, ()))
 
         cfg = getattr(self.model, "cfg", None)
 
@@ -1095,10 +1411,14 @@ class ModelController:
         separate_prompts = bool(self.settings.get("SEPARATE_PROMPTS", True))
         save_missed_history = bool(self.settings.get("SAVE_MISSED_HISTORY", True))
         memory_limit = int(_cfg_get("memory_limit", 40))
-        is_game_master = (char_id == "GameMaster")
-        disable_history_compression = bool(data.get("disable_history_compression", False))
+
+        # Пресет резолвим ДО capabilities. Раньше capabilities брались у текущего
+        # пресета, а запрос уходил в пресет персонажа — structured_output мог не
+        # совпадать с тем, что реально поддерживает провайдер.
+        preset_id = self._resolve_preset_id(event_type, policy, char_id, char_name)
 
         effective_capabilities = {}
+        effective_preset = None
         try:
             effective_preset = self.preset_resolver.resolve(preset_id)
             effective_capabilities = dict(getattr(effective_preset, "capabilities", {}) or {})
@@ -1108,9 +1428,20 @@ class ModelController:
                 f"mode={effective_capabilities.get('structured_output_mode', 'json_schema')}"
             )
         except Exception as e:
-            logger.warning(f"[ModelController] Failed to resolve preset capabilities: {e}")
+            logger.warning(f"[ModelController] Failed to resolve preset capabilities: {format_exception(e)}")
 
-        _tools_on = bool(self.settings.get("TOOLS_ON", True))
+        remote_only_segment_fields = self._remote_only_structured_segment_fields()
+        if remote_only_segment_fields:
+            effective_capabilities["structured_segment_exclude_fields"] = remote_only_segment_fields
+
+        if is_game_master:
+            effective_capabilities["structured_output"] = True
+
+        _tools_on = (
+            bool(self.settings.get("TOOLS_ON", True))
+            and not is_game_master
+            and bool(effective_capabilities.get("tools_prompt_enabled", True))
+        )
         _tools_mode = str(self.settings.get("TOOLS_MODE", "native"))
         if _tools_mode == "off":
             _tools_on = False
@@ -1126,15 +1457,33 @@ class ModelController:
                 schema = self.model.tool_manager._filtered_schema(_enabled_tools)
                 effective_capabilities["tools_prompt"] = _render_tools_for_prompt(schema)
             except Exception as e:
-                logger.warning(f"[ModelController] Failed to build tools prompt: {e}")
+                logger.warning(f"[ModelController] Failed to build tools prompt: {format_exception(e)}")
                 _tools_on = False
 
-        _custom_params = getattr(char, "custom_params", [])
+        with character_lock(char_id):
+            _custom_params = copy.deepcopy(getattr(char, "custom_params", []) or [])
         effective_capabilities["has_custom_params"] = bool(_custom_params)
         effective_capabilities["custom_params"] = _custom_params
-        effective_capabilities["schema_reasoning"] = bool(self.settings.get("SCHEMA_REASONING", False))
+        # Схемный CoT — свойство конкретной модели, а не всей программы: локальной
+        # он нужен, чтобы думать вслух, большой хостовой только жжёт токены.
+        effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
+            effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
+        )
 
-        data["capabilities"] = dict(effective_capabilities)
+        # The selected DSL template is the only owner of intent support. The
+        # capability is finalized after PromptController processes the template.
+        effective_capabilities["schema_intents"] = False
+
+        # Пока секрет персонажа не раскрыт, secret_exposed в схеме провайдера
+        # обязателен: опциональное поле constrained decoding молча пропускает,
+        # и модель писала реплику-раскрытие без флага — текст и состояние
+        # расходились. Required + nullable заставляет решать каждый ход.
+        from characters import SecretExposedCharacter
+        if isinstance(char, SecretExposedCharacter):
+            with character_lock(char_id):
+                _secret_open = bool(char.get_variable("secretExposed", False))
+            if not _secret_open:
+                effective_capabilities["structured_required_fields"] = ("secret_exposed",)
 
         # Non-native image fallback: describe images with a vision provider first,
         # then pass text descriptions to the main (non-vision) model instead of images.
@@ -1150,7 +1499,7 @@ class ModelController:
                 "This is what the character is currently seeing with their own eyes, not a player photo, selfie, or drawing. "
                 "Describe the scene strictly from the character's point of view."
             )
-        elif image_source == "mita_camera" or str((data.get("context") or {}).get("image_source") or "").strip().lower() == "mita_camera":
+        elif image_source == "mita_camera":
             _image_context_hint = (
                 "These frames were explicitly marked as coming from the character's own in-game camera. "
                 "This is the character's current visual perception, not a player-uploaded image, selfie, or drawing. "
@@ -1198,13 +1547,15 @@ class ModelController:
 
             try:
                 if len(image_data) > 1:
-                    seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
+                    with perf_span(trace_id, "generation.image_description", mode="sequence"):
+                        seq_desc = self.image_description_handler.describe_sequence(image_data, context_hint=_image_context_hint)
                     if seq_desc and not seq_desc.startswith("["):
                         hidden_user_context = f"[Hidden image context]\n{_ctx_preamble_seq}\n[Scene: {seq_desc}]"
                         image_descriptions = {_detail: seq_desc}
                         logger.info(f"[ModelController] Non-native sequence mode: {len(image_data)} frames described as one scene.")
                 else:
-                    descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
+                    with perf_span(trace_id, "generation.image_description", mode="single"):
+                        descriptions = self.image_description_handler.describe(image_data, context_hint=_image_context_hint)
                     if descriptions:
                         desc_text = "\n".join(
                             f"[Image {i + 1}: {d}]" for i, d in enumerate(descriptions)
@@ -1214,108 +1565,78 @@ class ModelController:
                         logger.info(f"[ModelController] Non-native image mode: replaced {len(descriptions)} image(s) with text descriptions.")
                 image_data = []  # don't send images to main model
             except Exception as _desc_exc:
-                logger.warning(f"[ModelController] Image description fallback failed: {_desc_exc}")
+                logger.warning(f"[ModelController] Image description fallback failed: {format_exception(_desc_exc)}")
 
-        build_prompt_payload = {
-            "character_id": char_id,
-            "character_ref": char,
-            "event_type": event_type,
-            "user_input": user_input,
-            "system_input": system_input,
-            "hidden_user_context": hidden_user_context,
-            "image_data": image_data,
-            "memory_limit": memory_limit,
-            "is_game_master": is_game_master,
-            "save_missed_history": save_missed_history,
-            "image_quality": image_quality_cfg,
-            "separate_prompts": separate_prompts,
-            "extra_system_infos": extra_system_infos,
-            "game_state": game_state,
-            "disable_history_compression": disable_history_compression,
-            "sender": sender,
-            "participants": participants,
-            "policy": policy.to_dict(),
-            "capabilities": effective_capabilities,
-        }
+        prompt_request = PromptBuildRequest(
+            character=char,
+            event_type=event_type,
+            policy=policy,
+            user_input=user_input,
+            system_input=system_input,
+            rag_context=rag_context,
+            core_memory_context=core_memory_context_text,
+            hidden_user_context=hidden_user_context,
+            image_data=image_data,
+            memory_limit=memory_limit,
+            is_game_master=is_game_master,
+            save_missed_history=save_missed_history,
+            image_quality=image_quality_cfg,
+            separate_prompts=separate_prompts,
+            extra_system_infos=extra_system_infos,
+            game_state=game_state,
+            sender=sender,
+            participants=participants,
+            capabilities=effective_capabilities,
+            dialogue=request.dialogue,
+            player_message_source=request.player_message_source,
+            previous_player_message_source=request.previous_player_message_source,
+            gm_instruction_override=request.gm_instruction_override,
+        )
         self._capture_generation_input(
-            raw_event_data=original_event_data,
+            request=request,
             char_id=char_id,
             char_name=char_name,
-            event_type=event_type,
-            preset_id_override=preset_id_override,
             policy=policy,
-            build_prompt_payload=build_prompt_payload,
+            prompt_request=prompt_request,
             original_image_data=original_image_data,
             image_data_after_processing=image_data,
             image_descriptions=image_descriptions,
         )
 
         try:
-            prompt_res = self.event_bus.emit_and_wait(
-                Events.Prompt.BUILD_PROMPT,
-                build_prompt_payload,
-                timeout=10.0
-            )
+            with perf_span(trace_id, "generation.prompt_build"):
+                with character_lock(char_id):
+                    prompt_data = use(PromptBuilderService).build(prompt_request)
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
+        except OperationCancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Ошибка при BUILD_PROMPT: {e}", exc_info=True)
+            logger.error(f"Ошибка при сборке промпта: {format_exception(e)}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                 "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
             })
             return None
 
-        if not prompt_res or not isinstance(prompt_res[0], dict):
-            logger.error("BUILD_PROMPT не вернул валидный результат")
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
-            })
-            return None
+        excluded_segment_fields = {
+            str(name).strip()
+            for name in effective_capabilities.get("structured_segment_exclude_fields", ())
+            if str(name).strip()
+        }
+        intents_available = bool(prompt_data.support_intents) and "intents" not in excluded_segment_fields
+        effective_capabilities["schema_intents"] = intents_available
+        if intents_available:
+            excluded_segment_fields.discard("intents")
+        else:
+            excluded_segment_fields.add("intents")
+        effective_capabilities["structured_segment_exclude_fields"] = tuple(
+            sorted(excluded_segment_fields)
+        )
 
-        prompt_data = prompt_res[0]
-        combined_messages = prompt_data.get("messages", []) or []
+        combined_messages = prompt_data.messages
 
         if event_type == "chat":
             self._cache_base_prompt(char_id, "chat", combined_messages)
-
-        preset_id: Optional[int] = None
-
-        def _is_current_label(label: str | None) -> bool:
-            s = str(label or "").strip()
-            return s in ("", "Current", "Текущий", _("Текущий", "Current"))
-
-        def _resolve_label_to_preset_id(label: str | None) -> Optional[int]:
-            if label is None or _is_current_label(label):
-                return None
-            s = str(label).strip()
-            try:
-                return int(s)
-            except ValueError:
-                pass
-            try:
-                return self.preset_resolver.resolve_preset_id_by_name(s)
-            except Exception:
-                return None
-
-        def _get_char_provider_label(cid: str, cname: str) -> str:
-            v = self.settings.get(f"CHAR_PROVIDER_{cid}", None)
-            if v is None and cname:
-                v = self.settings.get(f"CHAR_PROVIDER_{cname}", None)
-            return str(v if v is not None else "Current")
-
-        if event_type == "react":
-            lvl = int(getattr(policy, "react_level", None) or 1)
-
-            if lvl == 2:
-                label = str(self.settings.get("REACT_PROVIDER_L2", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
-            else:
-                label = str(self.settings.get("REACT_PROVIDER_L1", self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))))
-
-            preset_id = _resolve_label_to_preset_id(label)
-            if preset_id is None:
-                preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
-
-            logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
-        else:
-            preset_id = _resolve_label_to_preset_id(_get_char_provider_label(char_id, char_name))
 
         active_pricing = None
         try:
@@ -1343,27 +1664,58 @@ class ModelController:
                 structured_model_cls = None
 
         try:
+            if request.cancellation is not None:
+                request.cancellation.raise_if_cancelled()
             use_stream_cb = stream_callback if policy.allow_streaming else None
-            llm_response = self.model.generate(
-                combined_messages,
-                stream_callback=use_stream_cb,
-                preset_id=preset_id,
-                capabilities_override=effective_capabilities,
-                structured_model=structured_model_cls,
-            )
+            with perf_span(trace_id, "llm.total", streaming=bool(policy.allow_streaming)):
+                llm_response = self.model.generate(
+                    combined_messages,
+                    stream_callback=use_stream_cb,
+                    stream_event_callback=(stream_event_callback if policy.allow_streaming else None),
+                    preset_id=preset_id,
+                    request_id=str(task_uid or req_id or origin_message_id or ""),
+                    capabilities_override=effective_capabilities,
+                    request_options_override={
+                        "trace_id": trace_id,
+                        "cancellation": request.cancellation,
+                    },
+                    structured_model=structured_model_cls,
+                    context_character_id=char_id,
+                    context_character_name=char_name,
+                )
 
             if not llm_response or not llm_response.text:
                 error_message = getattr(llm_response, "error_message", None) or _(
                     "Не удалось получить ответ.",
                     "Text generation failed."
                 )
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": error_message
-                })
-                return None
+                if hasattr(self.model, "get_last_error_message"):
+                    try:
+                        error_message = self.model.get_last_error_message() or error_message
+                    except Exception:
+                        pass
+                error_details = getattr(llm_response, "error_details", None) if llm_response else None
+                provider_error = getattr(self.model, "last_error", None)
+                if error_details is None and provider_error is not None and hasattr(provider_error, "to_payload"):
+                    error_details = provider_error.to_payload()
+                if provider_error is None:
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                        "error": error_message,
+                    })
+                return ChatGenerationResult(
+                    text="",
+                    character_id=char_id,
+                    error=error_message,
+                    error_details=error_details,
+                )
 
             raw_text = llm_response.text
-            visible_raw, think_text = self._extract_think_blocks(str(raw_text))
+            trace = get_trace(trace_id)
+            if trace is not None:
+                trace.set_attribute("provider", llm_response.provider_name or "")
+                trace.set_attribute("model", llm_response.model or "")
+                trace.set_attribute("response_chars", len(raw_text or ""))
+            visible_raw, think_text = self._split_response_thinking(llm_response)
 
             if original_image_data and bool(self.settings.get("IMAGE_INLINE_DESCRIPTION", False)):
                 _detail = str(self.settings.get("IMAGE_DESCRIPTION_DETAIL", "normal") or "normal")
@@ -1377,7 +1729,8 @@ class ModelController:
                     )
 
             if is_structured_output:
-                return self._process_structured_output(
+                sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
+                structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
                     think_text=think_text,
                     usage=llm_response.usage,
@@ -1387,7 +1740,8 @@ class ModelController:
                     char=char,
                     char_id=char_id,
                     char_name=char_name,
-                    data=data,
+                    origin_message_id=origin_message_id,
+                    capabilities=effective_capabilities,
                     policy=policy,
                     sender=sender,
                     participants=participants,
@@ -1396,6 +1750,7 @@ class ModelController:
                     image_source=image_source,
                     req_id=req_id,
                     task_uid=task_uid,
+                    trace_id=trace_id,
                     event_type=event_type,
                     combined_messages=combined_messages,
                     preset_id=preset_id,
@@ -1404,23 +1759,39 @@ class ModelController:
                     tool_depth=0,
                     image_descriptions=image_descriptions,
                     structured_model_cls=structured_model_cls,
+                    sample_id=sample_id,
+                    dialogue=request.dialogue,
                 )
+                if structured_result is not None:
+                    structured_result = dataclasses.replace(
+                        structured_result,
+                        context_snapshot_id=str(
+                            (getattr(llm_response, "raw", {}) or {}).get("context_snapshot_id") or ""
+                        ),
+                    )
+                    self._consume_temporary_system_infos(char_id, extra_system_infos)
+                return structured_result
 
             inline_graph_json: Optional[str] = None
             if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
                 visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
-            processed = char.process_response_nlp_commands(visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False))
-
-            targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    targets = char.consume_pending_targets()
-                except Exception:
-                    targets = []
-            target = targets[-1] if targets else "Player"
-
+            with character_lock(char_id):
+                with perf_span(trace_id, "generation.nlp_postprocess"):
+                    processed = char.process_response_nlp_commands(
+                        visible_raw,
+                        self.settings.get("SAVE_MISSED_MEMORY", False),
+                    )
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             final_text = processed
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
@@ -1438,28 +1809,32 @@ class ModelController:
                 cost_fallback_currency=getattr(active_pricing, "currency", None),
                 cost_fallback_source=getattr(active_pricing, "source", None),
             )
+            sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
 
             assistant_message_id = ""
             if policy.write_to_history:
-                origin_message_id = str(data.get("origin_message_id") or "") or None
-
-                assistant_message_id = self.event_writer.write_turn(
-                    responder_character_id=char_id,
-                    sender=sender,
-                    participants=participants,
-                    user_input=visible_user_input,
-                    image_data=original_image_data,
-                    image_source=image_source,
-                    image_descriptions=image_descriptions,
-                    req_id=req_id,
-                    origin_message_id=origin_message_id,
-                    assistant_text=final_text,
-                    assistant_target=target,
-                    event_type=event_type,
-                    task_uid=task_uid,
-                    thinking=think_text or None,
-                    llm_usage=usage_snapshot,
-                )
+                with perf_span(trace_id, "generation.history_write"):
+                    history_write = self.event_writer.write_turn(
+                        responder_character_id=char_id,
+                        sender=sender,
+                        participants=participants,
+                        user_input=visible_user_input,
+                        image_data=original_image_data,
+                        image_source=image_source,
+                        image_descriptions=image_descriptions,
+                        req_id=req_id,
+                        origin_message_id=origin_message_id,
+                        assistant_text=final_text,
+                        assistant_target="Player",
+                        event_type=event_type,
+                        task_uid=task_uid,
+                        thinking=think_text or None,
+                        llm_usage=usage_snapshot,
+                        sample_id=sample_id,
+                        dialogue=request.dialogue,
+                    )
+                    assistant_message_id = history_write.assistant_message_id
+                    self._publish_history_commit(history_write, character_id=char_id)
 
             self._store_last_usage(
                 llm_response.usage,
@@ -1472,10 +1847,8 @@ class ModelController:
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
 
-            if hasattr(char, "flush_variables"):
-                char.flush_variables()
+            self._consume_temporary_system_infos(char_id, extra_system_infos)
 
-            created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
             self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
                 "character_id": char_id,
                 "character_ref": char,
@@ -1485,26 +1858,23 @@ class ModelController:
                 "inline_graph_json": inline_graph_json,
             })
 
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
+            return ChatGenerationResult(
+                text=final_text,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                think=think_text or None,
+                message_id=assistant_message_id,
+                sample_id=sample_id or "",
+                context_snapshot_id=str(
+                    (getattr(llm_response, "raw", {}) or {}).get("context_snapshot_id") or ""
+                ),
+            )
 
-            return {
-                "text": final_text,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": target,
-                "targets": targets,
-                "think": think_text or None,
-                "message_id": assistant_message_id,
-            }
-
+        except OperationCancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Error during LLM generation/processing: {e}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": str(e)})
+            logger.error(f"Error during LLM generation/processing: {format_exception(e)}", exc_info=True)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": format_exception(e)})
             return None
 
     # Default RAG output templates
@@ -1515,7 +1885,9 @@ class ModelController:
     def process_rag(self, char_id, system_input, user_input, prompt_set_path=None):
         # ---------------------------------------------------------------------
         # RAG выполняется ДО BUILD_PROMPT
-        # результаты кладутся в system prompt
+        # Возвращает готовый RAG-блок отдельным сообщением. Исходный
+        # system_input (событие или служебная инструкция) не изменяется:
+        # актуальная инструкция должна оставаться после справочного контекста.
         # Templates can be customized per prompt set via Structural/ files:
         #   rag_memory_item.txt, rag_history_item.txt, rag_wrapper.txt
         from utils.template_loader import load_optional_template
@@ -1527,7 +1899,9 @@ class ModelController:
             final_input = system_input
         if final_input:
             try:
-                rag = RAGManager(char_id)
+                from managers.rag.rag_manager import RAGManager
+
+                rag = RAGManager.for_character(char_id)
                 rag_limit = int(self.settings.get("RAG_MAX_RESULTS", 8))
                 rag_thr = float(self.settings.get("RAG_SIM_THRESHOLD", 0.4))
                 results = rag.search_relevant(str(final_input), limit=rag_limit, threshold=rag_thr)
@@ -1621,14 +1995,13 @@ class ModelController:
                         if forgotten_count > 0:
                             rag_block += f"\nForgotten pool: {forgotten_count} memories"
 
-                        separator = "\n\n" if system_input else ""
-                        system_input = f"{system_input}{separator}{rag_block}"
                         logger.info(
-                            f"[{char_id}] RAG blocks injected into system_input "
+                            f"[{char_id}] RAG blocks built as separate message "
                             f"(mem={len(mem_lines)}, hist={len(hist_lines)}, graph={len(graph_lines)}).")
+                        return rag_block
             except Exception as e:
-                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {e}", exc_info=True)
-        return system_input
+                logger.warning(f"[{char_id}] Failed to run RAG (ignored): {format_exception(e)}", exc_info=True)
+        return ""
 
     # ---------------------------------------------------------------------
     # Structured Output processing
@@ -1645,7 +2018,8 @@ class ModelController:
         char,
         char_id: str,
         char_name: str,
-        data: dict,
+        origin_message_id: str | None,
+        capabilities: dict,
         policy,
         sender: str,
         participants: list,
@@ -1655,6 +2029,7 @@ class ModelController:
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
+        trace_id: str | None = None,
         combined_messages: list | None = None,
         preset_id: int | None = None,
         tools_on: bool = False,
@@ -1662,33 +2037,35 @@ class ModelController:
         tool_depth: int = 0,
         image_descriptions: dict[str, str] | None = None,
         structured_model_cls=None,
-    ) -> dict | None:
+        sample_id: str | None = None,
+        dialogue: Any = None,
+    ) -> Optional[ChatGenerationResult]:
         try:
-            structured = parse_structured_response(visible_raw, model_cls=structured_model_cls)
+            with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
+                parse_outcome = parse_structured_response_with_meta(
+                    visible_raw,
+                    model_cls=structured_model_cls,
+                )
+                structured = parse_outcome.response
         except StructuredResponseParseError as e:
             logger.error(
-                f"[ModelController] Failed to parse structured response for {char_id}: {e}. "
+                f"[ModelController] Failed to parse structured response for {char_id}: {format_exception(e)}. "
                 f"Falling back to legacy processing."
             )
             # Fallback to legacy tag-based processing
-            processed = char.process_response_nlp_commands(
-                visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
-            )
-            fallback_targets: list[str] = []
-            if hasattr(char, "consume_pending_targets"):
-                try:
-                    fallback_targets = char.consume_pending_targets()
-                except Exception:
-                    fallback_targets = []
-            fallback_target = fallback_targets[-1] if fallback_targets else "Player"
-
-            voice_profile = None
-            if hasattr(char, "to_voice_profile"):
-                try:
-                    voice_profile = char.to_voice_profile()
-                except Exception:
-                    voice_profile = None
-
+            with character_lock(char_id):
+                with perf_span(trace_id, "generation.nlp_postprocess"):
+                    processed = char.process_response_nlp_commands(
+                        visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
+                    )
+                if hasattr(char, "flush_variables"):
+                    char.flush_variables()
+                voice_profile = None
+                if hasattr(char, "to_voice_profile"):
+                    try:
+                        voice_profile = char.to_voice_profile()
+                    except Exception:
+                        voice_profile = None
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
             self._store_last_usage(
                 usage,
@@ -1700,21 +2077,34 @@ class ModelController:
             )
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-            return {
-                "text": processed,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": fallback_target,
-                "targets": fallback_targets,
-                "think": think_text or None,
-            }
+            return ChatGenerationResult(
+                text=processed,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                think=think_text or None,
+                sample_id=sample_id or "",
+                structured_parse_level="legacy_fallback",
+                control_plane_trusted=False,
+            )
 
-        # Apply structured response processing (behavior changes, memory, game tags)
-        char.process_structured_response(
-            structured,
-            save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
-        )
+        self._sanitize_structured_segment_fields(structured, capabilities)
 
+        # Apply and snapshot character state in a short critical section. Tool
+        # execution and any follow-up provider request happen after this lock.
+        with character_lock(char_id):
+            char.process_structured_response(
+                structured,
+                save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
+            )
+            if hasattr(char, "flush_variables"):
+                char.flush_variables()
+            created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
+            voice_profile = None
+            if hasattr(char, "to_voice_profile"):
+                try:
+                    voice_profile = char.to_voice_profile()
+                except Exception:
+                    voice_profile = None
         # --- Tool call path ---
         _active_tools = enabled_tools or []
         _tool_max_depth = int(self.settings.get("TOOL_MAX_DEPTH", 2))
@@ -1741,20 +2131,27 @@ class ModelController:
                 char=char,
                 char_id=char_id,
                 char_name=char_name,
-                data=data,
+                origin_message_id=origin_message_id,
+                capabilities=capabilities,
                 policy=policy,
                 sender=sender,
                 participants=participants,
                 user_input=user_input,
                 image_data=image_data,
+                image_source=image_source,
                 req_id=req_id,
                 task_uid=task_uid,
+                trace_id=trace_id,
                 event_type=event_type,
                 combined_messages=combined_messages or [],
                 preset_id=preset_id,
                 enabled_tools=_active_tools,
                 tool_depth=tool_depth,
                 structured_model_cls=structured_model_cls,
+                sample_id=sample_id,
+                image_descriptions=image_descriptions,
+                voice_profile=voice_profile,
+                dialogue=dialogue,
             )
 
         # Extract reasoning from structured response (if model used the reasoning field)
@@ -1767,20 +2164,13 @@ class ModelController:
                     think_text = schema_reasoning
 
         # Build the result dict with segments
-        result_dict = structured_response_to_result_dict(structured)
+        with perf_span(trace_id, "generation.structured_postprocess", stage="result"):
+            result_dict = structured_response_to_result_dict(structured)
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
         # Attach raw LLM JSON for the debug panel (not saved to history)
         result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
-
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
-        target = targets[-1] if targets else "Player"
 
         if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
             final_text = re.sub(
@@ -1810,27 +2200,31 @@ class ModelController:
 
         assistant_message_id = ""
         if policy.write_to_history:
-            origin_message_id = str(data.get("origin_message_id") or "") or None
             history_dict = {k: v for k, v in result_dict.items()
                             if not k.startswith("_") or k == "_raw_json"}
-            assistant_message_id = self.event_writer.write_turn(
-                responder_character_id=char_id,
-                sender=sender,
-                participants=participants,
-                user_input=user_input,
-                image_data=image_data,
-                image_source=image_source,
-                image_descriptions=_structured_image_descriptions,
-                req_id=req_id,
-                origin_message_id=origin_message_id,
-                assistant_text=final_text,
-                assistant_target=target,
-                event_type=event_type,
-                task_uid=task_uid,
-                structured_data=history_dict,
-                thinking=think_text or None,
-                llm_usage=usage_snapshot,
-            )
+            with perf_span(trace_id, "generation.history_write"):
+                history_write = self.event_writer.write_turn(
+                    responder_character_id=char_id,
+                    sender=sender,
+                    participants=participants,
+                    user_input=user_input,
+                    image_data=image_data,
+                    image_source=image_source,
+                    image_descriptions=_structured_image_descriptions,
+                    req_id=req_id,
+                    origin_message_id=origin_message_id,
+                    assistant_text=final_text,
+                    assistant_target="Player",
+                    event_type=event_type,
+                    task_uid=task_uid,
+                    structured_data=history_dict,
+                    thinking=think_text or None,
+                    llm_usage=usage_snapshot,
+                    sample_id=sample_id,
+                    dialogue=dialogue,
+                )
+                assistant_message_id = history_write.assistant_message_id
+                self._publish_history_commit(history_write, character_id=char_id)
 
         self._store_last_usage(
             usage,
@@ -1842,9 +2236,6 @@ class ModelController:
         )
 
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
-
-        if hasattr(char, "flush_variables"):
-            char.flush_variables()
 
         # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
@@ -1858,10 +2249,9 @@ class ModelController:
                 }
                 inline_graph_json = _json.dumps(graph_payload, ensure_ascii=False)
             except Exception as _ge:
-                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {_ge}")
+                logger.warning(f"[ModelController] Failed to build graph JSON from structured entities/relations: {format_exception(_ge)}")
 
         # Notify graph extraction (and any future subscribers).
-        created_memory_ids = getattr(char, "_last_created_memory_ids", None) or []
         self.event_bus.emit(Events.History.MESSAGE_COMPLETED, {
             "character_id": char_id,
             "character_ref": char,
@@ -1873,23 +2263,17 @@ class ModelController:
             "from_structured_output": True,
         })
 
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
-
-        return {
-            "text": final_text,
-            "character_id": char_id,
-            "voice_profile": voice_profile,
-            "target": target,
-            "targets": targets,
-            "think": think_text or None,
-            "structured": result_dict,
-            "message_id": assistant_message_id,
-        }
+        return ChatGenerationResult(
+            text=final_text,
+            character_id=char_id,
+            voice_profile=voice_profile,
+            think=think_text or None,
+            structured=result_dict,
+            message_id=assistant_message_id,
+            sample_id=sample_id or "",
+            structured_parse_level=parse_outcome.parse_level,
+            control_plane_trusted=parse_outcome.control_plane_trusted,
+        )
 
     # ---------------------------------------------------------------------
     # Tool call handler (structured output tools)
@@ -1907,12 +2291,14 @@ class ModelController:
         char,
         char_id: str,
         char_name: str,
-        data: dict,
+        origin_message_id: str | None,
+        capabilities: dict,
         policy,
         sender: str,
         participants: list,
         user_input: str,
         image_data: list,
+        image_source: str,
         req_id: str | None,
         task_uid: str | None,
         event_type: str,
@@ -1920,8 +2306,13 @@ class ModelController:
         preset_id: int | None,
         enabled_tools: list,
         tool_depth: int,
+        trace_id: str | None = None,
         structured_model_cls=None,
-    ) -> dict | None:
+        sample_id: str | None = None,
+        image_descriptions: dict[str, str] | None = None,
+        voice_profile=None,
+        dialogue: Any = None,
+    ) -> Optional[ChatGenerationResult]:
         """
         Handle a tool_call from a structured response:
         1. Emit first response to UI.
@@ -1940,21 +2331,6 @@ class ModelController:
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
-        targets: list[str] = []
-        if hasattr(char, "consume_pending_targets"):
-            try:
-                targets = char.consume_pending_targets()
-            except Exception:
-                targets = []
-        target = targets[-1] if targets else "Player"
-
-        voice_profile = None
-        if hasattr(char, "to_voice_profile"):
-            try:
-                voice_profile = char.to_voice_profile()
-            except Exception:
-                voice_profile = None
-
         # Write first turn to history
         usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
         usage_snapshot = self._build_usage_snapshot(
@@ -1968,8 +2344,7 @@ class ModelController:
 
         first_assistant_message_id = ""
         if policy.write_to_history:
-            origin_message_id = str(data.get("origin_message_id") or "") or None
-            first_assistant_message_id = self.event_writer.write_turn(
+            history_write = self.event_writer.write_turn(
                 responder_character_id=char_id,
                 sender=sender,
                 participants=participants,
@@ -1980,13 +2355,17 @@ class ModelController:
                 req_id=req_id,
                 origin_message_id=origin_message_id,
                 assistant_text=first_text,
-                assistant_target=target,
+                assistant_target="Player",
                 event_type=event_type,
                 task_uid=task_uid,
                 structured_data=result_dict,
                 thinking=think_text or None,
                 llm_usage=usage_snapshot,
+                sample_id=sample_id,
+                dialogue=dialogue,
             )
+            first_assistant_message_id = history_write.assistant_message_id
+            self._publish_history_commit(history_write, character_id=char_id)
 
         # Emit first response to UI (shows "I'll check that" message)
         self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
@@ -1998,11 +2377,9 @@ class ModelController:
             "character_id": char_id or "",
             "character_name": char_name or "",
             "speaker_name": char_name or "",
-            "target": target,
-            "targets": targets,
             "structured_data": result_dict,
             "message_id": first_assistant_message_id,
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Emit tool executing indicator for UI
         self.event_bus.emit(Events.Model.ON_TOOL_EXECUTING, {
@@ -2014,10 +2391,10 @@ class ModelController:
         logger.info(f"[ModelController] Executing tool '{tool_name}' with args: {tool_args}")
         self.model.tool_manager.set_char_context(char_id)
         try:
-            tool_result = self.model.tool_manager.run(tool_name, tool_args)
+            tool_result = self.model.tool_manager.run(tool_name, tool_args, trace_id=trace_id)
         except Exception as e:
-            tool_result = f"[Tool error: {e}]"
-            logger.error(f"[ModelController] Tool '{tool_name}' failed: {e}", exc_info=True)
+            tool_result = f"[Tool error: {format_exception(e)}]"
+            logger.error(f"[ModelController] Tool '{tool_name}' failed: {format_exception(e)}", exc_info=True)
 
         self.event_bus.emit(Events.Model.ON_TOOL_DONE, {
             "tool_name": tool_name,
@@ -2028,10 +2405,10 @@ class ModelController:
             "response": f"[Tool: {tool_name}]\n{tool_result}",
             "is_initial": False,
             "emotion": "",
-            "character_id": "",
+            "character_id": char_id or "",
             "character_name": "",
             "speaker_name": "",
-        }, sync=True)
+        }, delivery=EventDelivery.ORDERED)
 
         # Build tool result message(s) for the second LLM call.
         # TOOL_RESULT_MSG_MODE controls which role(s) are used to inject the result:
@@ -2066,12 +2443,16 @@ class ModelController:
             "character_name": char_name or char_id or "Мита",
         })
 
-        llm_response_2 = self.model.generate(
-            combined_messages_v2,
-            preset_id=preset_id,
-            capabilities_override=(data.get("capabilities") or None),
-            structured_model=structured_model_cls,
-        )
+        with perf_span(trace_id, "llm.total", phase="tool_followup"):
+            llm_response_2 = self.model.generate(
+                combined_messages_v2,
+                preset_id=preset_id,
+                capabilities_override=(capabilities or None),
+                request_options_override={"trace_id": trace_id} if trace_id else None,
+                structured_model=structured_model_cls,
+                context_character_id=char_id,
+                context_character_name=char_name,
+            )
 
         if not llm_response_2 or not llm_response_2.text:
             logger.error(f"[ModelController] Second LLM call after tool '{tool_name}' returned empty.")
@@ -2083,22 +2464,27 @@ class ModelController:
                 "error": error_message
             })
             # Return first response as fallback
-            return {
-                "text": first_text,
-                "character_id": char_id,
-                "voice_profile": voice_profile,
-                "target": target,
-                "targets": targets,
-                "think": think_text or None,
-                "structured": result_dict,
-            }
+            return ChatGenerationResult(
+                text=first_text,
+                character_id=char_id,
+                voice_profile=voice_profile,
+                think=think_text or None,
+                structured=result_dict,
+                message_id=first_assistant_message_id,
+                structured_parse_level="tool_intermediate",
+                control_plane_trusted=False,
+            )
 
-        visible_raw_2, think_text_2 = self._extract_think_blocks(str(llm_response_2.text))
+        visible_raw_2, think_text_2 = self._split_response_thinking(llm_response_2)
         merged_usage = usage.merged_with(llm_response_2.usage) if usage else llm_response_2.usage
 
         combined_think = think_text
         if think_text_2:
             combined_think = (combined_think + "\n\n" + think_text_2) if combined_think else think_text_2
+
+        # Process second response (depth+1 prevents infinite tool loops)
+        # user_input is empty so the user message is not written to history again
+        sample_id_2 = str((getattr(llm_response_2, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
 
         # Process second response (depth+1 prevents infinite tool loops)
         # user_input is empty so the user message is not written to history again
@@ -2112,16 +2498,18 @@ class ModelController:
             char=char,
             char_id=char_id,
             char_name=char_name,
-            data=data,
+            origin_message_id=origin_message_id,
+            capabilities=capabilities,
             policy=policy,
             sender=sender,
-                participants=participants,
-                user_input="",
-                image_data=[],
-                image_source=image_source,
-                req_id=req_id,
-                task_uid=task_uid,
-                event_type=event_type,
+            participants=participants,
+            user_input="",
+            image_data=[],
+            image_source=image_source,
+            req_id=req_id,
+            task_uid=task_uid,
+            trace_id=trace_id,
+            event_type=event_type,
             combined_messages=combined_messages_v2,
             preset_id=preset_id,
             tools_on=True,
@@ -2129,6 +2517,8 @@ class ModelController:
             tool_depth=tool_depth + 1,
             image_descriptions=image_descriptions,
             structured_model_cls=structured_model_cls,
+            sample_id=sample_id_2,
+            dialogue=dialogue,
         )
 
     # ---------------------------------------------------------------------
@@ -2136,19 +2526,14 @@ class ModelController:
     # ---------------------------------------------------------------------
 
     def _on_reload_prompts_async(self, event: Event):
-        self.event_bus.emit(Events.Core.RUN_IN_LOOP, {
-            "coroutine": self._async_reload_prompts(),
-            "callback": None
-        })
+        # Скачивание промптов — блокирующий IO, ему не нужен asyncio-loop.
+        executors().submit(Pools.IO, self._reload_prompts)
 
-    async def _async_reload_prompts(self):
+    def _reload_prompts(self):
         try:
             from utils.prompt_downloader import PromptDownloader
-            import asyncio
 
-            downloader = PromptDownloader()
-            loop = asyncio.get_event_loop()
-            success = await loop.run_in_executor(None, downloader.download_and_replace_prompts)
+            success = PromptDownloader().download_and_replace_prompts()
 
             if success:
                 cid = self._get_current_character_id()
@@ -2158,8 +2543,8 @@ class ModelController:
             else:
                 self.event_bus.emit("reload_prompts_failed", {"error": "Download failed"})
         except Exception as e:
-            logger.error(f"Ошибка при обновлении промптов: {e}", exc_info=True)
-            self.event_bus.emit("reload_prompts_failed", {"error": str(e)})
+            logger.error(f"Ошибка при обновлении промптов: {format_exception(e)}", exc_info=True)
+            self.event_bus.emit("reload_prompts_failed", {"error": format_exception(e)})
 
     # ---------------------------------------------------------------------
     # Helpers
@@ -2175,7 +2560,16 @@ class ModelController:
         def is_player(x: str) -> bool:
             return str(x or "").strip().lower() == "player"
 
-        if raw_role == "user" or is_player(speaker) or is_player(sender) or sender == "Player" or speaker == "Player":
+        has_explicit_non_player_actor = any(
+            actor and not is_player(actor) for actor in (speaker, sender)
+        )
+        is_player_message = (
+            ((raw_role == "user") and not has_explicit_non_player_actor)
+            or is_player(speaker)
+            or is_player(sender)
+        )
+
+        if is_player_message:
             out = dict(ui_msg)
             out["role"] = "user"
             out["speaker"] = "Player"

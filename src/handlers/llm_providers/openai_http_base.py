@@ -1,18 +1,36 @@
-﻿# src/handlers/llm_providers/openai_http_base.py
+# src/handlers/llm_providers/openai_http_base.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 import json
+import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
-import requests
+import httpx
 
 from main_logger import logger
-from handlers.llm_providers.base import BaseProvider, LLMRequest, LLMResponse, normalize_usage_payload
+from handlers.llm_providers.base import (
+    BaseProvider,
+    LLMRequest,
+    LLMResponse,
+    StreamCallback,
+    StreamChannel,
+    check_request_cancelled,
+    normalize_usage_payload,
+)
+from handlers.llm_providers.errors import build_provider_error, build_stream_error, coerce_provider_error
+from handlers.llm_providers.message_transforms import trailing_system_to_user_prefix
 from schemas.structured_response import StructuredResponse
 from utils.openrouter_routing import (
     annotate_openrouter_prompt_cache,
     normalize_openrouter_routing,
 )
+from handlers.llm_providers.streaming import StreamAccumulator, iter_sse_data, track_response_body
+
+# Уровни reasoning_effort, которые принимает LM Studio / llama.cpp.
+# "none" выставляется отдельно — это выключение, а не уровень.
+REASONING_EFFORT_LEVELS = ("low", "medium", "high")
 
 
 class OpenAIHTTPProviderBase(BaseProvider):
@@ -105,9 +123,13 @@ class OpenAIHTTPProviderBase(BaseProvider):
             OpenRouter model — unsupported models normalize it away).
           - "deepseek": the native DeepSeek `thinking` object, which defaults to
             "enabled" and must be explicitly disabled to skip reasoning.
-          - otherwise (legacy/unknown): only ever ENABLE via an Anthropic-style
-            `thinking` object; never emit a disabled flag, since some providers
-            reject it (e.g. Mistral 422).
+          - "reasoning_effort": OpenAI-style `reasoning_effort` string, where "none"
+            disables reasoning. Used by LM Studio / llama.cpp: local reasoning models
+            (Gemma 4, Qwen3) think by default, and chat_template_kwargs does not
+            reach the template there — reasoning_effort is the only switch that works.
+          - otherwise (legacy/unknown): emit nothing. Generic OpenAI-compatible
+            providers (e.g. Mistral) reject unknown `thinking` members with 4xx,
+            so thinking is strictly opt-in via a declared reasoning_control.
 
         enable_thinking is tri-state: absent -> leave the provider default untouched;
         True -> enable; False -> disable.
@@ -126,7 +148,17 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         if transport == "openrouter":
             reasoning: Dict[str, Any] = {"enabled": enabled}
-            if enabled and budget > 0:
+            effort = str(extra.get("reasoning_effort") or "").strip().lower()
+            model_profile = (req.capabilities or {}).get("model_profile") or {}
+            thinking_profile = model_profile.get("thinking") if isinstance(model_profile, dict) else {}
+            allowed_efforts = {
+                str(value).strip().lower()
+                for value in (thinking_profile.get("allowed_levels") or [])
+                if str(value).strip()
+            } if isinstance(thinking_profile, dict) else set()
+            if enabled and effort and (not allowed_efforts or effort in allowed_efforts):
+                reasoning["effort"] = effort
+            elif enabled and budget > 0:
                 reasoning["max_tokens"] = budget
             payload["reasoning"] = reasoning
         elif transport == "deepseek":
@@ -134,23 +166,59 @@ class OpenAIHTTPProviderBase(BaseProvider):
             if enabled and budget > 0:
                 thinking["budget_tokens"] = budget
             payload["thinking"] = thinking
-        elif enabled:
-            thinking = {"type": "enabled"}
-            if budget > 0:
-                thinking["budget_tokens"] = budget
-            payload["thinking"] = thinking
+        elif transport == "reasoning_effort":
+            if not enabled:
+                payload["reasoning_effort"] = "none"
+            else:
+                effort = str(extra.get("reasoning_effort") or "").strip().lower()
+                # Уровень шлём только если пользователь его явно выбрал. Без уровня
+                # не отправляем ничего: reasoning-модели LM Studio / llama.cpp
+                # (Gemma 4, Qwen3) думают по умолчанию, а посланный "medium"/"low"
+                # на модели, знающей лишь on/off (напр. gemma-4-12b-qat), даёт WARN
+                # и откат на 'on' — тот же результат, но с шумом в логах.
+                if effort in REASONING_EFFORT_LEVELS:
+                    payload["reasoning_effort"] = effort
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
         return bool(caps.get("structured_output", False))
 
+    def _resolve_request_url(self, req: LLMRequest) -> str:
+        url = str(req.api_url or "").strip()
+        if not url:
+            return ""
+
+        if str(req.dialect_id or "").strip() != "openai_chat_completions":
+            return url
+
+        parsed = urlsplit(url)
+        path = (parsed.path or "").rstrip("/")
+        lowered = path.lower()
+
+        # Already a completions endpoint — leave it untouched.
+        if lowered.endswith("/chat/completions") or lowered.endswith("/completions"):
+            return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+        # Only auto-complete obvious "base" URLs: empty/root path or a versioned
+        # prefix like ".../v1". Custom gateway paths (e.g. ".../llm/generate") are
+        # left as the user entered them to avoid producing ".../generate/chat/completions".
+        if path == "" or re.search(r"/v\d+$", lowered):
+            normalized_path = f"{path}/chat/completions" if path else "/chat/completions"
+            return urlunsplit((parsed.scheme, parsed.netloc, normalized_path, parsed.query, parsed.fragment))
+
+        return url
+
     def _build_payload(self, req: LLMRequest, model_to_use: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         if req.protocol_id == "openrouter_default":
+            if bool((req.extra or {}).get("openrouter_tail_system_to_user", True)):
+                messages = trailing_system_to_user_prefix(messages, tag="[SYSTEM INFO]")
             messages = annotate_openrouter_prompt_cache(messages, model_to_use)
         payload: Dict[str, Any] = {
             "model": model_to_use,
             "messages": messages,
         }
+        if req.stream and self.should_request_stream_usage(req):
+            payload["stream_options"] = {"include_usage": True}
         payload.update(self._map_unified_params(req.extra or {}, model_to_use))
         self._apply_reasoning(payload, req)
 
@@ -173,17 +241,32 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
-                payload["response_format"] = model_cls.openai_response_format(exclude_fields=excl or None)
+                excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
+                segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
+                # intents is an internal Unity channel — hidden from the model
+                # unless the selected DSL main template explicitly enables support_intents.
+                if not caps.get("schema_intents", False):
+                    segment_excl.add("intents")
+                payload["response_format"] = model_cls.openai_response_format(
+                    exclude_fields=excl or None,
+                    exclude_segment_fields=segment_excl or None,
+                    require_fields=set(caps.get("structured_required_fields") or ()) or None,
+                )
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
         return payload
 
-    def _request(self, req: LLMRequest, payload: Dict[str, Any]) -> requests.Response:
+    def _request(self, request_url: str, req: LLMRequest, payload: Dict[str, Any]) -> httpx.Response:
         headers = self._headers(req)
         if req.stream:
             payload["stream"] = True
-        timeout = float((req.extra or {}).get("http_timeout_seconds") or 120)
-        return requests.post(req.api_url, headers=headers, json=payload, stream=req.stream, timeout=timeout)
+        return self.http_transport.post_json(
+            req,
+            request_url,
+            headers=headers,
+            payload=payload,
+            stream=req.stream,
+        )
 
     def generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
@@ -196,21 +279,29 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         if not req.api_url:
             logger.error(f"[{self.name}] api_url is empty.")
-            return LLMResponse(
-                text=None,
-                provider_name=self.name,
-                error_message="Provider api_url is empty.",
-            )
+            raise build_provider_error(self.name, provider_message="api_url is empty.", url=req.api_url)
 
         model_to_use = req.model
         msgs = self._preprocess_messages(req)
         msgs = self._normalize_messages(req, msgs)
+        request_url = self._resolve_request_url(req)
 
         payload = self._build_payload(req, model_to_use, msgs)
 
-        resp = self._request(req, payload)
+        try:
+            resp = self._request(request_url, req, payload)
+        except Exception as e:
+            provider_error = coerce_provider_error(self.name, e, url=request_url)
+            logger.debug(
+                "[%s] Transport failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
+            raise provider_error from e
 
         if resp.status_code == 400 and self._supports_structured_output(req):
+            if req.stream:
+                resp.read()
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             if rf_mode != "json_object" and "response_format" in payload:
                 try:
@@ -224,48 +315,97 @@ class OpenAIHTTPProviderBase(BaseProvider):
                         f"Error: {err_msg[:200]}"
                     )
                     payload["response_format"] = {"type": "json_object"}
-                    resp = self._request(req, payload)
+                    resp.close()
+                    resp = self._request(request_url, req, payload)
 
         if resp.status_code != 200:
+            if req.stream:
+                resp.read()
             try:
                 err = resp.json()
             except Exception:
                 err = resp.text
-            error_text = self._stringify_error(err)
-            logger.error(f"[{self.name}] HTTP {resp.status_code}: {error_text}")
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message=f"HTTP {resp.status_code}: {error_text}",
+            provider_error = build_provider_error(
+                self.name,
+                status_code=resp.status_code,
+                payload=err,
+                response_headers=resp.headers,
+                url=request_url,
             )
+            logger.debug(
+                "[%s] HTTP failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
+            logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(err, limit=800)}")
+            resp.close()
+            raise provider_error
 
         if req.stream:
-            return self._handle_stream(resp, req.api_url, req.stream_cb)
+            return self._handle_stream(resp, request_url, req, req.stream_cb)
 
         try:
             data = resp.json()
         except Exception as e:
-            logger.error(f"[{self.name}] JSON parse error: {e}", exc_info=True)
-            return LLMResponse(
-                text=None,
-                model=model_to_use,
-                provider_name=self.name,
-                error_message=f"Failed to parse provider JSON response: {e}",
+            provider_error = build_provider_error(
+                self.name,
+                provider_message=f"JSON parse error: {format_exception(e)}",
+                payload=getattr(resp, "text", None),
+                url=request_url,
             )
+            logger.debug(
+                "[%s] Parse failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
+            resp.close()
+            raise provider_error from e
+        resp.close()
+
+        if isinstance(data, dict) and data.get("error"):
+            status_code = None
+            err_payload = data.get("error")
+            if isinstance(err_payload, dict):
+                raw_code = err_payload.get("code")
+                try:
+                    status_code = int(raw_code)
+                except Exception:
+                    status_code = None
+            provider_error = build_provider_error(
+                self.name,
+                status_code=status_code,
+                payload=data,
+                response_headers=resp.headers,
+                url=request_url,
+            )
+            logger.debug(
+                "[%s] Payload failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
+            logger.debug(f"[{self.name}] raw error payload: {self._stringify_error(data, limit=800)}")
+            raise provider_error
 
         message = (data.get("choices", [{}])[0].get("message") or {}) if isinstance(data, dict) else {}
         finish_reason = ((data.get("choices") or [{}])[0].get("finish_reason") if isinstance(data, dict) else None)
 
-        content = message.get("content") or message.get("reasoning_content") or ""
+        content, reasoning = self._resolve_content_and_reasoning(
+            str(message.get("content") or ""),
+            str(message.get("reasoning_content") or ""),
+        )
         if not content:
             response_preview = self._stringify_error(data, limit=600)
             finish_suffix = f" finish_reason={finish_reason}." if finish_reason else ""
             error_message = f"Provider returned 200 OK but empty message content.{finish_suffix}"
-            logger.error(f"[{self.name}] {error_message} Raw response: {response_preview}")
+            logger.debug(
+                "[%s] Empty response delegated to request runner: %s Raw response: %s",
+                self.name,
+                error_message,
+                response_preview,
+            )
             return LLMResponse(
                 text=None,
-                usage=self._extract_usage(data, req.api_url),
+                usage=self._extract_usage(data, request_url),
                 model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
                 provider_name=self.name,
                 finish_reason=finish_reason,
@@ -275,83 +415,106 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
         return LLMResponse(
             text=content.strip() if content else None,
-            usage=self._extract_usage(data, req.api_url),
+            usage=self._extract_usage(data, request_url),
             model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
             provider_name=self.name,
             finish_reason=finish_reason,
             raw=data if isinstance(data, dict) else {},
+            reasoning=reasoning.strip() or None,
         )
 
     def _handle_stream(
         self,
-        resp: requests.Response,
+        resp: httpx.Response,
         api_url: str,
-        stream_callback: Optional[callable] = None,
+        req: LLMRequest,
+        stream_callback: Optional[StreamCallback] = None,
     ) -> LLMResponse:
-        parts: List[str] = []
-        usage = None
+        accumulator = StreamAccumulator(req, provider=self.name, model=req.model)
         finish_reason = None
         response_model = None
-        chunk_error_count = 0
-        last_chunk_error = ""
+        tool_calls: dict[int, dict[str, Any]] = {}
         try:
-            for line_bytes in resp.iter_lines(decode_unicode=False):
-                if not line_bytes:
-                    continue
-                try:
-                    line = line_bytes.decode("utf-8")
-                except UnicodeDecodeError:
-                    line = line_bytes.decode("utf-8", errors="replace")
-
-                if not line.startswith("data: "):
-                    continue
-
-                chunk = line[6:]
+            for chunk in iter_sse_data(track_response_body(req, resp.iter_lines())):
+                check_request_cancelled(req)
                 if chunk.strip() == "[DONE]":
                     break
 
                 try:
                     obj = json.loads(chunk)
-                    if response_model is None:
-                        response_model = obj.get("model")
-                    usage = usage or self._extract_usage(obj, api_url)
-                    delta = obj.get("choices", [{}])[0].get("delta", {}) or {}
-                    fr = obj.get("choices", [{}])[0].get("finish_reason")
-                    if fr:
-                        finish_reason = fr
-                    text = delta.get("content", "") or delta.get("reasoning_content", "") or ""
-                    if text:
-                        if stream_callback:
-                            stream_callback(text)
-                        parts.append(text)
-                except Exception as e:
-                    chunk_error_count += 1
-                    last_chunk_error = f"{type(e).__name__}: {e}"
-                    if chunk_error_count <= 3:
-                        preview = chunk[:240].replace("\n", "\\n")
-                        logger.warning(f"[{self.name}] Failed to parse stream chunk: {last_chunk_error}. Chunk: {preview}")
+                except json.JSONDecodeError as e:
+                    raise build_stream_error(
+                        self.name,
+                        payload=chunk[:500],
+                        provider_message=f"Invalid JSON in provider stream: {format_exception(e)}",
+                        code="stream.invalid_json",
+                        url=api_url,
+                    ) from e
+                if not isinstance(obj, dict):
+                    raise build_stream_error(
+                        self.name,
+                        payload=obj,
+                        provider_message="Provider stream chunk is not a JSON object.",
+                        code="stream.invalid_payload",
+                        url=api_url,
+                    )
+                if obj.get("error"):
+                    raise build_stream_error(self.name, payload=obj, url=api_url)
+                if response_model is None:
+                    response_model = obj.get("model")
+                chunk_usage = self._extract_usage(obj, api_url)
+                if chunk_usage is not None:
+                    accumulator.set_usage(chunk_usage)
+                choices = obj.get("choices") or []
+                if not choices:
                     continue
+                choice = choices[0] if isinstance(choices[0], dict) else {}
+                delta = choice.get("delta", {}) or {}
+                fr = choice.get("finish_reason")
+                if fr:
+                    finish_reason = fr
+                accumulator.add_text(delta.get("content", ""))
+                accumulator.add_reasoning(delta.get("reasoning_content", ""))
+                for tool_delta in delta.get("tool_calls") or []:
+                    if not isinstance(tool_delta, dict):
+                        continue
+                    index = int(tool_delta.get("index") or 0)
+                    state = tool_calls.setdefault(index, {"id": "", "name": "", "started": False})
+                    state["id"] = str(tool_delta.get("id") or state["id"])
+                    function = tool_delta.get("function") if isinstance(tool_delta.get("function"), dict) else {}
+                    state["name"] = str(function.get("name") or state["name"])
+                    if not state["started"] and (state["id"] or state["name"]):
+                        accumulator.tool_call_started(tool_call_id=state["id"], tool_name=state["name"])
+                        state["started"] = True
+                    arguments = str(function.get("arguments") or "")
+                    if arguments:
+                        accumulator.tool_call_delta(
+                            tool_call_id=state["id"],
+                            tool_name=state["name"],
+                            arguments_delta=arguments,
+                        )
         except Exception as e:
-            logger.error(f"[{self.name}] stream error: {e}", exc_info=True)
+            provider_error = coerce_provider_error(self.name, e, url=api_url)
+            logger.debug(
+                "[%s] Stream failure delegated to request runner: %s",
+                self.name,
+                provider_error.to_console_summary(),
+            )
+            raise provider_error from e
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                logger.debug(f"[{self.name}] Failed to close HTTP stream", exc_info=True)
 
-        error_message = None
-        if not parts:
-            if chunk_error_count > 0:
-                error_message = (
-                    "Provider stream ended without content. "
-                    f"Chunk parse errors: {chunk_error_count}, last error: {last_chunk_error}"
-                )
-            elif finish_reason and finish_reason != "stop":
-                error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
-
-        return LLMResponse(
-            text="".join(parts) or None,
-            usage=usage,
-            model=response_model,
-            provider_name=self.name,
-            finish_reason=finish_reason,
-            error_message=error_message,
-        )
+        for state in tool_calls.values():
+            if state["started"]:
+                accumulator.tool_call_completed(tool_call_id=state["id"], tool_name=state["name"])
+        response = accumulator.complete(finish_reason=finish_reason, model=response_model)
+        if not response.text:
+            if finish_reason and finish_reason != "stop":
+                response.error_message = f"Provider stream ended without content (finish_reason={finish_reason})."
+        return response
 
     def _extract_usage(self, data: Any, api_url: str):
         if not isinstance(data, dict):

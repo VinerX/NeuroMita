@@ -4,6 +4,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
+from core.services import use
+from services.contracts import CharacterRegistry, PlayerMessageSource, SettingsService, TaskService
+from domain.dialogue_identity import DialogueActorKind
+from domain.conversation_message_ids import ConversationMessageIds
+from services.dialogue_identity_resolver import DialogueIdentityResolver
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
 from game_connections.handlers.registry import RequestContext
@@ -38,6 +43,89 @@ def _should_label_as_mita_camera(event_type: str, context: dict) -> bool:
     return event_type in ("answer", "react")
 
 
+def _normalise_reaction_events(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_events = data.get("reaction_events")
+    if not isinstance(raw_events, (list, tuple)):
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for raw in raw_events[:24]:
+        if not isinstance(raw, dict):
+            continue
+
+        reason = str(raw.get("reason_content") or raw.get("reason") or "").strip()
+        if not reason:
+            continue
+
+        reason_type = str(raw.get("reason_type") or "Generic").strip() or "Generic"
+        try:
+            duration = max(0.0, float(raw.get("duration") or 0.0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        try:
+            count = max(1, min(1000, int(raw.get("count") or 1)))
+        except (TypeError, ValueError):
+            count = 1
+
+        events.append({
+            "reason_type": reason_type,
+            "reason_content": reason,
+            "duration": duration,
+            "count": count,
+        })
+
+    return events
+
+
+def _build_react_prompt(
+    data: Dict[str, Any],
+    *,
+    react_level: int,
+) -> tuple[List[str], str, float, List[Dict[str, Any]]]:
+    reaction_events = _normalise_reaction_events(data)
+    if reaction_events:
+        lines = [
+            "This is a collected batch of react events from the game. React to the batch as one current turn.",
+            f"React level: {react_level}",
+            "The current Unity world state is authoritative if an older event conflicts with it.",
+            "Events accumulated while the previous turn was active (oldest to newest):",
+        ]
+        for index, item in enumerate(reaction_events, start=1):
+            count_suffix = f"; occurrences: {item['count']}" if item["count"] > 1 else ""
+            duration_suffix = (
+                f"; duration: {item['duration']:.1f}s"
+                if item["duration"] > 0
+                else ""
+            )
+            lines.append(
+                f"{index}. [{item['reason_type']}] {item['reason_content']}"
+                f"{count_suffix}{duration_suffix}"
+            )
+
+        latest = reaction_events[-1]
+        reason_text = latest["reason_content"]
+        duration = max(item["duration"] for item in reaction_events)
+        return lines, reason_text, duration, reaction_events
+
+    reason_type = str(data.get("reason_type") or "").strip()
+    reason_content = str(data.get("reason_content") or "").strip()
+    reason_text = reason_content or str(data.get("reason") or "").strip() or "player_react"
+    try:
+        duration = max(0.0, float(data.get("duration") or 0.0))
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    lines = [
+        "This is a react event from the game. React to it!",
+        f"React level: {react_level}",
+    ]
+    if reason_type:
+        lines.append(f"Reason type: {reason_type}")
+    lines.append(f"Reason: {reason_text}")
+    lines.append(f"Duration (seconds): {duration:.1f}")
+    return lines, reason_text, duration, []
+
+
 async def _dispatch_task(
     *,
     server,
@@ -56,7 +144,11 @@ async def _dispatch_task(
     req_id,
     origin_message_id,
     event_type: str,
+    dialogue: Optional[dict] = None,
+    game_state: Optional[dict] = None,
     image_source: str = "",
+    player_message_source: str = "",
+    gm_instruction_override: str | None = None,
     extra_task_data: Optional[dict] = None,
     abort_reason: str = "Failed to create task",
 ) -> Any:
@@ -76,21 +168,21 @@ async def _dispatch_task(
         "participants": participants,
         "origin_message_id": origin_message_id,
         "policy": policy_dict,
+        "dialogue": dict(dialogue or {}),
     }
+    if player_message_source:
+        task_data["player_message_source"] = str(player_message_source)
     if extra_task_data:
         task_data.update(extra_task_data)
+    if gm_instruction_override is not None:
+        task_data["gm_instruction_override"] = gm_instruction_override
 
-    task_result = event_bus.emit_and_wait(
-        Events.Task.CREATE_TASK,
-        {"type": task_type, "data": task_data},
-        timeout=5.0,
-    )
-    task = task_result[0] if task_result else None
+    task = use(TaskService).create_task(task_type, task_data)
 
     if task:
         server.client_tasks[ctx.client_id].add(task.uid)
         await server.send_task_update(ctx.client_id, task)
-        event_bus.emit(Events.Chat.SEND_MESSAGE, {
+        chat_event = {
             "user_input": user_input,
             "system_input": system_input,
             "image_data": images,
@@ -103,7 +195,14 @@ async def _dispatch_task(
             "req_id": req_id,
             "origin_message_id": origin_message_id,
             "policy": policy_dict,
-        })
+            "game_state": dict(game_state or {}),
+            "dialogue": dict(dialogue or {}),
+        }
+        if player_message_source:
+            chat_event["player_message_source"] = str(player_message_source)
+        if gm_instruction_override is not None:
+            chat_event["gm_instruction_override"] = gm_instruction_override
+        event_bus.emit(Events.Chat.SEND_MESSAGE, chat_event)
     else:
         await server._send_aborted_update(
             ctx.client_id, event_type, character_id,
@@ -122,8 +221,14 @@ class CreateTaskAction:
         data = request.get("data", {}) or {}
         context = request.get("context", {}) or {}
         req_id = request.get("req_id", None)
+        dialogue_payload = context.get("dialogue") if isinstance(context.get("dialogue"), dict) else {}
 
-        sender = str(request.get("sender") or data.get("sender") or "Player")
+        identity_resolver = DialogueIdentityResolver(use(CharacterRegistry).get)
+        resolved_speaker = identity_resolver.resolve(
+            request.get("sender") or data.get("sender") or "Player",
+            dialogue_payload,
+        )
+        sender = resolved_speaker.sender_id
         origin_message_id = request.get("origin_message_id") or data.get("origin_message_id")
 
         participants = request.get("participants")
@@ -152,12 +257,7 @@ class CreateTaskAction:
             if not cid:
                 return {"attitude": 60.0, "boredom": 10.0, "stress": 5.0}
             try:
-                res = event_bus.emit_and_wait(
-                    Events.Character.GET,
-                    {"character_id": cid},
-                    timeout=1.0
-                )
-                ch = res[0] if res else None
+                ch = use(CharacterRegistry).get(cid)
                 if ch is not None and hasattr(ch, "get_stats_dict"):
                     v = ch.get_stats_dict()
                     if isinstance(v, dict):
@@ -172,13 +272,46 @@ class CreateTaskAction:
 
         character_stats = _get_character_stats(character_id)
 
-        event_bus.emit(Events.Server.SET_GAME_DATA, {
+        dialogue_world_id = (
+            str(dialogue_payload.get("world_id") or "").strip()
+            if isinstance(dialogue_payload, dict)
+            else ""
+        )
+        # New Unity clients send explicit worldPlayer/worldMita fields. The
+        # world_id fallbacks keep Python compatible while Unity is migrated.
+        world_player = str(
+            context.get("worldPlayer")
+            or context.get("world_id")
+            or dialogue_world_id
+            or ""
+        ).strip()
+        world_mita = str(
+            context.get("worldMita")
+            or context.get("world_id")
+            or dialogue_world_id
+            or world_player
+            or ""
+        ).strip()
+
+        game_state_payload = {
             "distance": float(str(context.get("distance", "0")).replace(",", ".")),
             "roomPlayer": int(context.get("roomPlayer", 0)),
             "roomMita": int(context.get("roomMita", 0)),
             "nearObjects": context.get("hierarchy", ""),
-            "actualInfo": context.get("currentInfo", "")
-        })
+            "world_state": context.get("world_state", ""),
+            "worldPlayer": world_player,
+            "worldMita": world_mita,
+            "runtime_rules": context.get("runtime_rules", ""),
+            "runtime_static_catalog": context.get("runtime_static_catalog", ""),
+            "runtime_capabilities": context.get("runtime_capabilities", ""),
+            "intent_rules": context.get("intent_rules", ""),
+            "runtime_events": context.get("runtime_events", []),
+        }
+        # Runtime events are consumable by this exact turn and must never leak
+        # into the persistent fallback state used by non-Unity requests.
+        persistent_game_state = dict(game_state_payload)
+        persistent_game_state.pop("runtime_events", None)
+        event_bus.emit(Events.Server.SET_GAME_DATA, persistent_game_state)
 
         if server._should_block_event(event_type):
             await server._send_aborted_update(ctx.client_id, event_type, character_id, req_id=req_id)
@@ -196,7 +329,30 @@ class CreateTaskAction:
             req_id=req_id,
             origin_message_id=origin_message_id,
             event_type=event_type,
+            dialogue=dialogue_payload,
+            game_state=game_state_payload,
         )
+
+        # Unity owns continuation admission and the shared dialogue budget.
+        # Python processes the already-authorized turn like any other request.
+        if event_type == "continue":
+            instruction = str(
+                data.get("message")
+                or data.get("instruction")
+                or "Continue your current thought naturally."
+            ).strip()
+            await _dispatch_task(
+                **_shared,
+                task_type="chat",
+                model_event_type="chat",
+                policy_dict=resolve_policy(model_event_type="chat").to_dict(),
+                user_input=instruction,
+                system_input="",
+                images=[],
+                image_source="",
+                abort_reason="Failed to create continue task",
+            )
+            return
 
         # ── answer ────────────────────────────────────────────────────────────
         if event_type == "answer":
@@ -204,24 +360,30 @@ class CreateTaskAction:
             policy = resolve_policy(model_event_type=model_event_type)
             user_input = data.get("message", "")
 
-            if user_input:
+            # The player needs to see their own line in the desktop Sandbox.
+            # Inter-Mita auto-turns already have a visible preceding reply and
+            # a visible generated answer; echoing their internal relay prompt
+            # produces a redundant English service bubble such as
+            # "kind_mita: Kind Mita asks Cappie …".
+            if user_input and resolved_speaker.kind is DialogueActorKind.PLAYER:
                 event_bus.emit(Events.Server.ECHO_CHAT_MESSAGE_REQUESTED, {
                     "client_id": ctx.client_id,
                     "sender": sender,
+                    "sender_kind": resolved_speaker.kind,
                     "text": str(user_input),
                     "message_id": req_id,
+                    "presentation_message_id": ConversationMessageIds.incoming(req_id),
                     "origin_message_id": origin_message_id,
+                    "character_id": character_id,
                 })
 
-            collected_sys = ""
-            if policy.use_pending_sysinfo:
-                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
+            system_input = ""
 
             # Label continuous in-game camera frames when Unity flags them
             effective_image_source = str(context.get("image_source") or "")
             if _should_label_as_mita_camera(event_type, context):
                 camera_label = "[Your eyes (in-game camera)] The attached image shows what you currently see through your own eyes in-game. It is not a player photo, selfie, or drawing."
-                collected_sys = (camera_label + "\n" + collected_sys).strip() if collected_sys else camera_label
+                system_input = camera_label
                 effective_image_source = "mita_camera"
 
             await _dispatch_task(
@@ -230,10 +392,14 @@ class CreateTaskAction:
                 model_event_type=model_event_type,
                 policy_dict=policy.to_dict(),
                 user_input=str(user_input or ""),
-                system_input=collected_sys,
+                system_input=system_input,
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source=effective_image_source,
-                extra_task_data={"system_info": context.get("currentInfo", "")},
+                player_message_source=(
+                    PlayerMessageSource.GAME.value
+                    if user_input and resolved_speaker.kind is DialogueActorKind.PLAYER
+                    else ""
+                ),
                 abort_reason="Failed to create task",
             )
             return
@@ -248,43 +414,34 @@ class CreateTaskAction:
 
             last_idle_uid = server.last_idle_tasks.get(character_id)
             if last_idle_uid:
-                last_task_result = event_bus.emit_and_wait(Events.Task.GET_TASK, {"uid": last_idle_uid}, timeout=1.0)
-                last_task = last_task_result[0] if last_task_result else None
+                last_task = use(TaskService).get_task(last_idle_uid)
                 if last_task and last_task.status == TaskStatus.PENDING:
                     await server.send_task_update(ctx.client_id, last_task)
                     return
 
-            collected_sys = ""
-            if policy.use_pending_sysinfo:
-                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
+            # Порог простоя задаёт мод; здесь конкретное число не называем,
+            # чтобы фолбэк не разошёлся с реальным таймером Unity.
+            idle_prompt = data.get("message")
+            if not isinstance(idle_prompt, str) or not idle_prompt.strip():
+                idle_prompt = "The player has been silent for a while. React naturally to this silence."
 
-            task_result = event_bus.emit_and_wait(Events.Task.CREATE_TASK, {
-                "type": "idle",
-                "data": {
-                    "character": character_id,
-                    "character_stats": character_stats,
-                    "message": data.get("message", "Player idle for 90 seconds"),
-                    "system_input": collected_sys,
-                    "client_id": ctx.client_id,
-                    "event_type": event_type,
-                    "req_id": req_id,
-                    "sender": sender,
-                    "participants": participants,
-                    "origin_message_id": origin_message_id,
-                    "policy": policy_dict,
-                }
-            }, timeout=5.0)
-
-            task = task_result[0] if task_result else None
+            task = use(TaskService).create_task("idle", {
+                "character": character_id,
+                "character_stats": character_stats,
+                "message": idle_prompt,
+                "system_input": "",
+                "client_id": ctx.client_id,
+                "event_type": event_type,
+                "req_id": req_id,
+                "sender": sender,
+                "participants": participants,
+                "origin_message_id": origin_message_id,
+                "policy": policy_dict,
+            })
             if task:
                 server.client_tasks[ctx.client_id].add(task.uid)
                 server.last_idle_tasks[character_id] = task.uid
                 await server.send_task_update(ctx.client_id, task)
-
-                idle_prompt = "The player has been silent for 90 seconds. React naturally to this silence."
-                if collected_sys:
-                    idle_prompt += f"\n\nAdditional context:\n{collected_sys}"
-
                 event_bus.emit(Events.Chat.SEND_MESSAGE, {
                     "user_input": "",
                     "system_input": idle_prompt,
@@ -297,25 +454,68 @@ class CreateTaskAction:
                     "req_id": req_id,
                     "origin_message_id": origin_message_id,
                     "policy": policy_dict,
+                    "game_state": dict(game_state_payload),
                 })
             else:
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="Failed to create idle task", req_id=req_id)
             return
-
-        # ── system_info ───────────────────────────────────────────────────────
-        if event_type == "system_info":
-            msg = data.get("message", "")
-            if msg:
-                server.pending_sysinfo.setdefault(character_id, []).append(msg)
-            await server.send_json(ctx.writer, {"type": "info", "stored": len(server.pending_sysinfo.get(character_id, []))})
+        # ── game_master_observe ───────────────────────────────────────────────
+        if event_type in {"game_master_observe", "game_master_command"}:
+            command = str(
+                data.get("command")
+                or data.get("instruction")
+                or data.get("message")
+                or ""
+            ).strip()
+            if event_type == "game_master_command" and not command:
+                await server._send_aborted_update(
+                    ctx.client_id,
+                    event_type,
+                    "GameMaster",
+                    reason="GameMaster command is empty",
+                    req_id=req_id,
+                )
+                return
+            policy = resolve_policy(model_event_type=event_type)
+            gm_shared = dict(_shared)
+            gm_shared.update(
+                character_id="GameMaster",
+                character_stats=_get_character_stats("GameMaster"),
+                sender="GameMaster",
+            )
+            await _dispatch_task(
+                **gm_shared,
+                task_type="chat",
+                model_event_type=event_type,
+                policy_dict=policy.to_dict(),
+                user_input="",
+                system_input=(
+                    command
+                    or "Review the active conversation and emit only the structured "
+                    "GameMaster intents needed to correct or guide it."
+                ),
+                images=[],
+                image_source="",
+                gm_instruction_override=(
+                    command if event_type == "game_master_command" else None
+                ),
+                abort_reason=(
+                    "Failed to create GameMaster command"
+                    if event_type == "game_master_command"
+                    else "Failed to create GameMaster observation"
+                ),
+            )
             return
 
         # ── system_info_flush ─────────────────────────────────────────────────
         if event_type == "system_info_flush":
             policy = resolve_policy(model_event_type="chat")
-            collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
-            if not collected_sys:
-                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="No pending system_info to flush", req_id=req_id)
+            runtime_events = context.get("runtime_events", [])
+            if not isinstance(runtime_events, (list, tuple)):
+                runtime_events = [runtime_events] if runtime_events else []
+            flush_instruction = str(data.get("message") or "").strip()
+            if not flush_instruction and not any(str(item).strip() for item in runtime_events):
+                await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="No runtime events or instruction to flush", req_id=req_id)
                 return
             await _dispatch_task(
                 **_shared,
@@ -323,11 +523,10 @@ class CreateTaskAction:
                 model_event_type="chat",
                 policy_dict=policy.to_dict(),
                 user_input="",
-                system_input=collected_sys,
+                system_input=flush_instruction or "React to the accumulated Unity runtime events.",
                 images=[],
                 image_source="",
-                extra_task_data={"system_info": context.get("currentInfo", "")},
-                abort_reason="Failed to flush system info",
+                abort_reason="Failed to flush runtime events",
             )
             return
 
@@ -335,46 +534,25 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            react_enabled_res = event_bus.emit_and_wait(
-                Events.Settings.GET_SETTING,
-                {"key": "REACT_ENABLED", "default": False},
-                timeout=0.8,
-            )
-            if not bool(react_enabled_res and react_enabled_res[0]):
+            if not bool(use(SettingsService).get("REACT_ENABLED", False)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
             incoming_level = data.get("react_level", None)
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
-            level_default = False if policy.react_level == 2 else True
-            level_res = event_bus.emit_and_wait(Events.Settings.GET_SETTING, {"key": level_key, "default": level_default}, timeout=0.8)
-            if not bool(level_res and level_res[0]):
+            # L1 (тихие реакции) временно выключены и убраны из интерфейса —
+            # по умолчанию отключены (совпадает с UI-дефолтом чекбокса).
+            # L2 сохраняет прежний backend-дефолт (выкл. при отсутствии ключа).
+            level_default = False
+            if not bool(use(SettingsService).get(level_key, level_default)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
 
-            reason_type = str(data.get("reason_type") or "").strip()
-            reason_content = str(data.get("reason_content") or "").strip()
-            reason_text = reason_content or str(data.get("reason") or "").strip() or "player_react"
-            duration = data.get("duration", 0.0)
-
-            react_lines = [
-                "This is a react event from the game. React to it!",
-                f"React level: {policy.react_level or 1}",
-            ]
-            if reason_type:
-                react_lines.append(f"Reason type: {reason_type}")
-            react_lines.append(f"Reason: {reason_text}")
-            react_lines.append(f"Duration (seconds): {float(duration or 0.0):.1f}")
-
-            current_info = context.get("currentInfo", "")
-            if current_info and not policy.use_pending_sysinfo:
-                react_lines += ["", "Current game info:", str(current_info)]
-
-            if policy.use_pending_sysinfo:
-                collected_sys = "\n".join(server.pending_sysinfo.pop(character_id, []))
-                if collected_sys.strip():
-                    react_lines += ["", "Pending system info:", collected_sys]
+            react_lines, reason_text, duration, reaction_events = _build_react_prompt(
+                data,
+                react_level=policy.react_level or 1,
+            )
 
             # Label continuous in-game camera frames when Unity flags them
             effective_image_source = str(context.get("image_source") or "")
@@ -391,7 +569,11 @@ class CreateTaskAction:
                 system_input="\n".join(react_lines),
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source=effective_image_source,
-                extra_task_data={"reason": reason_text, "duration": duration},
+                extra_task_data={
+                    "reason": reason_text,
+                    "duration": duration,
+                    "reaction_events": reaction_events,
+                },
                 abort_reason="Failed to create react task",
             )
             return
@@ -410,7 +592,6 @@ class CreateTaskAction:
                 system_input=system_input,
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source="mita_camera",
-                extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create snapshot task",
             )
             return
@@ -430,7 +611,6 @@ class CreateTaskAction:
                 system_input=system_input,
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source=str(context.get("image_source") or ""),
-                extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create TV reaction task",
             )
             return
@@ -452,7 +632,6 @@ class CreateTaskAction:
                 system_input=system_input,
                 images=collect_context_images(context, client_id=ctx.client_id),
                 image_source="easel",
-                extra_task_data={"system_info": context.get("currentInfo", "")},
                 abort_reason="Failed to create easel drawing task",
             )
             return

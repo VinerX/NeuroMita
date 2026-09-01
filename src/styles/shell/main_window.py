@@ -11,7 +11,7 @@ QStackedWidget#MainPageStack > QWidget {
 QFrame#LauncherBrandCard,
 QFrame#LauncherFooterCard {
     background-color: rgba({sidebar_panel_rgb}, 0.94);
-    border: 1px solid rgba({accent_rgb}, 0.20);
+    border: 1px solid {panel_border};
     border-radius: 20px;
 }
 
@@ -41,7 +41,7 @@ QLabel#LauncherFooterStatus {
 
 QFrame#LauncherSpotlightCard {
     background-color: rgba({settings_panel_rgb}, 0.94);
-    border: 1px solid rgba({accent_rgb}, 0.18);
+    border: 1px solid {panel_border};
     border-radius: 22px;
 }
 
@@ -54,5 +54,31 @@ QLabel#LauncherSpotlightArt {
     color: {text};
     font-size: 18pt;
     font-weight: 800;
+}
+
+QFrame#ShutdownOverlayPanel {
+    background-color: rgba({settings_panel_rgb}, 0.99);
+    border: 1px solid {panel_border};
+    border-radius: 24px;
+}
+
+QLabel#ShutdownOverlayIcon {
+    background-color: rgba({accent_rgb}, 0.20);
+    border: 1px solid rgba({accent_rgb}, 0.48);
+    border-radius: 29px;
+}
+
+QLabel#ShutdownOverlayTitle {
+    background: transparent;
+    border: none;
+    color: {text};
+    font-size: 18pt;
+    font-weight: 750;
+}
+
+QFrame#ShutdownOverlayAccent {
+    background-color: {accent};
+    border: none;
+    border-radius: 1px;
 }
 """

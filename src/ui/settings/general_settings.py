@@ -1,4 +1,5 @@
-﻿from ui.gui_templates import create_settings_section, create_section_header
+from ui.gui_templates import create_settings_section, create_section_header
+from ui.settings.settings_access import get_setting, settings_store
 from utils import getTranslationVariant as _
 
 
@@ -7,8 +8,23 @@ def _on_section_toggled(gui, category=None, value=None):
     try:
         from ui.widgets.settings_panel import apply_section_visibility, set_section_enabled
         if category is not None:
-            set_section_enabled(str(category), bool(value))
+            set_section_enabled(str(category), bool(value), settings_store(gui))
         apply_section_visibility(gui)
+    except Exception:
+        pass
+
+
+def _on_language_changed(gui, value=None):
+    """Смена языка требует перезапуска — предлагаем его сразу.
+
+    Значение уже сохранено комбобоксом до вызова command, поэтому здесь только
+    спрашиваем и при согласии перезапускаем приложение.
+    """
+    try:
+        from ui.language_restart import prompt_language_restart
+
+        parent = gui if hasattr(gui, "window") else gui
+        prompt_language_restart(parent)
     except Exception:
         pass
 
@@ -18,7 +34,7 @@ def _on_sandbox_panel_toggled(gui, key=None, value=None):
     try:
         from ui.widgets.sandbox_panels import apply_sandbox_panel_visibility, set_panel_enabled
         if key is not None:
-            set_panel_enabled(str(key), bool(value))
+            set_panel_enabled(str(key), bool(value), settings_store(gui))
         apply_sandbox_panel_visibility(gui)
     except Exception:
         pass
@@ -116,7 +132,14 @@ def setup_general_settings_controls(self, parent):
         {'label': _('Скрывать (приватные) данные', 'Hide (private) data'), 
          'key': 'HIDE_PRIVATE',
          'type': 'checkbutton', 
-         'default_checkbutton': True},
+         'default_checkbutton': True,
+         'tooltip': _(
+             'Маскирует в интерфейсе значения Telegram ID/Hash/Phone и '
+             'Google API Key/CSE ID. Не шифрует, не удаляет и не меняет '
+             'отправку данных.',
+             'Masks Telegram ID/Hash/Phone and Google API Key/CSE ID in the '
+             'interface. It does not encrypt, delete, or change how data is sent.',
+         )},
     ]
     create_settings_section(
         self, 
@@ -156,6 +179,13 @@ def setup_general_settings_controls(self, parent):
                       'По умолчанию скрыты. Дублируется в Песочнице → Отладка.',
                       'Show system/context notes (e.g. "[Easel drawing]…") in chat. '
                       'Hidden by default. Also available in Sandbox → Debug.')},
+
+        {'label': _('Показывать статистику токенов/стоимости', 'Show token/cost stats'), 'key': 'SHOW_TOKEN_INFO',
+         'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _('Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. '
+                      'По умолчанию выключена.',
+                      'Bottom-of-chat line with tokens, context fill, cache and cost. '
+                      'Off by default.')},
     ]
 
     create_settings_section(
@@ -168,9 +198,7 @@ def setup_general_settings_controls(self, parent):
 
     # ── Профиль памяти ──────────────────────────────────────────────────────
     from ui.settings.memory_profile import apply_memory_profile, detect_memory_profile, KEY_TO_LABEL_RU, KEY_TO_LABEL_EN
-    from managers.settings_manager import SettingsManager as _SM
-
-    _lang = _SM.get('LANGUAGE', 'RU')
+    _lang = get_setting(self, 'LANGUAGE', 'RU')
     _key_map = KEY_TO_LABEL_EN if _lang == 'EN' else KEY_TO_LABEL_RU
     _detected_key = detect_memory_profile(self)
     _detected_label = _key_map.get(_detected_key, _('Сбалансированный', 'Balanced'))
@@ -212,17 +240,4 @@ def setup_general_settings_controls(self, parent):
     except Exception:
         pass
 
-    language_config = [
-        {'label': 'Язык / Language', 'key': 'LANGUAGE', 'type': 'combobox',
-         'options': ["RU", "EN"], 'default': "RU"},
-        {'label': 'Перезапусти программу после смены!', 'type': 'text'},
-        {'label': 'Restart program after change!', 'type': 'text'},
-    ]
-
-    create_settings_section(
-        self, 
-        parent,
-        "Язык / Language",
-        language_config,
-        icon_name='fa5s.globe'
-    )
+    # Выбор языка вынесен в отдельную вкладку настроек («Язык» / language_settings).

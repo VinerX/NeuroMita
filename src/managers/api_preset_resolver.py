@@ -1,12 +1,16 @@
-﻿# src/managers/api_preset_resolver.py
+# src/managers/api_preset_resolver.py
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
+from core.services import use
+from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
+from presets.model_profiles import resolve_model_profile
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,7 @@ class PresetSettings:
 
     preset_name: str
     reserve_keys: List[str]
+    distribute_keys: bool = False
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
 
@@ -44,12 +49,15 @@ class ApiPresetResolver:
     def __init__(self, settings: Any, event_bus: Any):
         self.settings = settings
         self.event_bus = event_bus
+        # Round-robin для режима «Всегда распределять» (ключ словарей — имя пресета).
+        self._distribute_counter: Dict[str, int] = {}
+        self._distribute_base: Dict[str, int] = {}
 
     # ---------------------------
     # Public API
     # ---------------------------
 
-    def resolve(self, preset_id: Optional[int] = None) -> PresetSettings:
+    def resolve(self, preset_id: Optional[int] = None, *, model_override: Optional[str] = None) -> PresetSettings:
         if preset_id is None:
             preset_id = self.settings.get("LAST_API_PRESET_ID", 0)
 
@@ -73,12 +81,17 @@ class ApiPresetResolver:
         # Core fields from preset
         preset_name = str((preset or {}).get("name", "Unknown") or "Unknown")
         api_model = str((preset or {}).get("default_model", "") or "")
+        if model_override is not None:
+            mo = str(model_override or "").strip()
+            if mo:
+                api_model = mo
         api_key = str((preset or {}).get("key", "") or "")
 
         reserve_keys = (preset or {}).get("reserve_keys", []) or []
         if not isinstance(reserve_keys, list):
             reserve_keys = []
         reserve_keys = [str(k) for k in reserve_keys if str(k).strip()]
+        distribute_keys = bool((preset or {}).get("reserve_keys_distribute", False))
 
         # Build base URL (no auth logic here)
         base_url = self._compute_base_url(preset or {}, api_model)
@@ -104,6 +117,23 @@ class ApiPresetResolver:
             if isinstance(oc, dict):
                 for k, v in oc.items():
                     capabilities[str(k)] = v
+
+        model_profile = resolve_model_profile(
+            api_model,
+            (preset or {}).get("model_profiles"),
+            (preset or {}).get("model_profile_overrides"),
+            default_safe=dialect_id == "gemini_generate_content",
+        )
+        if model_profile:
+            capabilities["model_profile"] = model_profile
+            if model_profile.get("safe_mode"):
+                capabilities.update({
+                    "tools_native": False,
+                    "tools_prompt_enabled": False,
+                    "streaming": False,
+                    "streaming_with_tools": False,
+                    "reasoning_control": "",
+                })
 
         # headers: let ProtocolsController build final headers/auth,
         # but allow preset overrides to contribute extra headers.
@@ -142,16 +172,76 @@ class ApiPresetResolver:
             api_model=api_model,
             preset_name=preset_name,
             reserve_keys=reserve_keys,
+            distribute_keys=distribute_keys,
             generation_overrides=generation_overrides,
             openrouter_routing=openrouter_routing,
         )
+
+    def resolve_chain(self, preset_id: Optional[int] = None, *, max_depth: int = 6) -> List[PresetSettings]:
+        """
+        Resolve main preset followed by its configured fallbacks (in order).
+        Each fallback may carry its own model override.
+        Skips duplicates by (preset_id, model_override) pair.
+        Stops at max_depth entries total to prevent runaway chains.
+        """
+        if preset_id is None:
+            try:
+                preset_id = int(self.settings.get("LAST_API_PRESET_ID", 0) or 0)
+            except Exception:
+                preset_id = 0
+
+        chain: List[PresetSettings] = []
+        seen_keys: set = set()
+
+        # Main preset
+        try:
+            main = self.resolve(preset_id)
+            chain.append(main)
+            seen_keys.add((int(preset_id) if preset_id else 0, str(main.api_model or "")))
+        except Exception as e:
+            logger.error(f"[ApiPresetResolver] resolve_chain: main resolve failed: {format_exception(e)}", exc_info=True)
+
+        # Fallback entries are stored in the main preset dict
+        main_raw = self._load_preset_full(preset_id) or {}
+        fallbacks_raw = main_raw.get("fallbacks") or []
+        if not isinstance(fallbacks_raw, list):
+            fallbacks_raw = []
+
+        for fb in fallbacks_raw:
+            if len(chain) >= max_depth:
+                break
+            try:
+                if isinstance(fb, dict):
+                    fb_pid = fb.get("preset_id", fb.get("id"))
+                    fb_model = str(fb.get("model") or "").strip()
+                else:
+                    fb_pid = fb
+                    fb_model = ""
+                fb_pid = int(fb_pid)
+            except Exception:
+                continue
+            if fb_pid <= 0:
+                continue
+
+            try:
+                ps = self.resolve(fb_pid, model_override=fb_model or None)
+            except Exception as e:
+                logger.warning(f"[ApiPresetResolver] fallback resolve failed for {fb_pid}: {format_exception(e)}")
+                continue
+
+            key = (fb_pid, str(ps.api_model or ""))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            chain.append(ps)
+
+        return chain
 
     def resolve_preset_id_by_name(self, display_name: str) -> Optional[int]:
         if not display_name:
             return None
         try:
-            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = meta_res[0] if meta_res else None
+            meta = use(ApiPresetService).list_meta()
             if not meta:
                 return None
 
@@ -162,7 +252,7 @@ class ApiPresetResolver:
                         pid = getattr(pm, "id", None)
                         return pid if isinstance(pid, int) else None
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to resolve preset id by name '{display_name}': {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] Failed to resolve preset id by name '{display_name}': {format_exception(e)}", exc_info=True)
         return None
 
     def apply_key_rotation(self, preset: PresetSettings, attempt: int) -> PresetSettings:
@@ -170,15 +260,17 @@ class ApiPresetResolver:
         Rotates api_key across reserve_keys and rebuilds (url, headers) via protocol factory,
         so bearer/query auth stays consistent without dialect-specific logic.
         """
-        if attempt <= 1:
-            return preset
         if not preset.reserve_keys:
+            return preset
+
+        key_index = self._resolve_key_index(preset, attempt)
+        if key_index <= 0 and not preset.distribute_keys:
             return preset
 
         new_key = self.select_key_for_attempt(
             current_key=preset.api_key,
             reserve_keys=preset.reserve_keys,
-            attempt_index=attempt - 1,
+            attempt_index=key_index,
         )
         if not new_key or new_key == preset.api_key:
             return preset
@@ -193,6 +285,20 @@ class ApiPresetResolver:
         )
 
         return replace(preset, api_key=new_key, api_url=new_url, headers=new_headers)
+
+    def _resolve_key_index(self, preset: PresetSettings, attempt: int) -> int:
+        """Индекс ключа в списке [main, *reserve] для данной попытки."""
+        if not preset.distribute_keys:
+            return max(0, attempt - 1)
+
+        key = preset.preset_name or ""
+        if attempt <= 1:
+            base = self._distribute_counter.get(key, 0)
+            self._distribute_counter[key] = base + 1
+            self._distribute_base[key] = base
+        else:
+            base = self._distribute_base.get(key, 0)
+        return base + max(0, attempt - 1)
 
     def select_key_for_attempt(self, current_key: str, reserve_keys: List[str], attempt_index: int) -> Optional[str]:
         all_keys: List[str] = []
@@ -222,21 +328,14 @@ class ApiPresetResolver:
         if not preset_id:
             return None
         try:
-            preset_data = self.event_bus.emit_and_wait(
-                Events.ApiPresets.GET_PRESET_FULL,
-                {"id": int(preset_id)},
-                timeout=1.0,
-            )
-            if preset_data and preset_data[0]:
-                return preset_data[0]
+            return use(ApiPresetService).get_full(int(preset_id))
         except Exception as e:
-            logger.error(f"[ApiPresetResolver] Failed to load preset via bus: {e}", exc_info=True)
+            logger.error(f"[ApiPresetResolver] Failed to load preset: {format_exception(e)}", exc_info=True)
         return None
 
     def _pick_fallback_preset_id(self) -> Optional[int]:
         try:
-            meta_res = self.event_bus.emit_and_wait(Events.ApiPresets.GET_PRESET_LIST, timeout=1.0)
-            meta = meta_res[0] if meta_res else None
+            meta = use(ApiPresetService).list_meta()
             if not meta:
                 return None
 
@@ -273,23 +372,20 @@ class ApiPresetResolver:
         extra_headers: Dict[str, str] | None,
     ) -> tuple[str, Dict[str, str]]:
         """
-        Asks ProtocolsController to produce final url+headers according to protocol auth rules.
-        Falls back to registry-local minimal behavior if no subscriber.
+        Asks ProtocolBuilderService to produce final url+headers according to protocol auth rules.
+        Falls back to registry-local minimal behavior if the service is unavailable.
         """
-        payload = {
-            "protocol_id": str(protocol_id or "").strip(),
-            "url": str(url or ""),
-            "api_key": str(api_key or ""),
-            "headers": dict(extra_headers or {}),
-        }
-
         try:
-            res = self.event_bus.emit_and_wait(Events.Protocols.BUILD_HTTP_REQUEST, payload, timeout=1.0)
-            built = res[0] if res else None
+            built = use(ProtocolBuilderService).build_http_request(
+                protocol_id=str(protocol_id or "").strip(),
+                url=str(url or ""),
+                api_key=str(api_key or ""),
+                headers=dict(extra_headers or {}),
+            )
             if isinstance(built, dict) and built.get("url") and isinstance(built.get("headers"), dict):
                 return str(built["url"]), dict(built["headers"])
         except Exception as e:
-            logger.warning(f"[ApiPresetResolver] BUILD_HTTP_REQUEST failed, fallback: {e}")
+            logger.warning(f"[ApiPresetResolver] build_http_request failed, fallback: {format_exception(e)}")
 
         # Fallback (should rarely happen): use protocol registry directly
         reg = get_protocol_registry()

@@ -1,3 +1,4 @@
+from core.error_utils import format_exception
 import os
 import json
 import shutil
@@ -54,7 +55,7 @@ def list_prompt_sets(root_path, character_name=None):
         return out
 
     except Exception as e:
-        logger.exception(f"Error listing prompt sets in {root_path}: {e}")
+        logger.exception(f"Error listing prompt sets in {root_path}: {format_exception(e)}")
         return []
 
 
@@ -73,12 +74,12 @@ def read_info_json(set_path):
         logger.warning(f"info.json not found in {set_path}")
         return {}
     except json.JSONDecodeError as e:
-        logger.error(f"Error decoding JSON in {info_file_path}: {e}")
-        QMessageBox.critical(None, "Error", f"Error decoding JSON in info.json: {e}")
+        logger.error(f"Error decoding JSON in {info_file_path}: {format_exception(e)}")
+        QMessageBox.critical(None, "Error", f"Error decoding JSON in info.json: {format_exception(e)}")
         return {}
     except Exception as e:
-        logger.exception(f"Error reading info.json in {set_path}: {e}")
-        QMessageBox.critical(None, "Error", f"Error reading info.json: {e}")
+        logger.exception(f"Error reading info.json in {set_path}: {format_exception(e)}")
+        QMessageBox.critical(None, "Error", f"Error reading info.json: {format_exception(e)}")
         return {}
 
 
@@ -89,8 +90,8 @@ def write_info_json(set_path, data):
             json.dump(data, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        logger.exception(f"Error writing info.json to {info_file_path}: {e}")
-        QMessageBox.critical(None, "Error", f"Error writing info.json: {e}")
+        logger.exception(f"Error writing info.json to {info_file_path}: {format_exception(e)}")
+        QMessageBox.critical(None, "Error", f"Error writing info.json: {format_exception(e)}")
         return False
 
 
@@ -101,8 +102,8 @@ def copy_prompt_set(set_path: str, target_path: str, clean_target: bool = True) 
         shutil.copytree(set_path, target_path, dirs_exist_ok=True)
         return True
     except Exception as e:
-        logger.exception(f"Error copying prompt set from {set_path} to {target_path}: {e}")
-        QMessageBox.critical(None, "Error", f"Error copying prompt set: {e}")
+        logger.exception(f"Error copying prompt set from {set_path} to {target_path}: {format_exception(e)}")
+        QMessageBox.critical(None, "Error", f"Error copying prompt set: {format_exception(e)}")
         return False
 
 
@@ -124,8 +125,8 @@ def create_new_set(character_name, root_path, source_path):
         shutil.rmtree(new_set_path)
         return None
     except Exception as e:
-        logger.exception(f"Error creating new prompt set in {root_path}: {e}")
-        QMessageBox.critical(None, "Error", f"Error creating new prompt set: {e}")
+        logger.exception(f"Error creating new prompt set in {root_path}: {format_exception(e)}")
+        QMessageBox.critical(None, "Error", f"Error creating new prompt set: {format_exception(e)}")
         return None
 
 
@@ -141,8 +142,8 @@ def delete_prompt_set(set_path):
             shutil.rmtree(set_path)
             return True
         except Exception as e:
-            logger.exception(f"Error deleting prompt set at {set_path}: {e}")
-            QMessageBox.critical(None, "Error", f"Error deleting prompt set: {e}")
+            logger.exception(f"Error deleting prompt set at {set_path}: {format_exception(e)}")
+            QMessageBox.critical(None, "Error", f"Error deleting prompt set: {format_exception(e)}")
             return False
     return False
 

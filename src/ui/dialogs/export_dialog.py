@@ -3,6 +3,7 @@
 ExportDialog — диалог экспорта данных для дообучения.
 """
 from __future__ import annotations
+from core.error_utils import format_exception
 
 from datetime import datetime, timezone
 from typing import List
@@ -20,18 +21,14 @@ from main_logger import logger
 
 
 class ExportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, view_model, parent=None):
         super().__init__(parent)
+        self._view_model = view_model
         self.setWindowTitle(tr("Экспорт данных дообучения", "Export Finetune Data"))
         self.setMinimumWidth(500)
         self.setModal(True)
 
-        self._collector = None
-        try:
-            from managers.finetune_collector import FineTuneCollector
-            self._collector = FineTuneCollector.instance
-        except Exception:
-            pass
+        self._collector_available = self._view_model.export_available()
 
         self._build_ui()
         self._populate_characters()
@@ -97,8 +94,8 @@ class ExportDialog(QDialog):
 
         self._rating_combo = QComboBox()
         self._rating_combo.addItem(tr("Все записи", "All records"), None)
-        self._rating_combo.addItem(tr("Без отрицательных (👍 и без оценки)", "No negatives (👍 and unrated)"), 0)
-        self._rating_combo.addItem(tr("Только 👍 положительные", "Only 👍 positive"), 1)
+        self._rating_combo.addItem(tr("Без отрицательных (положительные и без оценки)", "No negatives (positive and unrated)"), 0)
+        self._rating_combo.addItem(tr("Только положительные", "Only positive"), 1)
         self._rating_combo.currentIndexChanged.connect(self._update_count)
         self._rating_combo.setMinimumWidth(280)
         rating_layout.addWidget(self._rating_combo)
@@ -157,10 +154,10 @@ class ExportDialog(QDialog):
     # ── Populate ──────────────────────────────────────────────────────────────
 
     def _populate_characters(self):
-        if not self._collector:
+        if not self._collector_available:
             return
         try:
-            stats = self._collector.get_stats()
+            stats = self._view_model.export_stats()
             for char_id, count in sorted(stats.get("by_character", {}).items()):
                 item = QListWidgetItem(f"{char_id}  ({count} {tr('записей', 'records')})")
                 item.setData(Qt.ItemDataRole.UserRole, char_id)
@@ -168,7 +165,7 @@ class ExportDialog(QDialog):
                 item.setCheckState(Qt.CheckState.Unchecked)
                 self._char_list.addItem(item)
         except Exception as e:
-            logger.error(f"ExportDialog populate_characters: {e}")
+            logger.error(f"ExportDialog populate_characters: {format_exception(e)}")
 
     # ── Filters ───────────────────────────────────────────────────────────────
 
@@ -201,27 +198,27 @@ class ExportDialog(QDialog):
     # ── Count update ──────────────────────────────────────────────────────────
 
     def _update_count(self):
-        if not self._collector:
+        if not self._collector_available:
             self._count_label.setText(tr("Сбор данных не активен", "Collector not active"))
             return
         try:
             filters = self._build_filters()
-            samples = self._collector.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             n = len(samples)
             self._count_label.setText(tr("Записей подходит: ", "Records matched: ") + str(n))
             self._export_btn.setEnabled(n > 0)
         except Exception as e:
-            self._count_label.setText(f"Error: {e}")
+            self._count_label.setText(f"Error: {format_exception(e)}")
 
     # ── Export ────────────────────────────────────────────────────────────────
 
     def _do_export(self):
-        if not self._collector:
+        if not self._collector_available:
             return
 
         try:
             filters = self._build_filters()
-            samples = self._collector.load_samples(filters)
+            samples = self._view_model.export_samples(filters)
             if not samples:
                 QMessageBox.information(
                     self,
@@ -245,10 +242,11 @@ class ExportDialog(QDialog):
             if not path:
                 return
 
-            if is_sharegpt:
-                count = self._collector.export_sharegpt(samples, path)
-            else:
-                count = self._collector.export_raw_jsonl(samples, path)
+            count = self._view_model.export_to_file(
+                samples,
+                path,
+                sharegpt=is_sharegpt,
+            )
 
             QMessageBox.information(
                 self,
@@ -258,9 +256,9 @@ class ExportDialog(QDialog):
             self.accept()
 
         except Exception as e:
-            logger.error(f"ExportDialog export error: {e}", exc_info=True)
+            logger.error(f"ExportDialog export error: {format_exception(e)}", exc_info=True)
             QMessageBox.critical(
                 self,
                 tr("Ошибка", "Error"),
-                str(e)
+                format_exception(e)
             )

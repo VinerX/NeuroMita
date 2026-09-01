@@ -1,8 +1,10 @@
+from core.error_utils import format_exception
 import abc
 import json
 import os
 from typing import Any, Dict, List, Optional
 
+from core.app_paths import settings_path
 from core.backends import BackendKind
 from core.install_types import InstallPlan
 from core.installables import (
@@ -11,14 +13,16 @@ from core.installables import (
     ComponentStatus,
     ComponentStatusCode,
     ValidationResult,
+    coerce_compatibility_spec,
     coerce_backend,
     make_component_id,
 )
 from core.installables.helpers import build_runtime_ctx, status_from_installed
+from handlers.voice_models.context import VoiceRuntimeContext
 
 
 def _voice_settings_path() -> str:
-    return os.path.join("Settings", "voice_model_settings.json")
+    return str(settings_path("voice_model_settings.json", create_parent=True))
 
 
 def load_voice_model_settings(model_id: str) -> Dict[str, Any]:
@@ -80,14 +84,14 @@ class _InstallableVoiceParent:
 
 class IVoiceModel(abc.ABC):
     """
-    РђР±СЃС‚СЂР°РєС‚РЅС‹Р№ Р±Р°Р·РѕРІС‹Р№ РєР»Р°СЃСЃ (РёРЅС‚РµСЂС„РµР№СЃ) РґР»СЏ РІСЃРµС… РјРѕРґРµР»РµР№ РѕР·РІСѓС‡РєРё.
-    РћРїСЂРµРґРµР»СЏРµС‚ РєРѕРЅС‚СЂР°РєС‚, РєРѕС‚РѕСЂРѕРјСѓ РґРѕР»Р¶РЅС‹ СЃР»РµРґРѕРІР°С‚СЊ РІСЃРµ РєР»Р°СЃСЃС‹ РјРѕРґРµР»РµР№.
+    Абстрактный базовый класс (интерфейс) для всех моделей озвучки.
+    Определяет контракт, которому должны следовать все классы моделей.
     """
 
     category = ComponentCategory.TTS
     legacy_kind = "voice"
 
-    def __init__(self, parent: "LocalVoice", model_id: str):
+    def __init__(self, parent: VoiceRuntimeContext, model_id: str):
         self.parent = parent
         self.model_id = str(model_id or "").strip()
         self.initialized = False
@@ -119,6 +123,28 @@ class IVoiceModel(abc.ABC):
             if isinstance(item, dict) and str(item.get("id") or "").strip() == target:
                 return dict(item)
         return {}
+
+    @classmethod
+    def default_settings_for_model(cls, model_id: str) -> Dict[str, Any]:
+        """Return the schema defaults for a model without persisting them."""
+        defaults: Dict[str, Any] = {}
+        config = cls._find_model_config(model_id)
+        for setting in config.get("settings") or []:
+            if not isinstance(setting, dict):
+                continue
+            key = str(setting.get("key") or "").strip()
+            options = setting.get("options")
+            if key and isinstance(options, dict) and "default" in options:
+                defaults[key] = options["default"]
+        return defaults
+
+    @classmethod
+    def resolve_settings_for_model(cls, model_id: str, values: Dict[str, Any] | None) -> Dict[str, Any]:
+        """Overlay persisted settings onto the model schema defaults."""
+        resolved = cls.default_settings_for_model(model_id)
+        if isinstance(values, dict):
+            resolved.update(values)
+        return resolved
 
     @classmethod
     def create_installable_components(cls) -> List["IVoiceModel"]:
@@ -158,8 +184,15 @@ class IVoiceModel(abc.ABC):
 
     def metadata(self) -> ComponentMetadata:
         config = self._find_model_config(self.model_id)
-        runtime_ctx = build_runtime_ctx({})
-        backend = coerce_backend(self.__class__.required_backend_for_model(self.model_id, runtime_ctx))
+        # Каталожный backend — статичное свойство компонента из карточки модели.
+        # required_backend_for_model остаётся для install/status: он может зависеть
+        # от машины (например, F5 предпочитает CUDA, но работает на CPU).
+        declared_backend = config.get("backend")
+        if declared_backend:
+            backend = coerce_backend(declared_backend)
+        else:
+            runtime_ctx = build_runtime_ctx({})
+            backend = coerce_backend(self.__class__.required_backend_for_model(self.model_id, runtime_ctx))
 
         size_value = config.get("size_gb")
         size = ""
@@ -183,6 +216,7 @@ class IVoiceModel(abc.ABC):
             tags=tuple(tags),
             languages=tuple(str(item) for item in (config.get("languages") or []) if str(item).strip()),
             size=size,
+            compatibility=coerce_compatibility_spec(config.get("compatibility")),
         )
 
     def status(self, ctx: Dict[str, Any] | None = None) -> ComponentStatus:
@@ -196,7 +230,7 @@ class IVoiceModel(abc.ABC):
                 code=ComponentStatusCode.FAILED,
                 installed=False,
                 ready=False,
-                message=str(exc),
+                message=format_exception(exc),
                 backend=backend,
                 backend_ok=False,
             )
@@ -220,7 +254,10 @@ class IVoiceModel(abc.ABC):
         return list(self._find_model_config(self.model_id).get("settings") or [])
 
     def load_settings(self) -> Dict[str, Any]:
-        return load_voice_model_settings(self.model_id)
+        return self.resolve_settings_for_model(
+            self.model_id,
+            load_voice_model_settings(self.model_id),
+        )
 
     def validate_settings(self, values: Dict[str, Any]) -> ValidationResult:
         return validate_voice_model_settings(self.settings_schema(), values)
