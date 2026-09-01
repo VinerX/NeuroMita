@@ -40,6 +40,8 @@ On the home page, install the Unity part if the interface offers it, then click 
 
 After Unity starts, keep the NeuroMita launcher open: it maintains the connection between the game and the AI. You can minimize the window.
 
+If network problems prevent the Unity download from completing, a [manual installation method](docs/TROUBLESHOOTING_EN.md#manual-unity-installation) is available.
+
 Updates are installed from the home page: select the required components and click **Update**. Do not extract a new ZIP over an existing working NeuroMita folder.
 
 ### Setting up the first chat

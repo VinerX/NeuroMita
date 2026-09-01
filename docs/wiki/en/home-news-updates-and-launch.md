@@ -38,6 +38,8 @@ After clicking `Play`, keep the NeuroMita launcher open: it runs the backend and
 
 The right side of the split button opens contextual maintenance actions while idle. During cancellable download or extraction stages it becomes a direct cancel action; verification and commit stages disable cancellation because interrupting them would be misleading.
 
+If the automatic Unity installation ends with an error, use the [manual Unity installation guide](../../TROUBLESHOOTING_EN.md#manual-unity-installation).
+
 ## Recoverable Installation
 
 Both components download through a resumable `.part` cache, are checked against the release size and SHA-256 digest when available, and are extracted outside the live install directory. Each explicitly authorized operation has a durable journal. The staged tree receives a per-file manifest, so a launcher restart can verify and reuse it instead of downloading again.
