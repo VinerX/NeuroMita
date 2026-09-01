@@ -17,9 +17,9 @@ All options use the same flow in the app: **Settings → API presets → +** →
 
 Do not paste a key into a message, screenshot, public log, or repository. If a key is exposed, revoke it with the provider and create a new one.
 
-## Russia: access through a VPN
+## Russia: access to foreign services
 
-Some foreign AI services may be unavailable from Russia or for Russian accounts. In that case, a VPN may be required to access the service. Follow the service rules and the applicable requirements in your country.
+Some foreign AI services may be unavailable from Russia or for Russian accounts. This includes Google AI Studio and OpenRouter. In that case, a VPN may be required to access the service; you can also try changing your DNS server. Changing DNS can sometimes help with domain-name resolution issues, but it does not bypass service or account regional restrictions. Follow the service rules and the applicable requirements in your country.
 
 ## Paid options
 
