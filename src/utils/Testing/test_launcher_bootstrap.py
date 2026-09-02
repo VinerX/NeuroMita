@@ -62,7 +62,7 @@ def test_launcher_normalizes_unsigned_windows_negative_exit_code() -> None:
 def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text("example-package\nnum2words==0.5.14\n", encoding="utf-8")
+    requirements.write_text("example-package\nnum2words2==1.0.20\n", encoding="utf-8")
     python = tmp_path / "embedded" / "python.exe"
     target = tmp_path / "Lib" / "core"
     uv = tmp_path / ".bootstrap" / "uv" / "bin" / "uv.exe"
@@ -83,15 +83,15 @@ def test_uv_requirements_install_targets_explicit_core(tmp_path, monkeypatch) ->
     assert command[:3] == [str(uv), "pip", "install"]
     assert command[command.index("--python") + 1] == str(python)
     assert command[command.index("--target") + 1] == str(target)
-    assert "num2words==0.5.14" not in command
-    assert "num2words==0.5.14" in commands[1]
+    assert "num2words2==1.0.20" not in command
+    assert "num2words2==1.0.20" in commands[1]
     assert "--no-deps" in commands[1]
 
 
 def test_pip_fallback_targets_explicit_core(tmp_path, monkeypatch) -> None:
     launcher = _load_launcher()
     requirements = tmp_path / "requirements.txt"
-    requirements.write_text("example-package\nnum2words==0.5.14\n", encoding="utf-8")
+    requirements.write_text("example-package\nnum2words2==1.0.20\n", encoding="utf-8")
     python = tmp_path / "embedded" / "python.exe"
     target = tmp_path / "Lib" / "core"
     commands: list[list[str]] = []
@@ -110,16 +110,16 @@ def test_pip_fallback_targets_explicit_core(tmp_path, monkeypatch) -> None:
     command = commands[0]
     assert command[:5] == [str(python), "-m", "pip", "--isolated", "install"]
     assert command[command.index("--target") + 1] == str(target)
-    assert "num2words==0.5.14" not in command
-    assert "num2words==0.5.14" in commands[1]
+    assert "num2words2==1.0.20" not in command
+    assert "num2words2==1.0.20" in commands[1]
     assert "--no-deps" in commands[1]
 
 
-def test_num2words_no_deps_version_must_be_reaudited() -> None:
+def test_num2words2_no_deps_version_must_be_reaudited() -> None:
     launcher = _load_launcher()
 
     with pytest.raises(RuntimeError, match="повторно проверить"):
-        launcher._split_audited_no_deps_requirements("num2words==0.5.15\n")
+        launcher._split_audited_no_deps_requirements("num2words2==1.0.21\n")
 
 
 def test_ensure_pip_probe_uses_60_second_timeout(monkeypatch) -> None:

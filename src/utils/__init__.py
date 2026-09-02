@@ -15,7 +15,7 @@ except Exception:
     LANGDETECT_AVAILABLE = False
 
 try:
-    from num2words import num2words
+    from num2words2 import num2words
 except Exception:
     def num2words(value, *args, **kwargs):
         return str(value)
@@ -313,7 +313,7 @@ SCRIPT_TO_LANG = {
     # "LATIN": "en",    # не доверяем на 100% латинице — пусть решит модель
 }
 
-# Нормализация кодов языка (из langdetect → для num2words и общего использования)
+# Нормализация кодов языка (из langdetect → для num2words2 и общего использования)
 LANG_NORMALIZATION = {
     "zh-cn": "zh",
     "zh-tw": "zh",
@@ -400,7 +400,7 @@ def normalize_lang_code(code: str | None) -> str | None:
         return None
     c = code.lower()
     c = LANG_NORMALIZATION.get(c, c)
-    # num2words чаще ожидает базовые коды ('en', 'ru', 'fr', 'pt', 'pt_BR', ...)
+    # num2words2 чаще ожидает базовые коды ('en', 'ru', 'fr', 'pt', 'pt_BR', ...)
     return c
 
 
@@ -443,7 +443,7 @@ def replace_numbers_with_words(text: str, lang: str | None = None) -> str:
                 # Фолбэк на английский
                 word = num2words(num, lang="en")
                 if lang != "en":
-                    logger.debug(f"num2words: язык '{lang}' не поддержан, используем 'en'.")
+                    logger.debug(f"num2words2: язык '{lang}' не поддержан, используем 'en'.")
         except Exception:
             # На случай чего-то странного — вернём исходное
             word = token
