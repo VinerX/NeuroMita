@@ -534,17 +534,14 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            if not bool(use(SettingsService).get("REACT_ENABLED", False)):
+            if not bool(use(SettingsService).get("REACT_ENABLED", True)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
             incoming_level = data.get("react_level", None)
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
-            # L1 (тихие реакции) временно выключены и убраны из интерфейса —
-            # по умолчанию отключены (совпадает с UI-дефолтом чекбокса).
-            # L2 сохраняет прежний backend-дефолт (выкл. при отсутствии ключа).
-            level_default = False
+            level_default = policy.react_level == 2
             if not bool(use(SettingsService).get(level_key, level_default)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
