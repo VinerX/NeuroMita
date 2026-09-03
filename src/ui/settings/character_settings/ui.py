@@ -251,6 +251,14 @@ def _build_char_config_panel(self, label_w: int) -> QWidget:
     self.btn_maint_files_db.setObjectName("SecondaryButton")
     _make_compact(self.btn_maint_files_db)
 
+    self.btn_maint_legacy_recovery = tr_set(QPushButton(), "Восстановить старую память…", "Restore old memory…")
+    tr_set(self.btn_maint_legacy_recovery,
+           "Выбрать ZIP, папку или JSON-файлы старого сохранения и восстановить их с предпросмотром",
+           "Choose a ZIP, folder, or JSON files from an old backup and restore them with a preview", "setToolTip")
+    self.btn_maint_legacy_recovery.setIcon(qta.icon('fa5s.life-ring', color='#ffffff'))
+    self.btn_maint_legacy_recovery.setObjectName("SecondaryButton")
+    _make_compact(self.btn_maint_legacy_recovery)
+
     self.btn_maint_tags = tr_set(QPushButton(), "Теги → данные", "Tags → data")
     tr_set(self.btn_maint_tags, "Перенести теги из поля content в колонку structured_data",
           "Move inline tags from the content field into the structured_data column", "setToolTip")
@@ -259,6 +267,7 @@ def _build_char_config_panel(self, label_w: int) -> QWidget:
     _make_compact(self.btn_maint_tags)
 
     self.maintenance_section.add_widget(_btn_row(self.btn_maint_files_db, self.btn_maint_tags))
+    self.maintenance_section.add_widget(_btn_row(self.btn_maint_legacy_recovery))
 
     self.btn_maint_index_new = tr_set(QPushButton(), "Индекс нового", "Index new")
     tr_set(self.btn_maint_index_new, "Заполнить отсутствующие векторы для RAG", "Fill missing embedding vectors for RAG", "setToolTip")

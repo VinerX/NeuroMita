@@ -562,6 +562,8 @@ def wire_character_settings_logic(self, *, settings_data):
     if hasattr(self, 'btn_maint_files_db'):
         self.btn_maint_files_db.clicked.connect(
             lambda: migrate_to_db(self) if _scope() == "current" else migrate_to_db_all(self))
+    if hasattr(self, 'btn_maint_legacy_recovery'):
+        self.btn_maint_legacy_recovery.clicked.connect(lambda: restore_legacy_memory(self))
     if hasattr(self, 'btn_maint_tags'):
         self.btn_maint_tags.clicked.connect(
             lambda: migrate_db_to_structured(self, "current" if _scope() == "current" else None))
@@ -1122,6 +1124,197 @@ def migrate_to_db_all(gui):
         return
 
     _start_migration_worker(gui, character_id=None)
+
+
+def restore_legacy_memory(gui):
+    """Select and restore one pre-SQLite character backup with a preview first."""
+    character_id = _selected_character_id(gui)
+    if not character_id:
+        QMessageBox.information(gui, _("Информация", "Information"),
+                                _("Персонаж не выбран.", "No character selected."))
+        return
+
+    chooser = QMessageBox(gui)
+    chooser.setWindowTitle(_("Восстановление старой памяти", "Restore old memory"))
+    chooser.setText(_(
+        "Выберите, как открыть старое сохранение. Данные пока не будут изменены.",
+        "Choose how to open the old backup. No data will be changed yet.",
+    ))
+    file_button = chooser.addButton(
+        _("ZIP или один JSON-файл…", "ZIP or one JSON file…"),
+        QMessageBox.ButtonRole.ActionRole,
+    )
+    folder_button = chooser.addButton(
+        _("Папка…", "Folder…"),
+        QMessageBox.ButtonRole.ActionRole,
+    )
+    files_button = chooser.addButton(
+        _("Список JSON-файлов…", "JSON file list…"),
+        QMessageBox.ButtonRole.ActionRole,
+    )
+    chooser.addButton(QMessageBox.StandardButton.Cancel)
+    chooser.exec()
+
+    paths: list[str] = []
+    clicked = chooser.clickedButton()
+    if clicked is file_button:
+        path, _filter = QFileDialog.getOpenFileName(
+            gui,
+            _("Выберите архив или JSON", "Select backup archive or JSON"),
+            os.getcwd(),
+            "Backup (*.zip *.json);;ZIP (*.zip);;JSON (*.json)",
+        )
+        paths = [path] if path else []
+    elif clicked is folder_button:
+        path = QFileDialog.getExistingDirectory(
+            gui,
+            _("Выберите папку со старым сохранением", "Select folder with old backup"),
+            os.getcwd(),
+        )
+        paths = [path] if path else []
+    elif clicked is files_button:
+        paths, _filter = QFileDialog.getOpenFileNames(
+            gui,
+            _("Выберите JSON-файлы старого сохранения", "Select old backup JSON files"),
+            os.getcwd(),
+            "JSON (*.json)",
+        )
+    if not paths:
+        return
+
+    from utils.legacy_memory_recovery import LegacyBackupError, inspect_legacy_backup
+
+    try:
+        preview = inspect_legacy_backup(paths)
+    except LegacyBackupError as exc:
+        QMessageBox.warning(gui, _("Не удалось прочитать сохранение", "Could not read backup"), str(exc))
+        return
+
+    source_id = ", ".join(dict.fromkeys(preview.source_character_ids)) or _("неизвестный", "unknown")
+    details = _(
+        "Источник: {source}\nЦелевой персонаж: {target}\n\n"
+        "Сообщений истории: {history}\nВоспоминаний: {memories}\nПеременных: {variables}\n"
+        "Старых системных частей: {fixed}\n\n"
+        "Перед записью будет создана резервная копия базы. Старые системные промпты сохранятся "
+        "в архиве импорта, но не будут добавлены в активный контекст.",
+        "Source: {source}\nTarget character: {target}\n\n"
+        "History messages: {history}\nMemories: {memories}\nVariables: {variables}\n"
+        "Legacy fixed parts: {fixed}\n\n"
+        "A database backup will be created before writing. Old system prompts will be retained "
+        "in the import archive but will not be added to active context.",
+    ).format(
+        source=source_id,
+        target=character_id,
+        history=preview.history_count,
+        memories=preview.memory_count,
+        variables=preview.variable_count,
+        fixed=preview.fixed_parts_count,
+    )
+    if preview.warnings:
+        details += "\n\n" + _("Предупреждения:", "Warnings:") + "\n• " + "\n• ".join(preview.warnings)
+    reply = QMessageBox.question(
+        gui,
+        _("Предпросмотр восстановления", "Restore preview"),
+        details,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+    _start_legacy_memory_recovery_worker(gui, preview, character_id)
+
+
+def _start_legacy_memory_recovery_worker(gui, preview, character_id: str) -> None:
+    from utils.legacy_memory_recovery import import_legacy_backup
+
+    cancelled = False
+    worker = TaskWorker(
+        import_legacy_backup,
+        kwargs={"preview": preview, "target_character_id": character_id},
+        use_progress=True,
+        task_key=f"legacy-memory-import:{character_id}",
+        exclusive_resources={f"legacy-memory-import:{character_id}"},
+    )
+    progress = QProgressDialog(
+        _("Восстановление старой памяти…", "Restoring old memory…"),
+        _("Отмена", "Cancel"),
+        0,
+        0,
+        gui,
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+
+    def on_progress(current, total):
+        try:
+            total = int(total or 0)
+            current = int(current or 0)
+            if total > 0:
+                progress.setRange(0, total)
+                progress.setValue(min(current, total))
+        except Exception:
+            pass
+
+    def on_finished(result):
+        if cancelled:
+            return
+        progress.close()
+        status = str((result or {}).get("status") or "")
+        if status == "already_imported":
+            QMessageBox.information(
+                gui,
+                _("Уже восстановлено", "Already restored"),
+                _("Этот архив уже был восстановлен для выбранного персонажа. Дубликаты не добавлены.",
+                  "This backup was already restored for the selected character. No duplicates were added."),
+            )
+            return
+        result = result or {}
+        message = _(
+            "История: {history}\nПамять: {memories}\nПеременные: {variables}",
+            "History: {history}\nMemories: {memories}\nVariables: {variables}",
+        ).format(
+            history=result.get("history_inserted", 0),
+            memories=result.get("memories_inserted", 0),
+            variables=result.get("variables_written", 0),
+        )
+        backup_path = result.get("backup_path")
+        if backup_path:
+            message += "\n\n" + _("Резервная копия БД: {path}", "Database backup: {path}").format(path=backup_path)
+        QMessageBox.information(gui, _("Восстановление завершено", "Restore complete"), message)
+        try:
+            get_event_bus().emit(Events.Character.RELOAD_DATA)
+            get_event_bus().emit(Events.RAG.INDEX_CHANGED)
+        except Exception:
+            pass
+        if hasattr(gui, "update_debug_info"):
+            gui.update_debug_info()
+
+    def on_error(message: str):
+        if not cancelled:
+            progress.close()
+            QMessageBox.critical(gui, _("Ошибка восстановления", "Restore error"), message)
+
+    def on_cancel():
+        nonlocal cancelled
+        cancelled = True
+        worker.requestInterruption()
+        progress.close()
+
+    worker.progress_signal.connect(on_progress)
+    worker.finished_signal.connect(on_finished)
+    worker.error_signal.connect(on_error)
+    worker.cancelled_signal.connect(on_cancel)
+    progress.canceled.connect(on_cancel)
+    progress.show()
+    if not worker.start():
+        progress.close()
+        QMessageBox.information(
+            gui,
+            _("Восстановление уже идёт", "Restore already running"),
+            _("Дождитесь завершения текущего восстановления этого персонажа.",
+              "Wait for the current restore for this character to finish."),
+        )
 
 
 def _start_migration_worker(gui, character_id: str | None):
