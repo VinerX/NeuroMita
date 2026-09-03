@@ -2037,5 +2037,7 @@
   "Кросс-языковое клонирование": "Cross-lingual cloning",
   "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "Cross-lingual F5-TTS that clones a Russian reference voice and synthesizes English or Chinese speech.",
   "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS followed by timbre conversion through RVC.",
-  "Удаление компонентов RVC...": "Uninstalling RVC components..."
+  "Удаление компонентов RVC...": "Uninstalling RVC components...",
+  "Возможно, уже восстановлено": "Possibly already restored",
+  "Похоже, этот архив уже восстанавливали. Повторить восстановление?": "It looks like this backup may already have been restored. Restore it again?"
 }

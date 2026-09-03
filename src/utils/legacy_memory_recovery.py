@@ -432,9 +432,15 @@ def import_legacy_backup(
     preview: LegacyBackupPreview,
     *,
     target_character_id: str,
+    allow_reimport: bool = False,
     progress_callback: Callable[[int, int], Any] | None = None,
 ) -> dict[str, Any]:
-    """Import an inspected backup into SQLite, keeping its original payload for audit."""
+    """Import an inspected backup into SQLite, keeping its original payload for audit.
+
+    ``allow_reimport`` is only for the explicit confirmation in the UI after a
+    player has reset the character.  It deliberately bypasses the import
+    ledger, but does not remove any active data by itself.
+    """
     target = str(target_character_id or "").strip()
     if not target:
         raise LegacyBackupError("Choose the character that should receive the restored data")
@@ -448,7 +454,7 @@ def import_legacy_backup(
         has_import_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_imports'"
         ).fetchone()
-        if has_import_table:
+        if has_import_table and not allow_reimport:
             existing = conn.execute(
                 "SELECT 1 FROM legacy_imports WHERE source_digest=? AND character_id=?",
                 (preview.source_digest, target),
@@ -466,7 +472,7 @@ def import_legacy_backup(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_import_items'"
         ).fetchone()
         history_seen = memory_seen = False
-        if has_item_table:
+        if has_item_table and not allow_reimport:
             if preview.history_item_digest:
                 history_seen = bool(conn.execute(
                     "SELECT 1 FROM legacy_import_items WHERE source_item_digest=? AND character_id=? AND kind='history'",
@@ -593,21 +599,21 @@ def import_legacy_backup(
             "warnings": preview.warnings,
         }
         conn.execute(
-            "INSERT INTO legacy_import_archives (source_digest, character_id, payload_json) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO legacy_import_archives (source_digest, character_id, payload_json) VALUES (?, ?, ?)",
             (preview.source_digest, target, json.dumps(payload, ensure_ascii=False)),
         )
         if preview.history_item_digest and not history_seen:
             conn.execute(
-                "INSERT INTO legacy_import_items (source_item_digest, character_id, kind) VALUES (?, ?, 'history')",
+                "INSERT OR IGNORE INTO legacy_import_items (source_item_digest, character_id, kind) VALUES (?, ?, 'history')",
                 (preview.history_item_digest, target),
             )
         if preview.memories_item_digest and not memory_seen:
             conn.execute(
-                "INSERT INTO legacy_import_items (source_item_digest, character_id, kind) VALUES (?, ?, 'memories')",
+                "INSERT OR IGNORE INTO legacy_import_items (source_item_digest, character_id, kind) VALUES (?, ?, 'memories')",
                 (preview.memories_item_digest, target),
             )
         conn.execute(
-            "INSERT INTO legacy_imports (source_digest, character_id, imported_at, source_summary) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO legacy_imports (source_digest, character_id, imported_at, source_summary) VALUES (?, ?, ?, ?)",
             (preview.source_digest, target, datetime.now().isoformat(timespec="seconds"), json.dumps(summary, ensure_ascii=False)),
         )
         conn.commit()

@@ -91,6 +91,36 @@ def test_import_is_idempotent_and_archives_legacy_payload(tmp_path: Path) -> Non
         DatabaseManager._path_override = None
 
 
+def test_explicit_reimport_restores_a_reset_character(tmp_path: Path) -> None:
+    _write_backup(tmp_path / "source")
+    preview = inspect_legacy_backup([tmp_path / "source"])
+    DatabaseManager._instance = None
+    DatabaseManager._path_override = str(tmp_path / "world.db")
+    try:
+        import_legacy_backup(preview, target_character_id="ShortHair")
+        db = DatabaseManager()
+        with db.connection() as conn:
+            conn.execute("UPDATE history SET is_deleted=1 WHERE character_id='ShortHair'")
+            conn.execute("UPDATE memories SET is_deleted=1 WHERE character_id='ShortHair'")
+            conn.commit()
+        repeated = import_legacy_backup(preview, target_character_id="ShortHair", allow_reimport=True)
+        with db.connection() as conn:
+            active_history = conn.execute(
+                "SELECT COUNT(*) FROM history WHERE character_id='ShortHair' AND is_deleted=0"
+            ).fetchone()[0]
+            active_memories = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE character_id='ShortHair' AND is_deleted=0"
+            ).fetchone()[0]
+        assert repeated["status"] == "imported"
+        assert repeated["history_inserted"] == 2
+        assert repeated["memories_inserted"] == 2
+        assert active_history == 2
+        assert active_memories == 2
+    finally:
+        DatabaseManager._instance = None
+        DatabaseManager._path_override = None
+
+
 def test_zip_path_traversal_is_rejected(tmp_path: Path) -> None:
     archive = tmp_path / "unsafe.zip"
     with zipfile.ZipFile(archive, "w") as output:

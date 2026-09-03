@@ -1224,13 +1224,17 @@ def restore_legacy_memory(gui):
     _start_legacy_memory_recovery_worker(gui, preview, character_id)
 
 
-def _start_legacy_memory_recovery_worker(gui, preview, character_id: str) -> None:
+def _start_legacy_memory_recovery_worker(gui, preview, character_id: str, *, allow_reimport: bool = False) -> None:
     from utils.legacy_memory_recovery import import_legacy_backup
 
     cancelled = False
     worker = TaskWorker(
         import_legacy_backup,
-        kwargs={"preview": preview, "target_character_id": character_id},
+        kwargs={
+            "preview": preview,
+            "target_character_id": character_id,
+            "allow_reimport": allow_reimport,
+        },
         use_progress=True,
         task_key=f"legacy-memory-import:{character_id}",
         exclusive_resources={f"legacy-memory-import:{character_id}"},
@@ -1263,12 +1267,16 @@ def _start_legacy_memory_recovery_worker(gui, preview, character_id: str) -> Non
         progress.close()
         status = str((result or {}).get("status") or "")
         if status == "already_imported":
-            QMessageBox.information(
+            repeat = QMessageBox.question(
                 gui,
-                _("Уже восстановлено", "Already restored"),
-                _("Этот архив уже был восстановлен для выбранного персонажа. Дубликаты не добавлены.",
-                  "This backup was already restored for the selected character. No duplicates were added."),
+                _("Возможно, уже восстановлено", "Possibly already restored"),
+                _("Похоже, этот архив уже восстанавливали. Повторить восстановление?",
+                  "It looks like this backup may already have been restored. Restore it again?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
+            if repeat == QMessageBox.StandardButton.Yes:
+                _start_legacy_memory_recovery_worker(gui, preview, character_id, allow_reimport=True)
             return
         result = result or {}
         message = _(
