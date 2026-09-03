@@ -60,7 +60,7 @@
     {
       "text": "Спасибо за комплимент! Я рада, что тебе нравится.",
       "emotions": ["smileteeth"],
-      "animations": ["FriendlyPunch"]
+      "animations": ["ClapHands"]
     },
     {
       "text": "Я стараюсь, чтобы тебе было хорошо со мной.",
