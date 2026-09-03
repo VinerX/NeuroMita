@@ -25,11 +25,74 @@ from ui.settings.beat_settings_presentation import (
 from ui.gui_templates import create_settings_section
 from ui.settings.dialogue_settings import add_dialogue_settings_section
 from ui.settings.settings_access import get_setting
+from core.services import use
+from services.contracts import CharacterRegistry
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
 
 _BEAT_BACKEND_OPTIONS = ("auto", "beat_this", "librosa", "dsp_fallback")
+
+
+def _start_manual_game(gui, game_id: str) -> None:
+    """Open a mini-game for the current character from the settings panel."""
+    try:
+        character = use(CharacterRegistry).current()
+    except Exception:
+        character = None
+
+    if character is None or not hasattr(character, "game_manager"):
+        QMessageBox.warning(
+            gui,
+            _("Игра недоступна", "Game unavailable"),
+            _(
+                "Мита ещё не загружена. Дождитесь готовности приложения и повторите.",
+                "Mita is not loaded yet. Wait for the application to finish starting and try again.",
+            ),
+        )
+        return
+
+    if character.game_manager.start_game_from_player(game_id):
+        return
+
+    QMessageBox.warning(
+        gui,
+        _("Не удалось запустить игру", "Could not start game"),
+        _(
+            "Включите общий переключатель игр и разрешение для выбранной игры. "
+            "При подключённом Unity также разрешите запуск игр с Unity.",
+            "Enable games globally and allow the selected game. "
+            "When Unity is connected, also allow games while Unity is connected.",
+        ),
+    )
+
+
+def _bind_manual_game_launch_buttons(gui) -> None:
+    """Keep the action buttons in sync with both game enable switches."""
+    mappings = (
+        ("ENABLE_GAME_CHESS", "launch_chess_button"),
+        ("ENABLE_GAME_SEABATTLE", "launch_seabattle_button"),
+    )
+
+    def _sync(_=None) -> None:
+        global_enabled = bool(getattr(gui, "ENABLE_GAMES", None) and gui.ENABLE_GAMES.isChecked())
+        for setting_name, button_name in mappings:
+            toggle = getattr(gui, setting_name, None)
+            button = getattr(gui, button_name, None)
+            if button is not None:
+                button.setEnabled(global_enabled and bool(toggle and toggle.isChecked()))
+
+    for setting_name in ("ENABLE_GAMES", "ENABLE_GAME_CHESS", "ENABLE_GAME_SEABATTLE"):
+        toggle = getattr(gui, setting_name, None)
+        if toggle is None:
+            continue
+        callbacks = getattr(toggle, "_settings_dependency_sync_callbacks", None)
+        if callbacks is None:
+            callbacks = []
+            setattr(toggle, "_settings_dependency_sync_callbacks", callbacks)
+        callbacks.append(_sync)
+        toggle.stateChanged.connect(_sync)
+    _sync()
 
 
 def _format_beat_cache_size(total_bytes: int) -> str:
@@ -296,6 +359,40 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
             'depends_on': 'ENABLE_GAMES',
             'tooltip': _('Разрешить игру "Морской бой".', 'Allow "Sea Battle" game.'),
         },
+        {
+            'type': 'subsection',
+            'label': _('Ручной запуск', 'Manual launch'),
+        },
+        {
+            'type': 'button_group',
+            'buttons': [
+                {
+                    'label': _('Запустить шахматы', 'Start chess'),
+                    'command': lambda: _start_manual_game(self, 'chess'),
+                    'widget_name': 'launch_chess_button',
+                    'tooltip': _(
+                        'Открыть шахматы с выбранной Митой. Если игровые запросы не заглушены и реакции L2 включены, '
+                        'Мита отреагирует в чате.',
+                        'Open chess with the selected Mita. If game requests are not muted and L2 reactions are enabled, '
+                        'Mita will react in chat.',
+                    ),
+                },
+                {
+                    'label': _('Запустить морской бой', 'Start Sea Battle'),
+                    'command': lambda: _start_manual_game(self, 'seabattle'),
+                    'widget_name': 'launch_seabattle_button',
+                    'tooltip': _(
+                        'Открыть морской бой с выбранной Митой. Если игровые запросы не заглушены и реакции L2 включены, '
+                        'Мита отреагирует в чате.',
+                        'Open Sea Battle with the selected Mita. If game requests are not muted and L2 reactions are enabled, '
+                        'Mita will react in chat.',
+                    ),
+                },
+            ],
+        },
+        {
+            'type': 'end',
+        },
     ]
 
     create_settings_section(
@@ -304,6 +401,7 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
         _("Игры", "Games"),
         games_config
     )
+    _bind_manual_game_launch_buttons(self)
 
     beat_sync_config = [
         {

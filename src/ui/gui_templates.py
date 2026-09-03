@@ -273,6 +273,10 @@ def create_button_group(gui, parent, buttons_config):
     for btn_config in buttons_config:
         button = QPushButton(btn_config['label'])
         register_if_tr(button, btn_config['label'])
+        tooltip = btn_config.get('tooltip')
+        if tooltip:
+            button.setToolTip(_fmt_tooltip(str(tooltip)))
+            register_if_tr(button, tooltip, "setToolTip", _fmt_tooltip)
         if 'command' in btn_config:
             button.clicked.connect(btn_config['command'])
         if 'widget_name' in btn_config:

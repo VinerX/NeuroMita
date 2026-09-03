@@ -12,10 +12,11 @@ PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
     sys.path.insert(0, str(PROJECT_SRC))
 
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QCheckBox, QPushButton, QVBoxLayout, QWidget
 
 from core.settings_registry import SettingsRegistry
 from ui.gui_templates import create_setting_widget
+from ui.settings.game_settings import _bind_manual_game_launch_buttons
 from ui.settings.settings_binding import QtSettingsViewModel
 
 
@@ -59,6 +60,29 @@ class SettingsDependenciesTests(unittest.TestCase):
         finally:
             binding.close()
             settings.close()
+
+    def test_manual_game_buttons_follow_global_and_per_game_switches(self) -> None:
+        gui = QWidget()
+        gui.ENABLE_GAMES = QCheckBox()
+        gui.ENABLE_GAME_CHESS = QCheckBox()
+        gui.ENABLE_GAME_SEABATTLE = QCheckBox()
+        gui.launch_chess_button = QPushButton()
+        gui.launch_seabattle_button = QPushButton()
+
+        _bind_manual_game_launch_buttons(gui)
+        self.assertFalse(gui.launch_chess_button.isEnabled())
+        self.assertFalse(gui.launch_seabattle_button.isEnabled())
+
+        gui.ENABLE_GAMES.setChecked(True)
+        gui.ENABLE_GAME_CHESS.setChecked(True)
+        self.assertTrue(gui.launch_chess_button.isEnabled())
+        self.assertFalse(gui.launch_seabattle_button.isEnabled())
+
+        gui.ENABLE_GAME_SEABATTLE.setChecked(True)
+        self.assertTrue(gui.launch_seabattle_button.isEnabled())
+        gui.ENABLE_GAMES.setChecked(False)
+        self.assertFalse(gui.launch_chess_button.isEnabled())
+        self.assertFalse(gui.launch_seabattle_button.isEnabled())
 
 
 if __name__ == "__main__":

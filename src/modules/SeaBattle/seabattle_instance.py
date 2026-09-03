@@ -133,9 +133,15 @@ class SeaBattleGame(GameInterface):
                 )
                 continue
 
-            if not isinstance(event, dict) or event.get("event") != "player_target_selected":
+            if not isinstance(event, dict):
                 continue
-            self._dispatch_player_target_reaction(event)
+            event_name = event.get("event")
+            if event_name == "player_target_selected":
+                self._dispatch_player_target_reaction(event)
+            elif event_name == "player_placement_completed":
+                self._dispatch_placement_completed_reaction()
+            elif event_name == "player_game_closed":
+                self._dispatch_player_close_reaction()
 
     def _dispatch_player_target_reaction(self, event: Dict[str, Any]):
         """Request a visible Mita reaction after a valid player shot.
@@ -168,6 +174,48 @@ class SeaBattleGame(GameInterface):
             "React briefly and naturally in character to this move. "
             "Do not take a Sea Battle turn yourself in this reply."
         )
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": system_input,
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
+
+    def _dispatch_placement_completed_reaction(self):
+        if not self._reactions_enabled():
+            return
+        self._emit_reaction(
+            "[Sea Battle] The player has finished placing all ships. "
+            "React briefly and naturally in character before the battle begins."
+        )
+
+    def _dispatch_player_close_reaction(self):
+        if not self._reactions_enabled():
+            return
+        self._emit_reaction(
+            "[Sea Battle] The player closed the Sea Battle game window. "
+            "React briefly and naturally in character to the end of this match."
+        )
+
+    def _reactions_enabled(self) -> bool:
+        try:
+            settings = use(SettingsService)
+            return bool(settings.get("REACT_ENABLED", True)) and bool(settings.get("REACT_L2_ENABLED", True))
+        except Exception as exc:
+            logger.debug(
+                f"[{self.character.char_id}] Не удалось проверить настройки реакций: "
+                f"{format_exception(exc)}"
+            )
+            return False
+
+    def _emit_reaction(self, system_input: str):
         policy = resolve_policy(model_event_type="react", react_level=2)
         self.character.event_bus.emit(
             Events.Chat.SEND_MESSAGE,

@@ -3,6 +3,7 @@ from main_logger import logger
 from modules.available_games import get_available_games
 from modules.game_interface import GameInterface
 from core.events import Events
+from core.request_policy import resolve_policy
 from core.services import use
 from services.contracts import GameLinkService, SettingsService
 
@@ -89,6 +90,62 @@ class GameManager:
         self.active_game = game_class(self.character, game_name)
         self.active_game.start(params)
         return True
+
+    def start_game_from_player(self, full_id_str: str) -> bool:
+        """Start a game from the desktop UI and optionally invite a Mita reaction.
+
+        A manual click is a player action, rather than an instruction emitted by
+        the model.  The game still goes through ``start_game`` so every normal
+        availability rule remains in force.
+        """
+        game_name, _params = self._parse_id_string(full_id_str)
+        started = self.start_game(full_id_str)
+        if started:
+            self._request_manual_start_reaction(game_name)
+        return started
+
+    def _request_manual_start_reaction(self, game_name: str) -> None:
+        """Emit a visible L2 reaction when game requests and reactions allow it."""
+        try:
+            settings = use(SettingsService)
+            # The desktop launch should observe the same mute switch as game
+            # events.  A manual game may still open while requests are muted;
+            # it simply does not generate a Mita response.
+            if bool(settings.get("IGNORE_GAME_REQUESTS", False)):
+                return
+            if not bool(settings.get("REACT_ENABLED", True)):
+                return
+            if not bool(settings.get("REACT_L2_ENABLED", True)):
+                return
+        except Exception as exc:
+            logger.debug(
+                f"[{self.character.char_id}] Не удалось проверить настройки реакции на запуск игры: {exc}"
+            )
+            return
+
+        game_labels = {
+            "chess": "chess",
+            "seabattle": "Sea Battle",
+        }
+        game_label = game_labels.get(game_name, game_name or "a mini-game")
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": (
+                    "[Desktop mini-game] The player manually started "
+                    f"{game_label} with you. The game window is already open. "
+                    "React briefly and naturally in character to the invitation. "
+                    "Do not start or end a game in this reply."
+                ),
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
 
     def stop_game(self, full_id_str: str):
         game_name, params = self._parse_id_string(full_id_str)
