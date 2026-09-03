@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Silnik AI",
+  "Возможности модели": "Możliwości modelu",
+  "Лаунчер": "Program uruchamiający",
+  "Общие": "Ogólne",
   " (нужен код тестера)": " (wymagany kod testera)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} godz.",
   " · ~{minutes} мин": " · ~{minutes} min.",

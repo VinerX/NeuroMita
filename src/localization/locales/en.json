@@ -1,4 +1,8 @@
 {
+  "AI Engine": "AI Engine",
+  "Возможности модели": "Model capabilities",
+  "Лаунчер": "Launcher",
+  "Общие": "General",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} h",
   " · ~{minutes} мин": " · ~{minutes} min",
   " · ~{seconds} с": " · ~{seconds}s",

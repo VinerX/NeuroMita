@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Yapay Zeka Motoru",
+  "Возможности модели": "Model yetenekleri",
+  "Лаунчер": "Başlatıcı",
+  "Общие": "Genel",
   " (нужен код тестера)": " (test kodu gerekli)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} sa",
   " · ~{minutes} мин": " · ~{minutes} dk.",

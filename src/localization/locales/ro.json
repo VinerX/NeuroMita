@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Motor AI",
+  "Возможности модели": "Capacitățile modelului",
+  "Лаунчер": "Lansator",
+  "Общие": "General",
   " (нужен код тестера)": " (cod tester necesar)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} ore",
   " · ~{minutes} мин": " · ~{minutes} minute",

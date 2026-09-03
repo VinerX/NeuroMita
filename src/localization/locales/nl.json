@@ -1,4 +1,8 @@
 {
+  "AI Engine": "AI-engine",
+  "Возможности модели": "Mogelijkheden van het model",
+  "Лаунчер": "Opstartprogramma",
+  "Общие": "Algemeen",
   " (нужен код тестера)": " (testercode nodig)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} uur",
   " · ~{minutes} мин": " · ~{minutes} minuten",

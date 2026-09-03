@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Motore IA",
+  "Возможности модели": "Capacità del modello",
+  "Лаунчер": "Avviatore",
+  "Общие": "Generale",
   " (нужен код тестера)": " (necessario codice tester)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} ore",
   " · ~{minutes} мин": " · ~{minutes} minuti",

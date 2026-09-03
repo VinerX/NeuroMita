@@ -1,4 +1,8 @@
 {
+  "AI Engine": "KI-Engine",
+  "Возможности модели": "Modellfunktionen",
+  "Лаунчер": "Startprogramm",
+  "Общие": "Allgemein",
   " (нужен код тестера)": " (Tester-Code erforderlich)",
   " (🔒 нужен код тестера)": " (🔒 Tester-Code erforderlich)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} Std.",
