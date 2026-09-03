@@ -111,6 +111,47 @@ class SeaBattleGame(GameInterface):
             
         return response
 
+    def process_structured_commands(self, commands: list):
+        """Translate the commands advertised by the Sea Battle prompt to GUI actions."""
+        for command in commands:
+            if not isinstance(command, str):
+                continue
+            command = command.strip()
+            if not command:
+                continue
+
+            if command == "PlaceShipsRandomly":
+                self._send_command({"action": "mita_place_randomly"})
+                continue
+
+            place_match = re.fullmatch(
+                r"PlaceShip\s*,\s*([A-J](?:10|[1-9]))\s*,\s*([1-4])\s*,\s*([HV])",
+                command,
+                re.IGNORECASE,
+            )
+            if place_match:
+                coord, length, orientation = place_match.groups()
+                self._send_command(
+                    {
+                        "action": "mita_place_ship",
+                        "spec": f"{coord.upper()},{length},{orientation.upper()}",
+                    }
+                )
+                continue
+
+            move_match = re.fullmatch(
+                r"MakeMove\s*,\s*([A-J](?:10|[1-9]))", command, re.IGNORECASE
+            )
+            if move_match:
+                self._send_command(
+                    {"action": "mita_move", "coord": move_match.group(1).upper()}
+                )
+                continue
+
+            logger.warning(
+                f"[{self.character.char_id}] Structured: неизвестная команда Морского боя: {command!r}"
+            )
+
     def get_state_prompt(self) -> Optional[str]:
         if self.gui_process and not self.gui_process.is_alive():
             self.cleanup()
@@ -174,6 +215,7 @@ class SeaBattleGame(GameInterface):
         self.character.set_variable("GAME_STATE_WOUNDED_SHIPS_INFO", hunt_info.get('wounded_info_str', ''))
         self.character.set_variable("GAME_STATE_HUNT_TARGETS_LIST", ", ".join(hunt_info.get('hunt_targets', [])))
         self.character.set_variable("GAME_STATE_SHOT_HISTORY_STRING", latest_state.get('shot_history_str', ''))
+        self.character.set_variable("GAME_STATE_ERROR_MSG", latest_state.get('error'))
 
         template_filename = f"{self.game_id}.system"
         try:

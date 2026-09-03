@@ -56,18 +56,17 @@ class RuntimeCapabilitiesTests(unittest.TestCase):
                 "animations",
                 "clothes",
                 "emotions",
-                "end_game",
                 "face_params",
                 "idle_animations",
                 "intents",
                 "interactions",
                 "movement_modes",
-                "start_game",
                 "visual_effects",
             ),
         )
-        # commands and music are program-level; intents require a connected Unity runtime.
-        for kept in ("commands", "music", "text"):
+        # Desktop mini-games, commands, and music are program-level; intents
+        # require a connected Unity runtime.
+        for kept in ("commands", "music", "start_game", "end_game", "text"):
             self.assertNotIn(kept, snapshot.structured_segment_exclude_fields)
 
     def test_debug_setting_is_applied_by_the_shared_service(self):

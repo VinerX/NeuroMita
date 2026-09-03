@@ -49,7 +49,7 @@ IF GAME_STATE_IS_GAME_OVER == False THEN
                 SET prompt_text = prompt_text + "Все твои корабли расставлены. Ожидай, пока расставит свои корабли игрок.\n"
             ENDIF
         ELSE // Фаза 'battle'
-            SET prompt_text = prompt_text + "Тебе нужно сделать выстрел. Используй тег <MakeMove>координата</MakeMove>.\n"
+            SET prompt_text = prompt_text + "Тебе нужно сделать выстрел. Используй поле commands: ['MakeMove,координата'].\n"
             IF GAME_STATE_HAS_WOUNDED_SHIPS == True THEN
                 SET prompt_text = prompt_text + "ТАКТИЧЕСКАЯ ЦЕЛЬ: ДОБИТЬ РАНЕНЫЙ КОРАБЛЬ!\n"
                 SET prompt_text = prompt_text + f"ИНФОРМАЦИЯ: {GAME_STATE_WOUNDED_SHIPS_INFO}\n"
@@ -67,6 +67,10 @@ IF GAME_STATE_IS_GAME_OVER == False THEN
     ELSE
         SET prompt_text = prompt_text + "\nСЕЙЧАС ХОД ИГРОКА. Ожидай его действий и анализируй ситуацию.\n"
     ENDIF
+ENDIF
+
+IF GAME_STATE_ERROR_MSG != None THEN
+    SET prompt_text = prompt_text + f"\n[Ошибка игровой команды] {GAME_STATE_ERROR_MSG}\n"
 ENDIF
 
 SET prompt_text = prompt_text + "--- КОНЕЦ ИНФОРМАЦИИ О МОРСКОМ БОЕ ---"

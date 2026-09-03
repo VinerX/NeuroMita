@@ -199,19 +199,24 @@ class SeaBattleWindow(QWidget):
                             x, y = from_alg(coord)
                             length = int(length)
                             orient = 'v' if orient_char.lower() == 'v' else 'h'
-                            self.game.engine.place_ship(self.game.mita_id, x, y, length, orient)
+                            success, message = self.game.engine.place_ship(self.game.mita_id, x, y, length, orient)
+                            self.game.last_error = None if success else f"Мита не смогла поставить корабль: {message}"
                         except Exception as e:
-                            print(f"Mita place ship error: {format_exception(e)}")
+                            self.game.last_error = f"Ошибка расстановки Миты: {format_exception(e)}"
+                    else:
+                        self.game.last_error = "Ошибка расстановки Миты: неверный формат команды"
                 
                 if action == "mita_place_randomly":
-                    self.game.engine.place_all_mita_ships_randomly()
+                    success, message = self.game.engine.place_all_mita_ships_randomly()
+                    self.game.last_error = None if success else f"Мита не смогла расставить корабли: {message}"
 
                 if action == "mita_move":
                     try:
                         x, y = from_alg(cmd.get("coord"))
-                        self.game.engine.make_move(self.game.mita_id, x, y)
+                        result, message = self.game.engine.make_move(self.game.mita_id, x, y)
+                        self.game.last_error = None if result not in {"invalid_phase", "not_your_turn", "invalid_coord", "already_shot"} else f"Ход Миты не принят: {message}"
                     except Exception as e:
-                        print(f"Mita move error: {format_exception(e)}")
+                        self.game.last_error = f"Ошибка хода Миты: {format_exception(e)}"
 
                 self.update_view()
                 self.send_state_update()
