@@ -16,6 +16,7 @@ from utils.legacy_memory_recovery import (
     LegacyBackupError,
     import_legacy_backup,
     inspect_legacy_backup,
+    recover_legacy_memories,
 )
 
 
@@ -56,6 +57,7 @@ def test_inspection_accepts_folder_file_list_and_zip(tmp_path: Path) -> None:
         assert preview.source_character_ids == ("ShortHair", "ShortHair")
         assert preview.history_count == 2
         assert preview.memory_count == 2
+        assert preview.recovered_memory_count == 2
         assert preview.variable_count == 2
         assert preview.fixed_parts_count == 1
         assert any("Duplicate" in warning for warning in preview.warnings)
@@ -95,6 +97,16 @@ def test_zip_path_traversal_is_rejected(tmp_path: Path) -> None:
         output.writestr("../ShortHair_history.json", "{}")
     with pytest.raises(LegacyBackupError, match="Unsafe archive member"):
         inspect_legacy_backup([archive])
+
+
+def test_recovery_replays_hash_and_unclosed_delete_tags() -> None:
+    recovered, stats = recover_legacy_memories([
+        {"N": 1, "date": "01.01.2026_10.00", "priority": "normal", "content": "old</+memory>\n<#memory>1|high|new\\</#memory>"},
+        {"N": 2, "date": "01.01.2026_10.01", "priority": "normal", "content": "remove me</+memory>\n<-memory>2|high|old value"},
+    ])
+    assert [(item.legacy_id, item.priority, item.content) for item in recovered] == [(1, "high", "new")]
+    assert stats["commands_seen"] == 2
+    assert stats["commands_applied"] == 2
 
 
 def test_importing_a_single_file_then_the_pair_never_duplicates_data(tmp_path: Path) -> None:

@@ -1193,12 +1193,12 @@ def restore_legacy_memory(gui):
     source_id = ", ".join(dict.fromkeys(preview.source_character_ids)) or _("неизвестный", "unknown")
     details = _(
         "Источник: {source}\nЦелевой персонаж: {target}\n\n"
-        "Сообщений истории: {history}\nВоспоминаний: {memories}\nПеременных: {variables}\n"
+        "Сообщений истории: {history}\nВоспоминаний: {memories} → восстановится: {recovered}\nПеременных: {variables}\n"
         "Старых системных частей: {fixed}\n\n"
         "Перед записью будет создана резервная копия базы. Старые системные промпты сохранятся "
         "в архиве импорта, но не будут добавлены в активный контекст.",
         "Source: {source}\nTarget character: {target}\n\n"
-        "History messages: {history}\nMemories: {memories}\nVariables: {variables}\n"
+        "History messages: {history}\nMemories: {memories} → recovered: {recovered}\nVariables: {variables}\n"
         "Legacy fixed parts: {fixed}\n\n"
         "A database backup will be created before writing. Old system prompts will be retained "
         "in the import archive but will not be added to active context.",
@@ -1207,6 +1207,7 @@ def restore_legacy_memory(gui):
         target=character_id,
         history=preview.history_count,
         memories=preview.memory_count,
+        recovered=preview.recovered_memory_count,
         variables=preview.variable_count,
         fixed=preview.fixed_parts_count,
     )
@@ -1271,12 +1272,13 @@ def _start_legacy_memory_recovery_worker(gui, preview, character_id: str) -> Non
             return
         result = result or {}
         message = _(
-            "История: {history}\nПамять: {memories}\nПеременные: {variables}",
-            "History: {history}\nMemories: {memories}\nVariables: {variables}",
+            "История: {history}\nПамять: {memories}\nПеременные: {variables}\nОбработано команд памяти: {commands}",
+            "History: {history}\nMemories: {memories}\nVariables: {variables}\nMemory commands processed: {commands}",
         ).format(
             history=result.get("history_inserted", 0),
             memories=result.get("memories_inserted", 0),
             variables=result.get("variables_written", 0),
+            commands=result.get("memory_commands_seen", 0),
         )
         backup_path = result.get("backup_path")
         if backup_path:

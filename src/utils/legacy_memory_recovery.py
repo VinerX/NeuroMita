@@ -23,10 +23,26 @@ from managers.database_manager import DatabaseManager
 _HISTORY_SUFFIX = "_history.json"
 _MEMORIES_SUFFIX = "_memories.json"
 _MAX_JSON_BYTES = 32 * 1024 * 1024
+_MEMORY_COMMAND_RE = re.compile(
+    r"<([+#-])memory(?:_([a-zA-Z]+))?>(.*?)(?:\\?</[+#-]?memory>)",
+    re.DOTALL,
+)
+_MEMORY_MARKER_RE = re.compile(r"<[+#-]memory>|\\?</[+#-]memory>")
 
 
 class LegacyBackupError(ValueError):
     """Raised when a selected source cannot be treated as a legacy backup."""
+
+
+@dataclass
+class _RecoveredMemory:
+    legacy_id: int | None
+    date: str
+    priority: str
+    content: str
+    source_ordinal: int
+    directives_applied: int = 0
+    deleted: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,6 +54,8 @@ class LegacyBackupPreview:
     memories: list[dict[str, Any]] | None
     history_item_digest: str | None = None
     memories_item_digest: str | None = None
+    recovered_memory_count: int = 0
+    memory_commands_seen: int = 0
     warnings: tuple[str, ...] = ()
 
     @property
@@ -176,12 +194,16 @@ def inspect_legacy_backup(paths: Iterable[str | Path]) -> LegacyBackupPreview:
         warnings.append("Memory file was not selected; only history and variables will be restored.")
     if history and history.get("fixed_parts"):
         warnings.append("Legacy fixed prompts will be archived for audit and will not be activated.")
+    recovery_stats = {"commands_seen": 0}
+    recovered_memory_count = 0
     if memory_rows:
+        recovered_rows, recovery_stats = recover_legacy_memories(memory_rows)
+        recovered_memory_count = len(recovered_rows)
         numbers = [row.get("N") for row in memory_rows if isinstance(row.get("N"), int)]
         if len(numbers) != len(set(numbers)):
             warnings.append("Duplicate legacy memory numbers were found and will receive safe new IDs.")
         if any("<" in str(row.get("content") or "") and "memory>" in str(row.get("content") or "") for row in memory_rows):
-            warnings.append("Some memories contain old memory-command tags; original text will be preserved unchanged.")
+            warnings.append("Old memory-command tags will be replayed in file order; original text is retained in the import archive.")
 
     return LegacyBackupPreview(
         source_digest=digest.hexdigest(),
@@ -191,6 +213,8 @@ def inspect_legacy_backup(paths: Iterable[str | Path]) -> LegacyBackupPreview:
         memories=memory_rows,
         history_item_digest=sha256(histories[0][3]).hexdigest() if histories else None,
         memories_item_digest=sha256(memories[0][3]).hexdigest() if memories else None,
+        recovered_memory_count=recovered_memory_count,
+        memory_commands_seen=recovery_stats["commands_seen"],
         warnings=tuple(warnings),
     )
 
@@ -213,6 +237,151 @@ def _legacy_memory_date(raw: Any) -> str:
     if re.search(r" \d{2}:\d{2}$", value):
         value += ":00"
     return value
+
+
+def _memory_delete_targets(raw: str) -> list[int]:
+    """Read old delete payloads, including broken ``1|high|text`` tails."""
+    head = str(raw or "").strip().split("|", 1)[0].strip()
+    targets: list[int] = []
+    for part in head.split(","):
+        part = part.strip()
+        if part.isdigit():
+            targets.append(int(part))
+            continue
+        if "-" in part:
+            left, right = (value.strip() for value in part.split("-", 1))
+            if left.isdigit() and right.isdigit():
+                targets.extend(range(int(left), int(right) + 1))
+    return targets
+
+
+def _first_active_with_id(records: list[_RecoveredMemory], legacy_id: int) -> _RecoveredMemory | None:
+    return next((record for record in records if record.legacy_id == legacy_id and not record.deleted), None)
+
+
+def recover_legacy_memories(rows: Iterable[dict[str, Any]]) -> tuple[list[_RecoveredMemory], dict[str, int]]:
+    """Replay every readable legacy memory tag while retaining direct row content.
+
+    Old versions sometimes persisted a command body without its opening tag and
+    used closing tags such as ``</#memory>`` or ``\\</#memory>``.  Each JSON row
+    is therefore first restored as its direct text, then embedded ``+``, ``#``
+    and ``-`` commands are replayed in file order.  That mirrors the only order
+    available in a damaged v0.011 save and never discards the raw source (it is
+    archived separately by the importer).
+    """
+    records: list[_RecoveredMemory] = []
+    stats = {
+        "commands_seen": 0,
+        "commands_applied": 0,
+        "commands_noop": 0,
+        "orphan_updates": 0,
+        "deleted": 0,
+    }
+    valid_priorities = {"low", "normal", "high", "critical"}
+
+    for ordinal, row in enumerate(rows):
+        raw_content = str(row.get("content") or "")
+        marker = _MEMORY_MARKER_RE.search(raw_content)
+        direct_content = raw_content[:marker.start()] if marker else raw_content
+        direct_content = direct_content.strip()
+        legacy_id = row.get("N") if isinstance(row.get("N"), int) and row.get("N") > 0 else None
+        if direct_content:
+            records.append(_RecoveredMemory(
+                legacy_id=legacy_id,
+                date=_legacy_memory_date(row.get("date")),
+                priority=str(row.get("priority") or "Normal"),
+                content=direct_content,
+                source_ordinal=ordinal,
+            ))
+
+        matched_delete_starts: set[int] = set()
+        for match in _MEMORY_COMMAND_RE.finditer(raw_content):
+            operation, tag_priority, payload = match.groups()
+            payload = payload.strip()
+            stats["commands_seen"] += 1
+            if operation == "+":
+                parts = [part.strip() for part in payload.split("|", 1)]
+                priority = str(tag_priority or "").lower()
+                content = payload
+                if len(parts) == 2 and parts[0].lower() in valid_priorities:
+                    priority, content = parts[0].lower(), parts[1]
+                if not priority or priority not in valid_priorities:
+                    priority = "normal"
+                if content:
+                    records.append(_RecoveredMemory(
+                        legacy_id=None,
+                        date=_legacy_memory_date(row.get("date")),
+                        priority=priority,
+                        content=content,
+                        source_ordinal=ordinal,
+                        directives_applied=1,
+                    ))
+                    stats["commands_applied"] += 1
+            elif operation == "#":
+                parts = [part.strip() for part in payload.split("|", 2)]
+                if len(parts) >= 2 and parts[0].isdigit():
+                    target_id = int(parts[0])
+                    target = _first_active_with_id(records, target_id)
+                    if target is None:
+                        # A corrupted save may contain an update for a memory
+                        # that was omitted from the JSON array. Preserve that
+                        # update as a real recovered fact instead of silently
+                        # losing it.
+                        target = _RecoveredMemory(
+                            legacy_id=target_id,
+                            date=_legacy_memory_date(row.get("date")),
+                            priority="normal",
+                            content="",
+                            source_ordinal=ordinal,
+                        )
+                        records.append(target)
+                        stats["orphan_updates"] += 1
+                    if len(parts) == 3:
+                        if parts[1].lower() in valid_priorities:
+                            target.priority = parts[1].lower()
+                        target.content = parts[2]
+                    else:
+                        target.content = parts[1]
+                    target.directives_applied += 1
+                    stats["commands_applied"] += 1
+                else:
+                    stats["orphan_updates"] += 1
+            else:
+                matched_delete_starts.add(match.start())
+                deleted_any = False
+                for target_id in _memory_delete_targets(payload):
+                    target = _first_active_with_id(records, target_id)
+                    if target is not None:
+                        target.deleted = True
+                        target.directives_applied += 1
+                        stats["commands_applied"] += 1
+                        stats["deleted"] += 1
+                        deleted_any = True
+                if not deleted_any:
+                    # The command was understood, but the requested memory had
+                    # already been removed by an earlier legacy operation.
+                    stats["commands_noop"] += 1
+
+        # The final delete command was often left without a closing tag.  It is
+        # still actionable because the numeric target appears before any text.
+        for match in re.finditer(r"<-memory>([^<]*)", raw_content, flags=re.DOTALL):
+            if match.start() in matched_delete_starts:
+                continue
+            payload = match.group(1).strip()
+            stats["commands_seen"] += 1
+            deleted_any = False
+            for target_id in _memory_delete_targets(payload):
+                target = _first_active_with_id(records, target_id)
+                if target is not None:
+                    target.deleted = True
+                    target.directives_applied += 1
+                    stats["commands_applied"] += 1
+                    stats["deleted"] += 1
+                    deleted_any = True
+            if not deleted_any:
+                stats["commands_noop"] += 1
+
+    return [record for record in records if not record.deleted and record.content], stats
 
 
 def _backup_database(db_path: str) -> str | None:
@@ -323,6 +492,7 @@ def import_legacy_backup(
 
         conn.execute("BEGIN")
         history_inserted = history_normalized = memories_inserted = variables_written = 0
+        recovered_memories, recovery_stats = recover_legacy_memories(preview.memories or [])
         history = preview.history or {}
         for ordinal, message in enumerate([] if history_seen else history.get("messages") or []):
             if not isinstance(message, dict):
@@ -368,16 +538,16 @@ def import_legacy_backup(
                 progress_callback(done, total)
 
         used_ids: set[int] = set()
-        next_id = max([int(row.get("N")) for row in (preview.memories or []) if isinstance(row.get("N"), int)] or [0]) + 1
-        for ordinal, memory in enumerate([] if memory_seen else preview.memories or []):
-            legacy_id = memory.get("N")
-            if isinstance(legacy_id, int) and legacy_id > 0 and legacy_id not in used_ids:
+        next_id = max([record.legacy_id for record in recovered_memories if record.legacy_id] or [0]) + 1
+        for ordinal, memory in enumerate([] if memory_seen else recovered_memories):
+            legacy_id = memory.legacy_id
+            if legacy_id and legacy_id not in used_ids:
                 eternal_id = legacy_id
             else:
                 eternal_id = next_id
                 next_id += 1
             used_ids.add(eternal_id)
-            content = str(memory.get("content") or "")
+            content = memory.content
             conn.execute(
                 """
                 INSERT INTO memories (character_id, eternal_id, content, priority, type, date_created, is_deleted, tags)
@@ -387,9 +557,14 @@ def import_legacy_backup(
                     target,
                     eternal_id,
                     content,
-                    str(memory.get("priority") or "Normal"),
-                    _legacy_memory_date(memory.get("date")),
-                    json.dumps({"legacy_import": True, "legacy_original_id": legacy_id, "legacy_ordinal": ordinal}, ensure_ascii=False),
+                    memory.priority,
+                    memory.date,
+                    json.dumps({
+                        "legacy_import": True,
+                        "legacy_original_id": legacy_id,
+                        "legacy_ordinal": memory.source_ordinal,
+                        "legacy_directives_applied": memory.directives_applied,
+                    }, ensure_ascii=False),
                 ),
             )
             memories_inserted += 1
@@ -442,6 +617,10 @@ def import_legacy_backup(
             "status": "imported",
             "history_inserted": history_inserted,
             "history_normalized": history_normalized,
+            "memory_commands_seen": recovery_stats["commands_seen"],
+            "memory_commands_applied": recovery_stats["commands_applied"],
+            "memory_commands_noop": recovery_stats["commands_noop"],
+            "memory_orphan_updates": recovery_stats["orphan_updates"],
             "memories_inserted": memories_inserted,
             "variables_written": variables_written,
             "backup_path": backup_path,
