@@ -31,6 +31,21 @@ class SettingsBodyWidget(QWidget):
         self.setObjectName("SettingsBodyWidget")
 
 
+def _notify_setting_dependents(widget: QWidget) -> None:
+    """Refresh rows controlled by a setting widget after a silent model update.
+
+    Settings binding deliberately blocks Qt signals while applying a persisted
+    value to avoid feeding it back into the store.  Dependency rows used to
+    listen only to ``stateChanged``, so they could retain their old disabled
+    appearance after the controller was updated by the binding.
+    """
+    for sync in tuple(getattr(widget, "_settings_dependency_sync_callbacks", ())):
+        try:
+            sync()
+        except RuntimeError:
+            continue
+
+
 def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
     if not key:
         return
@@ -44,6 +59,7 @@ def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
             apply_value(value)
         finally:
             del blocker
+        _notify_setting_dependents(widget)
 
     binding.bind(key, widget, _apply)
 
@@ -72,6 +88,7 @@ def _bind_setting_two_way(
             apply_value(value)
         finally:
             del blocker
+        _notify_setting_dependents(widget)
 
     binding.bind_two_way(
         key,
@@ -699,6 +716,12 @@ def create_setting_widget(
                     _apply_setting_row_disabled(frame, not active)
 
             _dep_sync()
+
+            callbacks = getattr(controller, "_settings_dependency_sync_callbacks", None)
+            if callbacks is None:
+                callbacks = []
+                setattr(controller, "_settings_dependency_sync_callbacks", callbacks)
+            callbacks.append(_dep_sync)
 
             if hasattr(controller, "stateChanged"):
                 controller.stateChanged.connect(_dep_sync)
