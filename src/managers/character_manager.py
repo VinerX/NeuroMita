@@ -178,6 +178,7 @@ class CharacterManager:
             try:
                 self.resources.history_for(character_id).clear_history()
                 self.resources.memory_for(character_id).clear_memories()
+                self.resources.working_state_for(character_id).clear()
             except Exception as exc:
                 logger.error(
                     f"[CharacterManager] Failed to clear resources for {character_id}: {format_exception(exc)}",

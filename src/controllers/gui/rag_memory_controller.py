@@ -693,6 +693,42 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
                       'How many RAG chunks to inject into the system prompt.')},
 
+        {'label': _('Оперативное состояние диалога', 'Dialogue working state'), 'type': 'subsection'},
+        {'label': _('Включить оперативное состояние', 'Enable working state'),
+         'key': 'ENABLE_WORKING_STATE', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Добавляет скрытую компактную передачу текущего фокуса, понимания ситуации и незакрытых тем между ответами. '
+             'Это не история, не долгосрочная память и не цепочка рассуждений.',
+             'Adds a hidden compact handoff of the current focus, situation understanding and open threads between replies. '
+             'It is not history, long-term memory, or chain-of-thought.')},
+        {'label': _('Лимит оперативного состояния (символы)', 'Working state limit (chars)'),
+         'key': 'WORKING_STATE_MAX_CHARS', 'type': 'entry', 'default': 2000,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_WORKING_STATE',
+         'tooltip': _(
+             'Жёсткий максимум для скрытого состояния на одного персонажа. 2000 символов — примерно 300–500 токенов; '
+             'при переполнении поздние поля обрезаются.',
+             'Hard maximum for one character\'s hidden state. 2000 characters is roughly 300–500 tokens; '
+             'later fields are trimmed on overflow.')},
+
+        {'label': _('Память запрошенных действий', 'Requested-action memory'), 'type': 'subsection'},
+        {'label': _('Включить память действий', 'Enable action memory'),
+         'key': 'ENABLE_ACTION_MEMORY', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Передаёт модели компактный список действий из structured_data предыдущих ответов. '
+             'Действия помечаются как запрошенные: Python не считает их выполненными Unity без подтверждения.',
+             'Passes the model a compact list of actions from previous replies\' structured_data. '
+             'Actions are marked requested: Python never calls them executed by Unity without acknowledgement.')},
+        {'label': _('Сохранять действий после сводки', 'Keep actions after summary'),
+         'key': 'ACTION_MEMORY_RETAIN_LAST', 'type': 'entry', 'default': 4,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_ACTION_MEMORY',
+         'tooltip': _(
+             'Между сжатиями список только дополняется, чтобы не сдвигать окно на каждом ходе. '
+             'Только при успешной сводке старое схлопывается, и остаётся этот хвост последних действий.',
+             'Between compressions the list is append-only, so the window does not shift every turn. '
+             'Only a successful summary compacts old entries and keeps this final action tail.')},
+
         {'label': _('Гигиена памяти', 'Memory hygiene'), 'type': 'subsection'},
         {'label': _('Дедуп при добавлении', 'Deduplicate on insert'),
          'key': 'MEMORY_DEDUP_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,

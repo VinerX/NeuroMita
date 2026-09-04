@@ -638,6 +638,10 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
 
     return {
         "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
+        "working_state": (
+            response.working_state.model_dump(exclude_none=True)
+            if response.working_state is not None else None
+        ),
         "segments": segments_out,
         "response": response.full_text(),
         "attitude_change": response.attitude_change,

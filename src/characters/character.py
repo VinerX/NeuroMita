@@ -201,6 +201,10 @@ class Character:
     def reminder_system(self):
         return self._resources().reminders_for(self.char_id, self.name)
 
+    @property
+    def working_state(self):
+        return self._resources().working_state_for(self.char_id, self.name)
+
     def ensure_runtime_loaded(self) -> None:
         if self._runtime_loaded:
             return
@@ -1092,6 +1096,10 @@ class Character:
         try:
             from managers.core_memory_triggers import reset as reset_core_triggers
             reset_core_triggers(self.char_id)
+        except Exception:
+            pass
+        try:
+            self.working_state.clear()
         except Exception:
             pass
 

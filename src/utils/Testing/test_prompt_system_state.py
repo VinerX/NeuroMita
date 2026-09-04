@@ -152,6 +152,45 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(contents.index("[Runtime Core Directive: Code 23 — ACTIVE]"), contents.index("[relevant memories]"))
         self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
 
+    def test_working_state_is_opt_in_and_precedes_recent_input(self):
+        class _WorkingState:
+            @staticmethod
+            def format_for_prompt():
+                return "[WORKING STATE]\nFocus: continue the dance test\n[/WORKING STATE]"
+
+        class _Character:
+            char_id = "Test"
+            working_state = _WorkingState()
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
+        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+
+        enabled = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Что ты делаешь?",
+            capabilities={"structured_output": True, "working_state": True},
+        ))
+        enabled_contents = [m.get("content", "") for m in enabled.messages]
+        protocol_index = enabled_contents.index(next(c for c in enabled_contents if "[WORKING STATE PROTOCOL]" in c))
+        state_index = enabled_contents.index(next(c for c in enabled_contents if c.startswith("[WORKING STATE]")))
+        self.assertLess(protocol_index, state_index)
+        self.assertLess(state_index, len(enabled_contents) - 1)
+
+        disabled = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Что ты делаешь?",
+            capabilities={"structured_output": True, "working_state": False},
+        ))
+        self.assertFalse(any("[WORKING STATE" in m.get("content", "") for m in disabled.messages))
+
     def test_character_environment_is_common_dynamic_context_before_input(self):
         controller = PromptController()
         controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])

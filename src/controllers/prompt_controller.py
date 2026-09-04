@@ -419,6 +419,7 @@ class PromptController(PromptBuilderService):
         tools_prompt = str(caps.get("tools_prompt", "") or "")
         character.set_variable("TOOLS_DESCRIPTION", "")
         character.set_variable("SCHEMA_REASONING_ENABLED", caps.get("schema_reasoning", False))
+        character.set_variable("WORKING_STATE_ENABLED", caps.get("working_state", False))
         character.set_variable("CUSTOM_PARAMS_SCHEMA",
                                _build_custom_params_schema(getattr(character, "custom_params", [])))
 
@@ -856,6 +857,20 @@ class PromptController(PromptBuilderService):
         rag_context = request.rag_context or ""
         core_memory_context = request.core_memory_context or ""
         policy = request.policy
+        working_state_enabled = bool(
+            capabilities.get("working_state", False)
+            and capabilities.get("structured_output", False)
+        )
+        working_state_context = ""
+        if working_state_enabled:
+            try:
+                working_state_context = character.working_state.format_for_prompt()
+            except Exception as exc:
+                logger.warning(
+                    "[PromptController][%s] Failed to read working state: %s",
+                    char_id,
+                    format_exception(exc),
+                )
 
         game_state_prompt_content: Optional[str] = None
         try:
@@ -865,6 +880,7 @@ class PromptController(PromptBuilderService):
             logger.warning(f"[PromptController][{char_id}] Ошибка при формировании промпта игры: {format_exception(e)}", exc_info=True)
 
         messages: List[Dict[str, Any]] = []
+        prepared = None
 
         stable_system_messages, volatile_system_messages, dsl_system_infos = self._build_system_messages(
             character,
@@ -958,6 +974,30 @@ class PromptController(PromptBuilderService):
                 "role": "system",
                 "content": f"[HISTORY SUMMARY]\n{history_summary}",
             })
+
+        if working_state_enabled:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "[WORKING STATE PROTOCOL]\n"
+                    "Use the working_state response field as a compact handoff to your next turn. "
+                    "Keep only the current focus, established understanding, tentative assumptions, "
+                    "open loops, and immediate next steps. Do not copy dialogue, long-term memories, "
+                    "or chain-of-thought. Current observations, game state and newer dialogue override it.\n"
+                    "[/WORKING STATE PROTOCOL]"
+                ),
+            })
+        if working_state_context:
+            messages.append({"role": "system", "content": working_state_context})
+
+        action_context = ""
+        if bool(capabilities.get("action_memory", False)):
+            try:
+                action_context = str(getattr(prepared, "action_context", "") or "")
+            except Exception:
+                action_context = ""
+        if action_context:
+            messages.append({"role": "system", "content": action_context})
 
         messages.extend(history_limited)
 

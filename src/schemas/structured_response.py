@@ -320,6 +320,16 @@ class ResponseSegment(BaseModel):
         return data
 
 
+class WorkingState(BaseModel):
+    """Portable summary of the current interaction, not chain-of-thought."""
+
+    focus: str = Field(default="", description="Current main focus in one short sentence")
+    situation: List[str] = Field(default_factory=list, description="Established current understanding and relevant facts")
+    assumptions: List[str] = Field(default_factory=list, description="Tentative assumptions; do not present them as facts")
+    open_loops: List[str] = Field(default_factory=list, description="Unresolved threads worth returning to")
+    next_steps: List[str] = Field(default_factory=list, description="Immediate likely follow-ups, not a long plan")
+
+
 class StructuredResponse(BaseModel):
     """Top-level structured response from the LLM."""
 
@@ -401,6 +411,17 @@ class StructuredResponse(BaseModel):
             "Custom character-specific parameters defined by the prompter. "
             "Keys and their meaning are described in the response format instructions."
         )
+    )
+
+    # Keep this after the visible response/actions in the provider schema: it
+    # is a compact handoff for the next turn, not a prerequisite to answering.
+    working_state: Optional[WorkingState] = Field(
+        default=None,
+        description=(
+            "Compact temporary state for the next turn. Store only the current focus, "
+            "understanding, tentative assumptions, open loops and immediate next steps. "
+            "Do not copy dialogue, long-term memories, or chain-of-thought. Omit when there is no useful state."
+        ),
     )
 
     @model_validator(mode="after")

@@ -917,6 +917,8 @@ class ModelController(GenerationService, ModelStateService):
                 capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
             except Exception:
                 capabilities = {}
+            capabilities["working_state"] = bool(self.settings.get("ENABLE_WORKING_STATE", False))
+            capabilities["action_memory"] = bool(self.settings.get("ENABLE_ACTION_MEMORY", False))
             cfg = getattr(self.model, "cfg", None)
             memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
             prompt_request = PromptBuildRequest(
@@ -1477,6 +1479,20 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
             effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
         )
+        # Working state is an application-level opt-in, independent of native
+        # provider reasoning. When off, remove its field from strict schemas so
+        # the model's old response contract remains byte-for-byte compatible.
+        effective_capabilities["working_state"] = bool(
+            self.settings.get("ENABLE_WORKING_STATE", False)
+            and effective_capabilities.get("structured_output", False)
+        )
+        effective_capabilities["action_memory"] = bool(
+            self.settings.get("ENABLE_ACTION_MEMORY", False)
+        )
+        if not effective_capabilities["working_state"]:
+            excluded_fields = set(effective_capabilities.get("structured_exclude_fields") or ())
+            excluded_fields.add("working_state")
+            effective_capabilities["structured_exclude_fields"] = tuple(sorted(excluded_fields))
 
         # The selected DSL template is the only owner of intent support. The
         # capability is finalized after PromptController processes the template.
@@ -2104,6 +2120,21 @@ class ModelController(GenerationService, ModelStateService):
                 structured,
                 save_as_missed=self.settings.get("SAVE_MISSED_MEMORY", False),
             )
+            if effective_capabilities.get("working_state", False):
+                try:
+                    if structured.working_state is None:
+                        char.working_state.clear()
+                    else:
+                        char.working_state.update(
+                            structured.working_state,
+                            max_chars=int(self.settings.get("WORKING_STATE_MAX_CHARS", 2000) or 2000),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[ModelController][%s] Failed to update working state: %s",
+                        char_id,
+                        format_exception(exc),
+                    )
             if hasattr(char, "flush_variables"):
                 char.flush_variables()
             created_memory_ids = list(getattr(char, "_last_created_memory_ids", None) or [])
@@ -2176,6 +2207,9 @@ class ModelController(GenerationService, ModelStateService):
             result_dict = structured_response_to_result_dict(structured)
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
+        # Working state is an internal session handoff, never visible in UI,
+        # returned task data, or persisted assistant structured_data.
+        result_dict.pop("working_state", None)
         # Attach raw LLM JSON for the debug panel (not saved to history)
         result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
