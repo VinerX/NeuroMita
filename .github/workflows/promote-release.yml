@@ -1688,12 +1688,58 @@ jobs:
           echo "Verified promotion commit on VinerX/main:"
           echo "$RELEASE_COMMIT"
 
+      - name: Resolve safe release target
+        id: release_target
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ steps.merge.outputs.release_commit }}
+          NEEDS_PUSH: ${{ steps.merge.outputs.needs_push }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin main
+          CURRENT_MAIN="$(git rev-parse origin/main)"
+
+          if [ "$NEEDS_PUSH" = "true" ]; then
+            # Fresh promotion: use the promotion merge commit we just pushed.
+            TARGET="$RELEASE_COMMIT"
+          else
+            # Retry: the promotion merge already exists in main.
+            if ! git merge-base --is-ancestor "$RELEASE_COMMIT" "$CURRENT_MAIN"; then
+              echo "Existing promotion commit is not an ancestor of current main."
+              exit 1
+            fi
+
+            NON_WORKFLOW_CHANGES="$(
+              git diff \
+                --name-only \
+                "$RELEASE_COMMIT..$CURRENT_MAIN" \
+                -- . \
+                ':(exclude).github/workflows/**'
+            )"
+
+            if [ -n "$NON_WORKFLOW_CHANGES" ]; then
+              echo "VinerX/main contains non-workflow changes after the tested promotion:"
+              echo "$NON_WORKFLOW_CHANGES"
+              echo
+              echo "Refusing to attach the release to untested code."
+              exit 1
+            fi
+
+            echo "Only workflow files changed since the existing promotion merge."
+            echo "Using current VinerX/main as the safe release target."
+            TARGET="$CURRENT_MAIN"
+          fi
+
+          echo "commit=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Release target: $TARGET"
+
       - name: Create VinerX draft release
         id: draft_release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.source.outputs.source_tag }}
-          target_commitish: ${{ steps.merge.outputs.release_commit }}
+          target_commitish: ${{ steps.release_target.outputs.commit }}
           name: NeuroMita ${{ steps.source.outputs.source_tag }}
           body_path: ${{ steps.workspace.outputs.dir }}/RELEASE_BODY.md
           files: |
