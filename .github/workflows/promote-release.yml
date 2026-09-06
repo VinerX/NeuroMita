@@ -784,55 +784,20 @@ jobs:
           rm -rf "$EXTRACT_DIR" "$OUTPUT_ZIP"
           mkdir -p "$EXTRACT_DIR"
 
-          python - <<'PY'
-          import os
-          import zipfile
-          from pathlib import Path, PurePosixPath
+          if [ -z "${TESTER_CODE:-}" ]; then
+            echo "Repository secret TESTER_CODE is missing or empty."
+            exit 1
+          fi
 
-          source_zip = (
-              Path(os.environ["PROMOTE_DIR"])
-              / f"source-{os.environ['UNITY_NAME']}"
-          )
+          # The Atm4x Unity artifact may have a .zip filename while its
+          # actual container is 7z. Let 7-Zip detect the real format and
+          # verify both archive integrity and TESTER_CODE before extraction.
+          7z t \
+            -p"$TESTER_CODE" \
+            "$SOURCE_ZIP" \
+            >/dev/null
 
-          encrypted = 0
-          file_count = 0
-
-          with zipfile.ZipFile(source_zip, "r") as archive:
-              for info in archive.infolist():
-                  raw_name = (
-                      info.filename
-                      .replace("\\", "/")
-                  )
-
-                  path = PurePosixPath(raw_name)
-
-                  if (
-                      raw_name.startswith("/")
-                      or ".." in path.parts
-                      or "\x00" in raw_name
-                  ):
-                      raise SystemExit(
-                          f"Unsafe path in Unity ZIP: "
-                          f"{info.filename!r}"
-                      )
-
-                  if not info.is_dir():
-                      file_count += 1
-
-                  if info.flag_bits & 0x1:
-                      encrypted += 1
-
-          if file_count == 0:
-              raise SystemExit(
-                  "Unity source ZIP contains no files"
-              )
-
-          print(
-              f"Unity source ZIP: "
-              f"{file_count} files, "
-              f"{encrypted} encrypted entries"
-          )
-          PY
+          echo "Unity source archive is readable with TESTER_CODE."
 
           # Decrypt/extract with the repository secret.
           # No shell tracing is enabled, so the password is not printed.
