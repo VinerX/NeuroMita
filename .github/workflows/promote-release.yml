@@ -28,18 +28,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      - name: Capture VinerX base commit
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare isolated promotion workspace
+        id: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROMOTE_DIR="$RUNNER_TEMP/neuromita-promote-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$PROMOTE_DIR"
+          mkdir -p "$PROMOTE_DIR"
+
+          echo "dir=$PROMOTE_DIR" >> "$GITHUB_OUTPUT"
+
       - name: Resolve tested Atm4x release
         id: source
         shell: bash
         env:
           SOURCE_TAG: ${{ inputs.source_tag }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
@@ -51,9 +75,15 @@ jobs:
 
           source_repo = os.environ["SOURCE_REPO"].strip()
           source_tag = os.environ["SOURCE_TAG"].strip()
-          if not re.fullmatch(r"v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?", source_tag):
+          promote_dir = Path(os.environ["PROMOTE_DIR"])
+
+          if not re.fullmatch(
+              r"v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?",
+              source_tag,
+          ):
               raise SystemExit(
-                  f"Unsupported source tag {source_tag!r}; expected vYYYY.MM.DD or vYYYY.MM.DD.N"
+                  f"Unsupported source tag {source_tag!r}; "
+                  "expected vYYYY.MM.DD or vYYYY.MM.DD.N"
               )
 
           headers = {
@@ -62,60 +92,158 @@ jobs:
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
+          token = os.environ.get("GH_TOKEN", "").strip()
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+
           def get_json(url: str):
               request = urllib.request.Request(url, headers=headers)
+
               try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=30,
+                  ) as response:
                       return json.load(response)
               except urllib.error.HTTPError as exc:
-                  body = exc.read().decode("utf-8", errors="replace")
-                  raise SystemExit(f"GitHub API failed: HTTP {exc.code} for {url}: {body[:500]}") from exc
+                  body = exc.read().decode(
+                      "utf-8",
+                      errors="replace",
+                  )
 
-          encoded_tag = urllib.parse.quote(source_tag, safe="")
-          release = get_json(
-              f"https://api.github.com/repos/{source_repo}/releases/tags/{encoded_tag}"
+                  raise SystemExit(
+                      f"GitHub API failed: HTTP {exc.code} "
+                      f"for {url}: {body[:500]}"
+                  ) from exc
+
+          encoded_tag = urllib.parse.quote(
+              source_tag,
+              safe="",
           )
+
+          release = get_json(
+              f"https://api.github.com/repos/"
+              f"{source_repo}/releases/tags/{encoded_tag}"
+          )
+
           if release.get("draft"):
-              raise SystemExit(f"Source release {source_tag} is still a draft")
+              raise SystemExit(
+                  f"Source release {source_tag} is still a draft"
+              )
+
           if release.get("prerelease"):
               raise SystemExit(
                   f"Source release {source_tag} is marked as prerelease; "
                   "the two-repository contour expects ordinary Atm4x releases"
               )
+
+          if not release.get("published_at"):
+              raise SystemExit(
+                  f"Source release {source_tag} is not published"
+              )
+
           commit = get_json(
-              f"https://api.github.com/repos/{source_repo}/commits/{encoded_tag}"
+              f"https://api.github.com/repos/"
+              f"{source_repo}/commits/{encoded_tag}"
           )
-          source_commit = str(commit.get("sha") or "").strip()
-          if not re.fullmatch(r"[0-9a-fA-F]{40}", source_commit):
-              raise SystemExit(f"Could not resolve source commit for {source_tag}: {source_commit!r}")
+
+          source_commit = (
+              str(commit.get("sha") or "")
+              .strip()
+              .lower()
+          )
+
+          if not re.fullmatch(
+              r"[0-9a-f]{40}",
+              source_commit,
+          ):
+              raise SystemExit(
+                  f"Could not resolve source commit "
+                  f"for {source_tag}: {source_commit!r}"
+              )
 
           assets = [
-              asset for asset in (release.get("assets") or [])
-              if str(asset.get("name") or "").startswith("PythonBuild-")
-              and str(asset.get("name") or "").lower().endswith(".zip")
+              asset
+              for asset in (release.get("assets") or [])
+              if str(
+                  asset.get("name") or ""
+              ).startswith("PythonBuild-")
+              and str(
+                  asset.get("name") or ""
+              ).lower().endswith(".zip")
           ]
+
           if len(assets) != 1:
-              names = [str(asset.get("name") or "") for asset in (release.get("assets") or [])]
+              names = [
+                  str(asset.get("name") or "")
+                  for asset in (release.get("assets") or [])
+              ]
+
               raise SystemExit(
-                  f"Expected exactly one PythonBuild-*.zip asset in {source_repo} {source_tag}; "
+                  f"Expected exactly one PythonBuild-*.zip asset "
+                  f"in {source_repo} {source_tag}; "
                   f"found {len(assets)}. Assets: {names}"
               )
 
           asset = assets[0]
-          asset_name = str(asset["name"])
-          asset_url = str(asset["browser_download_url"])
-          if not asset_url.startswith("https://github.com/"):
-              raise SystemExit(f"Unexpected release asset URL: {asset_url}")
 
-          Path("source-release.json").write_text(
+          asset_name = str(
+              asset["name"]
+          ).strip()
+
+          asset_url = str(
+              asset["browser_download_url"]
+          ).strip()
+
+          asset_digest = str(
+              asset.get("digest") or ""
+          ).strip().lower()
+
+          if not re.fullmatch(
+              r"PythonBuild-[A-Za-z0-9._-]+\.zip",
+              asset_name,
+          ):
+              raise SystemExit(
+                  f"Unexpected release asset name: {asset_name!r}"
+              )
+
+          if not asset_url.startswith(
+              "https://github.com/"
+          ):
+              raise SystemExit(
+                  f"Unexpected release asset URL: {asset_url}"
+              )
+
+          if (
+              asset_digest
+              and not re.fullmatch(
+                  r"sha256:[0-9a-f]{64}",
+                  asset_digest,
+              )
+          ):
+              raise SystemExit(
+                  f"Unexpected release asset digest: "
+                  f"{asset_digest!r}"
+              )
+
+          (
+              promote_dir / "source-release.json"
+          ).write_text(
               json.dumps(
                   {
                       "tag": source_tag,
-                      "name": release.get("name") or f"NeuroMita {source_tag}",
-                      "body": release.get("body") or "",
+                      "name": (
+                          release.get("name")
+                          or f"NeuroMita {source_tag}"
+                      ),
+                      "body": (
+                          release.get("body")
+                          or ""
+                      ),
                       "source_commit": source_commit,
                       "asset_name": asset_name,
                       "asset_url": asset_url,
+                      "asset_digest": asset_digest,
                   },
                   ensure_ascii=False,
                   indent=2,
@@ -123,30 +251,77 @@ jobs:
               encoding="utf-8",
           )
 
-          github_output = Path(os.environ["GITHUB_OUTPUT"])
-          with github_output.open("a", encoding="utf-8") as out:
-              out.write(f"source_tag={source_tag}\n")
-              out.write(f"source_commit={source_commit}\n")
-              out.write(f"asset_name={asset_name}\n")
-              out.write(f"asset_url={asset_url}\n")
+          github_output = Path(
+              os.environ["GITHUB_OUTPUT"]
+          )
 
-          print(f"Source release: {source_repo} {source_tag}")
-          print(f"Source commit:  {source_commit}")
-          print(f"Source asset:   {asset_name}")
+          with github_output.open(
+              "a",
+              encoding="utf-8",
+          ) as out:
+              out.write(
+                  f"source_tag={source_tag}\n"
+              )
+              out.write(
+                  f"source_commit={source_commit}\n"
+              )
+              out.write(
+                  f"asset_name={asset_name}\n"
+              )
+              out.write(
+                  f"asset_url={asset_url}\n"
+              )
+              out.write(
+                  f"asset_digest={asset_digest}\n"
+              )
+
+          print(
+              f"Source release: "
+              f"{source_repo} {source_tag}"
+          )
+          print(
+              f"Source commit:  "
+              f"{source_commit}"
+          )
+          print(
+              f"Source asset:   "
+              f"{asset_name}"
+          )
+
+          if asset_digest:
+              print(
+                  f"Source digest:  "
+                  f"{asset_digest}"
+              )
           PY
 
-      - name: Refuse duplicate VinerX tag or release
+      - name: Refuse duplicate VinerX tag or published release
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git show-ref --verify --quiet "refs/tags/$SOURCE_TAG"; then
-            echo "Tag $SOURCE_TAG already exists in VinerX/NeuroMita. Refusing to overwrite it."
+          set -euo pipefail
+
+          if git ls-remote \
+              --exit-code \
+              --tags \
+              origin \
+              "refs/tags/$SOURCE_TAG" \
+              >/dev/null 2>&1; then
+
+            echo "Tag $SOURCE_TAG already exists in VinerX/NeuroMita."
+            echo "Refusing to overwrite it."
             exit 1
           fi
-          if gh release view "$SOURCE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $SOURCE_TAG already exists in VinerX/NeuroMita. Refusing to overwrite it."
+
+          if gh release view \
+              "$SOURCE_TAG" \
+              --repo "${{ github.repository }}" \
+              >/dev/null 2>&1; then
+
+            echo "Published release $SOURCE_TAG already exists."
+            echo "Refusing to overwrite it."
             exit 1
           fi
 
@@ -155,11 +330,40 @@ jobs:
         env:
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
           ASSET_URL: ${{ steps.source.outputs.asset_url }}
+          ASSET_DIGEST: ${{ steps.source.outputs.asset_digest }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
-          curl --fail --location --retry 3 --retry-all-errors \
-            --output "$ASSET_NAME" \
+          set -euo pipefail
+
+          ASSET_PATH="$PROMOTE_DIR/$ASSET_NAME"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-all-errors \
+            --output "$ASSET_PATH" \
             "$ASSET_URL"
-          test -s "$ASSET_NAME"
+
+          test -s "$ASSET_PATH"
+
+          ACTUAL_SHA256="$(
+            sha256sum "$ASSET_PATH" |
+            awk '{print $1}'
+          )"
+
+          if [ -n "$ASSET_DIGEST" ]; then
+            EXPECTED_SHA256="${ASSET_DIGEST#sha256:}"
+
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+              echo "Downloaded release asset digest mismatch."
+              echo "Expected: $EXPECTED_SHA256"
+              echo "Actual:   $ACTUAL_SHA256"
+              exit 1
+            fi
+          fi
+
+          echo "Downloaded ZIP sha256=$ACTUAL_SHA256"
 
       - name: Verify source artifact provenance
         shell: bash
@@ -167,7 +371,10 @@ jobs:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import hashlib
           import json
@@ -175,26 +382,69 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          archive_path = Path(os.environ["ASSET_NAME"])
+          promote_dir = Path(
+              os.environ["PROMOTE_DIR"]
+          )
+
+          archive_path = (
+              promote_dir /
+              os.environ["ASSET_NAME"]
+          )
+
           source_tag = os.environ["SOURCE_TAG"]
-          source_commit = os.environ["SOURCE_COMMIT"].lower()
+
+          source_commit = (
+              os.environ["SOURCE_COMMIT"]
+              .lower()
+          )
+
           source_repo = os.environ["SOURCE_REPO"]
 
           def is_marker(name: str) -> bool:
-              normalized = name.replace("\\", "/").strip("/").casefold()
-              marker = "settings/distribution.json"
-              return normalized == marker or normalized.endswith("/" + marker)
+              normalized = (
+                  name
+                  .replace("\\", "/")
+                  .strip("/")
+                  .casefold()
+              )
 
-          with zipfile.ZipFile(archive_path, "r") as archive:
+              marker = "settings/distribution.json"
+
+              return (
+                  normalized == marker
+                  or normalized.endswith(
+                      "/" + marker
+                  )
+              )
+
+          with zipfile.ZipFile(
+              archive_path,
+              "r",
+          ) as archive:
+
               marker_names = [
-                  info.filename for info in archive.infolist()
-                  if not info.is_dir() and is_marker(info.filename)
+                  info.filename
+                  for info in archive.infolist()
+                  if (
+                      not info.is_dir()
+                      and is_marker(
+                          info.filename
+                      )
+                  )
               ]
+
               if len(marker_names) != 1:
                   raise SystemExit(
-                      f"Expected exactly one Settings/distribution.json; found {marker_names}"
+                      "Expected exactly one "
+                      "Settings/distribution.json; "
+                      f"found {marker_names}"
                   )
-              marker = json.loads(archive.read(marker_names[0]).decode("utf-8"))
+
+              marker = json.loads(
+                  archive.read(
+                      marker_names[0]
+                  ).decode("utf-8")
+              )
 
               expected = {
                   "schema": 1,
@@ -203,60 +453,100 @@ jobs:
                   "source_tag": source_tag,
                   "source_commit": source_commit,
               }
+
               actual = {
                   "schema": marker.get("schema"),
-                  "contour": str(marker.get("contour") or "").strip().casefold(),
-                  "source_repo": str(marker.get("source_repo") or "").strip(),
-                  "source_tag": str(marker.get("source_tag") or "").strip(),
-                  "source_commit": str(marker.get("source_commit") or "").strip().lower(),
+                  "contour": str(
+                      marker.get("contour")
+                      or ""
+                  ).strip().casefold(),
+                  "source_repo": str(
+                      marker.get("source_repo")
+                      or ""
+                  ).strip(),
+                  "source_tag": str(
+                      marker.get("source_tag")
+                      or ""
+                  ).strip(),
+                  "source_commit": str(
+                      marker.get("source_commit")
+                      or ""
+                  ).strip().lower(),
               }
+
               if actual != expected:
                   raise SystemExit(
-                      "Source distribution marker does not match tested Atm4x release:\n"
-                      + json.dumps({"expected": expected, "actual": actual}, indent=2)
+                      "Source distribution marker "
+                      "does not match tested "
+                      "Atm4x release:\n"
+                      + json.dumps(
+                          {
+                              "expected": expected,
+                              "actual": actual,
+                          },
+                          indent=2,
+                      )
                   )
 
               pyz_hashes = {}
+
               for info in archive.infolist():
-                  if info.is_dir() or not info.filename.casefold().endswith(".pyz"):
+                  if (
+                      info.is_dir()
+                      or not info.filename
+                      .casefold()
+                      .endswith(".pyz")
+                  ):
                       continue
+
                   digest = hashlib.sha256()
-                  with archive.open(info, "r") as stream:
+
+                  with archive.open(
+                      info,
+                      "r",
+                  ) as stream:
                       while True:
-                          chunk = stream.read(1024 * 1024)
+                          chunk = stream.read(
+                              1024 * 1024
+                          )
+
                           if not chunk:
                               break
+
                           digest.update(chunk)
-                  pyz_hashes[info.filename] = digest.hexdigest()
+
+                  pyz_hashes[
+                      info.filename
+                  ] = digest.hexdigest()
 
               if not pyz_hashes:
-                  raise SystemExit("No .pyz artifact found in tested release ZIP")
+                  raise SystemExit(
+                      "No .pyz artifact found "
+                      "in tested release ZIP"
+                  )
 
-          Path("pyz-before.json").write_text(
-              json.dumps(pyz_hashes, sort_keys=True, indent=2) + "\n",
+          (
+              promote_dir / "pyz-before.json"
+          ).write_text(
+              json.dumps(
+                  pyz_hashes,
+                  sort_keys=True,
+                  indent=2,
+              ) + "\n",
               encoding="utf-8",
           )
-          print("Verified source marker: contour=test")
-          for name, digest in pyz_hashes.items():
-              print(f"Source .pyz: {name} sha256={digest}")
-          PY
 
-      - name: Verify tested commit is merged into VinerX
-        shell: bash
-        env:
-          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
-        run: |
-          if ! git cat-file -e "$SOURCE_COMMIT^{commit}" 2>/dev/null; then
-            echo "Tested Atm4x commit $SOURCE_COMMIT is not present in VinerX history."
-            echo "Merge the tested Atm4x branch/commit into VinerX without squash/rebase, then rerun Promote."
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD; then
-            echo "Tested Atm4x commit $SOURCE_COMMIT is not an ancestor of VinerX HEAD."
-            echo "Merge that tested commit into VinerX before promoting it."
-            exit 1
-          fi
-          echo "Verified: tested commit is contained in VinerX HEAD."
+          print(
+              "Verified source marker: "
+              "contour=test"
+          )
+
+          for name, digest in pyz_hashes.items():
+              print(
+                  f"Source .pyz: "
+                  f"{name} sha256={digest}"
+              )
+          PY
 
       - name: Stamp production distribution metadata
         shell: bash
@@ -264,13 +554,17 @@ jobs:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
+          set -euo pipefail
+
           test -f scripts/stamp_distribution_metadata.py || {
-            echo "scripts/stamp_distribution_metadata.py is missing. Merge the contour/distribution code into VinerX first."
+            echo "scripts/stamp_distribution_metadata.py is missing in VinerX/main."
             exit 1
           }
+
           python scripts/stamp_distribution_metadata.py \
-            --archive "$ASSET_NAME" \
+            --archive "$PROMOTE_DIR/$ASSET_NAME" \
             --contour release \
             --source-repo "$SOURCE_REPO" \
             --source-tag "$SOURCE_TAG" \
@@ -282,7 +576,10 @@ jobs:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import hashlib
           import json
@@ -290,27 +587,79 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          archive_path = Path(os.environ["ASSET_NAME"])
+          promote_dir = Path(
+              os.environ["PROMOTE_DIR"]
+          )
+
+          archive_path = (
+              promote_dir /
+              os.environ["ASSET_NAME"]
+          )
+
           source_tag = os.environ["SOURCE_TAG"]
-          source_commit = os.environ["SOURCE_COMMIT"].lower()
+
+          source_commit = (
+              os.environ["SOURCE_COMMIT"]
+              .lower()
+          )
+
           source_repo = os.environ["SOURCE_REPO"]
-          before = json.loads(Path("pyz-before.json").read_text(encoding="utf-8"))
+
+          before = json.loads(
+              (
+                  promote_dir /
+                  "pyz-before.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
 
           def is_marker(name: str) -> bool:
-              normalized = name.replace("\\", "/").strip("/").casefold()
-              marker = "settings/distribution.json"
-              return normalized == marker or normalized.endswith("/" + marker)
+              normalized = (
+                  name
+                  .replace("\\", "/")
+                  .strip("/")
+                  .casefold()
+              )
 
-          with zipfile.ZipFile(archive_path, "r") as archive:
+              marker = "settings/distribution.json"
+
+              return (
+                  normalized == marker
+                  or normalized.endswith(
+                      "/" + marker
+                  )
+              )
+
+          with zipfile.ZipFile(
+              archive_path,
+              "r",
+          ) as archive:
+
               marker_names = [
-                  info.filename for info in archive.infolist()
-                  if not info.is_dir() and is_marker(info.filename)
+                  info.filename
+                  for info in archive.infolist()
+                  if (
+                      not info.is_dir()
+                      and is_marker(
+                          info.filename
+                      )
+                  )
               ]
+
               if len(marker_names) != 1:
                   raise SystemExit(
-                      f"Expected exactly one final Settings/distribution.json; found {marker_names}"
+                      "Expected exactly one final "
+                      "Settings/distribution.json; "
+                      f"found {marker_names}"
                   )
-              marker = json.loads(archive.read(marker_names[0]).decode("utf-8"))
+
+              marker = json.loads(
+                  archive.read(
+                      marker_names[0]
+                  ).decode("utf-8")
+              )
+
               expected_marker = {
                   "schema": 1,
                   "contour": "release",
@@ -318,50 +667,114 @@ jobs:
                   "source_tag": source_tag,
                   "source_commit": source_commit,
               }
+
               actual_marker = {
                   "schema": marker.get("schema"),
-                  "contour": str(marker.get("contour") or "").strip().casefold(),
-                  "source_repo": str(marker.get("source_repo") or "").strip(),
-                  "source_tag": str(marker.get("source_tag") or "").strip(),
-                  "source_commit": str(marker.get("source_commit") or "").strip().lower(),
+                  "contour": str(
+                      marker.get("contour")
+                      or ""
+                  ).strip().casefold(),
+                  "source_repo": str(
+                      marker.get("source_repo")
+                      or ""
+                  ).strip(),
+                  "source_tag": str(
+                      marker.get("source_tag")
+                      or ""
+                  ).strip(),
+                  "source_commit": str(
+                      marker.get("source_commit")
+                      or ""
+                  ).strip().lower(),
               }
+
               if actual_marker != expected_marker:
                   raise SystemExit(
-                      "Final distribution marker is invalid:\n"
+                      "Final distribution marker "
+                      "is invalid:\n"
                       + json.dumps(
-                          {"expected": expected_marker, "actual": actual_marker},
+                          {
+                              "expected":
+                                  expected_marker,
+                              "actual":
+                                  actual_marker,
+                          },
                           indent=2,
                       )
                   )
 
               after = {}
+
               for info in archive.infolist():
-                  if info.is_dir() or not info.filename.casefold().endswith(".pyz"):
+                  if (
+                      info.is_dir()
+                      or not info.filename
+                      .casefold()
+                      .endswith(".pyz")
+                  ):
                       continue
+
                   digest = hashlib.sha256()
-                  with archive.open(info, "r") as stream:
+
+                  with archive.open(
+                      info,
+                      "r",
+                  ) as stream:
                       while True:
-                          chunk = stream.read(1024 * 1024)
+                          chunk = stream.read(
+                              1024 * 1024
+                          )
+
                           if not chunk:
                               break
+
                           digest.update(chunk)
-                  after[info.filename] = digest.hexdigest()
+
+                  after[
+                      info.filename
+                  ] = digest.hexdigest()
 
           if before != after:
               raise SystemExit(
-                  "Embedded .pyz changed during Promote:\n"
-                  + json.dumps({"before": before, "after": after}, indent=2)
+                  "Embedded .pyz changed "
+                  "during Promote:\n"
+                  + json.dumps(
+                      {
+                          "before": before,
+                          "after": after,
+                      },
+                      indent=2,
+                  )
               )
 
-          archive_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-          Path("promoted-archive.sha256").write_text(
-              f"{archive_sha}  {archive_path.name}\n",
+          archive_sha = hashlib.sha256(
+              archive_path.read_bytes()
+          ).hexdigest()
+
+          (
+              promote_dir /
+              "promoted-archive.sha256"
+          ).write_text(
+              f"{archive_sha}  "
+              f"{archive_path.name}\n",
               encoding="utf-8",
           )
-          print("Verified final marker: contour=release")
+
+          print(
+              "Verified final marker: "
+              "contour=release"
+          )
+
           for name, digest in after.items():
-              print(f"Unchanged .pyz: {name} sha256={digest}")
-          print(f"Promoted ZIP sha256={archive_sha}")
+              print(
+                  f"Unchanged .pyz: "
+                  f"{name} sha256={digest}"
+              )
+
+          print(
+              f"Promoted ZIP "
+              f"sha256={archive_sha}"
+          )
           PY
 
       - name: Validate final release contract
@@ -369,58 +782,371 @@ jobs:
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
+          set -euo pipefail
+
           test -f scripts/validate_release_contract.py || {
-            echo "scripts/validate_release_contract.py is missing. Merge current release tooling into VinerX first."
+            echo "scripts/validate_release_contract.py is missing in VinerX/main."
             exit 1
           }
+
           python scripts/validate_release_contract.py \
             --tag "$SOURCE_TAG" \
-            --asset "$ASSET_NAME"
+            --asset "$PROMOTE_DIR/$ASSET_NAME"
 
       - name: Build production release notes
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
+          set -euo pipefail
+
           python - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          source = json.loads(Path("source-release.json").read_text(encoding="utf-8"))
-          hashes = json.loads(Path("pyz-before.json").read_text(encoding="utf-8"))
+          promote_dir = Path(
+              os.environ["PROMOTE_DIR"]
+          )
+
+          source = json.loads(
+              (
+                  promote_dir /
+                  "source-release.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          hashes = json.loads(
+              (
+                  promote_dir /
+                  "pyz-before.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
           lines = [
-              "Promoted from the tested Atm4x release artifact.",
+              "Promoted from the tested "
+              "Atm4x release artifact.",
               "",
-              f"- Source repository: `{os.environ['SOURCE_REPO']}`",
-              f"- Source tag: `{os.environ['SOURCE_TAG']}`",
-              f"- Tested source commit: `{os.environ['SOURCE_COMMIT']}`",
-              "- Embedded Python artifact: byte-identical to the tested Atm4x build",
+              (
+                  "- Source repository: "
+                  f"`{os.environ['SOURCE_REPO']}`"
+              ),
+              (
+                  "- Source tag: "
+                  f"`{os.environ['SOURCE_TAG']}`"
+              ),
+              (
+                  "- Tested source commit: "
+                  f"`{os.environ['SOURCE_COMMIT']}`"
+              ),
+              (
+                  "- Embedded Python artifact: "
+                  "byte-identical to the "
+                  "tested Atm4x build"
+              ),
               "",
               "Embedded `.pyz` SHA256:",
           ]
-          for name, digest in sorted(hashes.items()):
-              lines.append(f"- `{name}`: `{digest}`")
-          body = str(source.get("body") or "").strip()
+
+          for name, digest in sorted(
+              hashes.items()
+          ):
+              lines.append(
+                  f"- `{name}`: `{digest}`"
+              )
+
+          body = str(
+              source.get("body") or ""
+          ).strip()
+
           if body:
-              lines.extend(["", "---", "", body])
-          Path("RELEASE_BODY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+              lines.extend(
+                  [
+                      "",
+                      "---",
+                      "",
+                      body,
+                  ]
+              )
+
+          (
+              promote_dir /
+              "RELEASE_BODY.md"
+          ).write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+          )
           PY
 
-      - name: Create VinerX production release
-        uses: softprops/action-gh-release@v2
+      - name: Merge tested Atm4x commit into VinerX/main
+        id: merge
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          BASE_COMMIT: ${{ steps.base.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          if [ "$(git rev-parse HEAD)" != "$BASE_COMMIT" ]; then
+            echo "VinerX working tree moved away from the validated base commit."
+            exit 1
+          fi
+
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "VinerX working tree is unexpectedly dirty before merge."
+            git status --short
+            exit 1
+          fi
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          PROMOTE_SUBJECT="Promote tested Atm4x release $SOURCE_TAG"
+
+          echo "Fetching tested source tag from $SOURCE_REPO..."
+
+          git fetch \
+            --no-tags \
+            "https://github.com/${SOURCE_REPO}.git" \
+            "refs/tags/${SOURCE_TAG}"
+
+          FETCHED_COMMIT="$(
+            git rev-parse 'FETCH_HEAD^{commit}'
+          )"
+
+          if [ "$FETCHED_COMMIT" != "$SOURCE_COMMIT" ]; then
+            echo "Fetched Atm4x tag moved or does not match the release resolved earlier."
+            echo "Expected: $SOURCE_COMMIT"
+            echo "Fetched:  $FETCHED_COMMIT"
+            exit 1
+          fi
+
+          find_existing_promotion() {
+            local candidate
+            local subject
+            local parents
+            local first_parent
+            local second_parent
+            local extra_parent
+
+            while IFS= read -r candidate; do
+              subject="$(
+                git show \
+                  -s \
+                  --format=%s \
+                  "$candidate"
+              )"
+
+              [ "$subject" = "$PROMOTE_SUBJECT" ] || continue
+
+              parents="$(
+                git show \
+                  -s \
+                  --format=%P \
+                  "$candidate"
+              )"
+
+              read -r \
+                first_parent \
+                second_parent \
+                extra_parent \
+                <<< "$parents"
+
+              if [ -n "${first_parent:-}" ] \
+                  && [ "${second_parent:-}" = "$SOURCE_COMMIT" ] \
+                  && [ -z "${extra_parent:-}" ]; then
+
+                echo "$candidate"
+                return 0
+              fi
+
+            done < <(
+              git rev-list \
+                --first-parent \
+                "$BASE_COMMIT"
+            )
+
+            return 1
+          }
+
+          EXISTING_PROMOTION="$(
+            find_existing_promotion || true
+          )"
+
+          if [ -n "$EXISTING_PROMOTION" ]; then
+
+            echo "Found an existing promotion merge from an earlier run:"
+            echo "$EXISTING_PROMOTION"
+
+            RELEASE_COMMIT="$EXISTING_PROMOTION"
+            NEEDS_PUSH="false"
+
+          elif git merge-base \
+              --is-ancestor \
+              "$SOURCE_COMMIT" \
+              "$BASE_COMMIT"; then
+
+            echo "The tested source commit is already contained in VinerX/main,"
+            echo "but no matching Promote merge commit was found."
+            echo "Refusing to guess which VinerX commit should be released."
+            exit 1
+
+          else
+
+            git merge \
+              --no-ff \
+              "$SOURCE_COMMIT" \
+              -m "$PROMOTE_SUBJECT"
+
+            RELEASE_COMMIT="$(
+              git rev-parse HEAD
+            )"
+
+            PARENTS="$(
+              git show \
+                -s \
+                --format=%P \
+                "$RELEASE_COMMIT"
+            )"
+
+            read -r \
+              FIRST_PARENT \
+              SECOND_PARENT \
+              EXTRA_PARENT \
+              <<< "$PARENTS"
+
+            if [ -z "${FIRST_PARENT:-}" ] \
+                || [ "${SECOND_PARENT:-}" != "$SOURCE_COMMIT" ] \
+                || [ -n "${EXTRA_PARENT:-}" ]; then
+
+              echo "Unexpected merge structure."
+              echo "Release commit: $RELEASE_COMMIT"
+              echo "Parents: $PARENTS"
+              exit 1
+            fi
+
+            NEEDS_PUSH="true"
+          fi
+
+          echo "base_commit=$BASE_COMMIT" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "release_commit=$RELEASE_COMMIT" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "needs_push=$NEEDS_PUSH" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "Base VinerX commit: $BASE_COMMIT"
+          echo "Release commit:      $RELEASE_COMMIT"
+          echo "Needs push:          $NEEDS_PUSH"
+
+      - name: Push promoted merge to VinerX/main
+        if: steps.merge.outputs.needs_push == 'true'
+        shell: bash
+        env:
+          BASE_COMMIT: ${{ steps.merge.outputs.base_commit }}
+          RELEASE_COMMIT: ${{ steps.merge.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          if [ "$(git rev-parse HEAD)" != "$RELEASE_COMMIT" ]; then
+            echo "Local HEAD changed unexpectedly before push."
+            exit 1
+          fi
+
+          git fetch \
+            --no-tags \
+            origin \
+            main
+
+          REMOTE_HEAD="$(
+            git rev-parse origin/main
+          )"
+
+          if [ "$REMOTE_HEAD" != "$BASE_COMMIT" ]; then
+            echo "VinerX/main changed while Promote was running."
+            echo "Expected remote HEAD: $BASE_COMMIT"
+            echo "Actual remote HEAD:   $REMOTE_HEAD"
+            echo "Nothing was pushed."
+            echo "Rerun Promote against the new main."
+            exit 1
+          fi
+
+          git push \
+            origin \
+            HEAD:refs/heads/main
+
+      - name: Verify promoted commit is on VinerX/main
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ steps.merge.outputs.release_commit }}
+        run: |
+          set -euo pipefail
+
+          git fetch \
+            --no-tags \
+            origin \
+            main
+
+          if ! git merge-base \
+              --is-ancestor \
+              "$RELEASE_COMMIT" \
+              origin/main; then
+
+            echo "Promotion commit $RELEASE_COMMIT is not reachable from VinerX/main."
+            exit 1
+          fi
+
+          echo "Verified promotion commit on VinerX/main: $RELEASE_COMMIT"
+
+      - name: Create VinerX draft release
+        id: draft_release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.source.outputs.source_tag }}
-          target_commitish: ${{ steps.source.outputs.source_commit }}
+          target_commitish: ${{ steps.merge.outputs.release_commit }}
           name: NeuroMita ${{ steps.source.outputs.source_tag }}
-          body_path: RELEASE_BODY.md
+          body_path: ${{ steps.workspace.outputs.dir }}/RELEASE_BODY.md
           files: |
-            ${{ steps.source.outputs.asset_name }}
-            promoted-archive.sha256
+            ${{ steps.workspace.outputs.dir }}/${{ steps.source.outputs.asset_name }}
+            ${{ steps.workspace.outputs.dir }}/promoted-archive.sha256
           fail_on_unmatched_files: true
+          draft: true
           prerelease: false
-          make_latest: true
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report draft release
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          RELEASE_COMMIT: ${{ steps.merge.outputs.release_commit }}
+          DRAFT_URL: ${{ steps.draft_release.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Promote complete"
+            echo
+            echo "- Draft release: [$SOURCE_TAG]($DRAFT_URL)"
+            echo "- Release commit: \`$RELEASE_COMMIT\`"
+            echo "- The release is still a draft and is not public."
+            echo "- Edit/check the draft, then publish it manually."
+            echo "- release-manifest.yml will rebuild the manifest after publication."
+          } >> "$GITHUB_STEP_SUMMARY"
