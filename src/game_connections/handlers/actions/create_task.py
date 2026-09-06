@@ -79,26 +79,28 @@ def _normalise_reaction_events(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _build_react_prompt(
     data: Dict[str, Any],
-    *,
-    react_level: int,
 ) -> tuple[List[str], str, float, List[Dict[str, Any]]]:
     reaction_events = _normalise_reaction_events(data)
     if reaction_events:
-        lines = [
-            "This is a collected batch of react events from the game. React to the batch as one current turn.",
-            f"React level: {react_level}",
-            "The current Unity world state is authoritative if an older event conflicts with it.",
-            "Events accumulated while the previous turn was active (oldest to newest):",
-        ]
+        is_batch = len(reaction_events) > 1
+        lines = (
+            [
+                "Several game events occurred while your previous reply was being generated.",
+                "React to their combined meaning as one current moment. Do not mechanically list or retell every event.",
+                "Prioritize the most recent and most significant event.",
+                "Events, oldest to newest:",
+            ]
+            if is_batch
+            else ["React naturally to this game event:"]
+        )
         for index, item in enumerate(reaction_events, start=1):
             count_suffix = f"; occurrences: {item['count']}" if item["count"] > 1 else ""
-            duration_suffix = (
-                f"; duration: {item['duration']:.1f}s"
-                if item["duration"] > 0
-                else ""
-            )
+            # Do not expose duration until Unity defines it consistently: the
+            # current payload may disagree with the event's own description.
+            duration_suffix = ""
+            prefix = f"{index}. " if is_batch else ""
             lines.append(
-                f"{index}. [{item['reason_type']}] {item['reason_content']}"
+                f"{prefix}[{item['reason_type']}] {item['reason_content']}"
                 f"{count_suffix}{duration_suffix}"
             )
 
@@ -115,14 +117,12 @@ def _build_react_prompt(
     except (TypeError, ValueError):
         duration = 0.0
 
-    lines = [
-        "This is a react event from the game. React to it!",
-        f"React level: {react_level}",
-    ]
+    lines = ["React naturally to this game event:"]
     if reason_type:
         lines.append(f"Reason type: {reason_type}")
     lines.append(f"Reason: {reason_text}")
-    lines.append(f"Duration (seconds): {duration:.1f}")
+    # Do not expose duration until Unity defines it consistently: the current
+    # payload may disagree with the event's own description.
     return lines, reason_text, duration, []
 
 
@@ -534,24 +534,20 @@ class CreateTaskAction:
         if event_type == "react":
             model_event_type = "react"
 
-            if not bool(use(SettingsService).get("REACT_ENABLED", False)):
+            if not bool(use(SettingsService).get("REACT_ENABLED", True)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason="React disabled by settings", req_id=req_id)
                 return
 
             incoming_level = data.get("react_level", None)
             policy = resolve_policy(model_event_type=model_event_type, react_level=incoming_level)
             level_key = "REACT_L2_ENABLED" if policy.react_level == 2 else "REACT_L1_ENABLED"
-            # L1 (тихие реакции) временно выключены и убраны из интерфейса —
-            # по умолчанию отключены (совпадает с UI-дефолтом чекбокса).
-            # L2 сохраняет прежний backend-дефолт (выкл. при отсутствии ключа).
-            level_default = False
+            level_default = policy.react_level == 2
             if not bool(use(SettingsService).get(level_key, level_default)):
                 await server._send_aborted_update(ctx.client_id, event_type, character_id, reason=f"React level {policy.react_level or 1} disabled by settings", req_id=req_id)
                 return
 
             react_lines, reason_text, duration, reaction_events = _build_react_prompt(
                 data,
-                react_level=policy.react_level or 1,
             )
 
             # Label continuous in-game camera frames when Unity flags them

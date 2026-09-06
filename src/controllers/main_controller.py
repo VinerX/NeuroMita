@@ -18,7 +18,6 @@ from services.contracts import (
     AIEngineAdministrationService,
     AIEnvironmentMaintenanceService,
     AIEngineService,
-    ApiPresetService,
     AppVarsService,
     CharacterRegistry,
     CharacterEnvironmentContextService,
@@ -39,7 +38,6 @@ from services.contracts import (
     InstallableCatalogService,
     InstallableOperationsService,
     LoopService,
-    ProtocolBuilderService,
     SettingsService,
     TaskService,
     TelegramAuthService,
@@ -92,6 +90,7 @@ class MainController:
         self.speech_controller = None
         self.graph_controller = None
         self.feature_manager = None
+        self._api_configuration = None
 
         target_folder = str(settings_dir(create=True))
         self.config_path = str(settings_path("settings.json", create_parent=True))
@@ -168,7 +167,6 @@ class MainController:
 
         with startup_trace.phase("controller.core_imports"):
             from controllers.ai_engine_controller import AIEngineController
-            from controllers.api_presets_controller import ApiPresetsController
             from controllers.character_controller import CharacterController
             from controllers.chat_controller import ChatController
             from controllers.embedding_presets_controller import EmbeddingPresetsController
@@ -176,8 +174,8 @@ class MainController:
             from controllers.loop_controller import LoopController
             from controllers.model_controller import ModelController
             from controllers.prompt_controller import PromptController
-            from controllers.protocols_controller import ensure_protocols_controller
             from controllers.task_controller import TaskController
+            from startup.api_configuration import ensure_api_configuration
 
         self.loop_controller = self._build_component("loop", LoopController)
         logger.notify("LoopController initialized.")
@@ -215,12 +213,11 @@ class MainController:
         self.prompt_controller = self._build_component("prompt", PromptController)
         logger.notify("PromptController успешно инициализирован.")
 
-        self.protocols_controller = self._build_component(
-            "protocols", ensure_protocols_controller
+        self._api_configuration = self._build_component(
+            "api_configuration", ensure_api_configuration
         )
-        services().register(ProtocolBuilderService, self.protocols_controller, replace=True)
-        self.api_presets_controller = self._build_component("api_presets", ApiPresetsController)
-        services().register(ApiPresetService, self.api_presets_controller, replace=True)
+        self.protocols_controller = self._api_configuration.protocols
+        self.api_presets_controller = self._api_configuration.presets
         logger.notify("ApiPresetsController успешно инициализирован.")
 
         self.embedding_presets_controller = self._build_component(
@@ -638,11 +635,9 @@ class MainController:
             if callable(close_gui):
                 shutdown_step("GUI controllers", close_gui)
 
-        api_presets_controller = getattr(self, "api_presets_controller", None)
-        if api_presets_controller is not None:
-            close_api_presets = getattr(api_presets_controller, "close", None)
-            if callable(close_api_presets):
-                shutdown_step("API preset HTTP transport", close_api_presets)
+        api_configuration = getattr(self, "_api_configuration", None)
+        if api_configuration is not None:
+            shutdown_step("API configuration", api_configuration.close)
 
         model_controller = getattr(self, "model_controller", None)
         if model_controller is not None:

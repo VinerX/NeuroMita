@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,8 +179,30 @@ class DirectoryInstallTransaction:
         logger: Callable[[str], None] | None = None,
     ) -> None:
         self.component = str(component)
-        self.target = target.resolve()
-        self.state_root = state_root.resolve()
+        target_input = Path(target).expanduser()
+        state_input = Path(state_root).expanduser()
+        if target_input.is_symlink():
+            raise UpdateTransactionError(f"Transaction target must not be a symbolic link: {target_input}")
+        self.target = target_input.resolve(strict=False)
+        self.state_root = state_input.resolve(strict=False)
+        if self.target == Path(self.target.anchor):
+            raise UpdateTransactionError(f"Transaction target must not be a filesystem root: {self.target}")
+        try:
+            self.state_root.relative_to(self.target)
+        except ValueError:
+            pass
+        else:
+            raise UpdateTransactionError(
+                f"Transaction state root must not be inside its target: {self.state_root}"
+            )
+        try:
+            self.target.relative_to(self.state_root)
+        except ValueError:
+            pass
+        else:
+            raise UpdateTransactionError(
+                f"Transaction target must not be inside its state root: {self.target}"
+            )
         safe_component = "".join(
             character if character.isalnum() or character in "-_" else "_"
             for character in self.component
@@ -198,6 +221,63 @@ class DirectoryInstallTransaction:
     @property
     def phase(self) -> str:
         return str(self.state.get("phase") or "")
+
+    @staticmethod
+    def _same_path(left: Path | str, right: Path | str) -> bool:
+        return os.path.normcase(str(Path(left).expanduser().resolve(strict=False))) == os.path.normcase(
+            str(Path(right).expanduser().resolve(strict=False))
+        )
+
+    @staticmethod
+    def _is_reparse_point(path: Path) -> bool:
+        if not os.path.lexists(path):
+            return False
+        try:
+            attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+        except OSError:
+            return True
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+        return path.is_symlink() or bool(reparse_flag and attributes & reparse_flag)
+
+    def _journal_owns_artifacts(self, state: dict[str, Any] | None = None) -> bool:
+        journal = state if state is not None else self.state
+        return (
+            journal.get("schema") == 1
+            and journal.get("authorized") is True
+            and str(journal.get("component") or "") == self.component
+            and bool(journal.get("target"))
+            and bool(journal.get("stage"))
+            and bool(journal.get("backup"))
+            and self._same_path(str(journal["target"]), self.target)
+            and self._same_path(str(journal["stage"]), self.paths.stage)
+            and self._same_path(str(journal["backup"]), self.paths.backup)
+        )
+
+    def _assert_artifacts_safe(self, state: dict[str, Any] | None = None) -> None:
+        artifacts = tuple(
+            path for path in (self.paths.stage, self.paths.backup) if os.path.lexists(path)
+        )
+        if not artifacts:
+            return
+        if not self._journal_owns_artifacts(state):
+            names = ", ".join(str(path) for path in artifacts)
+            raise UpdateTransactionError(
+                f"Refusing to modify transaction artifacts not owned by the current journal: {names}"
+            )
+        for path in artifacts:
+            if self._is_reparse_point(path):
+                raise UpdateTransactionError(
+                    f"Refusing to modify a symbolic link or junction used as a transaction artifact: {path}"
+                )
+            if not path.is_dir():
+                raise UpdateTransactionError(f"Transaction artifact is not a directory: {path}")
+
+    def _remove_owned_directory(self, path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        if self._is_reparse_point(path) or not path.is_dir():
+            raise UpdateTransactionError(f"Refusing to recursively remove an unsafe path: {path}")
+        shutil.rmtree(path)
 
     def matches(self, *, version: str, archive_url: str) -> bool:
         state = self.state
@@ -226,6 +306,7 @@ class DirectoryInstallTransaction:
                 "A previous directory commit must be recovered before starting another update"
             )
 
+        self._assert_artifacts_safe(current)
         self.discard_artifacts(keep_journal=True)
         state = {
             "schema": 1,
@@ -251,8 +332,9 @@ class DirectoryInstallTransaction:
         atomic_write_json(self.paths.journal, state)
 
     def reset_stage(self) -> Path:
+        self._assert_artifacts_safe()
         if self.paths.stage.exists():
-            shutil.rmtree(self.paths.stage, ignore_errors=True)
+            self._remove_owned_directory(self.paths.stage)
         self.paths.stage.mkdir(parents=True, exist_ok=True)
         return self.paths.stage
 
@@ -263,6 +345,7 @@ class DirectoryInstallTransaction:
         self,
         verifier: Callable[[Path], Any],
     ) -> bool:
+        self._assert_artifacts_safe()
         phase = self.phase
         if phase == "stage_ready":
             return False
@@ -291,11 +374,12 @@ class DirectoryInstallTransaction:
         return phase == "completed"
 
     def commit(self, verifier: Callable[[Path], Any]) -> None:
+        self._assert_artifacts_safe()
         if not self.paths.stage.is_dir():
             raise UpdateTransactionError("Staging directory does not exist")
         self.set_phase("commit_prepared", had_target=self.target.exists())
         if self.paths.backup.exists():
-            shutil.rmtree(self.paths.backup, ignore_errors=True)
+            self._remove_owned_directory(self.paths.backup)
         try:
             if self.target.exists():
                 os.replace(self.target, self.paths.backup)
@@ -309,41 +393,38 @@ class DirectoryInstallTransaction:
         self.finalize()
 
     def rollback(self) -> None:
+        self._assert_artifacts_safe()
         state = self.state
         had_target = bool(state.get("had_target", self.paths.backup.exists()))
         if self.paths.backup.exists() and self.target.exists():
-            failed = self.target.parent / f".{self.target.name}.failed"
-            if failed.exists():
-                shutil.rmtree(failed, ignore_errors=True)
-            try:
-                os.replace(self.target, failed)
-            except OSError:
-                shutil.rmtree(self.target, ignore_errors=True)
-            shutil.rmtree(failed, ignore_errors=True)
+            self._remove_owned_directory(self.target)
         elif not had_target and self.target.exists():
-            shutil.rmtree(self.target, ignore_errors=True)
+            self._remove_owned_directory(self.target)
         self._rollback_without_target()
         if self.state:
             self.set_phase("rolled_back")
 
     def _rollback_without_target(self) -> None:
+        self._assert_artifacts_safe()
         if self.paths.backup.exists() and not self.target.exists():
             os.replace(self.paths.backup, self.target)
 
     def finalize(self) -> None:
+        self._assert_artifacts_safe()
         if self.paths.backup.exists():
-            shutil.rmtree(self.paths.backup, ignore_errors=True)
+            self._remove_owned_directory(self.paths.backup)
         if self.paths.stage.exists():
-            shutil.rmtree(self.paths.stage, ignore_errors=True)
+            self._remove_owned_directory(self.paths.stage)
         self.set_phase("completed", completed_at=int(time.time()))
 
     def discard_artifacts(self, *, keep_journal: bool = False) -> None:
+        self._assert_artifacts_safe()
         if self.paths.backup.exists() and not self.target.exists():
             os.replace(self.paths.backup, self.target)
         if self.paths.stage.exists():
-            shutil.rmtree(self.paths.stage, ignore_errors=True)
+            self._remove_owned_directory(self.paths.stage)
         if self.paths.backup.exists():
-            shutil.rmtree(self.paths.backup, ignore_errors=True)
+            self._remove_owned_directory(self.paths.backup)
         if not keep_journal:
             self.paths.journal.unlink(missing_ok=True)
 

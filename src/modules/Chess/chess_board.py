@@ -14,6 +14,9 @@ import sys
 # Импортируем контроллер из соседнего файла
 from .engine_handler import ChessGameController, MAIA_ELO as DEFAULT_MAIA_ELO # DEFAULT_MAIA_ELO если не передан ELO
 from .board_logic import PureBoardLogic # Не используется напрямую здесь, но контроллер его использует
+from ui.app_icon import application_icon, set_app_user_model_id
+from utils import getTranslationVariant as _
+from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
 
 try:
     from styles.theme import THEME
@@ -27,7 +30,9 @@ except ImportError:
     }
 
 # --- Константы для GUI ---
-SQUARE_SIZE = 70
+# A 56 px square keeps the board readable while allowing the board and controls
+# to fit on a 768 px wide display without clipping either one.
+SQUARE_SIZE = 56
 BOARD_BORDER_WIDTH = 2
 DEFAULT_PIECE_FONT_SIZE = int(SQUARE_SIZE * 0.6)
 
@@ -271,11 +276,13 @@ class ChessGuiTkinter(QMainWindow):
     board_update_signal = pyqtSignal()
     game_over_signal = pyqtSignal(str)
     
-    def __init__(self, game_controller: ChessGameController): 
+    def __init__(self, game_controller: ChessGameController, reaction_queue=None):
         super().__init__()
         self.game_controller = game_controller
+        self.reaction_queue = reaction_queue
         self.is_auto = game_controller.is_auto if game_controller else False
-        self.setWindowTitle(f"Шахматы против Maia ELO {self.game_controller.current_maia_elo if self.game_controller else DEFAULT_MAIA_ELO}")
+        self.setWindowTitle(self._window_title())
+        self.setWindowIcon(application_icon())
         self.setStyleSheet(f"QMainWindow {{ background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}; }}")
 
         coord_font_tuple = ChessGameModelTkStyles.COORDINATE_LABEL_FONT_TUPLE
@@ -287,9 +294,10 @@ class ChessGuiTkinter(QMainWindow):
         coord_label_strip_width_approx = fm.horizontalAdvance("W") + ChessGameModelTkStyles.LABEL_AREA_PADDING * 2 + 5
         coord_label_strip_height_approx = fm.height() + ChessGameModelTkStyles.LABEL_AREA_PADDING * 2 + 5
         
-        min_width = int(8 * SQUARE_SIZE + 2 * BOARD_BORDER_WIDTH + 250 + 40 + coord_label_strip_width_approx)
-        min_height = int(8 * SQUARE_SIZE + 2 * BOARD_BORDER_WIDTH + 60 + 40 + coord_label_strip_height_approx)
+        min_width = int(8 * SQUARE_SIZE + 2 * BOARD_BORDER_WIDTH + 240 + 40 + coord_label_strip_width_approx)
+        min_height = int(8 * SQUARE_SIZE + 2 * BOARD_BORDER_WIDTH + 60 + 32 + coord_label_strip_height_approx)
         self.setMinimumSize(min_width, min_height)
+        self.resize(max(800, min_width), max(610, min_height))
 
         self.piece_symbols = {
             'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
@@ -311,14 +319,18 @@ class ChessGuiTkinter(QMainWindow):
         self._init_ui()
         self._setup_board_squares()
 
+    def _window_title(self):
+        elo = self.game_controller.current_maia_elo if self.game_controller else DEFAULT_MAIA_ELO
+        return _("Шахматы против Maia ELO {}", "Chess versus Maia ELO {}").format(elo)
+
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         central_widget.setStyleSheet(f"background-color: {ChessGameModelTkStyles.COLOR_WINDOW_BG}")
         
         main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(12)
         
         # Board area
         board_area_widget = QWidget()
@@ -370,12 +382,12 @@ class ChessGuiTkinter(QMainWindow):
                     border-radius: 12px;
                 }}
             """)
-            control_panel_widget.setFixedWidth(220)
+            control_panel_widget.setFixedWidth(236)
             control_panel_layout = QVBoxLayout()
-            control_panel_layout.setContentsMargins(16, 16, 16, 16)
-            control_panel_layout.setSpacing(10)
+            control_panel_layout.setContentsMargins(14, 14, 14, 14)
+            control_panel_layout.setSpacing(9)
             
-            panel_title = QLabel("Управление")
+            panel_title = QLabel(_("Управление", "Controls"))
             panel_title.setStyleSheet(f"""
                 color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
                 font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
@@ -386,13 +398,48 @@ class ChessGuiTkinter(QMainWindow):
             """)
             control_panel_layout.addWidget(panel_title)
             
-            self.btn_new_game_white = self._create_button(control_panel_widget, "Новая игра (Белыми)",
+            self.btn_new_game_white = self._create_button(control_panel_widget, _("Новая игра (Белыми)", "New game (White)"),
                                                            lambda: self.game_controller.new_game(player_is_white_gui_override=True) if self.game_controller else None)
             control_panel_layout.addWidget(self.btn_new_game_white)
             
-            self.btn_new_game_black = self._create_button(control_panel_widget, "Новая игра (Черными)",
+            self.btn_new_game_black = self._create_button(control_panel_widget, _("Новая игра (Черными)", "New game (Black)"),
                                                            lambda: self.game_controller.new_game(player_is_white_gui_override=False) if self.game_controller else None)
             control_panel_layout.addWidget(self.btn_new_game_black)
+
+            self.mita_reaction_checkbox = QCheckBox(
+                _("Реакция Миты на ход игрока", "Mita reacts to the player's move")
+            )
+            self.mita_reaction_checkbox.setChecked(True)
+            self.mita_reaction_checkbox.setToolTip(
+                _(
+                    "После принятого хода Мита получает повод для реакции в чате.",
+                    "After an accepted move, Mita gets a prompt to react in chat.",
+                )
+            )
+            # The application-wide checkbox styling is intentionally neutral,
+            # but this dark card needs an explicit foreground to avoid black
+            # text on a near-black background.
+            self.mita_reaction_checkbox.setStyleSheet(f"""
+                QCheckBox {{
+                    color: {ChessGameModelTkStyles.COLOR_TEXT_LIGHT};
+                    background: transparent;
+                    border: none;
+                    font-family: {ChessGameModelTkStyles.UI_FONT_FAMILY};
+                    font-size: 9pt;
+                    spacing: 7px;
+                }}
+                QCheckBox::indicator {{
+                    width: 14px;
+                    height: 14px;
+                    border: 1px solid {ChessGameModelTkStyles.COLOR_MUTED};
+                    background: {ChessGameModelTkStyles.COLOR_WINDOW_BG};
+                }}
+                QCheckBox::indicator:checked {{
+                    background: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                    border-color: {ChessGameModelTkStyles.COLOR_BUTTON_BG};
+                }}
+            """)
+            control_panel_layout.addWidget(self.mita_reaction_checkbox)
             
             control_panel_layout.addStretch()
             
@@ -401,11 +448,12 @@ class ChessGuiTkinter(QMainWindow):
         else:
             self.btn_new_game_white = None
             self.btn_new_game_black = None
+            self.mita_reaction_checkbox = None
         
         central_widget.setLayout(main_layout)
         
         # Status bar
-        self.status_bar_label = QLabel("Инициализация GUI...")
+        self.status_bar_label = QLabel(_("Инициализация GUI...", "Initializing GUI..."))
         self.status_bar_label.setStyleSheet(f"""
             color: {ChessGameModelTkStyles.COLOR_MUTED};
             background: transparent;
@@ -427,7 +475,7 @@ class ChessGuiTkinter(QMainWindow):
     def _create_button(self, parent, text, command): 
         button = QPushButton(text)
         button.clicked.connect(command)
-        button.setFixedWidth(188)
+        button.setMinimumHeight(40)
         
         button.setStyleSheet(f"""
             QPushButton {{
@@ -481,7 +529,7 @@ class ChessGuiTkinter(QMainWindow):
     def update_board_display_slot(self):
         if not self.game_controller or self.is_closing : return
         current_elo_in_title = self.game_controller.current_maia_elo if self.game_controller else DEFAULT_MAIA_ELO
-        expected_title = f"Шахматы против Maia ELO {current_elo_in_title}"
+        expected_title = self._window_title()
         if self.windowTitle() != expected_title:
             self.setWindowTitle(expected_title)
 
@@ -598,12 +646,35 @@ class ChessGuiTkinter(QMainWindow):
                             self.possible_moves_for_selected_gui_coords = []
                             self.update_board_display_slot() 
                             return
-            self.game_controller.handle_player_move_from_gui(uci_move_str)
+            try:
+                san_move = current_board_obj.san(chess.Move.from_uci(uci_move_str))
+            except Exception:
+                san_move = uci_move_str
+            if self.game_controller.handle_player_move_from_gui(uci_move_str):
+                self._request_mita_reaction(uci_move_str, san_move)
             self.selected_square_gui_coords = None
             self.possible_moves_for_selected_gui_coords = []
         self.update_board_display_slot()
 
+    def _request_mita_reaction(self, uci_move, san_move):
+        """Send only accepted player moves, and only for the current match."""
+        if not self.mita_reaction_checkbox or not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
+            return
+        try:
+            self.reaction_queue.put({
+                "event": "player_chess_move",
+                "uci": str(uci_move),
+                "san": str(san_move),
+            })
+        except Exception as exc:
+            print(f"GUI Error: Could not queue Mita chess reaction: {format_exception(exc)}")
+
     def closeEvent(self, event):
+        # Programmatic stops use ``is_closing`` and must neither prompt the
+        # player nor create a "player closed the game" reaction.
+        if self.is_closing:
+            event.accept()
+            return
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Выход")
         msg_box.setText("Вы уверены, что хотите выйти из шахмат?")
@@ -634,14 +705,24 @@ class ChessGuiTkinter(QMainWindow):
         """)
         reply = msg_box.exec()
         if reply == QMessageBox.StandardButton.Yes:
+            self._request_game_closed_reaction()
             self.is_closing = True
             print("CONSOLE (chess_board GUI): Окно GUI закрывается пользователем.")
             event.accept()
         else:
             event.ignore()
 
+    def _request_game_closed_reaction(self):
+        if not self.mita_reaction_checkbox or not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
+            return
+        try:
+            self.reaction_queue.put({"event": "player_game_closed"})
+        except Exception as exc:
+            print(f"GUI Error: Could not queue Mita chess close reaction: {format_exception(exc)}")
+
 def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiprocessing.Queue,
-                          initial_elo: int, player_is_white_gui: bool, is_auto: bool = False, is_cheat: bool = False):
+                          initial_elo: int, player_is_white_gui: bool, is_auto: bool = False,
+                          is_cheat: bool = False, reaction_queue=None):
     print(f"CONSOLE (chess_board_process): >>> ЗАПУСК. ELO: {initial_elo}, Белый: {player_is_white_gui}, auto={is_auto}, cheat={is_cheat}")
     
     app_instance_ref = {"instance": None} 
@@ -680,9 +761,12 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
     qt_app = None
     try:
         print(f"CONSOLE (chess_board_process): [STAGE 0] Создание QApplication...")
+        set_app_user_model_id()
         qt_app = QApplication.instance()
         if qt_app is None:
             qt_app = QApplication(sys.argv)
+        qt_app.setWindowIcon(application_icon())
+        install_dark_titlebar_sync(qt_app, True)
         print(f"CONSOLE (chess_board_process): [STAGE 0] QApplication создан.")
 
         print(f"CONSOLE (chess_board_process): [STAGE 1] Создание ChessGameController...")
@@ -707,14 +791,10 @@ def run_chess_gui_process(command_q: multiprocessing.Queue, state_q: multiproces
         print(f"CONSOLE (chess_board_process): [STAGE 2] initialize_dependencies_and_engine() УСПЕШНО ВЫПОЛНЕН.")
         
         print(f"CONSOLE (chess_board_process): [STAGE 3] Создание ChessGuiTkinter (окна)...")
-        app = ChessGuiTkinter(game_controller)
+        app = ChessGuiTkinter(game_controller, reaction_queue)
         app_instance_ref["instance"] = app
         app.show()
-        try:
-            from utils.win_titlebar import apply_dark_titlebar
-            apply_dark_titlebar(app, True)
-        except Exception:
-            pass
+        apply_dark_titlebar(app, True)
         print(f"CONSOLE (chess_board_process): [STAGE 3] ChessGuiTkinter (окно) СОЗДАНО.")
 
         print(f"CONSOLE (chess_board_process): [STAGE 4] Вызов game_controller.new_game()...")

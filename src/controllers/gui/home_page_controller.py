@@ -330,7 +330,11 @@ class HomePageController(QObject):
             )
             results["python"] = python_result.as_dict()
             python_pending_restart = bool(python_result.restart_required)
-        if update_unity and not stop_event.is_set() and not python_pending_restart:
+        # Python is applied in-place and needs a later application restart, but
+        # that must not cut a multi-component request short.  Continue with the
+        # selected Unity install and let the view model offer one restart only
+        # after the whole requested sequence has reached its outcome.
+        if update_unity and not stop_event.is_set():
             unity_result = check_for_unity_updates(
                 base_dir=base_dir,
                 logger=logger_adapter,

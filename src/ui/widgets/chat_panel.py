@@ -382,7 +382,7 @@ class ChatPanel(QWidget):
         self.user_entry.setFixedHeight(36)
         tr_set(
             self.user_entry,
-            "Напиши что-нибудь Crazy Mita…",
+            "Напиши что-нибудь Мите…",
             "Write something to Mita…",
             "setPlaceholderText",
         )

@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Silnik AI",
+  "Возможности модели": "Możliwości modelu",
+  "Лаунчер": "Program uruchamiający",
+  "Общие": "Ogólne",
   " (нужен код тестера)": " (wymagany kod testera)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} godz.",
   " · ~{minutes} мин": " · ~{minutes} min.",
@@ -981,7 +985,7 @@
   "Найдены потенциальные дубли:": "Znaleziono potencjalne duplikaty:",
   "Найти дубли (превью)": "Znajdź duplikaty (podgląd)",
   "Найти осиротевшие файлы": "Znajdź osierocone pliki",
-  "Напиши что-нибудь Crazy Mita…": "Write something do Mita…",
+  "Напиши что-нибудь Мите…": "Write something do Mita…",
   "Напоминания": "Przypomnienia",
   "Насколько может отклоняться длина диалога NPC без участия игрока": "O ile może odbiegać długość dialogu NPC bez udziału gracza",
   "Насколько похожими должны быть тексты (Jaccard по токенам), чтобы считать их дублями. Выше — строже (только почти идентичные), ниже — агрессивнее склеивает. По умолчанию 0.8.": "How podobny two teksty must be (token Jaccard) do be treated as duplikaty. Higher = stricter (near-identical tylko), lower = merges more aggressively. Domyslny 0.8.",
@@ -2153,5 +2157,7 @@
   "Кросс-языковое клонирование": "Klonowanie międzyjęzykowe",
   "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "Międzyjęzykowy F5-TTS klonujący rosyjski głos referencyjny i syntezujący mowę angielską lub chińską.",
   "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS z późniejszą konwersją barwy głosu przez RVC.",
-  "Удаление компонентов RVC...": "Odinstalowywanie komponentów RVC..."
+  "Удаление компонентов RVC...": "Odinstalowywanie komponentów RVC...",
+  "Возможно, уже восстановлено": "Prawdopodobnie już przywrócono",
+  "Похоже, этот архив уже восстанавливали. Повторить восстановление?": "Wygląda na to, że to archiwum zostało już przywrócone. Przywrócić ponownie?"
 }

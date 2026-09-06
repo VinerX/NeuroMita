@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Motor AI",
+  "Возможности модели": "Capacitățile modelului",
+  "Лаунчер": "Lansator",
+  "Общие": "General",
   " (нужен код тестера)": " (cod tester necesar)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} ore",
   " · ~{minutes} мин": " · ~{minutes} minute",
@@ -981,7 +985,7 @@
   "Найдены потенциальные дубли:": "Potentiale duplicate gasite:",
   "Найти дубли (превью)": "Cauta duplicate (previzualizare)",
   "Найти осиротевшие файлы": "Cauta fisiere orfane",
-  "Напиши что-нибудь Crazy Mita…": "Write something la Mita…",
+  "Напиши что-нибудь Мите…": "Write something la Mita…",
   "Напоминания": "Mementouri",
   "Насколько может отклоняться длина диалога NPC без участия игрока": "Cat de mult poate devia lungimea dialogului NPC fara jucator",
   "Насколько похожими должны быть тексты (Jaccard по токенам), чтобы считать их дублями. Выше — строже (только почти идентичные), ниже — агрессивнее склеивает. По умолчанию 0.8.": "How similar two texte must be (jeton Jaccard) la be treated as duplicate. Higher = stricter (near-identical doar), lower = merges more aggressively. Implicit 0.8.",
@@ -2153,5 +2157,7 @@
   "Кросс-языковое клонирование": "Clonare interlingvistică",
   "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "F5-TTS interlingvistic care clonează o voce rusă de referință și sintetizează vorbire în engleză sau chineză.",
   "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS urmat de conversia timbrului prin RVC.",
-  "Удаление компонентов RVC...": "Se dezinstalează componentele RVC..."
+  "Удаление компонентов RVC...": "Se dezinstalează componentele RVC...",
+  "Возможно, уже восстановлено": "Posibil deja restaurat",
+  "Похоже, этот архив уже восстанавливали. Повторить восстановление?": "Se pare că această arhivă a fost deja restaurată. Restaurați din nou?"
 }

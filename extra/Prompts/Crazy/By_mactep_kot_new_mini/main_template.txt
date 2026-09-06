@@ -1,3 +1,5 @@
+support_intents=True
+behavior_state=custom
 [<Scripts/init.script>]
 [<Structural/response_structure.txt>]
 [<Structural/VariableEffects.script>]

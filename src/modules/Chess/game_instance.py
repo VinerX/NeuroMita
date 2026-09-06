@@ -3,10 +3,15 @@ from core.error_utils import format_exception
 import re
 import threading
 import multiprocessing
+import queue
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Type
 from main_logger import logger
 from modules.game_interface import GameInterface
+from core.events import Events
+from core.request_policy import resolve_policy
+from core.services import use
+from services.contracts import SettingsService
 
 class ChessGame(GameInterface):
     """Реализация игры в шахматы."""
@@ -16,6 +21,9 @@ class ChessGame(GameInterface):
         self.gui_thread: Optional[threading.Thread] = None
         self.command_queue: Optional[multiprocessing.Queue] = None
         self.state_queue: Optional[multiprocessing.Queue] = None
+        self.reaction_queue: Optional[multiprocessing.Queue] = None
+        self._reaction_listener: Optional[threading.Thread] = None
+        self._reaction_stop_event = threading.Event()
         self.current_elo: Optional[int] = None
         self.is_auto: bool = False
         self.is_cheat: bool = False
@@ -42,15 +50,23 @@ class ChessGame(GameInterface):
 
             self.command_queue = multiprocessing.Queue()
             self.state_queue = multiprocessing.Queue()
+            self.reaction_queue = multiprocessing.Queue()
+            self._reaction_stop_event.clear()
 
             logger.info(f"[{self.character.char_id}] Запуск шахматного GUI. ELO: {self.current_elo}, auto={self.is_auto}, cheat={self.is_cheat}")
 
             self.gui_thread = multiprocessing.Process(
                 target=run_chess_gui_process,
-                args=(self.command_queue, self.state_queue, self.current_elo, player_is_white, self.is_auto, self.is_cheat),
+                args=(self.command_queue, self.state_queue, self.current_elo, player_is_white, self.is_auto, self.is_cheat, self.reaction_queue),
                 daemon=True
             )
             self.gui_thread.start()
+            self._reaction_listener = threading.Thread(
+                target=self._listen_for_player_move_reactions,
+                name=f"ChessReaction-{self.character.char_id}",
+                daemon=True,
+            )
+            self._reaction_listener.start()
         except ImportError as e:
             logger.error(f"[{self.character.char_id}] Не удалось импортировать шахматный модуль: {format_exception(e)}", exc_info=True)
             self.cleanup()
@@ -94,6 +110,10 @@ class ChessGame(GameInterface):
 
     def cleanup(self):
         logger.debug(f"[{self.character.char_id}] Очистка ресурсов шахмат.")
+        self._reaction_stop_event.set()
+        listener = self._reaction_listener
+        if listener and listener.is_alive() and listener is not threading.current_thread():
+            listener.join(timeout=1)
         self.character.set_variable("playingGame", False)
         self.character.set_variable("game_id", None)
 
@@ -104,10 +124,101 @@ class ChessGame(GameInterface):
         except Exception:
             pass
 
+        if self.command_queue:
+            self.command_queue.close()
+        if self.state_queue:
+            self.state_queue.close()
+        if self.reaction_queue:
+            self.reaction_queue.close()
+
         self.gui_thread = None
         self.command_queue = None
         self.state_queue = None
+        self.reaction_queue = None
+        self._reaction_listener = None
         self.current_elo = None
+
+    def _listen_for_player_move_reactions(self):
+        """Forward checked GUI move notifications through the standard L2 react path."""
+        while not self._reaction_stop_event.is_set():
+            reaction_queue = self.reaction_queue
+            if reaction_queue is None:
+                return
+            try:
+                event = reaction_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+            except Exception as exc:
+                logger.debug(f"[{self.character.char_id}] Ошибка очереди реакций шахмат: {format_exception(exc)}")
+                continue
+
+            if not isinstance(event, dict):
+                continue
+            if event.get("event") == "player_chess_move":
+                self._dispatch_player_move_reaction(event)
+            elif event.get("event") == "player_game_closed":
+                self._dispatch_player_close_reaction()
+
+    def _dispatch_player_move_reaction(self, event: Dict[str, Any]):
+        try:
+            settings = use(SettingsService)
+            if not bool(settings.get("REACT_ENABLED", True)) or not bool(settings.get("REACT_L2_ENABLED", True)):
+                return
+        except Exception as exc:
+            logger.debug(f"[{self.character.char_id}] Не удалось проверить настройки реакций шахмат: {format_exception(exc)}")
+            return
+
+        if not self.character.get_variable("playingGame", False):
+            return
+
+        san_move = str(event.get("san") or event.get("uci") or "a move")
+        uci_move = str(event.get("uci") or "")
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": (
+                    "[Chess] The player made the move "
+                    f"{san_move}" + (f" ({uci_move})" if uci_move else "") + ". "
+                    "React briefly and naturally in character. Do not make a chess move yourself in this reply."
+                ),
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
+
+    def _dispatch_player_close_reaction(self):
+        """React when the player deliberately closes the chess window."""
+        try:
+            settings = use(SettingsService)
+            if not bool(settings.get("REACT_ENABLED", True)) or not bool(settings.get("REACT_L2_ENABLED", True)):
+                return
+        except Exception as exc:
+            logger.debug(f"[{self.character.char_id}] Не удалось проверить настройки реакции на выход из шахмат: {format_exception(exc)}")
+            return
+
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": (
+                    "[Chess] The player closed the chess game window. "
+                    "React briefly and naturally in character to the end of this match."
+                ),
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
 
 
     def process_llm_tags(self, response: str) -> str:

@@ -638,9 +638,12 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                     100,
                     busy=False,
                 )
-            if python_applied and not cancel_event.is_set():
+            # A Python payload may already have been committed when a later
+            # Unity step fails or is cancelled.  Keep that restart requirement
+            # visible and ask only after the complete selected sequence ends.
+            if python_applied:
                 self._mark_python_restart_required(pending_python_version)
-            self._finish_operation(prompt_restart=python_applied and not cancel_event.is_set())
+            self._finish_operation(prompt_restart=python_applied)
 
         self.run_exclusive(
             "home-apply-updates",
@@ -1020,7 +1023,15 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self.emit_effect(HomeRefreshSidebar())
         self._refresh_local_state()
 
+    @staticmethod
+    def _is_ai_hub_install_event(event) -> bool:
+        data = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        return str(meta.get("source") or "").strip().lower() == "ai_hub"
+
     def _on_install_started(self, event) -> None:
+        if self._is_ai_hub_install_event(event):
+            return
         if self.state.operation is not None:
             return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}
@@ -1028,6 +1039,8 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self.post_progress(title, 0, 100, busy=True)
 
     def _on_install_progress(self, event) -> None:
+        if self._is_ai_hub_install_event(event):
+            return
         if self.state.operation is not None:
             return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}
@@ -1047,7 +1060,9 @@ class HomePageViewModel(IntentViewModel[HomeState]):
                 busy=True,
             )
 
-    def _on_install_finished(self, _event) -> None:
+    def _on_install_finished(self, event) -> None:
+        if self._is_ai_hub_install_event(event):
+            return
         self._post_ui(self._handle_external_install_finished)
 
     def _handle_external_install_finished(self) -> None:
@@ -1056,6 +1071,8 @@ class HomePageViewModel(IntentViewModel[HomeState]):
         self._refresh_local_state()
 
     def _on_install_failed(self, event) -> None:
+        if self._is_ai_hub_install_event(event):
+            return
         if self.state.operation is not None:
             return
         data = event.data if isinstance(getattr(event, "data", None), dict) else {}

@@ -41,7 +41,7 @@ API_TEMPLATES_DATA = [
         "name": "Google AI Studio",
         "pricing": "mixed",
         "url_tpl": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        "default_model": "gemini-3.6-flash",
+        "default_model": "gemini-3.1-flash-lite",
         "known_models": [
             "gemini-3.7-flash",
             "gemini-3.6-flash",

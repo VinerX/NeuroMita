@@ -30,7 +30,7 @@ mistralai==1.5.1
 multidict==6.1.0
 mypy-extensions==1.0.0
 nest-asyncio==1.6.0
-num2words==0.5.14
+num2words2==1.0.20
 # numpy==2.2.3
 openai==1.61.1
 packaging==24.2

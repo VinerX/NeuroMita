@@ -43,7 +43,7 @@ EFFECTIVE_REQ_FILE = BOOTSTRAP_DIR / "effective-requirements.txt"
 SETTINGS_FILE = ROOT / "Settings" / "settings.json"
 STATE_VERSION = 6
 
-_AUDITED_NO_DEPS_REQUIREMENTS = ("num2words==0.5.14",)
+_AUDITED_NO_DEPS_REQUIREMENTS = ("num2words2==1.0.20",)
 _CORE_ACTIVATION_TIMEOUT_SECONDS = 60.0
 
 os.environ.setdefault("UV_LINK_MODE", "copy")

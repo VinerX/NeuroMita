@@ -55,7 +55,10 @@ _SECTION_GUI_FEATURES: dict[str, str] = {
     "microphone": "speech",
 }
 
-_BACKEND_REQUIRED_SECTIONS = frozenset({"api", "characters", "models"})
+# Characters and model-runtime settings consume services materialized by the
+# conversation backend. API presets are application-scoped and deliberately do
+# not wait for optional voice/game initialization.
+_BACKEND_REQUIRED_SECTIONS = frozenset({"characters", "models"})
 
 
 def normalize_mode(value):

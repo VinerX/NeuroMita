@@ -1,4 +1,8 @@
 {
+  "AI Engine": "Yapay Zeka Motoru",
+  "Возможности модели": "Model yetenekleri",
+  "Лаунчер": "Başlatıcı",
+  "Общие": "Genel",
   " (нужен код тестера)": " (test kodu gerekli)",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} sa",
   " · ~{minutes} мин": " · ~{minutes} dk.",
@@ -981,7 +985,7 @@
   "Найдены потенциальные дубли:": "Potansiyel kopyalar:",
   "Найти дубли (превью)": "Kopyalari bul (onizleme)",
   "Найти осиротевшие файлы": "Yetim dosyalari bul",
-  "Напиши что-нибудь Crazy Mita…": "Crazy Mita'ya bir şey yaz…",
+  "Напиши что-нибудь Мите…": "Mita'ya bir şey yaz…",
   "Напоминания": "Animsaticilar",
   "Насколько может отклоняться длина диалога NPC без участия игрока": "NPC diyalog sapması.",
   "Насколько похожими должны быть тексты (Jaccard по токенам), чтобы считать их дублями. Выше — строже (только почти идентичные), ниже — агрессивнее склеивает. По умолчанию 0.8.": "Metinlerin yineleme sayılması için ne kadar benzer olması gerektiği (token Jaccard). Daha yüksek değer daha katıdır (yalnızca neredeyse aynı olanlar), daha düşük değer daha agresif birleştirir. Varsayılan 0,8'dir.",
@@ -2153,5 +2157,7 @@
   "Кросс-языковое клонирование": "Diller arası klonlama",
   "Кросс-языковая F5-TTS для клонирования голоса по русскому референсу и синтеза английской или китайской речи.": "Rusça referans sesi klonlayıp İngilizce veya Çince konuşma üreten diller arası F5-TTS.",
   "Cross-Lingual F5-TTS с последующей конверсией тембра через RVC.": "Cross-Lingual F5-TTS ve ardından RVC ile tını dönüşümü.",
-  "Удаление компонентов RVC...": "RVC bileşenleri kaldırılıyor..."
+  "Удаление компонентов RVC...": "RVC bileşenleri kaldırılıyor...",
+  "Возможно, уже восстановлено": "Muhtemelen zaten geri yüklendi",
+  "Похоже, этот архив уже восстанавливали. Повторить восстановление?": "Bu arşiv daha önce geri yüklenmiş gibi görünüyor. Yeniden geri yüklensin mi?"
 }

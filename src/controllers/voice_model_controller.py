@@ -829,6 +829,7 @@ class VoiceModelController(VoiceModelService):
                 "initial_status": _("Подготовка...", "Preparing..."),
                 "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
                 "with_ui": bool(with_ui),
+                "install_style_variant": "ai_hub",
                 "initialize_mode": "clear_cache" if clear_only else "compile",
                 "meta": {"kind": "voice", "item_id": mid, "op": "initialize"},
             }

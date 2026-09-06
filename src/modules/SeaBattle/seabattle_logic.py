@@ -121,6 +121,7 @@ class GameStateProvider:
         self.engine = SeaBattleEngine(player_id, mita_id)
         self.player_id = player_id
         self.mita_id = mita_id
+        self.last_error: str | None = None
 
     def _board_to_str(self, board_data: list, perspective: str) -> str:
         """
@@ -184,6 +185,7 @@ class GameStateProvider:
             # Тактическая аналитика для Миты
             "hunt_info": self._get_hunt_info_for_mita(),
             "shot_history_str": ", ".join(self._get_shot_history_for_mita()),
+            "error": self.last_error,
         }
 
     def _get_shot_history_for_mita(self) -> List[str]:

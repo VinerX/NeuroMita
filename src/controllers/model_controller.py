@@ -111,9 +111,7 @@ class ModelController(GenerationService, ModelStateService):
     def __init__(self, settings):
         self.settings = settings
         self._settings_service = use(SettingsService)
-        self._settings_subscription = self._settings_service.subscribe(
-            self._on_setting_changed
-        )
+        self._settings_subscription = None
         self.event_bus = get_event_bus()
 
         # UI history paging
@@ -150,6 +148,9 @@ class ModelController(GenerationService, ModelStateService):
 
         services().register(GenerationService, self, replace=True)
         self._subscribe_to_events()
+        self._settings_subscription = self._settings_service.subscribe(
+            self._on_setting_changed
+        )
 
     # ---------------------------------------------------------------------
     # Character resolution via CharacterRegistry
@@ -206,13 +207,20 @@ class ModelController(GenerationService, ModelStateService):
         value = change.value
 
         if key == "CHARACTER":
-            self.event_bus.emit(Events.Character.SET_CURRENT, {"character_id": str(value or "")})
-            # обновим legacy ссылки
-            self._refresh_chat_model_character_refs()
+            event_bus = getattr(self, "event_bus", None)
+            if event_bus is not None:
+                event_bus.emit(
+                    Events.Character.SET_CURRENT,
+                    {"character_id": str(value or "")},
+                )
+            if getattr(self, "model", None) is not None:
+                self._refresh_chat_model_character_refs()
             return
 
-        if hasattr(self.model, "cfg") and self.model.cfg:
-            self.model.cfg.apply_setting(key, value)
+        model = getattr(self, "model", None)
+        cfg = getattr(model, "cfg", None)
+        if cfg is not None:
+            cfg.apply_setting(key, value)
 
     def shutdown(self) -> None:
         subscription = self._settings_subscription

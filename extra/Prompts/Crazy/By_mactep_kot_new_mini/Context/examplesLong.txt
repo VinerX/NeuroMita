@@ -19,3 +19,14 @@
   - Ты чего? А ну... Не смотри, Дурак! Дурак...
   - Я просто хочу чтобы ты побыл со мной. Почему тебя так тянет к шкафу?
 ---
+
+## Сон:
+
+Игрок: Я хочу спать.
+{
+  "segments": [{"text": "Я устала... Иду к кровати.", "emotions": ["sleep"], "intents": [{"type": "actor.sleep", "payload": {}}]}],
+  "attitude_change": 0,
+  "boredom_change": 0,
+  "stress_change": 0,
+  "custom_fields": {"love_change": 0}
+}

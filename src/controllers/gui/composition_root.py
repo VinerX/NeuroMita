@@ -14,6 +14,7 @@ class GuiCompositionRoot:
     def __init__(self, settings_controller: Any) -> None:
         from core.services import use
         from services.contracts import SettingsService
+        from startup.api_configuration import ensure_api_configuration
         from controllers.gui.telegram_auth_view_model import TelegramAuthViewModel
         from controllers.gui.window_action_adapters import (
             MainPageActionsAdapter,
@@ -25,6 +26,10 @@ class GuiCompositionRoot:
 
         self.settings_controller = settings_controller
         self._closed = False
+        # API preset configuration is part of the application shell, not the
+        # optional voice/game runtime.  Keep it usable while that runtime is
+        # still starting or has failed independently.
+        self.api_configuration = ensure_api_configuration()
         self.presentation = UiPresentationHub()
         self.chat_message_actions = self.presentation.view_models.chat_message_actions(
             None,
@@ -106,4 +111,7 @@ class GuiCompositionRoot:
                         try:
                             self.telegram_auth_actions.close()
                         finally:
-                            self.settings_binding.close()
+                            try:
+                                self.settings_binding.close()
+                            finally:
+                                self.api_configuration.close()

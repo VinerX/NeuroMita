@@ -3,10 +3,16 @@ from core.error_utils import format_exception
 
 import re
 import multiprocessing
+import queue
+import threading
 from typing import Dict, Any, Optional
 
+from core.events import Events
+from core.request_policy import resolve_policy
+from core.services import use
 from main_logger import logger
 from modules.game_interface import GameInterface
+from services.contracts import SettingsService
 
 class SeaBattleGame(GameInterface):
 
@@ -15,6 +21,9 @@ class SeaBattleGame(GameInterface):
         self.gui_process: Optional[multiprocessing.Process] = None
         self.command_queue: Optional[multiprocessing.Queue] = None
         self.state_queue: Optional[multiprocessing.Queue] = None
+        self.reaction_queue: Optional[multiprocessing.Queue] = None
+        self._reaction_listener: Optional[threading.Thread] = None
+        self._reaction_stop_event = threading.Event()
 
     def start(self, params: Dict[str, Any]):
         if self.gui_process and self.gui_process.is_alive():
@@ -29,15 +38,23 @@ class SeaBattleGame(GameInterface):
 
             self.command_queue = multiprocessing.Queue()
             self.state_queue = multiprocessing.Queue()
+            self.reaction_queue = multiprocessing.Queue()
+            self._reaction_stop_event.clear()
 
             logger.info(f"[{self.character.char_id}] Запуск GUI для 'Морского боя'.")
 
             self.gui_process = multiprocessing.Process(
                 target=run_seabattle_gui_process,
-                args=(self.command_queue, self.state_queue),
+                args=(self.command_queue, self.state_queue, self.reaction_queue),
                 daemon=True
             )
             self.gui_process.start()
+            self._reaction_listener = threading.Thread(
+                target=self._listen_for_player_target_reactions,
+                name=f"SeaBattleReaction-{self.character.char_id}",
+                daemon=True,
+            )
+            self._reaction_listener.start()
         except ImportError as e:
             logger.error(f"[{self.character.char_id}] Не удалось импортировать модуль 'Морского боя': {format_exception(e)}", exc_info=True)
             self.cleanup()
@@ -69,6 +86,11 @@ class SeaBattleGame(GameInterface):
 
     def cleanup(self):
         logger.debug(f"[{self.character.char_id}] Очистка ресурсов 'Морского боя'.")
+        self._reaction_stop_event.set()
+        listener = self._reaction_listener
+        if listener and listener.is_alive() and listener is not threading.current_thread():
+            listener.join(timeout=1)
+
         self.character.set_variable("playingGame", False)
         self.character.set_variable("game_id", None)
 
@@ -83,10 +105,130 @@ class SeaBattleGame(GameInterface):
             self.command_queue.close()
         if self.state_queue:
             self.state_queue.close()
+        if self.reaction_queue:
+            self.reaction_queue.close()
 
         self.gui_process = None
         self.command_queue = None
         self.state_queue = None
+        self.reaction_queue = None
+        self._reaction_listener = None
+
+    def _listen_for_player_target_reactions(self):
+        """Forward explicit player shots from the GUI to the normal L2 react path."""
+        while not self._reaction_stop_event.is_set():
+            reaction_queue = self.reaction_queue
+            if reaction_queue is None:
+                return
+            try:
+                event = reaction_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+            except Exception as exc:
+                logger.debug(
+                    f"[{self.character.char_id}] Ошибка очереди реакций Морского боя: "
+                    f"{format_exception(exc)}"
+                )
+                continue
+
+            if not isinstance(event, dict):
+                continue
+            event_name = event.get("event")
+            if event_name == "player_target_selected":
+                self._dispatch_player_target_reaction(event)
+            elif event_name == "player_placement_completed":
+                self._dispatch_placement_completed_reaction()
+            elif event_name == "player_game_closed":
+                self._dispatch_player_close_reaction()
+
+    def _dispatch_player_target_reaction(self, event: Dict[str, Any]):
+        """Request a visible Mita reaction after a valid player shot.
+
+        This mirrors the existing L2 ``react`` policy, so the global reactions
+        switches remain the source of truth.  The game-level checkbox only
+        decides whether the GUI sends this event for the current match.
+        """
+        try:
+            settings = use(SettingsService)
+            if not bool(settings.get("REACT_ENABLED", True)):
+                return
+            if not bool(settings.get("REACT_L2_ENABLED", True)):
+                return
+        except Exception as exc:
+            logger.debug(
+                f"[{self.character.char_id}] Не удалось проверить настройки реакций: "
+                f"{format_exception(exc)}"
+            )
+            return
+
+        if not self.character.get_variable("playingGame", False):
+            return
+
+        coord = str(event.get("coord") or "неизвестную клетку")
+        result = str(event.get("message") or event.get("result") or "сделал ход")
+        system_input = (
+            "[Sea Battle] The player fired at "
+            f"{coord}. Result: {result}. "
+            "React briefly and naturally in character to this move. "
+            "Do not take a Sea Battle turn yourself in this reply."
+        )
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": system_input,
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
+
+    def _dispatch_placement_completed_reaction(self):
+        if not self._reactions_enabled():
+            return
+        self._emit_reaction(
+            "[Sea Battle] The player has finished placing all ships. "
+            "React briefly and naturally in character before the battle begins."
+        )
+
+    def _dispatch_player_close_reaction(self):
+        if not self._reactions_enabled():
+            return
+        self._emit_reaction(
+            "[Sea Battle] The player closed the Sea Battle game window. "
+            "React briefly and naturally in character to the end of this match."
+        )
+
+    def _reactions_enabled(self) -> bool:
+        try:
+            settings = use(SettingsService)
+            return bool(settings.get("REACT_ENABLED", True)) and bool(settings.get("REACT_L2_ENABLED", True))
+        except Exception as exc:
+            logger.debug(
+                f"[{self.character.char_id}] Не удалось проверить настройки реакций: "
+                f"{format_exception(exc)}"
+            )
+            return False
+
+    def _emit_reaction(self, system_input: str):
+        policy = resolve_policy(model_event_type="react", react_level=2)
+        self.character.event_bus.emit(
+            Events.Chat.SEND_MESSAGE,
+            {
+                "user_input": "",
+                "system_input": system_input,
+                "event_type": "react",
+                "character_id": self.character.char_id,
+                "sender": "Player",
+                "participants": [],
+                "policy": policy.to_dict(),
+            },
+        )
 
     def process_llm_tags(self, response: str) -> str:
         
@@ -110,6 +252,47 @@ class SeaBattleGame(GameInterface):
             response = response.replace(make_move_match.group(0), "", 1).strip()
             
         return response
+
+    def process_structured_commands(self, commands: list):
+        """Translate the commands advertised by the Sea Battle prompt to GUI actions."""
+        for command in commands:
+            if not isinstance(command, str):
+                continue
+            command = command.strip()
+            if not command:
+                continue
+
+            if command == "PlaceShipsRandomly":
+                self._send_command({"action": "mita_place_randomly"})
+                continue
+
+            place_match = re.fullmatch(
+                r"PlaceShip\s*,\s*([A-J](?:10|[1-9]))\s*,\s*([1-4])\s*,\s*([HV])",
+                command,
+                re.IGNORECASE,
+            )
+            if place_match:
+                coord, length, orientation = place_match.groups()
+                self._send_command(
+                    {
+                        "action": "mita_place_ship",
+                        "spec": f"{coord.upper()},{length},{orientation.upper()}",
+                    }
+                )
+                continue
+
+            move_match = re.fullmatch(
+                r"MakeMove\s*,\s*([A-J](?:10|[1-9]))", command, re.IGNORECASE
+            )
+            if move_match:
+                self._send_command(
+                    {"action": "mita_move", "coord": move_match.group(1).upper()}
+                )
+                continue
+
+            logger.warning(
+                f"[{self.character.char_id}] Structured: неизвестная команда Морского боя: {command!r}"
+            )
 
     def get_state_prompt(self) -> Optional[str]:
         if self.gui_process and not self.gui_process.is_alive():
@@ -174,6 +357,7 @@ class SeaBattleGame(GameInterface):
         self.character.set_variable("GAME_STATE_WOUNDED_SHIPS_INFO", hunt_info.get('wounded_info_str', ''))
         self.character.set_variable("GAME_STATE_HUNT_TARGETS_LIST", ", ".join(hunt_info.get('hunt_targets', [])))
         self.character.set_variable("GAME_STATE_SHOT_HISTORY_STRING", latest_state.get('shot_history_str', ''))
+        self.character.set_variable("GAME_STATE_ERROR_MSG", latest_state.get('error'))
 
         template_filename = f"{self.game_id}.system"
         try:

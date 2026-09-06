@@ -1892,12 +1892,18 @@ def _copy_preserved_unity_data(source: Path, stage: Path) -> None:
 
 
 def _unity_transaction(base_path: Path, unity_path: Path, log) -> DirectoryInstallTransaction:
-    return DirectoryInstallTransaction(
+    from core.unity_installation import validate_unity_update_target
+
+    safe_target = validate_unity_update_target(base_path, unity_path)
+    transaction = DirectoryInstallTransaction(
         component="unity",
-        target=unity_path,
+        target=safe_target,
         state_root=base_path / "_update_state",
         logger=log,
     )
+    if transaction.paths.backup.exists() or transaction.paths.backup.is_symlink():
+        validate_unity_update_target(base_path, transaction.paths.backup)
+    return transaction
 
 
 def _verify_unity_install(path: Path, on_progress=None) -> dict:
@@ -1929,17 +1935,28 @@ def _install_unity_asset(
 ) -> UpdateResult:
     log = make_logger(logger, _LOG_PREFIX)
     archive = base_path / "_update_download" / asset.name
-    transaction = _unity_transaction(base_path, unity_path, log)
-    transaction.begin(
-        {
-            "version": str(version),
-            "archive_url": str(asset.url),
-            "archive_name": str(asset.name),
-            "archive_path": str(archive),
-            "archive_size": int(asset.size or 0),
-            "archive_digest": str(asset.digest or ""),
-        }
-    )
+    try:
+        transaction = _unity_transaction(base_path, unity_path, log)
+        transaction.begin(
+            {
+                "version": str(version),
+                "archive_url": str(asset.url),
+                "archive_name": str(asset.name),
+                "archive_path": str(archive),
+                "archive_size": int(asset.size or 0),
+                "archive_digest": str(asset.digest or ""),
+            }
+        )
+    except (OSError, ValueError, UpdateTransactionError) as error:
+        message = f"Unsafe Unity update target: {format_exception(error)}"
+        log(message, "error")
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="failed",
+            version=version,
+            error=message,
+        )
 
     try:
         initial_phase = transaction.phase
@@ -2101,7 +2118,15 @@ def resume_pending_unity_update(
         if recorded_target
         else Path(unity_dir) if unity_dir else base_path / "NeuroMita-Unity"
     )
-    transaction = _unity_transaction(base_path, target, make_logger(logger, _LOG_PREFIX))
+    try:
+        transaction = _unity_transaction(base_path, target, make_logger(logger, _LOG_PREFIX))
+    except (OSError, ValueError, UpdateTransactionError) as error:
+        return UpdateResult(
+            component="unity",
+            ok=False,
+            status="failed",
+            error=f"Unsafe Unity recovery target: {format_exception(error)}",
+        )
     state = transaction.state
     phase = str(state.get("phase") or "")
     if not state or phase in {"", "completed", "rolled_back", "cancelled", "failed"}:

@@ -31,6 +31,21 @@ class SettingsBodyWidget(QWidget):
         self.setObjectName("SettingsBodyWidget")
 
 
+def _notify_setting_dependents(widget: QWidget) -> None:
+    """Refresh rows controlled by a setting widget after a silent model update.
+
+    Settings binding deliberately blocks Qt signals while applying a persisted
+    value to avoid feeding it back into the store.  Dependency rows used to
+    listen only to ``stateChanged``, so they could retain their old disabled
+    appearance after the controller was updated by the binding.
+    """
+    for sync in tuple(getattr(widget, "_settings_dependency_sync_callbacks", ())):
+        try:
+            sync()
+        except RuntimeError:
+            continue
+
+
 def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
     if not key:
         return
@@ -44,6 +59,7 @@ def _bind_setting_value(gui, key: str, widget: QWidget, apply_value) -> None:
             apply_value(value)
         finally:
             del blocker
+        _notify_setting_dependents(widget)
 
     binding.bind(key, widget, _apply)
 
@@ -72,6 +88,7 @@ def _bind_setting_two_way(
             apply_value(value)
         finally:
             del blocker
+        _notify_setting_dependents(widget)
 
     binding.bind_two_way(
         key,
@@ -256,6 +273,10 @@ def create_button_group(gui, parent, buttons_config):
     for btn_config in buttons_config:
         button = QPushButton(btn_config['label'])
         register_if_tr(button, btn_config['label'])
+        tooltip = btn_config.get('tooltip')
+        if tooltip:
+            button.setToolTip(_fmt_tooltip(str(tooltip)))
+            register_if_tr(button, tooltip, "setToolTip", _fmt_tooltip)
         if 'command' in btn_config:
             button.clicked.connect(btn_config['command'])
         if 'widget_name' in btn_config:
@@ -699,6 +720,12 @@ def create_setting_widget(
                     _apply_setting_row_disabled(frame, not active)
 
             _dep_sync()
+
+            callbacks = getattr(controller, "_settings_dependency_sync_callbacks", None)
+            if callbacks is None:
+                callbacks = []
+                setattr(controller, "_settings_dependency_sync_callbacks", callbacks)
+            callbacks.append(_dep_sync)
 
             if hasattr(controller, "stateChanged"):
                 controller.stateChanged.connect(_dep_sync)

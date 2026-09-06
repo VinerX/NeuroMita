@@ -3,22 +3,83 @@ from core.error_utils import format_exception
 
 import sys
 import multiprocessing
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QLabel, QGridLayout, QPushButton, QGroupBox)
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
 from modules.SeaBattle.seabattle_logic import GameStateProvider, to_alg, from_alg
+from styles.main_styles import get_stylesheet
+from ui.app_icon import application_icon, set_app_user_model_id
+from utils import getTranslationVariant as _
+from utils.win_titlebar import apply_dark_titlebar, install_dark_titlebar_sync
 
-STYLESHEET = """
-QWidget { background-color: #2E3440; color: #ECEFF4; font-family: Arial; }
-QLabel#header { font-size: 24px; font-weight: bold; color: #88C0D0; padding: 10px; }
-QLabel#info { font-size: 14px; color: #A3BE8C; }
-QGroupBox { border: 1px solid #4C566A; border-radius: 5px; margin-top: 1ex; font-weight: bold; }
-QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 3px; }
-QPushButton { background-color: #5E81AC; border: none; padding: 8px; border-radius: 4px; font-weight: bold; }
-QPushButton:hover { background-color: #81A1C1; }
-QPushButton:disabled { background-color: #4C566A; color: #D8DEE9; }
+SEABATTLE_QSS = """
+QWidget#SeaBattleWindow {
+    background-color: #0a0a18;
+}
+QFrame#SeaBattleHeader, QFrame#SeaBattlePanel, QFrame#SeaBattleBoardCard {
+    background-color: rgba(14, 16, 31, 0.96);
+    border: 1px solid rgba(40, 38, 54, 0.90);
+    border-radius: 14px;
+}
+QLabel#SeaBattleTitle {
+    color: #f3edf6;
+    font-size: 20pt;
+    font-weight: 700;
+}
+QLabel#SeaBattleSubtitle {
+    color: #bca9bb;
+    font-size: 10pt;
+}
+QLabel#SeaBattleStatus {
+    color: #f3edf6;
+    font-size: 13pt;
+    font-weight: 700;
+}
+QLabel#SeaBattleInfo {
+    color: #bca9bb;
+    font-size: 10pt;
+}
+QLabel#SeaBattleBoardTitle, QLabel#SeaBattlePanelTitle {
+    color: #f3edf6;
+    font-size: 10pt;
+    font-weight: 700;
+}
+QLabel#SeaBattleHint {
+    color: #bca9bb;
+    font-size: 9pt;
+}
+QPushButton#ShipButton {
+    min-height: 28px;
+}
+QPushButton#ShipButton[selected="true"] {
+    background-color: #c04c80;
+    border-color: rgba(255, 190, 220, 0.55);
+}
+QCheckBox {
+    color: #f3edf6;
+    background: transparent;
+}
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #bca9bb;
+    background: #0a0a18;
+}
+QCheckBox::indicator:checked {
+    background: #c04c80;
+    border-color: #c04c80;
+}
 """
 
 class BoardWidget(QWidget):
@@ -26,10 +87,10 @@ class BoardWidget(QWidget):
     cell_hovered = pyqtSignal(int, int)
 
     COLORS = {
-        0: QColor("#434C5E"), 1: QColor("#D8DEE9"), 2: QColor("#BF616A"), 
-        3: QColor("#EBCB8B"), 4: QColor("#BF616A"), 5: QColor("#3B4252"),
-        'opp_0': QColor("#ECEFF4"), 'opp_1': QColor("#BF616A"),
-        'opp_2': QColor("#4C566A"), 'opp_3': QColor("#A3BE8C"),
+        0: QColor("#191b30"), 1: QColor("#b74b7d"), 2: QColor("#d64545"),
+        3: QColor("#69758e"), 4: QColor("#ff7f8e"), 5: QColor("#111222"),
+        'opp_0': QColor("#191b30"), 'opp_1': QColor("#d64545"),
+        'opp_2': QColor("#69758e"), 'opp_3': QColor("#ff7f8e"),
     }
 
     def __init__(self, is_opponent_board=False):
@@ -38,7 +99,8 @@ class BoardWidget(QWidget):
         self.board_data = [[0] * 10 for _ in range(10)]
         self.preview_ship = None
         self.setMouseTracking(True)
-        self.cell_size = 30
+        # Keeps a full 10x10 board, title, and controls visible at 768 px height.
+        self.cell_size = 28
         self.margin = 25  # Отступ для букв и цифр
         self.setFixedSize(self.cell_size * 10 + self.margin, self.cell_size * 10 + self.margin)
 
@@ -58,11 +120,11 @@ class BoardWidget(QWidget):
         painter = QPainter(self)
         
         # Настройка шрифта для обозначений
-        font = QFont("Arial", 10, QFont.Weight.Bold)
+        font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         painter.setFont(font)
         
         # Рисуем буквы (A-J) сверху
-        painter.setPen(QColor("#ECEFF4"))
+        painter.setPen(QColor("#bca9bb"))
         for i in range(10):
             letter = chr(ord('A') + i)
             x = self.margin + i * self.cell_size + self.cell_size // 2 - 5
@@ -85,13 +147,13 @@ class BoardWidget(QWidget):
                 color = self.COLORS.get(key, QColor("black"))
                 painter.fillRect(x, y, self.cell_size, self.cell_size, color)
                 if not self.is_opponent_board and cell_state == 4:
-                    painter.setPen(QPen(QColor("#A3BE8C"), 3))
+                    painter.setPen(QPen(QColor("#ffb4d0"), 3))
                     painter.drawRect(x + 2, y + 2, self.cell_size - 4, self.cell_size - 4)
-                painter.setPen(QColor("#2E3440"))
+                painter.setPen(QColor("#34344b"))
                 painter.drawRect(x, y, self.cell_size, self.cell_size)
                 
         if self.preview_ship:
-            color = QColor(143, 188, 187, 180) if self.preview_ship['is_valid'] else QColor(191, 97, 106, 180)
+            color = QColor(183, 75, 125, 180) if self.preview_ship['is_valid'] else QColor(214, 69, 69, 180)
             painter.setBrush(color)
             painter.setPen(Qt.PenStyle.NoPen)
             for c, r in self.preview_ship['coords']:
@@ -110,11 +172,13 @@ class BoardWidget(QWidget):
     def leaveEvent(self, event): self.clear_preview()
 
 class SeaBattleWindow(QWidget):
-    def __init__(self, command_queue, state_queue):
+    def __init__(self, command_queue, state_queue, reaction_queue=None):
         super().__init__()
         self.command_queue = command_queue
         self.state_queue = state_queue
+        self.reaction_queue = reaction_queue
         self.game = GameStateProvider()
+        self._programmatic_close = False
         
         self.ship_to_place = None
         self.init_ui()
@@ -125,9 +189,14 @@ class SeaBattleWindow(QWidget):
         self.command_timer.start(100)
 
     def closeEvent(self, event):
+        if not self._programmatic_close:
+            self._request_game_closed_reaction()
         try:
             if self.state_queue:
-                self.state_queue.put({"event": "gui_closed", "reason": "user_closed"})
+                self.state_queue.put({
+                    "event": "gui_closed",
+                    "reason": "stop_gui_process" if self._programmatic_close else "user_closed",
+                })
         except Exception:
             pass
         try:
@@ -138,37 +207,93 @@ class SeaBattleWindow(QWidget):
         event.accept()
 
     def init_ui(self):
-        self.setWindowTitle("Морской Бой")
-        self.setGeometry(100, 100, 620, 500)
+        self.setWindowTitle(_("Морской бой", "Sea Battle"))
+        self.setWindowIcon(application_icon())
+        self.setMinimumSize(780, 660)
+        self.resize(900, 740)
+        self.setObjectName("SeaBattleWindow")
         main_layout = QVBoxLayout(self)
-        self.status_label = QLabel("Расстановка кораблей", objectName="header", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.info_label = QLabel("Выберите корабль", objectName="info", alignment=Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(self.status_label)
-        main_layout.addWidget(self.info_label)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(10)
+
+        header = QFrame(objectName="SeaBattleHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(QLabel(_("Морской бой", "Sea Battle"), objectName="SeaBattleTitle"))
+        header_layout.addWidget(QLabel(
+            _("Сыграйте партию с Митой — сначала расставьте корабли.", "Play against Mita — place your ships first."),
+            objectName="SeaBattleSubtitle",
+        ))
+        self.status_label = QLabel(_("Расстановка кораблей", "Ship placement"), objectName="SeaBattleStatus")
+        self.info_label = QLabel(_("Выберите корабль", "Choose a ship"), objectName="SeaBattleInfo")
+        header_layout.addSpacing(4)
+        header_layout.addWidget(self.status_label)
+        header_layout.addWidget(self.info_label)
+        main_layout.addWidget(header)
 
         boards_layout = QHBoxLayout()
+        boards_layout.setSpacing(10)
+        boards_layout.addStretch(1)
         self.my_board_widget = BoardWidget()
         self.opponent_board_widget = BoardWidget(is_opponent_board=True)
-        boards_layout.addWidget(self.my_board_widget)
-        boards_layout.addWidget(self.opponent_board_widget)
+
+        self.my_board_card = self._make_board_card(_("Ваше поле", "Your board"), self.my_board_widget)
+        self.opponent_board_card = self._make_board_card(_("Поле Миты", "Mita's board"), self.opponent_board_widget)
+        boards_layout.addWidget(self.my_board_card)
+        boards_layout.addWidget(self.opponent_board_card)
+        boards_layout.addStretch(1)
         main_layout.addLayout(boards_layout)
 
-        self.controls_group = QGroupBox("Ваши корабли")
+        self.controls_panel = QFrame(objectName="SeaBattlePanel")
+        controls_panel_layout = QVBoxLayout(self.controls_panel)
+        controls_panel_layout.setContentsMargins(14, 10, 14, 10)
+        controls_panel_layout.setSpacing(7)
+        self.controls_title = QLabel(_("Ваши корабли", "Your ships"), objectName="SeaBattlePanelTitle")
+        controls_panel_layout.addWidget(self.controls_title)
         self.controls_layout = QGridLayout()
-        self.controls_group.setLayout(self.controls_layout)
-        main_layout.addWidget(self.controls_group)
+        self.controls_layout.setHorizontalSpacing(8)
+        self.controls_layout.setVerticalSpacing(6)
+        controls_panel_layout.addLayout(self.controls_layout)
+
+        self.mita_reaction_checkbox = QCheckBox(_("Мита реагирует на мой выстрел", "Mita reacts to my shot"))
+        self.mita_reaction_checkbox.setChecked(True)
+        self.mita_reaction_checkbox.setToolTip(
+            _("После вашего действительного хода Мита сразу получает повод для реакции в чате.", "After an accepted shot, Mita gets a prompt to react in chat.")
+        )
+        controls_panel_layout.addWidget(self.mita_reaction_checkbox)
+        controls_panel_layout.addWidget(QLabel(
+            _("Можно отключить для этой партии. Общая настройка реакций приложения сохраняет приоритет.", "You can turn this off for this match. The app-wide reaction setting still takes priority."),
+            objectName="SeaBattleHint",
+        ))
+        main_layout.addWidget(self.controls_panel)
 
         self.ship_buttons = {}
         ship_counts = {s: self.game.engine.SHIP_CONFIG.count(s) for s in sorted(list(set(self.game.engine.SHIP_CONFIG)), reverse=True)}
         for i, (length, count) in enumerate(ship_counts.items()):
-            btn = QPushButton(f"{length}-палубный (x{count})")
+            btn = QPushButton(self._ship_button_text(length, count))
+            btn.setObjectName("ShipButton")
             btn.clicked.connect(lambda _, l=length: self.select_ship_to_place(l))
             self.ship_buttons[length] = {'btn': btn, 'count': count}
-            self.controls_layout.addWidget(btn, i // 2, i % 2)
+            self.controls_layout.addWidget(btn, 0, i)
 
         self.my_board_widget.cell_hovered.connect(self.on_my_board_hover)
         self.my_board_widget.cell_clicked.connect(self.on_my_board_click)
         self.opponent_board_widget.cell_clicked.connect(self.on_opponent_board_click)
+
+    @staticmethod
+    def _make_board_card(title, board):
+        card = QFrame(objectName="SeaBattleBoardCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel(title, objectName="SeaBattleBoardTitle"))
+        layout.addWidget(board, alignment=Qt.AlignmentFlag.AlignCenter)
+        return card
+
+    @staticmethod
+    def _ship_button_text(length, count):
+        return _("{}-палубный (x{})", "{}-deck (x{})").format(length, count)
 
     def send_state_update(self):
         state = self.game.get_full_state()
@@ -184,6 +309,7 @@ class SeaBattleWindow(QWidget):
                 action = cmd.get("action")
 
                 if action == "stop_gui_process":
+                    self._programmatic_close = True
                     self.close()
                     return
 
@@ -199,19 +325,24 @@ class SeaBattleWindow(QWidget):
                             x, y = from_alg(coord)
                             length = int(length)
                             orient = 'v' if orient_char.lower() == 'v' else 'h'
-                            self.game.engine.place_ship(self.game.mita_id, x, y, length, orient)
+                            success, message = self.game.engine.place_ship(self.game.mita_id, x, y, length, orient)
+                            self.game.last_error = None if success else f"Мита не смогла поставить корабль: {message}"
                         except Exception as e:
-                            print(f"Mita place ship error: {format_exception(e)}")
+                            self.game.last_error = f"Ошибка расстановки Миты: {format_exception(e)}"
+                    else:
+                        self.game.last_error = "Ошибка расстановки Миты: неверный формат команды"
                 
                 if action == "mita_place_randomly":
-                    self.game.engine.place_all_mita_ships_randomly()
+                    success, message = self.game.engine.place_all_mita_ships_randomly()
+                    self.game.last_error = None if success else f"Мита не смогла расставить корабли: {message}"
 
                 if action == "mita_move":
                     try:
                         x, y = from_alg(cmd.get("coord"))
-                        self.game.engine.make_move(self.game.mita_id, x, y)
+                        result, message = self.game.engine.make_move(self.game.mita_id, x, y)
+                        self.game.last_error = None if result not in {"invalid_phase", "not_your_turn", "invalid_coord", "already_shot"} else f"Ход Миты не принят: {message}"
                     except Exception as e:
-                        print(f"Mita move error: {format_exception(e)}")
+                        self.game.last_error = f"Ошибка хода Миты: {format_exception(e)}"
 
                 self.update_view()
                 self.send_state_update()
@@ -246,6 +377,8 @@ class SeaBattleWindow(QWidget):
             success, msg = self.game.engine.place_ship(self.game.player_id, x, y, l, o)
             if success:
                 self.ship_to_place = None
+                if not self.game.get_full_state()['player_ships_to_place']:
+                    self._request_placement_completed_reaction()
                 self.update_view()
                 self.send_state_update()
             else:
@@ -256,9 +389,40 @@ class SeaBattleWindow(QWidget):
         if state['phase'] != 'battle' or not state['is_player_turn']: return
         if button != Qt.MouseButton.LeftButton: return
 
-        self.game.engine.make_move(self.game.player_id, x, y)
+        result, message = self.game.engine.make_move(self.game.player_id, x, y)
+        if result not in {"invalid_phase", "not_your_turn", "invalid_coord", "already_shot"}:
+            self._request_mita_reaction(x, y, result, message)
         self.update_view()
         self.send_state_update()
+
+    def _request_mita_reaction(self, x, y, result, message):
+        if not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
+            return
+        try:
+            self.reaction_queue.put({
+                "event": "player_target_selected",
+                "coord": to_alg(x, y),
+                "result": str(result or ""),
+                "message": str(message or ""),
+            })
+        except Exception as exc:
+            print(f"GUI Error: Could not queue Mita reaction: {format_exception(exc)}")
+
+    def _request_placement_completed_reaction(self):
+        if not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
+            return
+        try:
+            self.reaction_queue.put({"event": "player_placement_completed"})
+        except Exception as exc:
+            print(f"GUI Error: Could not queue Mita placement reaction: {format_exception(exc)}")
+
+    def _request_game_closed_reaction(self):
+        if not self.mita_reaction_checkbox.isChecked() or not self.reaction_queue:
+            return
+        try:
+            self.reaction_queue.put({"event": "player_game_closed"})
+        except Exception as exc:
+            print(f"GUI Error: Could not queue Mita Sea Battle close reaction: {format_exception(exc)}")
 
     def update_view(self):
         state = self.game.get_full_state()
@@ -266,49 +430,60 @@ class SeaBattleWindow(QWidget):
         self.opponent_board_widget.update_data(state['opponent_view_raw'])
 
         if state['phase'] == 'placement':
-            self.controls_group.setVisible(True)
-            self.opponent_board_widget.setVisible(False)
+            self.controls_panel.setVisible(True)
+            self.controls_title.setVisible(True)
+            self.opponent_board_card.setVisible(False)
             ships_left = state['player_ships_to_place']
             for length, data in self.ship_buttons.items():
                 count = ships_left.count(length)
-                data['btn'].setText(f"{length}-палубный (x{count})")
+                data['btn'].setText(self._ship_button_text(length, count))
                 data['btn'].setEnabled(count > 0)
+                data['btn'].setVisible(True)
                 is_selected = self.ship_to_place and self.ship_to_place['len'] == length
-                data['btn'].setStyleSheet("background-color: #88C0D0;" if is_selected else "")
+                data['btn'].setProperty("selected", bool(is_selected))
+                data['btn'].style().unpolish(data['btn'])
+                data['btn'].style().polish(data['btn'])
 
             if not ships_left:
-                self.status_label.setText("Ожидание Миты")
-                self.info_label.setText("Все ваши корабли расставлены.")
+                self.status_label.setText(_("Ожидание Миты", "Waiting for Mita"))
+                self.info_label.setText(_("Все ваши корабли расставлены.", "All your ships are placed."))
             else:
-                self.status_label.setText("Расстановка кораблей")
-                info = "Выберите корабль. ПКМ для вращения."
+                self.status_label.setText(_("Расстановка кораблей", "Ship placement"))
+                info = _("Выберите корабль. ПКМ для вращения.", "Choose a ship. Right-click to rotate it.")
                 if self.ship_to_place:
-                    orient = "Вертикально" if self.ship_to_place['orient'] == 'v' else "Горизонтально"
-                    info = f"Разместите {self.ship_to_place['len']}-палубный. ({orient})"
+                    orient = _("Вертикально", "Vertical") if self.ship_to_place['orient'] == 'v' else _("Горизонтально", "Horizontal")
+                    info = _("Разместите {}-палубный. ({})", "Place the {}-deck ship. ({})").format(self.ship_to_place['len'], orient)
                 self.info_label.setText(info)
 
         elif state['phase'] == 'battle':
-            self.controls_group.setVisible(False)
+            self.controls_panel.setVisible(True)
+            self.controls_title.setVisible(False)
+            for data in self.ship_buttons.values():
+                data['btn'].setVisible(False)
             self.my_board_widget.clear_preview()
-            self.opponent_board_widget.setVisible(True)
-            self.status_label.setText("Ваш ход!" if state['is_player_turn'] else "Ход Миты")
-            self.info_label.setText("Стреляйте по полю противника.")
+            self.opponent_board_card.setVisible(True)
+            self.status_label.setText(_("Ваш ход!", "Your turn!") if state['is_player_turn'] else _("Ход Миты", "Mita's turn"))
+            self.info_label.setText(_("Стреляйте по полю противника.", "Fire at the opponent's board."))
             if state.get('last_move'):
                 last_move = state['last_move']
-                actor = "Вы" if last_move['attacker'] == self.game.player_id else "Мита"
-                self.info_label.setText(f"Последний ход: {actor} на {last_move['coord_alg']} - {last_move['message']}")
+                actor = _("Вы", "You") if last_move['attacker'] == self.game.player_id else "Mita"
+                self.info_label.setText(_("Последний ход: {} на {} - {}", "Last move: {} at {} - {}").format(actor, last_move['coord_alg'], last_move['message']))
 
         elif state['phase'] == 'game_over':
-            self.controls_group.setVisible(False)
+            self.controls_panel.setVisible(False)
             self.my_board_widget.clear_preview()
-            winner_text = "Вы победили!" if state['winner'] == self.game.player_id else "Мита победила."
-            self.status_label.setText("Игра окончена")
+            winner_text = _("Вы победили!", "You won!") if state['winner'] == self.game.player_id else _("Мита победила.", "Mita won.")
+            self.status_label.setText(_("Игра окончена", "Game over"))
             self.info_label.setText(winner_text)
 
-def run_seabattle_gui_process(command_queue, state_queue):
+def run_seabattle_gui_process(command_queue, state_queue, reaction_queue=None):
+    set_app_user_model_id()
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLESHEET)
-    window = SeaBattleWindow(command_queue, state_queue)
+    app.setWindowIcon(application_icon())
+    install_dark_titlebar_sync(app, True)
+    app.setStyleSheet(get_stylesheet() + SEABATTLE_QSS)
+    window = SeaBattleWindow(command_queue, state_queue, reaction_queue)
     window.show()
+    apply_dark_titlebar(window, True)
     window.send_state_update()
     sys.exit(app.exec())

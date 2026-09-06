@@ -182,7 +182,7 @@ class LauncherSidebarWidget(QFrame):
         title.setObjectName("LauncherShellBrandTitle")
         title_column.addWidget(title)
 
-        subtitle = QLabel("Launcher")
+        subtitle = tr_set(QLabel(), "Лаунчер", "Launcher")
         subtitle.setObjectName("LauncherShellBrandSubtitle")
         title_column.addWidget(subtitle)
 

@@ -51,6 +51,7 @@ SET result = result + """  "segments": [
       "clothes": ["id_одежды"],
       "music": ["имя_музыки"],
       "interactions": ["цель взаимодействия"],
+      "intents": [{"type": "intent.type", "payload": {}}],
       "face_params": ["параметр лица"],
       "start_game": "id_игры",
       "end_game": "id_игры",

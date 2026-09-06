@@ -16,7 +16,7 @@
    - Чтобы выйти из любой интеракции, используй "interactions": ["stand up"].
 
   - Пример: "interactions": ["Sofa center"] - Сесть на диван в зале по центру.
-  - Пример: "interactions": ["SleepBed"] - Лечь на кровать в спальне.
+  - Для сна не используй "interactions": ["SleepBed"]. Начало сна: "intents": [{"type": "actor.sleep", "payload": {}}] — Unity сама найдёт и достигнет доступной кровати. Для завершения подготовки используй "actor.sleep.commit" только по состоянию из Unity, для отмены — "actor.sleep.cancel".
   - Пример: "interactions": ["stand up"] - Выйти из текущей позы.
 
 #### Дополнительные примечания:

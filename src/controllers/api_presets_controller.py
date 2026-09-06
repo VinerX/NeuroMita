@@ -103,6 +103,8 @@ class ApiPresetsController(ApiPresetService):
 
     def __init__(self, http_transport: LLMHttpClient | None = None):
         self.event_bus = get_event_bus()
+        self._close_lock = threading.Lock()
+        self._closed = False
         self._http_transport = http_transport or LLMHttpClient(service_id="api-presets")
         self._owns_http_transport = http_transport is None
 
@@ -125,7 +127,12 @@ class ApiPresetsController(ApiPresetService):
         self._migrate_old_api_keys()
 
     def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         task_supervisor().cancel_owner(self, timeout=2.0)
+        self.event_bus.unsubscribe_owner(self)
         if self._owns_http_transport:
             self._http_transport.close()
 
