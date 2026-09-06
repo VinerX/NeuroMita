@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_tag:
-        description: "Tested Atm4x release tag (for example v2026.08.27)"
+        description: "Tested Atm4x release tag (for example v2026.09.06.3)"
         required: true
         type: string
 
@@ -12,11 +12,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: promote-release
+  group: promote-release-${{ github.repository }}
   cancel-in-progress: false
 
 env:
   SOURCE_REPO: Atm4x/NeuroMita
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   promote:
@@ -24,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout VinerX repository
+      - name: Checkout VinerX/main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -34,6 +35,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Install archive tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          7z i >/dev/null
 
       - name: Capture VinerX base commit
         id: base
@@ -53,6 +62,19 @@ jobs:
           mkdir -p "$PROMOTE_DIR"
 
           echo "dir=$PROMOTE_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Check Unity archive password secret
+        shell: bash
+        env:
+          TESTER_CODE: ${{ secrets.TESTER_CODE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TESTER_CODE:-}" ]; then
+            echo "Repository secret TESTER_CODE is missing or empty."
+            echo "It is required to unpack the protected Atm4x UnityBuild archive."
+            exit 1
+          fi
 
       - name: Resolve tested Atm4x release
         id: source
@@ -98,28 +120,17 @@ jobs:
 
           def get_json(url: str):
               request = urllib.request.Request(url, headers=headers)
-
               try:
-                  with urllib.request.urlopen(
-                      request,
-                      timeout=30,
-                  ) as response:
+                  with urllib.request.urlopen(request, timeout=30) as response:
                       return json.load(response)
               except urllib.error.HTTPError as exc:
-                  body = exc.read().decode(
-                      "utf-8",
-                      errors="replace",
-                  )
-
+                  body = exc.read().decode("utf-8", errors="replace")
                   raise SystemExit(
-                      f"GitHub API failed: HTTP {exc.code} "
-                      f"for {url}: {body[:500]}"
+                      f"GitHub API failed: HTTP {exc.code} for {url}: "
+                      f"{body[:500]}"
                   ) from exc
 
-          encoded_tag = urllib.parse.quote(
-              source_tag,
-              safe="",
-          )
+          encoded_tag = urllib.parse.quote(source_tag, safe="")
 
           release = get_json(
               f"https://api.github.com/repos/"
@@ -134,7 +145,7 @@ jobs:
           if release.get("prerelease"):
               raise SystemExit(
                   f"Source release {source_tag} is marked as prerelease; "
-                  "the two-repository contour expects ordinary Atm4x releases"
+                  "Promote expects a published tested Atm4x release"
               )
 
           if not release.get("published_at"):
@@ -147,155 +158,132 @@ jobs:
               f"{source_repo}/commits/{encoded_tag}"
           )
 
-          source_commit = (
-              str(commit.get("sha") or "")
-              .strip()
-              .lower()
-          )
+          source_commit = str(commit.get("sha") or "").strip().lower()
 
-          if not re.fullmatch(
-              r"[0-9a-f]{40}",
-              source_commit,
-          ):
+          if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
               raise SystemExit(
-                  f"Could not resolve source commit "
-                  f"for {source_tag}: {source_commit!r}"
+                  f"Could not resolve source commit for "
+                  f"{source_tag}: {source_commit!r}"
               )
 
-          assets = [
-              asset
-              for asset in (release.get("assets") or [])
-              if str(
-                  asset.get("name") or ""
-              ).startswith("PythonBuild-")
-              and str(
-                  asset.get("name") or ""
-              ).lower().endswith(".zip")
-          ]
+          expected_python_name = f"PythonBuild-{source_tag}.zip"
+          expected_unity_name = f"UnityBuild-{source_tag}.zip"
 
-          if len(assets) != 1:
-              names = [
-                  str(asset.get("name") or "")
-                  for asset in (release.get("assets") or [])
+          release_assets = list(release.get("assets") or [])
+
+          def resolve_asset(expected_name: str) -> dict:
+              matches = [
+                  asset
+                  for asset in release_assets
+                  if str(asset.get("name") or "").strip() == expected_name
               ]
 
-              raise SystemExit(
-                  f"Expected exactly one PythonBuild-*.zip asset "
-                  f"in {source_repo} {source_tag}; "
-                  f"found {len(assets)}. Assets: {names}"
-              )
+              if len(matches) != 1:
+                  names = [
+                      str(asset.get("name") or "")
+                      for asset in release_assets
+                  ]
+                  raise SystemExit(
+                      f"Expected exactly one {expected_name!r} in "
+                      f"{source_repo} {source_tag}; found {len(matches)}. "
+                      f"Assets: {names}"
+                  )
 
-          asset = assets[0]
+              asset = matches[0]
+              url = str(
+                  asset.get("browser_download_url") or ""
+              ).strip()
+              digest = str(
+                  asset.get("digest") or ""
+              ).strip().lower()
 
-          asset_name = str(
-              asset["name"]
-          ).strip()
+              if not url.startswith("https://github.com/"):
+                  raise SystemExit(
+                      f"Unexpected release asset URL "
+                      f"for {expected_name}: {url}"
+                  )
 
-          asset_url = str(
-              asset["browser_download_url"]
-          ).strip()
-
-          asset_digest = str(
-              asset.get("digest") or ""
-          ).strip().lower()
-
-          if not re.fullmatch(
-              r"PythonBuild-[A-Za-z0-9._-]+\.zip",
-              asset_name,
-          ):
-              raise SystemExit(
-                  f"Unexpected release asset name: {asset_name!r}"
-              )
-
-          if not asset_url.startswith(
-              "https://github.com/"
-          ):
-              raise SystemExit(
-                  f"Unexpected release asset URL: {asset_url}"
-              )
-
-          if (
-              asset_digest
-              and not re.fullmatch(
+              if digest and not re.fullmatch(
                   r"sha256:[0-9a-f]{64}",
-                  asset_digest,
-              )
-          ):
-              raise SystemExit(
-                  f"Unexpected release asset digest: "
-                  f"{asset_digest!r}"
-              )
+                  digest,
+              ):
+                  raise SystemExit(
+                      f"Unexpected release asset digest "
+                      f"for {expected_name}: {digest!r}"
+                  )
 
-          (
-              promote_dir / "source-release.json"
-          ).write_text(
+              return {
+                  "name": expected_name,
+                  "url": url,
+                  "digest": digest,
+                  "size": int(asset.get("size") or 0),
+              }
+
+          python_asset = resolve_asset(expected_python_name)
+          unity_asset = resolve_asset(expected_unity_name)
+
+          source_data = {
+              "tag": source_tag,
+              "name": (
+                  release.get("name")
+                  or f"NeuroMita {source_tag}"
+              ),
+              "body": release.get("body") or "",
+              "source_commit": source_commit,
+              "python": python_asset,
+              "unity": unity_asset,
+          }
+
+          (promote_dir / "source-release.json").write_text(
               json.dumps(
-                  {
-                      "tag": source_tag,
-                      "name": (
-                          release.get("name")
-                          or f"NeuroMita {source_tag}"
-                      ),
-                      "body": (
-                          release.get("body")
-                          or ""
-                      ),
-                      "source_commit": source_commit,
-                      "asset_name": asset_name,
-                      "asset_url": asset_url,
-                      "asset_digest": asset_digest,
-                  },
+                  source_data,
                   ensure_ascii=False,
                   indent=2,
               ) + "\n",
               encoding="utf-8",
           )
 
-          github_output = Path(
-              os.environ["GITHUB_OUTPUT"]
-          )
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
 
-          with github_output.open(
-              "a",
-              encoding="utf-8",
-          ) as out:
+          with github_output.open("a", encoding="utf-8") as out:
+              out.write(f"source_tag={source_tag}\n")
+              out.write(f"source_commit={source_commit}\n")
+
               out.write(
-                  f"source_tag={source_tag}\n"
+                  f"python_name={python_asset['name']}\n"
               )
               out.write(
-                  f"source_commit={source_commit}\n"
+                  f"python_url={python_asset['url']}\n"
               )
               out.write(
-                  f"asset_name={asset_name}\n"
+                  f"python_digest={python_asset['digest']}\n"
+              )
+
+              out.write(
+                  f"unity_name={unity_asset['name']}\n"
               )
               out.write(
-                  f"asset_url={asset_url}\n"
+                  f"unity_url={unity_asset['url']}\n"
               )
               out.write(
-                  f"asset_digest={asset_digest}\n"
+                  f"unity_digest={unity_asset['digest']}\n"
               )
 
           print(
-              f"Source release: "
-              f"{source_repo} {source_tag}"
+              f"Source release: {source_repo} {source_tag}"
           )
           print(
-              f"Source commit:  "
-              f"{source_commit}"
+              f"Source commit:  {source_commit}"
           )
           print(
-              f"Source asset:   "
-              f"{asset_name}"
+              f"Python asset:   {python_asset['name']}"
           )
-
-          if asset_digest:
-              print(
-                  f"Source digest:  "
-                  f"{asset_digest}"
-              )
+          print(
+              f"Unity asset:    {unity_asset['name']}"
+          )
           PY
 
-      - name: Refuse duplicate VinerX tag or published release
+      - name: Refuse duplicate VinerX tag or release
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
@@ -315,62 +303,90 @@ jobs:
             exit 1
           fi
 
-          if gh release view \
-              "$SOURCE_TAG" \
-              --repo "${{ github.repository }}" \
-              >/dev/null 2>&1; then
+          RELEASE_TAGS="$(
+            gh api \
+              --paginate \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[].tag_name'
+          )"
 
-            echo "Published release $SOURCE_TAG already exists."
-            echo "Refusing to overwrite it."
+          if grep -Fxq "$SOURCE_TAG" <<< "$RELEASE_TAGS"; then
+            echo "A VinerX release (including a draft) already exists for $SOURCE_TAG."
+            echo "Delete the old draft/release before rerunning Promote."
             exit 1
           fi
 
-      - name: Download tested artifact from Atm4x
+      - name: Download tested artifacts from Atm4x
+        id: download
         shell: bash
         env:
-          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
-          ASSET_URL: ${{ steps.source.outputs.asset_url }}
-          ASSET_DIGEST: ${{ steps.source.outputs.asset_digest }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
+          PYTHON_URL: ${{ steps.source.outputs.python_url }}
+          PYTHON_DIGEST: ${{ steps.source.outputs.python_digest }}
+          UNITY_NAME: ${{ steps.source.outputs.unity_name }}
+          UNITY_URL: ${{ steps.source.outputs.unity_url }}
+          UNITY_DIGEST: ${{ steps.source.outputs.unity_digest }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
 
-          ASSET_PATH="$PROMOTE_DIR/$ASSET_NAME"
+          download_and_verify() {
+            local name="$1"
+            local url="$2"
+            local digest="$3"
+            local output="$4"
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-all-errors \
-            --output "$ASSET_PATH" \
-            "$ASSET_URL"
+            curl \
+              --fail \
+              --location \
+              --retry 3 \
+              --retry-all-errors \
+              --output "$output" \
+              "$url"
 
-          test -s "$ASSET_PATH"
+            test -s "$output"
 
-          ACTUAL_SHA256="$(
-            sha256sum "$ASSET_PATH" |
-            awk '{print $1}'
-          )"
+            local actual_sha
+            actual_sha="$(
+              sha256sum "$output" |
+              awk '{print $1}'
+            )"
 
-          if [ -n "$ASSET_DIGEST" ]; then
-            EXPECTED_SHA256="${ASSET_DIGEST#sha256:}"
+            if [ -n "$digest" ]; then
+              local expected_sha="${digest#sha256:}"
 
-            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-              echo "Downloaded release asset digest mismatch."
-              echo "Expected: $EXPECTED_SHA256"
-              echo "Actual:   $ACTUAL_SHA256"
-              exit 1
+              if [ "$actual_sha" != "$expected_sha" ]; then
+                echo "$name digest mismatch."
+                echo "Expected: $expected_sha"
+                echo "Actual:   $actual_sha"
+                exit 1
+              fi
             fi
-          fi
 
-          echo "Downloaded ZIP sha256=$ACTUAL_SHA256"
+            echo "$name sha256=$actual_sha"
+          }
 
-      - name: Verify source artifact provenance
+          PYTHON_PATH="$PROMOTE_DIR/$PYTHON_NAME"
+          UNITY_SOURCE_PATH="$PROMOTE_DIR/source-$UNITY_NAME"
+
+          download_and_verify \
+            "$PYTHON_NAME" \
+            "$PYTHON_URL" \
+            "$PYTHON_DIGEST" \
+            "$PYTHON_PATH"
+
+          download_and_verify \
+            "$UNITY_NAME" \
+            "$UNITY_URL" \
+            "$UNITY_DIGEST" \
+            "$UNITY_SOURCE_PATH"
+
+      - name: Verify Python source artifact provenance
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
-          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -382,22 +398,18 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          promote_dir = Path(
-              os.environ["PROMOTE_DIR"]
-          )
-
+          promote_dir = Path(os.environ["PROMOTE_DIR"])
           archive_path = (
               promote_dir /
-              os.environ["ASSET_NAME"]
+              os.environ["PYTHON_NAME"]
           )
 
           source_tag = os.environ["SOURCE_TAG"]
-
           source_commit = (
               os.environ["SOURCE_COMMIT"]
+              .strip()
               .lower()
           )
-
           source_repo = os.environ["SOURCE_REPO"]
 
           def is_marker(name: str) -> bool:
@@ -412,24 +424,16 @@ jobs:
 
               return (
                   normalized == marker
-                  or normalized.endswith(
-                      "/" + marker
-                  )
+                  or normalized.endswith("/" + marker)
               )
 
-          with zipfile.ZipFile(
-              archive_path,
-              "r",
-          ) as archive:
-
+          with zipfile.ZipFile(archive_path, "r") as archive:
               marker_names = [
                   info.filename
                   for info in archive.infolist()
                   if (
                       not info.is_dir()
-                      and is_marker(
-                          info.filename
-                      )
+                      and is_marker(info.filename)
                   )
               ]
 
@@ -457,28 +461,23 @@ jobs:
               actual = {
                   "schema": marker.get("schema"),
                   "contour": str(
-                      marker.get("contour")
-                      or ""
+                      marker.get("contour") or ""
                   ).strip().casefold(),
                   "source_repo": str(
-                      marker.get("source_repo")
-                      or ""
+                      marker.get("source_repo") or ""
                   ).strip(),
                   "source_tag": str(
-                      marker.get("source_tag")
-                      or ""
+                      marker.get("source_tag") or ""
                   ).strip(),
                   "source_commit": str(
-                      marker.get("source_commit")
-                      or ""
+                      marker.get("source_commit") or ""
                   ).strip().lower(),
               }
 
               if actual != expected:
                   raise SystemExit(
-                      "Source distribution marker "
-                      "does not match tested "
-                      "Atm4x release:\n"
+                      "Source distribution marker does not match "
+                      "the tested Atm4x release:\n"
                       + json.dumps(
                           {
                               "expected": expected,
@@ -501,10 +500,7 @@ jobs:
 
                   digest = hashlib.sha256()
 
-                  with archive.open(
-                      info,
-                      "r",
-                  ) as stream:
+                  with archive.open(info, "r") as stream:
                       while True:
                           chunk = stream.read(
                               1024 * 1024
@@ -522,11 +518,12 @@ jobs:
               if not pyz_hashes:
                   raise SystemExit(
                       "No .pyz artifact found "
-                      "in tested release ZIP"
+                      "in the tested Python ZIP"
                   )
 
           (
-              promote_dir / "pyz-before.json"
+              promote_dir /
+              "pyz-before.json"
           ).write_text(
               json.dumps(
                   pyz_hashes,
@@ -537,8 +534,7 @@ jobs:
           )
 
           print(
-              "Verified source marker: "
-              "contour=test"
+              "Verified source marker: contour=test"
           )
 
           for name, digest in pyz_hashes.items():
@@ -548,12 +544,12 @@ jobs:
               )
           PY
 
-      - name: Stamp production distribution metadata
+      - name: Stamp production Python distribution metadata
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
-          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -564,18 +560,19 @@ jobs:
           }
 
           python scripts/stamp_distribution_metadata.py \
-            --archive "$PROMOTE_DIR/$ASSET_NAME" \
+            --archive "$PROMOTE_DIR/$PYTHON_NAME" \
             --contour release \
             --source-repo "$SOURCE_REPO" \
             --source-tag "$SOURCE_TAG" \
             --source-commit "$SOURCE_COMMIT"
 
-      - name: Verify production artifact and unchanged pyz
+      - name: Verify production Python artifact
+        id: python_final
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
-          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -587,22 +584,18 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          promote_dir = Path(
-              os.environ["PROMOTE_DIR"]
-          )
-
+          promote_dir = Path(os.environ["PROMOTE_DIR"])
           archive_path = (
               promote_dir /
-              os.environ["ASSET_NAME"]
+              os.environ["PYTHON_NAME"]
           )
 
           source_tag = os.environ["SOURCE_TAG"]
-
           source_commit = (
               os.environ["SOURCE_COMMIT"]
+              .strip()
               .lower()
           )
-
           source_repo = os.environ["SOURCE_REPO"]
 
           before = json.loads(
@@ -626,24 +619,16 @@ jobs:
 
               return (
                   normalized == marker
-                  or normalized.endswith(
-                      "/" + marker
-                  )
+                  or normalized.endswith("/" + marker)
               )
 
-          with zipfile.ZipFile(
-              archive_path,
-              "r",
-          ) as archive:
-
+          with zipfile.ZipFile(archive_path, "r") as archive:
               marker_names = [
                   info.filename
                   for info in archive.infolist()
                   if (
                       not info.is_dir()
-                      and is_marker(
-                          info.filename
-                      )
+                      and is_marker(info.filename)
                   )
               ]
 
@@ -671,33 +656,26 @@ jobs:
               actual_marker = {
                   "schema": marker.get("schema"),
                   "contour": str(
-                      marker.get("contour")
-                      or ""
+                      marker.get("contour") or ""
                   ).strip().casefold(),
                   "source_repo": str(
-                      marker.get("source_repo")
-                      or ""
+                      marker.get("source_repo") or ""
                   ).strip(),
                   "source_tag": str(
-                      marker.get("source_tag")
-                      or ""
+                      marker.get("source_tag") or ""
                   ).strip(),
                   "source_commit": str(
-                      marker.get("source_commit")
-                      or ""
+                      marker.get("source_commit") or ""
                   ).strip().lower(),
               }
 
               if actual_marker != expected_marker:
                   raise SystemExit(
-                      "Final distribution marker "
-                      "is invalid:\n"
+                      "Final distribution marker is invalid:\n"
                       + json.dumps(
                           {
-                              "expected":
-                                  expected_marker,
-                              "actual":
-                                  actual_marker,
+                              "expected": expected_marker,
+                              "actual": actual_marker,
                           },
                           indent=2,
                       )
@@ -716,10 +694,7 @@ jobs:
 
                   digest = hashlib.sha256()
 
-                  with archive.open(
-                      info,
-                      "r",
-                  ) as stream:
+                  with archive.open(info, "r") as stream:
                       while True:
                           chunk = stream.read(
                               1024 * 1024
@@ -736,8 +711,7 @@ jobs:
 
           if before != after:
               raise SystemExit(
-                  "Embedded .pyz changed "
-                  "during Promote:\n"
+                  "Embedded .pyz changed during Promote:\n"
                   + json.dumps(
                       {
                           "before": before,
@@ -753,16 +727,14 @@ jobs:
 
           (
               promote_dir /
-              "promoted-archive.sha256"
+              "python-promoted.sha256"
           ).write_text(
-              f"{archive_sha}  "
-              f"{archive_path.name}\n",
+              archive_sha + "\n",
               encoding="utf-8",
           )
 
           print(
-              "Verified final marker: "
-              "contour=release"
+              "Verified final marker: contour=release"
           )
 
           for name, digest in after.items():
@@ -772,16 +744,16 @@ jobs:
               )
 
           print(
-              f"Promoted ZIP "
+              f"Promoted Python ZIP "
               f"sha256={archive_sha}"
           )
           PY
 
-      - name: Validate final release contract
+      - name: Validate final Python release contract
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
-          ASSET_NAME: ${{ steps.source.outputs.asset_name }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -793,13 +765,317 @@ jobs:
 
           python scripts/validate_release_contract.py \
             --tag "$SOURCE_TAG" \
-            --asset "$PROMOTE_DIR/$ASSET_NAME"
+            --asset "$PROMOTE_DIR/$PYTHON_NAME"
+
+      - name: Repack Unity build without password and verify content
+        id: unity_final
+        shell: bash
+        env:
+          UNITY_NAME: ${{ steps.source.outputs.unity_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
+          TESTER_CODE: ${{ secrets.TESTER_CODE }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_ZIP="$PROMOTE_DIR/source-$UNITY_NAME"
+          OUTPUT_ZIP="$PROMOTE_DIR/$UNITY_NAME"
+          EXTRACT_DIR="$PROMOTE_DIR/unity-source"
+
+          rm -rf "$EXTRACT_DIR" "$OUTPUT_ZIP"
+          mkdir -p "$EXTRACT_DIR"
+
+          python - <<'PY'
+          import os
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          source_zip = (
+              Path(os.environ["PROMOTE_DIR"])
+              / f"source-{os.environ['UNITY_NAME']}"
+          )
+
+          encrypted = 0
+          file_count = 0
+
+          with zipfile.ZipFile(source_zip, "r") as archive:
+              for info in archive.infolist():
+                  raw_name = (
+                      info.filename
+                      .replace("\\", "/")
+                  )
+
+                  path = PurePosixPath(raw_name)
+
+                  if (
+                      raw_name.startswith("/")
+                      or ".." in path.parts
+                      or "\x00" in raw_name
+                  ):
+                      raise SystemExit(
+                          f"Unsafe path in Unity ZIP: "
+                          f"{info.filename!r}"
+                      )
+
+                  if not info.is_dir():
+                      file_count += 1
+
+                  if info.flag_bits & 0x1:
+                      encrypted += 1
+
+          if file_count == 0:
+              raise SystemExit(
+                  "Unity source ZIP contains no files"
+              )
+
+          print(
+              f"Unity source ZIP: "
+              f"{file_count} files, "
+              f"{encrypted} encrypted entries"
+          )
+          PY
+
+          # Decrypt/extract with the repository secret.
+          # No shell tracing is enabled, so the password is not printed.
+          7z x \
+            -y \
+            -p"$TESTER_CODE" \
+            -o"$EXTRACT_DIR" \
+            "$SOURCE_ZIP" \
+            >/dev/null
+
+          # Hash the extracted source files, repack them as an ordinary
+          # password-free ZIP, then compare every file inside the new ZIP.
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          promote_dir = Path(
+              os.environ["PROMOTE_DIR"]
+          )
+
+          root = (
+              promote_dir /
+              "unity-source"
+          )
+
+          output_zip = (
+              promote_dir /
+              os.environ["UNITY_NAME"]
+          )
+
+          def file_sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  while True:
+                      chunk = stream.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          before = {}
+
+          all_paths = sorted(
+              root.rglob("*"),
+              key=lambda p: p.as_posix().casefold(),
+          )
+
+          for path in all_paths:
+              if path.is_symlink():
+                  raise SystemExit(
+                      f"Refusing to repack symlink: "
+                      f"{path.relative_to(root)}"
+                  )
+
+              if not path.is_file():
+                  continue
+
+              relative = (
+                  path.relative_to(root)
+                  .as_posix()
+              )
+
+              before[relative] = {
+                  "size": path.stat().st_size,
+                  "sha256": file_sha256(path),
+              }
+
+          if not before:
+              raise SystemExit(
+                  "Extracted Unity build contains no files"
+              )
+
+          with zipfile.ZipFile(
+              output_zip,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+              compresslevel=6,
+              allowZip64=True,
+          ) as archive:
+
+              for path in all_paths:
+                  if not path.is_file():
+                      continue
+
+                  relative = (
+                      path.relative_to(root)
+                      .as_posix()
+                  )
+
+                  archive.write(
+                      path,
+                      arcname=relative,
+                  )
+
+          after = {}
+
+          with zipfile.ZipFile(
+              output_zip,
+              "r",
+          ) as archive:
+
+              names_seen = set()
+
+              for info in archive.infolist():
+                  if info.is_dir():
+                      continue
+
+                  if info.flag_bits & 0x1:
+                      raise SystemExit(
+                          "Production Unity ZIP still "
+                          f"contains encrypted entry: "
+                          f"{info.filename}"
+                      )
+
+                  if info.filename in names_seen:
+                      raise SystemExit(
+                          "Duplicate path in production "
+                          f"Unity ZIP: {info.filename}"
+                      )
+
+                  names_seen.add(info.filename)
+
+                  digest = hashlib.sha256()
+
+                  with archive.open(info, "r") as stream:
+                      while True:
+                          chunk = stream.read(
+                              1024 * 1024
+                          )
+
+                          if not chunk:
+                              break
+
+                          digest.update(chunk)
+
+                  after[info.filename] = {
+                      "size": info.file_size,
+                      "sha256": digest.hexdigest(),
+                  }
+
+          if before != after:
+              before_names = set(before)
+              after_names = set(after)
+
+              changed = sorted(
+                  name
+                  for name in (
+                      before_names &
+                      after_names
+                  )
+                  if before[name] != after[name]
+              )
+
+              raise SystemExit(
+                  "Unity content changed while "
+                  "removing ZIP protection.\n"
+                  f"Missing: "
+                  f"{sorted(before_names - after_names)[:20]}\n"
+                  f"Added: "
+                  f"{sorted(after_names - before_names)[:20]}\n"
+                  f"Changed: {changed[:20]}"
+              )
+
+          source_sha = hashlib.sha256(
+              (
+                  promote_dir /
+                  f"source-{os.environ['UNITY_NAME']}"
+              ).read_bytes()
+          ).hexdigest()
+
+          release_sha = hashlib.sha256(
+              output_zip.read_bytes()
+          ).hexdigest()
+
+          meta = {
+              "file_count": len(before),
+              "source_archive_sha256": source_sha,
+              "release_archive_sha256": release_sha,
+              "content_identity_verified": True,
+              "release_archive_encrypted": False,
+          }
+
+          (
+              promote_dir /
+              "unity-meta.json"
+          ).write_text(
+              json.dumps(
+                  meta,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              f"Verified {len(before)} Unity files: "
+              "content-identical after repack."
+          )
+          print(
+              "Production Unity ZIP contains "
+              "no encrypted entries."
+          )
+          print(
+              f"Production Unity ZIP "
+              f"sha256={release_sha}"
+          )
+          PY
+
+      - name: Build promoted archive checksums
+        shell: bash
+        env:
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
+          UNITY_NAME: ${{ steps.source.outputs.unity_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
+        run: |
+          set -euo pipefail
+
+          (
+            cd "$PROMOTE_DIR"
+            sha256sum \
+              "$PYTHON_NAME" \
+              "$UNITY_NAME" \
+              > promoted-archive.sha256
+          )
+
+          cat "$PROMOTE_DIR/promoted-archive.sha256"
 
       - name: Build production release notes
         shell: bash
         env:
           SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
           SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
+          UNITY_NAME: ${{ steps.source.outputs.unity_name }}
           PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
         run: |
           set -euo pipefail
@@ -822,7 +1098,7 @@ jobs:
               )
           )
 
-          hashes = json.loads(
+          pyz_hashes = json.loads(
               (
                   promote_dir /
                   "pyz-before.json"
@@ -831,9 +1107,17 @@ jobs:
               )
           )
 
+          unity_meta = json.loads(
+              (
+                  promote_dir /
+                  "unity-meta.json"
+              ).read_text(
+                  encoding="utf-8"
+              )
+          )
+
           lines = [
-              "Promoted from the tested "
-              "Atm4x release artifact.",
+              "Promoted from the tested Atm4x release artifacts.",
               "",
               (
                   "- Source repository: "
@@ -849,19 +1133,40 @@ jobs:
               ),
               (
                   "- Embedded Python artifact: "
-                  "byte-identical to the "
-                  "tested Atm4x build"
+                  "byte-identical to the tested "
+                  "Atm4x build"
+              ),
+              (
+                  "- Unity build: extracted with "
+                  "the test archive secret and "
+                  "repacked without a password; "
+                  "file contents verified identical"
               ),
               "",
               "Embedded `.pyz` SHA256:",
           ]
 
           for name, digest in sorted(
-              hashes.items()
+              pyz_hashes.items()
           ):
               lines.append(
                   f"- `{name}`: `{digest}`"
               )
+
+          lines.extend(
+              [
+                  "",
+                  "Promoted artifacts:",
+                  (
+                      f"- `{os.environ['PYTHON_NAME']}`"
+                  ),
+                  (
+                      f"- `{os.environ['UNITY_NAME']}` "
+                      f"({unity_meta['file_count']} "
+                      "files verified)"
+                  ),
+              ]
+          )
 
           body = str(
               source.get("body") or ""
@@ -886,6 +1191,326 @@ jobs:
           )
           PY
 
+      - name: Build preview release manifest
+        shell: bash
+        env:
+          SOURCE_TAG: ${{ steps.source.outputs.source_tag }}
+          PYTHON_NAME: ${{ steps.source.outputs.python_name }}
+          UNITY_NAME: ${{ steps.source.outputs.unity_name }}
+          PROMOTE_DIR: ${{ steps.workspace.outputs.dir }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          test -f src/services/release_catalog.py || {
+            echo "src/services/release_catalog.py is missing in VinerX/main."
+            exit 1
+          }
+
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path.cwd()
+          sys.path.insert(
+              0,
+              str(root / "src"),
+          )
+
+          from services.release_catalog import (
+              build_release_manifest,
+              parse_release_manifest,
+          )
+
+          repository = os.environ[
+              "GITHUB_REPOSITORY"
+          ].strip()
+
+          source_tag = os.environ[
+              "SOURCE_TAG"
+          ].strip()
+
+          promote_dir = Path(
+              os.environ["PROMOTE_DIR"]
+          )
+
+          token = os.environ.get(
+              "GITHUB_TOKEN",
+              "",
+          ).strip()
+
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "NeuroMita-preview-manifest",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          if token:
+              headers["Authorization"] = (
+                  f"Bearer {token}"
+              )
+
+          releases = []
+          page = 1
+
+          while True:
+              query = urllib.parse.urlencode(
+                  {
+                      "per_page": 100,
+                      "page": page,
+                  }
+              )
+
+              url = (
+                  "https://api.github.com/repos/"
+                  f"{repository}/releases?{query}"
+              )
+
+              request = urllib.request.Request(
+                  url,
+                  headers=headers,
+              )
+
+              try:
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=30,
+                  ) as response:
+                      payload = json.load(response)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode(
+                      "utf-8",
+                      errors="replace",
+                  )
+
+                  raise SystemExit(
+                      f"GitHub API failed: "
+                      f"HTTP {exc.code}: "
+                      f"{body[:500]}"
+                  ) from exc
+
+              if not isinstance(payload, list):
+                  raise SystemExit(
+                      "GitHub releases API "
+                      "did not return a list"
+                  )
+
+              releases.extend(payload)
+
+              if len(payload) < 100:
+                  break
+
+              page += 1
+
+          # The duplicate check should already have caught this,
+          # but do not let a stale same-tag release enter the preview.
+          releases = [
+              release
+              for release in releases
+              if str(
+                  release.get("tag_name") or ""
+              ).strip() != source_tag
+          ]
+
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+
+              with path.open("rb") as stream:
+                  while True:
+                      chunk = stream.read(
+                          1024 * 1024
+                      )
+
+                      if not chunk:
+                          break
+
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          def local_asset(
+              name: str,
+              content_type: str,
+          ) -> dict:
+              path = promote_dir / name
+
+              if not path.is_file():
+                  raise SystemExit(
+                      f"Preview asset is missing: "
+                      f"{path}"
+                  )
+
+              encoded_tag = urllib.parse.quote(
+                  source_tag,
+                  safe="",
+              )
+
+              encoded_name = urllib.parse.quote(
+                  name,
+                  safe="",
+              )
+
+              return {
+                  "name": name,
+                  "browser_download_url": (
+                      f"https://github.com/"
+                      f"{repository}/releases/"
+                      f"download/{encoded_tag}/"
+                      f"{encoded_name}"
+                  ),
+                  "size": path.stat().st_size,
+                  "content_type": content_type,
+                  "digest": (
+                      f"sha256:{sha256(path)}"
+                  ),
+              }
+
+          now = (
+              datetime.now(timezone.utc)
+              .isoformat()
+              .replace("+00:00", "Z")
+          )
+
+          preview_release = {
+              "tag_name": source_tag,
+              "name": f"NeuroMita {source_tag}",
+              "body": (
+                  promote_dir /
+                  "RELEASE_BODY.md"
+              ).read_text(
+                  encoding="utf-8"
+              ),
+              # The real release remains a draft.
+              # This synthetic object is non-draft ONLY
+              # so the normal manifest builder can show
+              # what the catalog will look like after Publish.
+              "draft": False,
+              "prerelease": False,
+              "created_at": now,
+              "published_at": now,
+              "html_url": (
+                  f"https://github.com/"
+                  f"{repository}/releases/tag/"
+                  f"{urllib.parse.quote(source_tag, safe='')}"
+              ),
+              "assets": [
+                  local_asset(
+                      os.environ["PYTHON_NAME"],
+                      "application/zip",
+                  ),
+                  local_asset(
+                      os.environ["UNITY_NAME"],
+                      "application/zip",
+                  ),
+                  local_asset(
+                      "promoted-archive.sha256",
+                      "text/plain",
+                  ),
+              ],
+          }
+
+          preview_input = releases + [
+              preview_release
+          ]
+
+          manifest = build_release_manifest(
+              repository,
+              preview_input,
+              stable_tag=source_tag,
+          )
+
+          if (
+              manifest.get("channels", {})
+              .get("stable")
+              != source_tag
+          ):
+              raise SystemExit(
+                  "Preview manifest did not "
+                  "select the promoted draft "
+                  "as the stable channel"
+              )
+
+          preview_entries = [
+              release
+              for release in manifest.get(
+                  "releases",
+                  [],
+              )
+              if release.get("tag_name")
+              == source_tag
+          ]
+
+          if len(preview_entries) != 1:
+              raise SystemExit(
+                  "Preview manifest does not "
+                  "contain exactly one promoted "
+                  "release entry"
+              )
+
+          expected_assets = {
+              os.environ["PYTHON_NAME"],
+              os.environ["UNITY_NAME"],
+              "promoted-archive.sha256",
+          }
+
+          actual_assets = {
+              asset.get("name")
+              for asset
+              in preview_entries[0].get(
+                  "assets",
+                  [],
+              )
+          }
+
+          if not expected_assets.issubset(
+              actual_assets
+          ):
+              raise SystemExit(
+                  "Preview manifest is missing "
+                  "promoted assets: "
+                  f"{sorted(expected_assets - actual_assets)}"
+              )
+
+          # Validate with the same parser the updater uses.
+          parse_release_manifest(
+              manifest,
+              expected_repository=repository,
+          )
+
+          output = (
+              promote_dir /
+              "releases-manifest.json"
+          )
+
+          output.write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print(
+              "Preview manifest built: "
+              f"stable={source_tag}, "
+              f"releases="
+              f"{len(manifest['releases'])}"
+          )
+          print(
+              "The URLs for the new version "
+              "are preview URLs and become live "
+              "only after the draft is published."
+          )
+          PY
+
       - name: Merge tested Atm4x commit into VinerX/main
         id: merge
         shell: bash
@@ -897,7 +1522,7 @@ jobs:
           set -euo pipefail
 
           if [ "$(git rev-parse HEAD)" != "$BASE_COMMIT" ]; then
-            echo "VinerX working tree moved away from the validated base commit."
+            echo "Local VinerX HEAD moved away from the validated base commit."
             exit 1
           fi
 
@@ -915,11 +1540,10 @@ jobs:
             user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
 
-          PROMOTE_SUBJECT="Promote tested Atm4x release $SOURCE_TAG"
-
-          echo "Fetching tested source tag from $SOURCE_REPO..."
+          echo "Fetching tested tag $SOURCE_TAG from $SOURCE_REPO..."
 
           git fetch \
+            --force \
             --no-tags \
             "https://github.com/${SOURCE_REPO}.git" \
             "refs/tags/${SOURCE_TAG}"
@@ -929,71 +1553,55 @@ jobs:
           )"
 
           if [ "$FETCHED_COMMIT" != "$SOURCE_COMMIT" ]; then
-            echo "Fetched Atm4x tag moved or does not match the release resolved earlier."
+            echo "Fetched Atm4x tag does not match the release resolved earlier."
             echo "Expected: $SOURCE_COMMIT"
             echo "Fetched:  $FETCHED_COMMIT"
             exit 1
           fi
 
-          find_existing_promotion() {
-            local candidate
-            local subject
-            local parents
-            local first_parent
-            local second_parent
-            local extra_parent
+          MATCHES=()
 
-            while IFS= read -r candidate; do
-              subject="$(
-                git show \
-                  -s \
-                  --format=%s \
-                  "$candidate"
-              )"
+          while IFS= read -r candidate; do
+            PARENTS="$(
+              git show \
+                -s \
+                --format=%P \
+                "$candidate"
+            )"
 
-              [ "$subject" = "$PROMOTE_SUBJECT" ] || continue
+            read -r \
+              FIRST_PARENT \
+              SECOND_PARENT \
+              EXTRA_PARENT \
+              <<< "$PARENTS"
 
-              parents="$(
-                git show \
-                  -s \
-                  --format=%P \
-                  "$candidate"
-              )"
+            if [ -n "${FIRST_PARENT:-}" ] \
+                && [ "${SECOND_PARENT:-}" = "$SOURCE_COMMIT" ] \
+                && [ -z "${EXTRA_PARENT:-}" ]; then
 
-              read -r \
-                first_parent \
-                second_parent \
-                extra_parent \
-                <<< "$parents"
+              MATCHES+=("$candidate")
+            fi
 
-              if [ -n "${first_parent:-}" ] \
-                  && [ "${second_parent:-}" = "$SOURCE_COMMIT" ] \
-                  && [ -z "${extra_parent:-}" ]; then
+          done < <(
+            git rev-list \
+              --first-parent \
+              --merges \
+              "$BASE_COMMIT"
+          )
 
-                echo "$candidate"
-                return 0
-              fi
+          if [ "${#MATCHES[@]}" -gt 1 ]; then
+            echo "More than one promotion-like merge directly references $SOURCE_COMMIT."
+            printf '  %s\n' "${MATCHES[@]}"
+            echo "Refusing to guess which commit should be released."
+            exit 1
+          fi
 
-            done < <(
-              git rev-list \
-                --first-parent \
-                "$BASE_COMMIT"
-            )
-
-            return 1
-          }
-
-          EXISTING_PROMOTION="$(
-            find_existing_promotion || true
-          )"
-
-          if [ -n "$EXISTING_PROMOTION" ]; then
-
-            echo "Found an existing promotion merge from an earlier run:"
-            echo "$EXISTING_PROMOTION"
-
-            RELEASE_COMMIT="$EXISTING_PROMOTION"
+          if [ "${#MATCHES[@]}" -eq 1 ]; then
+            RELEASE_COMMIT="${MATCHES[0]}"
             NEEDS_PUSH="false"
+
+            echo "Found existing promotion merge from an earlier run:"
+            echo "$RELEASE_COMMIT"
 
           elif git merge-base \
               --is-ancestor \
@@ -1001,16 +1609,15 @@ jobs:
               "$BASE_COMMIT"; then
 
             echo "The tested source commit is already contained in VinerX/main,"
-            echo "but no matching Promote merge commit was found."
+            echo "but no direct two-parent promotion merge was found."
             echo "Refusing to guess which VinerX commit should be released."
             exit 1
 
           else
-
             git merge \
               --no-ff \
               "$SOURCE_COMMIT" \
-              -m "$PROMOTE_SUBJECT"
+              -m "Promote tested Atm4x release $SOURCE_TAG"
 
             RELEASE_COMMIT="$(
               git rev-parse HEAD
@@ -1029,8 +1636,8 @@ jobs:
               EXTRA_PARENT \
               <<< "$PARENTS"
 
-            if [ -z "${FIRST_PARENT:-}" ] \
-                || [ "${SECOND_PARENT:-}" != "$SOURCE_COMMIT" ] \
+            if [ "$FIRST_PARENT" != "$BASE_COMMIT" ] \
+                || [ "$SECOND_PARENT" != "$SOURCE_COMMIT" ] \
                 || [ -n "${EXTRA_PARENT:-}" ]; then
 
               echo "Unexpected merge structure."
@@ -1108,11 +1715,13 @@ jobs:
               "$RELEASE_COMMIT" \
               origin/main; then
 
-            echo "Promotion commit $RELEASE_COMMIT is not reachable from VinerX/main."
+            echo "Promotion commit $RELEASE_COMMIT "
+            echo "is not reachable from VinerX/main."
             exit 1
           fi
 
-          echo "Verified promotion commit on VinerX/main: $RELEASE_COMMIT"
+          echo "Verified promotion commit on VinerX/main:"
+          echo "$RELEASE_COMMIT"
 
       - name: Create VinerX draft release
         id: draft_release
@@ -1123,8 +1732,10 @@ jobs:
           name: NeuroMita ${{ steps.source.outputs.source_tag }}
           body_path: ${{ steps.workspace.outputs.dir }}/RELEASE_BODY.md
           files: |
-            ${{ steps.workspace.outputs.dir }}/${{ steps.source.outputs.asset_name }}
+            ${{ steps.workspace.outputs.dir }}/${{ steps.source.outputs.python_name }}
+            ${{ steps.workspace.outputs.dir }}/${{ steps.source.outputs.unity_name }}
             ${{ steps.workspace.outputs.dir }}/promoted-archive.sha256
+            ${{ steps.workspace.outputs.dir }}/releases-manifest.json
           fail_on_unmatched_files: true
           draft: true
           prerelease: false
@@ -1146,7 +1757,12 @@ jobs:
             echo
             echo "- Draft release: [$SOURCE_TAG]($DRAFT_URL)"
             echo "- Release commit: \`$RELEASE_COMMIT\`"
-            echo "- The release is still a draft and is not public."
-            echo "- Edit/check the draft, then publish it manually."
-            echo "- release-manifest.yml will rebuild the manifest after publication."
+            echo "- Python archive: release contour, tested .pyz unchanged"
+            echo "- Unity archive: password removed, file contents verified"
+            echo "- releases-manifest.json: preview attached to the draft"
+            echo "- Nothing has been published yet"
+            echo
+            echo "Edit/check the draft, then publish it manually."
+            echo "After manual Publish, release-manifest.yml will rebuild"
+            echo "the canonical releases-manifest.json and upload it with --clobber."
           } >> "$GITHUB_STEP_SUMMARY"
