@@ -229,7 +229,7 @@ NeuroMita развивается силами сообщества. Сейчас
 ### Поддержать проект
 
 [Boosty VinerX](https://boosty.to/vinerx)
-
+[DonationAlerts Резервно](https://dalink.to/vinerx)
 <details>
 <summary>Криптовалютные адреса</summary>
 ⠀
