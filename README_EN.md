@@ -229,7 +229,7 @@ Thank you to **smarkloker**, author of New Story Mod, for cooperation and sharin
 ### Support the project
 
 [Boosty VinerX](https://boosty.to/vinerx)
-
+[DonationAlerts reserve](https://dalink.to/vinerx)
 <details>
 <summary>Cryptocurrency addresses</summary>
 ⠀
