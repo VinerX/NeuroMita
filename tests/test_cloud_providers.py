@@ -140,7 +140,7 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(models_url(endpoint), "https://nano-gpt.com/api/v1/models")
         self.assertEqual(models_url("http://localhost:1234/v1"), "http://localhost:1234/v1/models")
         self.assertEqual(models_url("https://example.com/gateway/chat/completions?x=1"), "https://example.com/gateway/models?x=1")
-        for bad in ("", "example.com", "file:///tmp/test", "https://user:pass@example.com/v1"):
+        for bad in ("", "example.com", "file:///tmp/test", "https://user:pass@example.com/v1", "https://example.com/v1?api_key=secret"):
             with self.assertRaises(ValueError):
                 models_url(bad)
 

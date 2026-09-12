@@ -313,6 +313,8 @@ class AudioController(AudioStateService):
                     self._set_mita_speaking(False)
             else:
                 logger.info("Озвучка в локальном чате отключена.")
+                if method == "Fish Audio" and result_path and not delivered_to_game:
+                    Path(result_path).unlink(missing_ok=True)
 
         except Exception as e:
             trace_status = "error"

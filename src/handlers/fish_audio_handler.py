@@ -225,6 +225,7 @@ async def synthesize(text: str, *, config: dict | None = None, output_dir=None, 
                     if "json" in content_type or "text/" in content_type:
                         raise ValueError("Fish Audio вернул текст вместо аудио.")
                     size = 0
+                    buffer = bytearray()
                     with wave.open(name, "wb") as audio:
                         audio.setnchannels(1)
                         audio.setsampwidth(2)
@@ -233,7 +234,13 @@ async def synthesize(text: str, *, config: dict | None = None, output_dir=None, 
                             size += len(chunk)
                             if size > 100 * 1024 * 1024:
                                 raise ValueError("Ответ Fish Audio превышает 100 МБ.")
-                            audio.writeframesraw(chunk)
+                            buffer.extend(chunk)
+                            even_len = len(buffer) - (len(buffer) % 2)
+                            if even_len > 0:
+                                audio.writeframesraw(buffer[:even_len])
+                                del buffer[:even_len]
+                        if buffer:
+                            raise ValueError("Fish Audio вернул неполный 16-битный PCM фрейм.")
                     if size < 2 or size % 2:
                         raise ValueError("Fish Audio вернул пустое или повреждённое аудио.")
         return str(Path(name).resolve())

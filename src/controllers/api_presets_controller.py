@@ -1160,7 +1160,7 @@ class ApiPresetsController(ApiPresetService):
             self,
             "api-preset-connection-test",
             self._sync_test_connection,
-            args=(preset_id or 0, p_tpl, key),
+            args=(preset_id, p_tpl, key),
             replace=True,
         )
 
