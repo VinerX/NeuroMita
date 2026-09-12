@@ -350,6 +350,10 @@ class AppShellController:
                 and local_voice.check_initialized(model_id)
             )
             from managers.rag.readiness import rag_readiness
+            if method == "API":
+                from services.contracts import RemoteVoiceService
+                remote = services().get_optional(RemoteVoiceService)
+                voice_initialized = bool(use_voice and remote and remote.status().verified)
 
             rag = rag_readiness()
             return {

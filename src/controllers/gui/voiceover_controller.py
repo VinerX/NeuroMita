@@ -822,7 +822,7 @@ class VoiceoverGuiController(BaseController):
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
             return
 
-        if method == "TG":
+        if method in {"TG", "API"}:
             self._emit_voice_icon_state()
             return
 
@@ -935,6 +935,8 @@ class VoiceoverGuiController(BaseController):
         method_cb = getattr(self.view, "method_combobox", None)
         tg_frame = getattr(self.view, "tg_settings_frame", None)
         local_frame = getattr(self.view, "local_settings_frame", None)
+        api_frame = getattr(self.view, "api_settings_frame", None)
+        playback_frame = getattr(self.view, "playback_settings_frame", None)
 
         if method_cb is not None:
             method_cb.setEnabled(use_voice)
@@ -943,6 +945,10 @@ class VoiceoverGuiController(BaseController):
             tg_frame.setVisible(method == "TG")
         if local_frame is not None:
             local_frame.setVisible(method == "Local")
+        if api_frame is not None:
+            api_frame.setVisible(method == "API")
+        if playback_frame is not None:
+            playback_frame.setVisible(method in {"Local", "API"})
 
     # ---------- sidebar indicator ----------
     def _emit_voice_icon_state(self):
@@ -951,6 +957,17 @@ class VoiceoverGuiController(BaseController):
 
         if not use_voice:
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            return
+
+        if method == "API":
+            from services.contracts import RemoteVoiceService
+            remote = services().get_optional(RemoteVoiceService)
+            status = remote.status() if remote else None
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice",
+                "state": "green" if status and status.verified else "warn" if status and status.configured else "red",
+                "tooltip": "API озвучка: проверена" if status and status.verified else "API озвучка: ожидает проверки" if status and status.configured else "API озвучка: заполните ключ и голос",
+            })
             return
 
         if method == "TG":

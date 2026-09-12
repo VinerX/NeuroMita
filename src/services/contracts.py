@@ -16,6 +16,7 @@ from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional
 
 from core.cancellation import CancellationToken
 from core.request_policy import RequestPolicy
+from core.remote_voice import RemoteVoiceConfiguration, RemoteVoicePreset, RemoteVoiceStatus, RemoteVoiceTemplate
 
 
 # ---------------------------------------------------------------------------
@@ -981,6 +982,35 @@ class CaptureService(ABC):
 class AudioStateService(ABC):
     @abstractmethod
     def is_waiting_answer(self) -> bool: ...
+
+
+class RemoteVoiceService(ABC):
+    @abstractmethod
+    def templates(self) -> tuple[RemoteVoiceTemplate, ...]: ...
+
+    @abstractmethod
+    def configuration(self) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def save_preset(self, preset: RemoteVoicePreset) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def select_preset(self, preset_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def add_preset(self, template_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def delete_preset(self, preset_id: str) -> RemoteVoiceConfiguration: ...
+
+    @abstractmethod
+    def status(self) -> RemoteVoiceStatus: ...
+
+    @abstractmethod
+    async def synthesize(self, text: str) -> str: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
 
 
 class LocalVoiceService(ABC):

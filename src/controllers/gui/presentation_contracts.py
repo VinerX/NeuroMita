@@ -6,6 +6,7 @@ from typing import Any
 
 
 class UiTopic(StrEnum):
+    AUDIO_MITA_SPEAKING_WINDOW = "mita_speaking_window"
     AI_RESTART_SERVICE = "ai_restart_service"
 
     API_PRESET_DELETE = "delete_custom_preset"

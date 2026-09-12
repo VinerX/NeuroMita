@@ -23,6 +23,10 @@ def wire_voiceover_settings_logic(self):
 
         QTimer.singleShot(0, fire)
 
+    actions = getattr(self, "_voiceover_settings_view_model", None)
+    if actions is not None:
+        actions.remote.state_changed.connect(lambda _state: request_refresh())
+
     def _local_model_already_installed() -> bool:
         """Установлена ли уже выбранная локальная модель.
 

@@ -10,6 +10,7 @@ from services.contracts import (
     CharacterEnvironmentSnapshot,
     InstallableCatalogService,
     LocalVoiceService,
+    RemoteVoiceService,
     PlayerMessageSource,
     RuntimeFeatureService,
     SettingsService,
@@ -116,7 +117,10 @@ def format_character_environment_context(
         )
 
     method = str(snapshot.voice_method or "Local").strip()
-    if not snapshot.voice_enabled:
+    if method.lower() == "api":
+        state = "switched off" if not snapshot.voice_enabled else "verified by successful synthesis" if snapshot.voice_model_initialized else "awaiting configuration or a successful synthesis test"
+        lines.append(f"Your remote API voice ({snapshot.voice_model_name}) is {state}. No local voice model installation is required.")
+    elif not snapshot.voice_enabled:
         if snapshot.voice_model_installed:
             lines.append(
                 f"Your voice is currently switched off. The configured voice is {snapshot.voice_model_name or snapshot.voice_model_id}; keep this as background knowledge rather than repeatedly asking to enable it."
@@ -198,6 +202,13 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 initialized = False
             model_name = "Telegram voice"
+        elif voice_method.lower() == "api":
+            remote = services().get_optional(RemoteVoiceService)
+            status = remote.status() if remote else None
+            model_id = "api:fish_audio" if status and status.configured else ""
+            model_name = f"{status.provider_name} / {status.model}" if status else "API voice"
+            installed = bool(status and status.configured)
+            initialized = bool(status and status.verified)
         elif voice_enabled and installed:
             local_voice = services().get_optional(LocalVoiceService)
             try:

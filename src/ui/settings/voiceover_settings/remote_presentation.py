@@ -1,0 +1,36 @@
+from dataclasses import dataclass
+
+from core.remote_voice import RemoteVoicePreset
+
+
+@dataclass(frozen=True, slots=True)
+class LoadRemoteVoice:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class SaveRemoteVoice:
+    preset: RemoteVoicePreset
+
+
+@dataclass(frozen=True, slots=True)
+class SelectRemoteVoice:
+    preset_id: str
+    draft: RemoteVoicePreset
+
+
+@dataclass(frozen=True, slots=True)
+class AddRemoteVoice:
+    template_id: str
+    draft: RemoteVoicePreset
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteRemoteVoice:
+    preset_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewRemoteVoice:
+    preset: RemoteVoicePreset
+    text: str

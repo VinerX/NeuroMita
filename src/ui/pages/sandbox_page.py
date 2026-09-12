@@ -989,6 +989,8 @@ class SandboxPage(QWidget):
             elif method.lower() == "local":
                 model_id = str(get("NM_CURRENT_VOICEOVER", "") or get("LOCAL_VOICE_MODEL_ID", "") or "").strip()
                 voice_val = self._format_local_voice_value(model_id)
+            elif method == "API":
+                voice_val = "API"
             else:
                 voice_val = "Telegram"
             self._voice_status_row.set_value(voice_val)

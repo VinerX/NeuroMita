@@ -427,12 +427,15 @@ class _ViewModelFactory:
         )
 
     def voiceover_settings(self, host: Any, *, parent: Any = None):
+        from services.contracts import RemoteVoiceService
         from controllers.gui.voiceover_settings_view_model import (
             VoiceoverSettingsViewModel,
         )
 
         return VoiceoverSettingsViewModel(
             events=self._presentation.events,
+            remote_service=services().get(RemoteVoiceService),
+            playback_volume=lambda: use(SettingsService).get("VOICEOVER_LOCAL_VOLUME", 100),
             open_settings=lambda category: host.show_settings_category(
                 category,
                 force=True,
