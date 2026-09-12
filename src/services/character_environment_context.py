@@ -198,6 +198,12 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 initialized = False
             model_name = "Telegram voice"
+        elif voice_method == "Fish Audio":
+            from handlers.fish_audio_handler import is_configured
+            model_name = "Fish Audio (cloud API)"
+            model_id = "fish-audio"
+            installed = True
+            initialized = is_configured()
         elif voice_enabled and installed:
             local_voice = services().get_optional(LocalVoiceService)
             try:

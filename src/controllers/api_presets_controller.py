@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Iterable
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from urllib.parse import urlparse
 
 from core.app_paths import settings_path
@@ -1121,6 +1121,27 @@ class ApiPresetsController(ApiPresetService):
                 p_tpl = self.templates[up.base]
         elif preset_id and preset_id in self.templates:
             p_tpl = self.templates[preset_id]
+
+        # A custom URL must fetch models from that gateway, never the old template host.
+        current = self.presets.get(preset_id)
+        endpoint = str((event.data or {}).get("url") or (current.url if current else "") or "").strip()
+        protocol_id = str((event.data or {}).get("protocol_id") or
+                          (current.protocol_id if current else "") or
+                          (p_tpl.protocol_id if p_tpl else "") or "custom_openai_default")
+        if endpoint and (p_tpl is None or protocol_id in {
+            "openai_compatible_default", "custom_openai_default", "lmstudio_default"
+        } or (p_tpl.url and endpoint.rstrip("/") != p_tpl.url.rstrip("/"))):
+            try:
+                from utils.provider_urls import models_url
+                test_endpoint = models_url(endpoint)
+            except ValueError as exc:
+                self.event_bus.emit(Events.ApiPresets.TEST_FAILED, {
+                    "id": preset_id, "error": "invalid_url", "message": str(exc),
+                })
+                return
+            p_tpl = replace(p_tpl, test_url=test_endpoint, protocol_id=protocol_id, filter_fn="") if p_tpl else ApiTemplate(
+                id=0, name="Custom", url=endpoint, test_url=test_endpoint, protocol_id=protocol_id,
+            )
 
         if not p_tpl or not p_tpl.test_url:
             logger.warning(f"No test_url for preset {preset_id} and base {base_id}")

@@ -327,3 +327,39 @@ API_TEMPLATES_DATA = [
         "key_url": "",
     },
 ]
+
+API_TEMPLATES_DATA.append({
+    "id": 10001, "name": "NanoGPT", "pricing": "mixed",
+    "url": "https://nano-gpt.com/api/v1/chat/completions",
+    "default_model": "", "known_models": [],
+    "protocol_id": "custom_openai_default",
+    "test_url": "https://nano-gpt.com/api/v1/models",
+    "documentation_url": "https://docs.nano-gpt.com/",
+    "models_url": "https://nano-gpt.com/models",
+    "key_url": "https://nano-gpt.com/api",
+})
+
+API_TEMPLATES_DATA.append({
+    "id": 10002, "name": "CLIProxyAPI (Local)", "pricing": "free",
+    "badge_kind": "local",
+    "url": "http://127.0.0.1:8317/v1/chat/completions",
+    "default_model": "gemini-3.7-flash",
+    "known_models": [
+        "gemini-3.7-flash",
+        "gemini-3.8-flash-high",
+        "gemini-3.7-flash-high",
+        "claude-4.6-sonnet",
+        "claude-4.6-opus",
+        "claude-4.6-sonnet-thinking",
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro",
+        "gemini-3-flash",
+        "gpt-oss-120b-medium",
+    ],
+    "protocol_id": "custom_openai_default",
+    "test_url": "http://127.0.0.1:8317/v1/models",
+    "documentation_url": "http://127.0.0.1:8317",
+    "models_url": "http://127.0.0.1:8317/v1/models",
+    "key_url": "",
+})
+

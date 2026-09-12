@@ -154,13 +154,14 @@ class AudioController(AudioStateService):
                     trace_id=trace_id,
                 ))
 
-            elif self.voiceover_method == "Local":
+            elif self.voiceover_method in {"Local", "Fish Audio"}:
                 loop_service.run(self._await_local_voiceover_and_postprocess(
                     text_for_voice,
                     original_text,
                     task_uid,
                     character_id=character_id,
                     voice_profile=voice_profile,
+                    method=self.voiceover_method,
                     message_id=message_id,
                     trace_id=trace_id,
                 ))
@@ -242,17 +243,22 @@ class AudioController(AudioStateService):
         voice_profile: Optional[dict] = None,
         message_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        method: str = "Local",
     ):
         trace_status = "ok"
         trace_error_stage = ""
         trace_error_type = ""
         try:
-            with perf_span(trace_id, "tts.synthesis", method="local"):
-                result_path = await use(LocalVoiceService).synthesize(
-                    voice_text,
-                    character_id=character_id,
-                    voice_profile=voice_profile,
-                )
+            with perf_span(trace_id, "tts.synthesis", method=method):
+                if method == "Fish Audio":
+                    from handlers.fish_audio_handler import synthesize
+                    result_path = await synthesize(voice_text)
+                else:
+                    result_path = await use(LocalVoiceService).synthesize(
+                        voice_text,
+                        character_id=character_id,
+                        voice_profile=voice_profile,
+                    )
             if result_path:
                 perf_mark(trace_id, "tts.ready")
 
@@ -276,7 +282,7 @@ class AudioController(AudioStateService):
                 # Начало и конец воспроизведения сообщит сам мод (speech_state);
                 # гадать по длительности файла больше не нужно.
                 self._emit_show_voicing(voice_profile, character_id, message_id)
-            elif self.settings.get("VOICEOVER_LOCAL_CHAT"):
+            elif self.settings.get("VOICEOVER_LOCAL_CHAT", True):
                 # Воспроизведение идёт в нашем процессе — точно знаем начало и
                 # конец, поэтому держим окно «Мита говорит» открытым на всю
                 # длительность play (см. SpeechController: ASR в это время
@@ -306,10 +312,10 @@ class AudioController(AudioStateService):
 
         except Exception as e:
             trace_status = "error"
-            trace_error_stage = trace_error_stage or "tts.local"
+            trace_error_stage = trace_error_stage or ("tts.fish_audio" if method == "Fish Audio" else "tts.local")
             trace_error_type = trace_error_type or type(e).__name__
             error_description = format_exception(e)
-            logger.error(f"Ошибка при выполнении локальной озвучки: {error_description}")
+            logger.error(f"Ошибка озвучки ({method}): {error_description}")
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, error_description)
         finally:

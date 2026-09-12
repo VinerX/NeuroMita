@@ -750,7 +750,7 @@ class VoiceoverGuiController(BaseController):
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
             return
 
-        if method == "TG":
+        if method in {"TG", "Fish Audio"}:
             self._emit_voice_icon_state()
             return
 
@@ -865,6 +865,9 @@ class VoiceoverGuiController(BaseController):
             tg_frame.setVisible(method == "TG")
         if local_frame is not None:
             local_frame.setVisible(method == "Local")
+        fish_frame = getattr(self.view, "fish_settings_frame", None)
+        if fish_frame is not None:
+            fish_frame.setVisible(method == "Fish Audio")
 
     # ---------- sidebar indicator ----------
     def _emit_voice_icon_state(self):
@@ -873,6 +876,15 @@ class VoiceoverGuiController(BaseController):
 
         if not use_voice:
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
+            return
+
+        if method == "Fish Audio":
+            from handlers.fish_audio_handler import is_configured
+            ready = is_configured()
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice", "state": None if ready else "red",
+                "tooltip": "Fish Audio: настройки заполнены; проверка — в разделе Голос" if ready else "Fish Audio: укажите ключ и ID голоса",
+            })
             return
 
         if method == "TG":

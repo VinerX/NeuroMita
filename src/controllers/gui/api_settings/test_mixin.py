@@ -34,6 +34,8 @@ class TestMixin:
             "id": self.current_preset_id,
             "base": base_id,
             "key": v.api_key_row.text(),
+            "url": v.api_url_row.text(),
+            "protocol_id": self._current_protocol_id_ui(),
         })
 
     def _on_test_result(self, event):

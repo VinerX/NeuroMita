@@ -1525,6 +1525,9 @@ class AppWindowBase(QMainWindow):
                 if method == "Local":
                     voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
                     voice_active = bool(state.get("voice_initialized"))
+                elif method == "Fish Audio":
+                    voice_label = "Fish Audio"
+                    voice_active = bool(use_voice and state.get("voice_initialized"))
                 else:
                     voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
                     voice_active = bool(use_voice and state.get("silero_connected"))
