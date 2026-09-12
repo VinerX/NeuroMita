@@ -90,6 +90,8 @@ If the local model works but responds very slowly, this is usually a CPU/GPU, VR
 3. Check the compute device: an incorrect CPU/CUDA/DML mode can make initialisation very slow or cause an error.
 4. During the first installation, wait for downloading and extraction to finish; do not close the app.
 
+Windows Defender or another antivirus can be one possible source of the problem: it may block or quarantine temporary files created while downloading and installing the model. Check Windows Protection history, and restore or allow a file only if the archive source is trusted. As a brief diagnostic step, you can temporarily disable real-time protection while downloading the model, then turn it back on immediately.
+
 See the [local voice guide](LocalVoiceInstallationEn.md). If the model does not start, include its name, the selected compute device, and the relevant installation log fragment.
 
 ## The microphone does not work
