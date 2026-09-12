@@ -1736,7 +1736,15 @@ class ModelController(GenerationService, ModelStateService):
                         f"but no <image_description> block was found in the model response."
                     )
 
-            if is_structured_output:
+            is_json_payload = False
+            stripped_raw = (visible_raw or "").strip()
+            if not is_structured_output and stripped_raw:
+                if (stripped_raw.startswith("{") and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)) or \
+                   (stripped_raw.startswith("```") and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)):
+                    is_json_payload = True
+                    logger.info(f"[ModelController][{char_id}] Auto-detected structured JSON payload from model response.")
+
+            if is_structured_output or is_json_payload:
                 sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
                 structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
@@ -1801,6 +1809,10 @@ class ModelController(GenerationService, ModelStateService):
                     except Exception:
                         voice_profile = None
             final_text = processed
+            from utils import extract_clean_dialogue_text
+            clean_dialogue = extract_clean_dialogue_text(final_text)
+            if clean_dialogue:
+                final_text = clean_dialogue
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
                     r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
@@ -2083,6 +2095,11 @@ class ModelController(GenerationService, ModelStateService):
                 cost_fallback_currency=getattr(pricing_info, "currency", None),
                 cost_fallback_source=getattr(pricing_info, "source", None),
             )
+
+            from utils import extract_clean_dialogue_text
+            clean_processed = extract_clean_dialogue_text(processed)
+            if clean_processed:
+                processed = clean_processed
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return ChatGenerationResult(

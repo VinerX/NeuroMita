@@ -454,16 +454,100 @@ def replace_numbers_with_words(text: str, lang: str | None = None) -> str:
     return re.sub(r"[-+]?\d+", _repl, text)
 
 
+def extract_clean_dialogue_text(text: str) -> str:
+    """
+    Extracts pure human dialogue from text that may contain raw JSON,
+    structured segments, schema fields, markdown fences, or NLP tags.
+    Ensures that technical keywords, braces, and metadata are never spoken or displayed.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    candidate = text.strip()
+    if not candidate:
+        return ""
+
+    # Unwrap markdown code fence if present
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate).strip()
+
+    # Try full JSON parsing
+    parsed_json = None
+    if (candidate.startswith("{") and candidate.endswith("}")) or ("\"segments\"" in candidate and "{" in candidate):
+        try:
+            first_brace = candidate.find("{")
+            last_brace = candidate.rfind("}")
+            if first_brace != -1 and last_brace > first_brace:
+                parsed_json = json.loads(candidate[first_brace:last_brace + 1])
+        except Exception:
+            parsed_json = None
+
+    if isinstance(parsed_json, dict):
+        segments = parsed_json.get("segments")
+        if isinstance(segments, list) and segments:
+            texts = []
+            for seg in segments:
+                if isinstance(seg, dict) and "text" in seg:
+                    val = str(seg["text"]).strip()
+                    if val:
+                        texts.append(val)
+                elif isinstance(seg, str) and seg.strip():
+                    texts.append(seg.strip())
+            if texts:
+                return " ".join(texts)
+        if "response" in parsed_json and isinstance(parsed_json["response"], str):
+            res_str = parsed_json["response"].strip()
+            if res_str:
+                return res_str
+        if "text" in parsed_json and isinstance(parsed_json["text"], str):
+            text_str = parsed_json["text"].strip()
+            if text_str:
+                return text_str
+
+    # Regex fallback if JSON was malformed or truncated but contains "text": "..."
+    if "\"text\"" in candidate or "\"segments\"" in candidate:
+        text_matches = re.findall(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', candidate)
+        if text_matches:
+            extracted = []
+            for m in text_matches:
+                try:
+                    cleaned = m.encode().decode("unicode_escape", errors="ignore").strip()
+                except Exception:
+                    cleaned = m.strip()
+                if cleaned:
+                    extracted.append(cleaned)
+            if extracted:
+                return " ".join(extracted)
+
+    # Strip any residual schema keywords and technical syntax
+    candidate = re.sub(r'"?(?:attitude_change|boredom_change|stress_change)"?\s*:\s*[-+]?\d+(?:\.\d+)?', '', candidate)
+    candidate = re.sub(r'"?(?:emotions|animations|face_params|commands)"?\s*:\s*\[[^\]]*\]', '', candidate)
+    candidate = re.sub(r'"?(?:segments|memory_add|memory_update|memory_delete)"?\s*:\s*\[', '', candidate)
+
+    # Strip legacy NLP / XML-like tags: <e>...</e>, <a...>...</a>, etc.
+    candidate = re.sub(r"<[^>]+>.*?</[^>]+>", "", candidate, flags=re.DOTALL)
+    candidate = re.sub(r"<[^>]+>", "", candidate)
+
+    # Strip inline NLP tags like [attitude+0.2], [emotions: smile], [animations: Hug]
+    candidate = re.sub(r"\[(?:attitude|boredom|stress)[+-]?\d*(?:\.\d+)?\]", "", candidate)
+    candidate = re.sub(r"\[(?:emotions|animations|face_params|idle_animations):[^\]]+\]", "", candidate)
+
+    return candidate.strip()
+
+
 # ========================== Основная очистка для TTS ==========================
 
-def process_text_to_voice(text_to_speak: str) -> str:
+def process_text_to_voice(text_to_speak: str, *, allow_fish_tags: bool = False) -> str:
     """
     Очищает текст перед TTS:
-      1) удаляет HTML/markup;
-      2) определяет язык (эвристика по скриптам + langdetect);
-      3) переводит числа в слова на соответствующем языке (если поддержан);
-      4) оставляет только буквы Юникода, пробелы и знаки из SAFE_PUNCT;
-      5) схлопывает пробелы; при пустом результате возвращает '...'.
+      1) извлекает чистую речь из JSON/структурированных сегментов и удаляет тех-теги;
+      2) если allow_fish_tags=True, сохраняет валидные теги Fish Audio ([happy], (happy), etc.),
+         иначе вырезает все теги в скобках для совместимости с локальными моделями и Silero;
+      3) определяет язык (эвристика по скриптам + langdetect);
+      4) переводит числа в слова на соответствующем языке (если поддержан);
+      5) оставляет только буквы Юникода, пробелы и знаки из SAFE_PUNCT;
+      6) схлопывает пробелы; при пустом результате возвращает '...'.
     """
     if not isinstance(text_to_speak, str):
         logger.warning(
@@ -471,28 +555,47 @@ def process_text_to_voice(text_to_speak: str) -> str:
         )
         text_to_speak = str(text_to_speak)
 
-    # 1) Удаляем HTML/markup
-    clean_text = re.sub(r"<[^>]+>.*?</[^>]+>", "", text_to_speak, flags=re.DOTALL)
-    clean_text = re.sub(r"<[^>]+>", "", clean_text)
+    # 1) Извлекаем чистый диалог из JSON и убираем техническую разметку
+    clean_text = extract_clean_dialogue_text(text_to_speak)
 
-    # 2) Определяем язык
+    # 2) Обработка тегов Fish Audio vs остальных моделей
+    saved_fish_tags: list[tuple[str, str]] = []
+    if allow_fish_tags:
+        def _save_fish_tag(match: re.Match) -> str:
+            tag_id = "".join(chr(ord("a") + int(c)) for c in str(len(saved_fish_tags)))
+            saved_fish_tags.append((tag_id, match.group(0)))
+            return f" __FISHTAG{tag_id}__ "
+        clean_text = re.sub(r"\[[a-zA-Z_ -]+\]|\([a-zA-Z_ -]+\)", _save_fish_tag, clean_text)
+    else:
+        clean_text = re.sub(r"\[[a-zA-Z_ -]+\]", "", clean_text)
+        clean_text = re.sub(r"\([a-zA-Z_ -]+\)", "", clean_text)
+
+    # Удаляем любые оставшиеся технические квадратные скобки
+    clean_text = re.sub(r"[\[\]\{\}]", " ", clean_text)
+
+    # 3) Определяем язык
     lang_code = detect_language(clean_text)
     if lang_code:
         logger.debug(f"Detected language: {lang_code}")
     else:
         logger.debug("Language detection failed, using default 'en' for numbers.")
 
-    # 3) Цифры → слова
+    # 4) Цифры → слова
     clean_text = replace_numbers_with_words(clean_text, lang=lang_code or "en")
 
-    # 4) Фильтрация символов: оставляем буквы, пробелы и безопасные знаки
+    # 5) Фильтрация символов: оставляем буквы, пробелы и безопасные знаки
     filtered_chars = [
-        ch if ch.isalpha() or ch.isspace() or ch in SAFE_PUNCT else " "
+        ch if ch.isalpha() or ch.isspace() or ch in SAFE_PUNCT or ch == "_" else " "
         for ch in clean_text
     ]
     clean_text = "".join(filtered_chars)
 
-    # 5) Схлопываем пробелы и обрезаем
+    # Восстанавливаем теги Fish Audio, если они были сохранены
+    if allow_fish_tags and saved_fish_tags:
+        for tag_id, tag in saved_fish_tags:
+            clean_text = clean_text.replace(f"__FISHTAG{tag_id}__", tag)
+
+    # 6) Схлопываем пробелы и обрезаем
     clean_text = re.sub(r"\s{2,}", " ", clean_text).strip()
 
     if not clean_text:

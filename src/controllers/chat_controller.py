@@ -759,6 +759,7 @@ class ChatController(GenerationActivityService):
                             "voice_profile": voice_profile,
                             "message_id": assistant_message_id,
                             "trace_id": trace_id,
+                            "structured_data": structured_data,
                         })
                         voiceover_pending = True
                     else:

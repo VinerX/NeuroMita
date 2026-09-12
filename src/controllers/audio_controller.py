@@ -127,20 +127,24 @@ class AudioController(AudioStateService):
             performance_traces().finish(trace_id, "error", error_stage="tts.empty") if trace_id else None
             return
 
+        structured_data = data.get("structured_data")
         original_text = text
-        text_for_voice = process_text_to_voice(text)
-
-        loop_service = use(LoopService)
-        if not loop_service.is_running():
-            logger.error("Ошибка: Цикл событий не готов.")
-            if task_uid:
-                self._update_task_failed_voiceover(task_uid, "Event loop not ready")
-            self.waiting_answer = False
-            performance_traces().finish(trace_id, "error", error_stage="tts") if trace_id else None
-            return
-
-        self.waiting_answer = True
         self.voiceover_method = self.settings.get("VOICEOVER_METHOD", "Local")
+
+        if self.voiceover_method == "Fish Audio":
+            from handlers.fish_audio_handler import format_text_with_fish_emotions, load_config
+            try:
+                fish_cfg = load_config()
+                model_name = str(fish_cfg.get("model") or "s2.1-pro")
+            except Exception:
+                model_name = "s2.1-pro"
+            segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
+            if segments and isinstance(segments, list):
+                text_for_voice = format_text_with_fish_emotions(segments, model=model_name)
+            else:
+                text_for_voice = process_text_to_voice(text, allow_fish_tags=True)
+        else:
+            text_for_voice = process_text_to_voice(text, allow_fish_tags=False)
 
         try:
             if self.voiceover_method == "TG":

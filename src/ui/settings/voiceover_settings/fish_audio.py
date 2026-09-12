@@ -5,16 +5,24 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QFormLayout, QLabel, QLineEdit, QPushButton
-
-from controllers.gui.task_worker import TaskWorker
-from handlers.fish_audio_handler import MODELS, load_config, save_config, synthesize, validate_config
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+)
+from core.error_utils import format_exception
 from ui.gui_templates import SettingsBodyWidget
+
+MODELS = ("s2.1-pro", "s2-pro", "s1", "s2.1-pro-free", "drama-3-preview")
 
 
 class FishAudioSettings(SettingsBodyWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        from handlers.fish_audio_handler import load_config
         layout = QFormLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         self.key = QLineEdit()
@@ -34,7 +42,7 @@ class FishAudioSettings(SettingsBodyWidget):
             cfg = load_config()
         except ValueError as exc:
             cfg = {}
-            self.status.setText(str(exc))
+            self.status.setText(format_exception(exc))
         self.key.setText(str(cfg.get("api_key", "")))
         self.voice.setText(str(cfg.get("voice_id", "")))
         self.model.setCurrentText(str(cfg.get("model", "s2.1-pro")))
@@ -65,6 +73,7 @@ class FishAudioSettings(SettingsBodyWidget):
                 "model": self.model.currentText(), "speed": self.speed.value()}
 
     def _save(self, *_args):
+        from handlers.fish_audio_handler import save_config
         try:
             save_config(self._config())
             self.status.setText("Сохранено")
@@ -74,6 +83,8 @@ class FishAudioSettings(SettingsBodyWidget):
     def _preview(self):
         if self._worker is not None and self._worker.isRunning():
             return
+        from handlers.fish_audio_handler import save_config, synthesize, validate_config
+        from controllers.gui.task_worker import TaskWorker
         try:
             config = validate_config(self._config())
             save_config(config)
@@ -81,7 +92,7 @@ class FishAudioSettings(SettingsBodyWidget):
             if not text:
                 raise ValueError("Введите пробную фразу.")
         except (ValueError, OSError) as exc:
-            self.status.setText(str(exc))
+            self.status.setText(format_exception(exc))
             return
 
         def work():

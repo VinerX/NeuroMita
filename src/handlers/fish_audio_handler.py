@@ -77,8 +77,129 @@ def is_configured() -> bool:
         return False
 
 
+FISH_AUDIO_TAGS = {
+    # Basic emotions (24 expressions)
+    "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
+    "surprised", "delighted", "scared", "worried", "upset", "frustrated",
+    "depressed", "empathetic", "embarrassed", "disgusted", "moved",
+    "proud", "relaxed", "grateful", "curious", "sarcastic",
+    # Advanced emotions (25 expressions)
+    "disdainful", "unhappy", "anxious", "hysterical", "indifferent",
+    "uncertain", "doubtful", "confused", "disappointed", "regretful",
+    "guilty", "ashamed", "jealous", "envious", "hopeful", "optimistic",
+    "pessimistic", "nostalgic", "lonely", "bored", "contemptuous",
+    "sympathetic", "compassionate", "determined", "resigned",
+    # Tone markers (6 expressions)
+    "in a hurry tone", "shouting", "screaming", "whispering", "soft tone", "emphasis",
+    # Audio effects (11 expressions)
+    "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
+    "groaning", "panting", "gasping",
+}
+
+NEUROMITA_EMOTION_TO_FISH_TAG = {
+    "smile": "happy",
+    "smileobvi": "sarcastic",
+    "smileteeth": "excited",
+    "smilestrange": "curious",
+    "smiletonque": "delighted",
+    "smilecringe": "embarrassed",
+    "happy": "happy",
+    "laugh": "laughing",
+    "sad": "sad",
+    "cry": "sobbing",
+    "depressed": "depressed",
+    "moved": "moved",
+    "sigh": "sighing",
+    "angry": "angry",
+    "discontent": "frustrated",
+    "frustrated": "frustrated",
+    "upset": "upset",
+    "surprise": "surprised",
+    "surpriseo": "surprised",
+    "shock": "surprised",
+    "surprised": "surprised",
+    "gasp": "gasping",
+    "shy": "nervous",
+    "nervous": "nervous",
+    "scared": "scared",
+    "worried": "worried",
+    "suspicion": "doubtful",
+    "sleep": "whispering",
+    "halfsleep": "soft tone",
+    "calm": "calm",
+    "relaxed": "relaxed",
+    "whisper": "whispering",
+    "arrogance": "confident",
+    "confident": "confident",
+    "emptiness": "indifferent",
+    "bored": "bored",
+}
+
+
+def resolve_fish_emotion(emotions: list | str | None) -> str:
+    if not emotions:
+        return ""
+    if isinstance(emotions, str):
+        emotions = [emotions]
+    for emo in emotions:
+        if not emo or not isinstance(emo, str):
+            continue
+        key = emo.strip().lower()
+        if key in NEUROMITA_EMOTION_TO_FISH_TAG:
+            tag = NEUROMITA_EMOTION_TO_FISH_TAG[key]
+            if tag:
+                return tag
+        if key in FISH_AUDIO_TAGS:
+            return key
+    return ""
+
+
+def format_text_with_fish_emotions(segments: list, model: str = "s2.1-pro") -> str:
+    """
+    Преобразует сегменты диалога в речь с нативными тегами эмоций Fish Audio:
+    - Для моделей S2 (s2.1-pro, s2-pro, etc.): [tag]
+    - Для моделей S1: (tag)
+    """
+    if not isinstance(segments, list) or not segments:
+        return ""
+    parts = []
+    use_parens = (model == "s1")
+    for seg in segments:
+        if isinstance(seg, dict):
+            text = str(seg.get("text") or "").strip()
+            emo_tag = resolve_fish_emotion(seg.get("emotions"))
+        elif isinstance(seg, str):
+            text = seg.strip()
+            emo_tag = ""
+        else:
+            continue
+        if not text:
+            continue
+        from utils import extract_clean_dialogue_text
+        text = extract_clean_dialogue_text(text)
+        if not text:
+            continue
+        if emo_tag:
+            prefix = f"({emo_tag})" if use_parens else f"[{emo_tag}]"
+            parts.append(f"{prefix} {text}")
+        else:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
+def clean_fish_audio_text(text: str, model: str = "s2.1-pro") -> str:
+    """Очищает текст для Fish Audio, сохраняя теги эмоций и отсекая технический JSON/код."""
+    from utils import extract_clean_dialogue_text, process_text_to_voice
+    extracted = extract_clean_dialogue_text(text)
+    cleaned = process_text_to_voice(extracted or text, allow_fish_tags=True)
+    cleaned = re.sub(r"[\{\}\"]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 async def synthesize(text: str, *, config: dict | None = None, output_dir=None, transport=None) -> str:
     config = validate_config(load_config() if config is None else config)
+    text = clean_fish_audio_text(text, model=config.get("model", "s2.1-pro"))
     if not text or not text.strip():
         raise ValueError("Нет текста для озвучки.")
     headers = {"Authorization": "Bearer " + config["api_key"], "model": config["model"]}
