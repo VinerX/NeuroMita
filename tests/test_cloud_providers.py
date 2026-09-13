@@ -19,6 +19,32 @@ CONFIG = {"api_key": "test-secret", "voice_id": "a" * 32, "model": "s2.1-pro", "
 
 
 class FishTests(unittest.IsolatedAsyncioTestCase):
+    async def test_muted_local_audio_is_removed_without_failure_status(self):
+        from unittest.mock import AsyncMock, Mock
+        from controllers.audio_controller import AudioController
+        from core.events import Events
+        from managers.task_manager import TaskStatus
+        for task_uid in (None, 'muted-task'):
+            with self.subTest(task_uid=task_uid), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'voice.wav'
+                path.write_bytes(b'audio')
+                controller = AudioController.__new__(AudioController)
+                controller.settings = {'VOICEOVER_LOCAL_CHAT': False}
+                controller.event_bus = Mock()
+                controller.waiting_answer = True
+                game = Mock()
+                game.is_connected.return_value = False
+                with patch('controllers.audio_controller.use', return_value=game), \
+                     patch('handlers.fish_audio_handler.synthesize', new=AsyncMock(return_value=str(path))), \
+                     patch('controllers.audio_controller.AudioHandler.handle_voice_file', new=AsyncMock()) as play:
+                    await controller._await_local_voiceover_and_postprocess('Hi', 'Hi', task_uid, method='Fish Audio')
+                self.assertFalse(path.exists())
+                self.assertFalse(controller.waiting_answer)
+                play.assert_not_awaited()
+                statuses = [c.args[1]['status'] for c in controller.event_bus.emit.call_args_list
+                            if c.args[0] == Events.Task.UPDATE_TASK_STATUS]
+                self.assertEqual(statuses, [TaskStatus.SUCCESS] if task_uid else [])
+
     async def test_game_audio_delivery_and_failure_status(self):
         from unittest.mock import AsyncMock, Mock
         from controllers.audio_controller import AudioController

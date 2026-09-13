@@ -192,7 +192,16 @@ def clean_fish_audio_text(text: str, model: str = "s2.1-pro") -> str:
     """Очищает текст для Fish Audio, сохраняя теги эмоций и отсекая технический JSON/код."""
     from utils import extract_clean_dialogue_text, process_text_to_voice
     extracted = extract_clean_dialogue_text(text)
-    cleaned = process_text_to_voice(extracted or text, allow_fish_tags=True)
+    def normalize_marker(match: re.Match) -> str:
+        label = (match.group(1) or match.group(2)).strip().lower()
+        if label not in FISH_AUDIO_TAGS:
+            return match.group(0)
+        return f"({label})" if model == "s1" else f"[{label}]"
+
+    normalized = re.sub(
+        r"\[([^\[\]\n]+)\]|\(([^()\n]+)\)", normalize_marker, extracted or text,
+    )
+    cleaned = process_text_to_voice(normalized, allow_fish_tags=True)
     cleaned = re.sub(r"[\{\}\"]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned

@@ -454,12 +454,8 @@ def replace_numbers_with_words(text: str, lang: str | None = None) -> str:
     return re.sub(r"[-+]?\d+", _repl, text)
 
 
-def extract_clean_dialogue_text(text: str) -> str:
-    """
-    Extracts pure human dialogue from text that may contain raw JSON,
-    structured segments, schema fields, markdown fences, or NLP tags.
-    Ensures that technical keywords, braces, and metadata are never spoken or displayed.
-    """
+def extract_dialogue_payload(text: str) -> str:
+    """Recover dialogue from a JSON envelope without modifying dialogue markup."""
     if not isinstance(text, str):
         return ""
 
@@ -469,8 +465,11 @@ def extract_clean_dialogue_text(text: str) -> str:
 
     # Unwrap markdown code fence if present
     if candidate.startswith("```"):
-        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
-        candidate = re.sub(r"\s*```$", "", candidate).strip()
+        unwrapped = re.sub(r"^```(?:json)?\s*", "", candidate)
+        if unwrapped.lstrip().startswith("{"):
+            candidate = re.sub(r"\s*```$", "", unwrapped).strip()
+    if not candidate.startswith("{"):
+        return text.strip()
 
     # Try full JSON parsing
     parsed_json = None
@@ -512,7 +511,7 @@ def extract_clean_dialogue_text(text: str) -> str:
             extracted = []
             for m in text_matches:
                 try:
-                    cleaned = m.encode().decode("unicode_escape", errors="ignore").strip()
+                    cleaned = json.loads('"' + m + '"', strict=False).strip()
                 except Exception:
                     cleaned = m.strip()
                 if cleaned:
@@ -520,13 +519,27 @@ def extract_clean_dialogue_text(text: str) -> str:
             if extracted:
                 return " ".join(extracted)
 
+    return text.strip()
+
+
+def extract_clean_dialogue_text(text: str) -> str:
+    """Prepare a speech copy; keep the contents of ordinary formatting tags."""
+    candidate = extract_dialogue_payload(text)
     # Strip any residual schema keywords and technical syntax
     candidate = re.sub(r'"?(?:attitude_change|boredom_change|stress_change)"?\s*:\s*[-+]?\d+(?:\.\d+)?', '', candidate)
     candidate = re.sub(r'"?(?:emotions|animations|face_params|commands)"?\s*:\s*\[[^\]]*\]', '', candidate)
     candidate = re.sub(r'"?(?:segments|memory_add|memory_update|memory_delete)"?\s*:\s*\[', '', candidate)
 
-    # Strip legacy NLP / XML-like tags: <e>...</e>, <a...>...</a>, etc.
-    candidate = re.sub(r"<[^>]+>.*?</[^>]+>", "", candidate, flags=re.DOTALL)
+    # Only known control tags own non-dialogue content. Formatting such as
+    # <b>speech</b> must lose its markup, never its words.
+    candidate = re.sub(
+        r"<(e|a|memory|commands|face_params|animations)\s*>.*?</\1\s*>",
+        "", candidate, flags=re.DOTALL | re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"<p>\s*[-+]?\d+(?:\.\d+)?\s*,\s*[-+]?\d+(?:\.\d+)?\s*,\s*[-+]?\d+(?:\.\d+)?\s*</p>",
+        "", candidate, flags=re.IGNORECASE,
+    )
     candidate = re.sub(r"<[^>]+>", "", candidate)
 
     # Strip inline NLP tags like [attitude+0.2], [emotions: smile], [animations: Hug]
@@ -543,7 +556,7 @@ def process_text_to_voice(text_to_speak: str, *, allow_fish_tags: bool = False) 
     Очищает текст перед TTS:
       1) извлекает чистую речь из JSON/структурированных сегментов и удаляет тех-теги;
       2) если allow_fish_tags=True, сохраняет валидные теги Fish Audio ([happy], (happy), etc.),
-         иначе вырезает все теги в скобках для совместимости с локальными моделями и Silero;
+         иначе вырезает только известные маркеры эмоций, сохраняя обычные фразы;
       3) определяет язык (эвристика по скриптам + langdetect);
       4) переводит числа в слова на соответствующем языке (если поддержан);
       5) оставляет только буквы Юникода, пробелы и знаки из SAFE_PUNCT;
@@ -560,15 +573,22 @@ def process_text_to_voice(text_to_speak: str, *, allow_fish_tags: bool = False) 
 
     # 2) Обработка тегов Fish Audio vs остальных моделей
     saved_fish_tags: list[tuple[str, str]] = []
-    if allow_fish_tags:
-        def _save_fish_tag(match: re.Match) -> str:
+    from handlers.fish_audio_handler import FISH_AUDIO_TAGS
+
+    def _process_fish_tag(match: re.Match) -> str:
+        label = (match.group(1) or match.group(2)).strip().lower()
+        known = label in FISH_AUDIO_TAGS
+        # S2 accepts natural-language cues in square brackets; parentheses
+        # are ordinary speech unless they contain a recognized S1 marker.
+        if allow_fish_tags and (match.group(1) is not None or known):
             tag_id = "".join(chr(ord("a") + int(c)) for c in str(len(saved_fish_tags)))
             saved_fish_tags.append((tag_id, match.group(0)))
             return f" __FISHTAG{tag_id}__ "
-        clean_text = re.sub(r"\[[a-zA-Z_ -]+\]|\([a-zA-Z_ -]+\)", _save_fish_tag, clean_text)
-    else:
-        clean_text = re.sub(r"\[[a-zA-Z_ -]+\]", "", clean_text)
-        clean_text = re.sub(r"\([a-zA-Z_ -]+\)", "", clean_text)
+        if not allow_fish_tags and known:
+            return ""
+        return match.group(0)
+
+    clean_text = re.sub(r"\[([^\[\]\n]+)\]|\(([^()\n]+)\)", _process_fish_tag, clean_text)
 
     # Удаляем любые оставшиеся технические квадратные скобки
     clean_text = re.sub(r"[\[\]\{\}]", " ", clean_text)

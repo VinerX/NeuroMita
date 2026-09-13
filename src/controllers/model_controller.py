@@ -1809,10 +1809,6 @@ class ModelController(GenerationService, ModelStateService):
                     except Exception:
                         voice_profile = None
             final_text = processed
-            from utils import extract_clean_dialogue_text
-            clean_dialogue = extract_clean_dialogue_text(final_text)
-            if clean_dialogue:
-                final_text = clean_dialogue
             if bool(self.settings.get("REPLACE_IMAGES_WITH_PLACEHOLDERS", False)):
                 final_text = re.sub(
                     r'https?://\S+\.(?:png|jpg|jpeg|gif|bmp)|data:image/\S+;base64,\S+',
@@ -2099,10 +2095,8 @@ class ModelController(GenerationService, ModelStateService):
                 cost_fallback_source=getattr(pricing_info, "source", None),
             )
 
-            from utils import extract_clean_dialogue_text
-            clean_processed = extract_clean_dialogue_text(processed)
-            if clean_processed:
-                processed = clean_processed
+            from utils import extract_dialogue_payload
+            processed = extract_dialogue_payload(processed)
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return ChatGenerationResult(
