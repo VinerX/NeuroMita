@@ -544,8 +544,21 @@ class SpeechRecognition:
                     activated = False
 
                 if not activated:
+                    # Cloud or unmanaged ASR engines (e.g. nanogpt, google) do not have a dedicated
+                    # managed venv record, but run directly inside the shared AI worker process.
+                    try:
+                        f = eng.call("asr", "start_live", start_payload, timeout=30.0)
+                        activated = bool(f.result(timeout=30.0))
+                    except Exception as exc:
+                        logger.error(
+                            f"Direct ASR start_live failed for engine '{engine_id}': {format_exception(exc)}",
+                            exc_info=True,
+                        )
+                        activated = False
+
+                if not activated:
                     logger.error(
-                        f"Managed ASR environment could not be initialized for "
+                        f"ASR service could not be initialized for "
                         f"engine '{engine_id}'."
                     )
                     _emit_start_failure(_(

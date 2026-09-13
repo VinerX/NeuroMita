@@ -206,7 +206,15 @@ class SpeechController(SpeechService):
         SpeechRecognition.set_recognizer_type(engine)
         SpeechRecognition.apply_settings(engine, self._asr_settings["models"].get(engine, {}))
 
-        self.device_id = self.settings.get("NM_MICROPHONE_ID", 0)
+        saved_id = self.settings.get("NM_MICROPHONE_ID", None)
+        if saved_id is not None:
+            self.device_id = saved_id
+        else:
+            try:
+                def_id = sd.default.device[0]
+                self.device_id = def_id if def_id >= 0 else 0
+            except Exception:
+                self.device_id = 0
         self.selected_microphone = self.settings.get("NM_MICROPHONE_NAME", "")
 
         try:
@@ -835,11 +843,41 @@ class SpeechController(SpeechService):
 
         def compute():
             try:
+                import sys
                 devices = sd.query_devices()
                 result = []
+                default_name = ""
+                if sys.platform.startswith("linux"):
+                    try:
+                        import shutil, subprocess
+                        pactl = shutil.which("pactl")
+                        if pactl:
+                            source = subprocess.check_output([pactl, "get-default-source"], text=True, timeout=1).strip()
+                            if source:
+                                out = subprocess.check_output([pactl, "list", "sources"], text=True, timeout=1)
+                                for block in out.split("\n\n"):
+                                    if f"Name: {source}" in block or f"Имя: {source}" in block:
+                                        for line in block.splitlines():
+                                            if line.strip().startswith("node.nick =") or line.strip().startswith("device.description ="):
+                                                default_name = line.split("=", 1)[1].strip().strip('"')
+                                                break
+                                            if line.strip().startswith("Описание:"):
+                                                default_name = line.split(":", 1)[1].strip()
+                                                break
+                                        if default_name:
+                                            break
+                    except Exception:
+                        pass
+
+                has_alsa = any(d.get("hostapi") == 0 and d.get("max_input_channels", 0) > 0 for d in devices)
+
                 for i, d in enumerate(devices):
                     if d.get('max_input_channels', 0) > 0:
+                        if has_alsa and d.get("hostapi") != 0 and sys.platform.startswith("linux"):
+                            continue
                         name = d.get('name', f"Device {i}")
+                        if name == "default" and default_name:
+                            name = f"{default_name} [default]"
                         result.append(f"{name} ({i})")
                 return result or ["Микрофоны не найдены"]
             except Exception as e:

@@ -151,37 +151,119 @@ class AudioCaptureService:
         overflow_count = 0
         loop = asyncio.get_running_loop()
 
+        # Open stream with sample rate fallback and default device fallback if needed
+        stream = None
+        actual_rate = config.sample_rate
+        actual_chunk = config.chunk_size
+        actual_device = microphone_index
+        needs_resample = False
+
+        open_error = None
+        # Attempt 1: open selected device at target sample rate
         try:
-            with sd.InputStream(
+            stream = sd.InputStream(
                 samplerate=config.sample_rate,
                 channels=1,
                 dtype="float32",
                 blocksize=config.chunk_size,
                 device=microphone_index,
-            ) as stream:
+            )
+        except Exception as exc:
+            open_error = exc
+            self._logger.debug(f"Не удалось открыть микрофон {microphone_index} на {config.sample_rate} Гц: {exc}")
+
+        # Attempt 2: if failed, try opening at device's native rate and resample
+        if stream is None:
+            try:
+                dev_info = sd.query_devices(microphone_index)
+                native_sr = int(dev_info.get("default_samplerate") or 48000)
+                if native_sr > 0 and native_sr != config.sample_rate:
+                    native_chunk = int(round(config.chunk_size * native_sr / config.sample_rate))
+                    stream = sd.InputStream(
+                        samplerate=native_sr,
+                        channels=1,
+                        dtype="float32",
+                        blocksize=native_chunk,
+                        device=microphone_index,
+                    )
+                    actual_rate = native_sr
+                    actual_chunk = native_chunk
+                    needs_resample = True
+                    self._logger.info(
+                        f"Используем нативную частоту {native_sr} Гц с авторесемплингом для микрофона {microphone_index}"
+                    )
+            except Exception as exc:
+                self._logger.debug(f"Не удалось открыть микрофон {microphone_index} на нативной частоте: {exc}")
+
+        # Attempt 3: if selected device failed completely, try system default input device
+        if stream is None:
+            try:
+                default_idx = int(sd.default.device[0])
+                if default_idx >= 0 and default_idx != microphone_index:
+                    self._logger.warning(
+                        f"Микрофон {microphone_index} недоступен ({open_error}). "
+                        f"Переключаемся на устройство ввода по умолчанию (ID: {default_idx})."
+                    )
+                    stream = sd.InputStream(
+                        samplerate=config.sample_rate,
+                        channels=1,
+                        dtype="float32",
+                        blocksize=config.chunk_size,
+                        device=default_idx,
+                    )
+                    actual_device = default_idx
+                    actual_rate = config.sample_rate
+                    actual_chunk = config.chunk_size
+                    needs_resample = False
+                    device_name, host_api_name = _device_description(sd, default_idx)
+            except Exception as exc:
+                self._logger.debug(f"Не удалось открыть устройство по умолчанию: {exc}")
+
+        if stream is None:
+            raise AudioCaptureError(
+                _describe_audio_capture_error(
+                    open_error or RuntimeError("Failed to open audio input"),
+                    microphone_index=microphone_index,
+                    operation="open",
+                    device_name=device_name,
+                    host_api_name=host_api_name,
+                    sample_rate=config.sample_rate,
+                )
+            )
+
+        try:
+            with stream:
                 self._logger.info(
-                    f"Микрофон подключён: device={microphone_index}, "
-                    f"sr={config.sample_rate}, chunk={config.chunk_size}"
+                    f"Микрофон подключён: device={actual_device}, "
+                    f"sr={actual_rate}, chunk={actual_chunk}"
+                    + (" (resampling to 16kHz)" if needs_resample else "")
                 )
                 ready_reported = False
                 while is_active():
                     try:
-                        audio_chunk, overflowed = await loop.run_in_executor(
-                            None, stream.read, config.chunk_size
+                        raw_chunk, overflowed = await loop.run_in_executor(
+                            None, stream.read, actual_chunk
                         )
                     except Exception as exc:
                         if is_active():
                             raise AudioCaptureError(
                                 _describe_audio_capture_error(
                                     exc,
-                                    microphone_index=microphone_index,
+                                    microphone_index=actual_device,
                                     operation="read",
                                     device_name=device_name,
                                     host_api_name=host_api_name,
-                                    sample_rate=config.sample_rate,
+                                    sample_rate=actual_rate,
                                 )
                             ) from exc
                         break
+
+                    if needs_resample:
+                        orig_x = np.linspace(0, 1, len(raw_chunk), endpoint=False)
+                        target_x = np.linspace(0, 1, config.chunk_size, endpoint=False)
+                        audio_chunk = np.interp(target_x, orig_x, raw_chunk.reshape(-1)).astype(np.float32).reshape(-1, 1)
+                    else:
+                        audio_chunk = raw_chunk
 
                     if not ready_reported:
                         ready_reported = True
@@ -236,11 +318,11 @@ class AudioCaptureService:
             raise AudioCaptureError(
                 _describe_audio_capture_error(
                     exc,
-                    microphone_index=microphone_index,
+                    microphone_index=actual_device,
                     operation="open",
                     device_name=device_name,
                     host_api_name=host_api_name,
-                    sample_rate=config.sample_rate,
+                    sample_rate=actual_rate,
                 )
             ) from exc
         finally:
