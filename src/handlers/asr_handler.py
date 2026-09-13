@@ -383,7 +383,7 @@ class SpeechRecognition:
                     eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
 
                     retry = 0
-                    if SpeechRecognition._recognizer_type == "google":
+                    if SpeechRecognition._recognizer_type in ("google", "nanogpt"):
                         from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
                         import numpy as np
                         import torch
