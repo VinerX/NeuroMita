@@ -67,7 +67,7 @@ class NanoGPTAsrSettings(SettingsBodyWidget):
         layout.setContentsMargins(4, 6, 4, 6)
         layout.setSpacing(6)
 
-        header_lbl = QLabel(_("Параметры NanoGPT ASR (Облачный Whisper)", "NanoGPT ASR Settings (Cloud Whisper)"))
+        header_lbl = QLabel(_("Параметры NanoGPT (Облачный Whisper)", "NanoGPT Settings (Cloud Whisper)"))
         header_lbl.setStyleSheet("font-weight: bold; color: #f2b6d8; font-size: 10.5pt;")
         layout.addWidget(header_lbl)
 
@@ -138,7 +138,7 @@ class NanoGPTAsrSettings(SettingsBodyWidget):
             "Рекомендуется Whisper-Large-V3 для наилучшей точности и скорости.",
             "Whisper-Large-V3 is recommended for best accuracy and speed."
         ))
-        form.addRow(_("Модель ASR", "ASR Model"), self.model_combo)
+        form.addRow(_("Модель Whisper", "Whisper model"), self.model_combo)
 
         # 4. Язык
         self.lang_combo = QComboBox()

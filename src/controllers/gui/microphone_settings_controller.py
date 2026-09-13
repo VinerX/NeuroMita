@@ -608,14 +608,20 @@ class MicrophoneSettingsController(BaseController):
 
     def _update_nanogpt_frame_visibility(self, engine: str | None = None):
         v = self.view
-        frame = getattr(v, "nanogpt_settings_frame", None)
-        if frame is None:
+        if not v:
             return
+        frame = getattr(v, "nanogpt_settings_frame", None)
+        manage_btn = getattr(v, "asr_manage_button", None)
         if engine is None and hasattr(v, "recognizer_combobox"):
             idx = v.recognizer_combobox.currentIndex()
             engine = v.recognizer_combobox.itemData(idx) if idx >= 0 else v.recognizer_combobox.currentText()
         eng = str(engine or "").strip().lower()
-        frame.setVisible("nanogpt" in eng)
+        is_nanogpt = "nanogpt" in eng
+        is_cloud = is_nanogpt or "google" in eng
+        if frame is not None:
+            frame.setVisible(is_nanogpt)
+        if manage_btn is not None:
+            manage_btn.setVisible(not is_cloud)
 
     def _on_engine_changed(self, engine: str):
         v = self.view

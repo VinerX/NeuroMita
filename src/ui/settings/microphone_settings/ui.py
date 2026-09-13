@@ -82,8 +82,7 @@ def build_microphone_settings_ui(self, parent_layout):
     self.asr_refresh_button.setFixedSize(28, 26)
     eng_h.addWidget(self.asr_refresh_button, 0)
 
-    root_lay.addWidget(make_row(_("Модель", "Model"), engine_field, label_w))
-    root_lay.addWidget(self.asr_manage_button, 0)
+    root_lay.addWidget(make_row(_("Движок ASR", "ASR engine"), engine_field, label_w))
 
     try:
         from ui.settings.microphone_settings.nanogpt_asr import NanoGPTAsrSettings
@@ -91,6 +90,8 @@ def build_microphone_settings_ui(self, parent_layout):
         root_lay.addWidget(self.nanogpt_settings_frame)
     except Exception:
         self.nanogpt_settings_frame = None
+
+    root_lay.addWidget(self.asr_manage_button, 0)
 
     # 3) Текущий микрофон + refresh
     mic_field = SettingsBodyWidget()
