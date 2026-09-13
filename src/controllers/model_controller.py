@@ -1736,7 +1736,14 @@ class ModelController(GenerationService, ModelStateService):
                         f"but no <image_description> block was found in the model response."
                     )
 
-            if is_structured_output:
+            is_json_payload = False
+            stripped_raw = (visible_raw or "").strip()
+            if not is_structured_output and stripped_raw:
+                if (("{" in stripped_raw or "```" in stripped_raw) and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)):
+                    is_json_payload = True
+                    logger.info(f"[ModelController][{char_id}] Auto-detected structured JSON payload from model response.")
+
+            if is_structured_output or is_json_payload:
                 sample_id = str((getattr(llm_response, "raw", {}) or {}).get("finetune_sample_id") or "").strip() or None
                 structured_result = self._process_structured_output(
                     visible_raw=visible_raw,
@@ -2048,6 +2055,9 @@ class ModelController(GenerationService, ModelStateService):
         sample_id: str | None = None,
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
+        if structured_model_cls is None:
+            from schemas.structured_response import StructuredResponse
+            structured_model_cls = StructuredResponse
         try:
             with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
                 parse_outcome = parse_structured_response_with_meta(
@@ -2083,6 +2093,9 @@ class ModelController(GenerationService, ModelStateService):
                 cost_fallback_currency=getattr(pricing_info, "currency", None),
                 cost_fallback_source=getattr(pricing_info, "source", None),
             )
+
+            from utils import extract_dialogue_payload
+            processed = extract_dialogue_payload(processed)
 
             self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
             return ChatGenerationResult(
@@ -2174,6 +2187,14 @@ class ModelController(GenerationService, ModelStateService):
         # Build the result dict with segments
         with perf_span(trace_id, "generation.structured_postprocess", stage="result"):
             result_dict = structured_response_to_result_dict(structured)
+        logger.info(
+            "[StructuredActions][%s] segments=%d intents=%d interactions=%d movement_modes=%d parse=%s coerced=%s",
+            char_id, len(structured.segments),
+            sum(len(seg.intents) for seg in structured.segments),
+            sum(len(seg.interactions) for seg in structured.segments),
+            sum(len(seg.movement_modes) for seg in structured.segments),
+            parse_outcome.parse_level, parse_outcome.schema_coerced,
+        )
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
         # Attach raw LLM JSON for the debug panel (not saved to history)

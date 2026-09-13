@@ -33,6 +33,7 @@ _VOICE_MODELS: dict[str, tuple[str, str]] = {
     "high_clf5": ("Cross-Lingual F5-TTS", "cross-lingual English and Chinese synthesis from a reference voice"),
     "high_clf5+low": ("Cross-Lingual F5-TTS + RVC", "cross-lingual synthesis with additional RVC timbre conversion"),
     "high+low": ("F5-TTS + RVC (Russian)", "lively Russian speech with a closer character timbre, but sometimes less stable"),
+    "fish-audio": ("Fish Audio", "expressive cloud voice with dynamic emotion tagging and natural prosody"),
 }
 
 
@@ -198,6 +199,12 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 initialized = False
             model_name = "Telegram voice"
+        elif voice_method == "Fish Audio":
+            from handlers.fish_audio_handler import is_configured
+            model_name = "Fish Audio (cloud API)"
+            model_id = "fish-audio"
+            installed = True
+            initialized = is_configured()
         elif voice_enabled and installed:
             local_voice = services().get_optional(LocalVoiceService)
             try:

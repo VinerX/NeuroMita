@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, Type, Any, get_args, get_origin
 
 from main_logger import logger
+from pydantic_core import PydanticUndefined
 from schemas.structured_response import (
     RESPONSE_PROTOCOL_VERSION,
     StructuredResponse,
@@ -230,7 +231,37 @@ def _escape_inner_quotes(text: str) -> str:
     return ''.join(result)
 
 
+def _clean_trailing_incomplete_json(text: str) -> str:
+    text = text.rstrip()
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+    if in_string:
+        return text
+    for _ in range(5):
+        prev = text
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*[-+]\s*$", "", text)
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*$", "", text)
+        text = re.sub(r",\s*\"[^\"]*\"?$", "", text)
+        text = re.sub(r":\s*[-+]\s*$", "", text)
+        text = re.sub(r"\{\s*\"[^\"]*\"?\s*$", "{", text)
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*\{?\s*$", "", text)
+        text = re.sub(r"[,:]\s*$", "", text)
+        if text == prev:
+            break
+    return text
+
+
 def _close_truncated_json(text: str) -> str:
+    text = _clean_trailing_incomplete_json(text)
     stack = []
     in_string = False
     escape_next = False
@@ -273,14 +304,15 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
             ) from first_error
 
 
-def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]:
+def _extract_custom_field_models(model_cls: Type[StructuredResponse]) -> dict[str, Any]:
+    """Returns {field_name: field_info} for custom_fields sub-model if present."""
     custom_fields = getattr(model_cls, "model_fields", {}).get("custom_fields")
     if custom_fields is None:
-        return set()
+        return {}
 
     annotation = getattr(custom_fields, "annotation", None)
     if annotation is None:
-        return set()
+        return {}
 
     candidates = [annotation]
     origin = get_origin(annotation)
@@ -289,10 +321,14 @@ def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]
 
     for candidate in candidates:
         fields = getattr(candidate, "model_fields", None)
-        if isinstance(fields, dict):
-            return {str(name) for name in fields.keys()}
+        if isinstance(fields, dict) and fields:
+            return fields
 
-    return set()
+    return {}
+
+
+def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]:
+    return {str(name) for name in _extract_custom_field_models(model_cls).keys()}
 
 
 def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> dict:
@@ -319,26 +355,145 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
             return [str(item) for item in value if item is not None]
         return [str(value)]
 
-    custom_field_names = _extract_custom_field_names(model_cls)
-    if custom_field_names:
+    # A hallucinated numeric secret flag must not discard valid action segments
+    # or reveal the secret by truthiness. Treat ambiguous flags as unspecified.
+    flag = data.get("secret_exposed")
+    if flag is not None and not isinstance(flag, bool):
+        if isinstance(flag, str) and flag.strip().lower() in {"true", "false"}:
+            data["secret_exposed"] = flag.strip().lower() == "true"
+        else:
+            data["secret_exposed"] = None
+
+    # 0. Починка перепутанных и инвертированных полей модели
+    # Preserve misplaced known custom deltas, but never treat arbitrary memory
+    # objects as executable memory operations.
+    custom_names = _extract_custom_field_names(model_cls)
+    for memory_field in ("memory_add", "memory_update"):
+        if isinstance(data.get(memory_field), dict):
+            misplaced = data[memory_field]
+            if not isinstance(data.get("custom_fields"), dict):
+                data["custom_fields"] = {}
+            for key in custom_names:
+                if key in misplaced and key not in data["custom_fields"]:
+                    data["custom_fields"][key] = misplaced[key]
+            data[memory_field] = []
+
+    # 0b. image_description содержит список сегментов
+    img_desc = data.get("image_description")
+    if isinstance(img_desc, list) and img_desc:
+        has_segment_like = any(isinstance(x, dict) and ("text" in x or "hint" in x) for x in img_desc)
+        curr_segs = data.get("segments")
+        curr_segs_are_strings = isinstance(curr_segs, list) and all(isinstance(x, str) for x in curr_segs)
+        if has_segment_like and (not curr_segs or curr_segs_are_strings):
+            if curr_segs_are_strings and curr_segs:
+                # Если в segments были строки памяти ("normal|..."), переносим их в memory_add
+                if all("|" in s for s in curr_segs) and not data.get("memory_add"):
+                    data["memory_add"] = curr_segs
+            data["segments"] = img_desc
+        data["image_description"] = None
+    elif isinstance(img_desc, dict) and ("text" in img_desc or "hint" in img_desc):
+        if not data.get("segments"):
+            data["segments"] = [img_desc]
+        data["image_description"] = None
+    elif img_desc is not None and not isinstance(img_desc, str):
+        data["image_description"] = str(img_desc) if not isinstance(img_desc, (dict, list)) else None
+
+    # 0c. segments содержит строки вместо словарей
+    if isinstance(data.get("segments"), list):
+        segs = data["segments"]
+        if segs and all(isinstance(x, str) and "|" in x for x in segs) and not data.get("memory_add"):
+            data["memory_add"] = segs
+            data["segments"] = []
+        else:
+            new_segs = []
+            for item in segs:
+                if isinstance(item, str):
+                    new_segs.append({"text": item})
+                elif isinstance(item, dict):
+                    new_segs.append(item)
+                else:
+                    new_segs.append({"text": str(item)})
+            data["segments"] = new_segs
+
+    # 1. Custom fields: поиск алиасов, подъем из корня/сегмента, дефолтные значения
+    custom_field_models = _extract_custom_field_models(model_cls)
+    if custom_field_models:
         custom_fields = data.get("custom_fields")
         if not isinstance(custom_fields, dict):
             custom_fields = {}
 
-        hoisted_fields = []
-        for field_name in custom_field_names:
-            if field_name in data and field_name not in custom_fields:
-                custom_fields[field_name] = data.pop(field_name)
-                hoisted_fields.append(field_name)
+        seg0 = data["segments"][0] if (isinstance(data.get("segments"), list) and data["segments"] and isinstance(data["segments"][0], dict)) else {}
+        candidate_sources = [custom_fields, data, seg0]
 
+        hoisted_fields = []
+        for field_name, field_info in custom_field_models.items():
+            clean_name = field_name.strip()
+            aliases = [clean_name, clean_name.lower(), clean_name.capitalize()]
+            if clean_name.lower().endswith("_change"):
+                base = clean_name.lower()[:-7]
+                aliases.extend([base, base.capitalize(), base.upper(), f"{base}_change", f"{base.capitalize()}_change"])
+            else:
+                aliases.extend([f"{clean_name.lower()}_change", f"{clean_name}_change", f"{clean_name.capitalize()}_change"])
+
+            val_found = False
+            found_val = None
+            found_src = None
+            found_k = None
+
+            for src in candidate_sources:
+                if not isinstance(src, dict):
+                    continue
+                for alias in aliases:
+                    if alias in src:
+                        val_found = True
+                        found_val = src[alias]
+                        found_src = src
+                        found_k = alias
+                        break
+                if val_found:
+                    break
+                lower_aliases = {a.lower() for a in aliases}
+                for k, v in src.items():
+                    if k.lower() in lower_aliases:
+                        val_found = True
+                        found_val = v
+                        found_src = src
+                        found_k = k
+                        break
+                if val_found:
+                    break
+
+            if val_found:
+                custom_fields[field_name] = found_val
+                if found_src is data and found_k in data:
+                    data.pop(found_k, None)
+                    hoisted_fields.append(f"{found_k}->{field_name}")
+                elif found_src is seg0 and found_k in seg0:
+                    seg0.pop(found_k, None)
+                    hoisted_fields.append(f"seg0:{found_k}->{field_name}")
+            else:
+                default_val = getattr(field_info, "default", None)
+                if default_val is not None and default_val is not ... and default_val is not PydanticUndefined:
+                    custom_fields[field_name] = default_val
+                else:
+                    py_type = getattr(field_info, "annotation", None)
+                    if py_type in (float, int):
+                        custom_fields[field_name] = 0.0 if py_type is float else 0
+                    elif py_type is bool:
+                        custom_fields[field_name] = False
+                    elif py_type is str:
+                        custom_fields[field_name] = ""
+                    else:
+                        custom_fields[field_name] = 0.0
+
+        data["custom_fields"] = custom_fields
         if hoisted_fields:
-            data["custom_fields"] = custom_fields
             logger.warning(
-                "[StructuredResponseParser] Hoisted top-level custom fields into custom_fields: %s",
+                "[StructuredResponseParser] Hoisted custom fields: %s",
                 ", ".join(sorted(hoisted_fields)),
             )
 
-    # 1. Приведение числовых статов
+    # 2. Приведение числовых статов
     for field in ("attitude_change", "boredom_change", "stress_change"):
         val = data.get(field)
         if isinstance(val, str):
@@ -347,13 +502,13 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
             except ValueError:
                 data[field] = 0.0
 
-    # 2. Исправление null в списках (добавили entities и relations)
+    # 3. Исправление null в списках (добавили entities и relations)
     for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
                   "segments", "reminder_add", "reminder_delete", "entities", "relations"):
         if data.get(field) is None:
             data[field] = []
 
-    # 3. Базовая починка сегментов
+    # 4. Базовая починка сегментов
     if isinstance(data.get("segments"), list):
         for seg in data["segments"]:
             if not isinstance(seg, dict):
@@ -385,33 +540,17 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
                 else:
                     seg["allow_sleep"] = bool(value)
 
-    # 4. Если текста много, а сегментов нет — создаем сегмент
-    if not data.get("segments") and isinstance(data.get("text"), str):
-        data["segments"] = [{"text": data["text"]}]
+    # 5. Если текста много, а сегментов нет — создаем сегмент
+    if not data.get("segments"):
+        for alt_key in ("text", "message", "response", "content", "reply"):
+            if isinstance(data.get(alt_key), str) and data[alt_key].strip():
+                data["segments"] = [{"text": data[alt_key]}]
+                break
 
-    # 5. Hoisting (поднятие полей из сегмента наверх)
+    # 6. Hoisting (поднятие статов и памяти из сегмента наверх)
     if isinstance(data.get("segments"), list) and data["segments"]:
         seg0 = data["segments"][0]
         if isinstance(seg0, dict):
-            if not data.get("custom_fields") and "custom_fields" in seg0:
-                data["custom_fields"] = seg0.pop("custom_fields")
-
-            custom_fields = data.get("custom_fields")
-            if custom_field_names and not isinstance(custom_fields, dict):
-                custom_fields = {}
-            if custom_field_names and isinstance(custom_fields, dict):
-                hoisted_segment_fields = []
-                for field_name in custom_field_names:
-                    if field_name in seg0 and field_name not in custom_fields:
-                        custom_fields[field_name] = seg0.pop(field_name)
-                        hoisted_segment_fields.append(field_name)
-                if hoisted_segment_fields:
-                    data["custom_fields"] = custom_fields
-                    logger.warning(
-                        "[StructuredResponseParser] Hoisted segment custom fields into custom_fields: %s",
-                        ", ".join(sorted(hoisted_segment_fields)),
-                    )
-
             for stat_field in ("attitude_change", "boredom_change", "stress_change"):
                 if stat_field not in data and stat_field in seg0:
                     try:
@@ -419,13 +558,12 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
                     except (TypeError, ValueError):
                         seg0.pop(stat_field, None)
 
-            # Добавили entities и relations в список на "поднятие"
             for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
                           "reminder_add", "reminder_delete", "entities", "relations"):
                 if not data.get(field) and seg0.get(field):
                     data[field] = seg0.pop(field)
 
-    # 6. Трансформация объектов в строки "name:type"
+    # 7. Трансформация объектов в строки "name:type"
     if isinstance(data.get("entities"), list):
         coerced_entities = []
         for ent in data["entities"]:
@@ -454,7 +592,7 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
 
 def _extract_partial_response(raw_text: str, *, model_cls: Type[StructuredResponse]) -> Optional[StructuredResponse]:
     texts = re.findall(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text)
-    texts = [t for t in texts if t.strip()]
+    texts = [json.loads('"' + t + '"', strict=False) for t in texts if t.strip()]
     if not texts:
         return None
 
@@ -569,11 +707,14 @@ def _extract_json_string(text: str) -> tuple[str, str]:
         text = text[brace_start:]
 
     if not text.endswith("}"):
-        brace_end = text.rfind("}")
-        if brace_end != -1:
-            if text[brace_end + 1:].strip():
-                extraction_kind = "embedded_json"
-            text = text[:brace_end + 1]
+        if text.count("{") <= text.count("}"):
+            brace_end = text.rfind("}")
+            if brace_end != -1:
+                if text[brace_end + 1:].strip():
+                    extraction_kind = "embedded_json"
+                text = text[:brace_end + 1]
+        else:
+            extraction_kind = "truncated_json"
 
     return text, extraction_kind
 

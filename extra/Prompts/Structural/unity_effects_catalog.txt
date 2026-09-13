@@ -36,7 +36,8 @@ when you're playing with him or he angers you:
 - datamosh,<sec> — the player is almost blind
 - tvhit — without specifying a time
 
-Movement mode — the movement_modes field, exactly one:
+Movement policy: prefer actor.set_movement_mode from [Unity Intent Contract] when listed.
+Only for older runtimes without that intent, use movement_modes with exactly one:
 - FollowNearPlayer — the default mode
 - FollowPlayer
 - StandStill — together with movement to a point, to stay in place

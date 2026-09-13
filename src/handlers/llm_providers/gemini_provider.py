@@ -49,6 +49,18 @@ class GeminiProvider(BaseProvider):
         )
 
     @staticmethod
+    def _request_has_images(req: LLMRequest) -> bool:
+        if getattr(req, "image_data", None):
+            return True
+        for msg in (getattr(req, "messages", None) or []):
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                        return True
+        return False
+
+    @staticmethod
     def _request_url(req: LLMRequest, *, stream: bool) -> str:
         url = str(req.api_url or "")
         if not stream:
@@ -347,6 +359,8 @@ class GeminiProvider(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
+                if not self._request_has_images(req):
+                    excl.add("image_description")
                 excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
                 if not caps.get("schema_intents", False):
@@ -355,6 +369,7 @@ class GeminiProvider(BaseProvider):
                     exclude_fields=excl or None,
                     exclude_segment_fields=segment_excl or None,
                     require_fields=set(caps.get("structured_required_fields") or ()) or None,
+                    custom_params=caps.get("custom_params"),
                 )
                 gen_cfg["responseJsonSchema"] = schema
                 logger.debug("[GeminiProvider] Structured output: responseJsonSchema passed (gemini_schema mode)")

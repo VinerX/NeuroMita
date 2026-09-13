@@ -1,6 +1,7 @@
 from core.error_utils import format_exception
 # src/controllers/chat_controller.py
 import os
+import re
 import tempfile
 import base64
 import threading
@@ -64,6 +65,9 @@ class StructuredJsonStreamFilter:
         self._json_mode = False    # set True once we see the leading {
         self._pending_channel = "content"
         self._current_channel = "content"
+        self._tag_buf = ""
+        self._in_bracket = False
+        self._skip_space = False
 
     def is_json_mode(self) -> bool:
         return self._json_mode
@@ -159,17 +163,18 @@ class StructuredJsonStreamFilter:
                 if self._escape_next:
                     self._escape_next = False
                     if c == "n":
-                        emit(self._current_channel, "\n")
+                        self._emit_char("\n", emit)
                     elif c == "t":
-                        emit(self._current_channel, "\t")
+                        self._emit_char("\t", emit)
                     elif c in ('"', "\\", "/"):
-                        emit(self._current_channel, c)
+                        self._emit_char(c, emit)
                     elif c == "u":
                         if len(self._buf) >= 4:
                             try:
-                                emit(self._current_channel, chr(int(self._buf[:4], 16)))
+                                self._emit_char(chr(int(self._buf[:4], 16)), emit)
                             except ValueError:
-                                emit(self._current_channel, "\\u" + self._buf[:4])
+                                for ch in "\\u" + self._buf[:4]:
+                                    self._emit_char(ch, emit)
                             self._buf = self._buf[4:]
                         else:
                             # Not enough chars yet — restore state and wait for next chunk
@@ -180,16 +185,63 @@ class StructuredJsonStreamFilter:
                     self._escape_next = True
                 elif c == '"':
                     self._state = "SCANNING"
+                    if self._in_bracket:
+                        emit(self._current_channel, f"[{self._tag_buf}")
+                        self._in_bracket = False
+                        self._tag_buf = ""
+                    self._skip_space = False
                     # Пробел-разделитель между текстами сегментов (не для reasoning —
                     # оно одно). last content-кусок мог оканчиваться не пробелом.
                     if self._current_channel == "content":
                         emit("content", " ")
                 else:
-                    emit(self._current_channel, c)
+                    self._emit_char(c, emit)
         return out
+
+    def _emit_char(self, ch: str, emit_fn) -> None:
+        if self._current_channel != "content":
+            emit_fn(self._current_channel, ch)
+            return
+
+        if self._skip_space:
+            if ch in (" ", "\t"):
+                return
+            self._skip_space = False
+
+        if not self._in_bracket:
+            if ch == "[":
+                self._in_bracket = True
+                self._tag_buf = ""
+            else:
+                emit_fn("content", ch)
+        else:
+            if ch == "]":
+                self._in_bracket = False
+                tag = self._tag_buf.strip()
+                from handlers.fish_audio_handler import resolve_fish_tag, is_technical_marker
+                if (
+                    is_technical_marker(tag)
+                    or resolve_fish_tag(tag)
+                ):
+                    self._tag_buf = ""
+                    self._skip_space = True
+                else:
+                    emit_fn("content", f"[{self._tag_buf}]")
+                    self._tag_buf = ""
+            elif len(self._tag_buf) > 40:
+                self._in_bracket = False
+                emit_fn("content", f"[{self._tag_buf}{ch}")
+                self._tag_buf = ""
+            else:
+                self._tag_buf += ch
 
     def flush_visible(self) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
+        if self._in_bracket:
+            out.append((self._current_channel, f"[{self._tag_buf}"))
+            self._in_bracket = False
+            self._tag_buf = ""
+        self._skip_space = False
         if self._state == "IN_VALUE":
             tail = self._buf
             self._buf = ""
@@ -759,6 +811,7 @@ class ChatController(GenerationActivityService):
                             "voice_profile": voice_profile,
                             "message_id": assistant_message_id,
                             "trace_id": trace_id,
+                            "structured_data": structured_data,
                         })
                         voiceover_pending = True
                     else:
@@ -822,9 +875,16 @@ class ChatController(GenerationActivityService):
                         "speaker_name": effective_character_name or "",
                         "message_id": assistant_message_id or "",
                     }, delivery=EventDelivery.ORDERED)
+                from utils import clean_dialogue_for_subtitles
+
+                clean_ui_response = (
+                    clean_dialogue_for_subtitles(response_text)
+                    if (response_text and response_text.strip())
+                    else response_text
+                )
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
-                    "response": response_text if response_text is not None else "...",
+                    "response": clean_ui_response if clean_ui_response is not None else "...",
                     "is_initial": False,
                     "emotion": "",
                     "character_id": effective_character_id or "",
@@ -840,7 +900,7 @@ class ChatController(GenerationActivityService):
             self.event_bus.emit(Events.GUI.UPDATE_DEBUG_INFO)
             self.event_bus.emit(Events.GUI.UPDATE_TOKEN_COUNT)
 
-            return response_text
+            return result.text if str(effective_character_id or "").strip() == "GameMaster" else response_text
 
         except OperationCancelledError:
             trace_status = "cancelled"
@@ -999,12 +1059,34 @@ class ChatController(GenerationActivityService):
         control_plane_trusted: bool = False,
     ) -> dict:
         """Build the response contract; addressees live only on individual segments."""
+        from utils import clean_dialogue_for_subtitles
+
+        clean_resp = (
+            clean_dialogue_for_subtitles(response_text)
+            if (response_text and response_text.strip())
+            else response_text
+        )
         result = {
             "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
-            "response": response_text,
+            "response": clean_resp,
         }
         if structured_data:
-            result["segments"] = structured_data.get("segments", [])
+            raw_segments = structured_data.get("segments", [])
+            cleaned_segments = []
+            if isinstance(raw_segments, list):
+                for seg in raw_segments:
+                    if isinstance(seg, dict):
+                        seg_copy = dict(seg)
+                        if "text" in seg_copy and isinstance(seg_copy["text"], str):
+                            if seg_copy["text"].strip():
+                                seg_copy["text"] = clean_dialogue_for_subtitles(seg_copy["text"])
+                        cleaned_segments.append(seg_copy)
+                    else:
+                        cleaned_segments.append(seg)
+            else:
+                cleaned_segments = raw_segments
+
+            result["segments"] = cleaned_segments
             result["attitude_change"] = structured_data.get("attitude_change", 0)
             result["boredom_change"] = structured_data.get("boredom_change", 0)
             result["stress_change"] = structured_data.get("stress_change", 0)

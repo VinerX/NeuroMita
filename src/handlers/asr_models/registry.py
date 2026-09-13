@@ -7,6 +7,7 @@ from typing import Any
 
 _ENGINE_LOADERS: tuple[tuple[str, str], ...] = (
     ("google", "handlers.asr_models.google_recognizer:GoogleRecognizer"),
+    ("nanogpt", "handlers.asr_models.nanogpt_recognizer:NanoGPTRecognizer"),
     ("gigaam", "handlers.asr_models.gigaam_recognizer:GigaAMRecognizer"),
     ("gigaam_onnx", "handlers.asr_models.gigaam_onnx_recognizer:GigaAMOnnxRecognizer"),
     ("whisper", "handlers.asr_models.whisper_recognizer:WhisperRecognizer"),

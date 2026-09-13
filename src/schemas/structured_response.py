@@ -106,6 +106,66 @@ def _to_gemini_schema(schema: dict) -> dict:
     return convert(copy.deepcopy(schema))
 
 
+def _inline_defs(schema: dict) -> dict:
+    """Recursively inline all $ref references matching #/$defs/ into the schema.
+
+    OpenAI-compatible proxies and translation gateways (e.g. CLI Proxy routing
+    to Google Gemini) often lack a full JSON Schema dereferencer and strip or
+    drop unresolvable $ref keys. When `segments.items` has only `{"$ref": "#/$defs/ResponseSegment"}`,
+    the gateway produces `items: {}`, causing constrained decoding to emit
+    empty segment objects `[{}]` without `text`.
+
+    Inlining definitions directly into the schema ensures cross-provider compatibility
+    while preserving standard JSON Schema validity.
+    """
+    import copy
+
+    schema = copy.deepcopy(schema)
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict) or not defs:
+        return schema
+
+    memo: dict[str, dict] = {}
+
+    def resolve_def(name: str, visiting: set[str]) -> dict:
+        if name in memo:
+            return copy.deepcopy(memo[name])
+        if name not in defs or name in visiting:
+            return {}
+        visiting.add(name)
+        resolved = resolve_node(copy.deepcopy(defs[name]), visiting)
+        visiting.remove(name)
+        memo[name] = resolved
+        return copy.deepcopy(resolved)
+
+    def resolve_node(node: Any, visiting: set[str]) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref = str(node["$ref"])
+                if ref.startswith("#/$defs/"):
+                    def_name = ref[len("#/$defs/"):]
+                    resolved = resolve_def(def_name, visiting)
+                    if isinstance(resolved, dict) and resolved:
+                        out = copy.deepcopy(resolved)
+                        for k, v in node.items():
+                            if k != "$ref":
+                                out[k] = resolve_node(v, visiting)
+                        return out
+            return {k: resolve_node(v, visiting) for k, v in node.items()}
+        elif isinstance(node, list):
+            return [resolve_node(item, visiting) for item in node]
+        return node
+
+    resolved_defs = {k: resolve_def(k, set()) for k in defs}
+    schema["$defs"] = resolved_defs
+
+    for key, value in list(schema.items()):
+        if key != "$defs":
+            schema[key] = resolve_node(value, set())
+
+    return schema
+
+
 def _remove_schema_properties(schema: dict, field_names: set[str]) -> None:
     properties = schema.get("properties")
     if not isinstance(properties, dict):
@@ -243,7 +303,7 @@ class ResponseSegment(BaseModel):
     animations: List[str] = Field(default_factory=list, description="Animations to play once during this segment")
     idle_animations: List[str] = Field(default_factory=list, description="Animations to set as looping idle")
     commands: List[str] = Field(default_factory=list, description="Game commands to execute (supports prefix routing: light:*, music:*, eye:*)")
-    movement_modes: List[str] = Field(default_factory=list, description="Movement mode changes")
+    movement_modes: List[str] = Field(default_factory=list, description="Legacy movement policy. Prefer actor.set_movement_mode from the runtime intent contract when available.")
     visual_effects: List[str] = Field(default_factory=list, description="Visual effects to trigger")
     clothes: List[str] = Field(default_factory=list, description="Clothing/outfit changes")
     music: List[str] = Field(default_factory=list, description="Music changes")
@@ -265,7 +325,7 @@ class ResponseSegment(BaseModel):
         ),
     )
     hint: Optional[str] = Field(default=None, description="Hint text to display")
-    allow_sleep: Optional[bool] = Field(default=None, description="Whether to allow sleep")
+    allow_sleep: Optional[bool] = Field(default=None, description="Whether the PLAYER is allowed to sleep; never starts the character sleeping. Use actor.sleep from the runtime intent contract for the character.")
 
     @model_validator(mode="before")
     @classmethod
@@ -451,13 +511,28 @@ class StructuredResponse(BaseModel):
         """
         schema = cls.model_json_schema()
         if custom_params and "properties" in schema and "custom_fields" in schema["properties"]:
-            _type_map = {"float": "number", "double": "number", "int": "integer",
-                         "bool": "boolean", "str": "string", "string": "string"}
-            cf_props = {}
-            for p in custom_params:
-                key = p.get("change_command") or p["name"]
-                cf_props[key] = {"type": _type_map.get(p.get("type", "string"), "string")}
-            schema["properties"]["custom_fields"]["properties"] = cf_props
+            cf_schema = schema["properties"]["custom_fields"]
+            has_defs_ref = False
+            if "$defs" in schema:
+                try:
+                    import json as _json
+                    has_defs_ref = "#/$defs/" in _json.dumps(cf_schema)
+                except Exception:
+                    has_defs_ref = False
+            if not has_defs_ref:
+                _type_map = {"float": "number", "double": "number", "int": "integer",
+                             "bool": "boolean", "str": "string", "string": "string"}
+                cf_props = {}
+                for p in custom_params:
+                    key = p.get("change_command") or p["name"]
+                    cf_props[key] = {"type": _type_map.get(p.get("type", "string"), "string")}
+                if "anyOf" in cf_schema and isinstance(cf_schema["anyOf"], list):
+                    for branch in cf_schema["anyOf"]:
+                        if isinstance(branch, dict) and branch.get("type") == "object":
+                            branch["properties"] = cf_props
+                            break
+                elif cf_schema.get("type") == "object":
+                    cf_schema["properties"] = cf_props
         if exclude_fields:
             _remove_schema_properties(schema, exclude_fields)
         if exclude_segment_fields:
@@ -465,6 +540,7 @@ class StructuredResponse(BaseModel):
         _require_segments(schema)
         if require_fields:
             _require_fields(schema, require_fields)
+        schema = _inline_defs(schema)
         return {
             "type": "json_schema",
             "json_schema": {

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from schemas.structured_response import _to_gemini_schema
+from schemas.structured_response import _inline_defs, _to_gemini_schema
 
 
 class GameMasterAction(BaseModel):
@@ -40,7 +40,7 @@ class GameMasterResponse(BaseModel):
             "json_schema": {
                 "name": "game_master_response",
                 "strict": False,
-                "schema": cls.model_json_schema(),
+                "schema": _inline_defs(cls.model_json_schema()),
             },
         }
 

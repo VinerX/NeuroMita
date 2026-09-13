@@ -13,7 +13,7 @@ class AudioHandler:
     _lock = threading.Lock()
 
     @classmethod
-    async def handle_voice_file(cls, file_path, delete: bool = True, volume: int = 100):
+    async def handle_voice_file(cls, file_path, delete: bool = True, volume: int = 100, *, raise_errors: bool = False):
         """Проигрывает звуковой файл (MP3 или OGG).
 
         volume — громкость воспроизведения в процентах (100 = как есть).
@@ -32,6 +32,8 @@ class AudioHandler:
                     logger.info(f"Файл {file_path} НЕ удалён. Ошибка: {format_exception(e)}")
         except Exception as e:
             logger.info(f"Ошибка при воспроизведении файла: {format_exception(e)}")
+            if raise_errors:
+                raise
 
     @staticmethod
     def _amplify_wav(path: str, gain: float) -> str | None:

@@ -16,5 +16,18 @@
     "boredom_min": 0.0,
     "boredom_max": 100.0,
     "stress_min": 0.0,
-    "stress_max": 100.0
+    "stress_max": 100.0,
+    "custom_params": [
+        {
+            "name": "Love",
+            "change_command": "love_change",
+            "type": "float",
+            "change_min": -5,
+            "change_max": 5,
+            "required": true,
+            "initial": 25,
+            "formula": "max(1, min(Love + love_change, 100))",
+            "description": "Уровень любви, романтической привязанности и интимности (1..100). Отражай в custom_fields в КАЖДОМ ответе: +1..+5 за теплые моменты, искренний флирт, объятия, ласку, заботу, комплименты; -1..-5 за грубость, холодность, попытки сбежать или внимание к другим девушкам; 0 если момент нейтральный."
+        }
+    ]
 }

@@ -40,7 +40,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'default_checkbutton': False, 'widget_name': 'use_voice_checkbox'},
         {'label': _("Вариант озвучки", "Voiceover Method"),
          'key': 'VOICEOVER_METHOD', 'type': 'combobox',
-         'options': ["TG", "Local"], 'default': 'Local',
+         'options': ["TG", "Local", "Fish Audio"], 'default': 'Local',
          'widget_name': 'method_combobox'},
     ]
 
@@ -60,6 +60,15 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             container_lay.addWidget(widget)
             if cfg.get('widget_name') == 'method_combobox':
                 self.method_frame = widget
+
+    from ui.settings.voiceover_settings.fish_audio import FishAudioSettings
+    self.fish_settings_frame = FishAudioSettings(container)
+    container_lay.addWidget(self.fish_settings_frame)
+    fish_playback = create_setting_widget(
+        gui=self, parent=self.fish_settings_frame, label=_("Озвучка в чате", "Voice in chat"),
+        setting_key="VOICEOVER_LOCAL_CHAT", widget_type="checkbutton", default_checkbutton=True,
+    )
+    self.fish_settings_frame.layout().addRow(fish_playback)
 
     self.tg_settings_frame = SettingsBodyWidget()
     tg_layout = QVBoxLayout(self.tg_settings_frame)

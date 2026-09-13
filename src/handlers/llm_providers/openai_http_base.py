@@ -183,6 +183,18 @@ class OpenAIHTTPProviderBase(BaseProvider):
         caps = req.capabilities or {}
         return bool(caps.get("structured_output", False))
 
+    @staticmethod
+    def _request_has_images(req: LLMRequest) -> bool:
+        if getattr(req, "image_data", None):
+            return True
+        for msg in (getattr(req, "messages", None) or []):
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in ("image_url", "image"):
+                        return True
+        return False
+
     def _resolve_request_url(self, req: LLMRequest) -> str:
         url = str(req.api_url or "").strip()
         if not url:
@@ -241,6 +253,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 excl = set() if has_custom else {"custom_fields"}
                 if not caps.get("schema_reasoning", True):
                     excl.add("reasoning")
+                if not self._request_has_images(req):
+                    excl.add("image_description")
                 excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
                 # intents is an internal Unity channel — hidden from the model
@@ -251,6 +265,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
                     exclude_fields=excl or None,
                     exclude_segment_fields=segment_excl or None,
                     require_fields=set(caps.get("structured_required_fields") or ()) or None,
+                    custom_params=caps.get("custom_params"),
                 )
             logger.debug(f"[{self.name}] Structured output enabled: response_format={rf_mode}")
 
@@ -302,6 +317,14 @@ class OpenAIHTTPProviderBase(BaseProvider):
         if resp.status_code == 400 and self._supports_structured_output(req):
             if req.stream:
                 resp.read()
+            def _is_schema_rejection(msg: str) -> bool:
+                m = msg.lower()
+                return any(k in m for k in (
+                    "response_format", "json_schema", "json_object",
+                    "response_schema", "generation_config", "schema",
+                    "properties", "structured"
+                ))
+
             rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
             if rf_mode != "json_object" and "response_format" in payload:
                 try:
@@ -309,12 +332,29 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 except Exception:
                     err_body = {}
                 err_msg = str(err_body)
-                if "response_format" in err_msg or "json_schema" in err_msg or "json_object" in err_msg:
+                if _is_schema_rejection(err_msg):
                     logger.warning(
                         f"[{self.name}] json_schema rejected by provider, retrying with json_object. "
                         f"Error: {err_msg[:200]}"
                     )
                     payload["response_format"] = {"type": "json_object"}
+                    resp.close()
+                    resp = self._request(request_url, req, payload)
+
+            if resp.status_code == 400 and "response_format" in payload:
+                if req.stream:
+                    resp.read()
+                try:
+                    err_body = resp.json()
+                except Exception:
+                    err_body = {}
+                err_msg = str(err_body)
+                if _is_schema_rejection(err_msg):
+                    logger.warning(
+                        f"[{self.name}] response_format rejected by provider, retrying without response_format. "
+                        f"Error: {err_msg[:200]}"
+                    )
+                    payload.pop("response_format", None)
                     resp.close()
                     resp = self._request(request_url, req, payload)
 
