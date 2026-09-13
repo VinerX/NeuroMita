@@ -112,6 +112,31 @@ class AudioCaptureConfig:
     min_speech_duration: float = 0.35
 
 
+class AdaptiveEnergyVAD:
+    """Lightweight adaptive energy-based Voice Activity Detector (no PyTorch required)."""
+
+    def __init__(self, initial_noise_floor: float = 0.005):
+        self.noise_floor = float(initial_noise_floor)
+        self.alpha = 0.95
+
+    def __call__(self, audio: np.ndarray, rate: int = 16000) -> float:
+        data = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if len(data) == 0:
+            return 0.0
+        rms = float(np.sqrt(np.mean(data ** 2)))
+
+        if rms < self.noise_floor * 1.5:
+            self.noise_floor = self.alpha * self.noise_floor + (1.0 - self.alpha) * rms
+            self.noise_floor = max(0.001, min(self.noise_floor, 0.05))
+
+        threshold = max(0.012, self.noise_floor * 3.0)
+        if rms < threshold:
+            return float(max(0.0, min(0.35, (rms / threshold) * 0.35)))
+        else:
+            ratio = (rms - threshold) / max(0.001, (threshold * 2.0))
+            return float(min(1.0, 0.55 + ratio * 0.45))
+
+
 class AudioCaptureService:
     """Owns live microphone capture, VAD and speech-segment assembly."""
 

@@ -384,15 +384,25 @@ class SpeechRecognition:
 
                     retry = 0
                     if SpeechRecognition._recognizer_type in ("google", "nanogpt"):
-                        from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
+                        from handlers.asr_audio_capture import AdaptiveEnergyVAD
                         import numpy as np
-                        import torch
 
-                        vad_model = await asyncio.to_thread(load_silero_vad_compatible)
+                        try:
+                            import torch
+                            from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
+                            vad_model = await asyncio.to_thread(load_silero_vad_compatible)
+                        except Exception:
+                            vad_model = AdaptiveEnergyVAD()
 
                         def speech_probability(audio: np.ndarray, sample_rate: int) -> float:
-                            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
-                            return float(vad_model(tensor, sample_rate).item())
+                            if isinstance(vad_model, AdaptiveEnergyVAD):
+                                return float(vad_model(audio, sample_rate))
+                            try:
+                                import torch
+                                tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+                                return float(vad_model(tensor, sample_rate).item())
+                            except Exception:
+                                return float(AdaptiveEnergyVAD()(audio, sample_rate))
 
                         async def transcribe_segment(audio: np.ndarray, sample_rate: int) -> None:
                             trace = performance_traces().start(
