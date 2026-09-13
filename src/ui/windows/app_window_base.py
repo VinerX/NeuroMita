@@ -35,6 +35,10 @@ from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_e
 from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
 from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.overlay_widget import OverlayWidget
+try:
+    from ui.widgets.shutdown_overlay import ShutdownOverlayPanel
+except Exception:
+    ShutdownOverlayPanel = None
 from utils import getTranslationVariant as _
 
 # None — валидное значение индикатора («нет особого состояния»), поэтому
@@ -1044,42 +1048,75 @@ class AppWindowBase(QMainWindow):
             return
 
         self._close_requested = True
-        self._show_shutdown_overlay()
+        show_overlay = getattr(self, "_show_shutdown_overlay", None)
+        if callable(show_overlay):
+            try:
+                show_overlay()
+            except Exception as exc:
+                logger.warning(f"Не удалось показать оверлей завершения: {exc}")
+                if hasattr(self, "setEnabled"):
+                    self.setEnabled(False)
+        elif hasattr(self, "setEnabled"):
+            self.setEnabled(False)
+
         logger.info("Закрытие запланировано вне нативного closeEvent")
         QTimer.singleShot(50, self._finish_deferred_close)
 
     def _show_shutdown_overlay(self) -> None:
-        from ui.widgets.shutdown_overlay import ShutdownOverlayPanel
+        panel_cls = ShutdownOverlayPanel
+        if panel_cls is None:
+            try:
+                from ui.widgets.shutdown_overlay import ShutdownOverlayPanel as panel_cls
+            except Exception:
+                panel_cls = None
 
         overlay = getattr(self, "overlay", None)
-        if overlay is None:
-            self.setEnabled(False)
+        if overlay is None or panel_cls is None:
+            if hasattr(self, "setEnabled"):
+                self.setEnabled(False)
             return
 
-        central_widget = self.centralWidget()
-        if central_widget is not None:
-            central_widget.setEnabled(False)
-        overlay.set_content(ShutdownOverlayPanel(overlay), locked=True)
-        overlay.setGeometry(self.rect())
-        overlay.show_immediate()
-        overlay.repaint()
-        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        try:
+            central_widget = self.centralWidget() if hasattr(self, "centralWidget") else None
+            if central_widget is not None and hasattr(central_widget, "setEnabled"):
+                central_widget.setEnabled(False)
+            overlay.set_content(panel_cls(overlay), locked=True)
+            if hasattr(self, "rect"):
+                overlay.setGeometry(self.rect())
+            overlay.show_immediate()
+            overlay.repaint()
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        except Exception as exc:
+            logger.warning(f"Ошибка при отображении оверлея завершения: {exc}")
+            if hasattr(self, "setEnabled"):
+                self.setEnabled(False)
 
     def _finish_deferred_close(self):
         logger.info("Начинаем отложенное завершение backend и GUI")
         try:
-            self._shell_actions.close_application()
+            shell_actions = getattr(self, "_shell_actions", None)
+            if shell_actions is not None and hasattr(shell_actions, "close_application"):
+                shell_actions.close_application()
         except Exception as exc:
             logger.error(f"Ошибка при закрытии приложения: {format_exception(exc)}", exc_info=True)
 
         try:
-            self._window_actions.close()
+            window_actions = getattr(self, "_window_actions", None)
+            if window_actions is not None and hasattr(window_actions, "close"):
+                window_actions.close()
         except Exception:
             pass
 
         self._close_finalizing = True
         logger.info("Отложенное завершение выполнено; закрываем главное окно")
-        self.close()
+        try:
+            self.close()
+        except Exception as exc:
+            logger.error(f"Ошибка при закрытии главного окна: {format_exception(exc)}", exc_info=True)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def close_app(self):
         logger.info("Завершение программы...")
