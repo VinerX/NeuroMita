@@ -527,7 +527,14 @@ class SpeechRecognition:
                     "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                     "min_speech_duration": SpeechRecognition.MIN_SPEECH_DURATION_SEC,
                 }
-                settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
+                settings = SpeechRecognition._engine_settings.get(engine_id)
+                if not settings:
+                    try:
+                        from services.asr_settings_service import ensure_asr_settings_service
+                        settings = ensure_asr_settings_service().model_settings(engine_id)
+                    except Exception:
+                        settings = {}
+                settings = dict(settings or {})
                 start_payload = {
                     "engine_id": engine_id,
                     "microphone_index": int(device_id or 0),

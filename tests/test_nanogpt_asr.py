@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from unittest.mock import patch, MagicMock
 import numpy as np
@@ -72,3 +73,51 @@ class TestNanoGPTASR(unittest.IsolatedAsyncioTestCase):
         with patch('requests.post', return_value=mock_resp):
             res = await rec.transcribe(audio, 16000)
             self.assertIsNone(res)
+
+    def test_nanogpt_asr_config_load_and_save(self):
+        from handlers.asr_models.nanogpt_recognizer import (
+            load_nanogpt_asr_config,
+            save_nanogpt_asr_config,
+        )
+
+        test_cfg = {
+            "api_key": "sk-nano-test-12345",
+            "model": "gpt-4o-mini-transcribe",
+            "language": "en",
+        }
+        save_nanogpt_asr_config(test_cfg)
+
+        loaded = load_nanogpt_asr_config()
+        self.assertEqual(loaded["api_key"], "sk-nano-test-12345")
+        self.assertEqual(loaded["model"], "gpt-4o-mini-transcribe")
+        self.assertEqual(loaded["language"], "en")
+
+    def test_find_key_in_api_presets(self):
+        from handlers.asr_models.nanogpt_recognizer import find_nanogpt_key_in_api_presets
+
+        fake_presets = {
+            "presets": {
+                "10004": {
+                    "id": "10004",
+                    "name": "NanoGPT",
+                    "key": "sk-nano-preset-found",
+                }
+            }
+        }
+        with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_presets))), \
+             patch("os.path.exists", return_value=True):
+            key = find_nanogpt_key_in_api_presets()
+            self.assertEqual(key, "sk-nano-preset-found")
+
+    def test_is_nanogpt_asr_configured(self):
+        from handlers.asr_models.nanogpt_recognizer import (
+            is_nanogpt_asr_configured,
+            save_nanogpt_asr_config,
+        )
+
+        save_nanogpt_asr_config({"api_key": "sk-nano-valid-key"})
+        self.assertTrue(is_nanogpt_asr_configured())
+
+        save_nanogpt_asr_config({"api_key": ""})
+        with patch("handlers.asr_models.nanogpt_recognizer.find_nanogpt_key_in_api_presets", return_value=""):
+            self.assertFalse(is_nanogpt_asr_configured())

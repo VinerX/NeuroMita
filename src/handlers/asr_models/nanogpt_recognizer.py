@@ -109,6 +109,14 @@ class NanoGPTRecognizer(SpeechRecognizerInterface):
         if self.api_key:
             return self.api_key
 
+        try:
+            from services.asr_settings_service import ensure_asr_settings_service
+            k = str(ensure_asr_settings_service().model_settings("nanogpt").get("api_key") or "").strip()
+            if k:
+                return k
+        except Exception:
+            pass
+
         from pathlib import Path
 
         # 1. Читаем из настроек ASR
@@ -276,3 +284,87 @@ class NanoGPTRecognizer(SpeechRecognizerInterface):
             if self.logger:
                 self.logger.error(f"NanoGPT ASR ошибка запроса: {format_exception(exc)}")
             return None
+
+
+def find_nanogpt_key_in_api_presets() -> str:
+    """Ищет ключ NanoGPT в сохранённых API пресетах (Settings/api_presets.json)."""
+    from pathlib import Path
+    candidates = [
+        Path(os.getcwd()) / "Settings" / "api_presets.json",
+        Path(__file__).resolve().parents[2] / "Settings" / "api_presets.json",
+        Path(__file__).resolve().parents[3] / "Settings" / "api_presets.json",
+    ]
+    try:
+        from core.app_paths import settings_path
+        candidates.insert(0, Path(settings_path("api_presets.json", create_parent=False)))
+    except Exception:
+        pass
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                presets = data.get("presets", {})
+                for p in presets.values():
+                    name = str(p.get("name", "")).lower()
+                    base = str(p.get("base", ""))
+                    pid = str(p.get("id", ""))
+                    if "nano" in name or base == "10001" or pid == "10004":
+                        key = str(p.get("key") or "").strip()
+                        if key:
+                            return key
+            except Exception:
+                pass
+
+    env_key = os.environ.get("NANOGPT_API_KEY") or os.environ.get("NANO_GPT_API_KEY")
+    return str(env_key or "").strip()
+
+
+def load_nanogpt_asr_config() -> dict[str, str]:
+    api_key = ""
+    model = "Whisper-Large-V3"
+    language = "ru"
+
+    try:
+        from services.asr_settings_service import ensure_asr_settings_service
+        cfg = ensure_asr_settings_service().model_settings("nanogpt")
+        if isinstance(cfg, dict):
+            api_key = str(cfg.get("api_key") or "").strip()
+            model = str(cfg.get("model") or "Whisper-Large-V3").strip()
+            language = str(cfg.get("language") or "ru").strip()
+    except Exception:
+        pass
+
+    if not api_key:
+        api_key = find_nanogpt_key_in_api_presets()
+
+    return {
+        "api_key": api_key,
+        "model": model or "Whisper-Large-V3",
+        "language": language or "ru",
+    }
+
+
+def save_nanogpt_asr_config(config: dict[str, str]) -> None:
+    clean = {
+        "api_key": str(config.get("api_key") or "").strip(),
+        "model": str(config.get("model") or "Whisper-Large-V3").strip(),
+        "language": str(config.get("language") or "ru").strip(),
+    }
+    try:
+        from services.asr_settings_service import ensure_asr_settings_service
+        ensure_asr_settings_service().set_model_settings("nanogpt", clean)
+    except Exception:
+        pass
+
+    try:
+        from handlers.asr_handler import SpeechRecognition
+        SpeechRecognition.set_engine_settings("nanogpt", clean)
+    except Exception:
+        pass
+
+
+def is_nanogpt_asr_configured() -> bool:
+    cfg = load_nanogpt_asr_config()
+    return bool(cfg.get("api_key"))

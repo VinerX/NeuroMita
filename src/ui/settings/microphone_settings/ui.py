@@ -85,6 +85,13 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Модель", "Model"), engine_field, label_w))
     root_lay.addWidget(self.asr_manage_button, 0)
 
+    try:
+        from ui.settings.microphone_settings.nanogpt_asr import NanoGPTAsrSettings
+        self.nanogpt_settings_frame = NanoGPTAsrSettings(root)
+        root_lay.addWidget(self.nanogpt_settings_frame)
+    except Exception:
+        self.nanogpt_settings_frame = None
+
     # 3) Текущий микрофон + refresh
     mic_field = SettingsBodyWidget()
     mic_h = QHBoxLayout(mic_field)

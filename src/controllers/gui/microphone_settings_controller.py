@@ -165,7 +165,9 @@ class MicrophoneSettingsController(BaseController):
 
         self.refresh_microphones()
         self.refresh_engines()
+        self._update_nanogpt_frame_visibility()
         QTimer.singleShot(400, lambda: self._ui(self.refresh_engines))
+        QTimer.singleShot(450, lambda: self._ui(self._update_nanogpt_frame_visibility))
 
         QTimer.singleShot(1200, lambda: self._ui(self._bind_if_ready))
 
@@ -427,7 +429,7 @@ class MicrophoneSettingsController(BaseController):
                     return
 
                 glossary = result if isinstance(result, list) else []
-                engines: list[str] = []
+                engines: list[tuple[str, str]] = []
                 for item in glossary:
                     try:
                         metadata = item.get("metadata") if isinstance(item, dict) else None
@@ -438,7 +440,9 @@ class MicrophoneSettingsController(BaseController):
                             and bool(status.get("ready", False))
                             and metadata.get("item_id")
                         ):
-                            engines.append(str(metadata["item_id"]))
+                            item_id = str(metadata["item_id"])
+                            title = str(metadata.get("title") or item_id)
+                            engines.append((item_id, title))
                     except Exception:
                         pass
 
@@ -451,14 +455,23 @@ class MicrophoneSettingsController(BaseController):
                         if empty_status is not None:
                             empty_status.setVisible(False)
                         v.recognizer_combobox.setEnabled(True)
-                        v.recognizer_combobox.addItems(engines)
+                        for item_id, title in engines:
+                            v.recognizer_combobox.addItem(title, item_id)
 
-                        idx = v.recognizer_combobox.findText(desired)
+                        idx = -1
+                        for i in range(v.recognizer_combobox.count()):
+                            val = v.recognizer_combobox.itemData(i)
+                            txt = v.recognizer_combobox.itemText(i)
+                            if val == desired or txt == desired or (desired and desired in (val, txt)):
+                                idx = i
+                                break
+
                         if idx >= 0:
                             v.recognizer_combobox.setCurrentIndex(idx)
                         else:
                             v.recognizer_combobox.setCurrentIndex(0)
-                            self._save_setting("RECOGNIZER_TYPE", v.recognizer_combobox.currentText())
+                            first_id = v.recognizer_combobox.itemData(0) or v.recognizer_combobox.currentText()
+                            self._save_setting("RECOGNIZER_TYPE", str(first_id))
                     else:
                         v.recognizer_combobox.setEnabled(False)
                         v.recognizer_combobox.setVisible(False)
@@ -469,7 +482,8 @@ class MicrophoneSettingsController(BaseController):
                     v.recognizer_combobox.blockSignals(False)
 
                 try:
-                    new_engine = v.recognizer_combobox.currentText() if v.recognizer_combobox.isEnabled() else ""
+                    curr_idx = v.recognizer_combobox.currentIndex() if v.recognizer_combobox.isEnabled() else -1
+                    new_engine = str(v.recognizer_combobox.itemData(curr_idx) or v.recognizer_combobox.currentText() or "") if curr_idx >= 0 else ""
                 except Exception:
                     new_engine = ""
 
@@ -477,6 +491,7 @@ class MicrophoneSettingsController(BaseController):
                     self._reset_init_status()
 
                 self._apply_asr_install_status(new_engine if engines else "")
+                self._update_nanogpt_frame_visibility(new_engine)
 
             self._ui(apply)
 
@@ -591,18 +606,58 @@ class MicrophoneSettingsController(BaseController):
         except Exception as e:
             logger.error(f"Mic change error: {format_exception(e)}")
 
+    def _update_nanogpt_frame_visibility(self, engine: str | None = None):
+        v = self.view
+        frame = getattr(v, "nanogpt_settings_frame", None)
+        if frame is None:
+            return
+        if engine is None and hasattr(v, "recognizer_combobox"):
+            idx = v.recognizer_combobox.currentIndex()
+            engine = v.recognizer_combobox.itemData(idx) if idx >= 0 else v.recognizer_combobox.currentText()
+        eng = str(engine or "").strip().lower()
+        frame.setVisible("nanogpt" in eng)
+
     def _on_engine_changed(self, engine: str):
         v = self.view
         if not v or not getattr(v, "recognizer_combobox", None) or not v.recognizer_combobox.isEnabled():
             return
-        eng = str(engine or "").strip()
-        if not eng:
+        idx = v.recognizer_combobox.currentIndex()
+        eng_id = v.recognizer_combobox.itemData(idx) if idx >= 0 else None
+        eng_str = str(eng_id or engine or "").strip()
+        if not eng_str:
             return
         self._reset_init_status()
-        self._save_setting("RECOGNIZER_TYPE", eng)
-        self._apply_asr_install_status(eng)
+        self._save_setting("RECOGNIZER_TYPE", eng_str)
+        self._apply_asr_install_status(eng_str)
+        self._update_nanogpt_frame_visibility(eng_str)
 
     def _on_active_toggled(self, state: int):
+        v = self.view
+        if state and v and hasattr(v, "recognizer_combobox"):
+            idx = v.recognizer_combobox.currentIndex()
+            eng = str(v.recognizer_combobox.itemData(idx) or v.recognizer_combobox.currentText() or "").lower()
+            if "nanogpt" in eng:
+                try:
+                    from ui.settings.microphone_settings.nanogpt_asr import load_nanogpt_asr_config
+                    cfg = load_nanogpt_asr_config()
+                    if not cfg.get("api_key"):
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(
+                            v,
+                            _("Требуется API-ключ", "API Key Required"),
+                            _(
+                                "Для распознавания речи через NanoGPT укажите ваш API-ключ в настройках ниже.",
+                                "To use NanoGPT speech recognition, please specify your API key in the settings below.",
+                            ),
+                        )
+                        v.mic_active_checkbox.blockSignals(True)
+                        try:
+                            v.mic_active_checkbox.setChecked(False)
+                        finally:
+                            v.mic_active_checkbox.blockSignals(False)
+                        return
+                except Exception:
+                    pass
         self._save_setting("MIC_ACTIVE", bool(state))
 
     def _on_instant_toggled(self, state: int):
