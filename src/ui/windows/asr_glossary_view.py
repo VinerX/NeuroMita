@@ -547,6 +547,8 @@ class AsrGlossaryView(QWidget):
 
             else:
                 w = QLineEdit("" if val is None else str(val))
+                if any(sec in key.lower() for sec in ("key", "secret", "token", "password")):
+                    w.setEchoMode(QLineEdit.EchoMode.Password)
                 w.editingFinished.connect(
                     lambda ww=w, e=engine_id, k=key: self._view_model.dispatch(
                         SetAsrOption(e, k, ww.text().strip())

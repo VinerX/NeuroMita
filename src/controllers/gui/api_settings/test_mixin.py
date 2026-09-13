@@ -34,17 +34,21 @@ class TestMixin:
             "id": self.current_preset_id,
             "base": base_id,
             "key": v.api_key_row.text(),
+            "url": v.api_url_row.text(),
+            "protocol_id": self._current_protocol_id_ui(),
         })
 
     def _on_test_result(self, event):
         data = event.data or {}
-        if data.get("id") != self.current_preset_id:
+        incoming_id = data.get("id")
+        if incoming_id != self.current_preset_id and not (incoming_id in (0, None) and self.current_preset_id in (0, None)):
             return
         self.test_result_received.emit(dict(data))
 
     def _on_test_failed(self, event):
         data = event.data or {}
-        if data.get("id") != self.current_preset_id:
+        incoming_id = data.get("id")
+        if incoming_id != self.current_preset_id and not (incoming_id in (0, None) and self.current_preset_id in (0, None)):
             return
         self.test_result_failed.emit(dict(data))
 

@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
+from handlers.asr_audio_capture import AdaptiveEnergyVAD, AudioCaptureConfig, AudioCaptureService
 
 
 class ASRService:
@@ -164,10 +164,15 @@ class ASRService:
             return bool(self._active)
 
         def _speech_probability(audio: np.ndarray, rate: int) -> float:
-            import torch
+            if isinstance(vad_model, AdaptiveEnergyVAD):
+                return float(vad_model(audio, rate))
+            try:
+                import torch
 
-            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
-            return float(vad_model(tensor, rate).item())
+                tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+                return float(vad_model(tensor, rate).item())
+            except Exception:
+                return float(AdaptiveEnergyVAD()(audio, rate))
 
         async def _transcribe_segment(audio: np.ndarray, rate: int) -> None:
             text = await rec.transcribe(audio, rate)
@@ -295,13 +300,14 @@ class ASRService:
             return self._vad_model
 
         def load() -> Any:
-            import torch  # noqa: F401
-
             try:
+                import torch  # noqa: F401
                 from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
+                return load_silero_vad_compatible()
             except Exception as e:
-                raise RuntimeError(f"silero_vad not available: {format_exception(e)}") from None
-            return load_silero_vad_compatible()
+                if self._logger:
+                    self._logger.info(f"PyTorch/Silero VAD недоступен ({e}), используется адаптивный VAD на основе энергии.")
+                return AdaptiveEnergyVAD()
 
         self._vad_model = await asyncio.to_thread(load)
         return self._vad_model

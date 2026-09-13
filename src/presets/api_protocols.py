@@ -99,3 +99,12 @@ API_PROTOCOLS_DATA = [
         "transforms": [],
     },
 ]
+
+API_PROTOCOLS_DATA.append({
+    "id": "custom_openai_default", "name": "Custom / NanoGPT (OpenAI-compatible)",
+    "dialect": Dialects.OPENAI_CHAT_COMPLETIONS, "provider": "common",
+    "auth": {"mode": "bearer"}, "headers": {},
+    "capabilities": {"tools_native": False, "streaming": True,
+                     "streaming_with_tools": False, "structured_output": False},
+    "transforms": [],
+})

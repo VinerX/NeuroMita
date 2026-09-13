@@ -349,6 +349,9 @@ class AppShellController:
                 and model_id
                 and local_voice.check_initialized(model_id)
             )
+            if method == "Fish Audio" and use_voice:
+                from handlers.fish_audio_handler import is_configured
+                voice_initialized = is_configured()
             from managers.rag.readiness import rag_readiness
 
             rag = rag_readiness()

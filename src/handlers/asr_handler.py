@@ -383,16 +383,26 @@ class SpeechRecognition:
                     eb.emit(Events.Speech.ASR_MODEL_INITIALIZED)
 
                     retry = 0
-                    if SpeechRecognition._recognizer_type == "google":
-                        from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
+                    if SpeechRecognition._recognizer_type in ("google", "nanogpt"):
+                        from handlers.asr_audio_capture import AdaptiveEnergyVAD
                         import numpy as np
-                        import torch
 
-                        vad_model = await asyncio.to_thread(load_silero_vad_compatible)
+                        try:
+                            import torch
+                            from handlers.asr_models.silero_vad_compat import load_silero_vad_compatible
+                            vad_model = await asyncio.to_thread(load_silero_vad_compatible)
+                        except Exception:
+                            vad_model = AdaptiveEnergyVAD()
 
                         def speech_probability(audio: np.ndarray, sample_rate: int) -> float:
-                            tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
-                            return float(vad_model(tensor, sample_rate).item())
+                            if isinstance(vad_model, AdaptiveEnergyVAD):
+                                return float(vad_model(audio, sample_rate))
+                            try:
+                                import torch
+                                tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
+                                return float(vad_model(tensor, sample_rate).item())
+                            except Exception:
+                                return float(AdaptiveEnergyVAD()(audio, sample_rate))
 
                         async def transcribe_segment(audio: np.ndarray, sample_rate: int) -> None:
                             trace = performance_traces().start(
@@ -517,7 +527,14 @@ class SpeechRecognition:
                     "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
                     "min_speech_duration": SpeechRecognition.MIN_SPEECH_DURATION_SEC,
                 }
-                settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
+                settings = SpeechRecognition._engine_settings.get(engine_id)
+                if not settings:
+                    try:
+                        from services.asr_settings_service import ensure_asr_settings_service
+                        settings = ensure_asr_settings_service().model_settings(engine_id)
+                    except Exception:
+                        settings = {}
+                settings = dict(settings or {})
                 start_payload = {
                     "engine_id": engine_id,
                     "microphone_index": int(device_id or 0),
@@ -544,8 +561,21 @@ class SpeechRecognition:
                     activated = False
 
                 if not activated:
+                    # Cloud or unmanaged ASR engines (e.g. nanogpt, google) do not have a dedicated
+                    # managed venv record, but run directly inside the shared AI worker process.
+                    try:
+                        f = eng.call("asr", "start_live", start_payload, timeout=30.0)
+                        activated = bool(f.result(timeout=30.0))
+                    except Exception as exc:
+                        logger.error(
+                            f"Direct ASR start_live failed for engine '{engine_id}': {format_exception(exc)}",
+                            exc_info=True,
+                        )
+                        activated = False
+
+                if not activated:
                     logger.error(
-                        f"Managed ASR environment could not be initialized for "
+                        f"ASR service could not be initialized for "
                         f"engine '{engine_id}'."
                     )
                     _emit_start_failure(_(

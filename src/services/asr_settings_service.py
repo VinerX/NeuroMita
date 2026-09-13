@@ -30,6 +30,7 @@ class FileASRSettingsService(ASRSettingsService):
             "engine": "google",
             "models": {
                 "google": {},
+                "nanogpt": {"model": "Whisper-Large-V3", "language": "ru", "api_key": ""},
                 "gigaam": {"device": "auto"},
             },
         }

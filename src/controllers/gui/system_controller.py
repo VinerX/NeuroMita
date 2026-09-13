@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import shutil
 from PyQt6.QtCore import QTimer
 from main_logger import logger
 from core.events import Events, Event
@@ -26,6 +28,13 @@ class SystemController(BaseController):
         QTimer.singleShot(100, self._check_and_install_ffmpeg_impl)
         
     def _check_and_install_ffmpeg_impl(self):
+        settings = getattr(self.main_controller, "settings", None)
+        if settings is not None and settings.get("VOICEOVER_METHOD") == "Fish Audio" and not settings.get("MIC_ACTIVE", False):
+            logger.info("Fish Audio uses PCM/WAV directly; FFmpeg is not required.")
+            return
+        if os.name != "nt":
+            logger.info("Using system FFmpeg: %s", shutil.which("ffmpeg") or "not installed")
+            return
         ffmpeg_path = Path(".") / "ffmpeg.exe"
         logger.info(f"Checking for FFmpeg at: {ffmpeg_path}")
 
