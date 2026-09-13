@@ -520,7 +520,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'title': 'NanoGPT (Whisper Large V3)',
          'description': 'Онлайн-распознавание через NanoGPT API (Whisper Large V3). Высокая точность '
                         'и скорость без скачивания весов, облачный инференс.',
-         'backend': 'cpu',
+         'backend': 'none',
          'legacy_kind': 'asr',
          'tags': ['Онлайн', 'NanoGPT', 'Whisper'],
          'languages': ['Multilingual', 'Russian', 'English'],
@@ -531,7 +531,7 @@ CATALOG_ENTRIES: tuple[InstallableCatalogEntry, ...] = (
          'title': 'NanoGPT (Whisper Large V3)',
          'description': 'Online speech recognition via NanoGPT API (Whisper Large V3). High accuracy '
                         'and speed with no local weights download, cloud inference.',
-         'backend': 'cpu',
+         'backend': 'none',
          'legacy_kind': 'asr',
          'tags': ['Online', 'NanoGPT', 'Whisper'],
          'languages': ['Multilingual', 'Russian', 'English'],

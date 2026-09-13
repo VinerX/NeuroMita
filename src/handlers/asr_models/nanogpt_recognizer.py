@@ -168,30 +168,19 @@ class NanoGPTRecognizer(SpeechRecognizerInterface):
         return ""
 
     def requirements(self) -> List[InstallRequirement]:
-        return [
-            InstallRequirement(id="sounddevice", kind="python_module", module="sounddevice", required=True),
-            InstallRequirement(id="silero_vad", kind="python_module", module="silero_vad", required=True),
-        ]
+        return []
 
     def pip_install_steps(self, ctx: dict) -> List[dict]:
-        return [
-            {
-                "progress": 20,
-                "description": _("Проверка зависимостей...", "Checking dependencies..."),
-                "packages": ["sounddevice", "silero-vad"],
-                "extra_args": None,
-            }
-        ]
+        return []
 
     def required_backend(self, ctx: dict) -> BackendKind:
-        return BackendKind.CPU
+        return BackendKind.NONE
 
     def install_manifest(self) -> list[dict]:
         return []
 
     def is_installed(self, ctx: dict | None = None) -> bool:
-        st = check_requirements(self.requirements(), ctx=build_runtime_ctx(ctx))
-        return bool(st.get("ok"))
+        return True
 
     async def install(self) -> bool:
         return True
