@@ -33,6 +33,7 @@ _VOICE_MODELS: dict[str, tuple[str, str]] = {
     "high_clf5": ("Cross-Lingual F5-TTS", "cross-lingual English and Chinese synthesis from a reference voice"),
     "high_clf5+low": ("Cross-Lingual F5-TTS + RVC", "cross-lingual synthesis with additional RVC timbre conversion"),
     "high+low": ("F5-TTS + RVC (Russian)", "lively Russian speech with a closer character timbre, but sometimes less stable"),
+    "fish-audio": ("Fish Audio", "expressive cloud voice with dynamic emotion tagging and natural prosody"),
 }
 
 
