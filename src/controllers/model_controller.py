@@ -2060,6 +2060,9 @@ class ModelController(GenerationService, ModelStateService):
         sample_id: str | None = None,
         dialogue: Any = None,
     ) -> Optional[ChatGenerationResult]:
+        if structured_model_cls is None:
+            from schemas.structured_response import StructuredResponse
+            structured_model_cls = StructuredResponse
         try:
             with perf_span(trace_id, "generation.structured_postprocess", stage="parse"):
                 parse_outcome = parse_structured_response_with_meta(

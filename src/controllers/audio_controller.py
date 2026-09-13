@@ -146,6 +146,17 @@ class AudioController(AudioStateService):
         else:
             text_for_voice = process_text_to_voice(text, allow_fish_tags=False)
 
+        loop_service = use(LoopService)
+        if not loop_service.is_running():
+            logger.error("Ошибка: Цикл событий не готов.")
+            if task_uid:
+                self._update_task_failed_voiceover(task_uid, "Event loop not ready")
+            self.waiting_answer = False
+            performance_traces().finish(trace_id, "error", error_stage="tts") if trace_id else None
+            return
+
+        self.waiting_answer = True
+
         try:
             if self.voiceover_method == "TG":
                 logger.info(f"Используем Telegram (Silero/Miku) для озвучки: {speaker}")
