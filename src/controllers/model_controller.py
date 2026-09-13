@@ -1739,8 +1739,7 @@ class ModelController(GenerationService, ModelStateService):
             is_json_payload = False
             stripped_raw = (visible_raw or "").strip()
             if not is_structured_output and stripped_raw:
-                if (stripped_raw.startswith("{") and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)) or \
-                   (stripped_raw.startswith("```") and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)):
+                if (("{" in stripped_raw or "```" in stripped_raw) and ("\"segments\"" in stripped_raw or "\"text\"" in stripped_raw)):
                     is_json_payload = True
                     logger.info(f"[ModelController][{char_id}] Auto-detected structured JSON payload from model response.")
 

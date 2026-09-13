@@ -140,6 +140,14 @@ class AudioController(AudioStateService):
             except Exception:
                 model_name = "s2.1-pro"
             segments = structured_data.get("segments") if isinstance(structured_data, dict) else None
+            if not segments and text and ("{" in text and ("\"segments\"" in text or "\"text\"" in text)):
+                try:
+                    from utils.structured_response_parser import parse_structured_response_with_meta
+                    parsed_res = parse_structured_response_with_meta(text)
+                    if parsed_res.response.segments:
+                        segments = [{"text": s.text, "emotions": s.emotions} for s in parsed_res.response.segments]
+                except Exception:
+                    pass
             if segments and isinstance(segments, list):
                 text_for_voice = format_text_with_fish_emotions(segments, model=model_name)
             else:

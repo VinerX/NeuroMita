@@ -230,7 +230,37 @@ def _escape_inner_quotes(text: str) -> str:
     return ''.join(result)
 
 
+def _clean_trailing_incomplete_json(text: str) -> str:
+    text = text.rstrip()
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+    if in_string:
+        return text
+    for _ in range(5):
+        prev = text
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*[-+]\s*$", "", text)
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*$", "", text)
+        text = re.sub(r",\s*\"[^\"]*\"?$", "", text)
+        text = re.sub(r":\s*[-+]\s*$", "", text)
+        text = re.sub(r"\{\s*\"[^\"]*\"?\s*$", "{", text)
+        text = re.sub(r",\s*\"[^\"]*\"\s*:\s*\{?\s*$", "", text)
+        text = re.sub(r"[,:]\s*$", "", text)
+        if text == prev:
+            break
+    return text
+
+
 def _close_truncated_json(text: str) -> str:
+    text = _clean_trailing_incomplete_json(text)
     stack = []
     in_string = False
     escape_next = False
@@ -569,11 +599,14 @@ def _extract_json_string(text: str) -> tuple[str, str]:
         text = text[brace_start:]
 
     if not text.endswith("}"):
-        brace_end = text.rfind("}")
-        if brace_end != -1:
-            if text[brace_end + 1:].strip():
-                extraction_kind = "embedded_json"
-            text = text[:brace_end + 1]
+        if text.count("{") <= text.count("}"):
+            brace_end = text.rfind("}")
+            if brace_end != -1:
+                if text[brace_end + 1:].strip():
+                    extraction_kind = "embedded_json"
+                text = text[:brace_end + 1]
+        else:
+            extraction_kind = "truncated_json"
 
     return text, extraction_kind
 

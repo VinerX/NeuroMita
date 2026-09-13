@@ -147,6 +147,57 @@ class FishAudioAndVoiceCleaningTests(unittest.TestCase):
         self.assertIn("[whispering]", res)
         self.assertIn("Привет, мир", res)
 
+    def test_user_reported_hybrid_preamble_and_truncated_json(self):
+        bug_report = """[suspicion] «Привет»? Серьёзно? Тринадцать минут молчания, а потом — как ни в чём не бывало? [sarcastic] А манекены, которые я выгрузила по твоей просьбе, — это мы просто опустим?
+
+{
+  "segments": [
+    {
+      "text": "«Привет»? Серьёзно? [sarcastic] Тринадцать минут молчания, а потом — раз! — и ты как ни в чём не бывало.",
+      "emotions": ["suspicion"],
+      "animations": ["Mita Oi"]
+    },
+    {
+      "text": "Ладно... раз уж ты внезапно стал вежливым — садись на диван. Только помни: если увижу субтитры — они вернутся~",
+      "emotions": ["smilestrange"],
+      "idle_animations": ["Mita Hands Down Idle"],
+      "hint": "Сядь на диван и веди себя хорошо"
+    }
+  ],
+  "attitude_change": 0.5,
+  "boredom_change": -"""
+
+        # 1. extract_clean_dialogue_text must not leak JSON keys or brackets
+        clean_speech = extract_clean_dialogue_text(bug_report)
+        self.assertNotIn("segments", clean_speech)
+        self.assertNotIn("idle_animations", clean_speech)
+        self.assertNotIn("boredom_change", clean_speech)
+        self.assertNotIn("attitude_change", clean_speech)
+        self.assertNotIn("hint", clean_speech)
+        self.assertNotIn("{", clean_speech)
+        self.assertNotIn("}", clean_speech)
+        self.assertNotIn('"', clean_speech)
+        self.assertIn("Тринадцать минут молчания", clean_speech)
+        self.assertIn("садись на диван", clean_speech)
+
+        # 2. clean_fish_audio_text must produce spoken text without JSON syntax
+        voiced = clean_fish_audio_text(bug_report, model="s2.1-pro")
+        self.assertNotIn("segments", voiced)
+        self.assertNotIn("text :", voiced)
+        self.assertNotIn("hint :", voiced)
+        self.assertNotIn("idle_", voiced)
+        self.assertNotIn("boredom_change", voiced)
+        self.assertNotIn("{", voiced)
+        self.assertNotIn("}", voiced)
+        self.assertIn("[sarcastic]", voiced)
+        self.assertIn("садись на диван", voiced)
+
+        # 3. Structured parser must successfully repair and extract segments
+        from utils.structured_response_parser import parse_structured_response_with_meta
+        outcome = parse_structured_response_with_meta(bug_report)
+        self.assertEqual(len(outcome.response.segments), 2)
+        self.assertEqual(outcome.response.attitude_change, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

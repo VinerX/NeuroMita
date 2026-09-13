@@ -466,69 +466,118 @@ def extract_dialogue_payload(text: str) -> str:
     # Unwrap markdown code fence if present
     if candidate.startswith("```"):
         unwrapped = re.sub(r"^```(?:json)?\s*", "", candidate)
-        if unwrapped.lstrip().startswith("{"):
-            candidate = re.sub(r"\s*```$", "", unwrapped).strip()
-    if not candidate.startswith("{"):
+        candidate = re.sub(r"\s*```$", "", unwrapped).strip()
+    if "{" not in candidate:
         return text.strip()
 
-    # Try full JSON parsing
-    parsed_json = None
-    if (candidate.startswith("{") and candidate.endswith("}")) or ("\"segments\"" in candidate and "{" in candidate):
-        try:
-            first_brace = candidate.find("{")
-            last_brace = candidate.rfind("}")
-            if first_brace != -1 and last_brace > first_brace:
-                parsed_json = json.loads(candidate[first_brace:last_brace + 1])
-        except Exception:
-            parsed_json = None
+    first_brace = candidate.find("{")
+    last_brace = candidate.rfind("}")
 
+    preamble = candidate[:first_brace].strip()
+    if last_brace != -1 and last_brace > first_brace:
+        json_cand = candidate[first_brace:last_brace + 1]
+        postamble = candidate[last_brace + 1:].strip()
+    else:
+        json_cand = candidate[first_brace:]
+        postamble = ""
+
+    parsed_json = None
+    try:
+        parsed_json = json.loads(json_cand)
+    except Exception:
+        pass
+
+    if parsed_json is None:
+        try:
+            from utils.structured_response_parser import _close_truncated_json
+            closed = _close_truncated_json(json_cand)
+            parsed_json = json.loads(closed)
+        except Exception:
+            pass
+
+    if parsed_json is None:
+        try:
+            from json_repair import repair_json  # type: ignore
+            repaired = repair_json(json_cand, return_objects=True)
+            if isinstance(repaired, dict):
+                parsed_json = repaired
+        except Exception:
+            pass
+
+    extracted_texts = []
     if isinstance(parsed_json, dict):
         segments = parsed_json.get("segments")
         if isinstance(segments, list) and segments:
-            texts = []
             for seg in segments:
                 if isinstance(seg, dict) and "text" in seg:
                     val = str(seg["text"]).strip()
                     if val:
-                        texts.append(val)
+                        extracted_texts.append(val)
                 elif isinstance(seg, str) and seg.strip():
-                    texts.append(seg.strip())
-            if texts:
-                return " ".join(texts)
-        if "response" in parsed_json and isinstance(parsed_json["response"], str):
+                    extracted_texts.append(seg.strip())
+        elif "response" in parsed_json and isinstance(parsed_json["response"], str):
             res_str = parsed_json["response"].strip()
             if res_str:
-                return res_str
-        if "text" in parsed_json and isinstance(parsed_json["text"], str):
+                extracted_texts.append(res_str)
+        elif "text" in parsed_json and isinstance(parsed_json["text"], str):
             text_str = parsed_json["text"].strip()
             if text_str:
-                return text_str
+                extracted_texts.append(text_str)
 
     # Regex fallback if JSON was malformed or truncated but contains "text": "..."
-    if "\"text\"" in candidate or "\"segments\"" in candidate:
-        text_matches = re.findall(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', candidate)
+    if not extracted_texts and ("\"text\"" in json_cand or "\"segments\"" in json_cand):
+        text_matches = re.findall(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', json_cand)
         if text_matches:
-            extracted = []
             for m in text_matches:
                 try:
                     cleaned = json.loads('"' + m + '"', strict=False).strip()
                 except Exception:
                     cleaned = m.strip()
                 if cleaned:
-                    extracted.append(cleaned)
-            if extracted:
-                return " ".join(extracted)
+                    extracted_texts.append(cleaned)
 
-    return text.strip()
+    extracted_dialogue = " ".join(extracted_texts).strip()
+
+    if extracted_dialogue:
+        if preamble:
+            p_clean = re.sub(r"\[[^\]]+\]|\([^)]+\)", "", preamble)
+            e_clean = re.sub(r"\[[^\]]+\]|\([^)]+\)", "", extracted_dialogue)
+            p_words = re.sub(r"[^\w\s]", "", p_clean.lower()).split()
+            e_norm = re.sub(r"[^\w\s]", "", e_clean.lower())
+            is_dup = False
+            if len(p_words) >= 2:
+                prefix = " ".join(p_words[:2])
+                if prefix in e_norm:
+                    is_dup = True
+            if not is_dup:
+                return f"{preamble} {extracted_dialogue}".strip()
+        return extracted_dialogue
+
+    fallback = f"{preamble} {postamble}".strip()
+    return fallback if fallback else text.strip()
 
 
 def extract_clean_dialogue_text(text: str) -> str:
     """Prepare a speech copy; keep the contents of ordinary formatting tags."""
     candidate = extract_dialogue_payload(text)
-    # Strip any residual schema keywords and technical syntax
-    candidate = re.sub(r'"?(?:attitude_change|boredom_change|stress_change)"?\s*:\s*[-+]?\d+(?:\.\d+)?', '', candidate)
-    candidate = re.sub(r'"?(?:emotions|animations|face_params|commands)"?\s*:\s*\[[^\]]*\]', '', candidate)
-    candidate = re.sub(r'"?(?:segments|memory_add|memory_update|memory_delete)"?\s*:\s*\[', '', candidate)
+
+    # Strip schema keywords and their values (key: [list], key: {obj}, key: "str", key: num)
+    schema_compound_keys = (
+        "segments|idle_animations|face_params|attitude_change|"
+        "boredom_change|stress_change|custom_fields|memory_add|memory_update|"
+        "memory_delete|memory_merge|reminder_add|reminder_delete|start_game|"
+        "end_game|secret_exposed|tool_call|response_protocol_version"
+    )
+    all_schema_keys = (
+        f"{schema_compound_keys}|hint|target|clothes|music|text|"
+        "emotions|animations|commands|movement_modes|visual_effects|interactions"
+    )
+    candidate = re.sub(
+        rf'"?(?:{all_schema_keys})"?\s*:\s*(?:\[[^\]]*\]|\{{[^}}]*\}}|"[^"]*"|[-+]?\d*(?:\.\d+)?|true|false|null|-|\+)?',
+        ' ', candidate, flags=re.IGNORECASE
+    )
+    candidate = re.sub(rf'\b(?:{schema_compound_keys})\b\s*:?', ' ', candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]', ' ', candidate)
 
     # Only known control tags own non-dialogue content. Formatting such as
     # <b>speech</b> must lose its markup, never its words.
@@ -545,6 +594,10 @@ def extract_clean_dialogue_text(text: str) -> str:
     # Strip inline NLP tags like [attitude+0.2], [emotions: smile], [animations: Hug]
     candidate = re.sub(r"\[(?:attitude|boredom|stress)[+-]?\d*(?:\.\d+)?\]", "", candidate)
     candidate = re.sub(r"\[(?:emotions|animations|face_params|idle_animations):[^\]]+\]", "", candidate)
+
+    # Strip residual braces and cleanup horizontal whitespace
+    candidate = re.sub(r"[\{\}]", " ", candidate)
+    candidate = re.sub(r"[ \t]+", " ", candidate)
 
     return candidate.strip()
 

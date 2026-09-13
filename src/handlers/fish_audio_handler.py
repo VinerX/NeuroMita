@@ -182,7 +182,10 @@ def format_text_with_fish_emotions(segments: list, model: str = "s2.1-pro") -> s
             continue
         if emo_tag:
             prefix = f"({emo_tag})" if use_parens else f"[{emo_tag}]"
-            parts.append(f"{prefix} {text}")
+            if not text.startswith(prefix) and not text.startswith(f"[{emo_tag}]") and not text.startswith(f"({emo_tag})"):
+                parts.append(f"{prefix} {text}")
+            else:
+                parts.append(text)
         else:
             parts.append(text)
     return " ".join(parts).strip()
@@ -203,6 +206,17 @@ def clean_fish_audio_text(text: str, model: str = "s2.1-pro") -> str:
     )
     cleaned = process_text_to_voice(normalized, allow_fish_tags=True)
     cleaned = re.sub(r"[\{\}\"]", " ", cleaned)
+    schema_compound_keys = (
+        "segments|idle_animations|face_params|attitude_change|"
+        "boredom_change|stress_change|custom_fields|memory_add|memory_update|"
+        "memory_delete|memory_merge|reminder_add|reminder_delete|start_game|"
+        "end_game|secret_exposed|tool_call|response_protocol_version"
+    )
+    cleaned = re.sub(rf"\b(?:{schema_compound_keys})\b\s*:?", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:hint|target|clothes|music|text|emotions|animations|commands|movement_modes|visual_effects|interactions)\s*:", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?:\s*,\s*)+", ", ", cleaned)
+    cleaned = re.sub(r"^\s*,\s*", "", cleaned)
+    cleaned = re.sub(r"\s*,\s*$", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
