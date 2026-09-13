@@ -80,7 +80,7 @@ def is_configured() -> bool:
 FISH_AUDIO_TAGS = {
     # Basic emotions (24 expressions)
     "happy", "sad", "angry", "excited", "calm", "nervous", "confident",
-    "surprised", "delighted", "scared", "worried", "upset", "frustrated",
+    "surprised", "satisfied", "delighted", "scared", "worried", "upset", "frustrated",
     "depressed", "empathetic", "embarrassed", "disgusted", "moved",
     "proud", "relaxed", "grateful", "curious", "sarcastic",
     # Advanced emotions (25 expressions)
@@ -91,9 +91,10 @@ FISH_AUDIO_TAGS = {
     "sympathetic", "compassionate", "determined", "resigned",
     # Tone markers (6 expressions)
     "in a hurry tone", "shouting", "screaming", "whispering", "soft tone", "emphasis",
-    # Audio effects (11 expressions)
+    # Audio effects & vocal sounds (16 expressions)
     "laughing", "chuckling", "sobbing", "crying loudly", "sighing",
-    "groaning", "panting", "gasping",
+    "groaning", "panting", "gasping", "yawning", "snoring", "clear throat",
+    "break", "long-break", "crowd laughing", "background laughter", "audience laughing",
 }
 
 NEUROMITA_EMOTION_TO_FISH_TAG = {
@@ -204,7 +205,7 @@ async def synthesize(text: str, *, config: dict | None = None, output_dir=None, 
         raise ValueError("Нет текста для озвучки.")
     headers = {"Authorization": "Bearer " + config["api_key"], "model": config["model"]}
     payload = {"text": text, "reference_id": config["voice_id"], "format": "pcm",
-               "sample_rate": 44100, "prosody": {"speed": config["speed"]}}
+               "sample_rate": 44100, "prosody": {"speed": config["speed"], "normalize_loudness": True}}
     directory = Path(output_dir) if output_dir is not None else base_dir()
     fd, name = tempfile.mkstemp(prefix="fish_", suffix=".wav", dir=directory)
     os.close(fd)
