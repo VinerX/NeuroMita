@@ -1,4 +1,5 @@
 from core.error_utils import format_exception
+import asyncio
 import os
 import glob
 from typing import Optional
@@ -13,6 +14,7 @@ from services.contracts import (
     AudioStateService,
     GameLinkService,
     LocalVoiceService,
+    ExternalVoiceService,
     LoopService,
     TelegramService,
 )
@@ -165,6 +167,25 @@ class AudioController(AudioStateService):
                     trace_id=trace_id,
                 ))
 
+            elif self.voiceover_method == "External":
+                from controllers.external_voice_controller import external_config_from_settings
+
+                config_snapshot = external_config_from_settings(self.settings)
+                loop_service.run(self._await_voiceover_and_postprocess(
+                    lambda: self._synthesize_external_voice(
+                        text_for_voice,
+                        character_id=character_id,
+                        config_snapshot=config_snapshot,
+                    ),
+                    method="external",
+                    original_text=original_text,
+                    task_uid=task_uid,
+                    character_id=character_id,
+                    voice_profile=voice_profile,
+                    message_id=message_id,
+                    trace_id=trace_id,
+                ))
+
             else:
                 logger.warning(f"Неизвестный метод озвучки: {self.voiceover_method}")
                 if task_uid:
@@ -243,16 +264,55 @@ class AudioController(AudioStateService):
         message_id: Optional[str] = None,
         trace_id: Optional[str] = None,
     ):
+        await self._await_voiceover_and_postprocess(
+            lambda: use(LocalVoiceService).synthesize(
+                voice_text,
+                character_id=character_id,
+                voice_profile=voice_profile,
+            ),
+            method="local",
+            original_text=original_text,
+            task_uid=task_uid,
+            character_id=character_id,
+            voice_profile=voice_profile,
+            message_id=message_id,
+            trace_id=trace_id,
+        )
+
+    async def _synthesize_external_voice(self, text, *, character_id, config_snapshot):
+        controller = getattr(self.main_controller, "external_voice_controller", None)
+        if controller is None:
+            controller = await asyncio.to_thread(
+                self.main_controller.ensure_feature,
+                "external_voice",
+                timeout=30.0,
+            )
+        if not isinstance(controller, ExternalVoiceService):
+            controller = use(ExternalVoiceService)
+        return await controller.synthesize(
+            text,
+            character_id=character_id,
+            config_snapshot=config_snapshot,
+        )
+
+    async def _await_voiceover_and_postprocess(
+        self,
+        synthesize,
+        *,
+        method: str,
+        original_text: str,
+        task_uid: Optional[str],
+        character_id: Optional[str] = None,
+        voice_profile: Optional[dict] = None,
+        message_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+    ):
         trace_status = "ok"
         trace_error_stage = ""
         trace_error_type = ""
         try:
-            with perf_span(trace_id, "tts.synthesis", method="local"):
-                result_path = await use(LocalVoiceService).synthesize(
-                    voice_text,
-                    character_id=character_id,
-                    voice_profile=voice_profile,
-                )
+            with perf_span(trace_id, "tts.synthesis", method=method):
+                result_path = await synthesize()
             if result_path:
                 perf_mark(trace_id, "tts.ready")
 
@@ -306,10 +366,10 @@ class AudioController(AudioStateService):
 
         except Exception as e:
             trace_status = "error"
-            trace_error_stage = trace_error_stage or "tts.local"
+            trace_error_stage = trace_error_stage or f"tts.{method}"
             trace_error_type = trace_error_type or type(e).__name__
             error_description = format_exception(e)
-            logger.error(f"Ошибка при выполнении локальной озвучки: {error_description}")
+            logger.error(f"Ошибка при выполнении озвучки ({method}): {error_description}")
             if task_uid:
                 self._update_task_failed_voiceover(task_uid, error_description)
         finally:

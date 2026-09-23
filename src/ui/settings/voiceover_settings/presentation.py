@@ -23,3 +23,8 @@ class OpenAIEngineSettings(UiIntent):
 @dataclass(frozen=True, slots=True)
 class RestartVoiceService(UiIntent):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class CheckExternalTTS(UiIntent):
+    pass

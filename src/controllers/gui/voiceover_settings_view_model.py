@@ -10,6 +10,7 @@ from ui.settings.voiceover_settings.presentation import (
     OpenVoiceAIHub,
     RestartVoiceService,
     StartTelegramVoice,
+    CheckExternalTTS,
 )
 
 
@@ -42,6 +43,9 @@ class VoiceoverSettingsViewModel(IntentViewModel[_VoiceoverActionsState]):
                 UiTopic.AI_RESTART_SERVICE,
                 {"service": "tts"},
             )
+            return
+        if isinstance(intent, CheckExternalTTS):
+            self._events.publish(UiTopic.GUI_EXTERNAL_TTS_CHECK)
             return
         if isinstance(intent, OpenVoiceAIHub):
             payload = {"category": "tts"}

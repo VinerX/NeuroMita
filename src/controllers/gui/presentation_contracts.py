@@ -43,6 +43,7 @@ class UiTopic(StrEnum):
     GUI_UPDATE_TOKEN_COUNT = "update_token_count_ui"
     GUI_VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
     GUI_VOICEOVER_REFRESH = "voiceover_refresh"
+    GUI_EXTERNAL_TTS_CHECK = "external_tts_check"
 
     HISTORY_COMPRESSED = "history_compressed"
 

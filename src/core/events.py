@@ -576,6 +576,7 @@ class Events:
         VOICEOVER_REFRESH = "voiceover_refresh"
         VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
         VOICEOVER_MODEL_REINITIALIZE = "voiceover_model_reinitialize"
+        EXTERNAL_TTS_CHECK = "external_tts_check"
 
     class Model:
         """События для управления LLM, персонажами и историей"""

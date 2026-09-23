@@ -1,4 +1,5 @@
 from core.error_utils import format_exception
+import asyncio
 import os
 import time
 import threading
@@ -13,6 +14,7 @@ from core.settings_values import as_bool as _as_bool
 from core.task_supervisor import task_supervisor
 from services.contracts import (
     InstallableCatalogService,
+    ExternalVoiceService,
     LocalVoiceService,
     TelegramService,
     VoiceModelService,
@@ -57,6 +59,7 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_refresh, weak=False)
         eb.subscribe(Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False)
         eb.subscribe(Events.GUI.VOICEOVER_MODEL_REINITIALIZE, self._on_model_reinitialize, weak=False)
+        eb.subscribe(Events.GUI.EXTERNAL_TTS_CHECK, self._on_external_tts_check, weak=False)
 
         self._subscribe_settings(
             self._on_setting_changed,
@@ -564,6 +567,41 @@ class VoiceoverGuiController(BaseController):
 
         self._ui(apply)
 
+    def _on_external_tts_check(self, _event: Event):
+        status_label = getattr(self.view, "external_tts_status_label", None)
+        if status_label is not None:
+            self._ui(
+                lambda: status_label.setText(
+                    _("Проверка подключения...", "Checking connection...")
+                )
+            )
+
+        def check():
+            controller = self.main_controller.ensure_feature(
+                "external_voice", timeout=30.0
+            )
+            if not isinstance(controller, ExternalVoiceService):
+                raise RuntimeError("External voice service is unavailable.")
+            config = controller.configuration_snapshot()
+            return asyncio.run(controller.health(config))
+
+        def on_ok(_result):
+            label = getattr(self.view, "external_tts_status_label", None)
+            if label is not None:
+                label.setText(_("Подключение успешно", "Connection successful"))
+
+        def on_error(exc):
+            label = getattr(self.view, "external_tts_status_label", None)
+            if label is not None:
+                label.setText(format_exception(exc))
+
+        self._run_async(
+            check,
+            on_ok,
+            on_error,
+            name="external-tts-health",
+        )
+
     # ---------- sync ----------
     def _sync_everything(self, *, allow_autoload: bool):
         if not self.view:
@@ -911,6 +949,7 @@ class VoiceoverGuiController(BaseController):
         method_cb = getattr(self.view, "method_combobox", None)
         tg_frame = getattr(self.view, "tg_settings_frame", None)
         local_frame = getattr(self.view, "local_settings_frame", None)
+        external_frame = getattr(self.view, "external_settings_frame", None)
 
         if method_cb is not None:
             method_cb.setEnabled(use_voice)
@@ -919,6 +958,8 @@ class VoiceoverGuiController(BaseController):
             tg_frame.setVisible(method == "TG")
         if local_frame is not None:
             local_frame.setVisible(method == "Local")
+        if external_frame is not None:
+            external_frame.setVisible(method == "External")
 
     # ---------- sidebar indicator ----------
     def _emit_voice_icon_state(self):

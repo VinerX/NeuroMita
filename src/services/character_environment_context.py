@@ -116,7 +116,9 @@ def format_character_environment_context(
         )
 
     method = str(snapshot.voice_method or "Local").strip()
-    if not snapshot.voice_enabled:
+    if not snapshot.voice_enabled and method.lower() == "external":
+        lines.append("External voice output is selected but currently switched off.")
+    elif not snapshot.voice_enabled:
         if snapshot.voice_model_installed:
             lines.append(
                 f"Your voice is currently switched off. The configured voice is {snapshot.voice_model_name or snapshot.voice_model_id}; keep this as background knowledge rather than repeatedly asking to enable it."
@@ -128,6 +130,11 @@ def format_character_environment_context(
     elif method.lower() in {"tg", "telegram"}:
         state = "connected and working" if snapshot.voice_model_initialized else "enabled but not connected"
         lines.append(f"Your Telegram voice is {state}.")
+    elif method.lower() == "external":
+        lines.append(
+            "External voice output is enabled and delegates speech generation to the configured server. "
+            "Do not assume a local voice model is used or that the server is reachable unless it was checked."
+        )
     elif not snapshot.voice_model_id:
         lines.append(
             "Local voice output is enabled, but no voice model is selected. The Player cannot hear you yet; suggest choosing a model only when relevant."
@@ -198,12 +205,17 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 initialized = False
             model_name = "Telegram voice"
-        elif voice_enabled and installed:
+        elif voice_enabled and installed and voice_method.lower() == "local":
             local_voice = services().get_optional(LocalVoiceService)
             try:
                 initialized = bool(local_voice and local_voice.check_initialized(model_id))
             except Exception:
                 initialized = False
+        if voice_method.lower() == "external":
+            model_id = ""
+            model_name = "External TTS"
+            installed = False
+            initialized = False
 
         pipeline_ready: bool | None = None
         runtime = services().get_optional(RuntimeFeatureService)

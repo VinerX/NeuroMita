@@ -2,7 +2,7 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QSlider
+    QSizePolicy, QPushButton, QSlider, QLineEdit
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
@@ -12,6 +12,7 @@ from ui.settings.voiceover_settings.presentation import (
     OpenVoiceAIHub,
     RestartVoiceService,
     StartTelegramVoice,
+    CheckExternalTTS,
 )
 
 try:
@@ -40,7 +41,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'default_checkbutton': False, 'widget_name': 'use_voice_checkbox'},
         {'label': _("Вариант озвучки", "Voiceover Method"),
          'key': 'VOICEOVER_METHOD', 'type': 'combobox',
-         'options': ["TG", "Local"], 'default': 'Local',
+         'options': ["TG", "Local", "External"], 'default': 'Local',
          'widget_name': 'method_combobox'},
     ]
 
@@ -116,6 +117,77 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             tg_layout.addWidget(widget)
 
     container_lay.addWidget(self.tg_settings_frame)
+
+    self.external_settings_frame = SettingsBodyWidget()
+    external_layout = QVBoxLayout(self.external_settings_frame)
+    external_layout.setContentsMargins(0, 0, 0, 0)
+    external_layout.setSpacing(4)
+    external_hint = tr_set(
+        QLabel(),
+        "Укажите базовый URL сервера с NeuroMita External TTS API v1.",
+        "Enter the base URL of a server implementing NeuroMita External TTS API v1.",
+    )
+    external_hint.setWordWrap(True)
+    external_hint.setObjectName("SeparatorLabel")
+    external_layout.addWidget(external_hint)
+    external_config = [
+        {
+            'label': _('URL внешнего TTS-сервера', 'External TTS server URL'),
+            'key': 'EXTERNAL_TTS_BASE_URL', 'type': 'entry', 'default': '',
+        },
+        {
+            'label': _('API-ключ', 'API key'),
+            'key': 'EXTERNAL_TTS_API_KEY', 'type': 'entry', 'default': '',
+            'password': True,
+        },
+        {
+            'label': _('Профиль голоса (voice ID)', 'Voice profile (voice ID)'),
+            'key': 'EXTERNAL_TTS_VOICE_ID', 'type': 'entry', 'default': '',
+        },
+        {
+            'label': _('Макс. ожидание синтеза (сек)', 'Synthesis timeout (sec)'),
+            'key': 'EXTERNAL_TTS_TIMEOUT', 'type': 'number_stepper',
+            'default': 180, 'minimum': 5, 'maximum': 600, 'step': 5,
+        },
+    ]
+    for cfg in external_config:
+        widget = create_setting_widget(
+            gui=self,
+            parent=self.external_settings_frame,
+            label=cfg['label'],
+            setting_key=cfg['key'],
+            widget_type=cfg['type'],
+            default=cfg['default'],
+            minimum=cfg.get('minimum'),
+            maximum=cfg.get('maximum'),
+            step=cfg.get('step', 1),
+            suffix=cfg.get('suffix', ''),
+        )
+        if widget:
+            if cfg.get('password'):
+                editor = widget.findChild(QLineEdit)
+                if editor is not None:
+                    editor.setEchoMode(QLineEdit.EchoMode.Password)
+            external_layout.addWidget(widget)
+
+    check_row = SettingsBodyWidget()
+    check_layout = QHBoxLayout(check_row)
+    check_layout.setContentsMargins(0, 2, 0, 2)
+    self.external_tts_check_button = tr_set(
+        QPushButton(),
+        "Проверить подключение",
+        "Check connection",
+    )
+    self.external_tts_check_button.clicked.connect(
+        lambda: actions.dispatch(CheckExternalTTS())
+    )
+    self.external_tts_status_label = QLabel()
+    self.external_tts_status_label.setWordWrap(True)
+    self.external_tts_status_label.setObjectName("SeparatorLabel")
+    check_layout.addWidget(self.external_tts_check_button)
+    check_layout.addWidget(self.external_tts_status_label, 1)
+    external_layout.addWidget(check_row)
+    container_lay.addWidget(self.external_settings_frame)
 
     self.local_settings_frame = SettingsBodyWidget()
     local_layout = QVBoxLayout(self.local_settings_frame)

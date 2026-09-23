@@ -994,6 +994,25 @@ class LocalVoiceService(ABC):
     ) -> str: ...
 
 
+class ExternalVoiceService(ABC):
+    @abstractmethod
+    def configuration_snapshot(self):
+        """Return an immutable snapshot of the current External TTS settings."""
+        ...
+
+    @abstractmethod
+    async def health(self, config_snapshot=None) -> dict: ...
+
+    @abstractmethod
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        character_id: str | None = None,
+        config_snapshot=None,
+    ) -> str: ...
+
+
 class VoiceModelService(ABC):
     @abstractmethod
     def model_catalog_snapshot(self) -> List[Dict[str, Any]]: ...
