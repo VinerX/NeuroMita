@@ -1009,6 +1009,7 @@ class ExternalVoiceService(ABC):
         text: str,
         *,
         character_id: str | None = None,
+        voice_id: str | None = None,
         config_snapshot=None,
     ) -> str: ...
 

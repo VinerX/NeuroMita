@@ -52,6 +52,11 @@ class TTSService:
         if m == "ping":
             return True
 
+        if m == "unload_model":
+            async with get_scheduler().slot(Priority.TTS):
+                await self.shutdown()
+            return True
+
         if m == "set_language":
             lang = str(payload.get("voice_language") or "ru").strip().lower()
             if not lang:

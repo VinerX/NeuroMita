@@ -126,6 +126,19 @@ class LocalVoiceController(LocalVoiceService):
                 f"Local TTS request '{method}' timed out after {timeout_label}"
             ) from exc
 
+    def unload_model(self) -> None:
+        future = use(LoopService).run(self._engine_call_async("unload_model", timeout=180.0))
+        self._initialized_cache.clear()
+
+        def report_failure(completed):
+            try:
+                completed.result()
+                self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+            except Exception as exc:
+                logger.warning(f"Local TTS runtime unload failed: {format_exception(exc)}")
+
+        future.add_done_callback(report_failure)
+
     def model_configs(self) -> list[dict[str, Any]]:
         return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+from core.app_paths import settings_dir
 
 from services.contracts import ExternalVoiceService
 from services.external_tts_service import ExternalTTSClient, ExternalTTSConfig
@@ -17,7 +17,7 @@ def external_config_from_settings(settings) -> ExternalTTSConfig:
         voice_id=str(settings.get("EXTERNAL_TTS_VOICE_ID", "") or "").strip(),
         connect_timeout=min(5.0, total_timeout),
         total_timeout=total_timeout,
-        output_dir=os.getcwd(),
+        output_dir=str(settings.get("EXTERNAL_TTS_OUTPUT_DIR", "") or settings_dir() / "ExternalTTS"),
     )
 
 
@@ -38,6 +38,7 @@ class ExternalVoiceController(ExternalVoiceService):
         text: str,
         *,
         character_id: str | None = None,
+        voice_id: str | None = None,
         config_snapshot: ExternalTTSConfig | None = None,
     ) -> str:
         config = config_snapshot or self.configuration_snapshot()
@@ -45,4 +46,5 @@ class ExternalVoiceController(ExternalVoiceService):
             config,
             text,
             character_id=character_id,
+            voice_id=voice_id,
         )

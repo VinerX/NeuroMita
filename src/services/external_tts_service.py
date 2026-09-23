@@ -5,6 +5,7 @@ import json
 import os
 import struct
 import tempfile
+import time
 import uuid
 import wave
 from dataclasses import dataclass
@@ -58,6 +59,21 @@ class ExternalTTSClient:
     MAX_TEXT_CHARS = 100_000
     MAX_AUDIO_BYTES = 32 * 1024 * 1024
     CHUNK_SIZE = 64 * 1024
+    OUTPUT_TTL_SECONDS = 24 * 60 * 60
+
+    @classmethod
+    def _cleanup_stale_output(cls, output_dir: Path) -> None:
+        cutoff = time.time() - cls.OUTPUT_TTL_SECONDS
+        for path in output_dir.iterdir():
+            owned_output = path.name.startswith("external_tts_") and path.suffix in {".wav", ".part"}
+            if not path.is_file() or not owned_output:
+                continue
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                # A player may still hold an old file open (notably on Windows).
+                pass
 
     @staticmethod
     def _validate_config(config: ExternalTTSConfig) -> str:
@@ -172,8 +188,11 @@ class ExternalTTSClient:
         if len(text) > self.MAX_TEXT_CHARS:
             raise ExternalTTSConfigError("Text for External TTS is too long.")
 
-        output_dir = Path(config.output_dir or os.getcwd()).resolve()
+        if not str(config.output_dir or "").strip():
+            raise ExternalTTSConfigError("External TTS output directory is not configured.")
+        output_dir = Path(config.output_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_output(output_dir)
         request_id = str(uuid.uuid4())
         fd, temporary_path = tempfile.mkstemp(
             prefix=f"external_tts_{request_id}_", suffix=".part", dir=output_dir

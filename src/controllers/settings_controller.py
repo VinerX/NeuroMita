@@ -80,7 +80,8 @@ class SettingsController:
 
     def update_setting(self, key, value):
         self.settings_service.update(key, value)
-        logger.debug(f"Setting '{key}' applied with value: {value}")
+        logged_value = "<redacted>" if str(key) == "EXTERNAL_TTS_API_KEY" else value
+        logger.debug(f"Setting '{key}' applied with value: {logged_value}")
 
     def close(self) -> None:
         return None

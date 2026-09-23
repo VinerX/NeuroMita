@@ -1296,6 +1296,7 @@ class Character:
             "short_name": str(getattr(self, "short_name", "") or ""),
             "miku_tts_name": str(getattr(self, "miku_tts_name", "Player") or "Player"),
             "silero_turn_off_video": bool(getattr(self, "silero_turn_off_video", False)),
+            "external_voice_id": str(self.get_variable("external_voice_id", "") or "").strip() or None,
         }
 
     def __str__(self):

@@ -37,6 +37,8 @@ class VoiceoverGuiController(BaseController):
         self._startup_preload_done = False
 
         self._tg_connected: bool | None = None
+        self._external_health_status: bool | None = None
+        self._external_health_pending = False
         self._tg_last_attempt_ts: float = 0.0
         self._tg_attempt_cooldown_sec: float = 20.0
 
@@ -67,6 +69,7 @@ class VoiceoverGuiController(BaseController):
                 "USE_VOICEOVER", "VOICEOVER_METHOD", "NM_CURRENT_VOICEOVER",
                 "LOCAL_VOICE_LOAD_LAST", "LOCAL_VOICE_INIT_ON_REQUEST",
                 "VOICE_LANGUAGE", "TG_AUTOCONNECT",
+                "EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID",
             ),
         )
 
@@ -189,11 +192,18 @@ class VoiceoverGuiController(BaseController):
             "LOCAL_VOICE_LOAD_LAST",
             "VOICE_LANGUAGE",
             "TG_AUTOCONNECT",
+            "EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID",
         }
         if key not in relevant:
             return
 
         def apply():
+            if key in {"EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID"}:
+                self._external_health_status = None
+                self._external_health_pending = False
+                label = getattr(self.view, "external_tts_status_label", None)
+                if label is not None:
+                    label.setText(_("Не проверено", "Not checked"))
             if key == "VOICE_LANGUAGE":
                 lang = str(value or self._get_setting("VOICE_LANGUAGE", "ru") or "ru")
                 self.event_bus.emit(Events.Audio.CHANGE_VOICE_LANGUAGE, {"language": lang})
@@ -202,6 +212,13 @@ class VoiceoverGuiController(BaseController):
                 "VOICEOVER_METHOD",
                 "LOCAL_VOICE_LOAD_LAST",
             }
+            if key == "VOICEOVER_METHOD" and str(value or "") == "External":
+                local_voice = services().get_optional(LocalVoiceService)
+                if local_voice is not None and hasattr(local_voice, "unload_model"):
+                    try:
+                        local_voice.unload_model()
+                    except Exception as exc:
+                        logger.warning(f"Could not unload local TTS resources after switching to External: {format_exception(exc)}")
             allow_autoload = bool(
                 autoload_trigger
                 and self._effective_use_voice()
@@ -568,6 +585,9 @@ class VoiceoverGuiController(BaseController):
         self._ui(apply)
 
     def _on_external_tts_check(self, _event: Event):
+        check_context = {}
+        self._external_health_pending = True
+        self._emit_voice_icon_state()
         status_label = getattr(self.view, "external_tts_status_label", None)
         if status_label is not None:
             self._ui(
@@ -583,17 +603,35 @@ class VoiceoverGuiController(BaseController):
             if not isinstance(controller, ExternalVoiceService):
                 raise RuntimeError("External voice service is unavailable.")
             config = controller.configuration_snapshot()
-            return asyncio.run(controller.health(config))
+            check_context["config"] = (config.base_url, config.api_key, config.voice_id)
+            return config, asyncio.run(controller.health(config))
 
-        def on_ok(_result):
+        def on_ok(result):
+            config, _health = result
+            current = self.main_controller.external_voice_controller.configuration_snapshot()
+            is_current = (config.base_url, config.api_key, config.voice_id) == (current.base_url, current.api_key, current.voice_id)
+            if is_current:
+                self._external_health_status = True
+                self._external_health_pending = False
             label = getattr(self.view, "external_tts_status_label", None)
-            if label is not None:
-                label.setText(_("Подключение успешно", "Connection successful"))
+            if label is not None and is_current:
+                label.setText(_("Сервер доступен (health-check)", "Server reachable (health check)"))
+            if is_current:
+                self._emit_voice_icon_state()
 
         def on_error(exc):
+            checked = check_context.get("config")
+            controller = self.main_controller.external_voice_controller
+            current = controller.configuration_snapshot()
+            is_current = checked == (current.base_url, current.api_key, current.voice_id)
+            if is_current:
+                self._external_health_status = False
+                self._external_health_pending = False
             label = getattr(self.view, "external_tts_status_label", None)
-            if label is not None:
-                label.setText(format_exception(exc))
+            if label is not None and is_current:
+                label.setText(_("Сервер недоступен: ", "Server unavailable: ") + format_exception(exc))
+            if is_current:
+                self._emit_voice_icon_state()
 
         self._run_async(
             check,
@@ -846,6 +884,27 @@ class VoiceoverGuiController(BaseController):
             self._emit_voice_icon_state()
             return
 
+        if method == "External":
+            status = self._external_health_status
+            state = "loading" if self._external_health_pending else "warn" if status is None else "green" if status else "red"
+            if status is None:
+                tooltip = _(
+                    "Внешний TTS: проверка подключения не выполнена",
+                    "External TTS: connection not checked",
+                )
+            elif status:
+                tooltip = _(
+                    "Внешний TTS: сервер доступен (health-check)",
+                    "External TTS: server reachable (health check)",
+                )
+            else:
+                tooltip = _("Внешний TTS: сервер недоступен", "External TTS: server unavailable")
+            self.event_bus.emit(
+                Events.GUI.SET_SETTINGS_ICON_INDICATOR,
+                {"category": "voice", "state": state, "tooltip": tooltip},
+            )
+            return
+
         if method != "Local":
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": None, "tooltip": None})
             return
@@ -992,6 +1051,13 @@ class VoiceoverGuiController(BaseController):
                 "state": "red",
                 "tooltip": _("Telegram не подключен", "Telegram not connected"),
             })
+            return
+
+        if method == "External":
+            status = self._external_health_status
+            state = "warn" if status is None else "green" if status else "red"
+            tooltip = _("Внешний TTS: проверка подключения не выполнена", "External TTS: connection not checked") if status is None else _("Внешний TTS: сервер доступен (health-check)", "External TTS: server reachable (health check)") if status else _("Внешний TTS: сервер недоступен", "External TTS: server unavailable")
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {"category": "voice", "state": state, "tooltip": tooltip})
             return
 
         if method != "Local":

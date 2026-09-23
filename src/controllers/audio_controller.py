@@ -175,6 +175,7 @@ class AudioController(AudioStateService):
                     lambda: self._synthesize_external_voice(
                         text_for_voice,
                         character_id=character_id,
+                        voice_id=(voice_profile or {}).get("external_voice_id") if isinstance(voice_profile, dict) else None,
                         config_snapshot=config_snapshot,
                     ),
                     method="external",
@@ -279,7 +280,7 @@ class AudioController(AudioStateService):
             trace_id=trace_id,
         )
 
-    async def _synthesize_external_voice(self, text, *, character_id, config_snapshot):
+    async def _synthesize_external_voice(self, text, *, character_id, voice_id=None, config_snapshot):
         controller = getattr(self.main_controller, "external_voice_controller", None)
         if controller is None:
             controller = await asyncio.to_thread(
@@ -292,6 +293,7 @@ class AudioController(AudioStateService):
         return await controller.synthesize(
             text,
             character_id=character_id,
+            voice_id=voice_id,
             config_snapshot=config_snapshot,
         )
 

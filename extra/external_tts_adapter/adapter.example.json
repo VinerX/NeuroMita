@@ -1,0 +1,26 @@
+{
+  "timeout_seconds": 240,
+  "stages": [
+    {
+      "url": "http://f5-tts:8000/api/tts",
+      "method": "POST",
+      "encoding": "json",
+      "payload": {
+        "text": "{text}",
+        "speaker_id": "{voice_id}"
+      },
+      "response": "wav"
+    },
+    {
+      "url": "http://rvc:8001/convert",
+      "method": "POST",
+      "encoding": "json",
+      "payload": {
+        "audio_base64": "{audio_base64}",
+        "voice_id": "{voice_id}"
+      },
+      "response": "json_base64",
+      "audio_field": "audio_base64"
+    }
+  ]
+}

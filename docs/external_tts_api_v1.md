@@ -12,6 +12,8 @@ Authorization: Bearer <api-key>
 
 Use HTTPS when the endpoint is reachable over the public internet. HTTP is suitable only for a trusted LAN or VPN. NeuroMita keeps normal TLS certificate verification enabled.
 
+The API key is stored with the rest of the application settings in `Settings/settings.json`; the UI masks it and the settings update log redacts it, but the file is not encrypted. Restrict access to that file using the operating system account permissions.
+
 ## Health check
 
 ```http
@@ -52,6 +54,14 @@ Request:
 On success, return HTTP 200 with `Content-Type: audio/wav` (or `audio/x-wav`) and a complete, uncompressed PCM WAV in the response body. NeuroMita accepts one or two channels, 16–48 kHz, and common PCM sample widths from 8 to 32 bits; 16-bit PCM is recommended. Return a non-2xx status for errors and never put an error page or JSON document in a successful audio response.
 
 The server should return the final audio directly in the HTTP response. No WebSocket, polling endpoint, or client-side conversion is part of v1.
+
+## Generic Linux adapter example
+
+`extra/external_tts_adapter` contains a Docker Compose adapter for chaining configurable HTTP stages. It can send JSON or form fields and consume WAV or JSON/base64 WAV responses. Start from `adapter.example.json`, copy it to `adapter.json`, then set the actual F5/RVC URLs, methods, field names, and response modes used by your containers. Values in payload templates support `{text}`, `{voice_id}`, `{character_id}`, `{request_id}`, and `{audio_base64}`.
+
+A character can override the global voice profile by setting `external_voice_id` in that character's `config.json`. If omitted, NeuroMita sends the global `EXTERNAL_TTS_VOICE_ID` value.
+
+The sample field names are illustrative. TTS and RVC containers do not share a standard HTTP contract, so verify each upstream request/response against that container's documentation before deployment. Protect the adapter with a long random `NEUROMITA_API_KEY`; expose it only through a trusted LAN/VPN or TLS reverse proxy.
 
 ## Minimal server checklist
 

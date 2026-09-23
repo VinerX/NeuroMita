@@ -1,0 +1,11 @@
+services:
+  external-tts-adapter:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ADAPTER_CONFIG: /config/adapter.json
+      NEUROMITA_API_KEY: ${NEUROMITA_API_KEY:?set a long random key}
+    volumes:
+      - ./adapter.json:/config/adapter.json:ro
+    restart: unless-stopped

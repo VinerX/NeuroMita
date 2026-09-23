@@ -145,6 +145,10 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             'key': 'EXTERNAL_TTS_VOICE_ID', 'type': 'entry', 'default': '',
         },
         {
+            'label': _('Папка для внешних WAV', 'External WAV output folder'),
+            'key': 'EXTERNAL_TTS_OUTPUT_DIR', 'type': 'entry', 'default': '',
+        },
+        {
             'label': _('Макс. ожидание синтеза (сек)', 'Synthesis timeout (sec)'),
             'key': 'EXTERNAL_TTS_TIMEOUT', 'type': 'number_stepper',
             'default': 180, 'minimum': 5, 'maximum': 600, 'step': 5,
