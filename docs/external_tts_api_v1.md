@@ -2,6 +2,17 @@
 
 This contract lets NeuroMita use a user-hosted speech service without knowing whether it runs F5-TTS, RVC, Piper, or another engine. The server owns model paths, Docker containers, GPU scheduling, and any conversion needed to produce the response format below.
 
+## Quick setup
+
+If you already have an F5-TTS/RVC server:
+
+1. Start `extra/external_tts_adapter` and configure `adapter.json` for your containers' APIs.
+2. Set a long random `NEUROMITA_API_KEY` for the adapter.
+3. Make the adapter reachable to NeuroMita through a VPN or an HTTPS reverse proxy.
+4. In NeuroMita, select External voiceover, then enter the adapter base URL and API key.
+5. Optionally expand **Advanced** to change the health and synthesis URL paths. These must be paths on the configured server; the base URL and bearer token remain tied together.
+6. Click **Check connection**. This checks the health endpoint and API version, not whether speech synthesis succeeds.
+
 ## Base URL and authentication
 
 Configure the API base URL in NeuroMita without the endpoint path, for example `https://tts.example.net` or `http://192.168.1.20:8080`. A reverse-proxy path prefix is allowed. When an API key is configured, NeuroMita sends:

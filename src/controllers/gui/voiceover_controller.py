@@ -70,6 +70,7 @@ class VoiceoverGuiController(BaseController):
                 "LOCAL_VOICE_LOAD_LAST", "LOCAL_VOICE_INIT_ON_REQUEST",
                 "VOICE_LANGUAGE", "TG_AUTOCONNECT",
                 "EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID",
+                "EXTERNAL_TTS_HEALTH_PATH", "EXTERNAL_TTS_SYNTHESIZE_PATH",
             ),
         )
 
@@ -193,12 +194,16 @@ class VoiceoverGuiController(BaseController):
             "VOICE_LANGUAGE",
             "TG_AUTOCONNECT",
             "EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID",
+            "EXTERNAL_TTS_HEALTH_PATH", "EXTERNAL_TTS_SYNTHESIZE_PATH",
         }
         if key not in relevant:
             return
 
         def apply():
-            if key in {"EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID"}:
+            if key in {
+                "EXTERNAL_TTS_BASE_URL", "EXTERNAL_TTS_API_KEY", "EXTERNAL_TTS_VOICE_ID",
+                "EXTERNAL_TTS_HEALTH_PATH", "EXTERNAL_TTS_SYNTHESIZE_PATH",
+            }:
                 self._external_health_status = None
                 self._external_health_pending = False
                 label = getattr(self.view, "external_tts_status_label", None)
@@ -603,13 +608,22 @@ class VoiceoverGuiController(BaseController):
             if not isinstance(controller, ExternalVoiceService):
                 raise RuntimeError("External voice service is unavailable.")
             config = controller.configuration_snapshot()
-            check_context["config"] = (config.base_url, config.api_key, config.voice_id)
+            check_context["config"] = (
+                config.base_url, config.api_key, config.voice_id,
+                config.health_path, config.synthesize_path,
+            )
             return config, asyncio.run(controller.health(config))
 
         def on_ok(result):
             config, _health = result
             current = self.main_controller.external_voice_controller.configuration_snapshot()
-            is_current = (config.base_url, config.api_key, config.voice_id) == (current.base_url, current.api_key, current.voice_id)
+            is_current = (
+                config.base_url, config.api_key, config.voice_id,
+                config.health_path, config.synthesize_path,
+            ) == (
+                current.base_url, current.api_key, current.voice_id,
+                current.health_path, current.synthesize_path,
+            )
             if is_current:
                 self._external_health_status = True
                 self._external_health_pending = False
@@ -623,7 +637,10 @@ class VoiceoverGuiController(BaseController):
             checked = check_context.get("config")
             controller = self.main_controller.external_voice_controller
             current = controller.configuration_snapshot()
-            is_current = checked == (current.base_url, current.api_key, current.voice_id)
+            is_current = checked == (
+                current.base_url, current.api_key, current.voice_id,
+                current.health_path, current.synthesize_path,
+            )
             if is_current:
                 self._external_health_status = False
                 self._external_health_pending = False

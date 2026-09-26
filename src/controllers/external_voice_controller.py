@@ -21,6 +21,8 @@ def external_config_from_settings(settings) -> ExternalTTSConfig:
         connect_timeout=min(5.0, total_timeout),
         total_timeout=total_timeout,
         output_dir=str(settings.get("EXTERNAL_TTS_OUTPUT_DIR", "") or settings_dir() / "ExternalTTS"),
+        health_path=str(settings.get("EXTERNAL_TTS_HEALTH_PATH", "/v1/health") or "/v1/health").strip(),
+        synthesize_path=str(settings.get("EXTERNAL_TTS_SYNTHESIZE_PATH", "/v1/synthesize") or "/v1/synthesize").strip(),
     )
 
 

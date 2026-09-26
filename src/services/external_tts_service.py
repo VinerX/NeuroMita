@@ -25,6 +25,8 @@ class ExternalTTSConfig:
     total_timeout: float = 180.0
     output_dir: str = ""
     max_audio_bytes: int = 32 * 1024 * 1024
+    health_path: str = "/v1/health"
+    synthesize_path: str = "/v1/synthesize"
 
 
 class ExternalTTSError(RuntimeError):
@@ -60,6 +62,27 @@ class ExternalTTSClient:
     MAX_AUDIO_BYTES = 32 * 1024 * 1024
     CHUNK_SIZE = 64 * 1024
     OUTPUT_TTL_SECONDS = 24 * 60 * 60
+
+    @staticmethod
+    def _endpoint_url(base_url: str, path: str) -> str:
+        raw_path = str(path or "").strip()
+        if not raw_path:
+            raise ExternalTTSConfigError("External TTS endpoint path cannot be empty.")
+        parsed = urlsplit(raw_path)
+        if parsed.scheme or parsed.netloc:
+            raise ExternalTTSConfigError("External TTS endpoint must be a safe path on the configured server.")
+        if not raw_path.startswith("/"):
+            raw_path = "/" + raw_path
+        parsed = urlsplit(raw_path)
+        if (
+            parsed.query or parsed.fragment
+            or "\\" in raw_path
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in raw_path)
+            or raw_path.startswith("//")
+            or any(segment in {".", ".."} for segment in raw_path.split("/"))
+        ):
+            raise ExternalTTSConfigError("External TTS endpoint must be a safe path on the configured server.")
+        return base_url.rstrip("/") + raw_path
 
     @classmethod
     def _cleanup_stale_output(cls, output_dir: Path) -> None:
@@ -124,6 +147,8 @@ class ExternalTTSClient:
             raise ExternalTTSConfigError("External TTS API key must be text.")
         if "\r" in config.api_key or "\n" in config.api_key:
             raise ExternalTTSConfigError("External TTS API key contains invalid characters.")
+        ExternalTTSClient._endpoint_url("", config.health_path)
+        ExternalTTSClient._endpoint_url("", config.synthesize_path)
         return str(config.base_url).strip().rstrip("/")
 
     @staticmethod
@@ -148,7 +173,7 @@ class ExternalTTSClient:
             )
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(
-                    f"{base_url}/v1/health",
+                    self._endpoint_url(base_url, config.health_path),
                     headers=self._headers(config),
                     allow_redirects=False,
                 ) as response:
@@ -218,7 +243,7 @@ class ExternalTTSClient:
             try:
                 async with aiohttp.ClientSession(timeout=self._timeout(config)) as session:
                     async with session.post(
-                        f"{base_url}/v1/synthesize",
+                        self._endpoint_url(base_url, config.synthesize_path),
                         json=payload,
                         headers=self._headers(config),
                         allow_redirects=False,

@@ -1,8 +1,9 @@
 import os
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QSlider, QLineEdit, QFileDialog
+    QSizePolicy, QPushButton, QSlider, QLineEdit, QFileDialog, QToolButton
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
@@ -190,6 +191,48 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
                     browse.clicked.connect(choose_output_folder)
                     widget.layout().addWidget(browse)
             external_layout.addWidget(widget)
+
+    self.external_tts_advanced_button = tr_set(QToolButton(), "Дополнительно", "Advanced")
+    self.external_tts_advanced_button.setCheckable(True)
+    self.external_tts_advanced_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    self.external_tts_advanced_button.setArrowType(Qt.ArrowType.RightArrow)
+    self.external_tts_advanced_frame = SettingsBodyWidget()
+    advanced_layout = QVBoxLayout(self.external_tts_advanced_frame)
+    advanced_layout.setContentsMargins(12, 0, 0, 0)
+    advanced_layout.setSpacing(4)
+    self.external_tts_advanced_button.toggled.connect(
+        lambda expanded: (
+            self.external_tts_advanced_frame.setVisible(expanded),
+            self.external_tts_advanced_button.setArrowType(
+                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+            ),
+        )
+    )
+    external_layout.addWidget(self.external_tts_advanced_button)
+    endpoint_settings = (
+        ("Путь проверки сервера", "Server health path", "/v1/health", "EXTERNAL_TTS_HEALTH_PATH"),
+        ("Путь синтеза", "Synthesis path", "/v1/synthesize", "EXTERNAL_TTS_SYNTHESIZE_PATH"),
+    )
+    for label_ru, label_en, default, key in endpoint_settings:
+        widget = create_setting_widget(
+            gui=self,
+            parent=self.external_tts_advanced_frame,
+            label=_(label_ru, label_en),
+            setting_key=key,
+            widget_type="entry",
+            default=default,
+        )
+        if widget:
+            advanced_layout.addWidget(widget)
+    self.external_tts_guide_button = tr_set(
+        QPushButton(), "Как настроить External TTS", "How to set up External TTS"
+    )
+    self.external_tts_guide_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
+        "https://github.com/VinerX/NeuroMita/blob/codex/external-tts/docs/external_tts_api_v1.md"
+    )))
+    advanced_layout.addWidget(self.external_tts_guide_button)
+    self.external_tts_advanced_frame.setVisible(False)
+    external_layout.addWidget(self.external_tts_advanced_frame)
 
     check_row = SettingsBodyWidget()
     check_layout = QHBoxLayout(check_row)

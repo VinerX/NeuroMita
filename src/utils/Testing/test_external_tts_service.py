@@ -53,6 +53,43 @@ class ExternalTTSServiceTests(unittest.TestCase):
             result = asyncio.run(ExternalTTSClient().health(ExternalTTSConfig("http://localhost")))
         self.assertEqual(result["api_version"], 1)
 
+    def test_endpoint_paths_are_appended_to_base_url_and_cannot_change_host(self):
+        self.assertEqual(
+            ExternalTTSClient._endpoint_url("https://tts.example/prefix", "status"),
+            "https://tts.example/prefix/status",
+        )
+        for path in ("//evil.example/status", "https://evil.example/status", "/a/../status", " "):
+            with self.subTest(path=path), self.assertRaises(ExternalTTSConfigError):
+                ExternalTTSClient._endpoint_url("https://tts.example", path)
+
+    def test_health_uses_configured_path(self):
+        class Content:
+            async def iter_chunked(self, _size):
+                yield b'{"status":"ok","api_version":1}'
+
+        class Response:
+            status = 200
+            content_type = "application/json"
+            content_length = 32
+            content = Content()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+            def get(self, url, **_kwargs):
+                self.url = url
+                return Response()
+            def post(self, *_args, **_kwargs): raise AssertionError("health must not synthesize")
+
+        session = Session()
+        with patch("services.external_tts_service.aiohttp.ClientSession", return_value=session):
+            asyncio.run(ExternalTTSClient().health(ExternalTTSConfig(
+                "http://localhost/prefix", health_path="/status"
+            )))
+        self.assertEqual(session.url, "http://localhost/prefix/status")
+
     def test_rejects_missing_output_folder_instead_of_using_working_directory(self):
         with self.assertRaises(ExternalTTSConfigError):
             asyncio.run(ExternalTTSClient().synthesize(
@@ -109,15 +146,21 @@ class ExternalTTSServiceTests(unittest.TestCase):
         class Session:
             async def __aenter__(self): return self
             async def __aexit__(self, *_args): return False
-            def post(self, *_args, **_kwargs): return Response()
+            def post(self, url, **_kwargs):
+                self.url = url
+                return Response()
 
         with tempfile.TemporaryDirectory() as folder:
-            config = ExternalTTSConfig("http://localhost", output_dir=folder)
-            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=Session()):
+            config = ExternalTTSConfig(
+                "http://localhost/prefix", output_dir=folder, synthesize_path="/tts/generate"
+            )
+            session = Session()
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=session):
                 result = asyncio.run(ExternalTTSClient().synthesize(config, "hello"))
             self.assertTrue(Path(result).is_file())
             self.assertEqual(Path(result).read_bytes(), audio)
             self.assertEqual(list(Path(folder).glob("*.part")), [])
+            self.assertEqual(session.url, "http://localhost/prefix/tts/generate")
 
     def test_bad_content_type_removes_partial_download(self):
         class Response:
