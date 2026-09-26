@@ -1709,29 +1709,13 @@ class SandboxPage(QWidget):
             "chat_prompt_pack_combobox",
             tooltip=_("Текущий набор промптов. Изменяется в настройках персонажа", "Current prompt set. Change it in character settings"),
         )
-        prompt_settings_btn = QPushButton()
-        prompt_settings_btn.setObjectName("SandboxInlineIconBtn")
-        prompt_settings_btn.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
-        prompt_settings_btn.setFixedSize(28, 28)
-        prompt_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        prompt_settings_btn.setToolTip(_("Настройки набора промптов", "Prompt set settings"))
-        prompt_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
-        _combo_row(active_layout, _("Набор промптов", "Prompt set"), prompt_combo,
-                   trailing=prompt_settings_btn)
+        _combo_row(active_layout, _("Набор промптов", "Prompt set"), prompt_combo)
 
         model_combo = _session_value(
             "chat_model_combobox",
             tooltip=_("Модель, выбранная для активного персонажа", "Model selected for the active character"),
         )
-        model_settings_btn = QPushButton()
-        model_settings_btn.setObjectName("SandboxInlineIconBtn")
-        model_settings_btn.setIcon(qta.icon("fa6s.gear", color="#ffd2ec"))
-        model_settings_btn.setFixedSize(28, 28)
-        model_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        model_settings_btn.setToolTip(_("Выбрать модель для персонажа", "Choose the character's model"))
-        model_settings_btn.clicked.connect(lambda: self._jump_to_settings("api"))
-        _combo_row(active_layout, _("Модель", "Model"), model_combo,
-                   trailing=model_settings_btn)
+        _combo_row(active_layout, _("Модель", "Model"), model_combo)
         layout.addWidget(active_strip)
         self._panels["active"] = active_strip
 
