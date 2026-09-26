@@ -63,6 +63,23 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+class RuntimeIPCService(ABC):
+    @abstractmethod
+    def register_object(self, instance: Any) -> tuple[str, ...]: ...
+
+    @abstractmethod
+    def start(self, *, port: int | None = None) -> bool: ...
+
+    @abstractmethod
+    def stop(self) -> None: ...
+
+    @abstractmethod
+    def status(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CharacterEnvironmentSnapshot:
     unity_installed: bool = False
