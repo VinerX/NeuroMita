@@ -1,5 +1,6 @@
 from __future__ import annotations
 from core.error_utils import format_exception
+from core.runtime_ipc import ipc_allowed
 
 import multiprocessing as mp
 import os
@@ -1929,6 +1930,10 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             self._shutting_down.wait(0.05)
         return False
 
+    @ipc_allowed(
+        "ai.restart_service",
+        description="Restart one AI service: tts, asr, rag, or beats.",
+    )
     def restart_service(self, service: str, timeout: float = 5.0) -> bool:
         s = str(service or "").strip().lower()
         with self._lock:

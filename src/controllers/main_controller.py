@@ -34,6 +34,7 @@ from services.contracts import (
     ModelStateService,
     RuntimeFeatureService,
     RuntimeCapabilitiesService,
+    RuntimeIPCService,
     SpeechService,
     VoiceModelService,
     InstallableCatalogService,
@@ -106,6 +107,13 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        from services.runtime_ipc_service import DefaultRuntimeIPCService
+
+        self.runtime_ipc_service = services().register(
+            RuntimeIPCService,
+            DefaultRuntimeIPCService(settings_service),
+            replace=True,
+        )
         from services.asr_settings_service import ensure_asr_settings_service
 
         ensure_asr_settings_service()
@@ -191,6 +199,7 @@ class MainController:
             self.ai_engine_controller,
             replace=True,
         )
+        self.runtime_ipc_service.register_object(self.ai_engine_controller)
         from services.ai_environment_maintenance_service import (
             DefaultAIEnvironmentMaintenanceService,
         )
@@ -617,6 +626,10 @@ class MainController:
                 callback()
             except Exception as exc:
                 logger.error(f"Ошибка при остановке {name}: {format_exception(exc)}", exc_info=True)
+
+        runtime_ipc = getattr(self, "runtime_ipc_service", None)
+        if runtime_ipc is not None:
+            shutdown_step("runtime IPC", runtime_ipc.close)
 
         server_controller = getattr(self, "server_controller", None)
         if server_controller is not None:

@@ -3,6 +3,14 @@ from ui.settings.settings_access import get_setting, settings_store
 from utils import getTranslationVariant as _
 
 
+def _validate_runtime_ipc_port(value) -> bool:
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return False
+    return 1024 <= port <= 65535
+
+
 def _on_section_toggled(gui, category=None, value=None):
     """Re-apply sidebar/tab visibility whenever a section checkbox flips."""
     try:
@@ -147,6 +155,46 @@ def setup_general_settings_controls(self, parent):
         _("Приватность", "Privacy"), 
         privacy_config, 
         icon_name='fa5s.user-shield'
+    )
+
+    runtime_ipc_config = [
+        {
+            'label': _(
+                'Локальный IPC принимает только явно разрешённые команды на 127.0.0.1.',
+                'Local IPC accepts only explicitly allowed commands on 127.0.0.1.',
+            ),
+            'type': 'text',
+        },
+        {
+            'label': _('Разрешить локальное IPC-управление', 'Enable local IPC control'),
+            'key': 'RUNTIME_IPC_ENABLED',
+            'type': 'checkbutton',
+            'default_checkbutton': False,
+            'tooltip': _(
+                'Запускает локальный JSON IPC-сервер. Изменение применяется сразу.',
+                'Starts the local JSON IPC server. Changes apply immediately.',
+            ),
+        },
+        {
+            'label': _('Порт локального IPC', 'Local IPC port'),
+            'key': 'RUNTIME_IPC_PORT',
+            'type': 'entry',
+            'default': 47831,
+            'validation': _validate_runtime_ipc_port,
+            'depends_on': 'RUNTIME_IPC_ENABLED',
+            'depends_on_value': True,
+            'tooltip': _(
+                'TCP-порт на 127.0.0.1. Допустимый диапазон: 1024–65535.',
+                'TCP port on 127.0.0.1. Valid range: 1024–65535.',
+            ),
+        },
+    ]
+    create_settings_section(
+        self,
+        parent,
+        _('Локальное IPC-управление', 'Local IPC control'),
+        runtime_ipc_config,
+        icon_name='fa6s.plug-circle-bolt',
     )
 
     chat_settings_config = [

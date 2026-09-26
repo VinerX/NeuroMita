@@ -1,4 +1,10 @@
 {
+  "Локальное IPC-управление": "Local IPC control",
+  "Локальный IPC принимает только явно разрешённые команды на 127.0.0.1.": "Local IPC accepts only explicitly allowed commands on 127.0.0.1.",
+  "Порт локального IPC": "Local IPC port",
+  "Разрешить локальное IPC-управление": "Enable local IPC control",
+  "Запускает локальный JSON IPC-сервер. Изменение применяется сразу.": "Starts the local JSON IPC server. Changes apply immediately.",
+  "TCP-порт на 127.0.0.1. Допустимый диапазон: 1024–65535.": "TCP port on 127.0.0.1. Valid range: 1024–65535.",
   "ИИ-движок": "AI Engine",
   " · ~{hours:.1f} ч": " · ~{hours:.1f} h",
   " · ~{minutes} мин": " · ~{minutes} min",
