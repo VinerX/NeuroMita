@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import threading
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, call, patch
 
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
@@ -110,6 +111,35 @@ class LocalVoiceControllerReinitializeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LocalVoiceControllerSynthesisTests(unittest.IsolatedAsyncioTestCase):
+    async def test_synthesize_waits_for_pending_external_unload(self):
+        controller = LocalVoiceController.__new__(LocalVoiceController)
+        unload = Future()
+        controller._unload_future = unload
+        controller._unload_future_lock = threading.Lock()
+        controller._initialized_cache = {"medium+": True}
+        controller._get_setting = lambda key, default=None: {
+            "NM_CURRENT_VOICEOVER": "medium+",
+            "LOCAL_VOICE_INIT_ON_REQUEST": True,
+        }.get(key, default)
+        controller._ensure_model_environment = AsyncMock()
+        controller._engine_call_async = AsyncMock(return_value="voice.wav")
+        controller.event_bus = _EventBusStub()
+        registry = SimpleNamespace(current_profile=lambda: None, get=lambda _id: None)
+
+        with patch("controllers.local_voice_controller.use", return_value=registry):
+            synthesis = asyncio.create_task(controller.synthesize("hello"))
+            await asyncio.sleep(0)
+            controller._ensure_model_environment.assert_not_awaited()
+            controller._engine_call_async.assert_not_awaited()
+            unload.set_result(True)
+            self.assertEqual(await synthesis, "voice.wav")
+
+        controller._ensure_model_environment.assert_has_awaits([
+            call("medium+", initialize=True),
+            call("medium+", initialize=False),
+        ])
+        controller._engine_call_async.assert_awaited_once()
+
     async def test_engine_timeout_has_actionable_message(self):
         controller = LocalVoiceController.__new__(LocalVoiceController)
         pending = Future()

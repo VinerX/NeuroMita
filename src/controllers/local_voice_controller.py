@@ -155,10 +155,15 @@ class LocalVoiceController(LocalVoiceService):
         future.add_done_callback(report_failure)
 
     async def _await_pending_unload(self) -> None:
-        with self._unload_future_lock:
-            pending = self._unload_future
+        lock = getattr(self, "_unload_future_lock", None)
+        if lock is None:
+            return
+        with lock:
+            pending = getattr(self, "_unload_future", None)
         if pending is not None:
-            await asyncio.wrap_future(pending)
+            unloaded = await asyncio.wrap_future(pending)
+            if unloaded is True:
+                self._initialized_cache.clear()
 
     def model_configs(self) -> list[dict[str, Any]]:
         return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
@@ -476,6 +481,7 @@ class LocalVoiceController(LocalVoiceService):
         character_id: Optional[str] = None,
         voice_profile: Optional[Dict[str, Any]] = None,
     ) -> str:
+        await self._await_pending_unload()
         model_id = str(self._get_setting("NM_CURRENT_VOICEOVER", "") or "").strip() or "low"
         initialized = bool(self._initialized_cache.get(model_id, False))
 
