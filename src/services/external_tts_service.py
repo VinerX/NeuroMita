@@ -75,6 +75,12 @@ class ExternalTTSClient:
                 # A player may still hold an old file open (notably on Windows).
                 pass
 
+    @classmethod
+    def cleanup_outputs(cls, output_dir: str | Path) -> None:
+        path = Path(output_dir).expanduser()
+        if path.is_dir():
+            cls._cleanup_stale_output(path)
+
     @staticmethod
     def _validate_config(config: ExternalTTSConfig) -> str:
         if not isinstance(config, ExternalTTSConfig):
@@ -232,6 +238,8 @@ class ExternalTTSClient:
                                         raise ExternalTTSSizeError("External TTS audio exceeds the configured size limit.")
                                     audio_file.write(chunk)
                         except ExternalTTSError:
+                            raise
+                        except asyncio.TimeoutError:
                             raise
                         except OSError as exc:
                             raise ExternalTTSError("Could not save downloaded External TTS audio to disk.") from exc

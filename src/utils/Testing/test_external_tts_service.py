@@ -13,6 +13,8 @@ from services.external_tts_service import (
     ExternalTTSConfig,
     ExternalTTSConfigError,
     ExternalTTSAudioError,
+    ExternalTTSConnectionError,
+    ExternalTTSSizeError,
 )
 
 
@@ -28,6 +30,29 @@ def wav_bytes() -> bytes:
 
 
 class ExternalTTSServiceTests(unittest.TestCase):
+    def test_health_accepts_protocol_v1_without_synthesizing(self):
+        class Content:
+            async def iter_chunked(self, _size):
+                yield b'{"status":"ok","api_version":1}'
+
+        class Response:
+            status = 200
+            content_type = "application/json"
+            content_length = 32
+            content = Content()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+            def get(self, *_args, **_kwargs): return Response()
+            def post(self, *_args, **_kwargs): raise AssertionError("health must not synthesize")
+
+        with patch("services.external_tts_service.aiohttp.ClientSession", return_value=Session()):
+            result = asyncio.run(ExternalTTSClient().health(ExternalTTSConfig("http://localhost")))
+        self.assertEqual(result["api_version"], 1)
+
     def test_rejects_missing_output_folder_instead_of_using_working_directory(self):
         with self.assertRaises(ExternalTTSConfigError):
             asyncio.run(ExternalTTSClient().synthesize(
@@ -112,4 +137,114 @@ class ExternalTTSServiceTests(unittest.TestCase):
             with patch("services.external_tts_service.aiohttp.ClientSession", return_value=Session()):
                 with self.assertRaises(ExternalTTSAudioError):
                     asyncio.run(ExternalTTSClient().synthesize(config, "hello"))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_timeout_and_cancel_remove_partial_files(self):
+        class TimeoutContent:
+            async def iter_chunked(self, _size):
+                yield b"RIFFpartial"
+                raise asyncio.TimeoutError()
+
+        class Response:
+            status = 200
+            headers = {"Content-Type": "audio/wav"}
+            content_length = None
+            content = TimeoutContent()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+            def post(self, *_args, **_kwargs): return Response()
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=Session()):
+                with self.assertRaises(ExternalTTSConnectionError):
+                    asyncio.run(ExternalTTSClient().synthesize(
+                        ExternalTTSConfig("http://localhost", output_dir=folder), "hello"
+                    ))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+            class UnavailableSession(Session):
+                def post(self, *_args, **_kwargs):
+                    raise __import__("aiohttp").ClientError("offline")
+
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=UnavailableSession()):
+                with self.assertRaises(ExternalTTSConnectionError):
+                    asyncio.run(ExternalTTSClient().synthesize(
+                        ExternalTTSConfig("http://localhost", output_dir=folder), "hello"
+                    ))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+        class BlockingContent:
+            def __init__(self):
+                self.release = asyncio.Event()
+            async def iter_chunked(self, _size):
+                yield b"RIFFpartial"
+                await self.release.wait()
+
+        class BlockingResponse(Response):
+            content = BlockingContent()
+
+        class BlockingSession(Session):
+            def post(self, *_args, **_kwargs): return BlockingResponse()
+
+        async def cancel_request(folder):
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=BlockingSession()):
+                task = asyncio.create_task(ExternalTTSClient().synthesize(
+                    ExternalTTSConfig("http://localhost", output_dir=folder), "hello"
+                ))
+                while not list(Path(folder).glob("*.part")):
+                    await asyncio.sleep(0)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+        with tempfile.TemporaryDirectory() as folder:
+            asyncio.run(cancel_request(folder))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_rejects_corrupt_wav_and_audio_size_over_limit(self):
+        class Content:
+            data = b"not-a-wave"
+            async def iter_chunked(self, _size):
+                yield self.data
+
+        class Response:
+            status = 200
+            headers = {"Content-Type": "audio/wav"}
+            content_length = None
+            content = Content()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_args): return False
+            def post(self, *_args, **_kwargs): return Response()
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=Session()):
+                with self.assertRaises(ExternalTTSAudioError):
+                    asyncio.run(ExternalTTSClient().synthesize(
+                        ExternalTTSConfig("http://localhost", output_dir=folder), "hello"
+                    ))
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+        class LargeContent(Content):
+            data = b"x" * 100
+
+        class LargeResponse(Response):
+            content = LargeContent()
+
+        class LargeSession(Session):
+            def post(self, *_args, **_kwargs): return LargeResponse()
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("services.external_tts_service.aiohttp.ClientSession", return_value=LargeSession()):
+                with self.assertRaises(ExternalTTSSizeError):
+                    asyncio.run(ExternalTTSClient().synthesize(
+                        ExternalTTSConfig("http://localhost", output_dir=folder, max_audio_bytes=64), "hello"
+                    ))
             self.assertEqual(list(Path(folder).iterdir()), [])

@@ -2,6 +2,7 @@ from core.error_utils import format_exception
 import os
 import uuid
 import asyncio
+import threading
 from typing import Any, Dict, Optional
 
 from main_logger import logger
@@ -35,6 +36,8 @@ class LocalVoiceController(LocalVoiceService):
         # Не допускаем две параллельные тяжёлые инициализации при первых
         # запросах озвучки после включения соответствующей настройки.
         self._model_init_lock = asyncio.Lock()
+        self._unload_future = None
+        self._unload_future_lock = threading.Lock()
 
         self._triton_status_cache: Optional[Dict[str, Any]] = None
 
@@ -127,17 +130,35 @@ class LocalVoiceController(LocalVoiceService):
             ) from exc
 
     def unload_model(self) -> None:
-        future = use(LoopService).run(self._engine_call_async("unload_model", timeout=180.0))
-        self._initialized_cache.clear()
+        async def unload():
+            result = await self._engine_call_async("unload_model", timeout=180.0)
+            if result is not True:
+                raise RuntimeError("TTS worker did not confirm that its local runtime was unloaded")
+            return True
+
+        future = use(LoopService).run(unload())
+        with self._unload_future_lock:
+            self._unload_future = future
 
         def report_failure(completed):
             try:
                 completed.result()
+                self._initialized_cache.clear()
                 self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
             except Exception as exc:
                 logger.warning(f"Local TTS runtime unload failed: {format_exception(exc)}")
+            finally:
+                with self._unload_future_lock:
+                    if self._unload_future is completed:
+                        self._unload_future = None
 
         future.add_done_callback(report_failure)
+
+    async def _await_pending_unload(self) -> None:
+        with self._unload_future_lock:
+            pending = self._unload_future
+        if pending is not None:
+            await asyncio.wrap_future(pending)
 
     def model_configs(self) -> list[dict[str, Any]]:
         return list(self._on_get_all_local_model_configs(Event(Events.Audio.GET_ALL_LOCAL_MODEL_CONFIGS)) or [])
@@ -253,6 +274,7 @@ class LocalVoiceController(LocalVoiceService):
 
     async def _async_init_model(self, model_id: str):
         try:
+            await self._await_pending_unload()
             logger.info(f"LocalVoiceController init start: model_id='{model_id}'")
             self.event_bus.emit(
                 Events.Audio.UPDATE_MODEL_LOADING_STATUS,
@@ -293,6 +315,7 @@ class LocalVoiceController(LocalVoiceService):
 
     async def _async_reinit_model(self, model_id: str):
         try:
+            await self._await_pending_unload()
             logger.info(f"LocalVoiceController reinit start: model_id='{model_id}'")
             self.event_bus.emit(
                 Events.Audio.UPDATE_MODEL_LOADING_STATUS,

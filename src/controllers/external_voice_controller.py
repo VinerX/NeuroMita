@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
+
 from core.app_paths import settings_dir
+from main_logger import logger
 
 from services.contracts import ExternalVoiceService
 from services.external_tts_service import ExternalTTSClient, ExternalTTSConfig
@@ -22,12 +25,52 @@ def external_config_from_settings(settings) -> ExternalTTSConfig:
 
 
 class ExternalVoiceController(ExternalVoiceService):
+    CLEANUP_INTERVAL_SECONDS = 60 * 60
+
     def __init__(self, settings):
         self._settings = settings
         self._client = ExternalTTSClient()
+        self._cleanup_stop = threading.Event()
+        self._output_dirs_lock = threading.Lock()
+        self._output_dirs: set[str] = set()
+        self._remember_output_dir(external_config_from_settings(settings).output_dir)
+        self._cleanup_once()
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            name="external-tts-output-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def _remember_output_dir(self, path: str) -> None:
+        if path:
+            with self._output_dirs_lock:
+                self._output_dirs.add(str(path))
+
+    def _cleanup_once(self) -> None:
+        config = external_config_from_settings(self._settings)
+        self._remember_output_dir(config.output_dir)
+        with self._output_dirs_lock:
+            output_dirs = tuple(self._output_dirs)
+        for output_dir in output_dirs:
+            self._client.cleanup_outputs(output_dir)
+
+    def _cleanup_loop(self) -> None:
+        while not self._cleanup_stop.wait(self.CLEANUP_INTERVAL_SECONDS):
+            try:
+                self._cleanup_once()
+            except Exception as exc:
+                logger.warning(f"External TTS output cleanup failed: {type(exc).__name__}")
+
+    def close(self) -> None:
+        self._cleanup_stop.set()
+        if self._cleanup_thread.is_alive():
+            self._cleanup_thread.join(timeout=2.0)
 
     def configuration_snapshot(self) -> ExternalTTSConfig:
-        return external_config_from_settings(self._settings)
+        config = external_config_from_settings(self._settings)
+        self._remember_output_dir(config.output_dir)
+        return config
 
     async def health(self, config_snapshot: ExternalTTSConfig | None = None) -> dict:
         config = config_snapshot or self.configuration_snapshot()

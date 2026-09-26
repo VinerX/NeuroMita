@@ -343,6 +343,7 @@ class MainController:
                 enabled=external_voice_enabled,
                 factory=self._create_external_voice_controller,
                 provided_services=(ExternalVoiceService,),
+                shutdown=lambda controller: controller.close(),
                 priority=35,
                 stop_when_disabled=False,
             )

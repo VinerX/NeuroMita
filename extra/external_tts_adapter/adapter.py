@@ -14,9 +14,16 @@ def load_config() -> dict:
         return json.load(stream)
 
 
+def require_api_key() -> str:
+    key = str(os.environ.get("NEUROMITA_API_KEY", "") or "").strip()
+    if not key:
+        raise RuntimeError("NEUROMITA_API_KEY must be set before the adapter starts")
+    return key
+
+
 def auth(request: web.Request) -> None:
-    expected = os.environ.get("NEUROMITA_API_KEY", "")
-    if expected and request.headers.get("Authorization") != f"Bearer {expected}":
+    expected = require_api_key()
+    if request.headers.get("Authorization") != f"Bearer {expected}":
         raise web.HTTPUnauthorized()
 
 
@@ -96,6 +103,7 @@ async def synthesize(request: web.Request) -> web.Response:
 
 
 def create_app() -> web.Application:
+    require_api_key()
     app = web.Application(client_max_size=1_000_000)
     app["config"] = load_config()
     app.router.add_get("/v1/health", health)
@@ -104,4 +112,5 @@ def create_app() -> web.Application:
 
 
 if __name__ == "__main__":
+    require_api_key()
     web.run_app(create_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

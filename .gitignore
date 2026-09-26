@@ -49,6 +49,8 @@ _voice_bundles/
 /archive/legacy_mitaai_csharp/MitaAI/obj/
 *_review.diff
 /extra/Testing/rag_tester/Histories/*.db*
+/extra/external_tts_adapter/adapter.json
+/extra/external_tts_adapter/.env
 # Одноразовый тулинг перевода локалей (batch/check/fix-скрипты). В locales/
 # легитимны только .json-каталоги; постоянный тулинг живёт в scripts/.
 src/localization/locales/*.py

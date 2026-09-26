@@ -2,7 +2,7 @@ import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QSlider, QLineEdit
+    QSizePolicy, QPushButton, QSlider, QLineEdit, QFileDialog
 )
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
@@ -124,8 +124,8 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     external_layout.setSpacing(4)
     external_hint = tr_set(
         QLabel(),
-        "Укажите базовый URL сервера с NeuroMita External TTS API v1.",
-        "Enter the base URL of a server implementing NeuroMita External TTS API v1.",
+        "Укажите URL сервера NeuroMita External TTS API v1 и отдельную папку WAV. Если на диске C мало места, выберите папку на другом диске.",
+        "Enter the NeuroMita External TTS API v1 server URL and an audio folder. Choose a different drive if C: is low on space.",
     )
     external_hint.setWordWrap(True)
     external_hint.setObjectName("SeparatorLabel")
@@ -172,6 +172,23 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
                 editor = widget.findChild(QLineEdit)
                 if editor is not None:
                     editor.setEchoMode(QLineEdit.EchoMode.Password)
+            elif cfg['key'] == 'EXTERNAL_TTS_OUTPUT_DIR':
+                editor = widget.findChild(QLineEdit)
+                if editor is not None and widget.layout() is not None:
+                    browse = tr_set(QPushButton(), "Обзор…", "Browse…")
+
+                    def choose_output_folder(_checked=False, target=editor):
+                        selected = QFileDialog.getExistingDirectory(
+                            self,
+                            _("Папка для внешних WAV", "External WAV output folder"),
+                            target.text() or os.path.expanduser("~"),
+                        )
+                        if selected:
+                            target.setText(selected)
+                            self._save_setting("EXTERNAL_TTS_OUTPUT_DIR", selected)
+
+                    browse.clicked.connect(choose_output_folder)
+                    widget.layout().addWidget(browse)
             external_layout.addWidget(widget)
 
     check_row = SettingsBodyWidget()
