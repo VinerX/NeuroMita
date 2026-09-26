@@ -283,7 +283,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'type': 'button',
          'command': (lambda: actions.dispatch(RestartVoiceService()))},
 
-        {'label': _('Перейти к настройкам AI Engine', 'Open AI Engine settings'),
+        {'label': _('Перейти к настройкам ИИ-движка', 'Open AI Engine settings'),
          'type': 'button',
          'command': (lambda: actions.dispatch(OpenAIEngineSettings()))}
     ]

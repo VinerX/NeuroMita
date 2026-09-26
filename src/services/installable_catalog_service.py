@@ -10,6 +10,12 @@ from typing import Any, Iterable
 
 from core.daemon_executor import DaemonExecutor
 from core.installables.compatibility import evaluate_installable_compatibility
+from core.setting_behaviors import normalize_setting_behaviors
+from core.voice_device_selection import (
+    expand_voice_device_schema,
+    migrate_voice_device_values,
+    validate_voice_devices,
+)
 from core.services import services
 from installables.catalog_manifest import catalog_by_id, catalog_entries
 from main_logger import logger
@@ -540,7 +546,8 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             component = self._as_configurable(self.require_component(component_id))
             if component is None:
                 return []
-            return list(component.settings_schema() or [])
+            schema = list(component.settings_schema() or [])
+            return expand_voice_device_schema(schema, self._hardware_snapshot())
         except Exception as exc:
             logger.error(
                 f"Installable settings schema failed for '{component_id}': {format_exception(exc)}",
@@ -553,7 +560,11 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             component = self._as_configurable(self.require_component(component_id))
             if component is None:
                 return {}
-            return dict(component.load_settings() or {})
+            values = dict(component.load_settings() or {})
+            migrated = migrate_voice_device_values(self.settings_schema(component_id), values)
+            if migrated != values:
+                component.save_settings(migrated)
+            return migrated
         except Exception as exc:
             logger.error(
                 f"Installable settings load failed for '{component_id}': {format_exception(exc)}",
@@ -570,15 +581,20 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             component = self._as_configurable(self.require_component(component_id))
             if component is None:
                 return {"ok": False, "errors": {"_": "Component is not configurable"}}
+            schema = self.settings_schema(component_id)
+            normalized_values = normalize_setting_behaviors(schema, values)
+            device_errors = validate_voice_devices(schema, normalized_values)
+            if device_errors:
+                return {"ok": False, "errors": device_errors}
             validate = getattr(component, "validate_settings", None)
             if callable(validate):
-                result = validate(values)
+                result = validate(normalized_values)
                 if not bool(getattr(result, "ok", True)):
                     return {
                         "ok": False,
                         "errors": dict(getattr(result, "errors", {}) or {}),
                     }
-            component.save_settings(values)
+            component.save_settings(normalized_values)
             self.invalidate(component_id)
             return {"ok": True, "errors": {}}
         except Exception as exc:

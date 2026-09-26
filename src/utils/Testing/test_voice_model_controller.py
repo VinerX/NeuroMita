@@ -175,6 +175,24 @@ class VoiceModelControllerTests(unittest.TestCase):
         controller._installable_catalog = _CatalogStub([])
         return controller
 
+    def test_settings_save_rejects_unavailable_device(self):
+        controller = self._make_controller_stub()
+        controller.local_voice_models = [{
+            "id": "edge_tts_rvc_onnx",
+            "settings": [{"key": "device", "type": "combobox", "options": {
+                "values": ["dml", "dml:0", "cpu"],
+            }}],
+        }]
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "voice_model_settings.json"
+            controller.settings_values_file = str(path)
+            result = controller.save_settings_values({
+                "edge_tts_rvc_onnx": {"device": "dml:9"},
+            })
+            self.assertFalse(path.exists())
+
+        self.assertIn("device", result["errors"]["edge_tts_rvc_onnx"])
+
     def test_f5_high_low_defaults_are_adapted_for_intel(self):
         controller = self._make_controller_stub()
 

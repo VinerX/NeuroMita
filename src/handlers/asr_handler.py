@@ -318,7 +318,13 @@ class SpeechRecognition:
             return []
         try:
             if hasattr(inst, "settings_spec"):
-                return inst.settings_spec() or []
+                from core.voice_device_selection import expand_voice_device_schema
+                from utils.gpu_utils import get_hardware_snapshot
+
+                return expand_voice_device_schema(
+                    list(inst.settings_spec() or []),
+                    get_hardware_snapshot(),
+                )
         except Exception as e:
             logger.warning(f"settings_spec error for {engine}: {format_exception(e)}")
         return []

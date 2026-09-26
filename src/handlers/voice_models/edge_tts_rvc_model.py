@@ -16,6 +16,7 @@ from xml.sax.saxutils import escape
 from .base_model import IVoiceModel
 from core.app_paths import base_dir
 from core.backends import BackendKind
+from core.voice_device_selection import VoiceDeviceCatalog, device_half_precision_behavior
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
 from handlers.voice_models.context import VoiceRuntimeContext
@@ -32,9 +33,10 @@ from handlers.voice_models.rvc_runtime_assets import (
     runtime_asset_download_action,
     runtime_asset_requirements,
 )
+from handlers.voice_models.onnx_device_adapter import enable_indexed_directml
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
-from utils.gpu_utils import get_rvc_half_precision_decision
+from utils.gpu_utils import get_hardware_snapshot, get_rvc_half_precision_decision
 
 
 EDGE_TTS_RVC_CUDA_ID = "edge_tts_rvc_cuda"
@@ -102,6 +104,7 @@ def _setting_combo(
     help_en: str,
     *,
     locked: bool = False,
+    behavior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = {
         "key": key,
@@ -112,6 +115,8 @@ def _setting_combo(
     }
     if locked:
         item["locked"] = True
+    if behavior:
+        item["behavior"] = dict(behavior)
     return item
 
 
@@ -134,6 +139,7 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
             "True",
             "FP16 для NVIDIA: быстрее и экономнее по VRAM на совместимых видеокартах.",
             "FP16 on NVIDIA: faster and lighter on VRAM for compatible GPUs.",
+            behavior=device_half_precision_behavior("device"),
         ),
         _setting_combo(
             "f0method",
@@ -235,7 +241,7 @@ def _cuda_silero_settings() -> list[dict[str, Any]]:
     return [
         _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["cuda:0", "cpu"], "cuda:0", "CUDA-устройство для RVC.", "CUDA device for RVC."),
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cuda", "cpu"], "cuda", "Устройство для Silero.", "Device for Silero."),
-        _setting_combo("silero_rvc_is_half", "Half-precision RVC", "Half-precision RVC", ["True", "False"], "True", "FP16 для RVC на NVIDIA.", "FP16 for RVC on NVIDIA."),
+        _setting_combo("silero_rvc_is_half", "Half-precision RVC", "Half-precision RVC", ["True", "False"], "True", "FP16 для RVC на NVIDIA.", "FP16 for RVC on NVIDIA.", behavior=device_half_precision_behavior("silero_rvc_device")),
         _setting_combo(
             "silero_rvc_f0method",
             "Метод F0 (RVC)",
@@ -636,6 +642,23 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     def _resolve_runtime_device(self, value: Any) -> str:
         return str(value or self.RVC_DEFAULT_DEVICE).strip() or self.RVC_DEFAULT_DEVICE
 
+    def _ensure_runtime_device(self, requested_device: Any) -> None:
+        if self.current_tts_rvc is None or requested_device is None:
+            return
+        selected = self._resolve_runtime_device(requested_device)
+        active = str(getattr(self.current_tts_rvc, "device", "") or "").strip().lower()
+        if not active or active == selected.lower():
+            return
+        switch = getattr(self.current_tts_rvc, "set_device", None)
+        if callable(switch):
+            switch(selected)
+            return
+        self.current_tts_rvc = None
+        self.initialized = False
+        gc.collect()
+        if not self.initialize():
+            raise RuntimeError(f"RVC failed to switch to {selected}")
+
     @staticmethod
     def _normalize_runtime_path(path: str) -> str:
         value = str(path or "").strip()
@@ -982,6 +1005,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             )
 
         try:
+            self._ensure_runtime_device(device)
             self._prepare_rvc_target(character, use_index_file)
             inference_params = self._rvc_params(
                 pitch=pitch,
@@ -1014,6 +1038,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         try:
             config_id = settings_model_id if settings_model_id else self.parent.current_model_id
             settings = self._load_settings_for(str(config_id))
+            self._ensure_runtime_device(settings.get("device", self.RVC_DEFAULT_DEVICE))
             voice_paths = self._update_parent_paths(character)
             character_name = voice_paths["character_name"]
 
@@ -1203,6 +1228,7 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
 class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.ONNX
     RVC_PACKAGE = "tts-with-rvc-onnx[dml]"
+    INDEXED_DML_READY = False
     # PyPI documentation uses ``tts_with_rvc_onnx``, while the published wheel
     # has historically also shipped the repository package as ``tts_with_rvc``.
     # Treat the distribution identity and import package identity separately.
@@ -1253,8 +1279,11 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
 
     def _resolve_runtime_device(self, value: Any) -> str:
         requested = super()._resolve_runtime_device(value).lower()
-        if requested != "dml":
+        if requested != "dml" and not requested.startswith("dml:") and not requested.startswith("dml@"):
             return requested
+        if requested != "dml" and not self.INDEXED_DML_READY:
+            raise RuntimeError("Установленная RVC-библиотека не поддерживает выбор DirectML-адаптера")
+        selected = VoiceDeviceCatalog(get_hardware_snapshot()).resolve_runtime_device(requested)
         try:
             import onnxruntime
 
@@ -1262,7 +1291,9 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
         except Exception:
             providers = set()
         if "DmlExecutionProvider" in providers:
-            return "dml"
+            return selected
+        if requested != "dml":
+            raise RuntimeError("Выбранный DirectML-адаптер недоступен в ONNX Runtime")
         logger.warning(
             "ONNX RVC requested DirectML, but DmlExecutionProvider is unavailable; "
             "using CPUExecutionProvider."
@@ -1276,7 +1307,9 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
                 f"{module_name}.lib.infer_pack.onnx_inference"
             )
         except Exception:
+            cls.INDEXED_DML_READY = False
             return
+        cls.INDEXED_DML_READY = enable_indexed_directml(inference_module)
         if getattr(inference_module, "_neuromita_f0_cache_patch", False):
             return
 

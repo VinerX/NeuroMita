@@ -13,6 +13,7 @@ Schema entries are plain dicts with keys:
                       {"default": int, "min": int, "max": int, "step": int}
     help          — tooltip / inline help (optional)
     locked        — if True, the input is rendered disabled
+    behavior      — optional declarative dependency on another field
 
 Anything not understood is rendered as a read-only QLineEdit so the field
 isn't silently dropped.
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from core.setting_behaviors import evaluate_setting_behaviors
 from utils import getTranslationVariant as _tr
 
 from PyQt6.QtCore import Qt
@@ -65,6 +67,7 @@ class SchemaForm(QWidget):
         self._error_labels: dict[str, QLabel] = {}
         self._defaults: dict[str, str] = {}
         self._original: dict[str, str] = {}
+        self._base_locked: dict[str, bool] = {}
         self._on_change = on_change
 
         self._form_box = QVBoxLayout(self)
@@ -90,6 +93,7 @@ class SchemaForm(QWidget):
         self._schema = list(schema or [])
         for entry in self._schema:
             self._build_row(entry)
+        self._apply_behaviors()
 
     def values(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -104,7 +108,6 @@ class SchemaForm(QWidget):
         return out
 
     def set_values(self, values: dict[str, Any] | None) -> None:
-        self._original = {}
         if not isinstance(values, dict):
             values = {}
         for entry in self._schema:
@@ -115,7 +118,8 @@ class SchemaForm(QWidget):
             w = self._widgets.get(key)
             if w is not None:
                 self._write_widget(entry, w, raw)
-            self._original[key] = str(raw)
+        self._apply_behaviors()
+        self._original = self.values()
 
     def is_dirty(self) -> bool:
         current = self.values()
@@ -149,6 +153,7 @@ class SchemaForm(QWidget):
         self._error_labels.clear()
         self._defaults.clear()
         self._original.clear()
+        self._base_locked.clear()
         self._schema = []
 
     # ---- schema-dialect tolerance -------------------------------------
@@ -255,6 +260,7 @@ class SchemaForm(QWidget):
         key: str,
     ) -> QWidget | None:
         default = opts.get("default", "")
+        self._base_locked[key] = bool(locked)
 
         if type_ == "checkbutton":
             w = QCheckBox()
@@ -370,6 +376,13 @@ class SchemaForm(QWidget):
                 idx = widget.findData(str(value))
                 if idx < 0:
                     idx = widget.findText(str(value))
+                key = str(entry.get("key") or "").lower()
+                if idx < 0 and str(value).strip() and "device" in key:
+                    widget.addItem(
+                        _tr(f"Недоступно: {value}", f"Unavailable: {value}"),
+                        str(value),
+                    )
+                    idx = widget.count() - 1
                 if idx >= 0:
                     widget.setCurrentIndex(idx)
                 widget.blockSignals(False)
@@ -398,11 +411,26 @@ class SchemaForm(QWidget):
             pass
 
     def _fire_change(self, *_args, **_kwargs) -> None:
+        self._apply_behaviors()
         if callable(self._on_change):
             try:
                 self._on_change()
             except Exception:
                 pass
+
+    def _apply_behaviors(self) -> None:
+        for key, state in evaluate_setting_behaviors(self._schema, self.values()).items():
+            widget = self._widgets.get(key)
+            entry = next(
+                (item for item in self._schema if str(item.get("key") or "") == key),
+                None,
+            )
+            if widget is None or entry is None:
+                continue
+            forced = state.get("value")
+            if forced is not None:
+                self._write_widget(entry, widget, forced)
+            widget.setEnabled(bool(state.get("enabled")) and not self._base_locked.get(key, False))
 
 
 def _truthy(value: Any) -> bool:

@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -10,6 +11,25 @@ from handlers.voice_models.f5_tts_model import F5TTSInstallSpec, F5TTSModel
 
 
 class F5TTSInstallablesTests(unittest.TestCase):
+    def test_runtime_reinitializes_when_selected_device_changes(self):
+        parent = SimpleNamespace(
+            current_model_id="high",
+            provider="NVIDIA",
+            load_model_settings=lambda _model_id: {"device": "cuda:1"},
+        )
+        model = F5TTSModel(parent, "high")
+        model.initialized = True
+        model.initialized_for = "high"
+        model.current_f5_pipeline = object()
+        model._active_device = "cuda:0"
+
+        with patch.object(model, "initialize", return_value=False) as initialize:
+            with self.assertRaisesRegex(RuntimeError, "cuda:1"):
+                asyncio.run(model.voiceover("test"))
+
+        initialize.assert_called_once_with()
+        self.assertIsNone(model.current_f5_pipeline)
+
     def test_cross_lingual_variant_has_own_assets_and_dependencies(self):
         requirements = F5TTSInstallSpec.requirements(
             "high_clf5",

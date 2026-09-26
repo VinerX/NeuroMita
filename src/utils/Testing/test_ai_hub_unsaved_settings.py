@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ui.mvvm import immutable_payload
 from ui.windows.ai_hub.settings_panel import SettingsPanel
+from ui.windows.ai_hub.schema_renderer import SchemaForm
 from ui.windows.ai_hub.settings_presentation import (
     AIHubSettingsChanged,
     AIHubSettingsState,
@@ -95,6 +96,47 @@ def _set_dirty_device(panel: SettingsPanel) -> None:
     assert panel.has_unsaved_changes()
     # Raw model value must stay cuda:N even though the UI displays the GPU name.
     assert panel._form.values()["device"] == "cuda:1"
+
+
+def test_half_precision_reacts_immediately_to_device_selection() -> None:
+    _app()
+    form = SchemaForm([
+        {
+            "key": "device",
+            "type": "combobox",
+            "options": {"values": ["cuda:0", "cuda:1"], "default": "cuda:0"},
+        },
+        {
+            "key": "is_half",
+            "type": "combobox",
+            "options": {"values": ["True", "False"], "default": "True"},
+            "behavior": {
+                "kind": "source_allowlist",
+                "source": "device",
+                "supported_values": ["cuda:0"],
+                "unsupported_value": "False",
+            },
+        },
+    ])
+    form.set_values({"device": "cuda:0", "is_half": "True"})
+    device = form._widgets["device"]
+    half = form._widgets["is_half"]
+
+    assert half.isEnabled()
+    assert form.values()["is_half"] == "True"
+
+    device.setCurrentIndex(device.findData("cuda:1"))
+    _app().processEvents()
+    assert not half.isEnabled()
+    assert form.values()["is_half"] == "False"
+
+    device.setCurrentIndex(device.findData("cuda:0"))
+    _app().processEvents()
+    assert half.isEnabled()
+    assert form.values()["is_half"] == "False"
+    form.close()
+    form.deleteLater()
+    _app().processEvents()
 
 
 def test_unsaved_component_switch_cancel_restores_previous_selection(monkeypatch) -> None:

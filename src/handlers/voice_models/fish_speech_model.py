@@ -16,8 +16,10 @@ from core.app_paths import base_dir, checkpoints_dir
 from core.services import services
 from services.contracts import AIEngineAdministrationService, GuiInteractionService
 from utils import getTranslationVariant as _, get_character_voice_paths
+from utils.gpu_utils import get_rvc_half_precision_decision
 
 from core.backends import BackendKind
+from core.voice_device_selection import device_half_precision_behavior
 from core.install_types import InstallPlan, InstallAction
 from core.install_requirements import InstallRequirement, check_requirements
 from handlers.voice_models.context import VoiceRuntimeContext
@@ -490,6 +492,7 @@ class FishSpeechModel(IVoiceModel):
         super().__init__(parent, model_id)
         self.fish_speech_module = None
         self.current_fish_speech = None
+        self._active_device: str | None = None
         self.rvc_handler = rvc_handler
 
     MODEL_CONFIGS = [
@@ -511,8 +514,9 @@ class FishSpeechModel(IVoiceModel):
                  "options": {"values": ["cuda"], "default": "cuda", "values_nvidia": ["cuda"], "default_nvidia": "cuda", "values_other": []},
                  "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
-                 "options": {"values": ["False", "True"], "default": "False"},
-                 "help": _("FP16 для экономии VRAM и ускорения (если поддерживается).", "FP16 for VRAM saving and speed (if supported).")},
+                  "options": {"values": ["False", "True"], "default": "False"},
+                  "behavior": device_half_precision_behavior("device"),
+                  "help": _("FP16 для экономии VRAM и ускорения (если поддерживается).", "FP16 for VRAM saving and speed (if supported).")},
                 {"key": "temperature", "label": _("Температура", "Temperature"), "type": "entry", "options": {"default": "0.7"},
                  "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
                 {"key": "top_p", "label": _("Top-P", "Top-P"), "type": "entry", "options": {"default": "0.7"},
@@ -551,9 +555,9 @@ class FishSpeechModel(IVoiceModel):
                  "options": {"values": ["cuda"], "default": "cuda", "values_nvidia": ["cuda"], "default_nvidia": "cuda", "values_other": []},
                  "help": _("Устройство вычислений для модели.", "Compute device for the model.")},
                 {"key": "half", "label": _("Half-precision", "Half-precision"), "type": "combobox",
-                 "options": {"values": ["True", "False"], "default": "False"},
-                 "locked": True,
-                 "help": _("FP16 принудительно, параметр заблокирован для совместимости.", "FP16 enforced; parameter locked for compatibility.")},
+                  "options": {"values": ["True", "False"], "default": "False"},
+                  "behavior": device_half_precision_behavior("device"),
+                  "help": _("FP16 доступен на совместимой выбранной видеокарте.", "FP16 is available on a compatible selected GPU.")},
                 {"key": "temperature", "label": _("Температура", "Temperature"), "type": "entry", "options": {"default": "0.7"},
                  "help": _("Случайность сэмплирования (>0): выше — разнообразнее, но нестабильнее.", "Sampling randomness (>0): higher — more diverse, less stable.")},
                 {"key": "top_p", "label": _("Top-P", "Top-P"), "type": "entry", "options": {"default": "0.8"},
@@ -592,9 +596,9 @@ class FishSpeechModel(IVoiceModel):
                  "options": {"values": ["cuda"], "default": "cuda", "values_nvidia": ["cuda"], "default_nvidia": "cuda", "values_other": []},
                  "help": _("Устройство для части Fish Speech+.", "Device for Fish Speech+ part.")},
                 {"key": "fsprvc_fsp_half", "label": _("[FSP] Half-precision", "[FSP] Half-precision"), "type": "combobox",
-                 "options": {"values": ["True", "False"], "default": "False"},
-                 "locked": True,
-                 "help": _("FP16 для ускорения; параметр заблокирован.", "FP16 for speed; parameter locked.")},
+                  "options": {"values": ["True", "False"], "default": "False"},
+                  "behavior": device_half_precision_behavior("fsprvc_fsp_device"),
+                  "help": _("FP16 доступен на совместимой выбранной видеокарте.", "FP16 is available on a compatible selected GPU.")},
                 {"key": "fsprvc_fsp_temperature", "label": _("[FSP] Температура", "[FSP] Temperature"), "type": "entry", "options": {"default": "0.7"},
                  "help": _("Случайность генерации в части Fish Speech+.", "Sampling randomness in Fish Speech+ part.")},
                 {"key": "fsprvc_fsp_top_p", "label": _("[FSP] Top-P", "[FSP] Top-P"), "type": "entry", "options": {"default": "0.7"},
@@ -615,8 +619,9 @@ class FishSpeechModel(IVoiceModel):
                  "options": {"values": ["cuda:0", "cpu"], "default": "cuda:0"},
                  "help": _("Устройство для части RVC.", "Device for RVC part.")},
                 {"key": "fsprvc_is_half", "label": _("[RVC] Half-precision", "[RVC] Half-precision"), "type": "combobox",
-                 "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False"},
-                 "help": _("FP16 для RVC на совместимых GPU.", "FP16 for RVC on compatible GPUs.")},
+                  "options": {"values": ["True", "False"], "default_nvidia": "True", "default_amd": "False"},
+                  "behavior": device_half_precision_behavior("fsprvc_rvc_device"),
+                  "help": _("FP16 для RVC на совместимых GPU.", "FP16 for RVC on compatible GPUs.")},
                 {"key": "fsprvc_f0method", "label": _("[RVC] Метод F0", "[RVC] F0 Method"), "type": "combobox",
                  "options": {"values": ["pm", "rmvpe", "crepe", "harvest", "fcpe", "dio"], "default_nvidia": "rmvpe", "default_amd": "dio"},
                  "help": _("Алгоритм извлечения высоты тона.", "Pitch extraction algorithm.")},
@@ -736,6 +741,7 @@ class FishSpeechModel(IVoiceModel):
     def cleanup_state(self):
         super().cleanup_state()
         self.current_fish_speech = None
+        self._active_device = None
         self.fish_speech_module = None
         self._import_attempted = False
 
@@ -768,7 +774,11 @@ class FishSpeechModel(IVoiceModel):
         if self.current_fish_speech is None:
             settings = self.parent.load_model_settings(mode)
             device = settings.get("fsprvc_fsp_device" if mode == "medium+low" else "device", "cuda")
-            half = settings.get("fsprvc_fsp_half" if mode == "medium+low" else "half", "True" if compile_model else "False").lower() == "true"
+            requested_half = str(settings.get(
+                "fsprvc_fsp_half" if mode == "medium+low" else "half",
+                "True" if compile_model else "False",
+            )).lower() == "true"
+            half = requested_half and get_rvc_half_precision_decision(str(device)).allowed
 
             checkpoint_dir = FishSpeechInstallSpec.checkpoint_dir()
             self.current_fish_speech = self.fish_speech_module(
@@ -781,6 +791,7 @@ class FishSpeechModel(IVoiceModel):
                     "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
                 ),
             )
+            self._active_device = str(device)
 
             self.parent.first_compiled = compile_model
             logger.info(f"FishSpeech инициализирован (compile={compile_model})")
@@ -807,6 +818,13 @@ class FishSpeechModel(IVoiceModel):
 
         try:
             settings = self.parent.load_model_settings(mode)
+            device_key = "fsprvc_fsp_device" if mode == "medium+low" else "device"
+            selected_device = str(settings.get(device_key, "cuda"))
+            if getattr(self, "_active_device", None) and selected_device != self._active_device:
+                self.current_fish_speech = None
+                self.initialized = False
+                if not self.initialize():
+                    raise RuntimeError(f"Fish Speech failed to switch to {selected_device}")
             is_combined_model = mode == "medium+low"
 
             temp_key = "fsprvc_fsp_temperature" if is_combined_model else "temperature"

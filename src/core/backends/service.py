@@ -681,7 +681,7 @@ class BackendService:
         if gpu_vendor != "NVIDIA":
             return False
         device = str(ctx_data.get("device") or "").strip().lower()
-        return device not in ("cpu", "dml")
+        return device not in ("cpu", "dml") and not device.startswith(("dml:", "dml@"))
 
     def _build_ctx(self, ctx: dict[str, Any] | None) -> dict[str, Any]:
         data = dict(ctx or {})

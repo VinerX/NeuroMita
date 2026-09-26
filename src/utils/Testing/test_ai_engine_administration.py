@@ -15,6 +15,7 @@ from services.contracts import (
 )
 from services.hardware_inventory_service import WindowsHardwareInventoryService
 import services.hardware_inventory_service as hardware_inventory
+from ui.settings.ai_engine_settings import _sorted_accelerators
 
 
 class _Engine(AIEngineAdministrationService):
@@ -64,6 +65,38 @@ def test_windows_inventory_test_vendor_uses_pci_id(monkeypatch) -> None:
     snapshot = WindowsHardwareInventoryService().snapshot(refresh=True)
     assert snapshot["vendor"] == "AMD"
     assert snapshot["primary"]["vendor_id"] == "1002"
+
+
+def test_hardware_inventory_keeps_primary_independent_from_cuda_ordinals(monkeypatch) -> None:
+    monkeypatch.delenv("TEST_AS_AMD", raising=False)
+    monkeypatch.delenv("TEST_AS_NVIDIA", raising=False)
+    monkeypatch.setattr(hardware_inventory.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hardware_inventory, "_dxgi_adapters", lambda: [
+        {"index": 0, "name": "AMD Radeon", "vendor": "AMD"},
+        {"index": 1, "name": "NVIDIA RTX A400", "vendor": "NVIDIA"},
+        {"index": 2, "name": "NVIDIA GeForce RTX 5060 Ti", "vendor": "NVIDIA"},
+    ])
+    monkeypatch.setattr(hardware_inventory, "_nvidia_driver_inventory", lambda: {
+        "available": True,
+        "devices": [
+            {"ordinal": 0, "device": "cuda:0", "name": "NVIDIA GeForce RTX 5060 Ti"},
+            {"ordinal": 1, "device": "cuda:1", "name": "NVIDIA RTX A400"},
+        ],
+    })
+
+    snapshot = WindowsHardwareInventoryService().snapshot(refresh=True)
+
+    assert snapshot["primary"]["name"] == "NVIDIA RTX A400"
+    assert snapshot["adapters"][2]["cuda"]["device"] == "cuda:0"
+    assert len(snapshot["accelerators"]) == 3
+
+    rendered = _sorted_accelerators(snapshot)
+    assert [item["name"] for item in rendered] == [
+        "NVIDIA GeForce RTX 5060 Ti",
+        "NVIDIA RTX A400",
+        "AMD Radeon",
+    ]
+    assert len({item["id"] for item in rendered}) == 3
 
 
 def test_hardware_inventory_keeps_cuda_ordinals_when_dxgi_probe_fails(monkeypatch) -> None:

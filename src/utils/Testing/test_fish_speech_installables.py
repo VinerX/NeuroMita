@@ -1,15 +1,37 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec, FishSpeechModel
 
 
 class FishSpeechInstallablesTests(unittest.TestCase):
+    def test_runtime_reinitializes_when_selected_device_changes(self):
+        parent = SimpleNamespace(
+            current_model_id="medium",
+            provider="NVIDIA",
+            load_model_settings=lambda _model_id: {"device": "cuda:1"},
+        )
+        model = FishSpeechModel(parent, "medium")
+        model.initialized = True
+        model.initialized_for = "medium"
+        model.fish_speech_module = object()
+        model.current_fish_speech = object()
+        model._active_device = "cuda:0"
+
+        with patch.object(model, "initialize", return_value=False) as initialize:
+            result = asyncio.run(model.voiceover("test"))
+
+        initialize.assert_called_once_with()
+        self.assertIsNone(result)
+        self.assertIsNone(model.current_fish_speech)
+
     def test_fish_runtime_device_settings_are_selectable_for_multi_gpu(self):
         for model_id, key in (
             ("medium", "device"),

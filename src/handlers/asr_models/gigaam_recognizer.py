@@ -348,12 +348,19 @@ class GigaAMRecognizer(SpeechRecognizerInterface):
 
         # device selection
         device_choice = (self.gigaam_device or "auto").strip().lower()
-        if device_choice == "cuda" and not (self._torch.cuda.is_available()):
-            self.logger.warning("CUDA was requested but is unavailable. Falling back to CPU.")
-            device_choice = "cpu"
+        if device_choice == "cuda" or device_choice.startswith("cuda:"):
+            try:
+                cuda_index = int(device_choice.partition(":")[2] or 0)
+            except (TypeError, ValueError):
+                cuda_index = -1
+            if not self._torch.cuda.is_available() or not 0 <= cuda_index < self._torch.cuda.device_count():
+                self.logger.warning("CUDA was requested but is unavailable. Falling back to CPU.")
+                device_choice = "cpu"
+            else:
+                device_choice = f"cuda:{cuda_index}"
 
         if device_choice == "auto":
-            device_choice = "cuda" if self._torch.cuda.is_available() else "cpu"
+            device_choice = "cuda:0" if self._torch.cuda.is_available() else "cpu"
 
         try:
             self.logger.info(f"Loading GigaAM (PyTorch) on {device_choice}...")

@@ -50,7 +50,7 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
 
     # 1) Кнопка в глоссарий
-    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам AI Engine", "Open AI Engine settings")
+    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам ИИ-движка", "Open AI Engine settings")
     self.asr_manage_button.setObjectName("SecondaryButton")
     self.asr_manage_button.setIcon(qta.icon("fa6s.microchip", color="#ffffff"))
     self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

@@ -456,7 +456,7 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
         )
 
         init_options = {
-            "device": self.gigaam_device,
+            "device": self._runtime_device(),
             "model": self.gigaam_model,
             "onnx_path": self.gigaam_onnx_export_path,
             "model_path": self.gigaam_model_path,
@@ -474,6 +474,12 @@ class GigaAMOnnxRecognizer(SpeechRecognizerInterface):
 
         self.logger.success("GigaAM ONNX процесс успешно запущен и инициализирован")
         return True
+
+    def _runtime_device(self) -> str:
+        from core.voice_device_selection import VoiceDeviceCatalog
+        from utils.gpu_utils import get_hardware_snapshot
+
+        return VoiceDeviceCatalog(get_hardware_snapshot()).resolve_runtime_device(self.gigaam_device)
 
     def _stop_process(self):
         if not self._process:

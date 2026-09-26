@@ -36,6 +36,44 @@ def _format_bytes(value) -> str:
     return "—"
 
 
+def _sorted_accelerators(hardware: dict) -> list[dict]:
+    accelerators = [
+        dict(item)
+        for item in (hardware.get("accelerators") or [])
+        if isinstance(item, dict)
+    ]
+    if not accelerators:
+        for item in hardware.get("adapters") or []:
+            if not isinstance(item, dict):
+                continue
+            cuda = item.get("cuda") if isinstance(item.get("cuda"), dict) else {}
+            accelerators.append({
+                **item,
+                "dxgi_index": item.get("dxgi_index", item.get("index")),
+                "cuda_device": cuda.get("device"),
+                "compute_capability": cuda.get("compute_capability"),
+            })
+
+    def sort_key(item: dict) -> tuple:
+        cuda_device = str(item.get("cuda_device") or "")
+        try:
+            cuda_ordinal = int(cuda_device.partition(":")[2])
+        except (TypeError, ValueError):
+            cuda_ordinal = 1_000_000
+        try:
+            adapter_index = int(item.get("dxgi_index", item.get("index")))
+        except (TypeError, ValueError):
+            adapter_index = 1_000_000
+        return (
+            0 if cuda_ordinal < 1_000_000 else 1,
+            cuda_ordinal,
+            adapter_index,
+            str(item.get("name") or "").casefold(),
+        )
+
+    return sorted(accelerators, key=sort_key)
+
+
 def _set_icon(widget, name: str, *, color: str = "#f2b6d8", size: int = 18) -> None:
     if qta is None:
         return
@@ -88,7 +126,7 @@ def _clear_layout(layout) -> None:
 
 
 def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> None:
-    create_section_header(parent_layout, _("Управление AI Engine", "AI Engine management"))
+    create_section_header(parent_layout, _("Управление ИИ-движком", "AI Engine management"))
 
     root = SettingsBodyWidget()
     layout = QVBoxLayout(root)
@@ -151,24 +189,6 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
     loading_layout.addWidget(self.ai_hardware_spinner, 0)
     loading_layout.addWidget(loading_text, 1)
     hardware_content.addWidget(self.ai_hardware_loading)
-
-    self.ai_hardware_info = QWidget()
-    self.ai_hardware_info.setObjectName("AIEngineHardwareInfo")
-    info_layout = QHBoxLayout(self.ai_hardware_info)
-    info_layout.setContentsMargins(0, 0, 0, 0)
-    info_layout.setSpacing(8)
-    self.ai_hardware_name = QLabel("—")
-    self.ai_hardware_name.setObjectName("AIEngineHardwareName")
-    self.ai_hardware_name.setTextInteractionFlags(
-        Qt.TextInteractionFlag.TextSelectableByMouse
-    )
-    info_layout.addWidget(self.ai_hardware_name, 0, Qt.AlignmentFlag.AlignVCenter)
-    self.ai_hardware_chips = QHBoxLayout()
-    self.ai_hardware_chips.setContentsMargins(0, 0, 0, 0)
-    self.ai_hardware_chips.setSpacing(6)
-    info_layout.addLayout(self.ai_hardware_chips)
-    info_layout.addStretch(1)
-    hardware_content.addWidget(self.ai_hardware_info)
 
     self.ai_hardware_devices = QWidget()
     self.ai_hardware_devices.setObjectName("AIEngineHardwareDevices")
@@ -436,98 +456,33 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
 
     def render_hardware(state) -> None:
         hardware = dict(state.hardware or {})
-        primary = dict(hardware.get("primary") or {})
         loading = bool(
             state.hardware_loading
             or (not hardware and not state.hardware_error)
         )
         self.ai_hardware_loading.setVisible(loading)
-        self.ai_hardware_info.setVisible(not loading)
+        self.ai_hardware_devices.setVisible(not loading)
         if loading:
             return
 
-        vendor = str(hardware.get("vendor") or "CPU").upper()
-        name = str(
-            primary.get("name")
-            or (
+        cuda = dict(hardware.get("cuda") or {})
+        accelerators = _sorted_accelerators(hardware)
+        driver = str(cuda.get("driver_version") or "—")
+        hardware_card.setToolTip(
+            state.hardware_error
+            or (f"CUDA Driver {driver}" if cuda.get("available") else "")
+        )
+
+        _clear_layout(self.ai_hardware_devices_layout)
+        if not accelerators:
+            empty = QLabel(
                 _("Не удалось определить видеокарту", "Could not detect graphics adapter")
                 if state.hardware_error
                 else _("Видеокарта не обнаружена", "No graphics adapter detected")
             )
-        )
-        vendor_id = str(primary.get("vendor_id") or "—").upper()
-        device_id = str(primary.get("device_id") or "—").upper()
-        vram = _format_bytes(primary.get("dedicated_vram_bytes"))
-        cuda = dict(hardware.get("cuda") or {})
-        cuda_devices = list(cuda.get("devices") or [])
-        accelerators = list(hardware.get("accelerators") or [])
-        if not accelerators:
-            accelerators = [
-                {
-                    "name": item.get("name"),
-                    "vendor": item.get("vendor"),
-                    "dedicated_vram_bytes": item.get("dedicated_vram_bytes"),
-                    "cuda_device": (
-                        f"cuda:{int(item['cuda'].get('ordinal', 0))}"
-                        if isinstance(item.get("cuda"), dict)
-                        else None
-                    ),
-                    "compute_capability": (
-                        item["cuda"].get("compute_capability")
-                        if isinstance(item.get("cuda"), dict)
-                        else None
-                    ),
-                }
-                for item in (hardware.get("adapters") or [])
-                if isinstance(item, dict)
-            ]
-        driver = str(cuda.get("driver_version") or "—")
-        capabilities = ", ".join(
-            str(item.get("compute_capability") or "").upper()
-            for item in cuda_devices
-            if item.get("compute_capability")
-        )
-        tooltip = f"PCI {vendor_id}:{device_id}"
-        if cuda.get("available"):
-            tooltip += f"\nCUDA Driver {driver}"
-            if capabilities:
-                tooltip += f" · {capabilities}"
-        self.ai_hardware_name.setText(name)
-        self.ai_hardware_name.setToolTip(tooltip)
-        hardware_card.setToolTip(tooltip)
-
-        _clear_layout(self.ai_hardware_chips)
-        if state.hardware_error:
-            self.ai_hardware_chips.addWidget(
-                _chip(_("Ошибка проверки", "Detection failed"), "warning")
-            )
-            hardware_card.setToolTip(state.hardware_error)
-        elif vendor == "NVIDIA":
-            self.ai_hardware_chips.addWidget(_chip("NVIDIA", "gpu"))
-            if cuda.get("available"):
-                self.ai_hardware_chips.addWidget(
-                    _chip("CUDA", "cuda", f"CUDA Driver {driver}")
-                )
-            else:
-                self.ai_hardware_chips.addWidget(
-                    _chip(_("CUDA недоступна", "CUDA unavailable"), "warning")
-                )
-        elif vendor == "AMD":
-            self.ai_hardware_chips.addWidget(_chip("AMD", "gpu"))
-            self.ai_hardware_chips.addWidget(_chip("ONNX", "onnx"))
-            self.ai_hardware_chips.addWidget(_chip("DirectML"))
-        elif vendor == "INTEL":
-            self.ai_hardware_chips.addWidget(_chip("INTEL", "gpu"))
-            self.ai_hardware_chips.addWidget(_chip("ONNX", "onnx"))
-        else:
-            self.ai_hardware_chips.addWidget(_chip("CPU"))
-            self.ai_hardware_chips.addWidget(_chip("ONNX", "onnx"))
-        if primary.get("dedicated_vram_bytes"):
-            self.ai_hardware_chips.addWidget(_chip(f"VRAM {vram}"))
-        if capabilities:
-            self.ai_hardware_chips.addWidget(_chip(capabilities))
-
-        _clear_layout(self.ai_hardware_devices_layout)
+            empty.setObjectName("AIEngineCardSubtitle")
+            empty.setToolTip(state.hardware_error or "")
+            self.ai_hardware_devices_layout.addWidget(empty)
         for accelerator in accelerators:
             if not isinstance(accelerator, dict):
                 continue
@@ -543,10 +498,17 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
 
             cuda_device = str(accelerator.get("cuda_device") or "").strip()
             accelerator_vendor = str(accelerator.get("vendor") or "UNKNOWN").upper()
-            if cuda_device:
-                row_layout.addWidget(_chip(cuda_device, "cuda"), 0)
-            elif accelerator_vendor in {"NVIDIA", "AMD", "INTEL"}:
+            if accelerator_vendor != "UNKNOWN":
                 row_layout.addWidget(_chip(accelerator_vendor, "gpu"), 0)
+            if cuda_device:
+                row_layout.addWidget(_chip(cuda_device, "cuda", f"CUDA Driver {driver}"), 0)
+
+            try:
+                dml_index = int(accelerator.get("dxgi_index", accelerator.get("index")))
+            except (TypeError, ValueError):
+                dml_index = None
+            if dml_index is not None:
+                row_layout.addWidget(_chip(f"dml:{dml_index}"), 0)
 
             capability = str(accelerator.get("compute_capability") or "").upper()
             if capability:
@@ -558,7 +520,7 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
             row_layout.addStretch(1)
             self.ai_hardware_devices_layout.addWidget(row)
 
-        self.ai_hardware_devices.setVisible(bool(accelerators))
+        self.ai_hardware_devices.setVisible(True)
 
     def render_topology(state) -> None:
         topology = dict(state.topology or {})
@@ -578,9 +540,9 @@ def setup_ai_engine_settings_controls(self, parent_layout, *, view_model) -> Non
         total = len(workers)
         ready = bool(total and alive == total)
         if state.topology_error and not topology:
-            status = _("AI Engine недоступен", "AI Engine unavailable")
+            status = _("ИИ-движок недоступен", "AI Engine unavailable")
         elif state.topology_loading and not topology:
-            status = _("AI Engine запускается…", "AI Engine is starting…")
+            status = _("ИИ-движок запускается…", "AI Engine is starting…")
         elif not total:
             status = _("Процессы не запущены", "Processes are not running")
         elif mode == "shared" and ready:

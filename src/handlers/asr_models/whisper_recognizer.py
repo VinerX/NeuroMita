@@ -128,7 +128,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
     def settings_spec(self):
         return [
             {"key": "device", "label_ru": "Устройство", "label_en": "Device",
-             "type": "combobox", "options": ["auto", "cuda", "cpu", "dml"], "default": "auto"},
+             "type": "combobox", "options": ["auto", "cuda", "cpu"], "default": "auto"},
             {"key": "model", "label_ru": "Модель", "label_en": "Model",
              "type": "combobox", "options": ["large-v3-turbo", "large-v3"], "default": "large-v3-turbo"},
             {"key": "compute_type", "label_ru": "Точность", "label_en": "Compute type",
@@ -328,25 +328,24 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         return True
 
     # ---------- runtime ----------
-    def _resolve_device_for_runtime(self) -> str:
+    def _resolve_device_for_runtime(self) -> tuple[str, int]:
         dev = (self.whisper_device or "auto").strip().lower()
-
-        if dev == "dml":
-            self.logger.warning("Whisper: режим dml пока не реализован, используется CPU.")
-            return "cpu"
-
         if dev == "cpu":
-            return "cpu"
+            return "cpu", 0
 
-        if dev == "cuda":
+        if dev == "cuda" or dev.startswith("cuda:"):
             try:
                 import torch
-                if torch.cuda.is_available():
-                    return "cuda"
+                index = int(dev.partition(":")[2] or 0)
+                if torch.cuda.is_available() and 0 <= index < torch.cuda.device_count():
+                    return "cuda", index
                 self.logger.warning("Whisper: CUDA запрошен, но недоступен. Используется CPU.")
-                return "cpu"
+                return "cpu", 0
+            except (TypeError, ValueError):
+                self.logger.warning(f"Whisper: некорректное CUDA-устройство '{dev}'. Используется CPU.")
+                return "cpu", 0
             except Exception:
-                return "cpu"
+                return "cpu", 0
 
         # auto
         try:
@@ -354,15 +353,14 @@ class WhisperRecognizer(SpeechRecognizerInterface):
         except Exception:
             gpu = "CPU"
 
-        if gpu == "NVIDIA":
+        if str(gpu).upper() == "NVIDIA":
             try:
                 import torch
                 if torch.cuda.is_available():
-                    return "cuda"
+                    return "cuda", 0
             except Exception:
                 pass
-
-        return "cpu"
+        return "cpu", 0
 
     def _resolve_compute_type(self, device: str) -> str:
         ct = (self.compute_type or "auto").strip().lower()
@@ -391,7 +389,7 @@ class WhisperRecognizer(SpeechRecognizerInterface):
 
             os.makedirs(self.model_download_root, exist_ok=True)
 
-            device = self._resolve_device_for_runtime()
+            device, device_index = self._resolve_device_for_runtime()
             compute_type = self._resolve_compute_type(device)
 
             # Грузим из локального каталога с заранее скачанными весами (их кладёт
@@ -406,11 +404,13 @@ class WhisperRecognizer(SpeechRecognizerInterface):
 
             self.logger.info(
                 f"Whisper init: model={self.whisper_model}, source={model_ref}, "
-                f"device={device}, compute_type={compute_type}"
+                f"device={f'cuda:{device_index}' if device == 'cuda' else device}, "
+                f"compute_type={compute_type}"
             )
             self._model = WhisperModel(
                 model_ref,
                 device=device,
+                device_index=device_index,
                 compute_type=compute_type,
                 download_root=self.model_download_root
             )

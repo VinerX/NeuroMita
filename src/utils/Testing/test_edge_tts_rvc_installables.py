@@ -244,8 +244,68 @@ class EdgeTTSRVCInstallablesTests(unittest.TestCase):
             ],
         )
 
-        with patch.dict(sys.modules, {"onnxruntime": fake_ort}):
+        with patch.dict(sys.modules, {"onnxruntime": fake_ort}), patch.object(
+            EdgeTTSRVCOnnxModel, "INDEXED_DML_READY", True
+        ), patch(
+            "handlers.voice_models.edge_tts_rvc_model.get_hardware_snapshot",
+            return_value={"adapters": [{"index": 0, "name": "AMD Radeon"}]},
+        ):
             self.assertEqual(model._resolve_runtime_device("dml"), "dml")
+            self.assertEqual(model._resolve_runtime_device("dml:0"), "dml:0")
+
+    def test_selected_directml_adapter_switches_loaded_runtime(self):
+        class _Parent:
+            current_model_id = EDGE_TTS_RVC_ONNX_ID
+
+        model = EdgeTTSRVCOnnxModel(_Parent(), EDGE_TTS_RVC_ONNX_ID)
+        switched = []
+        model.current_tts_rvc = SimpleNamespace(
+            device="dml",
+            set_device=lambda device: switched.append(device),
+        )
+        fake_ort = SimpleNamespace(get_available_providers=lambda: ["DmlExecutionProvider"])
+
+        with patch.dict(sys.modules, {"onnxruntime": fake_ort}), patch.object(
+            EdgeTTSRVCOnnxModel, "INDEXED_DML_READY", True
+        ), patch(
+            "handlers.voice_models.edge_tts_rvc_model.get_hardware_snapshot",
+            return_value={"adapters": [{"index": 0, "name": "AMD Radeon"}]},
+        ):
+            model._ensure_runtime_device("dml:0")
+
+        self.assertEqual(switched, ["dml:0"])
+
+    def test_indexed_directml_uses_selected_adapter_for_all_onnx_sessions(self):
+        class FakeSession:
+            def _get_onnx_providers(self, _device):
+                return ["CPUExecutionProvider"]
+
+        class FakePredictor(FakeSession):
+            def _get_torch_device(self, _device):
+                return "unknown"
+
+        inference_module = SimpleNamespace(
+            OnnxRVC=type("OnnxRVC", (FakeSession,), {}),
+            ContentVec=type("ContentVec", (FakeSession,), {}),
+            RMVPEONNXPredictor=FakePredictor,
+            get_f0_predictor=lambda *args, **kwargs: object(),
+        )
+        with patch(
+            "handlers.voice_models.edge_tts_rvc_model.importlib.import_module",
+            return_value=inference_module,
+        ):
+            EdgeTTSRVCOnnxModel._configure_imported_rvc_module(
+                "tts_with_rvc", SimpleNamespace()
+            )
+
+        expected = [
+            ("DmlExecutionProvider", {"device_id": 0}),
+            "CPUExecutionProvider",
+        ]
+        for class_name in ("OnnxRVC", "ContentVec", "RMVPEONNXPredictor"):
+            instance = getattr(inference_module, class_name)()
+            self.assertEqual(instance._get_onnx_providers("dml:0"), expected)
+        self.assertEqual(inference_module.RMVPEONNXPredictor()._get_torch_device("dml:0"), "cpu")
 
     def test_onnx_runtime_import_accepts_published_wheel_package_layout(self):
         fallback_module = SimpleNamespace(TTS_RVC=object())

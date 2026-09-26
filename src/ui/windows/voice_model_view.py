@@ -1,6 +1,7 @@
 # voice_model_view.py
 
 import re
+from core.setting_behaviors import evaluate_setting_behaviors
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QLineEdit, QComboBox, QCheckBox,
@@ -268,6 +269,7 @@ class ModelDetailView(QWidget):
         current = options.get("default")
 
         def notify_changed():
+            self._apply_setting_behaviors()
             if callable(self._settings_changed_cb):
                 try:
                     self._settings_changed_cb(str(key))
@@ -349,7 +351,17 @@ class ModelDetailView(QWidget):
         row.addWidget(widget_frame, 6)
 
         self.settings_layout.addWidget(row_frame)
-        self.setting_widgets[key] = {"widget": w, "type": widget_type}
+        self.setting_widgets[key] = {
+            "widget": w,
+            "type": widget_type,
+            "entry": {
+                "key": key,
+                "type": widget_type,
+                "options": options,
+                "locked": locked,
+            },
+            "base_locked": locked,
+        }
 
     def build_settings_for(self, model_id: str):
         # Очистка области настроек и хранилища виджетов
@@ -384,6 +396,12 @@ class ModelDetailView(QWidget):
             if key and typ:
                 self._add_setting_row(key, label, typ, opts, locked)
 
+        for setting in adapted_settings:
+            key = str(setting.get("key") or "")
+            if key in self.setting_widgets:
+                self.setting_widgets[key]["entry"] = setting
+        self._apply_setting_behaviors()
+
         self.settings_layout.addStretch()
 
     def get_current_settings_values(self) -> dict:
@@ -399,6 +417,28 @@ class ModelDetailView(QWidget):
             elif isinstance(w, NumberStepper):
                 values[key] = w.value()
         return values
+
+    def _apply_setting_behaviors(self) -> None:
+        schema = [
+            item.get("entry")
+            for item in self.setting_widgets.values()
+            if isinstance(item.get("entry"), dict)
+        ]
+        for key, state in evaluate_setting_behaviors(schema, self.get_current_settings_values()).items():
+            item = self.setting_widgets.get(key)
+            if not item:
+                continue
+            widget = item.get("widget")
+            if widget is None:
+                continue
+            forced = state.get("value")
+            if forced is not None and isinstance(widget, QComboBox):
+                index = widget.findText(str(forced))
+                if index >= 0 and index != widget.currentIndex():
+                    widget.blockSignals(True)
+                    widget.setCurrentIndex(index)
+                    widget.blockSignals(False)
+            widget.setEnabled(bool(state.get("enabled")) and not bool(item.get("base_locked")))
 
     # ---- public API for view ----
     def update_for_model(self, model_id: str, models: list, model_desc_text: str):

@@ -401,7 +401,7 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
         )
 
         init_options = {
-            "device": self.device,
+            "device": self._runtime_device(),
             "language": self.language,
             "max_tokens": int(self.max_tokens or 192),
 
@@ -424,6 +424,12 @@ class WhisperOnnxRecognizer(SpeechRecognizerInterface):
 
         self.logger.success("Whisper ONNX процесс успешно запущен и инициализирован")
         return True
+
+    def _runtime_device(self) -> str:
+        from core.voice_device_selection import VoiceDeviceCatalog
+        from utils.gpu_utils import get_hardware_snapshot
+
+        return VoiceDeviceCatalog(get_hardware_snapshot()).resolve_runtime_device(self.device)
     
     def _stop_process(self):
         if not self._process:

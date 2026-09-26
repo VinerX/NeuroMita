@@ -9,6 +9,10 @@ def _inventory() -> HardwareInventoryService:
     return services().get_optional(HardwareInventoryService) or _FALLBACK_HARDWARE
 
 
+def get_hardware_snapshot() -> dict:
+    return dict(_inventory().snapshot() or {})
+
+
 def get_primary_gpu_info() -> dict[str, str | list[str]]:
     snapshot = _inventory().snapshot()
     primary = snapshot.get("primary") if isinstance(snapshot, dict) else None
