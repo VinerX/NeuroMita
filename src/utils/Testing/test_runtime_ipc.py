@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 import time
 
 import pytest
 
+from controllers.ai_engine_controller import AIEngineController
 from core.runtime_ipc import IPCMethodNotAllowed, IPCRegistry, ipc_allowed
 from core.settings_registry import SettingsRegistry
 from services.runtime_ipc_service import (
@@ -74,6 +76,40 @@ def test_json_server_invokes_allowlisted_method_and_rejects_unknown_method():
         assert accepted == {"id": 1, "ok": True, "result": {"value": "ok"}}
         assert rejected["ok"] is False
         assert rejected["error"]["code"] == "method_not_allowed"
+    finally:
+        service.close()
+        settings.close()
+
+
+def test_json_server_invokes_ai_restart_service_on_registered_controller():
+    calls = []
+
+    class Worker:
+        def restart_service(self, service, timeout=0):
+            calls.append((service, timeout))
+            return True
+
+    controller = AIEngineController.__new__(AIEngineController)
+    controller._lock = threading.RLock()
+    controller.mode = "shared"
+    controller._service_to_worker = {"tts": "shared"}
+    controller._workers = {"shared": Worker()}
+
+    settings = _Settings()
+    service = DefaultRuntimeIPCService(settings, default_port=0)
+    try:
+        assert service.register_object(controller) == ("ai.restart_service",)
+        assert service.start(port=0)
+        port = service.status()["port"]
+        methods = _request(port, {"id": 1, "method": "ipc.methods"})
+        response = _request(
+            port,
+            {"id": 2, "method": "ai.restart_service", "params": {"service": "tts", "timeout": 0.1}},
+        )
+
+        assert any(item["name"] == "ai.restart_service" for item in methods["result"])
+        assert response == {"id": 2, "ok": True, "result": True}
+        assert calls == [("tts", 0.1)]
     finally:
         service.close()
         settings.close()
