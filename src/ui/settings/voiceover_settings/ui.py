@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
     QSizePolicy, QPushButton, QSlider, QLineEdit, QFileDialog, QToolButton
 )
+from core.app_paths import base_dir
 from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
 from utils import getTranslationVariant as _
 from localization.live import tr_set
@@ -227,9 +228,10 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     self.external_tts_guide_button = tr_set(
         QPushButton(), "Как настроить External TTS", "How to set up External TTS"
     )
-    self.external_tts_guide_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
-        "https://github.com/VinerX/NeuroMita/blob/codex/external-tts/docs/external_tts_api_v1.md"
-    )))
+    external_tts_guide = base_dir() / "docs" / "external_tts_api_v1.md"
+    self.external_tts_guide_button.clicked.connect(
+        lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(external_tts_guide)))
+    )
     advanced_layout.addWidget(self.external_tts_guide_button)
     self.external_tts_advanced_frame.setVisible(False)
     external_layout.addWidget(self.external_tts_advanced_frame)

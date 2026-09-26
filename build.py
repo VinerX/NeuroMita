@@ -74,6 +74,8 @@ ALWAYS_DIRS_TO_COPY: List[Tuple[Path, Path]] = [
 # Дополнительные файлы, нужные в рантайме в любом режиме сборки.
 _always_files_raw = env.get("BUILD_ALWAYS_COPY_FILES", "")
 ALWAYS_FILES_TO_COPY: List[Tuple[Path, Path]] = [
+    (PROJECT_DIR / "docs" / "external_tts_api_v1.md", OUTPUT_DIR / "docs" / "external_tts_api_v1.md"),
+] + [
     (resolve_path(f.strip(), PROJECT_DIR), OUTPUT_DIR / Path(f.strip()).name)
     for f in _always_files_raw.split(",") if f.strip()
 ]
