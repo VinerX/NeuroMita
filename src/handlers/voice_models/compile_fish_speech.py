@@ -64,6 +64,27 @@ def _activate_runtime_paths(paths: list[str]) -> None:
 def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
     _activate_runtime_paths(_runtime_paths())
 
+    print(f"Requested compilation device: {device}", flush=True)
+    if device.startswith("cuda"):
+        import torch
+
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA compilation was requested but CUDA is unavailable")
+        try:
+            prefix, separator, ordinal = device.partition(":")
+            if prefix != "cuda":
+                raise ValueError
+            index = int(ordinal) if separator else 0
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid CUDA device: {device}") from exc
+        count = torch.cuda.device_count()
+        if index < 0 or index >= count:
+            raise RuntimeError(
+                f"CUDA device {device} is unavailable; detected {count} CUDA device(s)"
+            )
+        torch.cuda.set_device(index)
+        print(f"Compilation GPU: {torch.cuda.get_device_name(index)}", flush=True)
+
     import fish_speech_lib
 
     package_root = Path(fish_speech_lib.__file__).resolve().parent

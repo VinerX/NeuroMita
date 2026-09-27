@@ -826,20 +826,47 @@ class VoiceModelController(VoiceModelService):
         operations = services().get_optional(InstallableOperationsService)
         if operations is None:
             return False
-        admission = operations.install(
-            {
-                "component_id": component_id,
-                "kind": "voice",
-                "item_id": mid,
-                "task_id": f"voice:install:{mid}",
-                "title": title,
-                "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
-                "with_ui": bool(with_ui),
-                "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-            }
-        )
+        payload = {
+            "component_id": component_id,
+            "kind": "voice",
+            "item_id": mid,
+            "task_id": f"voice:install:{mid}",
+            "title": title,
+            "initial_status": _("Подготовка...", "Preparing..."),
+            "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
+            "with_ui": bool(with_ui),
+            "meta": {"kind": "voice", "item_id": mid, "op": "install"},
+        }
+        if mid in ("medium+", "medium+low"):
+            payload["device"] = self._selected_fish_device(mid)
+        admission = operations.install(payload)
         return bool(admission.accepted)
+
+    def _selected_fish_device(self, model_id: str) -> str:
+        mid = str(model_id or "").strip()
+        device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
+        with self._lock:
+            model = next(
+                (item for item in self.local_voice_models if str(item.get("id") or "") == mid),
+                None,
+            )
+            setting = next(
+                (
+                    item
+                    for item in (model.get("settings") or [])
+                    if str(item.get("key") or "") == device_key
+                ),
+                None,
+            ) if isinstance(model, dict) else None
+            options = setting.get("options") if isinstance(setting, dict) else None
+            selected = options.get("default") if isinstance(options, dict) else None
+        selected_device = str(selected or "").strip()
+        if selected_device:
+            return selected_device
+        logger.warning(
+            f"Fish Speech compile device is unavailable for '{mid}', falling back to cuda:0"
+        )
+        return "cuda:0"
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
@@ -907,25 +934,7 @@ class VoiceModelController(VoiceModelService):
             Events.VoiceModel.MODEL_COMPILE_STARTED,
             {"model_id": mid, "clear_only": bool(clear_only)},
         )
-        device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
-        selected_device = "cuda:0"
-        with self._lock:
-            model = next(
-                (item for item in self.local_voice_models if str(item.get("id") or "") == mid),
-                None,
-            )
-            if isinstance(model, dict):
-                setting = next(
-                    (
-                        item
-                        for item in (model.get("settings") or [])
-                        if str(item.get("key") or "") == device_key
-                    ),
-                    None,
-                )
-                if isinstance(setting, dict):
-                    options = setting.get("options") if isinstance(setting.get("options"), dict) else {}
-                    selected_device = str(options.get("default") or selected_device)
+        selected_device = self._selected_fish_device(mid)
         admission = operations.initialize(
             {
                 "component_id": f"tts:{mid}",

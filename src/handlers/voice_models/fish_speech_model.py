@@ -276,6 +276,7 @@ class FishSpeechInstallSpec:
                     ref_wav,
                 ]
                 compile_device = str(ctx.get("device") or "cuda:0").strip()
+                log(f"Fish Speech compile device: {compile_device}")
                 if compile_device:
                     init_cmd.extend(["--device", compile_device])
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0

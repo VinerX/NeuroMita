@@ -470,6 +470,75 @@ class VoiceModelControllerTests(unittest.TestCase):
 
         self.assertEqual(seen["device"], "cuda:1")
 
+    def test_fish_install_uses_selected_cuda_device(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [{
+            "id": "medium+",
+            "settings": [{"key": "device", "options": {"default": "cuda:1"}}],
+        }]
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def install(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True)
+
+        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
+        registry = SimpleNamespace(
+            get=lambda _contract: catalog,
+            get_optional=lambda _contract: _Operations(),
+        )
+        with patch("controllers.voice_model_controller.services", return_value=registry):
+            self.assertTrue(controller.start_install("medium+", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:1")
+
+    def test_fish_rvc_install_uses_fish_device_not_rvc_device(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [{
+            "id": "medium+low",
+            "settings": [
+                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
+                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
+            ],
+        }]
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def install(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True)
+
+        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
+        registry = SimpleNamespace(
+            get=lambda _contract: catalog,
+            get_optional=lambda _contract: _Operations(),
+        )
+        with patch("controllers.voice_model_controller.services", return_value=registry):
+            self.assertTrue(controller.start_install("medium+low", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:1")
+
+    def test_selected_fish_device_uses_effective_model_setting(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [
+            {"id": "medium+", "settings": [{"key": "device", "options": {"default": "cuda:1"}}]},
+            {"id": "medium+low", "settings": [
+                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
+                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
+            ]},
+        ]
+
+        self.assertEqual(controller._selected_fish_device("medium+"), "cuda:1")
+        self.assertEqual(controller._selected_fish_device("medium+low"), "cuda:1")
+
     def test_onnx_voice_model_is_supported_but_warned_on_nvidia(self):
         controller = self._make_controller_stub()
         model = EdgeTTSRVCOnnxModel.MODEL_CONFIGS[0]
