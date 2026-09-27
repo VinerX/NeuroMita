@@ -4,9 +4,10 @@ This local-only testbed runs the real NeuroMita adapter against two lightweight 
 
 ## Requirements
 
-- WSL 2 with an Ubuntu distribution, or another Linux environment.
-- Docker Engine and the Docker Compose plugin in that Linux environment. Docker Desktop with WSL integration also works.
+- Ubuntu in WSL or another Linux environment. WSL2 is needed for the containerized setup; WSL1 can use the native runner below.
+- Docker Engine and the Docker Compose plugin for the containerized setup. Docker Desktop with WSL integration also works.
 - Python 3.10+ on the machine running the smoke test; the runner uses only the standard library.
+- For the native runner without Docker, install `python3-aiohttp` in the Linux distribution.
 
 The adapter is published only on `127.0.0.1:8080`. Mock F5/RVC ports are internal to the Compose network.
 
@@ -25,6 +26,17 @@ From Windows PowerShell, you can invoke the smoke test through WSL after substit
 ```powershell
 wsl.exe -d Ubuntu --cd /mnt/c/<path-to-repo>/extra/external_tts_testbed -- python3 smoke_test.py --api-key <the-key-from-.env>
 ```
+
+If WSL2 virtualization is unavailable, or you do not want Docker, run the same real adapter and mock stages directly as local Linux processes:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-aiohttp
+export NEUROMITA_API_KEY='your-local-test-key'
+bash run_native.sh
+```
+
+The native runner binds all three services to loopback, stops them on exit, and keeps its WAV, JSON report, and logs under `artifacts/`.
 
 Or run `python3 smoke_test.py --api-key <the-key-from-.env>` inside WSL. The smoke test waits for readiness and checks:
 
