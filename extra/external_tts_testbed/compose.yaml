@@ -1,0 +1,41 @@
+services:
+  mock-f5:
+    build: .
+    image: neuromita-external-tts-testbed-mocks:local
+    command: ["python", "mock_upstream.py", "--stage", "f5", "--port", "8001"]
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  mock-rvc:
+    build: .
+    image: neuromita-external-tts-testbed-mocks:local
+    command: ["python", "mock_upstream.py", "--stage", "rvc", "--port", "8002"]
+    expose:
+      - "8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  external-tts-adapter:
+    build: ../external_tts_adapter
+    depends_on:
+      mock-f5:
+        condition: service_healthy
+      mock-rvc:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    environment:
+      ADAPTER_CONFIG: /config/adapter.json
+    volumes:
+      - ./adapter.test.json:/config/adapter.json:ro
+    restart: unless-stopped

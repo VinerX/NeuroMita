@@ -1,0 +1,31 @@
+{
+  "timeout_seconds": 20,
+  "stages": [
+    {
+      "url": "http://mock-f5:8001/synthesize",
+      "method": "POST",
+      "encoding": "json",
+      "payload": {
+        "text": "{text}",
+        "voice_id": "{voice_id}",
+        "character_id": "{character_id}",
+        "request_id": "{request_id}"
+      },
+      "response": "wav",
+      "max_response_bytes": 33554432
+    },
+    {
+      "url": "http://mock-rvc:8002/convert",
+      "method": "POST",
+      "encoding": "json",
+      "payload": {
+        "audio_base64": "{audio_base64}",
+        "voice_id": "{voice_id}",
+        "request_id": "{request_id}"
+      },
+      "response": "json_base64",
+      "audio_field": "audio_base64",
+      "max_response_bytes": 50331648
+    }
+  ]
+}
