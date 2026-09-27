@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.backends import BackendKind
+from core.voice_device_selection import device_half_precision_behavior
 from core.install_types import InstallAction, InstallPlan
 from core.installables.types import ComponentCategory, ComponentMetadata
 from installables.registry_builder import LazyInstallableRegistry
@@ -604,6 +605,154 @@ for name in (
             self.assertTrue(service.save_component_settings("tts:test", {"quality": "low"})["ok"])
             self.assertEqual(component.saved, {"quality": "low"})
             self.assertFalse(any(key[0] == "tts:test" for key in service._status_cache))
+
+    def test_voice_settings_use_hardware_devices_and_reject_unknown_adapter(self):
+        hardware = SimpleNamespace(snapshot=lambda refresh=False: {
+            "cuda": {"devices": [
+                {"ordinal": 0, "name": "RTX 5060 Ti"},
+                {"ordinal": 1, "name": "RTX A400"},
+            ]},
+            "accelerators": [
+                {"dxgi_index": 0, "name": "AMD Radeon"},
+                {"dxgi_index": 1, "name": "RTX A400"},
+                {"dxgi_index": 2, "name": "RTX 5060 Ti"},
+            ],
+        })
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+
+        class Component:
+            def settings_schema(self):
+                return [{"key": "device", "type": "combobox", "options": {
+                    "values": ["dml", "cpu"], "default": "dml",
+                }}]
+
+            def load_settings(self):
+                return {"device": "dml:0"}
+
+            def validate_settings(self, _values):
+                return SimpleNamespace(ok=True, errors={})
+
+            def save_settings(self, values):
+                self.saved = values
+
+        component = Component()
+        with patch.object(service, "require_component", return_value=component):
+            schema = service.settings_schema("tts:test")
+            self.assertIn("dml:0", schema[0]["options"]["values"])
+            self.assertEqual(service.load_settings("tts:test"), {"device": "dml:0"})
+            rejected = service.save_component_settings("tts:test", {"device": "dml:9"})
+            self.assertFalse(rejected["ok"])
+            self.assertIn("device", rejected["errors"])
+            self.assertTrue(service.save_component_settings("tts:test", {"device": "dml:0"})["ok"])
+            self.assertEqual(component.saved, {"device": "dml:0"})
+
+    def test_voice_settings_force_fp32_for_selected_unsupported_cuda_device(self):
+        hardware = SimpleNamespace(snapshot=lambda refresh=False: {
+            "vendor": "NVIDIA",
+            "cuda": {"devices": [
+                {"ordinal": 0, "name": "RTX 5060 Ti", "compute_capability": "sm_120"},
+                {"ordinal": 1, "name": "GTX 1060", "compute_capability": "sm_61"},
+            ]},
+        })
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+
+        class Component:
+            def settings_schema(self):
+                return [
+                    {"key": "device", "type": "combobox", "options": {
+                        "values": ["cuda"], "default": "cuda",
+                    }},
+                    {"key": "half", "type": "combobox", "options": {
+                        "values": ["True", "False"], "default": "True",
+                    }, "behavior": device_half_precision_behavior("device")},
+                ]
+
+            def load_settings(self):
+                return {}
+
+            def validate_settings(self, _values):
+                return SimpleNamespace(ok=True, errors={})
+
+            def save_settings(self, values):
+                self.saved = dict(values)
+
+        component = Component()
+        with patch.object(service, "require_component", return_value=component):
+            result = service.save_component_settings(
+                "tts:test", {"device": "cuda:1", "half": "True"}
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(component.saved["half"], "False")
+
+    def test_asr_settings_expand_and_validate_indexed_cuda_devices(self):
+        hardware = SimpleNamespace(snapshot=lambda refresh=False: {
+            "cuda": {"devices": [
+                {"ordinal": 0, "name": "RTX 5060 Ti"},
+                {"ordinal": 1, "name": "RTX A400"},
+            ]},
+        })
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+
+        class Component:
+            def settings_schema(self):
+                return [{
+                    "key": "device",
+                    "type": "combobox",
+                    "options": ["auto", "cuda", "cpu"],
+                    "default": "auto",
+                }]
+
+            def load_settings(self):
+                return {"device": "auto"}
+
+            def validate_settings(self, _values):
+                return SimpleNamespace(ok=True, errors={})
+
+            def save_settings(self, values):
+                self.saved = dict(values)
+
+        component = Component()
+        with patch.object(service, "require_component", return_value=component):
+            schema = service.settings_schema("asr:test")
+            accepted = service.save_component_settings("asr:test", {"device": "cuda:1"})
+            rejected = service.save_component_settings("asr:test", {"device": "cuda:2"})
+
+        self.assertEqual(schema[0]["options"]["values"], ["auto", "cuda:0", "cuda:1", "cpu"])
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(component.saved, {"device": "cuda:1"})
+        self.assertFalse(rejected["ok"])
+
+    def test_legacy_cuda_setting_loads_as_first_available_device(self):
+        hardware = SimpleNamespace(snapshot=lambda refresh=False: {
+            "cuda": {"devices": [{"ordinal": 0, "name": "RTX 4060"}]},
+        })
+        service = DefaultInstallableCatalogService(hardware=hardware)
+        self.addCleanup(service.close)
+
+        class Component:
+            def settings_schema(self):
+                return [{
+                    "key": "device",
+                    "type": "combobox",
+                    "options": {"values": ["cuda", "cpu"], "default": "cuda"},
+                }]
+
+            def load_settings(self):
+                return {"device": "cuda"}
+
+            def save_settings(self, values):
+                self.saved = dict(values)
+
+        component = Component()
+        with patch.object(service, "require_component", return_value=component):
+            values = service.load_settings("tts:test")
+
+        self.assertEqual(values, {"device": "cuda:0"})
+        self.assertEqual(component.saved, {"device": "cuda:0"})
 
     def test_install_preview_discloses_missing_backend_and_packages(self):
         hardware = SimpleNamespace(

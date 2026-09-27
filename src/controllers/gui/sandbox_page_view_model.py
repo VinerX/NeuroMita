@@ -36,6 +36,7 @@ from ui.pages.sandbox_presentation import (
 class SandboxPageViewModel(IntentViewModel[SandboxState]):
     """Owns Sandbox presentation state, refreshes and backend subscriptions."""
 
+    _MODEL_LABEL_MAX_LENGTH = 32
     _MEMORY_SETTING_KEYS = frozenset({"MODEL_MESSAGE_LIMIT", "MEMORY_CAPACITY"})
     _BUDGET_SETTING_KEYS = frozenset({"MAX_MODEL_TOKENS"})
     _STATUS_SETTING_KEYS = frozenset(
@@ -146,24 +147,33 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
         self.refresh_memory()
         self.refresh_budget()
 
+    @classmethod
+    def _model_label(cls, preset_name: str, model_name: str) -> str:
+        label = f"{preset_name} ({model_name})" if model_name else preset_name
+        if len(label) <= cls._MODEL_LABEL_MAX_LENGTH:
+            return label
+        return label[: cls._MODEL_LABEL_MAX_LENGTH - 3].rstrip() + "..."
+
     def refresh_selectors(self) -> None:
         self._update(selectors_loading=True, error=None)
 
         def worker() -> dict[str, Any]:
-            meta, current_model_id = self._controller.model_snapshot()
             characters, current_character = self._controller.character_snapshot()
+            meta, current_model_id = self._controller.model_snapshot(current_character)
             character_id, prompts, current_prompt = self._controller.prompt_snapshot(
                 current_character
             )
             model_items: list[SandboxModelItem] = []
-            for preset in list((meta or {}).get("custom", []) or []):
-                preset_id = getattr(preset, "id", None)
-                if preset_id is None:
-                    continue
-                name = str(getattr(preset, "name", "") or "")
-                model = str(getattr(preset, "default_model", "") or "")
-                label = f"{name} ({model})" if model else name
-                model_items.append(SandboxModelItem(int(preset_id), label))
+            for bucket in ("custom", "builtin"):
+                for preset in list((meta or {}).get(bucket, []) or []):
+                    field = preset.get if isinstance(preset, dict) else lambda key, default=None: getattr(preset, key, default)
+                    preset_id = field("id")
+                    if preset_id is None:
+                        continue
+                    name = str(field("name", "") or "")
+                    model = str(field("default_model", "") or "")
+                    label = self._model_label(name, model)
+                    model_items.append(SandboxModelItem(int(preset_id), label))
             return {
                 "model_items": tuple(model_items),
                 "current_model_id": (
@@ -351,7 +361,7 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
                 self.refresh_memory()
             if key in self._BUDGET_SETTING_KEYS:
                 self.refresh_budget()
-            if key.startswith("PROMPT_SET_"):
+            if key == "LAST_API_PRESET_ID" or key.startswith(("PROMPT_SET_", "CHAR_PROVIDER_")):
                 self.refresh_selectors()
 
         self._post_ui(apply)
@@ -375,11 +385,23 @@ class SandboxPageViewModel(IntentViewModel[SandboxState]):
     def _on_model_failed(self, event: Any) -> None:
         data = getattr(event, "data", None) or {}
         provider_error = data.get("provider_error")
+        error_details = data.get("error_details")
         message = (
             provider_error.get("message")
             if isinstance(provider_error, dict)
             else None
+        ) or (
+            error_details.get("message")
+            if isinstance(error_details, dict)
+            else None
         ) or data.get("error") or ""
+        if isinstance(error_details, dict) and error_details.get("kind") == "structured_response_error":
+            code = str(error_details.get("code") or "")
+            field = str(error_details.get("field") or "")
+            if code:
+                message = f"{message} [{code}]"
+            if field:
+                message = f"{message}\nField: {field}"
         self._finish_model_request(False, str(message))
 
     def _finish_model_request(self, ok: bool, error: str) -> None:

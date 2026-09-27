@@ -88,6 +88,7 @@ def _save_last_request_context(req, character_name: str = "") -> None:
             "context_snapshot_id": context_snapshot_id,
             "model": getattr(req, "model", None),
             "provider_name": getattr(req, "provider_name", None),
+            "provider_display_name": getattr(req, "provider_display_name", None) or getattr(req, "provider_name", None),
             "protocol_id": getattr(req, "protocol_id", None),
             "dialect_id": getattr(req, "dialect_id", None),
             "character_name": character_name or "",
@@ -124,6 +125,7 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
                 "context_snapshot_id": context_snapshot_id,
                 "model": getattr(req, "model", None),
                 "provider_name": getattr(req, "provider_name", None),
+                "provider_display_name": getattr(req, "provider_display_name", None) or getattr(req, "provider_name", None),
                 "protocol_id": getattr(req, "protocol_id", None),
                 "dialect_id": getattr(req, "dialect_id", None),
                 "character_name": "",
@@ -137,6 +139,12 @@ def _save_last_response_context(req, response: LLMResponse, *, raw_response_text
             "response_raw": raw_response_text or getattr(response, "text", "") or "",
             "response_model": getattr(response, "model", None) or getattr(req, "model", None),
             "response_provider_name": getattr(response, "provider_name", None) or getattr(req, "provider_name", None),
+            "response_provider_display_name": (
+                getattr(response, "provider_display_name", None)
+                or getattr(req, "provider_display_name", None)
+                or getattr(response, "provider_name", None)
+                or getattr(req, "provider_name", None)
+            ),
             "finish_reason": getattr(response, "finish_reason", None),
             "usage": usage.to_payload() if usage is not None else None,
         })
@@ -268,21 +276,25 @@ class ChatModel:
         def build_request(preset_settings, effective_model: str) -> LLMRequest:
             cfg = self.cfg_loader.effective_for_preset(self.cfg, preset_settings, effective_model)
 
-            params = build_unified_generation_params(
-                settings=self.settings,
-                temperature=cfg.temperature,
-                max_response_tokens=cfg.max_response_tokens,
-                presence_penalty=cfg.presence_penalty,
-                frequency_penalty=cfg.frequency_penalty,
-                log_probability=cfg.log_probability,
-                top_k=cfg.top_k,
-                top_p=cfg.top_p,
-                thinking_budget=cfg.thinking_budget,
-                enable_thinking=cfg.enable_thinking,
-                reasoning_effort=getattr(cfg, "reasoning_effort", None),
-                gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
-                force_params=getattr(cfg, "preset_forced_params", frozenset()),
-            )
+            native_parameters = getattr(preset_settings, "native_parameters", None)
+            if native_parameters is not None:
+                params = {}
+            else:
+                params = build_unified_generation_params(
+                    settings=self.settings,
+                    temperature=cfg.temperature,
+                    max_response_tokens=cfg.max_response_tokens,
+                    presence_penalty=cfg.presence_penalty,
+                    frequency_penalty=cfg.frequency_penalty,
+                    log_probability=cfg.log_probability,
+                    top_k=cfg.top_k,
+                    top_p=cfg.top_p,
+                    thinking_budget=cfg.thinking_budget,
+                    enable_thinking=cfg.enable_thinking,
+                    reasoning_effort=getattr(cfg, "reasoning_effort", None),
+                    gemini_thinking_budget=getattr(cfg, "gemini_thinking_budget", None),
+                    force_params=getattr(cfg, "preset_forced_params", frozenset()),
+                )
             if request_id:
                 params["request_id"] = str(request_id)
 
@@ -299,6 +311,7 @@ class ChatModel:
                 protocol_id=preset_settings.protocol_id,
                 dialect_id=preset_settings.dialect_id,
                 provider_name=preset_settings.provider_name,
+                provider_display_name=preset_settings.provider_display_name,
                 headers=dict(preset_settings.headers or {}),
                 transforms=list(preset_settings.transforms or []),
                 capabilities=caps,
@@ -310,6 +323,7 @@ class ChatModel:
                 stream_cb=stream_callback,
                 stream_event_cb=stream_event_callback,
                 extra=params,
+                native_parameters=native_parameters,
                 tool_manager=self.tool_manager,
                 settings=self.settings,
                 structured_model=structured_model,
@@ -362,6 +376,7 @@ class ChatModel:
                 suppress_failure_events=suppress_failure_events,
                 trace_id=trace_id,
                 cancellation=cancellation,
+                failure_context=request_options.get("failure_context"),
             )
         except OperationCancelledError:
             raise
@@ -434,7 +449,11 @@ class ChatModel:
         preset_settings = self.preset_resolver.resolve(preset_id)
 
         logger.info(f"Using preset: {preset_settings.preset_name}")
-        logger.info(f"Protocol: {preset_settings.protocol_id} | Dialect: {preset_settings.dialect_id} | Provider: {preset_settings.provider_name}")
+        logger.info(
+            f"Protocol: {preset_settings.protocol_id} | Dialect: {preset_settings.dialect_id} "
+            f"| Provider: {preset_settings.provider_display_name} "
+            f"| Transport: {preset_settings.provider_name}"
+        )
         logger.info(f"Capabilities: {preset_settings.capabilities}")
         logger.info(f"Max Response Tokens: {self.cfg.max_response_tokens}, Temperature: {self.cfg.temperature} (base; preset overrides applied separately)")
         logger.info(
@@ -481,6 +500,6 @@ class ChatModel:
         logger.info("Reloading current character data.")
         if self.current_character:
             self.current_character.reload_character_data()
-            logger.info(f"Character {self.current_character.name} data reloaded.")
+            logger.info(f"Character {self.current_character.display_name} data reloaded.")
         else:
             logger.warning("No current character selected to reload.")

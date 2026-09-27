@@ -63,12 +63,21 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
     def generate(self, req: LLMRequest) -> LLMResponse:
         return self._generate(req)
 
+    @staticmethod
+    def _extract_sdk_reasoning(message: Any) -> str:
+        extra = getattr(message, "model_extra", None) or {}
+        for value in (getattr(message, "reasoning_content", None), extra.get("reasoning_content"), extra.get("reasoning")):
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
     def _generate(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error(f"Слишком много рекурсивных tool-вызовов ({self.name}).")
             return LLMResponse(
                 text=None,
-                provider_name=self.name,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
                 error_message="Too deep tool recursion.",
             )
 
@@ -92,7 +101,14 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             params: Dict[str, Any] = {"model": model_to_use, "messages": cleaned_messages}
             if req.stream and self.should_request_stream_usage(req):
                 params["stream_options"] = {"include_usage": True}
-            params.update(self._map_unified_params(req.extra or {}, model_to_use))
+            if req.native_parameters is None:
+                params.update(self._map_unified_params(req.extra or {}, model_to_use))
+            else:
+                from copy import deepcopy
+                if req.dialect_id == "g4f":
+                    params.update(deepcopy(req.native_parameters))
+                else:
+                    params["extra_body"] = deepcopy(req.native_parameters)
             if req.protocol_id == "openrouter_default":
                 extra_body = dict(params.get("extra_body") or {})
                 routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
@@ -105,7 +121,7 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     params["extra_body"] = extra_body
 
             caps = req.capabilities or {}
-            if caps.get("structured_output"):
+            if caps.get("structured_output") and caps.get("native_structured_output", True):
                 rf_mode = caps.get("structured_output_mode", "json_schema")
                 if rf_mode == "json_object":
                     params["response_format"] = {"type": "json_object"}
@@ -117,7 +133,7 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                         excl.add("reasoning")
                     excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                     segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
-                    if not caps.get("schema_intents", False):
+                    if not caps.get("schema_intents", True):
                         segment_excl.add("intents")
                     params["response_format"] = model_cls.openai_response_format(
                         exclude_fields=excl or None,
@@ -155,7 +171,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
                     text=content.strip() if content else None,
                     usage=usage,
                     model=getattr(completion, "model", None) or model_to_use,
-                    provider_name=self.name,
+                    provider_name=req.provider_name or self.name,
+                    provider_display_name=req.provider_display_name or req.provider_name or self.name,
                     finish_reason=finish_reason,
                     error_message=None if content else (
                         "Provider returned completion without message content."
@@ -168,7 +185,8 @@ class OpenAICompatibleProvider(BaseProvider, ABC):
             return LLMResponse(
                 text=None,
                 model=model_to_use,
-                provider_name=self.name,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
                 error_message="Provider returned no completion choices.",
             )
 

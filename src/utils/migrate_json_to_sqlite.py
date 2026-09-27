@@ -189,7 +189,7 @@ def migrate(
             stats["characters_processed"] += 1
 
             # Temporary HistoryManager for content normalization & image extraction
-            h_manager = HistoryManager(character_name=char_id, character_id=char_id)
+            h_manager = HistoryManager(storage_name=char_id, character_id=char_id)
 
             # --- 1. MEMORIES (Active & Missed) ---
             memory_files = [

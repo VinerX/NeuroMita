@@ -247,6 +247,10 @@ class SendMessageCaptureTests(unittest.TestCase):
             )
         _, payload = controller._event_bus.emitted[0]
         self.assertEqual(payload["image_data"], [b"dup", b"staged", b"cam"])
+        rendered = view.rendered[0]
+        self.assertEqual(rendered["user_input"], "")
+        self.assertEqual(rendered["image_content"][0]["type"], "text")
+        self.assertTrue(rendered["image_content"][0]["content"].strip())
         self.assertEqual(view.staged_clear_count, 1)
 
 

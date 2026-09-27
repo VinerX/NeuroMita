@@ -335,7 +335,16 @@ class OmniVoiceModel(IVoiceModel):
             if requested_device.startswith("cuda") and not use_cuda:
                 logger.warning("OmniVoice: CUDA requested but unavailable; falling back to CPU.")
 
-            device = "cuda:0" if use_cuda else "cpu"
+            device = requested_device if use_cuda else "cpu"
+            if device == "cuda":
+                device = "cuda:0"
+            if use_cuda:
+                try:
+                    ordinal = int(device.split(":", 1)[1])
+                    if ordinal < 0 or ordinal >= torch.cuda.device_count():
+                        raise ValueError(f"CUDA device index out of range: {device}")
+                except (IndexError, ValueError) as exc:
+                    raise RuntimeError(f"Invalid OmniVoice CUDA device '{device}': {exc}") from exc
             dtype = torch.float16 if use_cuda else torch.float32
             self.current_model = OmniVoice.from_pretrained(
                 str(OmniVoiceInstallSpec.model_dir()),

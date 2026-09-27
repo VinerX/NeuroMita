@@ -14,6 +14,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
+from handlers.ai_engine import runtime_failure_policy
+
 
 _SHARED_WORKER = "shared"
 _SHARED_SERVICES = ("tts", "asr", "rag", "beats")
@@ -408,11 +410,33 @@ async def _respond(res_queue, service_name: str, req_id, *, ok: bool, result=Non
 async def _dispatch(service, service_name: str, method: str, payload: dict, req_id, res_queue, log_queue) -> None:
     try:
         result = await service.handle(method, payload)
+        if runtime_failure_policy.should_probe_after_result(result):
+            probe_error = runtime_failure_policy.probe_cuda_context()
+            if probe_error is not None:
+                _log(
+                    log_queue,
+                    "error",
+                    f"[{service_name}.{method}] CUDA context poisoned after a failure-shaped result: "
+                    f"{format_exception(probe_error)}",
+                )
+                runtime_failure_policy.terminate_poisoned_worker()
+                return
         await _respond(res_queue, service_name, req_id, ok=True, result=result)
     except asyncio.CancelledError:
         await _respond(res_queue, service_name, req_id, ok=False, error="Request cancelled")
         raise
     except Exception as e:
+        poison_error = e if runtime_failure_policy.is_cuda_context_poisoned(e) else runtime_failure_policy.probe_cuda_context()
+        if poison_error is not None:
+            _log(
+                log_queue,
+                "error",
+                f"[{service_name}.{method}] fatal CUDA runtime failure; worker will be recycled: "
+                f"{format_exception(poison_error)}",
+                detail=traceback.format_exc(),
+            )
+            runtime_failure_policy.terminate_poisoned_worker()
+            return
         _log(
             log_queue,
             "error",
@@ -620,6 +644,17 @@ async def _worker_loop(
                 blocked_services.pop(service_name, None)
                 await _respond(res_queue, service_name, req_id, ok=True, result=True)
             except Exception as e:
+                poison_error = e if runtime_failure_policy.is_cuda_context_poisoned(e) else runtime_failure_policy.probe_cuda_context()
+                if poison_error is not None:
+                    _log(
+                        log_queue,
+                        "error",
+                        f"[{service_name}] restart hit a poisoned CUDA context; worker will be recycled: "
+                        f"{format_exception(poison_error)}",
+                        detail=traceback.format_exc(),
+                    )
+                    runtime_failure_policy.terminate_poisoned_worker()
+                    return
                 _log(log_queue, "error", f"[{service_name}] restart failed: {format_exception(e)}\n{traceback.format_exc()}")
                 await _respond(res_queue, service_name, req_id, ok=False, error=e)
             continue

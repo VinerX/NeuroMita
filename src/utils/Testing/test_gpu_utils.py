@@ -63,6 +63,49 @@ class GpuUtilsTests(unittest.TestCase):
         self.assertEqual(info["name"], "NVIDIA GeForce RTX 4060 Laptop GPU")
         self.assertEqual(label, "NVIDIA GeForce RTX 4060 Laptop GPU")
 
+    def test_rvc_half_policy_uses_inventory_sm_and_blocks_gtx_1660_ti(self):
+        snapshot = {
+            "vendor": "NVIDIA",
+            "primary": {"name": "NVIDIA GeForce GTX 1660 Ti"},
+            "cuda": {
+                "available": True,
+                "devices": [
+                    {
+                        "ordinal": 0,
+                        "name": "NVIDIA GeForce GTX 1660 Ti",
+                        "compute_major": 7,
+                        "compute_minor": 5,
+                    }
+                ],
+            },
+        }
+        with patch("utils.gpu_utils._inventory", return_value=_Inventory(snapshot)):
+            decision = gpu_utils.get_rvc_half_precision_decision("cuda:0")
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.compute_capability, 75)
+
+    def test_rvc_half_policy_uses_same_sm_but_allows_rtx_20xx(self):
+        snapshot = {
+            "vendor": "NVIDIA",
+            "primary": {"name": "NVIDIA GeForce RTX 2080"},
+            "cuda": {
+                "available": True,
+                "devices": [
+                    {
+                        "ordinal": 0,
+                        "name": "NVIDIA GeForce RTX 2080",
+                        "compute_capability": "sm_75",
+                    }
+                ],
+            },
+        }
+        with patch("utils.gpu_utils._inventory", return_value=_Inventory(snapshot)):
+            decision = gpu_utils.get_rvc_half_precision_decision("cuda")
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.compute_capability, 75)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -106,6 +106,22 @@ def _hash_payload(payload: Any, length: int = 16) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:length]
 
 
+def _short_staging_name(kind: str, identity: str, nonce: str) -> str:
+    """Return a compact, collision-resistant staging directory name.
+
+    Staging names are implementation details and do not need to embed the full
+    logical environment/core-layer id.  Keeping them short matters on Windows:
+    large wheels (NumPy/OpenBLAS, Torch, etc.) can otherwise cross the classic
+    Win32 path budget while the final immutable environment would fit.
+    """
+    prefix = "c" if str(kind).lower().startswith("c") else "e"
+    identity_hash = hashlib.sha256(str(identity or "").encode("utf-8")).hexdigest()[:8]
+    nonce_token = re.sub(r"[^a-fA-F0-9]", "", str(nonce or ""))[:8].lower()
+    if len(nonce_token) < 8:
+        nonce_token = hashlib.sha256(str(nonce or "").encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}-{identity_hash}-{nonce_token}"
+
+
 def _python_tag() -> str:
     return f"py{sys.version_info.major}{sys.version_info.minor}"
 
@@ -442,7 +458,7 @@ class EnvironmentTransaction:
     _committed_record: EnvironmentRecord | None = None
 
     def __post_init__(self) -> None:
-        self.staging_root = self.manager.staging_root / f"env-{_safe_environment_id(self.logical_id)}-{self.transaction_id}"
+        self.staging_root = self.manager.staging_root / _short_staging_name("env", self.logical_id, self.transaction_id)
         self.site_packages = self.staging_root / "site-packages"
         self.site_packages.mkdir(parents=True, exist_ok=False)
 
@@ -976,7 +992,7 @@ class RuntimeEnvironmentManager:
                 self.register_backend_candidates((existing.layer_id,))
                 return existing
 
-            staging_root = self.staging_root / f"core-{spec.layer_id}-{uuid.uuid4().hex}"
+            staging_root = self.staging_root / _short_staging_name("core", spec.layer_id, uuid.uuid4().hex)
             site_packages = staging_root / "site-packages"
             site_packages.mkdir(parents=True, exist_ok=False)
             installer = installer_factory(str(site_packages))

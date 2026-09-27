@@ -75,6 +75,14 @@ def wire_microphone_settings_logic(self):
 
     reset_init_status()
 
+    # This section is created lazily. The styling hook above deliberately
+    # resets a newly-created label, so request the live snapshot only after the
+    # hook is connected and that reset has completed.
+    try:
+        get_event_bus().emit(Events.Speech.REFRESH_ASR_STATUS)
+    except Exception as e:
+        logger.debug(f"ASR status refresh request failed: {format_exception(e)}")
+
 
 def on_mic_selected(gui, full_device_name=None):
     if not hasattr(gui, "mic_combobox"):

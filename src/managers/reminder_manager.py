@@ -7,9 +7,11 @@ import logging
 import os
 import tempfile
 import threading
+import math
 from dataclasses import dataclass, field
 
 from managers.character_scoped_service import CharacterScopedService
+from core.events import Events, get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +28,13 @@ class _ReminderState:
 class ReminderManager(CharacterScopedService):
     """One reminder service with isolated state per character id."""
 
-    def __init__(self, character_name: str = ""):
+    def __init__(self, character_id: str = ""):
         super().__init__(
-            default_character_id=str(character_name or ""),
-            default_character_name=str(character_name or ""),
+            default_character_id=str(character_id or ""),
+            default_storage_name=str(character_id or ""),
         )
         self._states: dict[str, _ReminderState] = {}
-        if character_name:
+        if character_id:
             self.load_reminders()
 
     def _state(self) -> _ReminderState:
@@ -144,13 +146,29 @@ class ReminderManager(CharacterScopedService):
         with state.lock:
             self._save_state(state)
 
-    def add_reminder(self, text: str, due_iso: str) -> int:
+    def _notify_changed(self) -> None:
+        """Wake the scheduler after a persisted schedule change.
+
+        Notifications are deliberately best-effort: the reminder has already
+        been atomically saved, so an unavailable event bus must not turn a
+        successful add/delete into an application error.
+        """
+        try:
+            get_event_bus().emit(
+                Events.Reminder.CHANGED,
+                {"character_id": self.character_id},
+            )
+        except Exception:
+            pass
+
+    def add_reminder(self, text: str, due_iso: str, *, kind: str = "reminder") -> int:
         try:
             datetime.datetime.fromisoformat(due_iso)
         except ValueError as exc:
             logger.warning(f"[ReminderManager] Bad due_iso format '{due_iso}': {format_exception(exc)}")
             raise
 
+        kind = "timer" if str(kind or "").strip().lower() == "timer" else "reminder"
         state = self._state()
         with state.lock:
             new_id = state.last_reminder_number
@@ -161,13 +179,24 @@ class ReminderManager(CharacterScopedService):
                     "text": text,
                     "due_iso": due_iso,
                     "created_iso": datetime.datetime.now().isoformat("T", "seconds"),
+                    "kind": kind,
                 }
             )
             self._save_state(state)
             logger.info(
                 f"[ReminderManager] Added reminder #{new_id}, due={due_iso}: {text[:60]}"
             )
-            return new_id
+        self._notify_changed()
+        return new_id
+
+    def add_timer(self, instruction: str, delay_seconds: float) -> int:
+        delay = float(delay_seconds)
+        if not math.isfinite(delay) or delay <= 0:
+            raise ValueError("delay_seconds must be a finite positive number")
+        due_iso = (datetime.datetime.now() + datetime.timedelta(seconds=delay)).isoformat(
+            "T", "microseconds"
+        )
+        return self.add_reminder(instruction, due_iso, kind="timer")
 
     def delete_reminder(self, n: int) -> bool:
         state = self._state()
@@ -177,11 +206,14 @@ class ReminderManager(CharacterScopedService):
                     del state.reminders[index]
                     self._save_state(state)
                     logger.info(f"[ReminderManager] Deleted reminder #{n}")
-                    return True
-            logger.warning(
-                f"[ReminderManager] Reminder #{n} not found for deletion"
-            )
-            return False
+                    break
+            else:
+                logger.warning(
+                    f"[ReminderManager] Reminder #{n} not found for deletion"
+                )
+                return False
+        self._notify_changed()
+        return True
 
     def get_due_reminders(self) -> list[dict]:
         now = datetime.datetime.now()
@@ -199,6 +231,20 @@ class ReminderManager(CharacterScopedService):
                     )
         return due
 
+    def get_next_due_at(self) -> datetime.datetime | None:
+        """Return the earliest valid deadline without removing any reminder."""
+        state = self._state()
+        earliest: datetime.datetime | None = None
+        with state.lock:
+            for reminder in state.reminders:
+                try:
+                    due_dt = datetime.datetime.fromisoformat(reminder["due_iso"])
+                except Exception:
+                    continue
+                if earliest is None or due_dt < earliest:
+                    earliest = due_dt
+        return earliest
+
     def dismiss_reminder(self, n: int) -> bool:
         return self.delete_reminder(n)
 
@@ -208,6 +254,7 @@ class ReminderManager(CharacterScopedService):
             state.reminders.clear()
             state.last_reminder_number = 1
             self._save_state(state)
+        self._notify_changed()
 
     def get_reminders_formatted(self) -> str:
         state = self._state()

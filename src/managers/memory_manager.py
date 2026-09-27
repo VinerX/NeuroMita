@@ -18,7 +18,7 @@ except Exception:  # стеммер опционален — без него д�
 
 
 _ISLAND_PREFIX = "island:"
-_ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts")
+_ISLAND_TYPES = ("relationship", "opinion", "preferences", "commitments_conflicts", "language")
 
 
 def is_island(memory_type: Optional[str]) -> bool:
@@ -50,10 +50,10 @@ class MemoryManager(CharacterScopedService):
     _EMBED_EXECUTOR_LOCK: ClassVar[Lock] = Lock()
     _EMBED_EXECUTOR_SHUTDOWN: ClassVar[bool] = False
 
-    def __init__(self, character_name: str = ""):
+    def __init__(self, character_id: str = ""):
         super().__init__(
-            default_character_id=str(character_name or ""),
-            default_character_name=str(character_name or ""),
+            default_character_id=str(character_id or ""),
+            default_storage_name=str(character_id or ""),
         )
         self.db = DatabaseManager()
         self._total_characters: dict[str, int] = {}
@@ -1569,7 +1569,8 @@ class MemoryManager(CharacterScopedService):
             'memory_delete: ["2"]                — delete N:2; range: "3-7"; multi: "2,5"',
             'memory_merge: ["3,7,12:merged text"] — merge into first ID; rest deleted; content optional',
             'memory_add: ["island:relationship|summary"] — replace one running island',
-            "Use English to save tokens.",
+            'memory_add: ["island:language|<language>. Reply to the Player in <language>."] — store/update primary language',
+            "Keep memory entries concise.",
         ]
 
         island_block = None

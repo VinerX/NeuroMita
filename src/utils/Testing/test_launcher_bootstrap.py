@@ -35,6 +35,21 @@ def test_launcher_is_bound_to_the_interpreter_that_started_it() -> None:
     assert launcher.PYTHON == Path(sys.executable)
 
 
+def test_core_requirements_exclude_legacy_docopt_sources() -> None:
+    requirements = (SOURCE_ROOT.parent / "requirements.txt").read_text(encoding="utf-8")
+    specs = {
+        line.split("#", 1)[0].strip().lower()
+        for line in requirements.splitlines()
+        if line.split("#", 1)[0].strip()
+    }
+
+    assert not any(spec == "docopt" or spec.startswith("docopt-") for spec in specs)
+    assert "pymorphy2" not in specs
+    assert "pymorphy3==2.0.6" in specs
+    assert not any(spec == "num2words" or spec.startswith("num2words==") for spec in specs)
+    assert "num2words2==1.0.20" in specs
+
+
 def test_launcher_uv_is_isolated_from_embedded_python_scripts() -> None:
     launcher = _load_launcher()
     assert launcher.UV_TARGET == launcher.ROOT / ".bootstrap" / "uv"

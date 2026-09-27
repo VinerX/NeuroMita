@@ -86,7 +86,7 @@ class AudioController(AudioStateService):
     @staticmethod
     def _voice_status_name(voice_profile, speaker: str) -> str:
         if isinstance(voice_profile, dict):
-            for key in ("name", "short_name", "character_id"):
+            for key in ("display_name", "short_name", "character_id"):
                 value = str(voice_profile.get(key) or "").strip()
                 if value:
                     return value

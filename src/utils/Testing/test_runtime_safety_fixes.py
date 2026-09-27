@@ -118,7 +118,7 @@ def test_history_read_path_does_not_refresh_schema(tmp_path: Path) -> None:
     DatabaseManager._instance = None
     DatabaseManager._path_override = str(tmp_path / "world.db")
     try:
-        history = HistoryManager(character_name="Test", character_id="char:test")
+        history = HistoryManager(storage_name="Test", character_id="char:test")
         history.add_message({"role": "user", "content": "hello"})
         with patch.object(history.db, "get_history_columns", side_effect=AssertionError("hot schema refresh")):
             assert history.load_history()["messages"][0]["content"] == "hello"
@@ -146,7 +146,7 @@ def test_rag_initialization_retries_after_transient_failure(tmp_path: Path) -> N
     fake_module.RAGManager = _RAGManager
 
     try:
-        history = HistoryManager(character_name="Test", character_id="char:test")
+        history = HistoryManager(storage_name="Test", character_id="char:test")
         history._RAG_RETRY_BASE_SECONDS = 0.0
         history._RAG_RETRY_MAX_SECONDS = 0.0
         with patch.dict(sys.modules, {"managers.rag.rag_manager": fake_module}):

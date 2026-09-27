@@ -18,6 +18,7 @@ class ChatRenderCommand:
     sample_id: str = ""
     context_snapshot_id: str = ""
     insert_at_start: bool = False
+    delivery_error: str = ""
 
     def clone(self) -> "ChatRenderCommand":
         return ChatRenderCommand(
@@ -30,6 +31,7 @@ class ChatRenderCommand:
             sample_id=self.sample_id,
             context_snapshot_id=self.context_snapshot_id,
             insert_at_start=self.insert_at_start,
+            delivery_error=self.delivery_error,
         )
 
 
@@ -175,7 +177,12 @@ class ChatPresentationCoordinator:
         return bool(self._active_streams)
 
     @classmethod
-    def belongs_to_surface(cls, character_id: str | None, current_character_id: str | None) -> bool:
+    def belongs_to_surface(
+        cls,
+        character_id: str | None,
+        current_character_id: str | None,
+        surface_character_ids: Iterable[str] = (),
+    ) -> bool:
         """Return whether an event belongs to the currently projected chat surface.
 
         Empty ids are intentionally treated as unscoped for compatibility with
@@ -185,6 +192,13 @@ class ChatPresentationCoordinator:
         """
         event_key = cls._character_key(character_id)
         current_key = cls._character_key(current_character_id)
+        surface_keys = {
+            cls._character_key(value)
+            for value in surface_character_ids
+            if cls._character_key(value)
+        }
+        if event_key and surface_keys:
+            return event_key in surface_keys
         return not (event_key and current_key and event_key != current_key)
 
     def record_live(
@@ -192,6 +206,7 @@ class ChatPresentationCoordinator:
         command: ChatRenderCommand,
         *,
         current_character_id: str | None = None,
+        surface_character_ids: Iterable[str] = (),
     ) -> bool:
         """Record a live command and decide whether the active widget should render it.
 
@@ -206,7 +221,11 @@ class ChatPresentationCoordinator:
         message_id = self._message_key(command.message_id)
         if not message_id:
             self._ephemeral.append((revision, command))
-            return self.belongs_to_surface(command.character_id, current_character_id)
+            return self.belongs_to_surface(
+                command.character_id,
+                current_character_id,
+                surface_character_ids,
+            )
 
         key = (self._character_key(command.character_id), message_id)
         projected_signatures = self._history_projected.get(key)
@@ -226,7 +245,11 @@ class ChatPresentationCoordinator:
         state.commands.append((revision, command))
         while len(self._stable) > self._max_stable_messages:
             self._stable.popitem(last=False)
-        return self.belongs_to_surface(command.character_id, current_character_id)
+        return self.belongs_to_surface(
+            command.character_id,
+            current_character_id,
+            surface_character_ids,
+        )
 
     def acknowledge_persisted(self, *, message_ids: Iterable[str], character_ids: Iterable[str]) -> None:
         ids = {self._message_key(value) for value in message_ids if self._message_key(value)}
@@ -258,6 +281,49 @@ class ChatPresentationCoordinator:
 
         while len(self._persisted_acks) > self._max_stable_messages * 2:
             self._persisted_acks.popitem(last=False)
+
+    def mark_failed(
+        self,
+        *,
+        message_id: str,
+        character_id: str,
+        error: str,
+    ) -> bool:
+        """Attach a terminal delivery error to one live user message.
+
+        The state lives beside the replay commands, rather than only on the
+        transient Qt widget, so a history refresh cannot erase the marker.
+        """
+        key = (self._character_key(character_id), self._message_key(message_id))
+        if not key[1]:
+            return False
+        state = self._stable.get(key)
+        if state is None:
+            return False
+        reason = str(error or "").strip()
+        changed = False
+        commands: list[tuple[int, ChatRenderCommand]] = []
+        for revision, command in state.commands:
+            if command.role == "user" and command.delivery_error != reason:
+                command = ChatRenderCommand(
+                    role=command.role,
+                    content=command.content,
+                    character_id=command.character_id,
+                    message_id=command.message_id,
+                    message_time=command.message_time,
+                    structured_data=command.structured_data,
+                    sample_id=command.sample_id,
+                    context_snapshot_id=command.context_snapshot_id,
+                    insert_at_start=command.insert_at_start,
+                    delivery_error=reason,
+                )
+                changed = True
+            commands.append((revision, command))
+        state.commands = commands
+        return changed
+
+    def clear_failed(self, *, message_id: str, character_id: str) -> bool:
+        return self.mark_failed(message_id=message_id, character_id=character_id, error="")
 
     def begin_history_load(self, character_id: str) -> HistoryLoadTicket:
         ticket = HistoryLoadTicket(
@@ -399,9 +465,17 @@ class ChatPresentationCoordinator:
         *,
         current_character_id: str | None,
         character_id: str | None = None,
+        surface_character_ids: Iterable[str] = (),
     ) -> bool:
         owner_key = self.stream_character_key(stream_id) or self._character_key(character_id)
         current_key = self._character_key(current_character_id)
+        surface_keys = {
+            self._character_key(value)
+            for value in surface_character_ids
+            if self._character_key(value)
+        }
+        if owner_key and surface_keys:
+            return owner_key in surface_keys
         return not (owner_key and current_key and owner_key != current_key)
 
     def _has_active_stream_for(self, character_key: str) -> bool:

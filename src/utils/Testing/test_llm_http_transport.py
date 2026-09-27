@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import sys
 import threading
 from pathlib import Path
@@ -34,6 +35,7 @@ from handlers.llm_providers.streaming import (
     StreamAccumulator,
     StreamDeadlineExceeded,
     StreamDeadlinePolicy,
+    StreamEventChannel,
     StreamSupervisor,
     iter_sse_data,
 )
@@ -164,12 +166,14 @@ def test_stream_accumulator_preserves_exact_events_and_legacy_text_bridge():
     legacy = []
     cancellation = RequestCancellation()
     req = _request()
+    req.provider_display_name = "OpenRouter"
     req.stream = True
     req.stream_cb = lambda text, channel: legacy.append((channel, text))
     req.stream_event_cb = events.append
     req.extra["_request_cancellation"] = cancellation
     accumulator = StreamAccumulator(req, provider="common", model="model")
 
+    assert events == []
     accumulator.add_reasoning("think")
     accumulator.add_text("answer")
     response = accumulator.complete(finish_reason="stop")
@@ -182,6 +186,7 @@ def test_stream_accumulator_preserves_exact_events_and_legacy_text_bridge():
         LLMStreamEventType.COMPLETED,
     ]
     assert [event.sequence for event in events] == [1, 2, 3, 4]
+    assert [event.provider for event in events] == ["OpenRouter"] * 4
     # Мост stream_cb различает каналы явным аргументом, а не <think>-тегами
     # в тексте: подписчику незачем парсить строку, чтобы понять, что пришло.
     assert legacy == [
@@ -190,6 +195,8 @@ def test_stream_accumulator_preserves_exact_events_and_legacy_text_bridge():
     ]
     assert response.text == "answer"
     assert response.reasoning == "think"
+    assert response.provider_name == "common"
+    assert response.provider_display_name == "OpenRouter"
     assert cancellation.has_meaningful_stream_event
 
 
@@ -205,6 +212,34 @@ def test_stream_accumulator_rescues_answer_left_in_the_reasoning_channel():
 
     assert response.text == "весь ответ тут"
     assert response.reasoning is None
+
+
+def test_stream_failure_before_started_emits_display_provider_name():
+    events = []
+    req = _request()
+    req.stream = True
+    req.provider_display_name = "OpenRouter"
+    req.stream_event_cb = events.append
+    channel = StreamEventChannel(req)
+
+    channel.fail(LLMProviderError(provider="common", friendly_message="upstream failed"))
+
+    assert [(event.type, event.provider) for event in events] == [
+        (LLMStreamEventType.STARTED, "OpenRouter"),
+        (LLMStreamEventType.FAILED, "OpenRouter"),
+    ]
+
+
+def test_stream_complete_never_serializes_missing_provider_as_none():
+    events = []
+    req = _request()
+    req.provider_name = ""
+    req.stream_event_cb = events.append
+    channel = StreamEventChannel(req)
+
+    channel.complete(LLMResponse(text="ok"))
+
+    assert [event.provider for event in events] == ["", ""]
 
 
 def test_sse_decoder_supports_comments_and_multiline_data():
@@ -355,6 +390,7 @@ def test_openai_compatible_provider_streams_sse_through_normalized_accumulator()
         messages=[{"role": "user", "content": "hi"}],
         api_url="http://localhost:1234/v1",
         provider_name="common",
+        provider_display_name="OpenRouter",
         dialect_id="openai_chat_completions",
         stream=True,
         stream_cb=lambda text, channel: legacy.append((channel, text)),
@@ -367,6 +403,8 @@ def test_openai_compatible_provider_streams_sse_through_normalized_accumulator()
     assert response.text == "hello world"
     assert response.reasoning == "r"
     assert response.finish_reason == "stop"
+    assert response.provider_name == "common"
+    assert response.provider_display_name == "OpenRouter"
     assert legacy == [
         (StreamChannel.REASONING, "r"),
         (StreamChannel.CONTENT, "hello"),
@@ -435,6 +473,7 @@ def test_gemini_provider_uses_real_sse_endpoint_and_streams_deltas():
         messages=[{"role": "user", "content": "hi"}],
         api_url="https://example.test/v1/models/gemini-test:generateContent?key=secret",
         provider_name="gemini",
+        provider_display_name="Google AI Studio",
         stream=True,
     )
 
@@ -445,6 +484,8 @@ def test_gemini_provider_uses_real_sse_endpoint_and_streams_deltas():
     assert response.text == "answer"
     assert response.reasoning == "thought"
     assert response.finish_reason == "STOP"
+    assert response.provider_name == "gemini"
+    assert response.provider_display_name == "Google AI Studio"
     assert requested_urls and ":streamGenerateContent" in requested_urls[0]
     assert "alt=sse" in requested_urls[0]
     transport.close()
@@ -536,6 +577,84 @@ def test_openai_sdk_adapter_reuses_httpx_pool_and_disables_hidden_retries():
     assert first.max_retries == 0
     assert second.max_retries == 0
     assert first._client is second._client
+    provider.close()
+    transport.close()
+
+
+def test_common_provider_falls_back_from_schema_to_json_object_then_plain_json():
+    attempts = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        if "response_format" in payload:
+            mode = payload["response_format"]["type"]
+            return httpx.Response(
+                400,
+                json={"error": {"message": f"{mode} response_format unsupported"}},
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+        )
+
+    transport = LLMHttpClient(
+        enable_http2=False,
+        client_factory=lambda _service_id, _http2: httpx.Client(
+            transport=httpx.MockTransport(respond)
+        ),
+    )
+    provider = CommonProvider(http_transport=transport)
+    req = _request()
+    req.capabilities = {
+        "structured_output": True,
+        "native_structured_output": True,
+        "structured_output_mode": "json_schema",
+    }
+
+    response = provider.generate(req)
+
+    assert response.text == '{"ok":true}'
+    assert len(attempts) == 3
+    assert attempts[0]["response_format"]["type"] == "json_schema"
+    assert attempts[1]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in attempts[2]
+    provider.close()
+    transport.close()
+
+
+def test_common_provider_stops_at_plain_json_when_each_format_is_rejected():
+    attempts = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        return httpx.Response(
+            400,
+            json={"error": {"message": "response_format json_object unsupported"}},
+        )
+
+    transport = LLMHttpClient(
+        enable_http2=False,
+        client_factory=lambda _service_id, _http2: httpx.Client(
+            transport=httpx.MockTransport(respond)
+        ),
+    )
+    provider = CommonProvider(http_transport=transport)
+    req = _request()
+    req.capabilities = {
+        "structured_output": True,
+        "native_structured_output": True,
+        "structured_output_mode": "json_schema",
+    }
+
+    with pytest.raises(LLMProviderError):
+        provider.generate(req)
+
+    assert len(attempts) == 3
+    assert attempts[0]["response_format"]["type"] == "json_schema"
+    assert attempts[1]["response_format"]["type"] == "json_object"
+    assert "response_format" not in attempts[2]
     provider.close()
     transport.close()
 
@@ -704,11 +823,12 @@ class _RunnerResolver:
         return preset
 
 
-def _runner_preset(name: str) -> PresetSettings:
+def _runner_preset(name: str, *, display_name: str = "OpenAI-compatible API") -> PresetSettings:
     return PresetSettings(
         protocol_id="openai_compatible_default",
         dialect_id="openai_chat_completions",
         provider_name="common",
+        provider_display_name=display_name,
         headers={},
         transforms=[],
         capabilities={"streaming": True},
@@ -772,6 +892,113 @@ def test_stream_timeout_before_body_allows_fallback_preset():
 
     assert response is not None and response.text == "fallback ok"
     assert calls == ["main", "main", "fallback"]
+    runner.close()
+
+
+def test_stream_fallback_updates_display_provider_name_for_fallback_events():
+    events = []
+
+    class ProviderManager:
+        def generate(self, req):
+            if req.model == "openrouter-model":
+                raise LLMProviderError(
+                    provider=req.provider_name,
+                    friendly_message="OpenRouter disconnected",
+                    retryable=True,
+                )
+
+            accumulator = StreamAccumulator(req, provider=req.provider_name, model=req.model)
+            accumulator.add_text("fallback answer")
+            return accumulator.complete(finish_reason="stop")
+
+        def close(self):
+            return None
+
+    presets = [
+        _runner_preset("openrouter-model", display_name="OpenRouter"),
+        _runner_preset("google-model", display_name="Google AI Studio"),
+    ]
+    runner = _runner_with_provider(presets, ProviderManager())
+
+    def build_request(preset, model):
+        return LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name=preset.provider_name,
+            provider_display_name=preset.provider_display_name,
+            stream=True,
+            stream_event_cb=events.append,
+        )
+
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=build_request,
+        max_attempts=1,
+        retry_delay=0.0,
+        request_timeout=1.0,
+    )
+
+    assert response is not None and response.text == "fallback answer"
+    assert [(event.type, event.provider) for event in events] == [
+        (LLMStreamEventType.STARTED, "Google AI Studio"),
+        (LLMStreamEventType.TEXT_DELTA, "Google AI Studio"),
+        (LLMStreamEventType.COMPLETED, "Google AI Studio"),
+    ]
+    runner.close()
+
+
+def test_stream_fallback_failure_uses_last_preset_display_provider_name():
+    events = []
+
+    class ProviderManager:
+        def generate(self, req):
+            if req.model == "openrouter-model":
+                raise LLMProviderError(
+                    provider=req.provider_name,
+                    friendly_message="OpenRouter disconnected",
+                    retryable=True,
+                )
+            raise LLMProviderError(
+                provider=req.provider_name,
+                friendly_message="Google AI Studio disconnected",
+                retryable=False,
+            )
+
+        def close(self):
+            return None
+
+    presets = [
+        _runner_preset("openrouter-model", display_name="OpenRouter"),
+        _runner_preset("google-model", display_name="Google AI Studio"),
+    ]
+    runner = _runner_with_provider(presets, ProviderManager())
+
+    response = runner.run(
+        messages=[],
+        preset_id=None,
+        stream_callback=None,
+        build_request=lambda preset, model: LLMRequest(
+            model=model,
+            messages=[],
+            api_url="http://localhost:1234/v1",
+            provider_name=preset.provider_name,
+            provider_display_name=preset.provider_display_name,
+            stream=True,
+            stream_event_cb=events.append,
+        ),
+        max_attempts=1,
+        retry_delay=0.0,
+        request_timeout=1.0,
+    )
+
+    assert response is not None and response.text is None
+    assert [(event.type, event.provider) for event in events] == [
+        (LLMStreamEventType.STARTED, "Google AI Studio"),
+        (LLMStreamEventType.FAILED, "Google AI Studio"),
+    ]
     runner.close()
 
 

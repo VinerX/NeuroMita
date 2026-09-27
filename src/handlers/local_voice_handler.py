@@ -3,7 +3,6 @@ from core.error_utils import format_exception
 
 import gc
 import os
-import traceback
 from typing import Dict, Optional, Any, List
 
 import ffmpeg
@@ -276,10 +275,10 @@ class LocalVoice:
             return output_path
         except ffmpeg.Error as fe:
             err = fe.stderr.decode(errors="ignore") if getattr(fe, "stderr", None) else ""
-            logger.error(f"FFmpeg error:\n{format_exception(err)}\n{traceback.format_exc()}")
+            logger.exception("FFmpeg error: %s", format_exception(err))
             return None
         except Exception:
-            logger.error(f"convert_wav_to_stereo error:\n{traceback.format_exc()}")
+            logger.exception("convert_wav_to_stereo error")
             return None
 
     async def voiceover(self, text: str, *, output_file: str, character: Optional[Any] = None) -> Optional[str]:

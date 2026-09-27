@@ -50,7 +50,7 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Микрофон активен", "Microphone active"), self.mic_active_checkbox, label_w))
 
     # 1) Кнопка в глоссарий
-    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам AI Engine", "Open AI Engine settings")
+    self.asr_manage_button = tr_set(QPushButton(), "Перейти к настройкам ИИ-движка", "Open AI Engine settings")
     self.asr_manage_button.setObjectName("SecondaryButton")
     self.asr_manage_button.setIcon(qta.icon("fa6s.microchip", color="#ffffff"))
     self.asr_manage_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -169,8 +169,28 @@ def build_microphone_settings_ui(self, parent_layout):
     root_lay.addWidget(make_row(_("Не слышать Миту", "Ignore Mita's voice"), self.mic_mute_while_speaking_checkbox, label_w))
 
     # 5) Статус (как раньше) — под кнопками
+    status_field = SettingsBodyWidget()
+    status_h = QHBoxLayout(status_field)
+    status_h.setContentsMargins(0, 0, 0, 0)
+    status_h.setSpacing(6)
+
     self.asr_init_status = QLabel("—")
-    root_lay.addWidget(make_row(_("Статус", "Status"), self.asr_init_status, label_w))
+    status_h.addWidget(self.asr_init_status, 1)
+
+    self.asr_restart_button = QPushButton()
+    self.asr_restart_button.setObjectName("SecondaryButton")
+    self.asr_restart_button.setIcon(qta.icon("fa6s.power-off", color="#ffffff"))
+    self.asr_restart_button.setFixedSize(28, 26)
+    self.asr_restart_button.setEnabled(bool(self.settings.get("MIC_ACTIVE", False)))
+    tr_set(
+        self.asr_restart_button,
+        "Полностью перезапустить распознавание речи",
+        "Fully restart speech recognition",
+        "setToolTip",
+    )
+    status_h.addWidget(self.asr_restart_button, 0)
+
+    root_lay.addWidget(make_row(_("Статус", "Status"), status_field, label_w))
 
     # 6) VAD параметры
     create_section_header(root_lay, _("Параметры распознавания", "Recognition Parameters"))
@@ -194,8 +214,16 @@ def build_microphone_settings_ui(self, parent_layout):
         sb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return sb
 
-    self.vad_sample_rate_spinbox = _spinbox(8000, 48000, 16000, 1000)
-    tr_set(self.vad_sample_rate_spinbox, "Частота дискретизации (Гц)", "Sample rate (Hz)", "setToolTip")
+    # Общий live-ASR тракт (захват, Silero VAD и распознаватели) работает в
+    # 16 кГц. Произвольные значения вроде 14000 либо не открываются драйвером,
+    # либо роняют VAD уже после успешного открытия микрофона.
+    self.vad_sample_rate_spinbox = _spinbox(16000, 16000, 16000, 1000)
+    tr_set(
+        self.vad_sample_rate_spinbox,
+        "Live ASR использует фиксированную частоту 16000 Гц",
+        "Live ASR uses a fixed 16000 Hz sample rate",
+        "setToolTip",
+    )
     root_lay.addWidget(make_row(_("Sample rate", "Sample rate"), self.vad_sample_rate_spinbox, label_w))
 
     self.vad_chunk_size_spinbox = _spinbox(128, 4096, 512, 128)

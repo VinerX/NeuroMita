@@ -39,22 +39,24 @@ class ProjectInfoTests(unittest.TestCase):
         self.assertNotIn("code 23", wk)
         self.assertNotIn("код 23", wk)
 
-    def test_intents_are_gated_by_prompt_set_metadata(self):
+    def test_intents_support_is_not_a_required_prompt_set_declaration(self):
         script = (PROMPTS / "Structural" / "response_format_json.script").read_text(encoding="utf-8")
         self.assertIn("IF support_intents == True THEN", script)
-
         prompt_sets = [
             path for path in PROMPTS.rglob("main_template.txt")
             if "Legacy" not in path.parts and "System" not in path.parts
         ]
         self.assertTrue(prompt_sets)
-        for path in prompt_sets:
-            text = path.read_text(encoding="utf-8")
-            self.assertRegex(
-                text,
-                r"(?im)^\s*support_intents\s*=\s*(?:true|false)\s*$",
-                f"prompt set must explicitly declare intent support: {path}",
-            )
+
+    def test_custom_clothing_prompt_uses_catalog_ids_and_typed_recolor(self):
+        prompt_root = PROMPTS / "Crazy" / "By_mactep_kot_new_mini"
+        behavior = (prompt_root / "Main" / "common_behavior.txt").read_text(encoding="utf-8")
+        response = (prompt_root / "Structural" / "response_structure.txt").read_text(encoding="utf-8")
+        self.assertIn("точные ID из блока Available Outfits", behavior)
+        self.assertIn("appearance.clothes.recolor", behavior)
+        self.assertIn("appearance.clothes.reset", behavior)
+        self.assertNotIn("ClothesColor", behavior)
+        self.assertNotIn("SchoolVariant1", response)
 
     def test_reasoning_gated_in_text_schema(self):
         script = (PROMPTS / "Structural" / "response_format_json.script").read_text(encoding="utf-8")
@@ -65,6 +67,14 @@ class ProjectInfoTests(unittest.TestCase):
         endif_idx = script.index("ENDIF", else_idx)
         else_block = script[else_idx:endif_idx]
         self.assertNotIn("reasoning", else_block.lower())
+
+    def test_language_island_rules_are_present_and_english_memory_hint_is_gone(self):
+        script = (PROMPTS / "Structural" / "response_format_json.script").read_text(encoding="utf-8")
+        self.assertGreaterEqual(script.count("commitments_conflicts, language"), 2)
+        self.assertIn("primary conversation language", script)
+        self.assertIn("create the language island", script)
+        self.assertIn("explicit request to switch", script)
+        self.assertNotIn("Use English to save tokens.", script)
 
 
 class WorldKnowledgeTests(unittest.TestCase):
@@ -133,6 +143,28 @@ class ContextBudgetTests(unittest.TestCase):
         for path in mita_templates:
             text = path.read_text(encoding="utf-8")
             self.assertIn("Common/Dialogue.txt", text, str(path))
+
+    def test_every_prompt_set_uses_the_shared_games_layer(self):
+        games_layer = PROMPTS / "Common" / "games.txt"
+        self.assertEqual(
+            games_layer.read_text(encoding="utf-8"),
+            "[<./chess_handler.script>]\n[<./seabattle_handler.script>]\n",
+        )
+
+        templates = list(PROMPTS.rglob("main_template.txt"))
+        self.assertTrue(templates)
+        for path in templates:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("Common/games.txt", text, str(path))
+
+    def test_shared_chess_context_keeps_maia_out_of_mita_dialogue(self):
+        chess_handler = (PROMPTS / "Common" / "chess_handler.script").read_text(encoding="utf-8")
+        runtime_state = (PROMPTS / "_CommonPrompts" / "chess.system").read_text(encoding="utf-8")
+
+        self.assertIn("пока Игрок сам не спросит", chess_handler)
+        self.assertIn("unless the player explicitly asks", runtime_state)
+        self.assertNotIn("Maia (твой движок)", chess_handler)
+        self.assertNotIn("Maia выберет", chess_handler)
 
     def test_personality_opener_lives_in_exactly_one_block(self):
         """Личность не должна расползаться по нескольким статическим блокам.

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 from core.daemon_executor import DaemonExecutor
+from core.trace_context import current_trace_id, trace_scope
 
 
 class Pools:
@@ -113,13 +114,19 @@ class _BoundedPool:
         return self._submit_reserved(fn, args, kwargs)
 
     def _submit_reserved(self, fn: Callable, args: tuple, kwargs: dict) -> Future:
+        trace_id = current_trace_id()
+
+        def invoke():
+            with trace_scope(trace_id):
+                return fn(*args, **kwargs)
+
         def _release(_f: Future) -> None:
             with self._lock:
                 if self._reservations.pop(_f, None):
                     self._inflight -= 1
 
         try:
-            future = self._executor.submit(fn, *args, **kwargs)
+            future = self._executor.submit(invoke)
         except BaseException:
             with self._lock:
                 self._inflight -= 1

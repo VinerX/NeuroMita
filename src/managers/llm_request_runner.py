@@ -41,7 +41,6 @@ class LLMRequestRunner:
     - задержку между попытками
     - ротацию ключей через ApiPresetResolver
 
-    NOTE: GPT4FREE_LAST_ATTEMPT removed from logic.
     """
 
     def __init__(
@@ -88,6 +87,7 @@ class LLMRequestRunner:
         suppress_failure_events: bool = False,
         trace_id: str | None = None,
         cancellation: CancellationToken | None = None,
+        failure_context: dict[str, Any] | None = None,
     ) -> Optional[LLMResponse]:
         if messages is None:
             messages = []
@@ -154,11 +154,17 @@ class LLMRequestRunner:
         logger.error("All generation attempts failed across preset chain: %s", terminal_summary)
         if self.last_error and not suppress_failure_events:
             provider_error = self.last_error.to_payload()
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+            failure_payload = {
                 "error": self.last_error.to_user_message(),
                 "details": self.last_error.to_console_summary(),
                 "provider_error": provider_error,
-            })
+            }
+            context = failure_context if isinstance(failure_context, dict) else {}
+            for key in ("message_id", "character_id"):
+                value = context.get(key)
+                if value:
+                    failure_payload[key] = str(value)
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, failure_payload)
         if stream_channel_holder[0] is not None and self.last_error is not None:
             stream_channel_holder[0].fail(self.last_error)
         if last_response is not None:
@@ -233,6 +239,10 @@ class LLMRequestRunner:
                 req.extra.setdefault("http_read_timeout_seconds", float(request_timeout))
                 if stream_channel_holder[0] is None:
                     stream_channel_holder[0] = StreamEventChannel(req)
+                else:
+                    stream_channel_holder[0].set_provider_display_name(
+                        req.provider_display_name or req.provider_name
+                    )
                 req.extra["_stream_event_channel"] = stream_channel_holder[0]
             cancellation = RequestCancellation(operation_cancellation)
             req.extra["_request_cancellation"] = cancellation

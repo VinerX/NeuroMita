@@ -1,61 +1,148 @@
 from __future__ import annotations
 
 SETTINGS_PAGE_QSS = r"""
-/* ========= API Presets ========= */
-QFrame#PresetsPanel {
-    background-color: rgba({settings_panel_rgb}, 0.96);
-    border: 1px solid {panel_border};
-    border-radius: 16px;
+QWidget#CharacterSettingsWorkspace, QWidget#CharacterSettingsWorkspace QLabel,
+QWidget#CharacterSettingsWorkspace QLineEdit, QWidget#CharacterSettingsWorkspace QComboBox,
+QWidget#CharacterSettingsWorkspace QPushButton, QWidget#CharacterSettingsWorkspace QListWidget,
+QWidget#CharacterSettingsWorkspace QTabBar {
+    font-family: "Segoe UI"; letter-spacing: 0px;
 }
-QListWidget#PresetsList {
-    background: rgba({sandbox_bg_rgb}, 0.88);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 12px;
-    padding: 6px;
-    color: {text};
-    outline: 0;
+QLabel#CharacterSettingsTitle { font-size: 22px; font-weight: 700; }
+QWidget#CharacterSettingsWorkspace QLabel#SeparatorLabel { color: {muted}; font-weight: 400; }
+QFrame#CharacterLibrary, QFrame#CharacterDetail {
+    background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 12px;
 }
-QListWidget#PresetsList::item { padding: 6px 6px; color: {text}; }
-QListWidget#PresetsList::item:hover {
-    background: rgba({accent_rgb}, 0.10);
-    border-radius: 8px;
+QFrame#CharacterSection {
+    background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 10px;
 }
-QListWidget#PresetsList::item:selected {
-    background: rgba({accent_rgb}, 0.18);
-    border-radius: 8px;
-    color: #ffffff;
+QWidget#CharacterSettingsWorkspace QWidget#CollapsibleSection,
+QWidget#CharacterSettingsWorkspace QWidget#CollapsibleHeader,
+QWidget#CharacterSettingsWorkspace QFrame#CollapsibleContent {
+    background: {settings_panel_bg};
+}
+QWidget#CharacterSettingsWorkspace QWidget#CollapsibleSection {
+    border: 1px solid {panel_border}; border-radius: 10px;
+}
+QWidget#CharacterSettingsWorkspace QWidget#CollapsibleHeader {
+    border: none; border-radius: 10px;
+}
+QWidget#CharacterSettingsWorkspace QLabel#CharacterLibraryTitle,
+QLabel#CharacterCount { margin: 0px; padding: 0px; border: none; }
+QLabel#CharacterCount { color: {muted}; }
+QWidget#CharacterSettingsWorkspace QWidget#CharacterActionRow {
+    border-bottom: 1px solid {panel_border};
+}
+QLabel#CharacterActionTitle { font-weight: 600; }
+QListWidget#CharacterList { background: transparent; border: none; outline: none; padding: 0px; }
+QListWidget#CharacterList::item {
+    background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 9px;
+    padding: 3px 8px; font-size: 14px; font-weight: 600;
+}
+QListWidget#CharacterList::item:selected {
+    background: {settings_panel_bg}; border: 1px solid {muted};
+}
+QListWidget#CharacterList::item:hover { border: 1px solid {muted}; }
+QLabel#CharacterName { font-size: 20px; font-weight: 700; }
+QLabel#CharacterId { color: {muted}; font-size: 12px; font-weight: 400; }
+QWidget#CharacterSettingsWorkspace QLabel#CharacterActionDescription {
+    color: {muted}; font-weight: 400; font-size: 12px;
+}
+QWidget#CharacterSettingsWorkspace QWidget#CollapsibleSection[danger="true"] {
+    border: 1px solid {warn_border}; border-radius: 10px;
+}
+QLabel#CharacterLibraryTitle { font-size: 14px; font-weight: 600; }
+QLabel#CharacterActiveBadge {
+    background: rgba({accent_rgb}, 0.18); color: {text}; border-radius: 6px; padding: 5px 9px;
+}
+/* ========= API workspace ========= */
+QWidget#ApiSettingsWorkspace { background: transparent; }
+QWidget#ApiSettingsWorkspace, QWidget#ApiSettingsWorkspace QLabel,
+QWidget#ApiSettingsWorkspace QLineEdit, QWidget#ApiSettingsWorkspace QComboBox,
+QWidget#ApiSettingsWorkspace QPushButton, QWidget#ApiSettingsWorkspace QCheckBox {
+    font-family: "Segoe UI"; letter-spacing: 0px;
+}
+QLabel#ApiSettingsTitle { font-size: 22px; font-weight: 700; color: {text}; }
+QLabel#ApiEditorTitle { font-size: 13px; font-weight: 600; color: {text}; }
+QLabel#ApiPresetName { font-size: 18px; font-weight: 700; color: {text}; }
+QLabel#ApiSettingsSubtitle { color: {muted}; font-size: 12px; }
+QLabel#ApiParameterKey { color: {muted}; font-size: 11px; }
+QFrame#ApiWorkspacePanel {
+    background: transparent; border: none;
+}
+QFrame#ApiPresetSidebar { background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 12px; }
+QFrame#ApiEditorPanel { background: transparent; border: none; }
+QLineEdit#ApiPresetSearch { background: {bg_root}; border: 1px solid {panel_border}; border-radius: 8px; padding: 6px; }
+QSplitter#ApiWorkspaceSplitter { background: transparent; }
+QSplitter#ApiWorkspaceSplitter::handle {
+    background: transparent;
+}
+QSplitter#ApiWorkspaceSplitter::handle:hover { border-left: 1px solid {text}; }
+QFrame#ApiEditorHeader, QFrame#ApiConfigurationHeader {
+    background: {bg_root}; border: 1px solid {panel_border}; border-radius: 10px;
+}
+QFrame#ApiConfigurationHeader { border: 1px solid {panel_border}; border-radius: 8px; }
+QLabel#ApiActiveTag {
+    background: {chip_bg}; color: {success}; border: 1px solid {border_soft};
+    border-radius: 9px; padding: 3px 9px; font-size: 11px; font-weight: 600;
+}
+QFrame#ApiConnectionCard { background: {settings_panel_bg}; border: 1px solid {panel_border}; border-radius: 12px; }
+QTabWidget#ApiEditorTabs::pane { border: none; background: {settings_panel_bg}; }
+QLabel#ApiReserveCount { background: {chip_bg}; color: {text}; border: 1px solid {panel_border}; border-radius: 7px; padding: 6px 10px; }
+QTabWidget#ApiEditorTabs QTabBar { background: transparent; }
+QTabWidget#ApiEditorTabs QTabBar::tab {
+    background: {bg_root}; color: {muted}; border: none;
+    border-bottom: 2px solid transparent; padding: 14px 22px; font-weight: 600;
+}
+QTabWidget#ApiEditorTabs QTabBar::tab:selected {
+    background: {chip_bg}; color: {text}; border-bottom: 2px solid {accent};
+}
+QTabWidget#ApiEditorTabs QTabBar::tab:hover { color: {text}; }
+QTabWidget#ApiEditorTabs QTabBar::tab:first { border-top-left-radius: 11px; }
+QComboBox#ApiArrowCombo { padding-right: 30px; }
+QComboBox#ApiArrowCombo::drop-down { width: 30px; border: none; background: transparent; }
+
+QListWidget#ApiPresetCards, QScrollArea#ApiEditorScroll, QScrollArea#ApiConfigurationScroll, QWidget#ApiEditorContent {
+    background: transparent; border: none; padding: 0; outline: 0;
+}
+QListWidget#ApiPresetCards::item { padding: 0; border: none; background: transparent; }
+QListWidget#ModelParameterFields { background: {bg_root}; border: 1px solid {panel_border}; border-radius: 10px; padding: 6px; }
+QListWidget#ModelParameterFields::item { padding: 8px; border-radius: 6px; color: {text}; }
+QListWidget#ModelParameterFields::item:selected { background: rgba({accent_rgb}, 0.18); color: {text}; }
+QWidget#ApiSettingsWorkspace QPushButton { padding: 0px 14px; border-radius: 8px; font-weight: 600; }
+QPushButton#ApiAddPresetButton, QPushButton#ApiSaveButton {
+    background: {accent}; color: {text}; border: 1px solid {accent_border}; font-weight: 600;
+}
+QPushButton#ApiAddPresetButton:hover, QPushButton#ApiSaveButton:hover { background: {accent_hover}; }
+QPushButton#ApiSaveButton:disabled { background: {btn_disabled_bg}; color: {btn_disabled_fg}; border-color: {panel_border}; }
+QPushButton#ApiCheckButton { background: transparent; border: 1px solid {panel_border}; color: {text}; }
+QPushButton#ApiCheckButton:hover { background: rgba({accent_rgb}, 0.12); border-color: {accent}; }
+QWidget#ApiEditorContent QLineEdit, QWidget#ApiEditorContent QComboBox {
+    background: {bg_root}; border: 1px solid {panel_border};
+    border-radius: 7px; padding: 8px 11px;
+}
+QWidget#ApiEditorContent QLineEdit { placeholder-text-color: {muted}; }
+QWidget#ApiEditorContent QLineEdit:disabled {
+    color: {muted}; placeholder-text-color: {muted};
+    background: {bg_root}; border-color: {panel_border};
+}
+QWidget#ApiEditorContent QComboBox:disabled { color: {muted}; }
+QWidget#ApiEditorContent QLineEdit:focus, QWidget#ApiEditorContent QComboBox:focus { border-color: {accent}; }
+QWidget#ApiEditorContent QLabel[dirty="true"] { color: {link}; }
+QWidget#ApiEditorContent QLineEdit[invalid="true"],
+QWidget#ApiEditorContent QLineEdit[invalid="true"]:focus,
+QWidget#ApiEditorContent QComboBox[invalid="true"],
+QWidget#ApiEditorContent QComboBox[invalid="true"]:focus {
+    border: 1px solid {danger};
+}
+QWidget#ApiSettingsWorkspace QWidget#CollapsibleHeader {
+    background: {bg_root}; border: 1px solid {panel_border}; border-radius: 8px;
 }
 
-QPushButton#AddPresetButton,
-QPushButton#RemovePresetButton,
-QPushButton#MoveUpButton,
-QPushButton#MoveDownButton {
-    background-color: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.10);
-    color: {text};
-    padding: 0px;
-    min-width: 28px;
-    min-height: 28px;
-    border-radius: 8px;
+QWidget#ApiSettingsWorkspace QWidget#CollapsibleHeader QLabel#CollapsibleTitle { font-size: 14px; font-weight: 600; }
+QWidget#ApiSettingsWorkspace QWidget#CollapsibleHeader QLabel#CollapsibleSubtitle { color: {muted}; font-size: 12px; }
+QWidget#ApiSettingsWorkspace QLabel#CollapsibleIcon {
+    background: {chip_bg}; border: 1px solid {panel_border}; border-radius: 9px;
 }
-QPushButton#AddPresetButton:hover,
-QPushButton#RemovePresetButton:hover,
-QPushButton#MoveUpButton:hover,
-QPushButton#MoveDownButton:hover {
-    background-color: rgba({accent_rgb}, 0.16);
-    border: 1px solid {panel_border};
-}
-QPushButton#AddPresetButton:pressed,
-QPushButton#RemovePresetButton:pressed,
-QPushButton#MoveUpButton:pressed,
-QPushButton#MoveDownButton:pressed {
-    background-color: rgba({accent_rgb}, 0.24);
-}
-QPushButton#RemovePresetButton:disabled {
-    color: {muted};
-    border-color: {outline};
-}
-
 /* ========= Settings Page ========= */
 QWidget#SettingsPageRoot,
 QWidget#SettingsWorkspaceContent {
@@ -539,15 +626,6 @@ QWidget#SettingsPageRoot QLabel#AIEngineLoadingText,
 QWidget#SettingsPageRoot QLabel#AIEngineMaintenanceHint {
     color: {muted};
     font-size: 9pt;
-}
-QWidget#SettingsPageRoot QLabel#AIEngineHardwareName {
-    color: {text};
-    font-size: 12pt;
-    font-weight: 700;
-}
-QWidget#SettingsPageRoot QWidget#AIEngineHardwareInfo {
-    background: transparent;
-    border: none;
 }
 QWidget#SettingsPageRoot QPushButton#AIEngineLoadingSpinner:disabled {
     background: transparent;

@@ -194,7 +194,7 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     def on_regenerate(mid):
         actions.dispatch(RegenerateChat(str(character_id)))
     def on_retry(mid):
-        actions.dispatch(RetryLastChat(str(character_id)))
+        actions.dispatch(RetryLastChat(str(mid), str(character_id)))
     def on_regenerate_from(mid):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         dlg = QDialog()
@@ -244,17 +244,18 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     widget.view_context_requested.connect(on_view_context)
     widget.view_response_context_requested.connect(on_view_response_context)
 
-def mark_last_user_error(gui, tooltip: str = "") -> bool:
-    """Пометить последний пузырь пользователя как «сообщение не дошло».
-
-    Вызывается при провале генерации: сам пузырь остаётся, но получает иконку
-    с возможностью отправить снова. Возвращает True, если пузырь нашёлся.
-    """
+def mark_user_error(gui, message_id: str, tooltip: str = "") -> bool:
+    """Пометить конкретный пузырь пользователя как «сообщение не дошло»."""
     chat_window = getattr(gui, "chat_window", None)
-    if chat_window is None:
+    target_id = str(message_id or "")
+    if chat_window is None or not target_id:
         return False
     for widget in reversed(getattr(chat_window, "_messages", [])):
-        if isinstance(widget, MessageWidget) and getattr(widget, "_role", None) == "user":
+        if (
+            isinstance(widget, MessageWidget)
+            and getattr(widget, "_role", None) == "user"
+            and getattr(widget, "_message_id", None) == target_id
+        ):
             widget.set_error(tooltip)
             return True
     return False
@@ -270,7 +271,7 @@ def clear_message_errors(gui) -> None:
             widget.clear_error()
 
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None, context_snapshot_id=None):
+def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None, context_snapshot_id=None, delivery_error=""):
     chat_window = getattr(gui, "chat_window", None)
     if chat_window is None:
         return False
@@ -451,6 +452,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 )
             if is_last and _pending_struct_panel is not None:
                 w.set_structured_ref(_pending_struct_panel)
+            if delivery_error and role == "user":
+                w.set_error(delivery_error)
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
     elif full_text:
         msg_widget = MessageWidget(
@@ -468,6 +471,8 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             _connect_widget_signals(gui, msg_widget, message_id or "", character_id or "")
         if _pending_struct_panel is not None:
             msg_widget.set_structured_ref(_pending_struct_panel)
+        if delivery_error and role == "user":
+            msg_widget.set_error(delivery_error)
         gui.chat_window.add_message_widget(msg_widget, at_start=insert_at_start)
 
     if _pending_struct_panel is not None:

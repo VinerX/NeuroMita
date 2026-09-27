@@ -10,7 +10,6 @@ Checks:
   * duplicate-paragraph  — the same normalized paragraph in multiple files
   * conflicting-length   — several different word-count rules in one file
   * deprecated-item      — the old ``item|...`` tag format in Structural files
-  * intents-mention      — "intents" mentioned by a prompt set without support_intents=True
   * none-txt-include     — the removed Common/None.txt included again
 
 Usage::
@@ -33,11 +32,6 @@ _INCLUDE_RE = re.compile(r"\[<([^>]+\.(?:script|txt|system|postscript))>\]")
 _RUN_RE = re.compile(r"^\s*RUN\s+(\S+)", re.MULTILINE)
 _LOAD_RE = re.compile(r'\bLOAD\s+"([^"]+)"')
 _WORDS_RULE_RE = re.compile(r"(\d{1,3})\s*[-–]\s*(\d{1,3})\s*words", re.IGNORECASE)
-_SUPPORT_INTENTS_RE = re.compile(
-    r"^\s*support_intents\s*=\s*true\s*(?://.*)?$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
 # Legacy syntaxes that drift from the runtime contract (see improvement plans 01/02).
 # The Unity runtime parses light as ``light:color:R,G,B`` / ``light:set:...`` (colon),
 # and movement points as ``walkto,PointName`` (no space). The old comma-light form and
@@ -167,19 +161,6 @@ def lint_prompts(root: Path) -> List[LintWarning]:
                 rel, f"line {_line_of(text, 'item|')}", "deprecated-item",
                 "old 'item|...' tag format used in a Structural file",
             ))
-
-        # Intent rules are valid only for prompt sets that explicitly opt in.
-        main_template = set_root / "main_template.txt"
-        if main_template.exists() and re.search(r"\bintents\b", text, re.IGNORECASE):
-            try:
-                main_text = main_template.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                main_text = ""
-            if not _SUPPORT_INTENTS_RE.search(main_text):
-                warnings.append(LintWarning(
-                    rel, f"line {_line_of(text.lower(), 'intents')}", "intents-mention",
-                    "'intents' is mentioned but this prompt set does not declare support_intents=True",
-                ))
 
         # legacy syntaxes that no longer match the Unity runtime contract
         for rx, msg in _LEGACY_SYNTAX_RES:

@@ -701,8 +701,8 @@ class _CharacterController:
     def get(self, character_id: str):
         return self._service().get(str(character_id))
 
-    def name_of(self, character_id: str) -> str:
-        return self._service().name_of(str(character_id))
+    def display_name_of(self, character_id: str) -> str:
+        return self._service().display_name_of(str(character_id))
 
     def prepare_history(self, **kwargs):
         return use(HistoryService).prepare_for_prompt(**kwargs)

@@ -97,9 +97,12 @@ class GuideWidget(QWidget):
     # They intentionally cover the control itself rather than the red number label.
     _STEP_TARGETS = {
         "PresetGuidePage": {
-            1: (0.88, 0.20, 0.10, 0.12), 2: (0.18, 0.22, 0.43, 0.10),
-            3: (0.20, 0.67, 0.48, 0.09), 4: (0.03, 0.63, 0.18, 0.10),
-            5: (0.05, 0.82, 0.82, 0.07), 6: (0.05, 0.89, 0.82, 0.07),
+            1: (0.212, 0.368, 0.122, 0.045),
+            2: (0.656, 0.562, 0.273, 0.039),
+            3: (0.656, 0.745, 0.248, 0.037),
+            4: (0.816, 0.718, 0.084, 0.024),
+            5: (0.744, 0.368, 0.099, 0.045),
+            6: (0.846, 0.368, 0.102, 0.045),
         },
         "VoiceoverGuidePage": {
             1: (0.91, 0.31, 0.08, 0.14), 2: (0.13, 0.43, 0.83, 0.10),
@@ -124,6 +127,15 @@ class GuideWidget(QWidget):
         "ScreenCaptureGuidePage": {
             1: (0.04, 0.29, 0.39, 0.12), 2: (0.90, 0.40, 0.08, 0.15),
         },
+        "ModelsGuidePage": {
+            1: (0.488, 0.415, 0.178, 0.059),
+            2: (0.367, 0.606, 0.210, 0.040),
+            3: (0.367, 0.679, 0.210, 0.040),
+            4: (0.367, 0.750, 0.210, 0.040),
+            5: (0.367, 0.821, 0.210, 0.040),
+            6: (0.367, 0.893, 0.210, 0.040),
+            7: (0.367, 0.962, 0.210, 0.036),
+        },
         "CameraGuidePage": {
             3: (0.04, 0.50, 0.39, 0.12), 4: (0.90, 0.63, 0.08, 0.12),
             9: (0.17, 0.72, 0.77, 0.10),
@@ -131,6 +143,12 @@ class GuideWidget(QWidget):
         "CameraDependenciesGuidePage": {
             5: (0.88, 0.26, 0.08, 0.10), 6: (0.39, 0.08, 0.20, 0.09),
             7: (0.02, 0.73, 0.19, 0.09), 8: (0.82, 0.64, 0.15, 0.09),
+        },
+        "FinalGuidePage": {
+            1: (0.924, 0.100, 0.036, 0.050),
+            2: (0.936, 0.743, 0.032, 0.048),
+            3: (0.936, 0.813, 0.032, 0.048),
+            4: (0.936, 0.873, 0.032, 0.048),
         },
     }
 
@@ -974,7 +992,7 @@ class GuideWidget(QWidget):
                     f'<b>{number}.</b></a>'
                 )
                 if label:
-                    return f'{number_html} <b>{label}</b>'
+                    return f'{number_html}&nbsp;<b>{label}</b>'
                 return number_html
             return marker_re.sub(repl, value)
 
@@ -1248,20 +1266,20 @@ class PresetGuidePage(IGuidePage):
     def get_description_ru(self):
         return """Чтобы НейроМита ожила и могла с вами общаться, ей нужен доступ к языковой модели — её «мозгу». Для этого мы создадим ваш первый пресет API. Это просто!
 
-• Откройте настройки и перейдите во вкладку <b>API</b>. Нажмите <b>1 +</b>, чтобы добавить новый пресет.
-• Выберите <b>2 - Шаблон</b> провайдера — например, OpenRouter, Gemini, или KodikRouter и нажмите <b>OK</b>. Если вашего провайдера нет в списке, используйте вариант «Без шаблона».
-Затем вам понадобится <b>3 - API-ключ</b>. Перейдите по ссылке <b>4 - Получить ключ</b>, зарегистрируйтесь у провайдера и вставьте ключ в соответствующее поле.
-Чтобы проверить, всё ли работает, нажмите <b>5 - Тест подключения</b> и выберите модель из списка. Или оставьте ту, что предложена по умолчанию.
-В конце нажмите <b>6 - Сохранить</b> — и пресет готов! Теперь Мита будет думать именно с помощью этой модели."""
+• Откройте настройки и перейдите во вкладку <b>API</b>. Нажмите <b>1 - + Добавить пресет</b>, чтобы добавить новый пресет.
+• Выберите <b>2 - Шаблон провайдера</b> — например, OpenRouter, Gemini или KodikRouter. Если вашего провайдера нет в списке, используйте вариант «Без шаблона».
+• Затем вам понадобится <b>3 - API-ключ</b>. Перейдите по ссылке <b>4 - Получить ключ</b>, зарегистрируйтесь у провайдера и вставьте ключ в соответствующее поле.
+• Чтобы проверить, всё ли работает, нажмите <b>5 - Проверить</b> и выберите модель из списка. Или выберите модель из списка на сайте провайдера.
+• В конце нажмите <b>6 - Сохранить</b> — и пресет готов! Теперь Мита будет думать именно с помощью этой модели."""
 
     def get_description_en(self):
-        return """For NeuroMita to come alive and chat with you, she needs access to a language model — her “brain”. Let’s create your first API preset. It’s easy!
+        return """For NeuroMita to come to life and be able to communicate with you, she needs access to a language model — her “brain.” To do this, we’ll create your first API preset. It’s easy!
 
-Open the settings and go to the <b>API</b> tab. Click <b>1 +</b> to add a new preset.
-Choose a <b>2 - Template</b> — for example, OpenRouter, Gemini, or KodikRouter — and click <b>OK</b>. If your provider isn't listed, select “No template”.
-Next, you’ll need an <b>3 - API key</b>. Follow the <b>4 - Get key</b> link, sign up with the provider, and paste the key into the field.
-To make sure everything works, click <b>5 - Test Connection</b> and pick a model from the list. Or keep the default one.
-Finally, click <b>6 - Save</b> — and your preset is ready! Now Mita will think using this model."""
+• Open Settings and go to the <b>API</b> tab. Click <b>1 - + Add Preset</b> to add a new preset.
+• Select <b>2 - Provider Template</b> — for example, OpenRouter, Gemini, or KodikRouter. If your provider isn’t in the list, use the “No Template” option.
+• Then you’ll need <b>3 - API Key</b>. Follow the link <b>4 - Get Key</b>, register with the provider, and paste the key into the corresponding field.
+• To check whether everything works, click <b>5 - Check</b> and select a model from the list. Or select a model from the list on the provider’s website.
+• Finally, click <b>6 - Save</b> — and the preset is ready! Now Mita will think using this model specifically."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_preset.png" if language == "ru" else "guide/guide_preset1.png"
@@ -1329,7 +1347,7 @@ class MicrophoneGuidePage(IGuidePage):
 • Перейдите в настройки.
 • Выберите вкладку <b>ASR</b> со значком микрофона.
 • Выберите ваш микрофон из <b>1 - списка устройств</b>.
-• Нажмите кнопку <b>2 - Перейти к настройкам AI Engine</b>.
+• Нажмите кнопку <b>2 - Перейти к настройкам ИИ-движка</b>.
 • Откроется <b>AI Hub</b> — перейдите на вкладку <b>3 - Распознавание (ASR)</b>.
 • Выберите подходящую модель распознавания речи и дождитесь установки.
 • Установите галочку <b>4 - Микрофон активен</b>
@@ -1462,8 +1480,8 @@ class ScreenAnalysisGuidePage(IGuidePage):
 • Перейдите в настройки и откройте раздел <b>Изображения</b>.
 • Откройте вкладку <b>3 - Настройки захвата с камеры</b>.
 • Активируйте переключатель <b>4 - Включить захват с камеры</b> (у вас должна быть подключена веб-камера).
-• Если OpenCV не установлен, сначала сделайте видимым раздел <b>5 - AI Engine</b> в общих настройках.
-• Откройте вкладку <b>6 - AI Engine</b> и нажмите в этой вкладке кнопку <b>AI Hub</b>.
+• Если OpenCV не установлен, сначала сделайте видимым раздел <b>5 - ИИ-движок</b> в общих настройках.
+• Откройте вкладку <b>6 - ИИ-движок</b> и нажмите в этой вкладке кнопку <b>AI Hub</b>.
 • В AI Hub перейдите на вкладку <b>7 - Зависимости</b>.
 • Установите <b>8 - OpenCV</b>.
 • Вернитесь в <b>3 - Настройки захвата с камеры</b> и <b>9 - выберите камеру</b>.
@@ -1689,8 +1707,8 @@ class CameraDependenciesGuidePage(IGuidePage):
 
     def get_description_ru(self):
         return """Этот шаг нужен только если камера требует OpenCV.
-• В общих настройках сделайте видимым <b>5 - AI Engine</b>.
-• Откройте <b>6 - AI Engine</b> и перейдите в <b>AI Hub</b>.
+• В общих настройках сделайте видимым <b>5 - ИИ-движок</b>.
+• Откройте <b>6 - ИИ-движок</b> и перейдите в <b>AI Hub</b>.
 • В AI Hub выберите <b>7 - Зависимости</b> и установите <b>8 - OpenCV</b>.
 • Вернитесь к настройкам камеры и выберите устройство в <b>9</b>."""
 
@@ -1727,36 +1745,36 @@ class ModelsGuidePage(IGuidePage):
 Для большинства случаев стандартные настройки уже хороши, но если хочется больше креативности или, наоборот, строгости — эти параметры для вас.
 
 <b>Где находятся:</b>
-• Откройте настройки и перейдите во вкладку <b>Модели</b>.
-• Разверните вкладку <b>1 - Настройки генерации текста</b>.
+• Откройте настройки и перейдите во вкладку <b>API</b>.
+• Откройте раздел <b>1 - Параметры генерации</b>.
 
 <b>Основные параметры:</b>
-• <b>2 - Макс. токенов в ответе</b> — максимальная длина ответа Миты. Если ответы обрываются — увеличьте значение.
-• <b>3 - Температура</b> — управляет креативностью. 0.0 — очень строгие, предсказуемые ответы; 2.0 — очень творческие и неожиданные.
-• <b>4 - Top-K</b> — ограничивает выбор только K самых вероятных следующих слов. Чем ниже K (например, 10), тем суше ответ. Чем выше (например, 80), тем разнообразнее лексика.
-• <b>5 - Top-P</b> — ядерная выборка: модель перебирает слова, пока их суммарная вероятность не достигнет P. Например, P=0.9 означает, что модель выберет из самого узкого набора слов, дающих 90% уверенности. Низкое P — более сфокусированный ответ, высокое P — больше экспериментов.
-• <b>6 - Штраф присутствия</b> — насколько модель избегает повторения уже использованных слов. Положительное значение 0.1–2.0 заставит Миту чаще говорить о новых вещах, а не топтаться на одном.
-• <b>7 - Штраф частоты</b> — снижает вероятность повторения одних и тех же слов пропорционально их частоте в ответе. Полезно, если Мита начинает «зацикливаться». Обычно хватает небольшого значения 0.1–0.5, чтобы ответы стали разнообразнее.
+• <b>2 - Температура</b> — управляет креативностью. 0.0 — очень строгие, предсказуемые ответы; 2.0 — очень творческие и неожиданные.
+• <b>3 - Макс. токенов в ответе</b> — максимальная длина ответа Миты. Если ответы обрываются — увеличьте значение.
+• <b>4 - Top-P</b> — ядерная выборка: модель перебирает слова, пока их суммарная вероятность не достигнет P. Например, P=0.9 означает, что модель выберет из самого узкого набора слов, дающих 90% уверенности. Низкое P — более сфокусированный ответ, высокое P — больше экспериментов.
+• <b>5 - Штраф присутствия</b> — насколько модель избегает повторения уже использованных слов. Положительное значение 0.1–2.0 заставит Миту чаще говорить о новых вещах, а не топтаться на одном.
+• <b>6 - Штраф частоты</b> — снижает вероятность повторения одних и тех же слов пропорционально их частоте в ответе. Полезно, если Мита начинает «зацикливаться». Обычно хватает небольшого значения 0.1–0.5, чтобы ответы стали разнообразнее.
+• <b>7 - Глубина размышлений</b> — управляет тем, сколько модель тратит на внутренние рассуждения перед ответом. Чем выше значение, тем глубже и подробнее она «думает», но тем медленнее и дороже получается ответ. Чем ниже — тем быстрее и дешевле, но ответы проще.
 
 Не бойтесь экспериментировать: если результат не нравится, всегда можно вернуться к стандартным."""
 
     def get_description_en(self):
-        return """You can fine-tune how Mita formulates her responses.
-The default settings work well for most cases, but if you want more creativity or stricter answers — these parameters are for you.
+        return """You can fine-tune exactly how Mita formulates her responses.
+For most cases, the default settings are already good, but if you want more creativity or, conversely, more strictness, these parameters are for you.
 
 <b>Where to find them:</b>
-• Open Settings and go to the <b>Models</b> tab.
-• Expand the <b>1 - Text Generation Settings</b> section.
+• Open Settings and go to the <b>API</b> tab.
+• Open the <b>1 - Generation parameters</b> section.
 
-<b>Key parameters:</b>
-• <b>2 - Max tokens in response</b> — the maximum length of Mita's answer. If responses get cut off, increase this value.
-• <b>3 - Temperature</b> — controls creativity. 0.0 gives very strict, predictable answers; 2.0 gives very creative, unexpected ones.
-• <b>4 - Top-K</b> — limits the selection to only the K most likely next words. A low K (e.g., 10) makes answers more focused and dry; a higher K (e.g., 80) adds lexical variety.
-• <b>5 - Top-P</b> — nucleus sampling: the model considers words until their total probability reaches P. For example, P=0.9 means the model picks from the smallest set of words that together have at least 90% confidence. Lower P gives more focused answers, higher P encourages more variety.
-• <b>6 - Presence penalty</b> — how much the model avoids repeating words already used. A positive value of 0.1–2.0 encourages Mita to bring up new topics rather than circling around the same ones.
-• <b>7 - Frequency penalty</b> — reduces the chance of repeating the same words based on how often they've appeared. Useful if Mita starts sounding repetitive. A small value of 0.1–0.5 usually makes responses more diverse.
+<b>Main parameters:</b>
+• <b>2 - Temperature</b> — controls creativity. 0.0 — very strict, predictable responses; 2.0 — very creative and unexpected.
+• <b>3 - Max tokens in response</b> — the maximum length of Mita’s response. If responses are cut off, increase the value.
+• <b>4 - Top-P</b> — nucleus sampling: the model considers words until their cumulative probability reaches P. For example, P=0.9 means the model will choose from the narrowest set of words that gives 90% confidence. A low P — a more focused response; a high P — more experimentation.
+• <b>5 - Presence penalty</b> — how much the model avoids repeating words it has already used. A positive value of 0.1–2.0 will make Mita talk about new things more often instead of dwelling on the same thing.
+• <b>6 - Frequency penalty</b> — reduces the probability of repeating the same words in proportion to their frequency in the response. Useful if Mita starts “looping.” Usually, a small value of 0.1–0.5 is enough to make responses more varied.
+• <b>7 - Reasoning depth</b> — controls how much effort the model spends on internal reasoning before responding. The higher the value, the deeper and more detailed it “thinks,” but the slower and more expensive the response becomes. The lower it is, the faster and cheaper, but the responses are simpler.
 
-Feel free to experiment: if you don't like the results, you can always go back to the defaults."""
+Don’t be afraid to experiment: if you don’t like the result, you can always return to the defaults."""
 
     def get_image_filename(self, language: str) -> str:
         return "guide/guide_models.png" if language == "ru" else "guide/guide_models1.png"

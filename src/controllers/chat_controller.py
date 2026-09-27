@@ -16,15 +16,20 @@ from domain.conversation_message_ids import ConversationMessageIds
 from core.executors import Pools, PoolSaturated, executors
 from core.services import use
 from managers.task_manager import TaskStatus
+from managers.unity_retry_store import UnityRetryStore
 from core.request_policy import RequestPolicy, resolve_policy
 from core.performance_trace import get_trace, perf_mark, perf_mark_once, performance_traces
+from core.trace_context import trace_scope
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
     ChatGenerationResult,
+    ChatService,
     GenerationService,
     GenerationActivityService,
+    GameLinkService,
     PlayerMessageSource,
+    TaskService,
     parse_dialogue_turn_context,
     parse_player_message_source,
     DialogueRuntimeSource,
@@ -201,7 +206,7 @@ class StructuredJsonStreamFilter:
         return out
 
 
-class ChatController(GenerationActivityService):
+class ChatController(ChatService, GenerationActivityService):
     def __init__(self, settings):
         self.settings = settings
         self.event_bus = get_event_bus()
@@ -210,7 +215,7 @@ class ChatController(GenerationActivityService):
         # Реестр охватывает UI, игру и фоновые запросы, включая ожидающие очередь.
         # Токен нужен не только для статуса, но и для отмены конкретного HTTP-стрима.
         self._inflight_lock = threading.Lock()
-        self._active_generations: dict[str, CancellationToken] = {}
+        self._active_generations: dict[str, tuple[CancellationToken, str]] = {}
         self._player_message_source_lock = threading.Lock()
         self._last_player_message_source = PlayerMessageSource.NONE
 
@@ -219,6 +224,8 @@ class ChatController(GenerationActivityService):
         # Последний UI-запрос пользователя — для «отправить снова», когда
         # генерация упала и ход не попал в историю (write_turn не вызывался).
         self._last_ui_request: dict | None = None
+        self._ui_requests_by_message_id: dict[str, dict] = {}
+        UnityRetryStore.recover_interrupted_attempts()
         self._subscribe_to_events()
 
     @property
@@ -226,31 +233,169 @@ class ChatController(GenerationActivityService):
         with self._inflight_lock:
             return bool(self._active_generations)
 
-    def active_generation_count(self) -> int:
+    def active_generation_count(self, character_id: str | None = None) -> int:
         with self._inflight_lock:
+            if character_id is not None:
+                normalized_id = str(character_id or "")
+                return sum(
+                    1 for _token, active_character_id in self._active_generations.values()
+                    if active_character_id == normalized_id
+                )
             return len(self._active_generations)
 
-    def _register_generation(self, operation_id: str, token: CancellationToken) -> None:
+    def reply(
+        self,
+        *,
+        character_id: str,
+        message_id: str,
+        user_input: str = "",
+        system_input: str = "",
+        sender: str = "Player",
+        participants: list[str] | None = None,
+    ) -> bool:
+        target_message_id = str(message_id or "").strip()
+        if not target_message_id:
+            raise ValueError("ChatAPI.reply requires a non-empty message_id")
+        return self._submit_semantic_turn(
+            character_id=character_id,
+            user_input=user_input,
+            system_input=system_input,
+            event_type="chat",
+            sender=sender,
+            participants=participants,
+            origin_message_id=target_message_id,
+            policy=resolve_policy(model_event_type="chat"),
+        )
+
+    def react(
+        self,
+        *,
+        character_id: str,
+        instruction: str,
+        visible: bool = True,
+        sender: str = "Player",
+        participants: list[str] | None = None,
+    ) -> bool:
+        instruction = str(instruction or "").strip()
+        if not instruction:
+            raise ValueError("ChatAPI.react requires a non-empty instruction")
+        if not bool(self.settings.get("REACT_ENABLED", True)):
+            return False
+
+        react_level = 2 if visible else 1
+        level_key = "REACT_L2_ENABLED" if visible else "REACT_L1_ENABLED"
+        level_default = visible
+        if not bool(self.settings.get(level_key, level_default)):
+            return False
+
+        return self._submit_semantic_turn(
+            character_id=character_id,
+            system_input=instruction,
+            event_type="react",
+            sender=sender,
+            participants=participants,
+            policy=resolve_policy(model_event_type="react", react_level=react_level),
+        )
+
+    def initiate(
+        self,
+        *,
+        character_id: str,
+        instruction: str,
+        sender: str = "System",
+        participants: list[str] | None = None,
+    ) -> bool:
+        return self._submit_semantic_turn(
+            character_id=character_id,
+            system_input=str(instruction or ""),
+            event_type="chat",
+            sender=sender,
+            participants=participants,
+            policy=resolve_policy(model_event_type="chat"),
+        )
+
+    def _submit_semantic_turn(
+        self,
+        *,
+        character_id: str,
+        user_input: str = "",
+        system_input: str = "",
+        event_type: str,
+        sender: str,
+        participants: list[str] | None,
+        origin_message_id: str | None = None,
+        policy: RequestPolicy,
+    ) -> bool:
+        data = {
+            "character_id": str(character_id or ""),
+            "user_input": str(user_input or ""),
+            "system_input": str(system_input or ""),
+            "event_type": str(event_type or "chat"),
+            "sender": str(sender or "Player"),
+            "participants": list(participants or []),
+            "origin_message_id": origin_message_id,
+            "policy": policy.to_dict(),
+        }
+        trace_id = self._ensure_perf_trace(data)
+        self._submit_request(
+            user_input=data["user_input"],
+            system_input=data["system_input"],
+            image_data=[],
+            image_source="",
+            task_uid=None,
+            event_type=data["event_type"],
+            character_id=data["character_id"],
+            sender=data["sender"],
+            participants=self._normalize_participants(data["participants"]),
+            req_id=None,
+            origin_message_id=origin_message_id,
+            policy=data["policy"],
+            images_shown=False,
+            game_state=None,
+            dialogue=None,
+            dialogue_source=None,
+            player_message_source=PlayerMessageSource.NONE,
+            previous_player_message_source=PlayerMessageSource.NONE,
+            gm_instruction_override=None,
+            trace_id=trace_id,
+        )
+        return True
+
+    def _register_generation(self, operation_id: str, token: CancellationToken, character_id: str) -> None:
         with self._inflight_lock:
-            self._active_generations[operation_id] = token
+            normalized_id = str(character_id or "")
+            self._active_generations[operation_id] = (token, normalized_id)
             active_count = len(self._active_generations)
-        self._emit_generation_activity(active_count)
+            character_active_count = sum(
+                1 for _token, active_character_id in self._active_generations.values()
+                if active_character_id == normalized_id
+            )
+        self._emit_generation_activity(active_count, normalized_id, character_active_count)
 
     def _finish_generation(self, operation_id: str) -> None:
         with self._inflight_lock:
-            self._active_generations.pop(operation_id, None)
+            _token, character_id = self._active_generations.pop(operation_id, (None, ""))
             active_count = len(self._active_generations)
-        self._emit_generation_activity(active_count)
+            character_active_count = sum(
+                1 for _token, active_character_id in self._active_generations.values()
+                if active_character_id == character_id
+            )
+        self._emit_generation_activity(active_count, character_id, character_active_count)
 
-    def _emit_generation_activity(self, active_count: int) -> None:
+    def _emit_generation_activity(self, active_count: int, character_id: str = "", character_active_count: int = 0) -> None:
         self.event_bus.emit(
             Events.Chat.GENERATION_ACTIVITY_CHANGED,
-            {"active_count": active_count, "generating": active_count > 0},
+            {
+                "active_count": active_count,
+                "generating": active_count > 0,
+                "character_id": character_id,
+                "character_active_count": character_active_count,
+            },
         )
 
     def _on_cancel_active_generations(self, event: Event) -> int:
         with self._inflight_lock:
-            tokens = tuple(self._active_generations.values())
+            tokens = tuple(token for token, _character_id in self._active_generations.values())
         for token in tokens:
             token.cancel("Cancelled by user")
         return len(tokens)
@@ -336,7 +481,7 @@ class ChatController(GenerationActivityService):
     def _resolve_character_name(self, character_id: str | None) -> str:
         if not character_id:
             return ""
-        return use(CharacterRegistry).name_of(str(character_id))
+        return use(CharacterRegistry).display_name_of(str(character_id))
 
     def _run_request(
         self,
@@ -381,6 +526,13 @@ class ChatController(GenerationActivityService):
                 runtime_source = DialogueRuntimeSource.NONE
         if dialogue is not None and dialogue.conversation_id:
             self.dialogue_runtime_state.update_from_context(dialogue, runtime_source)
+        surface_character_ids = self._normalize_participants(list(participants or []))
+        normalized_character_id = str(character_id or "").strip()
+        if normalized_character_id and not any(
+            item.casefold() == normalized_character_id.casefold()
+            for item in surface_character_ids
+        ):
+            surface_character_ids.append(normalized_character_id)
         trace_status = "ok"
         trace_error_stage = ""
         trace_error_type = ""
@@ -427,6 +579,7 @@ class ChatController(GenerationActivityService):
                         "chunk": text,
                         "role": role,
                         "character_id": character_id or "",
+                        "surface_character_ids": surface_character_ids,
                     }, delivery=EventDelivery.ORDERED)
 
             stream_coalescer = TextDeltaCoalescer(append_stream_chunk) if is_streaming else None
@@ -447,6 +600,7 @@ class ChatController(GenerationActivityService):
                             "character_name": effective_character_name,
                             "speaker_name": effective_character_name,
                             "role": "think",
+                            "surface_character_ids": surface_character_ids,
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "think"
                         stream_started = True
@@ -471,6 +625,7 @@ class ChatController(GenerationActivityService):
                             "character_name": effective_character_name,
                             "speaker_name": effective_character_name,
                             "role": "assistant",
+                            "surface_character_ids": surface_character_ids,
                         }, delivery=EventDelivery.ORDERED)
                         stream_current_role = "assistant"
                         stream_started = True
@@ -538,6 +693,7 @@ class ChatController(GenerationActivityService):
                     "emotion": "",
                     "character_id": character_id or "",
                     "message_id": system_message_id,
+                    "surface_character_ids": surface_character_ids,
                 }, delivery=EventDelivery.ORDERED)
 
             if image_data and eff_policy.echo_to_ui and not images_shown:
@@ -557,6 +713,7 @@ class ChatController(GenerationActivityService):
                     "emotion": "",
                     "character_id": character_id or "",
                     "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                    "surface_character_ids": surface_character_ids,
                 }, delivery=EventDelivery.ORDERED)
 
             result: ChatGenerationResult | None = use(GenerationService).generate_chat(
@@ -717,8 +874,15 @@ class ChatController(GenerationActivityService):
                     })
                 trace_status = "error"
                 trace_error_stage = "generation.empty_response"
-                if eff_policy.echo_to_ui and not getattr(result, "error", ""):
-                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": "Пустой ответ модели"})
+                if eff_policy.echo_to_ui:
+                    failed_event = {
+                        "error": generation_error,
+                        "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                        "character_id": str(character_id or ""),
+                    }
+                    if error_details:
+                        failed_event["error_details"] = error_details
+                    self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, failed_event)
                 return None
 
             effective_character_name = self._resolve_character_name(effective_character_id)
@@ -797,6 +961,7 @@ class ChatController(GenerationActivityService):
                     "character_id": effective_character_id or "",
                     "sample_id": sample_id or "",
                     "context_snapshot_id": context_snapshot_id or "",
+                    "surface_character_ids": surface_character_ids,
                 }
                 if structured_data:
                     finish_payload["structured_data"] = structured_data
@@ -821,6 +986,7 @@ class ChatController(GenerationActivityService):
                         "character_name": effective_character_name or "",
                         "speaker_name": effective_character_name or "",
                         "message_id": assistant_message_id or "",
+                        "surface_character_ids": surface_character_ids,
                     }, delivery=EventDelivery.ORDERED)
                 self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
                     "role": "assistant",
@@ -834,6 +1000,7 @@ class ChatController(GenerationActivityService):
                     "message_id": assistant_message_id,
                     "sample_id": sample_id or "",
                     "context_snapshot_id": context_snapshot_id or "",
+                    "surface_character_ids": surface_character_ids,
                 }, delivery=EventDelivery.ORDERED)
                 perf_mark(trace_id, "response.ui_complete")
             self.event_bus.emit(Events.GUI.UPDATE_STATUS)
@@ -865,7 +1032,11 @@ class ChatController(GenerationActivityService):
                     "error": format_exception(e)
                 })
             if eff_policy and eff_policy.echo_to_ui:
-                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": f"Ошибка: {format_exception(e)[:50]}..."})
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": f"Ошибка: {format_exception(e)[:50]}...",
+                    "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                    "character_id": str(character_id or ""),
+                })
             return None
         finally:
             if stream_coalescer is not None:
@@ -896,27 +1067,31 @@ class ChatController(GenerationActivityService):
         """Ставит запрос в пул генераций. Переполнение — явный отказ, а не рост очереди."""
         task_uid = kwargs.get("task_uid")
         trace_id = kwargs.get("trace_id")
-        operation_id = str(trace_id or uuid.uuid4().hex)
-        cancellation = CancellationToken()
-        kwargs["operation_id"] = operation_id
-        kwargs["cancellation"] = cancellation
-        self._register_generation(operation_id, cancellation)
-        perf_mark(trace_id, "generation.enqueued")
-        try:
-            executors().try_submit(Pools.GENERATION, self._run_request, **kwargs)
-        except PoolSaturated:
-            self._finish_generation(operation_id)
-            performance_traces().finish(trace_id, "rejected", error_stage="generation.pool", error_type="PoolSaturated")
-            logger.warning("Очередь генераций переполнена — запрос отклонён.")
-            if task_uid:
-                self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
-                    "uid": task_uid,
-                    "status": TaskStatus.FAILED_ON_GENERATION,
-                    "error": "Generation queue is full",
+        with trace_scope(trace_id):
+            operation_id = str(trace_id or uuid.uuid4().hex)
+            cancellation = CancellationToken()
+            kwargs["operation_id"] = operation_id
+            kwargs["cancellation"] = cancellation
+            self._register_generation(operation_id, cancellation, str(kwargs.get("character_id") or ""))
+            perf_mark(trace_id, "generation.enqueued")
+            try:
+                executors().try_submit(Pools.GENERATION, self._run_request, **kwargs)
+            except PoolSaturated:
+                self._finish_generation(operation_id)
+                performance_traces().finish(trace_id, "rejected", error_stage="generation.pool", error_type="PoolSaturated")
+                logger.warning("Очередь генераций переполнена — запрос отклонён.")
+                if task_uid:
+                    self.event_bus.emit(Events.Task.UPDATE_TASK_STATUS, {
+                        "uid": task_uid,
+                        "status": TaskStatus.FAILED_ON_GENERATION,
+                        "error": "Generation queue is full",
+                    })
+                req_id = str(kwargs.get("req_id") or "").strip()
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": "Слишком много запросов одновременно. Подождите ответа.",
+                    "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                    "character_id": str(kwargs.get("character_id") or ""),
                 })
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": "Слишком много запросов одновременно. Подождите ответа."
-            })
 
     def _ensure_perf_trace(self, data: dict) -> str:
         trace_id = str(data.get("trace_id") or "").strip() or None
@@ -952,17 +1127,43 @@ class ChatController(GenerationActivityService):
         data = event.data or {}
         image_data = data.get("image_data", [])
         trace_id = self._ensure_perf_trace(data)
-        player_message_source, previous_player_message_source = (
-            self._resolve_player_message_source_transition(
-                data.get("player_message_source")
+        if "previous_player_message_source" in data:
+            player_message_source = parse_player_message_source(data.get("player_message_source"))
+            previous_player_message_source = parse_player_message_source(
+                data.get("previous_player_message_source")
             )
-        )
+        else:
+            player_message_source, previous_player_message_source = (
+                self._resolve_player_message_source_transition(
+                    data.get("player_message_source")
+                )
+            )
 
         # Запоминаем ручную отправку пользователя (без task_uid — это не игровой/
         # телеграм-ход), чтобы кнопка «отправить снова» на упавшем пузыре могла
         # повторить ровно тот же запрос. Копия — чтобы вызывающий не менял её потом.
-        if not data.get("task_uid") and str(data.get("event_type") or "chat") == "chat":
+        req_id = str(data.get("req_id") or "").strip()
+        retry_message_id = str(data.get("unity_retry_message_id") or "")
+        if retry_message_id:
+            current_source = player_message_source.value
+            previous_source = previous_player_message_source.value
+            if not UnityRetryStore.update_request_context(
+                str(self._normalize_character_id(data) or ""),
+                retry_message_id,
+                player_message_source=current_source,
+                previous_player_message_source=previous_source,
+            ):
+                logger.error("Could not persist Unity retry source context %s", retry_message_id)
+        if (
+            req_id
+            and not data.get("task_uid")
+            and str(data.get("event_type") or "chat") == "chat"
+        ):
             self._last_ui_request = dict(data)
+            message_id = ConversationMessageIds.incoming(req_id)
+            self._ui_requests_by_message_id[message_id] = dict(data)
+            while len(self._ui_requests_by_message_id) > 256:
+                self._ui_requests_by_message_id.pop(next(iter(self._ui_requests_by_message_id)))
 
         if image_data:
             self.event_bus.emit(Events.Capture.UPDATE_LAST_IMAGE_REQUEST_TIME)
@@ -1012,6 +1213,9 @@ class ChatController(GenerationActivityService):
             result["memory_update"] = structured_data.get("memory_update", [])
             result["memory_delete"] = structured_data.get("memory_delete", [])
             result["memory_merge"] = structured_data.get("memory_merge", [])
+            result["reminder_add"] = structured_data.get("reminder_add", [])
+            result["reminder_delete"] = structured_data.get("reminder_delete", [])
+            result["timer_add"] = structured_data.get("timer_add", [])
             result["structured_parse_level"] = structured_parse_level
             result["control_plane_trusted"] = bool(control_plane_trusted)
         return result
@@ -1138,17 +1342,162 @@ class ChatController(GenerationActivityService):
             self.event_bus.emit(Events.GUI.RELOAD_CHAT_HISTORY)
 
     def _on_retry_last(self, event: Event):
-        """Повторно отправить последний упавший запрос пользователя.
+        """Повторно отправить выбранный упавший запрос пользователя.
 
         Пузырь пользователя уже нарисован (эхо делает app_shell при исходной
         отправке), а в историю ход не попал — поэтому просто пере-отправляем
         сохранённый запрос. Дубля пузыря не будет: путь SEND_MESSAGE сам эхо не
         рисует, а image-пузыри защищены флагом images_shown из исходной отправки.
         """
-        if not self._last_ui_request:
-            logger.warning("[ChatController] RETRY_LAST: нет сохранённого запроса для повтора")
+        data = event.data if isinstance(event.data, dict) else {}
+        message_id = str(data.get("message_id") or "")
+        character_id = str(data.get("character_id") or "")
+        request = self._ui_requests_by_message_id.get(message_id) if message_id else None
+        if message_id and request is None:
+            executors().submit(
+                Pools.IO,
+                self._retry_unity_request,
+                character_id,
+                message_id,
+            )
             return
-        self.event_bus.emit(Events.Chat.SEND_MESSAGE, dict(self._last_ui_request))
+        if not message_id:
+            # Совместимость со старым вызовом без id: тогда доступен только
+            # прежний сценарий «повторить последний запрос».
+            request = self._last_ui_request
+        if not request:
+            logger.warning("[ChatController] RETRY_LAST: нет сохранённого запроса для повтора")
+            if message_id:
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": "Исходные данные запроса недоступны, повторить его нельзя.",
+                    "message_id": message_id,
+                    "character_id": character_id,
+                })
+            return
+        if message_id:
+            self.event_bus.emit(Events.GUI.CLEAR_CHAT_MESSAGE_ERROR, {
+                "message_id": message_id,
+                "character_id": str(data.get("character_id") or request.get("character_id") or ""),
+            })
+        self.event_bus.emit(Events.Chat.SEND_MESSAGE, dict(request))
+
+    def _retry_unity_request(self, character_id: str, message_id: str) -> None:
+        task = None
+        claimed = None
+        try:
+            claimed = UnityRetryStore.claim(character_id, message_id)
+            if claimed is None:
+                existing = UnityRetryStore.get(character_id, message_id)
+                if existing is None:
+                    self._show_unity_retry_error(
+                        "Данные Unity-запроса не сохранены или устарели; повтор невозможен.",
+                        message_id,
+                        character_id,
+                    )
+                elif existing.get("status") == "unretryable":
+                    self._show_unity_retry_error(
+                        str(existing.get("error") or "Повреждены данные исходного запроса."),
+                        message_id,
+                        character_id,
+                    )
+                elif existing.get("status") in UnityRetryStore.RETRYABLE_STATUSES:
+                    self._show_unity_retry_error(
+                        "Не удалось сохранить состояние повтора. Попробуйте ещё раз.",
+                        message_id,
+                        character_id,
+                    )
+                return
+
+            prior_status = str(claimed.get("claimed_from_status") or "needs_generation")
+            owner = str(use(GameLinkService).player_turn_owner() or "")
+            if not owner:
+                self._release_unity_retry_claim(
+                    character_id,
+                    message_id,
+                    prior_status,
+                    "Подключите игру, чтобы повторить запрос.",
+                )
+                self._show_unity_retry_error("Подключите игру, чтобы повторить запрос.", message_id, character_id)
+                return
+
+            stored_task_data = dict(claimed.get("task_data") or {})
+            stored_task_data["client_id"] = owner
+            stored_task_data["unity_retry_message_id"] = message_id
+            task_type = str(claimed.get("task_type") or "chat")
+            task = use(TaskService).create_task(task_type, stored_task_data)
+            if task is None or not getattr(task, "uid", None):
+                raise RuntimeError("Не удалось создать игровую задачу для повтора")
+            if not UnityRetryStore.set_active_task(character_id, message_id, task.uid):
+                raise RuntimeError("Не удалось связать повтор с новой игровой задачей")
+            self.event_bus.emit(Events.GUI.CLEAR_CHAT_MESSAGE_ERROR, {
+                "message_id": message_id,
+                "character_id": character_id,
+            })
+
+            if prior_status == "generated_pending_delivery":
+                result = claimed.get("result")
+                if not isinstance(result, dict):
+                    raise RuntimeError("Сохранённый ответ повреждён; повторная генерация отключена")
+                if use(TaskService).update_task_status(task.uid, TaskStatus.SUCCESS, result=result) is None:
+                    raise RuntimeError("Не удалось создать задачу доставки сохранённого ответа")
+                return
+
+            self.event_bus.emit(Events.Server.SEND_TASK_UPDATE, {"task": task})
+
+            request = dict(claimed.get("request") or {})
+            request["task_uid"] = task.uid
+            request["client_id"] = owner
+            request["unity_retry_message_id"] = message_id
+            request["images_shown"] = True
+            request["event_type"] = "chat"
+            self.event_bus.emit(Events.Chat.SEND_MESSAGE, request)
+        except Exception as exc:
+            if task is not None and getattr(task, "uid", None):
+                try:
+                    use(TaskService).update_task_status(
+                        task.uid,
+                        TaskStatus.ABORTED,
+                        error=str(exc),
+                    )
+                except Exception:
+                    logger.exception("Failed to abort orphan Unity retry task %s", task.uid)
+            self._release_unity_retry_claim(
+                character_id,
+                message_id,
+                str((claimed or {}).get("claimed_from_status") or "needs_generation"),
+                str(exc),
+            )
+            logger.exception("Failed to retry Unity request %s", message_id)
+            self._show_unity_retry_error(str(exc), message_id, character_id)
+
+    @staticmethod
+    def _release_unity_retry_claim(
+        character_id: str,
+        message_id: str,
+        prior_status: str,
+        error: str,
+    ) -> None:
+        released_status = (
+            "generated_pending_delivery"
+            if prior_status == "generated_pending_delivery"
+            else "needs_generation"
+        )
+        if not UnityRetryStore.transition(
+            character_id,
+            message_id,
+            expected_statuses={"generating", "delivery_retrying"},
+            status=released_status,
+            error=error,
+            task_uid="",
+        ):
+            logger.error("Could not release Unity retry claim %s", message_id)
+
+    def _show_unity_retry_error(self, error: str, message_id: str, character_id: str) -> None:
+        self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+            "error": error,
+            "message_id": message_id,
+            "character_id": character_id,
+        })
 
     def _on_regenerate(self, event: Event):
         data = event.data or {}

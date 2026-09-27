@@ -33,6 +33,43 @@ from handlers.llm_providers.streaming import StreamAccumulator, iter_sse_data, t
 REASONING_EFFORT_LEVELS = ("low", "medium", "high")
 
 
+def _next_response_format_fallback(payload: Dict[str, Any], error_message: str):
+    """Return the next narrower response-format attempt for compatible APIs."""
+    message = str(error_message or "").lower()
+    explicit_format_error = any(
+        signal in message
+        for signal in (
+            "response_format",
+            "response_schema",
+            "json_schema",
+            "json_object",
+        )
+    )
+    unsupported_terms = ("unsupported", "not supported", "does not support", "not allowed")
+    schema_error = (
+        any(signal in message for signal in ("schema", "properties", "structured"))
+        and any(term in message for term in unsupported_terms)
+    )
+    generation_schema_error = (
+        "generation_config" in message
+        and any(signal in message for signal in ("schema", "properties"))
+    )
+    if not (explicit_format_error or schema_error or generation_schema_error):
+        return None
+
+    response_format = payload.get("response_format")
+    if not isinstance(response_format, dict):
+        return None
+    mode = response_format.get("type")
+    if mode == "json_schema":
+        return {"type": "json_object"}
+    if mode == "json_object":
+        return {}
+    if isinstance(response_format.get("json_schema"), dict):
+        return {"type": "json_object"}
+    return None
+
+
 class OpenAIHTTPProviderBase(BaseProvider):
     supports_tools_native = True
     supports_streaming = True
@@ -181,7 +218,7 @@ class OpenAIHTTPProviderBase(BaseProvider):
 
     def _supports_structured_output(self, req: LLMRequest) -> bool:
         caps = req.capabilities or {}
-        return bool(caps.get("structured_output", False))
+        return bool(caps.get("structured_output", False) and caps.get("native_structured_output", True))
 
     def _resolve_request_url(self, req: LLMRequest) -> str:
         url = str(req.api_url or "").strip()
@@ -219,8 +256,12 @@ class OpenAIHTTPProviderBase(BaseProvider):
         }
         if req.stream and self.should_request_stream_usage(req):
             payload["stream_options"] = {"include_usage": True}
-        payload.update(self._map_unified_params(req.extra or {}, model_to_use))
-        self._apply_reasoning(payload, req)
+        if req.native_parameters is None:
+            payload.update(self._map_unified_params(req.extra or {}, model_to_use))
+            self._apply_reasoning(payload, req)
+        else:
+            from copy import deepcopy
+            payload.update(deepcopy(req.native_parameters))
 
         if req.protocol_id == "openrouter_default":
             routing = normalize_openrouter_routing((req.extra or {}).get("openrouter_routing"))
@@ -244,8 +285,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
                 # intents is an internal Unity channel — hidden from the model
-                # unless the selected DSL main template explicitly enables support_intents.
-                if not caps.get("schema_intents", False):
+                # unless PromptController has enabled intents for this request.
+                if not caps.get("schema_intents", True):
                     segment_excl.add("intents")
                 payload["response_format"] = model_cls.openai_response_format(
                     exclude_fields=excl or None,
@@ -273,7 +314,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             logger.error(f"[{self.name}] Too deep tool recursion.")
             return LLMResponse(
                 text=None,
-                provider_name=self.name,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
                 error_message="Too deep tool recursion.",
             )
 
@@ -302,21 +344,31 @@ class OpenAIHTTPProviderBase(BaseProvider):
         if resp.status_code == 400 and self._supports_structured_output(req):
             if req.stream:
                 resp.read()
-            rf_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
-            if rf_mode != "json_object" and "response_format" in payload:
+            initial_mode = (req.capabilities or {}).get("structured_output_mode", "json_schema")
+            fallback_count = 1 if initial_mode == "json_object" else 0
+            while resp.status_code == 400 and fallback_count < 2 and "response_format" in payload:
+                if req.stream:
+                    resp.read()
                 try:
                     err_body = resp.json()
                 except Exception:
                     err_body = {}
                 err_msg = str(err_body)
-                if "response_format" in err_msg or "json_schema" in err_msg or "json_object" in err_msg:
-                    logger.warning(
-                        f"[{self.name}] json_schema rejected by provider, retrying with json_object. "
-                        f"Error: {err_msg[:200]}"
-                    )
-                    payload["response_format"] = {"type": "json_object"}
-                    resp.close()
-                    resp = self._request(request_url, req, payload)
+                next_format = _next_response_format_fallback(payload, err_msg)
+                if next_format is None:
+                    break
+                label = next_format.get("type", "no response_format")
+                logger.warning(
+                    f"[{self.name}] response_format rejected by provider, retrying with {label}. "
+                    f"Error: {err_msg[:200]}"
+                )
+                if next_format:
+                    payload["response_format"] = next_format
+                else:
+                    payload.pop("response_format", None)
+                resp.close()
+                resp = self._request(request_url, req, payload)
+                fallback_count += 1
 
         if resp.status_code != 200:
             if req.stream:
@@ -407,7 +459,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
                 text=None,
                 usage=self._extract_usage(data, request_url),
                 model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
-                provider_name=self.name,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
                 finish_reason=finish_reason,
                 error_message=error_message,
                 raw=data if isinstance(data, dict) else {},
@@ -417,7 +470,8 @@ class OpenAIHTTPProviderBase(BaseProvider):
             text=content.strip() if content else None,
             usage=self._extract_usage(data, request_url),
             model=(data.get("model") if isinstance(data, dict) else None) or model_to_use,
-            provider_name=self.name,
+            provider_name=req.provider_name or self.name,
+            provider_display_name=req.provider_display_name or req.provider_name or self.name,
             finish_reason=finish_reason,
             raw=data if isinstance(data, dict) else {},
             reasoning=reasoning.strip() or None,

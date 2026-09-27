@@ -58,7 +58,7 @@ class StructuredResponseSandboxTests(unittest.TestCase):
 
     def test_default_schema_keeps_remote_excluded_fields(self):
         schema = StructuredResponse.openai_response_format()["json_schema"]["schema"]
-        segment_properties = schema["$defs"]["ResponseSegment"]["properties"]
+        segment_properties = schema["properties"]["segments"]["items"]["properties"]
 
         self.assertTrue(self._EXCLUDED.issubset(segment_properties))
 
@@ -66,7 +66,7 @@ class StructuredResponseSandboxTests(unittest.TestCase):
         schema = StructuredResponse.openai_response_format(
             exclude_segment_fields=self._EXCLUDED,
         )["json_schema"]["schema"]
-        segment_properties = schema["$defs"]["ResponseSegment"]["properties"]
+        segment_properties = schema["properties"]["segments"]["items"]["properties"]
 
         self.assertTrue(self._EXCLUDED.isdisjoint(segment_properties))
         self.assertIn("commands", segment_properties)

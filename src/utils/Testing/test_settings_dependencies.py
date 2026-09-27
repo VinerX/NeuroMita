@@ -61,6 +61,32 @@ class SettingsDependenciesTests(unittest.TestCase):
             binding.close()
             settings.close()
 
+    def test_persisted_enabled_games_make_child_rows_visually_active(self) -> None:
+        settings = SettingsRegistry({"ENABLE_GAMES": True, "ENABLE_GAME_CHESS": True})
+        binding = QtSettingsViewModel(settings)
+        gui = _SettingsGui(binding)
+        layout = QVBoxLayout(gui)
+        try:
+            layout.addWidget(
+                create_setting_widget(
+                    gui, gui, "Enable games", setting_key="ENABLE_GAMES",
+                    widget_type="checkbutton", widget_name="ENABLE_GAMES",
+                )
+            )
+            chess_row = create_setting_widget(
+                gui, gui, "Chess", setting_key="ENABLE_GAME_CHESS",
+                widget_type="checkbutton", widget_name="ENABLE_GAME_CHESS",
+                depends_on="ENABLE_GAMES",
+            )
+            layout.addWidget(chess_row)
+
+            self.assertTrue(gui.ENABLE_GAMES.isChecked())
+            self.assertTrue(gui.ENABLE_GAME_CHESS.isEnabled())
+            self.assertEqual(chess_row.property("disabled"), "false")
+        finally:
+            binding.close()
+            settings.close()
+
     def test_manual_game_buttons_follow_global_and_per_game_switches(self) -> None:
         gui = QWidget()
         gui.ENABLE_GAMES = QCheckBox()

@@ -1,390 +1,424 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize, QStringListModel
+from PyQt6.QtCore import Qt, QSize, QStringListModel, QTimer, QRect, QRectF
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton,
-    QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox, QLineEdit
+    QToolButton, QComboBox, QSizePolicy, QCompleter, QTextEdit, QCheckBox,
+    QLineEdit, QScrollArea, QSplitter, QTabWidget,
 )
+from PyQt6.QtGui import QPainter, QPainterPath, QPalette, QColor
 import qtawesome as qta
 
 from utils import _
-from localization.live import tr_set, register_if_tr
+from localization.live import tr_set, register_if_tr, register
+from styles.theme import THEME
+from .model_settings_form import ModelSettingsForm
 from .widgets import (
-    ProviderDelegate,
-    PresetsListWidget,
-    LabeledLineEditRow,
-    LabeledTextEditRow,
-    LabeledComboRow,
-    FallbackChainEditor,
-    ReserveKeysEditor,
+    ProviderDelegate, PresetsListWidget, LabeledLineEditRow, LabeledComboRow,
+    FallbackChainEditor, ReserveKeysEditor,
 )
-from ui.gui_templates import create_section_header, SettingsBodyWidget
+from ui.provider_icons import provider_icon
 from ui.widgets.tr_combobox import TRQComboBox
 from ui.widgets.settings_sections import CollapsibleSection
 
 
+class ApiWorkspaceSplitter(QSplitter):
+    def __init__(self):
+        super().__init__(Qt.Orientation.Horizontal)
+        self.setObjectName("ApiWorkspaceSplitter")
+        self.setChildrenCollapsible(False)
+        self.setHandleWidth(9)
+        self._initialised = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initialised:
+            self._initialised = True
+            QTimer.singleShot(0, self._set_initial_sizes)
+
+    def _set_initial_sizes(self):
+        width = max(1, self.width() - self.handleWidth())
+        self.setSizes([width // 3, width - width // 3])
+        self.setStretchFactor(0, 1)
+        self.setStretchFactor(1, 1)
+
+
+class ApiTemplateCombo(TRQComboBox):
+    def add_provider_item(self, text, *, value, provider):
+        self.add_data_item(text, value=value)
+        self.setItemIcon(self.count() - 1, provider_icon(provider))
+
+
+class ApiEditorTabs(QTabWidget):
+    def __init__(self):
+        super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.currentChanged.connect(self.updateGeometry)
+
+    def minimumSizeHint(self):
+        return QSize(0, 110)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(QRect(0, 0, self.width(), self.tabBar().height()))
+        header = QPainterPath()
+        header.addRoundedRect(QRectF(0, 0, self.width(), self.tabBar().height() + 11), 11, 11)
+        painter.fillPath(header, QColor(THEME["bg_root"]))
+        painter.end()
+
+
+class ApiField(QWidget):
+    def __init__(self, title, *, password=False):
+        super().__init__()
+        self._base_label = str(title)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.heading = QHBoxLayout()
+        self.label = QLabel(title)
+        register_if_tr(self.label, title)
+        self.heading.addWidget(self.label)
+        self.heading.addStretch(1)
+        layout.addLayout(self.heading)
+        self.input_layout = QHBoxLayout()
+        self.input_layout.setSpacing(6)
+        self.edit = QLineEdit()
+        self.edit.setMinimumHeight(40)
+        if password:
+            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_layout.addWidget(self.edit, 1)
+        layout.addLayout(self.input_layout)
+
+    def set_text(self, value):
+        self.edit.setText(str(value or ""))
+
+    def text(self):
+        return self.edit.text()
+
+    def set_enabled(self, enabled):
+        self.edit.setEnabled(enabled)
+
+    def set_dirty(self, dirty):
+        self.label.setProperty("dirty", bool(dirty))
+        self.label.style().unpolish(self.label)
+        self.label.style().polish(self.label)
+
+
+def _link_label():
+    label = QLabel()
+    label.setObjectName("LinkLabel")
+    label.setOpenExternalLinks(True)
+    label.hide()
+    return label
+
+
+def _button(ru, en, icon, name=""):
+    button = tr_set(QPushButton(), ru, en)
+    button.setIcon(qta.icon(icon, color=THEME["text"]))
+    button.setObjectName(name)
+    button.setFixedHeight(40)
+    button.setMinimumWidth(110)
+    button.setIconSize(QSize(14, 14))
+    return button
+
+
 def build_api_settings_ui(self, parent_layout):
-    main_container = SettingsBodyWidget()
-    main_layout = QVBoxLayout(main_container)
-    main_layout.setContentsMargins(0, 0, 0, 0)
-    main_layout.setSpacing(8)
+    root = QWidget()
+    root.setObjectName("ApiSettingsWorkspace")
+    root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    layout = QVBoxLayout(root)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(14)
 
-    create_section_header(main_layout, _("API пресеты", "API presets"))
+    heading = QHBoxLayout()
+    titles = QVBoxLayout()
+    titles.setSpacing(4)
+    title = tr_set(QLabel(), "API пресеты", "API presets")
+    title.setObjectName("ApiSettingsTitle")
+    titles.addWidget(title)
+    subtitle = tr_set(QLabel(), "Управление подключениями к провайдерам и настройками моделей.",
+                      "Manage provider connections and model settings.")
+    subtitle.setObjectName("ApiSettingsSubtitle")
+    subtitle.setWordWrap(True)
+    titles.addWidget(subtitle)
+    heading.addLayout(titles, 1)
+    self.add_preset_btn = _button("Добавить пресет", "Add preset", "fa5s.plus", "ApiAddPresetButton")
 
-    separator = QFrame()
-    separator.setFrameShape(QFrame.Shape.HLine)
-    separator.setFrameShadow(QFrame.Shadow.Sunken)
-    separator.setObjectName("SeparatorH")
-    main_layout.addWidget(separator)
+    layout.addLayout(heading)
 
-    # --- presets panel ---
-    custom_presets_frame = QFrame()
-    custom_presets_frame.setObjectName("PresetsPanel")
-    custom_presets_frame.setFixedHeight(160)
+    workspace = QFrame()
+    workspace.setObjectName("ApiWorkspacePanel")
+    workspace_layout = QVBoxLayout(workspace)
+    workspace_layout.setContentsMargins(1, 1, 1, 1)
+    self.api_workspace_splitter = ApiWorkspaceSplitter()
+    workspace_layout.addWidget(self.api_workspace_splitter)
+    layout.addWidget(workspace, 1)
 
-    presets_layout = QHBoxLayout(custom_presets_frame)
-    presets_layout.setContentsMargins(8, 8, 8, 8)
-    presets_layout.setSpacing(10)
-
+    sidebar = QFrame()
+    sidebar.setObjectName("ApiPresetSidebar")
+    sidebar.setMinimumWidth(310)
+    sidebar_layout = QVBoxLayout(sidebar)
+    sidebar_layout.setContentsMargins(10, 14, 10, 10)
+    sidebar_layout.setSpacing(10)
+    preset_tools = QHBoxLayout()
+    preset_tools.setSpacing(10)
+    self.preset_search = QLineEdit()
+    self.preset_search.setObjectName("ApiPresetSearch")
+    self.preset_search.setFixedHeight(40)
+    tr_set(self.preset_search, "Поиск пресетов...", "Search presets...", "setPlaceholderText")
+    self.preset_search.addAction(qta.icon("fa5s.search", color=THEME["muted"]), QLineEdit.ActionPosition.LeadingPosition)
+    preset_tools.addWidget(self.preset_search, 1)
+    preset_tools.addWidget(self.add_preset_btn)
+    sidebar_layout.addLayout(preset_tools)
     self.custom_presets_list = PresetsListWidget()
-    self.custom_presets_list.setObjectName("PresetsList")
+    self.custom_presets_list.setObjectName("ApiPresetCards")
+    self.custom_presets_list.setFrameShape(QFrame.Shape.NoFrame)
+    self.custom_presets_list.setStyleSheet("QListWidget {background: transparent; border: none; padding: 0;} QListWidget::item {padding: 0; border: none;}")
     self.custom_presets_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-    presets_layout.addWidget(self.custom_presets_list, 1)
+    sidebar_layout.addWidget(self.custom_presets_list, 1)
+    self.preset_search.textChanged.connect(lambda text: _filter_presets(self.custom_presets_list, text))
+    self.api_workspace_splitter.addWidget(sidebar)
 
-    buttons_grid = QGridLayout()
-    buttons_grid.setContentsMargins(0, 0, 0, 0)
-    buttons_grid.setHorizontalSpacing(6)
-    buttons_grid.setVerticalSpacing(6)
+    editor_panel = QFrame()
+    editor_panel.setObjectName("ApiEditorPanel")
+    editor_panel.setMinimumWidth(0)
+    editor_layout = QVBoxLayout(editor_panel)
+    editor_layout.setContentsMargins(4, 0, 0, 0)
+    editor_layout.setSpacing(14)
+    editor_header = QFrame()
+    editor_header.setObjectName("ApiEditorHeader")
+    toolbar = QHBoxLayout(editor_header)
+    toolbar.setContentsMargins(18, 12, 18, 12)
+    toolbar.setSpacing(12)
+    self.preset_provider_icon = QLabel()
+    self.preset_provider_icon.setFixedSize(42, 42)
+    self.preset_provider_icon.setPixmap(provider_icon("").pixmap(38, 38))
+    toolbar.addWidget(self.preset_provider_icon)
+    caption = QVBoxLayout()
+    caption.setContentsMargins(0, 0, 0, 0)
+    caption.setSpacing(2)
+    caption.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+    self.provider_label = tr_set(QLabel(), "Настройки пресета", "Preset settings")
+    self.provider_label.setObjectName("ApiPresetName")
+    self.provider_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    self.api_type_label = QLabel()
+    self.api_type_label.setObjectName("ApiSettingsSubtitle")
+    self.api_type_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    name_heading = QHBoxLayout()
+    name_heading.setContentsMargins(0, 0, 0, 0)
+    name_heading.setSpacing(6)
+    name_heading.addWidget(self.provider_label)
+    self.preset_active_tag = tr_set(QLabel(), "Активен", "Active")
+    self.preset_active_tag.setObjectName("ApiActiveTag")
+    self.preset_active_tag.setFixedHeight(24)
+    self.preset_active_tag.hide()
+    name_heading.addWidget(self.preset_active_tag)
+    name_heading.addStretch(1)
+    caption.addLayout(name_heading)
+    caption.addWidget(self.api_type_label)
+    toolbar.addLayout(caption, 1)
+    self.test_button = _button("Проверить", "Check", "fa5s.link", "ApiCheckButton")
+    register(self.test_button, lambda button: button.setText(
+        str(_("Проверка…", "Checking…") if button.property("apiTesting") else _("Проверить", "Check"))
+    ))
+    self.save_preset_button = _button("Сохранить", "Save", "fa5s.save", "ApiSaveButton")
+    self.save_preset_button.setEnabled(False)
+    self.cancel_button = _button("Отменить", "Cancel", "fa5s.undo")
+    self.cancel_button.hide()
+    for button in (self.test_button, self.cancel_button, self.save_preset_button):
+        toolbar.addWidget(button)
+    editor_layout.addWidget(editor_header)
 
-    self.add_preset_btn = QPushButton()
-    self.add_preset_btn.setObjectName("AddPresetButton")
-    self.add_preset_btn.setIcon(qta.icon('fa5s.plus', color='#e6e6e6'))
-    tr_set(self.add_preset_btn, "Добавить пресет", "Add preset", "setToolTip")
-    self.add_preset_btn.setFixedSize(28, 28)
-    self.add_preset_btn.setIconSize(QSize(14, 14))
+    scroll = QScrollArea()
+    scroll.setObjectName("ApiEditorScroll")
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    self.api_settings_container = ApiEditorTabs()
+    self.api_settings_container.setObjectName("ApiEditorTabs")
+    self.api_settings_container.setDocumentMode(False)
+    self.api_settings_container.tabBar().setDrawBase(False)
+    connection_body = QWidget()
+    connection_body.setObjectName("ApiEditorContent")
+    content = QVBoxLayout(connection_body)
+    content.setContentsMargins(20, 20, 20, 20)
+    content.setSpacing(16)
 
-    self.remove_preset_btn = QPushButton()
-    self.remove_preset_btn.setObjectName("RemovePresetButton")
-    self.remove_preset_btn.setIcon(qta.icon('fa5s.minus', color='#e6e6e6'))
-    tr_set(self.remove_preset_btn, "Удалить пресет", "Remove preset", "setToolTip")
-    self.remove_preset_btn.setEnabled(False)
-    self.remove_preset_btn.setFixedSize(28, 28)
-    self.remove_preset_btn.setIconSize(QSize(14, 14))
-
-    self.rename_preset_btn = QPushButton()
-    self.rename_preset_btn.setObjectName("RenamePresetButton")
-    self.rename_preset_btn.setIcon(qta.icon('fa5s.pen', color='#e6e6e6'))
-    tr_set(self.rename_preset_btn, "Переименовать пресет", "Rename preset", "setToolTip")
-    self.rename_preset_btn.setEnabled(False)
-    self.rename_preset_btn.setFixedSize(28, 28)
-    self.rename_preset_btn.setIconSize(QSize(14, 14))
-
-    self.copy_preset_btn = QPushButton()
-    self.copy_preset_btn.setObjectName("CopyPresetButton")
-    self.copy_preset_btn.setIcon(qta.icon('fa5s.copy', color='#e6e6e6'))
-    tr_set(self.copy_preset_btn, "Скопировать пресет", "Copy preset", "setToolTip")
-    self.copy_preset_btn.setEnabled(False)
-    self.copy_preset_btn.setFixedSize(28, 28)
-    self.copy_preset_btn.setIconSize(QSize(14, 14))
-
-    self.move_up_btn = QPushButton()
-    self.move_up_btn.setObjectName("MoveUpButton")
-    self.move_up_btn.setIcon(qta.icon('fa5s.arrow-up', color='#e6e6e6'))
-    tr_set(self.move_up_btn, "Переместить вверх", "Move up", "setToolTip")
-    self.move_up_btn.setEnabled(False)
-    self.move_up_btn.setFixedSize(28, 28)
-    self.move_up_btn.setIconSize(QSize(14, 14))
-
-    self.move_down_btn = QPushButton()
-    self.move_down_btn.setObjectName("MoveDownButton")
-    self.move_down_btn.setIcon(qta.icon('fa5s.arrow-down', color='#e6e6e6'))
-    tr_set(self.move_down_btn, "Переместить вниз", "Move down", "setToolTip")
-    self.move_down_btn.setEnabled(False)
-    self.move_down_btn.setFixedSize(28, 28)
-    self.move_down_btn.setIconSize(QSize(14, 14))
-
-    # 2x3 grid keeps all six buttons inside the fixed-height panel without overlap
-    buttons_grid.addWidget(self.add_preset_btn, 0, 0)
-    buttons_grid.addWidget(self.remove_preset_btn, 0, 1)
-    buttons_grid.addWidget(self.rename_preset_btn, 1, 0)
-    buttons_grid.addWidget(self.copy_preset_btn, 1, 1)
-    buttons_grid.addWidget(self.move_up_btn, 2, 0)
-    buttons_grid.addWidget(self.move_down_btn, 2, 1)
-
-    buttons_col = QVBoxLayout()
-    buttons_col.setContentsMargins(0, 0, 0, 0)
-    buttons_col.addLayout(buttons_grid)
-    buttons_col.addStretch()
-    presets_layout.addLayout(buttons_col)
-
-    main_layout.addWidget(custom_presets_frame)
-
-    # --- editor container ---
-    self.api_settings_container = SettingsBodyWidget()
-    api_container_layout = QVBoxLayout(self.api_settings_container)
-    api_container_layout.setContentsMargins(0, 10, 0, 0)
-    api_container_layout.setSpacing(8)
-
-    provider_info_layout = QHBoxLayout()
-    self.provider_label = QLabel("")
-    self.provider_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-    provider_info_layout.addWidget(self.provider_label)
-    provider_info_layout.addStretch()
-    api_container_layout.addLayout(provider_info_layout)
-
-    # Template row
-    template_layout = QHBoxLayout()
-    template_label = tr_set(QLabel(), "Шаблон:", "Template:")
-    self.template_combo = TRQComboBox()
-    self.template_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    self.preset_name_row = ApiField(_("Название пресета", "Preset name"))
+    identity = QGridLayout()
+    identity.setHorizontalSpacing(16)
+    identity.setColumnStretch(0, 1)
+    identity.setColumnStretch(1, 1)
+    identity.addWidget(self.preset_name_row, 0, 0)
+    template_field = QWidget()
+    template_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    template_layout = QVBoxLayout(template_field)
+    template_layout.setContentsMargins(0, 0, 0, 0)
+    template_layout.setSpacing(6)
+    template_heading = QHBoxLayout()
+    template_heading.addWidget(tr_set(QLabel(), "Шаблон / провайдер", "Template / provider"))
+    template_heading.addStretch(1)
+    self.url_help_label = _link_label()
+    template_heading.addWidget(self.url_help_label)
+    template_layout.addLayout(template_heading)
+    self.template_combo = ApiTemplateCombo()
+    self.template_combo.setObjectName("ApiArrowCombo")
+    self.template_combo.setMinimumHeight(40)
+    self.template_combo.setIconSize(QSize(18, 18))
     self.template_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     self.template_combo.setMinimumContentsLength(10)
-    try:
-        self.template_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
-    except Exception:
-        pass
+    template_layout.addWidget(self.template_combo)
+    identity.addWidget(template_field, 0, 1)
+    content.addLayout(identity)
 
-    template_layout.addWidget(template_label)
-    template_layout.addWidget(self.template_combo, 1)
-    api_container_layout.addLayout(template_layout)
-
-    # Help links (under fields)
-    self.url_help_label = QLabel()
-    self.url_help_label.setOpenExternalLinks(True)
-    self.url_help_label.setObjectName("LinkLabel")
-    self.url_help_label.setVisible(False)
-
-    self.model_help_label = QLabel()
-    self.model_help_label.setOpenExternalLinks(True)
-    self.model_help_label.setObjectName("LinkLabel")
-    self.model_help_label.setVisible(False)
-
-    self.key_help_label = QLabel()
-    self.key_help_label.setOpenExternalLinks(True)
-    self.key_help_label.setObjectName("LinkLabel")
-    self.key_help_label.setVisible(False)
-
-    api_container_layout.addWidget(self.url_help_label)
-    self.api_url_row = LabeledLineEditRow(_('Ссылка API', 'API URL'))
-    api_container_layout.addWidget(self.api_url_row)
-
-    api_container_layout.addWidget(self.model_help_label)
-    self.api_model_row = LabeledLineEditRow(_('Модель', 'Model'))
-    api_container_layout.addWidget(self.api_model_row)
-
-    api_container_layout.addWidget(self.key_help_label)
-    self.api_key_row = LabeledLineEditRow(_('API Ключ', 'API Key'), password=True)
-    api_container_layout.addWidget(self.api_key_row)
-
+    self.api_url_row = ApiField(_("Ссылка API", "API URL"))
+    content.addWidget(self.api_url_row)
+    credentials = QGridLayout()
+    credentials.setHorizontalSpacing(16)
+    credentials.setColumnStretch(0, 1)
+    credentials.setColumnStretch(1, 1)
+    self.api_model_row = ApiField(_("Модель", "Model"))
+    self.api_key_row = ApiField(_("API ключ", "API key"), password=True)
+    self.model_help_label = _link_label()
+    self.key_help_label = _link_label()
+    self.api_model_row.heading.addWidget(self.model_help_label)
+    self.api_key_row.heading.addWidget(self.key_help_label)
     self.key_visibility_button = QToolButton()
-    self.key_visibility_button.setIcon(qta.icon('fa5s.eye'))
+    self.key_visibility_button.setIcon(qta.icon("fa5s.eye", color=THEME["muted"]))
+    self.key_visibility_button.setFixedSize(30, 40)
     tr_set(self.key_visibility_button, "Показать/скрыть ключ", "Show/hide key", "setToolTip")
-    self.key_visibility_button.setFixedSize(28, 28)
-    self.api_key_row.layout().addWidget(self.key_visibility_button, 0, Qt.AlignmentFlag.AlignRight)
+    self.api_key_row.input_layout.addWidget(self.key_visibility_button)
+    credentials.addWidget(self.api_model_row, 0, 0)
+    credentials.addWidget(self.api_key_row, 0, 1)
+    content.addLayout(credentials)
 
-    # --- Collapsible reserve keys section (collapsed by default, list UI) ---
-    _reserve_keys_title = _('Резервные ключи', 'Reserve keys')
-    self.reserve_keys_section = CollapsibleSection(
-        _reserve_keys_title, self, icon_name="fa5s.key"
-    )
-    api_container_layout.addWidget(self.reserve_keys_section)
+    configuration_scroll = QScrollArea()
+    configuration_scroll.setObjectName("ApiConfigurationScroll")
+    configuration_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    configuration_scroll.setWidgetResizable(True)
+    configuration_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    configuration_body = QWidget()
+    configuration_body.setObjectName("ApiEditorContent")
+    configuration_layout = QVBoxLayout(configuration_body)
+    configuration_layout.setContentsMargins(16, 14, 16, 16)
+    configuration_layout.setSpacing(14)
+    _build_generation(self, configuration_layout)
+    configuration_layout.addStretch(1)
+    configuration_scroll.setWidget(configuration_body)
+    _build_protocol(self, content)
+    _build_routing(self, content)
+    _build_fallbacks(self, content)
+    content.addStretch(1)
+    _build_retained_state(self, root)
+    scroll.setWidget(connection_body)
+    self.api_settings_container.addTab(scroll, qta.icon("fa5s.link", color=THEME["muted"]), str(_("Подключение", "Connection")))
+    self.api_settings_container.addTab(configuration_scroll, qta.icon("fa5s.sliders-h", color=THEME["muted"]), str(_("Параметры генерации", "Generation parameters")))
+    register(self.api_settings_container, lambda tabs: (
+        tabs.setTabText(0, str(_("Подключение", "Connection"))),
+        tabs.setTabText(1, str(_("Параметры генерации", "Generation parameters"))),
+    ))
+    connection_card = QFrame()
+    connection_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    connection_card.setObjectName("ApiConnectionCard")
+    connection_card_layout = QVBoxLayout(connection_card)
+    connection_card_layout.setContentsMargins(1, 1, 1, 1)
+    connection_card_layout.addWidget(self.api_settings_container)
+    editor_layout.addWidget(connection_card, 1)
+    self.api_workspace_splitter.addWidget(editor_panel)
+    self.api_settings_container.hide()
+    parent_layout.addWidget(root, 1)
+    _build_completer(self)
+    self.provider_delegate = ProviderDelegate(self.template_combo)
+    self.template_combo.view().setItemDelegate(self.provider_delegate)
 
+
+def _build_generation(self, layout):
+    self.model_settings_form = ModelSettingsForm()
+    layout.addWidget(self.model_settings_form)
+
+
+def _build_protocol(self, layout):
+    title = _("Резервные ключи", "Reserve keys")
+    self.reserve_keys_section = CollapsibleSection(title, icon_name="fa5s.key", subtitle=_("Используются при недоступности основного ключа", "Used when the primary key is unavailable"))
+    self.reserve_keys_section.icon_label.setFixedSize(38, 38)
+    self.reserve_keys_section.icon_label.setPixmap(qta.icon("fa5s.key", color=THEME["muted"]).pixmap(20, 20))
     self.reserve_keys_row = ReserveKeysEditor()
-    self.reserve_keys_row.attach_section(self.reserve_keys_section, _reserve_keys_title)
+    self.reserve_keys_row.attach_section(self.reserve_keys_section, title)
+    self.reserve_keys_count = QLabel()
+    self.reserve_keys_count.setObjectName("ApiReserveCount")
+    register(self.reserve_keys_count, lambda label: label.setText(
+        str(label.property("keyCount") or 0) + str(_(" ключей", " keys"))
+    ))
+    header_layout = self.reserve_keys_section.header.layout()
+    header_layout.insertWidget(header_layout.count() - 1, self.reserve_keys_count)
+    self.reserve_keys_row.count_label = self.reserve_keys_count
+    self.reserve_keys_row.changed.connect(lambda: _update_reserve_count(self.reserve_keys_row))
+    _update_reserve_count(self.reserve_keys_row)
     self.reserve_keys_section.add_widget(self.reserve_keys_row)
-
-    # --- Collapsible protocol configuration section (UNDER inputs) ---
-    self.protocol_section = CollapsibleSection(_("Конфигурация протокола", "Protocol configuration"), self, icon_name="fa5s.sliders-h")
-    api_container_layout.addWidget(self.protocol_section)
-
-    self.protocol_row = LabeledComboRow(_("Протокол", "Protocol"))
+    layout.addWidget(self.reserve_keys_section)
+    self.protocol_section = CollapsibleSection(_("Расширенные настройки подключения", "Advanced connection settings"))
+    self.protocol_row = LabeledComboRow(_("Формат запроса", "Request format"))
     self.protocol_section.add_widget(self.protocol_row)
-
-    self.protocol_info_label = QLabel("")
+    self.protocol_info_label = QLabel()
     self.protocol_info_label.setWordWrap(True)
-    self.protocol_info_label.setObjectName("ProtocolInfoLabel")
-    self.protocol_info_label.setStyleSheet("color: #bfbfbf; font-size: 11px;")
     self.protocol_section.add_widget(self.protocol_info_label)
-
     self.protocol_transforms_view = QTextEdit()
     self.protocol_transforms_view.setReadOnly(True)
-    self.protocol_transforms_view.setMinimumHeight(70)
-    self.protocol_transforms_view.setMaximumHeight(110)
+    self.protocol_transforms_view.setFixedHeight(90)
     self.protocol_section.add_widget(self.protocol_transforms_view)
-
-    self.configure_pipeline_btn = tr_set(QPushButton(), "Настроить pipeline", "Configure pipeline")
-    self.configure_pipeline_btn.setIcon(qta.icon('fa5s.sliders-h', color='#3498db'))
+    self.configure_pipeline_btn = _button("Настроить pipeline", "Configure pipeline", "fa5s.sliders-h")
     self.protocol_section.add_widget(self.configure_pipeline_btn)
+    layout.addWidget(self.protocol_section)
 
-    # --- Collapsible generation overrides section ---
-    self.gen_overrides_section = CollapsibleSection(
-        _("Параметры генерации (переопределение)", "Generation overrides"), self, icon_name="fa5s.sliders-h"
+
+def _build_retained_state(self, parent):
+    for name in ("remove_preset_btn", "rename_preset_btn", "copy_preset_btn", "move_up_btn", "move_down_btn"):
+        button = QPushButton(parent)
+        button.hide()
+        button.setEnabled(False)
+        setattr(self, name, button)
+
+
+def _build_fallbacks(self, layout):
+    self.fallback_providers_section = CollapsibleSection(
+        _("Резервные провайдеры", "Fallback providers"),
+        icon_name="fa5s.random",
+        subtitle=_(
+            "Используются по очереди, если основной провайдер не ответил",
+            "Used in order when the primary provider does not respond",
+        ),
     )
-    api_container_layout.addWidget(self.gen_overrides_section)
+    self.fallback_editor = FallbackChainEditor(self.fallback_providers_section)
+    self.fallback_providers_section.add_widget(self.fallback_editor)
+    layout.addWidget(self.fallback_providers_section)
 
-    gen_note = tr_set(QLabel(),
-                      "Переопределяют глобальные настройки только для этого пресета.",
-                      "Override global generation settings for this preset only.")
-    gen_note.setWordWrap(True)
-    gen_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
-    self.gen_overrides_section.add_widget(gen_note)
 
-    # Numeric generation params: (key, display_label, default_value)
-    _gen_params = [
-        ("temperature",       _("Температура",       "Temperature"),       ""),
-        ("max_tokens",        _("Макс. токенов",      "Max tokens"),        "2500"),
-        ("top_p",             "Top-P",                                      ""),
-        ("top_k",             "Top-K",                                      ""),
-        ("presence_penalty",  _("Штраф присутствия", "Presence penalty"),   "0.0"),
-        ("frequency_penalty", _("Штраф частоты",     "Frequency penalty"),  "0.0"),
-        ("thinking_budget",        _("Бюджет мышления",          "Thinking budget"),         "0.0"),
-        ("gemini_thinking_budget", _("Бюджет мышления Gemini",   "Gemini thinking budget"),  "8192"),
-    ]
-    self.gen_override_widgets = {}
-    for param_key, param_label, default_val in _gen_params:
-        row = SettingsBodyWidget()
-        row_lay = QHBoxLayout(row)
-        row_lay.setContentsMargins(0, 1, 0, 1)
-        row_lay.setSpacing(6)
-        chk = QCheckBox()
-        chk.setFixedWidth(18)
-        tr_set(chk, "Включить переопределение", "Enable override", "setToolTip")
-        lbl = QLabel(param_label)
-        register_if_tr(lbl, param_label)  # иначе живая смена языка не обновит лейбл
-        lbl.setMinimumWidth(130)
-        lbl.setMaximumWidth(130)
-        val_edit = QLineEdit(default_val)
-        val_edit.setEnabled(False)
-        val_edit.setMaximumWidth(80)
-        chk.toggled.connect(val_edit.setEnabled)
-        row_lay.addWidget(chk)
-        row_lay.addWidget(lbl)
-        row_lay.addWidget(val_edit)
-        row_lay.addStretch()
-        self.gen_overrides_section.add_widget(row)
-        self.gen_override_widgets[param_key] = (chk, val_edit)
+def _build_completer(self):
+    self.api_model_completer = QCompleter()
+    self.api_model_list_model = QStringListModel()
+    self.api_model_completer.setModel(self.api_model_list_model)
+    self.api_model_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    self.api_model_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    self.api_model_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    self.api_model_row.edit.setCompleter(self.api_model_completer)
 
-    # enable_thinking override (boolean value)
-    et_row = SettingsBodyWidget()
-    et_lay = QHBoxLayout(et_row)
-    et_lay.setContentsMargins(0, 1, 0, 1)
-    et_lay.setSpacing(6)
-    et_enable_chk = QCheckBox()
-    et_enable_chk.setFixedWidth(18)
-    tr_set(et_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
-    et_lbl = tr_set(QLabel(), "Режим мышления", "Enable thinking")
-    et_lbl.setMinimumWidth(130)
-    et_lbl.setMaximumWidth(130)
-    et_val_chk = tr_set(QCheckBox(), "Вкл", "On")
-    et_val_chk.setEnabled(False)
-    et_enable_chk.toggled.connect(et_val_chk.setEnabled)
-    et_lay.addWidget(et_enable_chk)
-    et_lay.addWidget(et_lbl)
-    et_lay.addWidget(et_val_chk)
-    et_lay.addStretch()
-    self.gen_overrides_section.add_widget(et_row)
-    self.gen_override_widgets["enable_thinking"] = (et_enable_chk, et_val_chk)
+    def show_completer(event):
+        QLineEdit.mousePressEvent(self.api_model_row.edit, event)
+        if not self.api_model_row.edit.text():
+            self.api_model_completer.setCompletionPrefix("")
+            self.api_model_completer.complete()
 
-    # reasoning_effort override (выбор из списка)
-    re_row = SettingsBodyWidget()
-    re_lay = QHBoxLayout(re_row)
-    re_lay.setContentsMargins(0, 1, 0, 1)
-    re_lay.setSpacing(6)
-    re_enable_chk = QCheckBox()
-    re_enable_chk.setFixedWidth(18)
-    tr_set(re_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
-    re_lbl = tr_set(QLabel(), "Глубина размышлений", "Reasoning effort")
-    re_lbl.setMinimumWidth(130)
-    re_lbl.setMaximumWidth(130)
-    re_val_combo = QComboBox()
-    re_val_combo.addItems(["minimal", "low", "medium", "high"])
-    re_val_combo.setCurrentText("medium")
-    re_val_combo.setEnabled(False)
-    re_val_combo.setMaximumWidth(80)
-    tr_set(re_val_combo,
-           "Работает только при включённом режиме мышления. Поддерживаемые уровни определяет профиль выбранной модели.",
-           "Requires thinking mode. Supported levels are defined by the selected model profile.",
-           "setToolTip")
-    re_enable_chk.toggled.connect(re_val_combo.setEnabled)
-    re_lay.addWidget(re_enable_chk)
-    re_lay.addWidget(re_lbl)
-    re_lay.addWidget(re_val_combo)
-    re_lay.addStretch()
-    self.gen_overrides_section.add_widget(re_row)
-    self.gen_override_widgets["reasoning_effort"] = (re_enable_chk, re_val_combo)
+    self.api_model_row.edit.mousePressEvent = show_completer
 
-    # schema_reasoning override (boolean value)
-    sr_row = SettingsBodyWidget()
-    sr_lay = QHBoxLayout(sr_row)
-    sr_lay.setContentsMargins(0, 1, 0, 1)
-    sr_lay.setSpacing(6)
-    sr_enable_chk = QCheckBox()
-    sr_enable_chk.setFixedWidth(18)
-    tr_set(sr_enable_chk, "Включить переопределение", "Enable override", "setToolTip")
-    sr_lbl = tr_set(QLabel(), "Reasoning в схеме", "Schema reasoning")
-    sr_lbl.setMinimumWidth(130)
-    sr_lbl.setMaximumWidth(130)
-    sr_val_chk = tr_set(QCheckBox(), "Вкл", "On")
-    sr_val_chk.setEnabled(False)
-    tr_set(sr_val_chk,
-           "Поле reasoning в JSON-схеме: модель думает вслух перед заполнением полей. "
-           "Локальным моделям помогает, большим хостовым только тратит токены.",
-           "A reasoning field in the JSON schema: the model thinks aloud before filling the rest. "
-           "Helps local models; on large hosted models it only burns tokens.",
-           "setToolTip")
-    sr_enable_chk.toggled.connect(sr_val_chk.setEnabled)
-    sr_lay.addWidget(sr_enable_chk)
-    sr_lay.addWidget(sr_lbl)
-    sr_lay.addWidget(sr_val_chk)
-    sr_lay.addStretch()
-    self.gen_overrides_section.add_widget(sr_row)
-    self.gen_override_widgets["schema_reasoning"] = (sr_enable_chk, sr_val_chk)
 
-    self.model_capabilities_section = CollapsibleSection(
-        _("Возможности модели", "Model capabilities"), self, icon_name="fa5s.shield-alt"
-    )
-    api_container_layout.addWidget(self.model_capabilities_section)
-
-    self.model_safe_mode_cb = tr_set(
-        QCheckBox(),
-        "Безопасный режим совместимости",
-        "Safe compatibility mode",
-    )
-    tr_set(
-        self.model_safe_mode_cb,
-        "Отправляет только базовый запрос без thinking, инструментов, нативной JSON-схемы и дополнительных параметров. JSON-ответ по промпту всё равно обрабатывается приложением.",
-        "Sends only the base request without thinking, tools, native JSON schema, or optional parameters. Prompt-guided JSON is still parsed by the app.",
-        "setToolTip",
-    )
-    self.model_capabilities_section.add_widget(self.model_safe_mode_cb)
-
-    self.model_profile_summary_label = QLabel()
-    self.model_profile_summary_label.setWordWrap(True)
-    self.model_profile_summary_label.setStyleSheet("color: #8fc1e3; font-size: 11px;")
-    self.model_capabilities_section.add_widget(self.model_profile_summary_label)
-
-    profile_note = tr_set(
-        QLabel(),
-        "Расширенное переопределение профиля для выбранной модели. JSON применяется только к этому пресету.",
-        "Advanced profile override for the selected model. JSON applies only to this preset.",
-    )
-    profile_note.setWordWrap(True)
-    profile_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
-    self.model_capabilities_section.add_widget(profile_note)
-
-    self.model_profile_overrides_edit = QTextEdit()
-    self.model_profile_overrides_edit.setAcceptRichText(False)
-    self.model_profile_overrides_edit.setPlaceholderText(
-        '{"thinking":{"transport":"level","allowed_levels":["low","medium","high"]},"parameters":["max_tokens"]}'
-    )
-    self.model_profile_overrides_edit.setMinimumHeight(92)
-    self.model_profile_overrides_edit.setMaximumHeight(150)
-    self.model_capabilities_section.add_widget(self.model_profile_overrides_edit)
-
+def _build_routing(self, layout):
     self.openrouter_routing_section = CollapsibleSection(
         _("OpenRouter routing", "OpenRouter routing"), self, icon_name="fa5s.sliders-h"
     )
-    api_container_layout.addWidget(self.openrouter_routing_section)
+    layout.addWidget(self.openrouter_routing_section)
 
     or_note = tr_set(
         QLabel(),
@@ -392,7 +426,7 @@ def build_api_settings_ui(self, parent_layout):
         "Controls upstream provider selection for OpenRouter only.",
     )
     or_note.setWordWrap(True)
-    or_note.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    or_note.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
     self.openrouter_routing_section.add_widget(or_note)
 
     self.or_enable_cb = tr_set(QCheckBox(), "Включить provider routing", "Enable provider routing")
@@ -443,7 +477,7 @@ def build_api_settings_ui(self, parent_layout):
     )
     self.openrouter_routing_section.add_widget(self.or_data_collection_row)
 
-    or_flags_row = SettingsBodyWidget()
+    or_flags_row = QWidget()
     or_flags_layout = QHBoxLayout(or_flags_row)
     or_flags_layout.setContentsMargins(0, 2, 0, 2)
     or_flags_layout.setSpacing(12)
@@ -457,10 +491,10 @@ def build_api_settings_ui(self, parent_layout):
     self.openrouter_routing_section.add_widget(or_flags_row)
 
     or_max_price_label = tr_set(QLabel(), "Max price ($)", "Max price ($)")
-    or_max_price_label.setStyleSheet("color: #bfbfbf; font-size: 11px;")
+    or_max_price_label.setStyleSheet(f"color: {THEME['muted']}; font-size: 11px;")
     self.openrouter_routing_section.add_widget(or_max_price_label)
 
-    or_max_price_row = SettingsBodyWidget()
+    or_max_price_row = QWidget()
     or_max_price_layout = QHBoxLayout(or_max_price_row)
     or_max_price_layout.setContentsMargins(0, 2, 0, 2)
     or_max_price_layout.setSpacing(8)
@@ -505,69 +539,16 @@ def build_api_settings_ui(self, parent_layout):
     }
     self.openrouter_routing_section.setVisible(False)
 
-    # buttons
-    self.test_button = tr_set(QPushButton(), "Тест подключения (Получить список моделей)", "Test connection (Fetch model list)")
-    api_container_layout.addWidget(self.test_button)
 
-    btns = QHBoxLayout()
-    btns.setSpacing(10)
 
-    self.cancel_button = tr_set(QPushButton(), "Отменить", "Cancel")
-    self.cancel_button.setObjectName("CancelButton")
-    self.cancel_button.setIcon(qta.icon('fa5s.undo', color='#ffffff'))
-    self.cancel_button.setVisible(False)
+def _filter_presets(widget, text):
+    query = text.strip().casefold()
+    for index in range(widget.count()):
+        item = widget.item(index)
+        item.setHidden(query not in f"{item.base_name} {item.model} {getattr(item, 'provider_label', '')}".casefold())
 
-    self.save_preset_button = tr_set(QPushButton(), "Сохранить", "Save")
-    self.save_preset_button.setObjectName("SecondaryButton")
-    self.save_preset_button.setIcon(qta.icon('fa5s.save', color='#ffffff'))
-    self.save_preset_button.setEnabled(False)
-    self.save_preset_button.setVisible(False)
 
-    btns.addWidget(self.cancel_button, 1)
-    btns.addWidget(self.save_preset_button, 1)
-    api_container_layout.addLayout(btns)
 
-    # --- Provider-agnostic failover/priority block ---
-    # Everything above (fields + Test/Save/Cancel) acts on THIS preset.
-    # The backup chain is the cross-provider priority mechanic, so it lives
-    # below the preset's own action buttons, behind its own divider.
-    create_section_header(api_container_layout, _("Резервирование и приоритеты", "Failover & priority"))
-
-    self.fallback_section = CollapsibleSection(
-        _("Резервные провайдеры/модели", "Backup providers/models"), self, icon_name="fa5s.life-ring"
-    )
-    api_container_layout.addWidget(self.fallback_section)
-
-    self.fallback_editor = FallbackChainEditor()
-    self.fallback_section.add_widget(self.fallback_editor)
-
-    api_container_layout.addStretch(1)
-
-    main_layout.addWidget(self.api_settings_container)
-    self.api_settings_container.setVisible(False)
-
-    parent_layout.addWidget(main_container)
-
-    # --- model completer ---
-    self.api_model_completer = QCompleter()
-    self.api_model_list_model = QStringListModel()
-    self.api_model_completer.setModel(self.api_model_list_model)
-    self.api_model_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-    self.api_model_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-    self.api_model_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-    self.api_model_row.edit.setCompleter(self.api_model_completer)
-
-    completer = self.api_model_completer
-
-    def show_completer_on_click(event):
-        from PyQt6.QtWidgets import QLineEdit
-        QLineEdit.mousePressEvent(self.api_model_row.edit, event)
-        if self.api_model_row.edit.text() == "":
-            completer.setCompletionPrefix("")
-            completer.complete()
-
-    self.api_model_row.edit.mousePressEvent = show_completer_on_click
-
-    # Delegate for pricing badges
-    self.provider_delegate = ProviderDelegate(self.template_combo)
-    self.template_combo.view().setItemDelegate(self.provider_delegate)
+def _update_reserve_count(editor):
+    editor.count_label.setProperty("keyCount", len(editor.get_keys()))
+    editor.count_label.setText(str(len(editor.get_keys())) + str(_(" ключей", " keys")))

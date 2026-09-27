@@ -11,7 +11,9 @@ class Dialects:
 API_PROTOCOLS_DATA = [
     {
         "id": "mistral_default",
+        "settings_schema_id": "mistral",
         "name": "Mistral (OpenAI-compatible)",
+        "display_name": "Mistral",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
         "provider": "common",
         "auth": {"mode": "bearer"},
@@ -24,7 +26,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "openrouter_default",
+        "settings_schema_id": "openrouter",
         "name": "OpenRouter (OpenAI-compatible)",
+        "display_name": "OpenRouter",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
         "provider": "common",
         "auth": {"mode": "bearer"},
@@ -40,7 +44,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "openai_compatible_default",
+        "settings_schema_id": "openai-compatible",
         "name": "OpenAI-compatible (Generic)",
+        "display_name": "OpenAI-compatible API",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
         "provider": "common",
         "auth": {"mode": "bearer"},
@@ -50,7 +56,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "lmstudio_default",
+        "settings_schema_id": "local-openai",
         "name": "LM Studio (OpenAI-compatible)",
+        "display_name": "LM Studio",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
         "provider": "common",
         "auth": {"mode": "bearer"},
@@ -70,7 +78,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "aiio_default",
+        "settings_schema_id": "openai-compatible",
         "name": "Ai.iO (OpenAI-compatible)",
+        "display_name": "Ai.iO",
         "dialect": Dialects.OPENAI_CHAT_COMPLETIONS,
         "provider": "common",
         "auth": {"mode": "bearer"},
@@ -80,7 +90,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "google_gemini_default",
+        "settings_schema_id": "google-level",
         "name": "Google Gemini API (generateContent)",
+        "display_name": "Google AI Studio",
         "dialect": Dialects.GEMINI_GENERATE_CONTENT,
         "provider": "gemini",
         "auth": {"mode": "query", "param": "key"},
@@ -90,7 +102,9 @@ API_PROTOCOLS_DATA = [
     },
     {
         "id": "g4f_default",
+        "settings_schema_id": "g4f",
         "name": "GPT4Free",
+        "display_name": "GPT4Free",
         "dialect": Dialects.G4F,
         "provider": "g4f",
         "auth": {"mode": "none"},

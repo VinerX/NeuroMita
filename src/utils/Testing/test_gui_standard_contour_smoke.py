@@ -179,10 +179,13 @@ class GuiStandardContourSmokeTests(unittest.TestCase):
                 return "Crazy"
 
             def current_profile(self):
-                return {"id": "Crazy", "name": "Crazy"}
+                return {"character_id": "Crazy", "display_name": "Crazy"}
 
-            def current_name(self):
+            def current_display_name(self):
                 return "Crazy"
+
+            def display_name_of(self, character_id):
+                return str(character_id or "")
 
         class GameLink(GameLinkService):
             def is_connected(self) -> bool:

@@ -1,0 +1,32 @@
+// Runtime-state prompt shared by every character playing Sea Battle.
+
+SET LOCAL prompt_text = "[Game: Sea Battle]\n"
+SET prompt_text = prompt_text + f"[Phase] {GAME_STATE_PHASE}.\n"
+SET prompt_text = prompt_text + "[Your board]\n" + GAME_STATE_MY_BOARD + "\n"
+SET prompt_text = prompt_text + "[Opponent board]\n" + GAME_STATE_OPPONENT_BOARD + "\n"
+
+IF GAME_STATE_IS_GAME_OVER == True THEN
+    SET prompt_text = prompt_text + f"[Status] Game over: {GAME_STATE_OUTCOME}.\n"
+ELSEIF GAME_STATE_IS_LLM_TURN == True THEN
+    IF GAME_STATE_PHASE == "placement" THEN
+        IF GAME_STATE_HAS_SHIPS_TO_PLACE == True THEN
+            SET prompt_text = prompt_text + f"[Status] YOUR PLACEMENT. Ships left: {GAME_STATE_SHIPS_TO_PLACE_LIST}. Use PlaceShipsRandomly, or legal PlaceShip,<coordinate>,<length>,<H|V>.\n"
+        ELSE
+            SET prompt_text = prompt_text + "[Status] Your ships are ready; wait for the player.\n"
+        ENDIF
+    ELSE
+        SET prompt_text = prompt_text + "[Status] YOUR TURN. Put exactly one legal MakeMove,<coordinate> in commands.\n"
+        IF GAME_STATE_HAS_WOUNDED_SHIPS == True THEN
+            SET prompt_text = prompt_text + f"[Recommended targets] {GAME_STATE_HUNT_TARGETS_LIST}.\n"
+        ENDIF
+        SET prompt_text = prompt_text + f"[Shot history] {GAME_STATE_SHOT_HISTORY_STRING}.\n"
+    ENDIF
+ELSE
+    SET prompt_text = prompt_text + "[Status] Player's turn; do not shoot.\n"
+ENDIF
+
+IF GAME_STATE_ERROR_MSG != None THEN
+    SET prompt_text = prompt_text + f"[Game command error] {GAME_STATE_ERROR_MSG}.\n"
+ENDIF
+
+RETURN prompt_text

@@ -31,6 +31,14 @@ class _HideOnCloseFilter(QObject):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if obj is self._dialog and event.type() == QEvent.Type.Close:
             try:
+                # hide_on_close normally consumes the native Close event before
+                # QDialog.closeEvent() is called.  Give dialogs with guarded
+                # editor state an opt-in veto hook so the system title-bar X
+                # cannot silently hide a window with unsaved changes.
+                confirm = getattr(self._dialog, "confirm_hide_on_close", None)
+                if callable(confirm) and not bool(confirm()):
+                    event.ignore()
+                    return True
                 self._dialog.hide()
                 event.ignore()
                 return True

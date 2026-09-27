@@ -58,6 +58,9 @@ class _InstallComponent:
     item_id = "direct"
     id = "tts:direct"
 
+    def __init__(self):
+        self.last_initialize_ctx = None
+
     def build_install_plan(self, _ctx):
         return InstallPlan(actions=[])
 
@@ -65,6 +68,7 @@ class _InstallComponent:
         return InstallPlan(actions=[])
 
     def build_initialize_plan(self, _ctx):
+        self.last_initialize_ctx = dict(_ctx or {})
         return InstallPlan(actions=[])
 
     def metadata(self):
@@ -188,6 +192,32 @@ class InstallableControllerTests(unittest.TestCase):
         self.assertEqual(payload["task_id"], "tts:direct:install")
         self.assertEqual(payload["timeout_sec"], DEFAULT_INSTALL_TIMEOUT_SEC)
         self.assertTrue(callable(payload["runner"]))
+
+    def test_initialize_forwards_selected_device_to_component_context(self):
+        queue = _QueueService()
+        registration = services().register_owned(
+            InstallQueueService,
+            queue,
+            replace=True,
+        )
+        catalog = _InstallCatalog()
+        controller = InstallableController(catalog=catalog)
+        try:
+            admission = controller.initialize(
+                {
+                    "component_id": "tts:direct",
+                    "task_id": "tts:direct:initialize",
+                    "device": "cuda:1",
+                    "with_ui": False,
+                }
+            )
+            self.assertTrue(admission.accepted)
+            payload, _with_ui = queue.payload
+            payload["runner"](ctx={})
+        finally:
+            registration.close()
+
+        self.assertEqual(catalog.component.last_initialize_ctx["device"], "cuda:1")
 
 
 if __name__ == "__main__":

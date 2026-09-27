@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import socket
+import ssl
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -108,6 +110,24 @@ def classify_network_error(
     resolved_url = url or getattr(request, "url", None) or getattr(response, "url", None)
     detail = _compact_detail(exc)
 
+    tls_error = _find_tls_error(exc)
+    if tls_error is not None:
+        certificate_failure = _is_certificate_verification_error(tls_error)
+        return NetworkConnectionError(
+            service_id=service_id,
+            message=(
+                "Не удалось проверить SSL-сертификат сервера."
+                if certificate_failure
+                else "Не удалось установить защищённое SSL/TLS-соединение."
+            ),
+            code="network.tls.certificate" if certificate_failure else "network.tls.handshake",
+            phase="connect",
+            method=resolved_method,
+            url=str(resolved_url) if resolved_url else None,
+            retryable=False,
+            detail=_tls_error_detail(tls_error),
+        )
+
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = getattr(response, "status_code", None)
         return HttpResponseError(
@@ -178,21 +198,72 @@ def classify_network_error(
 
 
 def _contains_dns_error(exc: BaseException) -> bool:
-    current: Optional[BaseException] = exc
-    visited: set[int] = set()
-    while current is not None and id(current) not in visited:
-        visited.add(id(current))
+    for current in _iter_exception_chain(exc):
         if isinstance(current, socket.gaierror):
             return True
         text = str(current).lower()
         if any(marker in text for marker in ("getaddrinfo", "name resolution", "nodename nor servname")):
             return True
-        current = current.__cause__ or current.__context__
     return False
 
 
+def _iter_exception_chain(exc: BaseException):
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+_CERTIFICATE_ERROR_MARKERS = (
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "unable to get local issuer certificate",
+    "self signed certificate",
+    "hostname mismatch",
+    "certificate has expired",
+)
+
+
+def _is_certificate_verification_error(exc: BaseException) -> bool:
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _CERTIFICATE_ERROR_MARKERS)
+
+
+def _find_tls_error(exc: BaseException) -> BaseException | None:
+    for cause in _iter_exception_chain(exc):
+        if isinstance(cause, ssl.SSLError):
+            return cause
+        if any(marker in str(cause).lower() for marker in _CERTIFICATE_ERROR_MARKERS):
+            return cause
+    return None
+
+
+def _tls_error_detail(exc: BaseException) -> str:
+    text = str(exc)
+    lowered = text.lower()
+    for marker in _CERTIFICATE_ERROR_MARKERS:
+        if marker in lowered:
+            return marker
+
+    detail = _compact_detail(exc)
+    return _redact_sensitive_text(detail)[:500]
+
+
+def _redact_sensitive_text(text: str) -> str:
+    secret_keys = "|".join(re.escape(key) for key in _SECRET_QUERY_KEYS)
+    return re.sub(
+        rf"(?i)\b({secret_keys})(=|%3d)([^&\s,]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+
+
 def _compact_detail(exc: BaseException) -> str:
-    return " ".join(str(exc or "").split())[:500]
+    return _redact_sensitive_text(" ".join(str(exc or "").split()))[:500]
 
 
 def _timeout_phase(exc: httpx.TimeoutException) -> str:

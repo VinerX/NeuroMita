@@ -12,7 +12,6 @@ charset-normalizer==3.4.1
 colorama==0.4.6
 colorlog==6.9.0
 distro==1.9.0
-docopt-ng==0.9.0
 eval-type-backport==0.2.2
 ffmpeg-python==0.2.0
 frozenlist==1.5.0
@@ -66,7 +65,7 @@ emoji
 nodriver
 platformdirs
 dotenv
-pymorphy2
+pymorphy3==2.0.6
 # tools reqs
 ddgs
 bs4

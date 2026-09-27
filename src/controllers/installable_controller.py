@@ -185,6 +185,8 @@ class InstallableController(InstallableOperationsService):
             execution_ctx = dict(kwargs.get("ctx") or {}) if isinstance(kwargs.get("ctx"), dict) else {}
             if data.get("initialize_mode") is not None:
                 execution_ctx["initialize_mode"] = str(data.get("initialize_mode"))
+            if data.get("device") is not None:
+                execution_ctx["device"] = str(data.get("device"))
             if kwargs.get("pip_installer") is not None:
                 execution_ctx["pip_installer"] = kwargs.get("pip_installer")
             if kwargs.get("callbacks") is not None:

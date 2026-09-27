@@ -16,7 +16,24 @@ from schemas.structured_response import (
 
 
 class StructuredResponseParseError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "structured_response_parse_failed",
+        stage: str = "parse",
+        field: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+        self.field = field
+
+    def to_safe_payload(self) -> dict[str, str]:
+        payload = {"code": self.code, "stage": self.stage}
+        if self.field:
+            payload["field"] = self.field
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +45,15 @@ class StructuredParseOutcome:
     schema_coerced: bool = False
     fallback_kind: str = ""
     extraction_kind: str = "raw_json"
+
+    @property
+    def repaired(self) -> bool:
+        return (
+            self.parse_level != "direct"
+            or self.schema_coerced
+            or bool(self.fallback_kind)
+            or self.extraction_kind not in {"raw_json", "markdown_json_fence"}
+        )
 
     @property
     def control_plane_trusted(self) -> bool:
@@ -45,7 +71,9 @@ def parse_structured_response_with_meta(
     model_cls: Type[StructuredResponse] = StructuredResponse,
 ) -> StructuredParseOutcome:
     if not raw_text or not isinstance(raw_text, str):
-        raise StructuredResponseParseError("Empty or non-string response")
+        raise StructuredResponseParseError(
+            "Empty or non-string response", code="structured_response_empty", stage="input"
+        )
 
     cleaned, extraction_kind = _extract_json_string(raw_text)
 
@@ -60,31 +88,75 @@ def parse_structured_response_with_meta(
         data, parse_level = _try_json_loads(escaped, level="inner_quote_escape")
 
     if data is None:
-        data, parse_level = _try_json_repair_lib(cleaned)
-
-    if data is None:
         closed = _close_truncated_json(cleaned)
         data, parse_level = _try_json_loads(closed, level="truncation_close")
+
+    if data is None:
+        tail_cleaned = _drop_incomplete_json_tail(cleaned)
+        has_root_member = re.match(r'\s*\{\s*"(?:[^"\\]|\\.)*"\s*:', cleaned)
+        if tail_cleaned != cleaned and (tail_cleaned.strip() != "{}" or has_root_member):
+            data, parse_level = _try_json_loads(
+                _close_truncated_json(tail_cleaned),
+                level="truncated_tail_discard+truncation_close",
+            )
+
+    if data is None:
+        data, parse_level = _try_json_repair_lib(cleaned)
 
     if data is None:
         data, parse_level = _try_json_repair_lib(_close_truncated_json(cleaned),
                                                  level="truncation_close+json_repair")
 
+    if data == {} and cleaned.strip() != "{}":
+        has_root_member = re.match(r'\s*\{\s*"(?:[^"\\]|\\.)*"\s*:', cleaned)
+        if not has_root_member:
+            data, parse_level = None, ""
+
     if data is None:
+        likely_truncated = _is_likely_truncated_json(cleaned)
         raise StructuredResponseParseError(
             f"All JSON repair attempts failed. "
-            f"First 300 chars: {cleaned[:300]}"
+            f"First 300 chars: {cleaned[:300]}",
+            code=("structured_json_truncated" if likely_truncated else "structured_json_invalid"),
+            stage="parse",
         )
 
     if not isinstance(data, dict):
         raise StructuredResponseParseError(
-            f"Expected JSON object at top level, got {type(data).__name__}"
+            f"Expected JSON object at top level, got {type(data).__name__}",
+            code="structured_json_root_type",
+            stage="parse",
         )
 
-    if parse_level != "direct":
-        logger.warning(f"[StructuredResponseParser] JSON repaired via: {parse_level}")
+    # Compatibility fallback for older or unconstrained model output. Keep this
+    # out of StructuredResponse so providers never advertise top-level commands.
+    response_commands = data.pop("commands", None)
+    segments = data.get("segments")
+    if response_commands and isinstance(segments, list) and segments:
+        if not any(
+            isinstance(segment, dict) and segment.get("commands")
+            for segment in segments
+        ) and isinstance(segments[0], dict):
+            commands = (
+                response_commands
+                if isinstance(response_commands, list)
+                else [response_commands]
+            )
+            segments = list(segments)
+            segments[0] = {**segments[0], "commands": commands}
+            data["segments"] = segments
 
     response, schema_coerced = _validate_with_coerce(data, model_cls=model_cls)
+    if parse_level != "direct" or schema_coerced:
+        changes = []
+        if parse_level != "direct":
+            changes.append(f"JSON via {parse_level}")
+        if schema_coerced:
+            changes.append("schema coercion")
+        logger.warning(
+            "[StructuredResponseParser] Response repaired: %s",
+            ", ".join(changes),
+        )
 
     # Control-plane schemas such as GameMasterResponse intentionally do not
     # contain character reply segments. They still use this parser so the
@@ -133,7 +205,9 @@ def parse_structured_response_with_meta(
             )
 
         raise StructuredResponseParseError(
-            "StructuredResponse has no segments (segments list is empty)"
+            "StructuredResponse has no segments (segments list is empty)",
+            code="structured_missing_segments",
+            stage="semantic",
         )
 
     logger.debug(
@@ -161,6 +235,22 @@ def _try_json_loads(text: str, level: str = "direct") -> tuple[Optional[dict], s
         return json.loads(text), level
     except (json.JSONDecodeError, ValueError):
         return None, ""
+
+
+def _is_likely_truncated_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        if exc.msg.startswith("Unterminated string"):
+            return True
+        return exc.pos >= len(text) and exc.msg in {
+            "Expecting value",
+            "Expecting ',' delimiter",
+            "Expecting property name enclosed in double quotes",
+        }
+    except ValueError:
+        return False
+    return False
 
 
 def _try_json_repair_lib(text: str, level: str = "json_repair") -> tuple[Optional[dict], str]:
@@ -259,6 +349,62 @@ def _close_truncated_json(text: str) -> str:
     return text + suffix
 
 
+def _drop_incomplete_json_tail(text: str) -> str:
+    """Drop a malformed final object member or array item before closing JSON."""
+    stack: list[dict[str, int | str | None]] = []
+    in_string = False
+    escaped = False
+    string_start = -1
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            string_start = index
+        elif char == "{":
+            stack.append({"close": "}", "open": index, "comma": None})
+        elif char == "[":
+            stack.append({"close": "]", "open": index, "comma": None})
+        elif char in "}]":
+            if stack and stack[-1]["close"] == char:
+                stack.pop()
+        elif char == "," and stack:
+            stack[-1]["comma"] = index
+
+    if in_string and string_start >= 0:
+        partial_value = text[string_start + 1:]
+        incomplete_unicode = re.search(r"\\u[0-9a-fA-F]{0,3}$", partial_value)
+        if incomplete_unicode:
+            return text[:string_start + 1 + incomplete_unicode.start()] + '"'
+
+    if not stack:
+        return text
+
+    frame = stack[-1]
+    comma = frame["comma"]
+    if isinstance(comma, int):
+        return text[:comma]
+
+    opening = frame["open"]
+    if not isinstance(opening, int):
+        return text
+    if in_string and string_start > opening:
+        prefix = text[opening + 1:string_start]
+        if frame["close"] == "}" and ":" in prefix:
+            key, _ = prefix.rsplit(":", 1)
+            if key.strip():
+                return text[:opening + 1] + key.rstrip() + ": null"
+    return text[:opening + 1] + str(frame["close"])
+
+
 def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> tuple[StructuredResponse, bool]:
     try:
         return model_cls.model_validate(data), False
@@ -267,10 +413,58 @@ def _validate_with_coerce(data: dict, *, model_cls: Type[StructuredResponse]) ->
             data = _schema_aware_coerce(data, model_cls=model_cls)
             return model_cls.model_validate(data), True
         except Exception as second_error:
+            field = _safe_validation_field(second_error, model_cls)
             raise StructuredResponseParseError(
                 f"JSON does not match StructuredResponse schema "
-                f"(even after coercion): {format_exception(second_error)}"
+                f"(even after coercion): {format_exception(second_error)}",
+                code="structured_schema_validation_failed",
+                stage="schema",
+                field=field,
             ) from first_error
+
+
+def _safe_validation_field(error: Exception, model_cls: Type[StructuredResponse]) -> str | None:
+    errors_method = getattr(error, "errors", None)
+    if not callable(errors_method):
+        return None
+
+    allowed_names: set[str] = set()
+    pending = [model_cls]
+    visited: set[type] = set()
+    while pending:
+        current_model = pending.pop()
+        if current_model in visited:
+            continue
+        visited.add(current_model)
+        for name, field_info in getattr(current_model, "model_fields", {}).items():
+            allowed_names.add(str(name))
+            annotation = getattr(field_info, "annotation", None)
+            candidates = [annotation, *get_args(annotation)] if annotation is not None else []
+            for candidate in candidates:
+                origin = get_origin(candidate)
+                nested = get_args(candidate) if origin is not None else (candidate,)
+                pending.extend(
+                    item for item in nested
+                    if isinstance(item, type) and hasattr(item, "model_fields")
+                )
+
+    try:
+        validation_errors = errors_method(include_input=False)
+    except TypeError:
+        return None
+    except Exception:
+        return None
+
+    for validation_error in validation_errors:
+        location = validation_error.get("loc", ())
+        safe_parts = [
+            str(part) if isinstance(part, int) else part
+            for part in location
+            if isinstance(part, int) or (isinstance(part, str) and part in allowed_names)
+        ]
+        if safe_parts:
+            return ".".join(safe_parts)
+    return None
 
 
 def _extract_custom_field_names(model_cls: Type[StructuredResponse]) -> set[str]:
@@ -319,6 +513,21 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
             return [str(item) for item in value if item is not None]
         return [str(value)]
 
+    # OpenAI-compatible gateways such as OpenRouter may expose only the
+    # generic ``json_object`` contract.  In that mode Gemini sometimes emits
+    # compact working-state values as plain sentences instead of the richer
+    # object accepted by ``WorkingState``.  Normalize both compatibility
+    # forms so an otherwise valid structured reply stays on the structured
+    # path.  Native-schema responses are unaffected because this runs only
+    # after the initial strict validation fails.
+    if isinstance(data.get("working_state"), str):
+        data["working_state"] = {"focus": data["working_state"]}
+    if isinstance(data.get("working_state"), dict):
+        working_state = data["working_state"]
+        for field in ("situation", "assumptions", "open_loops", "next_steps"):
+            if field in working_state:
+                working_state[field] = _coerce_string_list(working_state[field])
+
     custom_field_names = _extract_custom_field_names(model_cls)
     if custom_field_names:
         custom_fields = data.get("custom_fields")
@@ -349,7 +558,7 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
 
     # 2. Исправление null в списках (добавили entities и relations)
     for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
-                  "segments", "reminder_add", "reminder_delete", "entities", "relations"):
+                  "segments", "reminder_add", "reminder_delete", "timer_add", "entities", "relations"):
         if data.get(field) is None:
             data[field] = []
 
@@ -421,7 +630,7 @@ def _schema_aware_coerce(data: dict, *, model_cls: Type[StructuredResponse]) -> 
 
             # Добавили entities и relations в список на "поднятие"
             for field in ("memory_add", "memory_update", "memory_delete", "memory_merge",
-                          "reminder_add", "reminder_delete", "entities", "relations"):
+                          "reminder_add", "reminder_delete", "timer_add", "entities", "relations"):
                 if not data.get(field) and seg0.get(field):
                     data[field] = seg0.pop(field)
 
@@ -569,11 +778,34 @@ def _extract_json_string(text: str) -> tuple[str, str]:
         text = text[brace_start:]
 
     if not text.endswith("}"):
-        brace_end = text.rfind("}")
-        if brace_end != -1:
-            if text[brace_end + 1:].strip():
-                extraction_kind = "embedded_json"
-            text = text[:brace_end + 1]
+        stack = []
+        in_string = False
+        escaped = False
+        matching = {"}": "{", "]": "["}
+        for char in text:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                stack.append(char)
+            elif char in "}]" and stack and stack[-1] == matching[char]:
+                stack.pop()
+
+        if stack:
+            extraction_kind = "truncated_json"
+        else:
+            brace_end = text.rfind("}")
+            if brace_end != -1:
+                if text[brace_end + 1:].strip():
+                    extraction_kind = "embedded_json"
+                text = text[:brace_end + 1]
 
     return text, extraction_kind
 
@@ -638,6 +870,10 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
 
     return {
         "response_protocol_version": RESPONSE_PROTOCOL_VERSION,
+        "working_state": (
+            response.working_state.model_dump(exclude_none=True)
+            if response.working_state is not None else None
+        ),
         "segments": segments_out,
         "response": response.full_text(),
         "attitude_change": response.attitude_change,
@@ -649,6 +885,7 @@ def structured_response_to_result_dict(response: StructuredResponse) -> dict:
         "memory_merge": list(response.memory_merge or []),
         "reminder_add": list(response.reminder_add or []),
         "reminder_delete": list(response.reminder_delete or []),
+        "timer_add": list(response.timer_add or []),
         "tool_call": tool_call_dict,
         "secret_exposed": response.secret_exposed,
         "custom_fields": custom_fields_out,

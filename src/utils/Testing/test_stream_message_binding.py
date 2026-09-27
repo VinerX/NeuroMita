@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from ui.chat import message_renderer
-from ui.chat.message_actions_presentation import ViewChatSampleContext
+from ui.chat.message_actions_presentation import RetryLastChat, ViewChatSampleContext
 from ui.chat.message_widget import MessageWidget
 
 _app = QApplication.instance() or QApplication([])
@@ -181,6 +181,33 @@ class MessageWidgetSetterTests(unittest.TestCase):
 
 
 class SplitMessageRenderingTests(unittest.TestCase):
+    def test_image_only_failed_message_keeps_one_retry_owner(self):
+        gui = _Gui()
+        message_renderer.insert_message(
+            gui,
+            "user",
+            [
+                {"type": "text", "content": "<Images>\n"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,AA=="},
+                },
+            ],
+            message_id="in:image-only",
+            character_id="Crazy",
+            delivery_error="Provider rejected the request",
+        )
+
+        owners = [item for item in gui.chat_window.added if isinstance(item, MessageWidget)]
+        self.assertEqual(len(owners), 1)
+        owner = owners[0]
+        self.assertTrue(owner._errored)
+        owner.retry_requested.emit(owner._message_id)
+        self.assertEqual(
+            gui.chat_message_actions.dispatched[-1],
+            RetryLastChat("in:image-only", "Crazy"),
+        )
+
     def test_loaded_split_parts_share_context_and_only_last_has_tail(self):
         gui = _Gui()
 

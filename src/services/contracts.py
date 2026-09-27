@@ -63,6 +63,23 @@ class SettingsService(ABC):
         raise NotImplementedError
 
 
+class RuntimeIPCService(ABC):
+    @abstractmethod
+    def register_object(self, instance: Any) -> tuple[str, ...]: ...
+
+    @abstractmethod
+    def start(self, *, port: int | None = None) -> bool: ...
+
+    @abstractmethod
+    def stop(self) -> None: ...
+
+    @abstractmethod
+    def status(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CharacterEnvironmentSnapshot:
     unity_installed: bool = False
@@ -366,14 +383,14 @@ class CharacterRegistry(ABC):
     def current_profile(self) -> Dict[str, Any]: ...
 
     @abstractmethod
-    def current_name(self) -> str: ...
+    def current_display_name(self) -> str: ...
 
-    def name_of(self, character_id: str) -> str:
-        """Имя персонажа; если его нет — сам id (для подписей в UI)."""
+    def display_name_of(self, character_id: str) -> str:
+        """Display label for a character; falls back to its stable id."""
         if not character_id:
             return ""
         ref = self.get(str(character_id))
-        return str(getattr(ref, "name", "") or character_id)
+        return str(getattr(ref, "display_name", "") or character_id)
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +426,14 @@ class GameLinkService(ABC):
         """
         return ""
 
+    def unity_target_character_id(self) -> str:
+        """Last character addressed by a Unity request, if known."""
+        return ""
+
+    def set_unity_target_character_id(self, character_id: str) -> bool:
+        """Record or clear the target; return whether it changed."""
+        return False
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeCapabilities:
@@ -434,6 +459,9 @@ class RuntimeCapabilitiesService(ABC):
 class PreparedHistory:
     messages: List[Dict[str, Any]]
     summary: str = ""
+    # Small deterministic bridge of requested actions whose source turns were
+    # already summarized. Recent actions stay with their assistant message.
+    action_context: str = ""
     # Время последнего сообщения истории. Сами messages уезжают провайдеру
     # строго как role/content, поэтому таймстемп едет отдельным полем —
     # иначе «сколько прошло с прошлого раза» посчитать не из чего.
@@ -711,7 +739,7 @@ class PromptBuildResult:
     messages: List[Dict[str, Any]]
     history_messages: List[Dict[str, Any]]
     user_message: Optional[Dict[str, Any]]
-    support_intents: bool = False
+    support_intents: bool = True
 
 
 class PromptBuilderService(ABC):
@@ -894,9 +922,46 @@ class ModelStateService(ABC):
     def schedule_g4f_update(self, version: str = "latest") -> bool: ...
 
 
+class ChatService(ABC):
+    """Application-level semantic entrypoint for character chat turns."""
+
+    @abstractmethod
+    def reply(
+        self,
+        *,
+        character_id: str,
+        message_id: str,
+        user_input: str = "",
+        system_input: str = "",
+        sender: str = "Player",
+        participants: Optional[List[str]] = None,
+    ) -> bool: ...
+
+    @abstractmethod
+    def react(
+        self,
+        *,
+        character_id: str,
+        instruction: str,
+        visible: bool = True,
+        sender: str = "Player",
+        participants: Optional[List[str]] = None,
+    ) -> bool: ...
+
+    @abstractmethod
+    def initiate(
+        self,
+        *,
+        character_id: str,
+        instruction: str,
+        sender: str = "System",
+        participants: Optional[List[str]] = None,
+    ) -> bool: ...
+
+
 class GenerationActivityService(ABC):
     @abstractmethod
-    def active_generation_count(self) -> int: ...
+    def active_generation_count(self, character_id: Optional[str] = None) -> int: ...
 
 
 class CaptureService(ABC):
@@ -935,6 +1000,11 @@ class LocalVoiceService(ABC):
 
     @abstractmethod
     def initialize_model(self, model_id: str) -> Any: ...
+
+    @abstractmethod
+    def reinitialize_model(self, model_id: str) -> Any:
+        """Restart the owning TTS runtime if needed, then initialize with current settings."""
+        ...
 
     @abstractmethod
     def triton_status(self, *, refresh: bool = False) -> Dict[str, Any]: ...

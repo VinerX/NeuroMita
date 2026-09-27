@@ -31,7 +31,8 @@ UNITY_DIALOGUE_CHARACTER_IDS = (
 @dataclass(slots=True)
 class DialoguePolicy:
     auto_dialogue_enabled: bool = True
-    max_chain_turns: int = 3
+    auto_dialogue_rounds: int = 1
+    max_chain_turns: int = 24
     max_continues: int = 3
     game_master_enabled: bool = False
     game_master_repeat: int = 2
@@ -44,11 +45,17 @@ class DialoguePolicy:
             settings.get("MITA_DIALOGUE_AUTO"),
             self.auto_dialogue_enabled,
         )
+        self.auto_dialogue_rounds = _bounded_int(
+            settings.get("DIALOGUE_AUTO_ROUNDS"),
+            self.auto_dialogue_rounds,
+            1,
+            24,
+        )
         self.max_chain_turns = _bounded_int(
             settings.get("DIALOGUE_MAX_CHAIN_TURNS"),
             self.max_chain_turns,
             1,
-            24,
+            200,
         )
         self.max_continues = _bounded_int(
             settings.get("DIALOGUE_MAX_CONTINUES"),
@@ -166,7 +173,9 @@ class DialogueSimulation:
     last_speaker_id: str = field(default="", init=False)
     stop_reason: str = field(default="Ожидание сообщения игрока", init=False)
     _dialogue_turn_count: int = field(default=0, init=False)
+    _speaker_turn_counts: dict[str, int] = field(default_factory=dict, init=False)
     _addressed_turns: list[AddressedTurn] = field(default_factory=list, init=False)
+    _latest_address_map: tuple[tuple[str, str], ...] = field(default=(), init=False)
     _rng: random.Random = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -214,7 +223,11 @@ class DialogueSimulation:
     ) -> None:
         if reset_pending:
             self._addressed_turns.clear()
-            self._dialogue_turn_count = 1
+            self._dialogue_turn_count = 0
+            self._speaker_turn_counts.clear()
+        self.last_speaker_id = source_id
+        self.last_response = str(full_response or "").strip()
+        self._latest_address_map = tuple(address_map)
         active_ids = {mita.character_id for mita in self.active_mitas()}
         texts_by_target: dict[str, list[str]] = {}
         target_order: list[str] = []
@@ -231,14 +244,20 @@ class DialogueSimulation:
                     target_order.append(target_id)
                 texts_by_target[target_id].append(message)
 
+        preferred_turns: list[AddressedTurn] = []
         for target_id in target_order:
-            self._addressed_turns.append(AddressedTurn(
+            preferred_turns.append(AddressedTurn(
                 source_id=source_id,
                 target_id=target_id,
                 message=" ".join(texts_by_target[target_id]),
                 full_response=str(full_response or "").strip(),
                 address_map=tuple(address_map),
             ))
+        preferred_ids = {turn.target_id for turn in preferred_turns}
+        self._addressed_turns = preferred_turns + [
+            turn for turn in self._addressed_turns
+            if turn.target_id not in preferred_ids
+        ]
 
     def clear_addressed_turns(self) -> None:
         self._addressed_turns.clear()
@@ -247,12 +266,21 @@ class DialogueSimulation:
     def can_schedule_automatic_turns(self) -> bool:
         return (
             self.policy.auto_dialogue_enabled
+            and self.policy.auto_dialogue_rounds > 0
             and self.policy.chain_turn_limit() > 1
         )
 
     @property
     def has_pending_addressed_turns(self) -> bool:
-        return bool(self._addressed_turns or self.pending_addressed_turn)
+        if self._dialogue_turn_count >= self.policy.chain_turn_limit():
+            return False
+        if self._addressed_turns or self.pending_addressed_turn:
+            return True
+        return any(
+            self._speaker_turn_counts.get(mita.character_id, 0)
+            < self.policy.auto_dialogue_rounds
+            for mita in self.active_mitas()
+        )
 
     def reset_orders(self, *, randomize: bool = False) -> None:
         for mita in self.active_mitas():
@@ -266,7 +294,9 @@ class DialogueSimulation:
         self.last_speaker_id = ""
         self.stop_reason = "Ожидание сообщения игрока"
         self._dialogue_turn_count = 0
+        self._speaker_turn_counts.clear()
         self._addressed_turns.clear()
+        self._latest_address_map = ()
         self._rng.seed(self.seed)
         for mita in self.mitas:
             mita.order_points = 0
@@ -291,7 +321,8 @@ class DialogueSimulation:
             if speaker is None:
                 raise SimulationError("Упомянутая Мита сейчас недоступна")
         speaker.order_points -= 25
-        self._dialogue_turn_count = 1
+        self._dialogue_turn_count = 0
+        self._speaker_turn_counts.clear()
         self._addressed_turns.clear()
         self.pending_speaker_id = ""
         self.pending_addressed_turn = None
@@ -344,6 +375,11 @@ class DialogueSimulation:
         speaker = self.get_mita(turn.speaker_id)
         self.last_response = str(response or "")
         self.last_speaker_id = speaker.character_id
+        if turn.event_type != "continue":
+            self._dialogue_turn_count += 1
+            self._speaker_turn_counts[speaker.character_id] = (
+                self._speaker_turn_counts.get(speaker.character_id, 0) + 1
+            )
         result = TurnResult(
             turn_index=len(self.history) + 1,
             speaker_id=speaker.character_id,
@@ -407,10 +443,35 @@ class DialogueSimulation:
                 selected_addressed_turn = addressed_turn
                 break
         if next_speaker is None:
-            self.stop_reason = "Нет адресованных сегментов — цепочка завершена"
-            return
+            ordered = self.ordered_active_mitas()
+            rounds = self.policy.auto_dialogue_rounds
+            next_speaker = next(
+                (
+                    item for item in ordered
+                    if item.character_id != from_character_id
+                    and self._speaker_turn_counts.get(item.character_id, 0) < rounds
+                ),
+                None,
+            )
+            if next_speaker is None:
+                next_speaker = next(
+                    (
+                        item for item in ordered
+                        if self._speaker_turn_counts.get(item.character_id, 0) < rounds
+                    ),
+                    None,
+                )
+            if next_speaker is None:
+                self.stop_reason = "Квота кругов выполнена — цепочка завершена"
+                return
+            selected_addressed_turn = AddressedTurn(
+                source_id=self.last_speaker_id,
+                target_id=next_speaker.character_id,
+                message=self.last_response or "The previous speaker has finished their reply.",
+                full_response=self.last_response or "The previous speaker has finished their reply.",
+                address_map=self._latest_address_map,
+            )
 
-        self._dialogue_turn_count += 1
         self.pending_speaker_id = next_speaker.character_id
         self.pending_addressed_turn = selected_addressed_turn
         self.stop_reason = f"Следующий ход: {next_speaker.display_name}"

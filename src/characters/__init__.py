@@ -26,6 +26,8 @@ class SecretExposedCharacter(Character):
 
 
 class CrazyMita(SecretExposedCharacter):
+    DISPLAY_NAME = "Crazy Mita"
+    STORAGE_NAME = "Crazy Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 50.0,
         "boredom": 20.0,
@@ -36,7 +38,8 @@ class CrazyMita(SecretExposedCharacter):
     def __init__(self):
         super().__init__(
             char_id="Crazy",
-            name="Crazy Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker mita",
             short_name="CrazyMita",
             miku_tts_name="/set_person CrazyMita",
@@ -46,6 +49,8 @@ class CrazyMita(SecretExposedCharacter):
         logger.info(f"Mita '{self.char_id}' fully initialized with overrides and chess attributes.")
 
 class KindMita(Character):
+    DISPLAY_NAME = "Kind Mita"
+    STORAGE_NAME = "Kind Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 90.0,
         "stress": 0.0,
@@ -55,7 +60,8 @@ class KindMita(Character):
     def __init__(self):
         super().__init__(
             char_id="Kind",
-            name="Kind Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker kind",
             short_name="MitaKind",
             miku_tts_name="/set_person KindMita",
@@ -64,6 +70,8 @@ class KindMita(Character):
         
 
 class ShortHairMita(Character):
+    DISPLAY_NAME = "ShortHair Mita"
+    STORAGE_NAME = "ShortHair Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 70.0,
         "boredom": 15.0,
@@ -74,7 +82,8 @@ class ShortHairMita(Character):
     def __init__(self):
         super().__init__(
             char_id="ShortHair",
-            name="ShortHair Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker shorthair",
             short_name="ShorthairMita",
             miku_tts_name="/set_person ShortHairMita",
@@ -83,6 +92,8 @@ class ShortHairMita(Character):
         
 
 class GhostMita(SecretExposedCharacter):
+    DISPLAY_NAME = "Ghost Mita"
+    STORAGE_NAME = "Ghost Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 30.0,
         "boredom": 10.0,
@@ -93,7 +104,8 @@ class GhostMita(SecretExposedCharacter):
     def __init__(self):
         super().__init__(
             char_id="Ghost",
-            name="Ghost Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker ghost",
             short_name="GhostMita",
             miku_tts_name="/set_person GhostMita",
@@ -102,6 +114,8 @@ class GhostMita(SecretExposedCharacter):
         
 
 class Cappie(Character):
+    DISPLAY_NAME = "Cappie"
+    STORAGE_NAME = "Cappie"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "boredom": 25.0,
         "current_fsm_state": "Default",
@@ -110,7 +124,8 @@ class Cappie(Character):
     def __init__(self):
         super().__init__(
             char_id="Cappie",
-            name="Cappie",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker cap",
             short_name="CappieMita",
             miku_tts_name="/set_person CapMita",
@@ -119,6 +134,8 @@ class Cappie(Character):
         
 
 class MilaMita(Character):
+    DISPLAY_NAME = "Mila"
+    STORAGE_NAME = "Mila"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 75.0,
         "current_fsm_state": "Default",
@@ -127,7 +144,8 @@ class MilaMita(Character):
     def __init__(self):
         super().__init__(
             char_id="Mila",
-            name="Mila",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker mila",
             short_name="Mila",
             miku_tts_name="/set_person MilaMita",
@@ -136,6 +154,8 @@ class MilaMita(Character):
         
 
 class CreepyMita(SecretExposedCharacter):
+    DISPLAY_NAME = "Creepy Mita"
+    STORAGE_NAME = "Creepy Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 40.0,
         "stress": 30.0,
@@ -145,7 +165,8 @@ class CreepyMita(SecretExposedCharacter):
     def __init__(self):
         super().__init__(
             char_id="Creepy",
-            name="Creepy Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker ghost",
             short_name="GhostMita",
             miku_tts_name="/set_person GhostMita",
@@ -153,6 +174,8 @@ class CreepyMita(SecretExposedCharacter):
         )
 
 class SleepyMita(Character):
+    DISPLAY_NAME = "Sleepy Mita"
+    STORAGE_NAME = "Sleepy Mita"
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "boredom": 40.0,
         "current_fsm_state": "Sleeping",
@@ -161,7 +184,8 @@ class SleepyMita(Character):
     def __init__(self):
         super().__init__(
             char_id="Sleepy",
-            name="Sleepy Mita",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker dream",
             short_name="SleepyMita",
             miku_tts_name="/set_person SleepyMita",
@@ -178,7 +202,7 @@ class SleepyMita(Character):
 #     def __init__(self):
 #         super().__init__(
 #             char_id="Cart_portal",
-#             name="Cart_portal",
+#             display_name="Cart_portal",
 #             silero_command="/speaker wheatley",
 #             short_name="Player",
 #             miku_tts_name="/set_person Player",
@@ -196,7 +220,7 @@ class SleepyMita(Character):
 #     def __init__(self):
 #         super().__init__(
 #             char_id="Cart_divan",
-#             name="Cart_divan",
+#             display_name="Cart_divan",
 #             silero_command="/speaker engineer",
 #             short_name="Player",
 #             miku_tts_name="/set_person Player",
@@ -206,6 +230,8 @@ class SleepyMita(Character):
         
 
 class GameMaster(Character):
+    DISPLAY_NAME = "GameMaster"
+    STORAGE_NAME = "GameMaster"
     dialogue_actor_kind = DialogueActorKind.GAME_MASTER
     DEFAULT_OVERRIDES: Dict[str, Any] = {
         "attitude": 100.0,
@@ -216,7 +242,8 @@ class GameMaster(Character):
     def __init__(self):
         super().__init__(
             char_id="GameMaster",
-            name="GameMaster",
+            display_name=self.DISPLAY_NAME,
+            storage_name=self.STORAGE_NAME,
             silero_command="/speaker dryad",
             short_name="PhoneMita",
             miku_tts_name="/set_person PhoneMita",
@@ -235,7 +262,7 @@ class GameMaster(Character):
 #     def __init__(self):
 #         super().__init__(
 #             char_id="Mitaphone",
-#             name="Mitaphone",
+#             display_name="Mitaphone",
 #             silero_command="/speaker dryad",
 #             short_name="PhoneMita",
 #             miku_tts_name="/set_person PhoneMita",

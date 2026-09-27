@@ -19,6 +19,7 @@ class ServerGameLinkService(GameLinkService):
         self._connected = False
         self._probe: Optional[Callable[[], Optional[bool]]] = None
         self._owner_probe: Optional[Callable[[], str]] = None
+        self._unity_target_character_id = ""
 
     def attach_probe(self, probe: Callable[[], Optional[bool]]) -> None:
         """probe() -> True/False по живым соединениям, либо None если неизвестно."""
@@ -42,7 +43,24 @@ class ServerGameLinkService(GameLinkService):
 
     def set_connected(self, connected: bool) -> None:
         with self._lock:
-            self._connected = bool(connected)
+            connected = bool(connected)
+            if connected and not self._connected:
+                self._unity_target_character_id = ""
+            self._connected = connected
+            if not self._connected:
+                self._unity_target_character_id = ""
+
+    def unity_target_character_id(self) -> str:
+        with self._lock:
+            return self._unity_target_character_id
+
+    def set_unity_target_character_id(self, character_id: str) -> bool:
+        normalized = str(character_id or "").strip()
+        with self._lock:
+            if self._unity_target_character_id == normalized:
+                return False
+            self._unity_target_character_id = normalized
+            return True
 
     def is_connected(self) -> bool:
         with self._lock:

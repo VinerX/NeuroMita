@@ -123,6 +123,7 @@ class AIHubDialog(QDialog):
         self._refresh_inflight = False
         self._checking_component_ids: set[str] = set()
         self._rendered_language = ""
+        self._allow_close_without_unsaved_prompt = False
         self._build()
         self.view_model.state_changed.connect(self.render)
         self.view_model.effect_emitted.connect(self.handle_effect)
@@ -654,6 +655,22 @@ class AIHubDialog(QDialog):
         cat = str(data.get("category") or "").strip().lower()
         cat = ROW_CATEGORY_MAP.get(cat, cat)
         cid = str(data.get("component_id") or "").strip()
+
+        # AI Hub may already be open when another part of the application asks
+        # it to jump to another component/category.  Treat that exactly like
+        # direct in-dialog navigation so an external activation cannot bypass
+        # the unsaved-settings guard.
+        current_component = ""
+        panel = getattr(self, "_settings_panel", None)
+        if panel is not None:
+            current_component = panel.selected_component_id()
+        changes_settings_target = bool(
+            (cat and cat != self._selected_category)
+            or (cid and current_component and cid != current_component)
+        )
+        if changes_settings_target and not self._settings_navigation_allowed(discard=True):
+            return
+
         if cat:
             self._pending_category = cat
         if cid:
@@ -812,13 +829,31 @@ class AIHubDialog(QDialog):
         self._rendered_language = self._current_ui_language()
 
     # ----------------------------------------------------------- tabs & filters
-    def _set_tab(self, key: str) -> None:
-        key = key if key in ("install", "settings") else "install"
+    def _settings_navigation_allowed(self, *, discard: bool = True) -> bool:
+        panel = getattr(self, "_settings_panel", None)
+        if panel is None or not panel.has_unsaved_changes():
+            return True
+        if not panel.confirm_discard_unsaved_changes():
+            return False
+        if discard:
+            panel.discard_unsaved_changes()
+        return True
+
+    def _render_tab_selection(self, key: str) -> None:
         for k, btn in self._tab_buttons.items():
             btn.setProperty("active", "true" if k == key else "false")
             btn.setChecked(k == key)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+
+    def _set_tab(self, key: str) -> None:
+        key = key if key in ("install", "settings") else "install"
+        current_key = "settings" if self._stack.currentIndex() == 1 else "install"
+        if current_key == "settings" and key != current_key:
+            if not self._settings_navigation_allowed(discard=True):
+                self._render_tab_selection(current_key)
+                return
+        self._render_tab_selection(key)
         self._stack.setCurrentIndex(1 if key == "settings" else 0)
         # the settings panel should reflect the current category when shown
         if key == "settings" and hasattr(self, "_settings_panel"):
@@ -864,6 +899,8 @@ class AIHubDialog(QDialog):
     def _select_category(self, key: str) -> None:
         if key not in CATEGORY_ORDER:
             return
+        if key != self._selected_category and not self._settings_navigation_allowed(discard=True):
+            return
         self._selected_category = key
         self._update_catalog_header()
         for k, btn in self._category_buttons.items():
@@ -887,6 +924,54 @@ class AIHubDialog(QDialog):
     def _category_status_loaded(self, category: str) -> bool:
         rows = [row for row in self._rows if row_category(row) == category]
         return bool(rows) and all(isinstance(row.get("status"), dict) for row in rows)
+
+    def _confirm_close_with_unsaved_settings(self) -> bool:
+        panel = getattr(self, "_settings_panel", None)
+        if panel is None or not panel.has_unsaved_changes():
+            return True
+        answer = QMessageBox.warning(
+            self,
+            _("Несохранённые изменения", "Unsaved changes"),
+            _(
+                "Изменения настроек не сохранены. Если продолжить, они будут потеряны.",
+                "Settings changes have not been saved. If you continue, they will be lost.",
+            ),
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return False
+        panel.discard_unsaved_changes()
+        return True
+
+    def confirm_hide_on_close(self) -> bool:
+        """Called by WindowManager before hide-on-close consumes native Close.
+
+        The system title-bar X is intercepted by WindowManager's event filter,
+        so closeEvent() is not reached for singleton hide-on-close dialogs.
+        Keep the unsaved-settings modal at that boundary as well.
+        """
+        if self._allow_close_without_unsaved_prompt:
+            return True
+        return self._confirm_close_with_unsaved_settings()
+
+    def reject(self) -> None:
+        if self._allow_close_without_unsaved_prompt:
+            super().reject()
+            return
+        if not self._confirm_close_with_unsaved_settings():
+            return
+        self._allow_close_without_unsaved_prompt = True
+        try:
+            super().reject()
+        finally:
+            self._allow_close_without_unsaved_prompt = False
+
+    def closeEvent(self, event) -> None:
+        if self._allow_close_without_unsaved_prompt or self._confirm_close_with_unsaved_settings():
+            super().closeEvent(event)
+            return
+        event.ignore()
 
     # ----------------------------------------------------------- filtering
     def _filtered_rows(self) -> list[dict[str, Any]]:
@@ -938,7 +1023,11 @@ class AIHubDialog(QDialog):
             item = self._scroll_layout.takeAt(0)
             w = item.widget()
             if w is not None:
-                w.setParent(None)
+                # Keep the widget owned by the dialog until Qt processes the
+                # deferred delete.  Detaching a visible child turns it into a
+                # temporary top-level window on Windows, which can produce a
+                # row of stray ``python`` taskbar entries during refreshes.
+                w.hide()
                 w.deleteLater()
 
     def _show_scroll_loading(self) -> None:
@@ -1474,7 +1563,10 @@ class AIHubDialog(QDialog):
             item = self._queue_layout.takeAt(0)
             w = item.widget()
             if w is not None:
-                w.setParent(None)
+                # Queue progress can refresh several times per second.  Do not
+                # promote retired rows to top-level windows while deleteLater
+                # is pending (see _clear_scroll for the Windows consequence).
+                w.hide()
                 w.deleteLater()
 
     @staticmethod
@@ -1538,7 +1630,7 @@ class AIHubDialog(QDialog):
             item = lay.takeAt(0)
             w = item.widget()
             if w is not None:
-                w.setParent(None)
+                w.hide()
                 w.deleteLater()
 
         running = self._queue_state.get("running")

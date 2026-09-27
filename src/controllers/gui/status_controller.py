@@ -49,11 +49,13 @@ class StatusController(BaseController):
         else:
             logger.error("StatusController: view not found")
 
-    def show_mita_error(self, error_message):
+    def show_mita_error(self, error_message, payload: dict | None = None):
         logger.debug(f"[DEBUG] StatusController: show error: {error_message}")
         logger.info(f"StatusController: show_mita_error: {error_message}")
         if self.view:
-            self.view.show_error_signal.emit(error_message)
+            data = dict(payload or {})
+            data["error"] = str(error_message or "")
+            self.view.show_error_signal.emit(data)
         else:
             logger.error("StatusController: view not found")
 
@@ -171,7 +173,7 @@ class StatusController(BaseController):
             self._last_detailed_error_text = error_message
             self._last_detailed_error_ts = time.time()
 
-        self.show_mita_error(error_message)
+        self.show_mita_error(error_message, data)
         if provider_code.startswith(("network.", "timeout.")):
             self._show_network_error_in_chat(error_message)
 

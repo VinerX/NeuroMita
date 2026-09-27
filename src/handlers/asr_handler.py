@@ -318,7 +318,13 @@ class SpeechRecognition:
             return []
         try:
             if hasattr(inst, "settings_spec"):
-                return inst.settings_spec() or []
+                from core.voice_device_selection import expand_voice_device_schema
+                from utils.gpu_utils import get_hardware_snapshot
+
+                return expand_voice_device_schema(
+                    list(inst.settings_spec() or []),
+                    get_hardware_snapshot(),
+                )
         except Exception as e:
             logger.warning(f"settings_spec error for {engine}: {format_exception(e)}")
         return []
@@ -480,6 +486,24 @@ class SpeechRecognition:
             return None
 
     @staticmethod
+    def _live_payload(device_id: int) -> dict:
+        engine_id = SpeechRecognition._recognizer_type
+        return {
+            "engine_id": engine_id,
+            "microphone_index": int(device_id or 0),
+            "engine_settings": SpeechRecognition._engine_settings.get(engine_id, {}) or {},
+            "vad": {
+                "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
+                "chunk_size": SpeechRecognition.CHUNK_SIZE,
+                "vad_threshold": SpeechRecognition.VAD_THRESHOLD,
+                "silence_timeout": SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
+                "pre_buffer_duration": SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
+                "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
+                "min_speech_duration": SpeechRecognition.MIN_SPEECH_DURATION_SEC,
+            },
+        }
+
+    @staticmethod
     def speech_recognition_start(device_id: int, loop) -> bool:
         with SpeechRecognition._start_lock:
             if SpeechRecognition._is_running:
@@ -508,22 +532,7 @@ class SpeechRecognition:
                     "The ASR service is unavailable. See the log for details.",
                 ))
             else:
-                vad = {
-                    "sample_rate": SpeechRecognition.VOSK_SAMPLE_RATE,
-                    "chunk_size": SpeechRecognition.CHUNK_SIZE,
-                    "vad_threshold": SpeechRecognition.VAD_THRESHOLD,
-                    "silence_timeout": SpeechRecognition.VAD_SILENCE_TIMEOUT_SEC,
-                    "pre_buffer_duration": SpeechRecognition.VAD_PRE_BUFFER_DURATION_SEC,
-                    "max_speech_duration": SpeechRecognition.MAX_SPEECH_DURATION_SEC,
-                    "min_speech_duration": SpeechRecognition.MIN_SPEECH_DURATION_SEC,
-                }
-                settings = SpeechRecognition._engine_settings.get(engine_id, {}) or {}
-                start_payload = {
-                    "engine_id": engine_id,
-                    "microphone_index": int(device_id or 0),
-                    "engine_settings": settings,
-                    "vad": vad,
-                }
+                start_payload = SpeechRecognition._live_payload(device_id)
                 activate = getattr(eng, "activate_environment", None)
                 try:
                     activated = callable(activate) and activate(
@@ -576,6 +585,51 @@ class SpeechRecognition:
         )
         logger.info(f"Speech recognition started (local) on device {device_id}")
         return True
+
+    @staticmethod
+    def speech_recognition_switch_microphone(device_id: int) -> bool:
+        """Switch only the managed capture stream, keeping loaded models alive."""
+
+        if not SpeechRecognition._is_running or not SpeechRecognition._remote_asr_mode:
+            return False
+
+        eng = SpeechRecognition._get_ai_engine()
+        if not eng:
+            return False
+
+        try:
+            future = eng.call(
+                "asr",
+                "switch_input",
+                {"microphone_index": int(device_id or 0)},
+            )
+            switched = bool(future.result(timeout=15.0))
+        except Exception as exc:
+            logger.error(
+                f"Не удалось переключить поток ASR на микрофон {device_id}: "
+                f"{format_exception(exc)}",
+                exc_info=True,
+            )
+            return False
+
+        if switched:
+            SpeechRecognition.microphone_index = int(device_id or 0)
+            update_replay = getattr(eng, "update_runtime_validation_payload", None)
+            if callable(update_replay):
+                updated = bool(
+                    update_replay(
+                        "asr",
+                        SpeechRecognition._recognizer_type,
+                        SpeechRecognition._live_payload(device_id),
+                    )
+                )
+                if not updated:
+                    logger.warning(
+                        "ASR microphone switched, but worker replay state "
+                        "could not be updated."
+                    )
+            logger.info(f"ASR microphone stream switched to device {device_id}")
+        return switched
 
     @staticmethod
     async def speech_recognition_start_async():

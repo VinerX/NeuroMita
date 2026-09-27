@@ -300,18 +300,33 @@ class VoiceModelGuiController(BaseController):
 
         values = self._vm_view.get_all_section_values()
         try:
-            backend.save_settings_values(values)
+            self._save_values(values)
+        except ValueError as exc:
+            self.event_bus.emit(
+                Events.GUI.SHOW_ERROR_MESSAGE,
+                {"title": _("Устройство недоступно", "Device unavailable"), "message": str(exc)},
+            )
+            return
         except Exception as e:
             logger.error(f"Ошибка сохранения настроек локальных моделей: {format_exception(e)}", exc_info=True)
+            return
 
-        self._after_models_changed()
         self._view_model.refresh()
 
     def _save_values(self, values: dict) -> None:
         backend = self._backend()
         if backend is None:
             raise RuntimeError("VoiceModelController is not initialized")
-        backend.save_settings_values(dict(values))
+        result = backend.save_settings_values(dict(values))
+        errors = result.get("errors") if isinstance(result, dict) else None
+        if isinstance(errors, dict) and errors:
+            details = "\n".join(
+                f"{model_id} / {key}: {message}"
+                for model_id, fields in errors.items()
+                if isinstance(fields, dict)
+                for key, message in fields.items()
+            )
+            raise ValueError(details)
         self._after_models_changed()
 
     def _close_with_values(self, values: dict) -> None:

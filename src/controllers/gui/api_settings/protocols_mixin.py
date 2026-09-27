@@ -57,6 +57,10 @@ class ProtocolsMixin:
         v = self.view
         pid = str(protocol_id or "").strip()
         proto = self._protocols.get(pid) or {}
+        from ui.provider_icons import provider_icon, protocol_provider
+        icon = v.template_combo.itemIcon(v.template_combo.currentIndex()) if v.template_combo.currentData() is not None else provider_icon(protocol_provider(pid))
+        v.preset_provider_icon.setPixmap(icon.pixmap(38, 38))
+        v.api_type_label.setText(str(proto.get("name") or ""))
         if hasattr(v, "openrouter_routing_section"):
             v.openrouter_routing_section.setVisible(pid == "openrouter_default")
 
@@ -94,4 +98,9 @@ class ProtocolsMixin:
         if self._is_loading_ui:
             return
         self._apply_protocol_details(self._current_protocol_id_ui())
+        protocol = self._protocols.get(self._current_protocol_id_ui()) or {}
+        self.model_settings_controller.set_dialect(
+            str(protocol.get("dialect") or "openai_chat_completions"),
+            str(protocol.get("settings_schema_id") or ""),
+        )
         self._on_field_changed()

@@ -758,7 +758,7 @@ class RagTesterService:
         if not msgs:
             return 0
 
-        hm = HistoryManager(character_name=cid, character_id=cid)
+        hm = HistoryManager(storage_name=cid, character_id=cid)
         rag = RAGManager(cid)
 
         inserted = 0
@@ -1001,7 +1001,7 @@ class RagTesterService:
     def load_scenario_from_db(self, cid: str, *, hist_limit: int, mem_limit: int) -> Scenario:
         cid = str(cid or "").strip() or "RAG_TEST"
 
-        hm = HistoryManager(character_name=cid, character_id=cid)
+        hm = HistoryManager(storage_name=cid, character_id=cid)
         hm._ensure_history_schema()
 
         # active messages (context)
@@ -1131,7 +1131,7 @@ class RagTesterService:
         return int(rag.index_all_missing(progress_callback=None) or 0)
 
     def missing_count(self, cid: str) -> int:
-        hm = HistoryManager(character_name=cid, character_id=cid)
+        hm = HistoryManager(storage_name=cid, character_id=cid)
         return int(hm.get_missing_embeddings_count() or 0)
 
     # -------------------------

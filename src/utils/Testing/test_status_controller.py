@@ -78,6 +78,8 @@ class StatusControllerTests(unittest.TestCase):
 
         controller._on_failed_response(SimpleNamespace(data={
             "error": "Generic failure",
+            "message_id": "incoming:req-42",
+            "character_id": "Mita",
             "provider_error": {
                 "message": "Network error. Reason: write operation timed out",
                 "reason": "write operation timed out",
@@ -87,7 +89,16 @@ class StatusControllerTests(unittest.TestCase):
 
         self.assertEqual(
             view.show_error_signal.calls,
-            ["Network error. Reason: write operation timed out"],
+            [{
+                "error": "Network error. Reason: write operation timed out",
+                "message_id": "incoming:req-42",
+                "character_id": "Mita",
+                "provider_error": {
+                    "message": "Network error. Reason: write operation timed out",
+                    "reason": "write operation timed out",
+                    "retryable": True,
+                },
+            }],
         )
 
     def test_retryable_attempt_only_pulses_without_terminal_error_banner(self):
@@ -127,7 +138,7 @@ class StatusControllerTests(unittest.TestCase):
 
         self.assertEqual(
             view.update_chat_signal.calls,
-            [("event", "⚠ Нет подключения к интернету.", False, "")],
+            [("event", "Нет подключения к интернету.", False, "")],
         )
 
 

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize
+
+from PyQt6.QtCore import Qt, QSize, QRect, QTimer, QPointF
 from PyQt6.QtGui import QPainter, QPixmap, QColor, QFont, QFontMetrics, QPalette
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame, QCheckBox
+    QStyledItemDelegate, QStyle, QListWidget, QListWidgetItem, QComboBox, QSizePolicy, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QTextEdit, QToolButton, QPushButton, QFrame, QCheckBox, QAbstractItemView, QMenu
 )
 import qtawesome as qta
 
 from utils import _
-from localization.live import tr_set, register_if_tr
+from localization.live import tr_set, register_if_tr, register
+from styles.theme import THEME
+from ui.provider_icons import provider_icon
+from PyQt6.QtWidgets import QToolTip
+
+
+def _label_translation(text):
+    ru = getattr(text, "tr_ru", None)
+    return str(_(ru, getattr(text, "tr_en", ""))) if ru is not None else str(text)
 
 
 class ProviderDelegate(QStyledItemDelegate):
@@ -96,87 +105,150 @@ class ProviderDelegate(QStyledItemDelegate):
     def set_presets_meta(self, presets_meta):
         self.presets_meta = {p.id: p for p in presets_meta}
 
+    def _badges(self, index):
+        preset = self.presets_meta.get(index.data(Qt.ItemDataRole.UserRole))
+        pricing = getattr(preset, "pricing", "")
+        kind = getattr(preset, "badge_kind", "")
+        badges = []
+        if kind == "local":
+            badges.append(self._local_pixmap())
+        elif kind == "ru":
+            badges.append(self._ru_pixmap())
+        if kind != "local":
+            if pricing in ("free", "mixed"):
+                badges.append(self._free_pixmap())
+            if pricing in ("paid", "mixed"):
+                badges.append(qta.icon("fa5s.dollar-sign", color="#FFC107").pixmap(10, 14))
+        return badges
+
     def paint(self, painter, option, index):
-        if option.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-        else:
-            painter.fillRect(option.rect, option.palette.base())
-
-        preset_id = index.data(Qt.ItemDataRole.UserRole)
-        text = index.data()
-
-        if preset_id and preset_id in self.presets_meta:
-            preset = self.presets_meta[preset_id]
-            pricing = preset.pricing
-            badge_kind = getattr(preset, "badge_kind", "") or ""
-        else:
-            pricing = ""
-            badge_kind = ""
-
-        dollar_font = QFont("Segoe UI", 9, QFont.Weight.Bold)
-        ascent = QFontMetrics(dollar_font).ascent()
-
-        x = option.rect.x() + 4
-        y = option.rect.y() + (option.rect.height() - 16) // 2
-
-        if badge_kind == "local":
-            painter.drawPixmap(x, y, self._local_pixmap())
-            x += self._local_pixmap().width() + 6
-
-        elif badge_kind == "ru":
-            painter.drawPixmap(x, y, self._ru_pixmap())
-            x += self._ru_pixmap().width() + 6
-
-        if badge_kind != "local" and pricing == "free":
-            painter.drawPixmap(x, y, self._free_pixmap())
-            x += self._free_pixmap().width() + 6
-
-        elif badge_kind != "local" and pricing == "paid":
-            painter.setPen(QColor("#FFC107"))
-            painter.setFont(dollar_font)
-            painter.drawText(x, y + ascent, "$")
-            x += 12
-
-        elif badge_kind != "local" and pricing == "mixed":
-            painter.drawPixmap(x, y, self._free_pixmap())
-            x += self._free_pixmap().width() + 4
-
-            painter.setPen(QColor("#666"))
-            painter.setFont(QFont("Segoe UI", 8))
-            painter.drawText(x, y + 10, "/")
-            x += 8
-
-            painter.setPen(QColor("#FFC107"))
-            painter.setFont(dollar_font)
-            painter.drawText(x, y + ascent, "$")
-            x += 12
-
-        painter.setPen(option.palette.color(
-            QPalette.ColorRole.HighlightedText
-            if option.state & QStyle.StateFlag.State_Selected
-            else QPalette.ColorRole.Text
-        ))
+        painter.save()
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        painter.fillRect(option.rect, option.palette.highlight() if selected else option.palette.base())
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        x = option.rect.left() + 10
+        if icon is not None:
+            icon.paint(painter, QRect(x, option.rect.center().y() - 10, 20, 20))
+        x += 30
+        badges = self._badges(index)
+        reserved = sum(badge.width() + 6 for badge in badges)
+        metrics = QFontMetrics(option.font)
+        text = metrics.elidedText(str(index.data() or ""), Qt.TextElideMode.ElideRight,
+                                  max(0, option.rect.right() - x - reserved - 10))
         painter.setFont(option.font)
-        txt_rect = option.rect.adjusted(x - option.rect.x(), 0, -4, 0)
-        painter.drawText(txt_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        painter.setPen(option.palette.color(QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text))
+        painter.drawText(QRect(x, option.rect.top(), metrics.horizontalAdvance(text), option.rect.height()), Qt.AlignmentFlag.AlignVCenter, text)
+        x += metrics.horizontalAdvance(text) + 6
+        for badge in badges:
+            painter.drawPixmap(x, option.rect.center().y() - badge.height() // 2, badge)
+            x += badge.width() + 6
+        painter.restore()
 
     def sizeHint(self, option, index):
-        sz = super().sizeHint(option, index)
-        return sz.expandedTo(QSize(140, 24))
+        width = QFontMetrics(option.font).horizontalAdvance(str(index.data() or "")) + 50
+        width += sum(badge.width() + 6 for badge in self._badges(index))
+        return QSize(width, 32)
+
+
+class PresetCardDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        item = self.parent().item(index.row())
+        rect = option.rect.adjusted(2, 3, -2, -3)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        background = QColor(THEME["accent"] if selected else THEME["bg_root"])
+        if selected:
+            background.setAlphaF(0.12)
+        border = QColor(THEME["accent"] if selected else THEME["muted"])
+        if not selected:
+            border.setAlphaF(0.18)
+        painter.setBrush(background)
+        painter.setPen(border)
+        painter.drawRoundedRect(rect, 10, 10)
+        icon_rect = QRect(rect.left() + 14, rect.center().y() - 13, 26, 26)
+        provider_icon(getattr(item, "provider", "")).paint(painter, icon_rect)
+        x = rect.left() + 52
+        width = max(0, rect.width() - 82)
+        font = QFont(option.font)
+        font.setPixelSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(THEME["text"]))
+        title = item.base_name + (" *" if item.has_changes else "")
+        display_title, title_width, indicator = self._title_layout(rect, font, title, getattr(item, "is_default", False))
+        if indicator is not None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(THEME["success"]))
+            painter.drawEllipse(indicator)
+            painter.setPen(QColor(THEME["text"]))
+        self._draw_text(painter, x, rect.center().y() - 10, display_title)
+        font = QFont(option.font)
+        painter.setFont(font)
+        painter.setPen(QColor(THEME["muted"]))
+        text = item.model or str(_("Модель не выбрана", "No model selected"))
+        self._draw_text(painter, x, rect.center().y() + 10,
+                        QFontMetrics(font).elidedText(text, Qt.TextElideMode.ElideRight, width))
+        qta.icon("fa5s.ellipsis-v", color=THEME["muted"]).paint(
+            painter, QRect(rect.right() - 23, rect.center().y() - 9, 14, 18)
+        )
+        painter.restore()
+
+    @staticmethod
+    def _draw_text(painter, x, center_y, text):
+        bounds = QFontMetrics(painter.font()).tightBoundingRect(text)
+        baseline = center_y - (bounds.top() + bounds.bottom()) / 2
+        painter.drawText(QPointF(x, baseline), text)
+
+    @staticmethod
+    def _title_layout(rect, font, title, is_default):
+        width = max(0, rect.width() - 82 - (18 if is_default else 0))
+        metrics = QFontMetrics(font)
+        shown = metrics.elidedText(title, Qt.TextElideMode.ElideRight, width)
+        indicator = QRect(rect.left() + 52 + metrics.horizontalAdvance(shown) + 6, rect.center().y() - 15, 10, 10) if is_default else None
+        return shown, width, indicator
+
+    def sizeHint(self, option, index):
+        return QSize(270, 62)
+
+    def helpEvent(self, event, view, option, index):
+        rect = option.rect.adjusted(2, 3, -2, -3)
+        icon_rect = QRect(rect.left() + 14, rect.center().y() - 13, 26, 26)
+        if icon_rect.contains(event.pos()):
+            item = view.item(index.row())
+            text = getattr(item, "provider_label", "") or str(_("Пользовательский API", "Custom API"))
+            QToolTip.showText(event.globalPos(), text, view.viewport(), icon_rect)
+            return True
+        item = view.item(index.row())
+        font = QFont(option.font)
+        font.setPixelSize(14)
+        font.setBold(True)
+        title = item.base_name + (" *" if item.has_changes else "")
+        _, _, indicator = self._title_layout(rect, font, title, getattr(item, "is_default", False))
+        if indicator is not None and indicator.adjusted(-3, -3, 3, 3).contains(event.pos()):
+            QToolTip.showText(event.globalPos(), str(_("По умолчанию", "Default")), view.viewport())
+            return True
+        QToolTip.hideText()
+        return False
 
 
 class PresetsListWidget(QListWidget):
-    """Список пресетов с подсказкой-приглашением, когда пресетов ещё нет.
-
-    Пустой QListWidget выглядел как пустое поле без намёка на то, что делать.
-    Теперь по центру рисуется «Нажмите, чтобы создать пресет», а клик по
-    пустому списку эмитит create_requested (то же, что кнопка «+» рядом).
-    """
+    """Preset cards with context actions, internal reordering and an empty-state invitation."""
 
     create_requested = pyqtSignal()
+    action_requested = pyqtSignal(str, int)
+    order_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setItemDelegate(PresetCardDelegate(self))
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._open_menu)
         # Текст плейсхолдера рисуется в paintEvent (берётся свежим из `_()`),
         # а на смену языка перерисовываем виджет по сигналу.
         try:
@@ -191,7 +263,33 @@ class PresetsListWidget(QListWidget):
 
     @property
     def _placeholder_hint(self) -> str:
-        return _("или нажмите «+» рядом", "or use the “+” button on the right")
+        return _("Кнопка «Добавить пресет» находится сверху", "Use Add preset above")
+
+    def _open_menu(self, position):
+        item = self.itemAt(position)
+        if item is None:
+            return
+        menu = QMenu(self)
+        for key, label in (
+            ("default", _("Выбрать по умолчанию", "Use by default")),
+            ("rename", _("Переименовать", "Rename")),
+            ("copy", _("Дублировать", "Duplicate")),
+            ("remove", _("Удалить", "Delete")),
+        ):
+            action = menu.addAction(str(label))
+            if key == "default":
+                action.setEnabled(not getattr(item, "is_default", False))
+            action.triggered.connect(lambda checked=False, k=key, pid=item.preset_id: self.action_requested.emit(k, pid))
+        menu.exec(self.viewport().mapToGlobal(position))
+
+    def dropEvent(self, event):
+        blocked = self.blockSignals(True)
+        try:
+            super().dropEvent(event)
+        finally:
+            self.blockSignals(blocked)
+        if event.isAccepted():
+            QTimer.singleShot(0, self.order_changed.emit)
 
     def _is_empty(self) -> bool:
         return self.count() == 0
@@ -222,6 +320,11 @@ class PresetsListWidget(QListWidget):
         painter.end()
 
     def mousePressEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item is not None and event.button() == Qt.MouseButton.LeftButton:
+            if event.pos().x() >= self.visualItemRect(item).right() - 30:
+                self._open_menu(event.pos())
+                return
         if self._is_empty():
             self.create_requested.emit()
             return
@@ -235,6 +338,10 @@ class CustomPresetListItem(QListWidgetItem):
         self.base_name = name
         self.model = str(model or "")
         self.has_changes = has_changes
+        self.provider = ""
+        self.provider_label = ""
+        self.is_default = False
+        self.setData(Qt.ItemDataRole.UserRole, preset_id)
         self.update_display()
 
     def update_changes_indicator(self, has_changes):
@@ -253,7 +360,7 @@ class CustomPresetListItem(QListWidgetItem):
 class LabeledLineEditRow(QWidget):
     def __init__(self, label: str, *, password: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
-        self._base_label = str(label)
+        self._base_label = label
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
@@ -266,6 +373,9 @@ class LabeledLineEditRow(QWidget):
         # Живая смена языка: если метка пришла из _()/TrStr — регистрируем, чтобы
         # переустанавливалась при смене языка (иначе застывает на языке сборки).
         register_if_tr(self.label, label)
+        register(self.label, lambda widget, text=label: widget.setText(
+            _label_translation(text) + ("*" if widget.property("dirty") else "")
+        ))
 
         self.edit = QLineEdit()
         if password:
@@ -291,24 +401,28 @@ class LabeledLineEditRow(QWidget):
         if dirty == self._dirty:
             return
         self._dirty = dirty
+        self.label.setProperty("dirty", dirty)
         if dirty:
-            self.label.setText(f"{self._base_label}*")
+            self.label.setText(_label_translation(self._base_label) + "*")
             self.label.setStyleSheet("color: #f39c12; font-weight: bold;")
         else:
-            self.label.setText(self._base_label)
+            self.label.setText(_label_translation(self._base_label))
             self.label.setStyleSheet("")
 
 
 class LabeledTextEditRow(QWidget):
     def __init__(self, label: str, *, parent: QWidget | None = None):
         super().__init__(parent)
-        self._base_label = str(label)
+        self._base_label = label
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
         lay.setSpacing(4)
 
         self.label = QLabel(self._base_label)
+        register(self.label, lambda widget, text=label: widget.setText(
+            _label_translation(text) + ("*" if widget.property("dirty") else "")
+        ))
         self.label.setWordWrap(True)
         lay.addWidget(self.label)
 
@@ -333,11 +447,12 @@ class LabeledTextEditRow(QWidget):
         if dirty == self._dirty:
             return
         self._dirty = dirty
+        self.label.setProperty("dirty", dirty)
         if dirty:
-            self.label.setText(f"{self._base_label}*")
+            self.label.setText(_label_translation(self._base_label) + "*")
             self.label.setStyleSheet("color: #f39c12; font-weight: bold;")
         else:
-            self.label.setText(self._base_label)
+            self.label.setText(_label_translation(self._base_label))
             self.label.setStyleSheet("")
 
 
@@ -361,7 +476,8 @@ class ReserveKeyRow(QWidget):
         self.key_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.eye_btn = QToolButton()
-        self.eye_btn.setText("\U0001F441")
+        self.eye_btn.setIcon(qta.icon("fa5s.eye", color=THEME["muted"]))
+        self.eye_btn.toggled.connect(lambda on: self.eye_btn.setIcon(qta.icon("fa5s.eye-slash" if on else "fa5s.eye", color=THEME["muted"])))
         self.eye_btn.setCheckable(True)
         self.eye_btn.setFixedWidth(24)
         tr_set(self.eye_btn, "Показать/скрыть ключ", "Show/hide key", "setToolTip")
@@ -372,7 +488,7 @@ class ReserveKeyRow(QWidget):
         )
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color=THEME["accent"]))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
@@ -440,12 +556,14 @@ class ReserveKeysEditor(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = tr_set(QPushButton(), "+ Добавить ключ", "+ Add key")
+        self.add_btn = tr_set(QPushButton(), "Добавить ключ", "Add key")
+        self.add_btn.setIcon(qta.icon("fa5s.plus", color=THEME["text"]))
         self.add_btn.clicked.connect(lambda *_: self._on_add_clicked())
         btn_row.addWidget(self.add_btn)
 
         self._toggle_all_btn = QToolButton()
-        self._toggle_all_btn.setText("\U0001F441")
+        self._toggle_all_btn.setIcon(qta.icon("fa5s.eye", color=THEME["muted"]))
+        self._toggle_all_btn.toggled.connect(lambda on: self._toggle_all_btn.setIcon(qta.icon("fa5s.eye-slash" if on else "fa5s.eye", color=THEME["muted"])))
         self._toggle_all_btn.setCheckable(True)
         self._toggle_all_btn.setFixedWidth(24)
         tr_set(self._toggle_all_btn, "Показать/скрыть все ключи", "Show/hide all keys", "setToolTip")
@@ -458,7 +576,10 @@ class ReserveKeysEditor(QWidget):
     def attach_section(self, section, base_title: str) -> None:
         """Секция-обёртка, заголовок которой получает '*' при наличии изменений."""
         self._section = section
-        self._section_base_title = str(base_title or "")
+        self._section_base_title = base_title or ""
+        register(section.title_label, lambda widget, text=base_title: widget.setText(
+            _label_translation(text) + ("*" if widget.property("dirty") else "")
+        ))
 
     def _iter_rows(self):
         for i in range(self._rows_layout.count()):
@@ -509,6 +630,9 @@ class ReserveKeysEditor(QWidget):
             ks = str(k or "").strip()
             if ks:
                 self._add_row(ks)
+        if hasattr(self, "count_label"):
+            self.count_label.setProperty("keyCount", len(self.get_keys()))
+            self.count_label.setText(str(len(self.get_keys())) + str(_(" ключей", " keys")))
 
     def is_distribute(self) -> bool:
         return bool(self.distribute_checkbox.isChecked())
@@ -537,7 +661,8 @@ class ReserveKeysEditor(QWidget):
             return
         self._dirty = dirty
         if self._section is not None and hasattr(self._section, "title_label"):
-            title = f"{self._section_base_title}*" if dirty else self._section_base_title
+            self._section.title_label.setProperty("dirty", dirty)
+            title = _label_translation(self._section_base_title) + ("*" if dirty else "")
             self._section.title_label.setText(title)
 
 
@@ -582,7 +707,7 @@ class FallbackRow(QWidget):
         self.down_btn.setAutoRaise(True)
 
         self.remove_btn = QToolButton()
-        self.remove_btn.setIcon(qta.icon("fa5s.times", color="#c04c80"))
+        self.remove_btn.setIcon(qta.icon("fa5s.times", color=THEME["accent"]))
         self.remove_btn.setFixedSize(22, 22)
         self.remove_btn.setIconSize(QSize(11, 11))
         self.remove_btn.setAutoRaise(True)
@@ -776,13 +901,16 @@ class FallbackChainEditor(QWidget):
 class LabeledComboRow(QWidget):
     def __init__(self, label: str, *, parent: QWidget | None = None):
         super().__init__(parent)
-        self._base_label = str(label)
+        self._base_label = label
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
         lay.setSpacing(10)
 
         self.label = QLabel(self._base_label)
+        register(self.label, lambda widget, text=label: widget.setText(
+            _label_translation(text) + ("*" if widget.property("dirty") else "")
+        ))
         self.label.setMinimumWidth(140)
         self.label.setMaximumWidth(140)
         self.label.setWordWrap(True)
@@ -829,9 +957,10 @@ class LabeledComboRow(QWidget):
         if dirty == self._dirty:
             return
         self._dirty = dirty
+        self.label.setProperty("dirty", dirty)
         if dirty:
-            self.label.setText(f"{self._base_label}*")
+            self.label.setText(_label_translation(self._base_label) + "*")
             self.label.setStyleSheet("color: #f39c12; font-weight: bold;")
         else:
-            self.label.setText(self._base_label)
+            self.label.setText(_label_translation(self._base_label))
             self.label.setStyleSheet("")

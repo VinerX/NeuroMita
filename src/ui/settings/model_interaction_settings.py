@@ -17,8 +17,8 @@ def setup_model_interaction_controls(
 
     general_config = [
         {
-            'label': _('Параметры генерации ответов моделью и работы инструментов (tools).',
-                       'Parameters for response generation and tool usage.'),
+            'label': _('Поведение запросов и работа инструментов. Параметры генерации настраиваются у API-пресета.',
+                       'Request behavior and tool usage. Generation parameters are configured in the API preset.'),
             'type': 'text',
         },
         {'label': _('Настройки сообщений', 'Message settings'), 'type': 'subsection'},
@@ -34,41 +34,16 @@ def setup_model_interaction_controls(
         {'label': _('Reasoning в схеме (schema CoT)', 'Schema reasoning (CoT)'), 'key': 'SCHEMA_REASONING',
          'type': 'checkbutton',
          'default_checkbutton': False,
-         'tooltip': _('Включает поле reasoning в JSON-схему структурированного ответа. '
-                      'Модель "думает вслух" перед заполнением полей — улучшает качество для локальных моделей. '
-                      'Отключите если используете нативный thinking или хотите сэкономить токены.',
-                      'Adds a reasoning field to the structured output JSON schema. '
-                      'The model "thinks aloud" before filling other fields — improves quality for local models. '
-                      'Disable if using native thinking or to save tokens.')},
-        {'label': _('Режим размышлений (enable_thinking)', 'Enable thinking mode'), 'key': 'ENABLE_THINKING',
-         'type': 'combobox',
-         'options': [
-             (_('Не определять', 'Do not specify'), ''),
-             (_('Нет', 'No'), False),
-             (_('Да', 'Yes'), True),
-         ],
-         'default': '',
-         'depends_on_value': True,
-         'tooltip': _('Для моделей Qwen3 и аналогичных: включает thinking-режим. '
-                      'Выберите «Не определять», чтобы не передавать параметр провайдеру; '
-                      '«Нет» и «Да» задают явное значение.',
-                      'For Qwen3 and similar models: enables thinking mode. '
-                      'Choose "Do not specify" to leave the parameter out of the provider request; '
-                      '"No" and "Yes" set an explicit value.')},
-        {'label': _('Глубина размышлений', 'Reasoning effort'),
-         'key': 'MODEL_REASONING_EFFORT', 'type': 'combobox',
-         'options': ['low', 'medium', 'high'], 'default': 'medium',
-         'depends_on': 'ENABLE_THINKING',
-         'tooltip': _('Глубина размышлений для локальных моделей через LM Studio / llama.cpp '
-                      '(Gemma 4, Qwen3): чем выше, тем длиннее мысли и больше потраченных токенов.\n'
-                      'Работает только при включённом "Режиме размышлений" и только у провайдеров, '
-                      'которые понимают reasoning_effort — на остальных параметр не отправляется.',
-                      'Reasoning depth for local models via LM Studio / llama.cpp (Gemma 4, Qwen3): '
-                      'the higher, the longer the thoughts and the more tokens spent.\n'
-                      'Requires "Enable thinking mode", and only applies to providers that understand '
-                      'reasoning_effort — it is not sent to the others.')},
-        {'label': _('Использовать gpt4free последней попыткой ', 'Use gpt4free as last attempt'),
-         'key': 'GPT4FREE_LAST_ATTEMPT', 'type': 'checkbutton', 'default_checkbutton': False},
+         'description': _('Добавляет явное поле reasoning в схему вывода перед остальными полями. В основном полезно для локальных моделей без нативного reasoning. Отключите при нативном thinking/reasoning, чтобы избежать дублирования и лишних токенов.',
+                          'Adds an explicit reasoning field to the output schema before other fields. Useful mainly for local or non-reasoning models. Disable with native thinking/reasoning to avoid duplicate reasoning and extra token usage.'),
+         'tooltip': _('Когда включать: используйте для моделей без нативного reasoning, если они иногда выбирают неправильные действия, эмоции, вызовы инструментов или другие структурированные поля. '
+                      'Модель сначала пишет короткий шаг рассуждения, а затем заполняет финальные поля ответа, используя этот контекст.\n\n'
+                      'Когда отключать: отключите для моделей, которые уже используют нативный thinking/reasoning, блоки <think> или отдельный канал reasoning. '
+                      'В таких случаях настройка обычно дублирует внутренние рассуждения модели и расходует токены впустую.',
+                      'When to enable: Use this for models without native reasoning when they sometimes choose incorrect actions, emotions, tool calls, or other structured fields. '
+                      'The model first writes a short reasoning step and then fills the final response fields using that context.\n\n'
+                      'When to disable: Disable it for models that already use native thinking/reasoning, <think> blocks, or a separate reasoning channel. '
+                      'In those cases it usually duplicates the model\'s internal reasoning and wastes tokens.')},
 
         {'type': 'end'},
 
@@ -79,102 +54,6 @@ def setup_model_interaction_controls(
         {'label': _('Время ожидания звука (сек)', 'Voice waiting time (sec)'),
          'key': 'VOICE_WAIT_TIME', 'type': 'entry', 'default': 40,
          'tooltip': _('время ожидания озвучки', 'voice generation waiting time')},
-
-        {'type': 'end'},
-
-        {'label': _('Настройки генерации текста', 'Text Generation Settings'), 'type': 'subsection'},
-
-        {'label': _('Макс. токенов в ответе', 'Max response tokens'),
-        'key': 'MODEL_MAX_RESPONSE_TOKENS',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_MAX_RESPONSE_TOKENS',
-        'toggle_default': self.settings.get('USE_MODEL_MAX_RESPONSE_TOKENS', True),
-        'default': 2500,
-        'validation': self.validate_positive_integer,
-        'tooltip': _('Максимальное количество токенов в ответе модели',
-                    'Maximum number of tokens in the model response')},
-
-        {'label': _('Температура', 'Temperature'), 'key': 'MODEL_TEMPERATURE',
-         'type': 'entry', 'default': '',
-         'toggle_key': 'USE_MODEL_TEMPERATURE',
-         'toggle_default': self.settings.get('USE_MODEL_TEMPERATURE', True),
-         'validation': self.validate_float_0_to_2,
-         'tooltip': _('Креативность ответа (0.0 = строго, 2.0 = очень творчески)',
-                      'Creativity of response (0.0 = strict, 2.0 = very creative)')},
-
-        {'label': _('Top-K', 'Top-K'),
-        'key': 'MODEL_TOP_K',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_TOP_K',
-        'toggle_default': self.settings.get('USE_MODEL_TOP_K', True),
-        'default': '',
-        'validation': self.validate_positive_integer_or_zero,
-        'tooltip': _('Ограничивает выбор токенов K наиболее вероятными (0 = отключено)',
-                    'Limits token selection to K most likely (0 = disabled)')},
-
-        {'label': _('Top-P', 'Top-P'),
-        'key': 'MODEL_TOP_P',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_TOP_P',
-        'toggle_default': self.settings.get('USE_MODEL_TOP_P', True),
-        'default': '',
-        'validation': self.validate_float_0_to_1,
-        'tooltip': _('Ограничивает выбор токенов по кумулятивной вероятности (0.0-1.0)',
-                    'Limits token selection by cumulative probability (0.0-1.0)')},
-
-        {'label': _('Бюджет размышлений', 'Thinking budget'),
-        'key': 'MODEL_THINKING_BUDGET',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_THINKING_BUDGET',
-        'toggle_default': self.settings.get('USE_MODEL_THINKING_BUDGET', False),
-        'default': 0.0,
-        'validation': self.validate_float_minus2_to_2,
-        'tooltip': _('Параметр, влияющий на глубину "размышлений" модели (зависит от модели)',
-                    'Parameter influencing the depth of model "thoughts" (model-dependent)')},
-
-        {'label': _('Бюджет размышлений Gemini (токены)', 'Gemini thinking budget (tokens)'),
-        'key': 'GEMINI_THINKING_BUDGET',
-        'type': 'entry',
-        'toggle_key': 'USE_GEMINI_THINKING_BUDGET',
-        'toggle_default': self.settings.get('USE_GEMINI_THINKING_BUDGET', False),
-        'default': 8192,
-        'validation': self.validate_positive_integer_or_zero,
-        'tooltip': _('Бюджет токенов для размышлений Gemini 2.5+. 0 = отключить. '
-                     'Если переключатель выключен — бюджет динамический (по умолчанию). '
-                     'Работает только при включённом "Режиме размышлений".',
-                     'Token budget for Gemini 2.5+ thinking. 0 = disable. '
-                     'If toggle is off — budget is dynamic (default). '
-                     'Requires "Enable thinking mode" to be enabled.')},
-
-        {'label': _('Штраф присутствия', 'Presence penalty'),
-        'key': 'MODEL_PRESENCE_PENALTY',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_PRESENCE_PENALTY',
-        'toggle_default': self.settings.get('USE_MODEL_PRESENCE_PENALTY', False),
-        'default': 0.0,
-        'validation': self.validate_float_minus2_to_2,
-        'tooltip': _('Штраф за использование новых токенов (-2.0 = поощрять новые, 2.0 = сильно штрафовать)',
-                    'Penalty for using new tokens (-2.0 = encourage new, 2.0 = strongly penalize)')},
-
-        {'label': _('Штраф частоты', 'Frequency penalty'),
-        'key': 'MODEL_FREQUENCY_PENALTY',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_FREQUENCY_PENALTY',
-        'toggle_default': self.settings.get('USE_MODEL_FREQUENCY_PENALTY', False),
-        'default': 0.0,
-        'validation': self.validate_float_minus2_to_2,
-        'tooltip': _('Штраф за частоту использования токенов (-2.0 = поощрять повторение, 2.0 = сильно штрафовать)',
-                    'Penalty for the frequency of token usage (-2.0 = encourage repetition, 2.0 = strongly penalize)')},
-
-        {'label': _('Лог вероятности', 'Log probability'),
-        'key': 'MODEL_LOG_PROBABILITY',
-        'type': 'entry',
-        'toggle_key': 'USE_MODEL_LOG_PROBABILITY',
-        'toggle_default': self.settings.get('USE_MODEL_LOG_PROBABILITY', False),
-        'default': 0.0,
-        'validation': self.validate_float_minus2_to_2,
-        'tooltip': _('Параметр, влияющий на логарифмическую вероятность выбора токенов (-2.0 = поощрять, 2.0 = штрафовать)',
-                    'Parameter influencing the logarithmic probability of token selection (-2.0 = encourage, 2.0 = penalize)')},
 
         {'type': 'end'},
 
@@ -248,7 +127,7 @@ def setup_model_interaction_controls(
 
     create_settings_section(
         self, parent,
-        _("Параметры генерации", "Generation Parameters"),
+        _("Поведение запросов", "Request behavior"),
         general_config,
         icon_name='fa5s.cogs'
     )
@@ -304,7 +183,8 @@ def setup_model_interaction_controls(
     create_settings_section(
         self, parent,
         _("Настройки реакций", "React settings"),
-        react_settings_config
+        react_settings_config,
+        icon_name='fa5s.bolt'
     )
 
     build_memory_section(self, parent, provider_options)

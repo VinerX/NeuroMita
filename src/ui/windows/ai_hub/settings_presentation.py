@@ -54,6 +54,11 @@ class ResetAIHubSettings(UiIntent):
 
 
 @dataclass(frozen=True, slots=True)
+class DiscardAIHubSettingsChanges(UiIntent):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class CompileAIHubModel(UiIntent):
     pass
 

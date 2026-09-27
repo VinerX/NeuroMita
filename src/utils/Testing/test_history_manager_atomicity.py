@@ -53,7 +53,7 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         self._conn_patcher.start()
         DatabaseManager._instance = None
         DatabaseManager._path_override = None
-        self.hm = HistoryManager(character_name="Test", character_id="char:test")
+        self.hm = HistoryManager(storage_name="Test", character_id="char:test")
 
     def tearDown(self) -> None:
         self._conn_patcher.stop()
@@ -333,6 +333,30 @@ class HistoryManagerAtomicityTests(unittest.TestCase):
         loaded = self.hm.load_history()["messages"]
         self.assertEqual([item["content"] for item in loaded], ["question", "answer"])
         self.assertEqual({item.get("turn_id") for item in loaded}, {turn_id})
+
+    def test_add_messages_persists_rejected_output_as_deleted_without_embedding(self) -> None:
+        executor = _FakeExecutor()
+        with patch.object(HistoryManager, "_get_embed_executor", return_value=executor):
+            row_ids = self.hm.add_messages(
+                [
+                    {
+                        "message_id": "out:rejected-json",
+                        "role": "assistant",
+                        "content": '{"invalid": true}',
+                        "_history_is_deleted": True,
+                    }
+                ]
+            )
+
+        self.assertEqual(len(row_ids), 1)
+        self.assertEqual(executor.jobs, [])
+        cursor = self._sqlite.cursor()
+        cursor.execute(
+            "SELECT is_active, is_deleted FROM history WHERE id = ?",
+            (row_ids[0],),
+        )
+        self.assertEqual(cursor.fetchone(), (0, 1))
+        self.assertEqual(self.hm.load_history()["messages"], [])
 
     def test_add_messages_rolls_back_entire_turn_on_insert_failure(self) -> None:
         self.hm.add_message(

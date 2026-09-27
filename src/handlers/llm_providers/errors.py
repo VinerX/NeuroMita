@@ -232,6 +232,21 @@ def _looks_like_unsupported_thinking_error(status_code: Optional[int], provider_
     )
 
 
+def _looks_like_context_window_error(provider_message: str) -> bool:
+    low = (provider_message or "").lower()
+    return any(
+        marker in low
+        for marker in (
+            "exceed_context_size_error",
+            "exceeds the available context size",
+            "exceeds the context window",
+            "context length exceeded",
+            "maximum context length",
+            "max context length",
+        )
+    )
+
+
 def _friendly_message(status_code: Optional[int], provider_message: str) -> tuple[str, str]:
     low = (provider_message or "").lower()
 
@@ -272,6 +287,15 @@ def _friendly_message(status_code: Optional[int], provider_message: str) -> tupl
                 "This provider does not support the thinking parameter. Disable thinking mode for this preset.",
             ),
             _("Unsupported thinking parameter.", "Unsupported thinking parameter."),
+        )
+
+    if _looks_like_context_window_error(provider_message):
+        return (
+            _(
+                "Запрос не поместился в контекст модели. Уменьшите историю или промпт, либо увеличьте размер контекста загруженной модели.",
+                "The request does not fit in the model context. Reduce the history or prompt, or increase the context size of the loaded model.",
+            ),
+            _("Model context limit exceeded.", "Model context limit exceeded."),
         )
 
     if status_code == 400:

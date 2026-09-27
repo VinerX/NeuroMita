@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import threading
 import unittest
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,6 +13,7 @@ from core.events import Event
 from core.installables.compatibility import evaluate_installable_compatibility
 from handlers.voice_models.edge_tts_rvc_model import EdgeTTSRVCOnnxModel
 from handlers.voice_models.f5_tts_model import F5TTSModel
+from handlers.voice_models.fish_speech_model import FishSpeechModel
 
 
 _F5_FIXTURE = [
@@ -166,8 +170,28 @@ class VoiceModelControllerTests(unittest.TestCase):
     def _make_controller_stub(self) -> VoiceModelController:
         controller = VoiceModelController.__new__(VoiceModelController)
         controller.gpu_name = "Intel Arc"
+        controller.detected_gpu_vendor = "INTEL"
+        controller.detected_compute_capability = None
         controller._installable_catalog = _CatalogStub([])
         return controller
+
+    def test_settings_save_rejects_unavailable_device(self):
+        controller = self._make_controller_stub()
+        controller.local_voice_models = [{
+            "id": "edge_tts_rvc_onnx",
+            "settings": [{"key": "device", "type": "combobox", "options": {
+                "values": ["dml", "dml:0", "cpu"],
+            }}],
+        }]
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "voice_model_settings.json"
+            controller.settings_values_file = str(path)
+            result = controller.save_settings_values({
+                "edge_tts_rvc_onnx": {"device": "dml:9"},
+            })
+            self.assertFalse(path.exists())
+
+        self.assertIn("device", result["errors"]["edge_tts_rvc_onnx"])
 
     def test_f5_high_low_defaults_are_adapted_for_intel(self):
         controller = self._make_controller_stub()
@@ -203,6 +227,8 @@ class VoiceModelControllerTests(unittest.TestCase):
     def test_all_real_f5_variants_expose_nonempty_device_choices(self):
         controller = self._make_controller_stub()
         controller.gpu_name = "NVIDIA GeForce RTX 4060"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 89
 
         adapted = controller.finalize_model_settings(
             F5TTSModel.MODEL_CONFIGS,
@@ -243,6 +269,8 @@ class VoiceModelControllerTests(unittest.TestCase):
     def test_f5_keeps_generic_cuda_choice_before_device_enumeration(self):
         controller = self._make_controller_stub()
         controller.gpu_name = "NVIDIA GeForce RTX 4060"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 89
 
         adapted = controller.finalize_model_settings(
             F5TTSModel.MODEL_CONFIGS,
@@ -261,6 +289,8 @@ class VoiceModelControllerTests(unittest.TestCase):
     def test_onnx_device_uses_directml_on_nvidia_without_offering_cuda(self):
         controller = self._make_controller_stub()
         controller.gpu_name = "NVIDIA GeForce RTX 4060"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 89
 
         adapted = controller.finalize_model_settings(
             _ONNX_FIXTURE,
@@ -271,6 +301,243 @@ class VoiceModelControllerTests(unittest.TestCase):
         device = adapted[0]["settings"][0]["options"]
         self.assertEqual(device["values"], ["dml", "cpu"])
         self.assertEqual(device["default"], "dml")
+
+    def test_gtx_1660_ti_forces_and_locks_rvc_half_precision_off(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce GTX 1660 Ti"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 75
+
+        adapted = controller.finalize_model_settings(
+            _F5_FIXTURE,
+            "NVIDIA",
+            ["cuda:0"],
+        )
+
+        model = next(item for item in adapted if item["id"] == "high+low")
+        half = next(item for item in model["settings"] if item["key"] == "f5rvc_is_half")
+        self.assertEqual(half["options"]["default"], "False")
+        self.assertTrue(half["locked"])
+
+    def test_rtx_2060_keeps_rvc_half_precision_available_on_sm75(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce RTX 2060"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 75
+
+        adapted = controller.finalize_model_settings(
+            _F5_FIXTURE,
+            "NVIDIA",
+            ["cuda:0"],
+        )
+
+        model = next(item for item in adapted if item["id"] == "high+low")
+        half = next(item for item in model["settings"] if item["key"] == "f5rvc_is_half")
+        self.assertEqual(half["options"]["default"], "True")
+        self.assertFalse(bool(half.get("locked")))
+
+    def test_gtx_1660_ti_sanitizes_persisted_half_true_to_false(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce GTX 1660 Ti"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 75
+
+        with TemporaryDirectory() as temp_dir:
+            controller.settings_values_file = str(Path(temp_dir) / "voice_model_settings.json")
+            with patch.object(controller, "load_settings"):
+                result = controller.save_settings_values(
+                    {"silero_rvc_cuda": {"silero_rvc_is_half": "True"}}
+                )
+
+            saved = json.loads(Path(controller.settings_values_file).read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["silero_rvc_cuda"]["silero_rvc_is_half"], "False")
+        self.assertEqual(result["changed"], 1)
+
+    def test_multi_gpu_cuda_choices_include_names_and_keep_raw_ids(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce GTX 1660 Ti"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 75
+        controller.detected_cuda_devices = ["cuda:0", "cuda:1"]
+        controller.detected_cuda_device_records = [
+            {"ordinal": 0, "name": "NVIDIA GeForce GTX 1660 Ti", "compute_major": 7, "compute_minor": 5},
+            {"ordinal": 1, "name": "NVIDIA GeForce RTX 5080", "compute_major": 12, "compute_minor": 0},
+        ]
+
+        adapted = controller.finalize_model_settings(
+            _F5_FIXTURE, "NVIDIA", controller.detected_cuda_devices
+        )
+        model = next(item for item in adapted if item["id"] == "high+low")
+        settings = {item["key"]: item for item in model["settings"]}
+        device_options = settings["f5rvc_rvc_device"]["options"]
+        half = settings["f5rvc_is_half"]
+
+        self.assertEqual(device_options["values"], ["cuda:0", "cuda:1", "dml", "cpu"])
+        self.assertEqual(
+            device_options["display_labels"],
+            {
+                "cuda:0": "cuda:0 (NVIDIA GeForce GTX 1660 Ti)",
+                "cuda:1": "cuda:1 (NVIDIA GeForce RTX 5080)",
+            },
+        )
+        # Default device is cuda:0 (1660 Ti), therefore half defaults off, but
+        # the field remains editable because cuda:1 supports the FP16 policy.
+        self.assertEqual(half["options"]["default"], "False")
+        self.assertFalse(bool(half.get("locked")))
+
+    def test_fish_device_choices_expand_to_all_detected_cuda_devices(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce RTX 4060"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 89
+        controller.detected_cuda_devices = ["cuda:0", "cuda:1"]
+        controller.detected_cuda_device_records = [
+            {"ordinal": 0, "name": "NVIDIA GeForce RTX 4060", "compute_major": 8, "compute_minor": 9},
+            {"ordinal": 1, "name": "NVIDIA GeForce RTX 5080", "compute_major": 12, "compute_minor": 0},
+        ]
+
+        adapted = controller.finalize_model_settings(
+            FishSpeechModel.MODEL_CONFIGS,
+            "NVIDIA",
+            controller.detected_cuda_devices,
+        )
+
+        medium_plus = next(item for item in adapted if item["id"] == "medium+")
+        device = next(item for item in medium_plus["settings"] if item["key"] == "device")
+        self.assertEqual(device["options"]["values"], ["cuda:0", "cuda:1"])
+        self.assertEqual(
+            device["options"]["display_labels"]["cuda:1"],
+            "cuda:1 (NVIDIA GeForce RTX 5080)",
+        )
+        self.assertFalse(bool(device.get("locked")))
+
+    def test_half_sanitization_uses_selected_cuda_device_on_multi_gpu(self):
+        controller = self._make_controller_stub()
+        controller.gpu_name = "NVIDIA GeForce GTX 1660 Ti"
+        controller.detected_gpu_vendor = "NVIDIA"
+        controller.detected_compute_capability = 75
+        controller.detected_cuda_devices = ["cuda:0", "cuda:1"]
+        controller.detected_cuda_device_records = [
+            {"ordinal": 0, "name": "NVIDIA GeForce GTX 1660 Ti", "compute_major": 7, "compute_minor": 5},
+            {"ordinal": 1, "name": "NVIDIA GeForce RTX 5080", "compute_major": 12, "compute_minor": 0},
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            controller.settings_values_file = str(Path(temp_dir) / "voice_model_settings.json")
+            with patch.object(controller, "load_settings"):
+                controller.save_settings_values({
+                    "silero_rvc_cuda": {
+                        "silero_rvc_device": "cuda:0",
+                        "silero_rvc_is_half": "True",
+                    },
+                    "edge_tts_rvc_cuda": {
+                        "device": "cuda:1",
+                        "is_half": "True",
+                    },
+                })
+            saved = json.loads(Path(controller.settings_values_file).read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["silero_rvc_cuda"]["silero_rvc_is_half"], "False")
+        self.assertEqual(saved["edge_tts_rvc_cuda"]["is_half"], "True")
+
+    def test_fish_compile_uses_selected_cuda_device(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [
+            {
+                "id": "medium+",
+                "settings": [
+                    {
+                        "key": "device",
+                        "options": {"default": "cuda:1"},
+                    }
+                ],
+            }
+        ]
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def initialize(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True, error="")
+
+        registry = SimpleNamespace(get_optional=lambda _contract: _Operations())
+        with patch("controllers.voice_model_controller.services", return_value=registry):
+            self.assertTrue(controller.start_compile("medium+", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:1")
+
+    def test_fish_install_uses_selected_cuda_device(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [{
+            "id": "medium+",
+            "settings": [{"key": "device", "options": {"default": "cuda:1"}}],
+        }]
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def install(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True)
+
+        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
+        registry = SimpleNamespace(
+            get=lambda _contract: catalog,
+            get_optional=lambda _contract: _Operations(),
+        )
+        with patch("controllers.voice_model_controller.services", return_value=registry):
+            self.assertTrue(controller.start_install("medium+", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:1")
+
+    def test_fish_rvc_install_uses_fish_device_not_rvc_device(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [{
+            "id": "medium+low",
+            "settings": [
+                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
+                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
+            ],
+        }]
+        controller.event_bus = SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+        seen = {}
+
+        class _Operations:
+            @staticmethod
+            def install(payload):
+                seen.update(payload)
+                return SimpleNamespace(accepted=True)
+
+        catalog = SimpleNamespace(get_row=lambda *_args, **_kwargs: {"metadata": {"title": "Fish"}})
+        registry = SimpleNamespace(
+            get=lambda _contract: catalog,
+            get_optional=lambda _contract: _Operations(),
+        )
+        with patch("controllers.voice_model_controller.services", return_value=registry):
+            self.assertTrue(controller.start_install("medium+low", with_ui=False))
+
+        self.assertEqual(seen["device"], "cuda:1")
+
+    def test_selected_fish_device_uses_effective_model_setting(self):
+        controller = VoiceModelController.__new__(VoiceModelController)
+        controller._lock = threading.RLock()
+        controller.local_voice_models = [
+            {"id": "medium+", "settings": [{"key": "device", "options": {"default": "cuda:1"}}]},
+            {"id": "medium+low", "settings": [
+                {"key": "fsprvc_fsp_device", "options": {"default": "cuda:1"}},
+                {"key": "fsprvc_rvc_device", "options": {"default": "cuda:0"}},
+            ]},
+        ]
+
+        self.assertEqual(controller._selected_fish_device("medium+"), "cuda:1")
+        self.assertEqual(controller._selected_fish_device("medium+low"), "cuda:1")
 
     def test_onnx_voice_model_is_supported_but_warned_on_nvidia(self):
         controller = self._make_controller_stub()

@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QPushButton
+from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
 from ui.windows.ai_hub.dialog import AIHubDialog
 
@@ -134,3 +134,28 @@ def test_popup_refreshes_while_open() -> None:
     labels = " | ".join(lbl.text() for lbl in dlg._queue_popup.findChildren(QLabel))
     assert "Распознавание" in labels
     assert "2" in dlg._install_bar_queue.text()
+
+
+def test_queue_refresh_does_not_promote_retired_rows_to_windows() -> None:
+    _app()
+    dlg = _bare_dialog()
+    queue_panel = QFrame(dlg)
+    dlg._queue_layout = QVBoxLayout(queue_panel)
+    dlg._queue_layout.addWidget(QLabel("Компиляция Fish Speech+"))
+    dlg._queue_layout.addWidget(QPushButton("Отмена"))
+
+    retired = [
+        dlg._queue_layout.itemAt(index).widget()
+        for index in range(dlg._queue_layout.count())
+    ]
+    assert retired
+    assert all(widget is not None and not widget.isWindow() for widget in retired)
+
+    # A progress update rebuilds the queue before deferred deletes necessarily
+    # run.  Old rows must stay children of the dialog rather than becoming
+    # separate ``python`` windows in the Windows taskbar.
+    dlg._clear_queue_panel()
+
+    assert all(widget.parent() is not None for widget in retired)
+    assert all(not widget.isWindow() for widget in retired)
+    assert all(widget.isHidden() for widget in retired)

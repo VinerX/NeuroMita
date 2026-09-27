@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from core.app_paths import settings_path
 from core.events import get_event_bus, Events, Event
 from core.services import use
-from services.contracts import ApiPresetService, ProtocolBuilderService
+from services.contracts import ApiPresetService, ProtocolBuilderService, SettingsService
 from main_logger import logger
 
 from utils import _
@@ -18,6 +18,8 @@ import threading
 from core.task_supervisor import task_supervisor
 import httpx
 
+from model_settings.service import ModelSettingsService
+from model_settings.schema import SchemaError
 from presets.provider_host_metadata import infer_provider_currency
 from handlers.llm_providers.http_transport import LLMHttpClient
 
@@ -32,6 +34,7 @@ class PresetMeta:
     dialect_id: str = ""
     provider_name: str = ""
     default_model: str = ""
+    template_name: str = ""
 
 
 @dataclass
@@ -45,6 +48,7 @@ class ApiTemplate:
     default_model: str = ""
     known_models: List[str] = field(default_factory=list)
     model_profiles: List[Dict[str, Any]] = field(default_factory=list)
+    settings_schema_id: str = ""
 
     protocol_id: str = ""
 
@@ -72,6 +76,7 @@ class UserPreset:
     protocol_overrides: Dict[str, Any] = field(default_factory=dict)
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     model_profile_overrides: Dict[str, Any] = field(default_factory=dict)
+    model_settings: Optional[Dict[str, Any]] = None
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
     # Ordered fallback chain. Each entry: {"preset_id": int, "model": str}.
     # "model" is optional (empty -> use that preset's default_model).
@@ -101,7 +106,8 @@ class ApiPresetsController(ApiPresetService):
         "tokens_per_second": 0.5,
     }
 
-    def __init__(self, http_transport: LLMHttpClient | None = None):
+    def __init__(self, http_transport: LLMHttpClient | None = None, *, model_settings_service=None, legacy_generation_settings=None):
+        self.model_settings_service = model_settings_service or ModelSettingsService()
         self.event_bus = get_event_bus()
         self._close_lock = threading.Lock()
         self._closed = False
@@ -125,6 +131,53 @@ class ApiPresetsController(ApiPresetService):
         self._subscribe_to_events()
 
         self._migrate_old_api_keys()
+        self._ensure_default_preset()
+        self._migrate_model_settings(legacy_generation_settings)
+
+    def _ensure_default_preset(self) -> None:
+        """Keep the persisted active preset valid when presets are available."""
+        try:
+            settings = use(SettingsService)
+        except Exception:
+            settings = None
+        if settings is None:
+            return
+
+        configured = settings.get("LAST_API_PRESET_ID", None)
+        try:
+            configured_id = int(configured)
+        except (TypeError, ValueError):
+            configured_id = None
+
+        # Templates only describe a provider.  Only user presets carry the
+        # endpoint credentials and are valid active generation targets.
+        if configured_id in self.presets:
+            self.current_preset_id = configured_id
+            return
+
+        for preset_id in self.presets_order:
+            if preset_id in self.presets:
+                settings.update("LAST_API_PRESET_ID", int(preset_id))
+                settings.save_settings()
+                self.current_preset_id = int(preset_id)
+                logger.info("Selected the first configured API preset as default: %s", preset_id)
+                return
+
+    def _migrate_model_settings(self, legacy_settings=None):
+        changed = False
+        for identifier, preset in self.presets.items():
+            if preset.model_settings is not None:
+                continue
+            effective = self._build_effective_preset_dict(identifier)
+            from managers.protocol_registry import get_protocol_registry
+            protocol = get_protocol_registry().get(effective["protocol_id"])
+            dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
+            preset.model_settings = self.model_settings_service.for_preset(effective, dialect, legacy_settings)
+            preset.generation_overrides = {}
+            preset.model_profile_overrides = {}
+            changed = True
+        if changed and not self._save_presets():
+            raise OSError("Failed to persist migrated preset model settings")
 
     def close(self) -> None:
         with self._close_lock:
@@ -499,6 +552,7 @@ class ApiPresetsController(ApiPresetService):
             protocol_overrides=dict(po),
             generation_overrides=dict(go),
             model_profile_overrides=dict(mpo),
+            model_settings=raw.get("model_settings"),
             openrouter_routing=dict(orr),
             fallbacks=fallbacks,
         )
@@ -740,6 +794,11 @@ class ApiPresetsController(ApiPresetService):
         if preset_id in self.templates:
             result = asdict(self.templates[preset_id])
             result["known_models"] = self._known_models_for_template(self.templates[preset_id])
+            from managers.protocol_registry import get_protocol_registry
+            protocol = get_protocol_registry().get(result["protocol_id"])
+            dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
+            schema_id = self.model_settings_service.default_id(dialect, result.get("settings_schema_id", ""))
+            result["model_settings"] = self.model_settings_service.create(schema_id)
             return result
 
         p = self.presets.get(preset_id)
@@ -774,8 +833,10 @@ class ApiPresetsController(ApiPresetService):
             "reserve_keys_distribute": bool(p.reserve_keys_distribute),
             "protocol_overrides": p.protocol_overrides or {},
             "generation_overrides": p.generation_overrides or {},
-            "model_profiles": tpl.model_profiles if tpl else [],
+            "model_profiles": tpl.model_profiles if tpl and p.model_settings is None else [],
             "model_profile_overrides": p.model_profile_overrides or {},
+            "model_settings": p.model_settings,
+            "settings_schema_id": tpl.settings_schema_id if tpl else "",
             "openrouter_routing": p.openrouter_routing or {},
             "fallbacks": [dict(fb) for fb in (p.fallbacks or [])],
         }
@@ -845,6 +906,7 @@ class ApiPresetsController(ApiPresetService):
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
                 default_model=str(tpl.default_model or ""),
+                template_name=tpl.name,
             ))
 
         ordered_custom: List[UserPreset] = []
@@ -872,6 +934,7 @@ class ApiPresetsController(ApiPresetService):
                 dialect_id=str(getattr(proto, "dialect", "") or ""),
                 provider_name=str(getattr(proto, "provider", "") or ""),
                 default_model=str(eff_model or ""),
+                template_name=tpl.name if tpl else "",
             ))
         return meta
 
@@ -914,7 +977,27 @@ class ApiPresetsController(ApiPresetService):
 
         name = str(data.get("name") or f"Preset {preset_id}")
 
-        up = self.presets.get(preset_id) or UserPreset(id=preset_id, name=name)
+        from managers.protocol_registry import get_protocol_registry
+        template = self.templates.get(base) if base is not None else None
+        protocol_id = (template.protocol_id if template else data.get("protocol_id")) or "openai_compatible_default"
+        protocol = get_protocol_registry().get(protocol_id)
+        dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
+        existing = self.presets.get(preset_id)
+        document = data.get("model_settings", existing.model_settings if existing else None)
+        if document is None:
+            suggested = (template.settings_schema_id if template else "") or str(getattr(protocol, "settings_schema_id", "") or "")
+            schema_id = self.model_settings_service.default_id(dialect, suggested)
+            if data.get("generation_overrides") or data.get("model_profile_overrides"):
+                legacy_preset = asdict(template) if template else {}
+                legacy_preset.update(data)
+                document = self.model_settings_service.for_preset(legacy_preset, dialect)
+            else:
+                document = self.model_settings_service.create(schema_id)
+        self.model_settings_service.compile(document, dialect)
+        _, document = self.model_settings_service.resolve(document, dialect)
+        from copy import deepcopy
+        up = deepcopy(existing) if existing else UserPreset(id=preset_id, name=name)
+        up.model_settings = document
         up.name = name
         up.base = base
         up.pricing = str(data.get("pricing", up.pricing) or up.pricing)
@@ -962,6 +1045,9 @@ class ApiPresetsController(ApiPresetService):
         if "fallbacks" in data:
             up.fallbacks = self._normalize_fallbacks(data.get("fallbacks"))
 
+        up.generation_overrides = {}
+        up.model_profile_overrides = {}
+        previous_order = list(self.presets_order)
         self.presets[preset_id] = up
         if preset_id not in self.presets_order:
             self.presets_order.append(preset_id)
@@ -969,6 +1055,11 @@ class ApiPresetsController(ApiPresetService):
 
         ok = self._save_presets()
         if not ok:
+            self.presets_order = previous_order
+            if existing is None:
+                self.presets.pop(preset_id, None)
+            else:
+                self.presets[preset_id] = existing
             logger.error(f"[ApiPresets] SAVE_CUSTOM_PRESET failed to save presets file for id={preset_id}")
             return None
 
@@ -1033,6 +1124,16 @@ class ApiPresetsController(ApiPresetService):
         if not preset_dict:
             return False
 
+        from copy import deepcopy
+        preset_dict = deepcopy(preset_dict)
+        document = preset_dict.get("model_settings")
+        if document is not None:
+            from managers.protocol_registry import get_protocol_registry
+            protocol = get_protocol_registry().get(preset_dict["protocol_id"])
+            dialect = str(getattr(protocol, "dialect", "") or "openai_chat_completions")
+            definition, _state = self.model_settings_service.resolve(document, dialect)
+            document["schema_override"] = deepcopy(definition.data)
+
         state = self.preset_states.get(preset_id, {})
         if state:
             preset_dict.update(state)
@@ -1056,34 +1157,10 @@ class ApiPresetsController(ApiPresetService):
 
             new_id = self._generate_new_id()
 
-            base = data.get("base", None)
-            if base is not None:
-                try:
-                    base = int(base)
-                except Exception:
-                    base = None
-
-            up = UserPreset(
-                id=new_id,
-                name=str(data.get("name", f"Preset {new_id}")),
-                base=base,
-                pricing=str(data.get("pricing", "mixed") or "mixed"),
-                badge_kind=str(data.get("badge_kind", "") or "").strip(),
-                default_model=str(data.get("default_model", "") or ""),
-                url=str(data.get("url", "") or "") if not base else "",
-                key=str(data.get("key", "") or ""),
-                reserve_keys=[str(k) for k in (data.get("reserve_keys", []) or []) if str(k).strip()],
-                reserve_keys_distribute=bool(data.get("reserve_keys_distribute", False)),
-                protocol_id=str(data.get("protocol_id", "") or "").strip(),
-                fallbacks=self._normalize_fallbacks(data.get("fallbacks", [])),
-            )
-
-            self.presets[new_id] = up
-            self.presets_order.append(new_id)
-            self._save_presets()
-
-            if "key" in data:
-                self.preset_states[new_id] = {"key": data["key"]}
+            data["id"] = new_id
+            saved_id = self.save_custom(data)
+            if saved_id is None:
+                return None
 
             self.event_bus.emit(Events.ApiPresets.PRESET_IMPORTED, {"id": new_id})
             return new_id

@@ -94,6 +94,11 @@ QComboBox::drop-down {
     border-left: 1px solid {border_soft};
     margin-left: 6px;
 }
+QComboBox::down-arrow {
+    image: url("{combo_arrow_url}");
+    width: 12px;
+    height: 12px;
+}
 QComboBox QAbstractItemView {
     background-color: {panel_bg};
     border: 1px solid {accent};

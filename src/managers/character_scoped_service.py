@@ -11,12 +11,12 @@ import threading
 @dataclass(frozen=True)
 class CharacterScope:
     character_id: str
-    character_name: str
+    storage_name: str
     prompt_set_path: str = ""
 
     @property
     def storage_key(self) -> str:
-        return self.character_id or self.character_name
+        return self.character_id or self.storage_name
 
 
 class BoundCharacterService:
@@ -37,8 +37,8 @@ class BoundCharacterService:
         return self._scope().character_id
 
     @property
-    def character_name(self) -> str:
-        return self._scope().character_name
+    def storage_name(self) -> str:
+        return self._scope().storage_name
 
     @property
     def storage_key(self) -> str:
@@ -77,7 +77,7 @@ class CharacterScopedService:
         self,
         *,
         default_character_id: str = "",
-        default_character_name: str = "",
+        default_storage_name: str = "",
         default_prompt_set_path: str = "",
     ) -> None:
         self._scope_lock = threading.RLock()
@@ -90,11 +90,11 @@ class CharacterScopedService:
         self._default_scope: CharacterScope | None = None
 
         character_id = str(default_character_id or "").strip()
-        character_name = str(default_character_name or character_id or "").strip()
-        if character_id or character_name:
+        storage_name = str(default_storage_name or character_id or "").strip()
+        if character_id or storage_name:
             self._default_scope = self.register_scope(
-                character_id or character_name,
-                character_name or character_id,
+                character_id or storage_name,
+                storage_name or character_id,
                 default_prompt_set_path,
             )
 
@@ -108,13 +108,13 @@ class CharacterScopedService:
     def register_scope(
         self,
         character_id: str,
-        character_name: str = "",
+        storage_name: str = "",
         prompt_set_path: str = "",
     ) -> CharacterScope:
         key = self._normalize_id(character_id)
         with self._scope_lock:
             current = self._scopes.get(key)
-            name = str(character_name or (current.character_name if current else key) or key)
+            name = str(storage_name or (current.storage_name if current else key) or key)
             path = str(prompt_set_path or (current.prompt_set_path if current else "") or "")
             scope = CharacterScope(key, name, path)
             self._scopes[key] = scope
@@ -125,12 +125,12 @@ class CharacterScopedService:
     def bind(
         self,
         character_id: str,
-        character_name: str = "",
+        storage_name: str = "",
         prompt_set_path: str = "",
     ) -> BoundCharacterService:
         return BoundCharacterService(
             self,
-            self.register_scope(character_id, character_name, prompt_set_path),
+            self.register_scope(character_id, storage_name, prompt_set_path),
         )
 
     def scope_for(self, character_id: str) -> CharacterScope:
@@ -178,8 +178,8 @@ class CharacterScopedService:
         return self.current_scope().character_id
 
     @property
-    def character_name(self) -> str:
-        return self.current_scope().character_name
+    def storage_name(self) -> str:
+        return self.current_scope().storage_name
 
     @property
     def storage_key(self) -> str:
@@ -192,4 +192,4 @@ class CharacterScopedService:
     @prompt_set_path.setter
     def prompt_set_path(self, value: str) -> None:
         scope = self.current_scope()
-        self.register_scope(scope.character_id, scope.character_name, str(value or ""))
+        self.register_scope(scope.character_id, scope.storage_name, str(value or ""))

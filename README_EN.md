@@ -140,6 +140,7 @@ We also welcome **3D modelers and animators**. Their work comes up as focused ta
 - **[vlad2830](https://github.com/vlad2830)** — C# MelonLoader mod and Python parts.
 - **Nelxi** (`distrane25`) — Python voice input integration.
 - **Feanor** (`feanorqq`) — Kind Mita house setup.
+- **ʟɪɴᴋʏ** (`linkyescobar`) — early work on Mila.
 
 </details>
 

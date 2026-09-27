@@ -1,5 +1,6 @@
 from __future__ import annotations
 from core.error_utils import format_exception
+from core.trace_context import trace_scope
 
 import threading
 import time
@@ -319,13 +320,15 @@ class EventBus:
             self._safe_call(callback, event)
 
     def _safe_call(self, callback: Callable[..., Any], event: Event) -> None:
-        try:
-            callback(event)
-        except Exception as exc:
-            logger.error(
-                f"Event subscriber failed for '{event.name}': {format_exception(exc)}",
-                exc_info=True,
-            )
+        data = event.data if isinstance(event.data, dict) else {}
+        with trace_scope(data.get("trace_id")):
+            try:
+                callback(event)
+            except Exception as exc:
+                logger.error(
+                    f"Event subscriber failed for '{event.name}': {format_exception(exc)}",
+                    exc_info=True,
+                )
 
     def _get_active_subscribers(self, event_name: str) -> List[Callable[..., Any]]:
         subscribers = self._subscribers.get(event_name)
@@ -557,6 +560,7 @@ class Events:
         UPDATE_CHAT_FONT_SIZE = "update_chat_font_size"
         RELOAD_CHAT_HISTORY = "reload_chat_history"
         REMOVE_LAST_CHAT_WIDGETS = "remove_last_chat_widgets"
+        CLEAR_CHAT_MESSAGE_ERROR = "clear_chat_message_error"
         UPDATE_TOKEN_COUNT_UI = "update_token_count_ui"
         GET_GUI_WINDOW_ID = "get_gui_window_id"
         CHECK_TRITON_DEPENDENCIES = "check_triton_dependencies"
@@ -574,6 +578,7 @@ class Events:
         VOICEOVER_UI_READY = "voiceover_ui_ready"
         VOICEOVER_REFRESH = "voiceover_refresh"
         VOICEOVER_MODEL_SELECTED = "voiceover_model_selected"
+        VOICEOVER_MODEL_REINITIALIZE = "voiceover_model_reinitialize"
 
     class Model:
         """События для управления LLM, персонажами и историей"""
@@ -621,6 +626,10 @@ class Events:
         INSERT_SYSTEM_MESSAGE = "chat_insert_system_message"
         SAVE_SNAPSHOT = "chat_save_snapshot"
         LOAD_SNAPSHOT = "chat_load_snapshot"
+
+    class Reminder:
+        """Notifications for persisted reminders and short autonomous timers."""
+        CHANGED = "reminder_changed"
 
     class Dialogue:
         """Ephemeral dialogue runtime facts consumed by the Python UI."""
@@ -674,6 +683,7 @@ class Events:
         REFRESH_MICROPHONE_LIST = "refresh_microphone_list"
         SET_GIGAAM_OPTIONS = "set_gigaam_options"
         RESTART_SPEECH_RECOGNITION = "restart_speech_recognition"
+        REFRESH_ASR_STATUS = "refresh_asr_status"
 
         INSTALL_ASR_MODEL = "install_asr_model"
         CHECK_ASR_MODEL_INSTALLED = "check_asr_model_installed" 
@@ -726,6 +736,7 @@ class Events:
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
         SEND_ASR_TEXT = "send_asr_text"
         CLIENT_DISCONNECTED = "server_client_disconnected"
+        GAME_DIALOGUE_TARGET_CHANGED = "game_dialogue_target_changed"
         ASR_TEXT_UNDELIVERED = "asr_text_undelivered"
 
     class Telegram:

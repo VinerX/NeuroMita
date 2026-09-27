@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from managers.character_manager import CharacterDefinition, CharacterManager
 from managers.character_resource_manager import CharacterResourceManager
 from managers.character_scoped_service import CharacterScopedService
 from managers.database_manager import DatabaseManager
+from characters.character import Character
 
 
 class _ProbeService(CharacterScopedService):
@@ -28,7 +30,7 @@ class _ProbeService(CharacterScopedService):
 
 class _FakeCharacter:
     char_id = ""
-    name = ""
+    DISPLAY_NAME = ""
     created = 0
 
     def __init__(self):
@@ -53,13 +55,15 @@ class _FakeCharacter:
 
 class _FakeA(_FakeCharacter):
     char_id = "A"
-    name = "A"
+    DISPLAY_NAME = "Character A"
+    STORAGE_NAME = "Legacy Character A"
     created = 0
 
 
 class _FakeB(_FakeCharacter):
     char_id = "B"
-    name = "B"
+    DISPLAY_NAME = "Character B"
+    STORAGE_NAME = "Legacy Character B"
     created = 0
 
 
@@ -79,6 +83,14 @@ class CharacterServiceTests(unittest.TestCase):
         else:
             os.environ["NEUROMITA_HISTORIES_DIR"] = self._old_histories
         self._temp_dir.cleanup()
+
+    def test_character_identity_contract_has_no_ambiguous_name_field(self):
+        parameters = inspect.signature(Character.__init__).parameters
+
+        self.assertNotIn("name", parameters)
+        self.assertIn("display_name", parameters)
+        self.assertIn("storage_name", parameters)
+        self.assertNotIn("name", Character.__dict__)
 
     def test_resources_own_one_service_instance_for_all_characters(self):
         resources = CharacterResourceManager()
@@ -156,8 +168,8 @@ class CharacterServiceTests(unittest.TestCase):
         _FakeA.created = 0
         _FakeB.created = 0
         definitions = (
-            CharacterDefinition("A", "A", _FakeA),
-            CharacterDefinition("B", "B", _FakeB),
+            CharacterDefinition("A", _FakeA),
+            CharacterDefinition("B", _FakeB),
         )
 
         with patch("managers.character_manager._CHARACTER_DEFINITIONS", definitions):
@@ -167,6 +179,12 @@ class CharacterServiceTests(unittest.TestCase):
             )
             self.assertEqual(list(manager.characters), ["A"])
             self.assertEqual(manager.get_all_characters(), ["A", "B"])
+            self.assertEqual(manager.get_display_name("A"), "Character A")
+            self.assertEqual(manager.get_display_name("B"), "Character B")
+            self.assertEqual(
+                manager.resources.history_for("B").storage_name,
+                "Legacy Character B",
+            )
             self.assertEqual(_FakeA.created, 1)
             self.assertEqual(_FakeB.created, 0)
 
@@ -176,7 +194,7 @@ class CharacterServiceTests(unittest.TestCase):
 
     def test_selecting_current_character_is_idempotent(self):
         _FakeA.created = 0
-        definitions = (CharacterDefinition("A", "A", _FakeA),)
+        definitions = (CharacterDefinition("A", _FakeA),)
 
         with patch("managers.character_manager._CHARACTER_DEFINITIONS", definitions):
             manager = CharacterManager(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_SRC = Path(__file__).resolve().parents[2]
 if str(PROJECT_SRC) not in sys.path:
@@ -15,6 +16,8 @@ from managers.game_state_manager import GameState
 from core.request_policy import RequestPolicy
 from services.contracts import (
     PlayerMessageSource,
+    PreparedHistory,
+    PromptBuildResult,
     PromptBuildRequest,
     parse_dialogue_turn_context,
 )
@@ -27,6 +30,24 @@ class PromptSystemStateTests(unittest.TestCase):
 
         def get_variable(self, _name, default=None):
             return default
+
+    class _PromptFeatures:
+        def __init__(self, features=None):
+            self.features = features or {}
+
+        def get_prompt_feature(self, name, default=None):
+            return self.features.get(name, default)
+
+    def test_intents_are_default_except_for_l1_react(self):
+        resolve = PromptController._resolve_support_intents
+        self.assertTrue(resolve(self._PromptFeatures(), RequestPolicy()))
+        self.assertFalse(resolve(self._PromptFeatures({"support_intents": False}), RequestPolicy()))
+        self.assertFalse(resolve(self._PromptFeatures(), RequestPolicy(react_level=1)))
+        self.assertTrue(resolve(self._PromptFeatures(), RequestPolicy(react_level=2)))
+
+    def test_prompt_build_result_defaults_to_intents_enabled(self):
+        result = PromptBuildResult(messages=[], history_messages=[], user_message=None)
+        self.assertTrue(result.support_intents)
 
     def test_dialogue_context_parser_keeps_auto_turn_state(self):
         context = parse_dialogue_turn_context({
@@ -151,6 +172,83 @@ class PromptSystemStateTests(unittest.TestCase):
         self.assertLess(contents.index("[stable prompt]"), contents.index("[Runtime Core Directive: Code 23 — ACTIVE]"))
         self.assertLess(contents.index("[Runtime Core Directive: Code 23 — ACTIVE]"), contents.index("[relevant memories]"))
         self.assertLess(contents.index("[relevant memories]"), contents.index("[event]"))
+
+    def test_working_state_is_opt_in_and_precedes_recent_input(self):
+        class _WorkingState:
+            @staticmethod
+            def format_for_prompt():
+                return "[WORKING STATE]\nFocus: continue the dance test\n[/WORKING STATE]"
+
+        class _Character:
+            char_id = "Test"
+            working_state = _WorkingState()
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
+        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+
+        enabled = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Что ты делаешь?",
+            capabilities={"structured_output": True, "working_state": True},
+        ))
+        enabled_contents = [m.get("content", "") for m in enabled.messages]
+        protocol_index = enabled_contents.index(next(c for c in enabled_contents if "[WORKING STATE PROTOCOL]" in c))
+        state_index = enabled_contents.index(next(c for c in enabled_contents if c.startswith("[WORKING STATE]")))
+        self.assertLess(protocol_index, state_index)
+        self.assertLess(state_index, len(enabled_contents) - 1)
+        self.assertEqual(enabled.messages[state_index]["role"], "assistant")
+
+        disabled = controller.build(PromptBuildRequest(
+            character=_Character(),
+            event_type="chat",
+            policy=RequestPolicy(use_history_in_prompt=False),
+            user_input="Что ты делаешь?",
+            capabilities={"structured_output": True, "working_state": False},
+        ))
+        self.assertFalse(any("[WORKING STATE" in m.get("content", "") for m in disabled.messages))
+
+    def test_retained_actions_precede_the_live_history(self):
+        class _Character:
+            char_id = "Test"
+
+            def get_variable(self, _name, default=None):
+                return default
+
+        class _History:
+            @staticmethod
+            def prepare_for_prompt(**_kwargs):
+                return PreparedHistory(
+                    messages=[{"role": "assistant", "content": "Recent Mita reply"}],
+                    summary="Older dialogue",
+                    action_context="[RECENT ACTIONS BEFORE SUMMARY BOUNDARY]\n- animation: Dance_07",
+                )
+
+        controller = PromptController()
+        controller._build_system_messages = lambda *_args, **_kwargs: ([], [], [])
+        controller._build_system_state_message = lambda: {"role": "system", "content": "[system state]"}
+        with patch("controllers.prompt_controller.use", return_value=_History()):
+            result = controller.build(PromptBuildRequest(
+                character=_Character(),
+                event_type="chat",
+                policy=RequestPolicy(use_history_in_prompt=True),
+                user_input="What did you do?",
+                capabilities={"action_memory": True},
+            ))
+
+        contents = [message.get("content", "") for message in result.messages]
+        self.assertLess(contents.index("[HISTORY SUMMARY]\nOlder dialogue"), contents.index(
+            "[RECENT ACTIONS BEFORE SUMMARY BOUNDARY]\n- animation: Dance_07"
+        ))
+        self.assertLess(
+            contents.index("[RECENT ACTIONS BEFORE SUMMARY BOUNDARY]\n- animation: Dance_07"),
+            contents.index("Recent Mita reply"),
+        )
 
     def test_character_environment_is_common_dynamic_context_before_input(self):
         controller = PromptController()

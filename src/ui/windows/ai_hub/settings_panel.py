@@ -30,6 +30,7 @@ from ui.windows.ai_hub.settings_presentation import (
     ApplyAIHubSettingsRows,
     CompileAIHubModel,
     DeleteAIHubModelCompilation,
+    DiscardAIHubSettingsChanges,
     OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
@@ -216,6 +217,57 @@ class SettingsPanel(QWidget):
                 self._list.setCurrentItem(item)
                 return
 
+    def selected_component_id(self) -> str:
+        return str(self._view_model.state.selected_component_id or "").strip()
+
+    def has_unsaved_changes(self) -> bool:
+        """Return true even if the view-model dirty signal has not propagated yet."""
+        try:
+            form_dirty = bool(self._form.is_dirty())
+        except Exception:
+            form_dirty = False
+        return bool(self._view_model.state.dirty or form_dirty)
+
+    def confirm_discard_unsaved_changes(self) -> bool:
+        """Ask before a navigation action would discard edited values."""
+        if not self.has_unsaved_changes():
+            return True
+        answer = QMessageBox.warning(
+            self,
+            _("Несохранённые изменения", "Unsaved changes"),
+            _(
+                "Изменения настроек не сохранены. Если продолжить, они будут потеряны.",
+                "Settings changes have not been saved. If you continue, they will be lost.",
+            ),
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Discard
+
+    def discard_unsaved_changes(self) -> None:
+        """Restore the last persisted values locally and mark the VM clean."""
+        if not self.has_unsaved_changes():
+            return
+        self._rendering = True
+        try:
+            self._form.set_values(dict(mutable_payload(self._view_model.state.values) or {}))
+            self._form.clear_field_errors()
+        finally:
+            self._rendering = False
+        self._view_model.dispatch(DiscardAIHubSettingsChanges())
+
+    def _restore_selected_list_item(self) -> None:
+        selected_id = str(self._view_model.state.selected_component_id or "").strip()
+        self._list.blockSignals(True)
+        try:
+            for i in range(self._list.count()):
+                item = self._list.item(i)
+                if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or "") == selected_id:
+                    self._list.setCurrentItem(item)
+                    return
+        finally:
+            self._list.blockSignals(False)
+
     def retranslate(self) -> None:
         """Refresh shell labels without disturbing the edited form values."""
         self._header.setText(_("Установленные модели", "Installed models"))
@@ -283,6 +335,9 @@ class SettingsPanel(QWidget):
             return
 
         if component_id != self._view_model.state.selected_component_id:
+            if not self.confirm_discard_unsaved_changes():
+                self._restore_selected_list_item()
+                return
             self._view_model.dispatch(SelectAIHubSettingsComponent(component_id))
 
     # ---------------------------------------------------------- actions
@@ -321,6 +376,80 @@ class SettingsPanel(QWidget):
         self._btn_save.setEnabled(enabled)
         self._btn_reset.setEnabled(enabled)
 
+    def _hardware_snapshot(self) -> dict[str, Any]:
+        catalog = getattr(self._view_model, "_catalog", None)
+        getter = getattr(catalog, "hardware_snapshot", None)
+        if not callable(getter):
+            return {}
+        try:
+            snapshot = getter()
+        except Exception:
+            return {}
+        return dict(snapshot or {}) if isinstance(snapshot, dict) else {}
+
+    def _cuda_display_labels(self) -> dict[str, str]:
+        snapshot = self._hardware_snapshot()
+        cuda = dict(snapshot.get("cuda") or {})
+        devices = [
+            dict(item)
+            for item in (cuda.get("devices") or [])
+            if isinstance(item, dict) and item.get("ordinal") is not None
+        ]
+        labels: dict[str, str] = {}
+        for index, item in enumerate(devices):
+            try:
+                ordinal = int(item.get("ordinal", index))
+            except (TypeError, ValueError):
+                continue
+            raw = f"cuda:{ordinal}"
+            name = str(item.get("name") or "").strip()
+            labels[raw] = f"{raw} ({name})" if name else raw
+        if len(devices) == 1:
+            item = devices[0]
+            try:
+                ordinal = int(item.get("ordinal", 0))
+            except (TypeError, ValueError):
+                ordinal = 0
+            raw = f"cuda:{ordinal}"
+            labels["cuda"] = labels.get(raw, raw)
+        return labels
+
+    def _decorate_schema_for_display(self, schema: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cuda_labels = self._cuda_display_labels()
+        if not cuda_labels:
+            return list(schema or [])
+
+        decorated: list[dict[str, Any]] = []
+        for entry in list(schema or []):
+            if not isinstance(entry, dict):
+                decorated.append(entry)
+                continue
+            type_ = self._form._normalize_type(entry.get("type"))
+            if type_ != "combobox":
+                decorated.append(entry)
+                continue
+            options = self._form._normalize_options(entry)
+            values = [str(v) for v in (options.get("values") or []) if str(v).strip()]
+            if not any(value == "cuda" or value.startswith("cuda:") for value in values):
+                decorated.append(entry)
+                continue
+            labels = dict(options.get("display_labels") or {})
+            changed = False
+            for value in values:
+                mapped = cuda_labels.get(value)
+                if mapped and labels.get(value) != mapped:
+                    labels[value] = mapped
+                    changed = True
+            if not changed:
+                decorated.append(entry)
+                continue
+            cloned = dict(entry)
+            cloned_options = dict(options)
+            cloned_options["display_labels"] = labels
+            cloned["options"] = cloned_options
+            decorated.append(cloned)
+        return decorated
+
     def render(self, state: AIHubSettingsState) -> None:
         self._rendering = True
         try:
@@ -337,7 +466,7 @@ class SettingsPanel(QWidget):
 
             if state.form_revision != self._form_revision:
                 self._form_revision = state.form_revision
-                schema = list(mutable_payload(state.schema) or [])
+                schema = self._decorate_schema_for_display(list(mutable_payload(state.schema) or []))
                 values = dict(mutable_payload(state.values) or {})
                 self._form.clear_field_errors()
                 if schema:

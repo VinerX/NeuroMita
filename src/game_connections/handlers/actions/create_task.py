@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from core.events import Events
 from core.services import use
-from services.contracts import CharacterRegistry, PlayerMessageSource, SettingsService, TaskService
+from services.contracts import CharacterRegistry, GameLinkService, PlayerMessageSource, SettingsService, TaskService
 from domain.dialogue_identity import DialogueActorKind
 from domain.conversation_message_ids import ConversationMessageIds
 from services.dialogue_identity_resolver import DialogueIdentityResolver
 from core.request_policy import resolve_policy
 from managers.task_manager import TaskStatus
+from managers.unity_retry_store import UnityRetryStore
 from game_connections.handlers.registry import RequestContext
 from game_connections.shared_image_transfer import collect_context_images
 
 logger = logging.getLogger(__name__)
+
+
+def should_update_unity_dialogue_target(event_type: str, speaker) -> bool:
+    return (
+        str(event_type or "").strip().lower() == "answer"
+        and getattr(speaker, "kind", None) is DialogueActorKind.PLAYER
+    )
 
 
 def _collect_context_images(context: dict) -> List:
@@ -177,11 +187,20 @@ async def _dispatch_task(
     if gm_instruction_override is not None:
         task_data["gm_instruction_override"] = gm_instruction_override
 
+    unity_retry_message_id = ""
+    if (
+        str(model_event_type or "").strip().lower() == "chat"
+        and str(player_message_source or "").strip().lower() == PlayerMessageSource.GAME.value
+        and str(user_input or "").strip()
+        and req_id
+    ):
+        unity_retry_message_id = ConversationMessageIds.incoming(req_id)
+        task_data["unity_retry_message_id"] = unity_retry_message_id
+
     task = use(TaskService).create_task(task_type, task_data)
 
     if task:
         server.client_tasks[ctx.client_id].add(task.uid)
-        await server.send_task_update(ctx.client_id, task)
         chat_event = {
             "user_input": user_input,
             "system_input": system_input,
@@ -202,6 +221,49 @@ async def _dispatch_task(
             chat_event["player_message_source"] = str(player_message_source)
         if gm_instruction_override is not None:
             chat_event["gm_instruction_override"] = gm_instruction_override
+        if unity_retry_message_id:
+            retry_record = {
+                "message_id": unity_retry_message_id,
+                "character_id": str(character_id or ""),
+                "created_at": time.time(),
+                "text": str(user_input or ""),
+                "task_type": str(task_type or "chat"),
+                "task_data": {**task_data, "client_id": ""},
+                "active_task_uid": str(task.uid),
+                "request": {
+                    "user_input": user_input,
+                    "system_input": system_input,
+                    "image_data": list(images or []),
+                    "images_shown": False,
+                    "image_source": image_source,
+                    "event_type": model_event_type,
+                    "character_id": character_id,
+                    "sender": sender,
+                    "participants": list(participants or []),
+                    "req_id": req_id,
+                    "origin_message_id": origin_message_id,
+                    "policy": dict(policy_dict or {}),
+                    "game_state": dict(game_state or {}),
+                    "dialogue": dict(dialogue or {}),
+                    "player_message_source": str(player_message_source or ""),
+                    "gm_instruction_override": gm_instruction_override,
+                    "unity_retry_message_id": unity_retry_message_id,
+                },
+            }
+            retry_record["task_data"].pop("unity_retry_message_id", None)
+            try:
+                retry_store_ok = await asyncio.to_thread(
+                    UnityRetryStore.add, character_id, retry_record
+                )
+            except Exception:
+                logger.exception("Failed to persist Unity retry request %s", unity_retry_message_id)
+                retry_store_ok = False
+            if not retry_store_ok:
+                logger.warning(
+                    "Unity request %s will run without a persistent retry record",
+                    unity_retry_message_id,
+                )
+        await server.send_task_update(ctx.client_id, task)
         event_bus.emit(Events.Chat.SEND_MESSAGE, chat_event)
     else:
         await server._send_aborted_update(
@@ -311,6 +373,14 @@ class CreateTaskAction:
         # into the persistent fallback state used by non-Unity requests.
         persistent_game_state = dict(game_state_payload)
         persistent_game_state.pop("runtime_events", None)
+        persistent_game_state["character_id"] = str(character_id or "")
+        if should_update_unity_dialogue_target(event_type, resolved_speaker):
+            target_changed = use(GameLinkService).set_unity_target_character_id(character_id)
+            if target_changed:
+                event_bus.emit(
+                    Events.Server.GAME_DIALOGUE_TARGET_CHANGED,
+                    {"character_id": str(character_id or "")},
+                )
         event_bus.emit(Events.Server.SET_GAME_DATA, persistent_game_state)
 
         if server._should_block_event(event_type):
@@ -375,6 +445,7 @@ class CreateTaskAction:
                     "presentation_message_id": ConversationMessageIds.incoming(req_id),
                     "origin_message_id": origin_message_id,
                     "character_id": character_id,
+                    "participants": list(participants or []),
                 })
 
             system_input = ""

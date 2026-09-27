@@ -61,8 +61,8 @@ CYR_RE = re.compile(r"[А-Яа-яЁё]")
 
 @lru_cache(maxsize=1)
 def _get_morph():
-    import pymorphy2  # type: ignore
-    return pymorphy2.MorphAnalyzer()
+    import pymorphy3  # type: ignore
+    return pymorphy3.MorphAnalyzer()
 
 
 @lru_cache(maxsize=1)

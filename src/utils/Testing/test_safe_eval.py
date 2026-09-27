@@ -96,22 +96,41 @@ class SafeEvalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             safe_eval_expression('f"{name.__class__}"', names={"name": "Mita"})
 
-    def test_main_template_declares_intent_support_explicitly(self) -> None:
+    def test_intent_support_defaults_on_and_can_be_disabled(self) -> None:
         character = _StubCharacter()
         interpreter = DslInterpreter(
             character,
-            resolver=_StubResolver("support_intents=True\n"),
+            resolver=_MultiFileResolver({
+                "main_template.txt": "[<format.script>]\n",
+                "format.script": 'IF support_intents == True THEN\nADD_SYSTEM_INFO "intent field enabled"\nENDIF\n',
+            }),
         )
 
         blocks, messages = interpreter.process_main_template("main_template.txt")
 
         self.assertEqual(blocks, [])
-        self.assertEqual(messages, [])
+        self.assertEqual(messages, ["intent field enabled"])
         self.assertIs(interpreter.get_prompt_feature("support_intents"), True)
         self.assertNotIn("support_intents", character.variables)
 
-        interpreter.resolver = _StubResolver("support_intents=False\n")
+        interpreter.resolver = _MultiFileResolver({"main_template.txt": "support_intents=False\n"})
         interpreter.process_main_template("main_template.txt")
+        self.assertIs(interpreter.get_prompt_feature("support_intents"), False)
+
+    def test_l1_override_hides_intents_even_if_template_declares_them(self) -> None:
+        interpreter = DslInterpreter(
+            _StubCharacter(),
+            resolver=_MultiFileResolver({
+                "main_template.txt": "support_intents=True\n[<format.script>]\n",
+                "format.script": 'IF support_intents == True THEN\nADD_SYSTEM_INFO "intent field enabled"\nENDIF\n',
+            }),
+        )
+        blocks, messages = interpreter.process_main_template(
+            "main_template.txt",
+            feature_overrides={"support_intents": False},
+        )
+        self.assertEqual(blocks, [])
+        self.assertEqual(messages, [])
         self.assertIs(interpreter.get_prompt_feature("support_intents"), False)
 
     def test_add_context_info_uses_separate_volatile_channel(self) -> None:

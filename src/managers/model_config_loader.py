@@ -208,6 +208,8 @@ class ModelConfigLoader:
         Apply per-preset generation parameter overrides on top of the global config.
         Each override entry: {param: {"enabled": bool, "value": Any}}
         """
+        if getattr(preset_settings, "native_parameters", None) is not None:
+            return base
         import copy
         overrides = getattr(preset_settings, "generation_overrides", None) or {}
         if not overrides:

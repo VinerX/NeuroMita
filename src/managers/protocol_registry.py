@@ -14,10 +14,12 @@ class ApiProtocol:
     name: str
     dialect: str
     provider: str
+    display_name: str = ""
     auth: Dict[str, Any] = field(default_factory=dict)
     headers: Dict[str, str] = field(default_factory=dict)
     capabilities: Dict[str, Any] = field(default_factory=dict)
     transforms: List[Dict[str, Any]] = field(default_factory=list)
+    settings_schema_id: str = ""
 
 
 class ProtocolRegistry:
@@ -30,10 +32,12 @@ class ProtocolRegistry:
                     name=str(raw.get("name", raw["id"])),
                     dialect=str(raw.get("dialect", "")),
                     provider=str(raw.get("provider", "")),
+                    display_name=str(raw.get("display_name", raw.get("name", raw["id"])) or raw["id"]),
                     auth=dict(raw.get("auth", {}) or {}),
                     headers=dict(raw.get("headers", {}) or {}),
                     capabilities=dict(raw.get("capabilities", {}) or {}),
                     transforms=list(raw.get("transforms", []) or []),
+                    settings_schema_id=str(raw.get("settings_schema_id") or ""),
                 )
                 items[p.id] = p
             except Exception as e:

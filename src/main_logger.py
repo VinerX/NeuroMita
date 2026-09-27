@@ -7,6 +7,7 @@ from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from typing import Any
 
 from core.app_paths import ai_worker_log_path, runtime_log_path
+from core.trace_context import current_trace_id
 
 try:
     import colorlog
@@ -78,6 +79,13 @@ class LocationFilter(logging.Filter):
         record.location = f"[{record.filename}:{record.lineno}]"
         return True
 
+class TraceContextFilter(logging.Filter):
+    def filter(self, record):
+        trace_id = current_trace_id()
+        record.trace_id = trace_id
+        record.trace_short = trace_id[:12] if trace_id else "-"
+        return True
+
 # -----------------------------------------------------------------------------
 # Кастомный класс логгера
 # -----------------------------------------------------------------------------
@@ -89,6 +97,7 @@ class CustomLogger(logging.Logger):
     
     def __init__(self, name: str, level: int = logging.NOTSET):
         super().__init__(name, level)
+        self.addFilter(TraceContextFilter())
         self._setup_handlers()
     
     def notify(self, message: str, *args: Any, **kwargs: Any) -> None:
@@ -136,7 +145,7 @@ class CustomLogger(logging.Logger):
             console_handler = colorlog.StreamHandler()
             console_handler.setFormatter(
                 colorlog.ColoredFormatter(
-                    '%(log_color)s%(levelname)-8s %(location)-30s | %(message)s',
+                    '%(log_color)s%(levelname)-8s %(location)-30s [trace=%(trace_short)s] | %(message)s',
                     log_colors={
                         'DEBUG':    'white',
                         'PROGRESS': 'light_blue',
@@ -151,7 +160,7 @@ class CustomLogger(logging.Logger):
             )
         else:
             console_handler = logging.StreamHandler()
-            console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s | %(message)s'))
+            console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s [trace=%(trace_short)s] | %(message)s'))
         console_handler.addFilter(ProjectFilter())
         console_handler.addFilter(LocationFilter())
 
@@ -168,7 +177,7 @@ class CustomLogger(logging.Logger):
             logging.Formatter(
                 '%(asctime)s - %(levelname)-8s '
                 '[%(filename)s:%(lineno)d - %(funcName)s] '
-                '%(message)s'
+                '[trace=%(trace_id)s] %(message)s'
             )
         )
         file_handler.addFilter(ProjectFilter())

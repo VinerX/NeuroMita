@@ -33,6 +33,64 @@ class PureBoardLogic:
     def get_legal_moves_uci_short(self, limit: int = 10):
         return [move.uci() for move in list(self.board.legal_moves)[:limit]]
 
+    def get_recent_move_history(self, max_moves_per_side: int = 8):
+        """Describe recent played moves and notable events for the game prompt."""
+        if max_moves_per_side <= 0 or not self.board.move_stack:
+            return []
+
+        root = self.board.root()
+        side_counts = {chess.WHITE: 0, chess.BLACK: 0}
+        moves = list(self.board.move_stack)
+        first_index = len(moves)
+        for index in range(len(moves) - 1, -1, -1):
+            mover = root.turn if index % 2 == 0 else not root.turn
+            if side_counts[mover] >= max_moves_per_side:
+                break
+            side_counts[mover] += 1
+            first_index = index
+
+        board = root.copy()
+        for index, move in enumerate(moves[:first_index]):
+            board.push(move)
+
+        history = []
+        for move in moves[first_index:]:
+            mover = board.turn
+            side = "White" if mover == chess.WHITE else "Black"
+            move_number = board.fullmove_number
+            try:
+                san = board.san(move)
+            except (AssertionError, ValueError):
+                san = move.uci()
+            events = []
+
+            captured_square = move.to_square
+            if board.is_en_passant(move):
+                captured_square = move.to_square - 8 if mover == chess.WHITE else move.to_square + 8
+            captured_piece = board.piece_at(captured_square)
+            if captured_piece:
+                color = "white" if captured_piece.color == chess.WHITE else "black"
+                piece_name = chess.piece_name(captured_piece.piece_type)
+                events.append(f"captures {color} {piece_name} on {chess.square_name(captured_square)}")
+
+            if board.is_castling(move):
+                flank = "kingside" if board.is_kingside_castling(move) else "queenside"
+                events.append(f"castles {flank}")
+            if move.promotion:
+                events.append(f"pawn promotes to {chess.piece_name(move.promotion)}")
+
+            board.push(move)
+            if board.is_checkmate():
+                events.append("checkmate")
+            elif board.is_check():
+                events.append("check")
+
+            detail = "; ".join(events) if events else "no special event"
+            prefix = f"{move_number}." if mover == chess.WHITE else f"{move_number}..."
+            history.append(f"{prefix} {side}: {san} ({detail})")
+
+        return history
+
     def make_move(self, uci_move_str):
         try:
             move = chess.Move.from_uci(uci_move_str)

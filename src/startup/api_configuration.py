@@ -53,7 +53,9 @@ def ensure_api_configuration() -> ApiConfigurationRuntime:
         if presets is None:
             from controllers.api_presets_controller import ApiPresetsController
 
-            presets = ApiPresetsController()
+            from managers.settings_manager import SettingsManager
+
+            presets = ApiPresetsController(legacy_generation_settings=SettingsManager)
             registry.register(ApiPresetService, presets)
 
         return ApiConfigurationRuntime(

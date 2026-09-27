@@ -33,6 +33,7 @@ def _parse_due(s: str) -> Optional[datetime.datetime]:
 
     # "через N минут/часов/дней/недель"
     _FUTURE_RU = [
+        (re.compile(r"через\s+(\d+(?:[.,]\d+)?)\s*секунд[ыу]?", re.I), lambda m, n=now: n + datetime.timedelta(seconds=float(m.group(1).replace(',', '.')))),
         (re.compile(r"через\s+(\d+)\s*минут[ыу]?", re.I), lambda m, n=now: n + datetime.timedelta(minutes=int(m.group(1)))),
         (re.compile(r"через\s+(\d+)\s*час[аов]?", re.I),  lambda m, n=now: n + datetime.timedelta(hours=int(m.group(1)))),
         (re.compile(r"через\s+(\d+)\s*дн[еёя]", re.I),   lambda m, n=now: n + datetime.timedelta(days=int(m.group(1)))),
@@ -43,6 +44,7 @@ def _parse_due(s: str) -> Optional[datetime.datetime]:
         (re.compile(r"через\s+полчаса", re.I),             lambda m, n=now: n + datetime.timedelta(minutes=30)),
     ]
     _FUTURE_EN = [
+        (re.compile(r"in\s+(\d+(?:\.\d+)?)\s*seconds?", re.I), lambda m, n=now: n + datetime.timedelta(seconds=float(m.group(1)))),
         (re.compile(r"in\s+(\d+)\s*minutes?", re.I), lambda m, n=now: n + datetime.timedelta(minutes=int(m.group(1)))),
         (re.compile(r"in\s+(\d+)\s*hours?", re.I),   lambda m, n=now: n + datetime.timedelta(hours=int(m.group(1)))),
         (re.compile(r"in\s+(\d+)\s*days?", re.I),    lambda m, n=now: n + datetime.timedelta(days=int(m.group(1)))),
@@ -85,22 +87,23 @@ def _parse_due(s: str) -> Optional[datetime.datetime]:
 # ---------- tool -----------------------------------------------------------
 
 class ReminderTool(Tool):
-    """Управление напоминаниями: просмотр, добавление, удаление."""
+    """Управление напоминаниями и короткими таймерами."""
 
     name = "reminder"
     description = (
         "Manage reminders. "
         "list — show all pending reminders; "
         "add — add a reminder (requires text and due date/time); "
-        "delete — remove a reminder by its number N. "
-        "Due examples: 'через 2 часа', 'завтра в 18:00', 'in 30 minutes', '2024-12-01T10:00:00'."
+        "delete — remove a reminder by its number N; "
+        "timer — after delay_seconds, autonomously start a new LLM turn with instruction. "
+        "Due examples: 'через 10 секунд', 'через 2 часа', 'in 30 seconds', '2024-12-01T10:00:00'."
     )
     parameters = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "add", "delete"],
+                "enum": ["list", "add", "delete", "timer"],
                 "description": "Action to perform.",
             },
             "text": {
@@ -118,6 +121,15 @@ class ReminderTool(Tool):
             "n": {
                 "type": "integer",
                 "description": "Reminder number N (required for 'delete').",
+            },
+            "delay_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Delay before timer fires (required for 'timer').",
+            },
+            "instruction": {
+                "type": "string",
+                "description": "System instruction for the autonomous turn (required for 'timer').",
             },
         },
         "required": ["action"],
@@ -138,7 +150,7 @@ class ReminderTool(Tool):
         char = use(CharacterRegistry).get(self._char_id)
         return getattr(char, "reminder_system", None)
 
-    def run(self, action: str, text: str = None, due: str = None, n: int = None, **_) -> Any:
+    def run(self, action: str, text: str = None, due: str = None, n: int = None, delay_seconds: float = None, instruction: str = None, **_) -> Any:
         rs = self._get_reminder_system()
         if rs is None:
             return "[reminder] Ошибка: система напоминаний недоступна."
@@ -166,6 +178,19 @@ class ReminderTool(Tool):
                 return f"Напоминание #{new_n} добавлено: «{text}» — {dt.strftime('%Y-%m-%d %H:%M')}."
             except Exception as e:
                 return f"[reminder] Ошибка при добавлении: {format_exception(e)}"
+
+        elif action == "timer":
+            if not instruction:
+                return "[timer] Для таймера укажи instruction для следующего хода."
+            if delay_seconds is None:
+                return "[timer] Для таймера укажи delay_seconds."
+            try:
+                new_n = rs.add_timer(str(instruction), float(delay_seconds))
+                return f"Таймер #{new_n} установлен на {float(delay_seconds):g} сек.: «{instruction}»."
+            except (TypeError, ValueError) as exc:
+                return f"[timer] Некорректный delay_seconds: {format_exception(exc)}"
+            except Exception as exc:
+                return f"[timer] Ошибка при добавлении: {format_exception(exc)}"
 
         elif action == "delete":
             if n is None:

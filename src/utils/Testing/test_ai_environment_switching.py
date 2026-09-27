@@ -355,6 +355,35 @@ def test_expanding_shared_runtime_reinitializes_existing_services_before_swap() 
     assert controller._runtime_validations.keys() == {"tts", "asr"}
 
 
+def test_runtime_validation_payload_can_be_updated_without_replaying_it() -> None:
+    current = _current_worker(("X:/overlay", "X:/backend"))
+    registry = _EnvironmentRegistry(current.python_paths)
+    controller = _controller(current, registry)
+    controller._runtime_validations = {
+        "asr": (
+            "asr",
+            "start_live",
+            {"engine_id": "whisper", "microphone_index": 1},
+            30.0,
+        ),
+    }
+
+    updated = controller.update_runtime_validation_payload(
+        "asr",
+        "whisper",
+        {"engine_id": "whisper", "microphone_index": 18},
+    )
+
+    assert updated is True
+    assert controller._runtime_validations["asr"] == (
+        "asr",
+        "start_live",
+        {"engine_id": "whisper", "microphone_index": 18},
+        30.0,
+    )
+    assert current.calls == []
+
+
 def test_deactivate_builds_candidate_without_removed_environment() -> None:
     current = _current_worker(("X:/overlay", "X:/backend"))
     registry = _EnvironmentRegistry(("X:/overlay", "X:/backend"))

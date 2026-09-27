@@ -83,22 +83,45 @@ class SandboxPageController:
         )
         return len(prepared.messages)
 
-    def model_snapshot(self) -> tuple[dict[str, Any], int | None]:
+    def model_snapshot(self, character_id: str | None = None) -> tuple[dict[str, Any], int | None]:
+        """Return the preset effective for this character's chat requests.
+
+        A character may inherit the application's current preset (``-1``) or
+        have an explicit ``CHAR_PROVIDER_<id>`` override.  The session panel is
+        informational, so it must use the same resolution rule as
+        ``ModelController`` rather than whichever preset happens to be first in
+        the catalogue.
+        """
         service = services().get_optional(ApiPresetService)
         if service is None:
             return {}, None
-        return dict(service.list_meta() or {}), service.current_id()
+        cid = str(character_id or self.current_character_id()).strip()
+        configured = self._settings().get(f"CHAR_PROVIDER_{cid}", -1) if cid else -1
+        from presets.character_provider import provider_preset_id
+
+        configured_id = provider_preset_id(configured)
+        # ApiPresetResolver (and therefore the actual chat request) resolves
+        # the inherited provider from LAST_API_PRESET_ID.  ApiPresetService's
+        # in-memory current_id is populated later in some startup paths, which
+        # made the disabled combo keep its first catalogue item.
+        default_id = provider_preset_id(
+            self._settings().get("LAST_API_PRESET_ID", None)
+        )
+        effective_id = configured_id if configured_id is not None else default_id
+        if effective_id is None:
+            effective_id = service.current_id()
+        return dict(service.list_meta() or {}), effective_id
 
     def select_model(self, preset_id: int) -> None:
         self._api_presets().set_current(int(preset_id))
 
     def current_model_name(self) -> str:
-        service = self._api_presets()
-        current_id = service.current_id()
-        for preset in (service.list_meta() or {}).get("custom", []) or []:
-            preset_id = getattr(preset, "id", None)
-            if preset_id is not None and current_id is not None and int(preset_id) == int(current_id):
-                return str(getattr(preset, "name", "") or "")
+        meta, current_id = self.model_snapshot()
+        for bucket in ("custom", "builtin"):
+            for preset in (meta.get(bucket) or []):
+                preset_id = preset.get("id") if isinstance(preset, dict) else getattr(preset, "id", None)
+                if preset_id is not None and current_id is not None and int(preset_id) == int(current_id):
+                    return str(preset.get("name", "") if isinstance(preset, dict) else getattr(preset, "name", ""))
         return ""
 
     def prompt_snapshot(self, character_id: str) -> tuple[str, list[str], str]:

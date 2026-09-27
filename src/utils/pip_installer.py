@@ -191,6 +191,16 @@ class PipInstaller:
     }
 
 
+    # Windows security products can briefly lock uv's generated console-script
+    # trampoline while uv updates its PE resources.  Retrying the same uv command
+    # against a fresh disposable staging target is safe and avoids changing the
+    # dependency resolver/lock semantics.
+    UV_WINDOWS_TRANSIENT_RETRIES = 2
+    UV_WINDOWS_TRANSIENT_BACKOFF_SEC = (0.35, 0.9)
+    WINDOWS_PATH_SOFT_LIMIT = 248
+    WINDOWS_WHEEL_MEMBER_RESERVE = 120
+
+
     def __init__(
         self,
         update_status=None,
@@ -310,7 +320,7 @@ class PipInstaller:
                 cmd.extend(package_spec)
             else:
                 cmd.append(package_spec)
-            return self._run_pip_process(cmd, description)
+            return self._run_install_with_transient_retries(cmd, description)
         finally:
             if requirement_file_path:
                 try:
@@ -334,6 +344,7 @@ class PipInstaller:
         overrides and are omitted from the overlay output, so large runtimes are
         neither downloaded nor copied into every feature environment.
         """
+        self._maybe_warn_fragile_location()
         specs = [str(item).strip() for item in direct_specs or [] if str(item).strip()]
         if not specs:
             return True
@@ -397,7 +408,10 @@ class PipInstaller:
 
             install_cmd = self._build_install_command()
             install_cmd.extend(["--no-deps", "-r", lock_path])
-            return self._run_pip_process(install_cmd, "Installing resolved environment...")
+            return self._run_install_with_transient_retries(
+                install_cmd,
+                "Installing resolved environment...",
+            )
         finally:
             for path in (input_path, lock_path, override_path):
                 if not path:
@@ -1188,6 +1202,23 @@ class PipInstaller:
                 "приложение в путь только из латинских букв, цифр и '_' — "
                 "например C:\\Games\\NeuroMita."
             )
+
+        self._maybe_warn_windows_path_budget()
+
+    def _maybe_warn_windows_path_budget(self) -> None:
+        if os.name != "nt" or getattr(self, "_path_budget_warned", False):
+            return
+        self._path_budget_warned = True
+        target_len = len(os.path.abspath(self.libs_path_abs))
+        estimated = target_len + 1 + self.WINDOWS_WHEEL_MEMBER_RESERVE
+        if estimated < self.WINDOWS_PATH_SOFT_LIMIT:
+            return
+        self.update_log(
+            "⚠️ Малый запас длины пути для Windows wheel extraction: "
+            f"target={target_len}, оценка с длинным wheel member={estimated}. "
+            "Внутренние staging-имена NeuroMita сокращены, но очень длинный корневой "
+            "путь приложения всё ещё может вызвать os error 3 при распаковке wheel."
+        )
 
     def _ensure_libs_path(self):
         os.makedirs(self.libs_path_abs, exist_ok=True)
@@ -2244,6 +2275,128 @@ class PipInstaller:
                 "access is denied" in low or "os error 5" in low
             ):
                 return True
+        return False
+
+    def _uv_windows_install_failure_kind(self, cmd: List[str]) -> str | None:
+        """Classify known Windows uv materialization failures from the last run.
+
+        The classifier is deliberately narrow: resolver/build errors must never
+        be retried as filesystem races because doing so can hide real dependency
+        incompatibilities.
+        """
+        if not self._is_uv_command(cmd) or self._last_run_returncode == 0:
+            return None
+        text = "\n".join(str(line) for line in self._last_run_recent_lines).lower()
+        if not text:
+            return None
+        if self._last_run_uv_cache_access_denied:
+            return "uv_cache_lock"
+
+        trampoline = "uv-trampoline-" in text or "windows pe resources" in text
+        open_failed = any(
+            marker in text
+            for marker in (
+                "os error -2147024786",
+                "system cannot open the device or file specified",
+                "система не может открыть устройство или файл",
+                "системе не удается открыть устройство или файл",
+            )
+        )
+        transient_lock = any(
+            marker in text
+            for marker in (
+                "os error 5",
+                "access is denied",
+                "доступ запрещен",
+                "os error 32",
+                "sharing violation",
+                "process cannot access the file",
+                "процесс не может получить доступ к файлу",
+            )
+        )
+        if trampoline and (open_failed or transient_lock):
+            return "pe_trampoline_lock"
+
+        persist_temp = "failed to persist temporary file" in text
+        path_missing = any(
+            marker in text
+            for marker in (
+                "os error 3",
+                "system cannot find the path specified",
+                "системе не удается найти указанный путь",
+            )
+        )
+        if persist_temp and path_missing:
+            return "path_materialization"
+        if persist_temp and transient_lock:
+            return "temporary_file_lock"
+        return None
+
+    def _is_disposable_staging_target(self) -> bool:
+        parts = {str(part).lower() for part in Path(self.libs_path_abs).parts}
+        return bool({".staging", ".install-staging"} & parts)
+
+    def _reset_disposable_staging_target(self) -> bool:
+        if not self._is_disposable_staging_target():
+            return False
+        target = Path(self.libs_path_abs)
+        if target.exists() and not self._rmtree_with_retries(str(target), "installer-staging-retry"):
+            return False
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            return True
+        except OSError as exc:
+            self.update_log(
+                "Не удалось подготовить чистый staging перед повтором установки: "
+                f"{format_exception(exc)}"
+            )
+            return False
+
+    def _log_windows_path_materialization_failure(self) -> None:
+        target_len = len(os.path.abspath(self.libs_path_abs))
+        estimated = target_len + 1 + self.WINDOWS_WHEEL_MEMBER_RESERVE
+        self.update_log(
+            "Windows не смог сохранить временный файл wheel (os error 3). "
+            f"Длина target-пути: {target_len}; оценочный путь с длинным wheel member: {estimated}. "
+            "NeuroMita использует сокращённые staging-имена, но если ошибка повторяется, "
+            "корневой путь приложения всё ещё может быть слишком длинным или каталог временно исчезает/блокируется."
+        )
+
+    def _run_install_with_transient_retries(self, cmd: List[str], description: str) -> bool:
+        """Run an install command and retry only known transient Windows uv races.
+
+        Dependency resolution remains uv-only.  On retry a transactional staging
+        target is wiped and recreated, preventing a partially materialized wheel
+        tree from contaminating the next attempt.
+        """
+        attempts = 1 + int(self.UV_WINDOWS_TRANSIENT_RETRIES)
+        for attempt in range(attempts):
+            if self._run_pip_process(cmd, description):
+                return True
+
+            kind = self._uv_windows_install_failure_kind(cmd)
+            if kind == "path_materialization":
+                self._log_windows_path_materialization_failure()
+                return False
+            if kind not in {"pe_trampoline_lock", "temporary_file_lock", "uv_cache_lock"}:
+                return False
+            if attempt + 1 >= attempts:
+                self.update_log(
+                    "Повторные попытки после временной блокировки Windows/антивирусом исчерпаны."
+                )
+                return False
+
+            next_attempt = attempt + 2
+            self.update_log(
+                "Обнаружена временная Windows-блокировка файлов uv "
+                f"({kind}); повтор установки {next_attempt}/{attempts}."
+            )
+            if self._is_disposable_staging_target() and not self._reset_disposable_staging_target():
+                return False
+            delay_index = min(attempt, len(self.UV_WINDOWS_TRANSIENT_BACKOFF_SEC) - 1)
+            delay = float(self.UV_WINDOWS_TRANSIENT_BACKOFF_SEC[delay_index])
+            if delay > 0:
+                time.sleep(delay)
         return False
 
     def _run_with_pipes(self, cmd: List[str], env: dict, state: _RunState) -> Tuple[bool, int]:

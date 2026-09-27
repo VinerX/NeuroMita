@@ -70,6 +70,7 @@ class DefaultAppVarsService(AppVarsService):
         "BEAT_SYNC_ENABLED",
         "BEAT_SYNC_STREAMING",
         "REMINDERS_ENABLED",
+        "RAG_ENABLED",
         "GRAPH_EXTRACTION_ENABLED",
         "MITA_CAMERA_ENABLED",
         "MITA_CAMERA_CONTINUOUS",

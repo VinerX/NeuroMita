@@ -1,12 +1,36 @@
 from __future__ import annotations
 
 import unittest
+import sys
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from handlers.asr_models.whisper_recognizer import WhisperRecognizer
 
 
 class WhisperRecognizerTests(unittest.TestCase):
+    def test_indexed_cuda_device_is_passed_to_ctranslate2(self):
+        recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())
+        recognizer.whisper_device = "cuda:1"
+        fake_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True, device_count=lambda: 2)
+        )
+
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertEqual(recognizer._resolve_device_for_runtime(), ("cuda", 1))
+
+    def test_auto_selects_first_cuda_device_as_runtime_tuple(self):
+        recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())
+        fake_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: True, device_count=lambda: 2)
+        )
+
+        with patch.dict(sys.modules, {"torch": fake_torch}), patch(
+            "handlers.asr_models.whisper_recognizer.check_gpu_provider",
+            return_value="NVIDIA",
+        ):
+            self.assertEqual(recognizer._resolve_device_for_runtime(), ("cuda", 0))
+
     def test_install_steps_include_pyyaml_repair_dependency(self):
         recognizer = WhisperRecognizer(pip_installer=None, logger=Mock())
 

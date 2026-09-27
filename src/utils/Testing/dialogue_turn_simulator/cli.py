@@ -15,6 +15,7 @@ def run_self_test() -> int:
         SimulatedMita("Kind", "Kind", order_points=20),
         SimulatedMita("Cappie", "Cappie", order_points=10),
     ], seed=3)
+    simulation.policy.max_chain_turns = 3
     full_response = "Kind, what do you think? One more thing, Kind. Cappie, do you agree?"
     address_map = (
         ("Kind", "Kind, what do you think?"),

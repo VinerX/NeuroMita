@@ -21,6 +21,7 @@ from controllers.speech_controller import SpeechController
 from core.events import Event, Events
 from core.executors import PoolSaturated, Pools
 from core.performance_trace import performance_traces
+from core.trace_context import current_trace_id
 from core.request_policy import RequestPolicy
 from core.services import services
 from handlers.llm_providers.base import LLMRequest, LLMResponse
@@ -28,7 +29,7 @@ from managers.api_preset_resolver import PresetSettings
 from managers.llm_request_runner import LLMRequestRunner
 from managers.tools.base import Tool
 from managers.tools.tool_manager import ToolManager
-from schemas.structured_response import ResponseSegment, StructuredResponse, ToolCall
+from schemas.structured_response import ResponseSegment, StructuredResponse, ToolCall, WorkingState
 from services.contracts import (
     CharacterRegistry,
     ChatGenerationRequest,
@@ -66,12 +67,12 @@ class _Registry(CharacterRegistry):
         return "Crazy"
 
     def current_profile(self):
-        return {"character_id": "Crazy", "name": "Crazy"}
+        return {"character_id": "Crazy", "display_name": "Crazy"}
 
-    def current_name(self):
+    def current_display_name(self):
         return "Crazy"
 
-    def name_of(self, character_id):
+    def display_name_of(self, character_id):
         return str(character_id or "")
 
 
@@ -93,11 +94,13 @@ class _Bus:
 class _Generation(GenerationService):
     def __init__(self, result=None, error=None):
         self.request = None
+        self.observed_trace_id = None
         self.result = result
         self.error = error
 
     def generate_chat(self, request: ChatGenerationRequest):
         self.request = request
+        self.observed_trace_id = current_trace_id()
         if self.error is not None:
             raise self.error
         return self.result or ChatGenerationResult(text="ok", character_id="Crazy")
@@ -120,6 +123,9 @@ class _VoiceService(LocalVoiceService):
         return True
 
     def initialize_model(self, model_id):
+        return True
+
+    def reinitialize_model(self, model_id):
         return True
 
     def triton_status(self, *, refresh=False):
@@ -205,6 +211,7 @@ def _preset(name):
         protocol_id="openai_compatible_default",
         dialect_id="openai_chat_completions",
         provider_name="common",
+        provider_display_name="OpenAI-compatible API",
         headers={},
         transforms=[],
         capabilities={},
@@ -255,6 +262,7 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(generation.request.trace_id, trace.trace_id)
+        self.assertEqual(generation.observed_trace_id, trace.trace_id)
         snapshot = performance_traces().snapshot(trace.trace_id)
         self.assertEqual(snapshot["status"], "ok")
         self.assertIn("response.generated", [mark["name"] for mark in snapshot["marks"]])
@@ -407,6 +415,7 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
         structured = StructuredResponse(
             segments=[ResponseSegment(text="Checking")],
             tool_call=ToolCall(name="calculator", args={"value": 41}),
+            working_state=WorkingState(focus="Calculate the requested value"),
         )
         result = ModelController._handle_tool_call(
             harness,
@@ -438,6 +447,12 @@ class PerformanceTraceIntegrationTests(unittest.TestCase):
             trace_id=trace.trace_id,
         )
         self.assertEqual(result.text, "done")
+        first_response = next(
+            payload
+            for name, payload in harness.event_bus.events
+            if name == Events.GUI.UPDATE_CHAT_UI
+        )
+        self.assertNotIn("working_state", first_response["structured_data"])
         snapshot = performance_traces().finish(trace.trace_id)
         llm_spans = [span for span in snapshot["spans"] if span["name"] == "llm.total"]
         self.assertEqual(len(llm_spans), 1)

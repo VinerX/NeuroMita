@@ -72,8 +72,8 @@ SET result = result + """  "segments": [
   "tool_call": {"name": "имя_инструмента", "args": {"параметр": "значение"}},
 """
 
-// Если граф включён, добавляем entities и relations
-IF GRAPH_EXTRACTION_ENABLED == True THEN
+// Если RAG и граф включены, добавляем entities и relations
+IF GRAPH_EXTRACTION_ENABLED == True AND RAG_ENABLED == True THEN
     SET result = result + """  "entities": [{"name": "нижний_регистр_1_3_слова", "type": "person|place|thing|concept"}, ...],
   "relations": ["субъект|предикат|объект", ...],
 """

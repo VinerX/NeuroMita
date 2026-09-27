@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,12 @@ from ui.pages.settings.section_registry import get_settings_section_specs
 
 SRC_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = SRC_ROOT.parent
-UNITY_SCRIPTS = Path(r"D:\NeuroMitaTest\NeuroMita-Unity6-Stable\Assets\Scripts\NeuroMitaScripts")
+UNITY_SCRIPTS = Path(
+    os.environ.get(
+        "NEUROMITA_UNITY_SCRIPTS",
+        PROJECT_ROOT.parent / "VinerX_NeuroMita-Unity" / "Assets" / "Scripts" / "NeuroMitaScripts",
+    )
+)
 
 
 def test_python_production_tree_has_no_dialogue_turn_router() -> None:
@@ -41,6 +47,7 @@ def test_python_sends_unity_owned_dialogue_policy_settings() -> None:
     source = (SRC_ROOT / "controllers" / "server_controller.py").read_text(encoding="utf-8")
     for key in (
         "MITA_DIALOGUE_AUTO",
+        "DIALOGUE_AUTO_ROUNDS",
         "DIALOGUE_MAX_CHAIN_TURNS",
     ):
         assert f'"{key}"' in source
@@ -101,6 +108,45 @@ def test_automatic_dialogue_setting_defaults_to_enabled(monkeypatch) -> None:
     ).read_text(encoding="utf-8")
 
 
+def test_automatic_dialogue_numeric_defaults_are_sent_to_unity(monkeypatch) -> None:
+    controller = object.__new__(ServerController)
+    controller.settings_to_send = [
+        "DIALOGUE_AUTO_ROUNDS",
+        "DIALOGUE_MAX_CHAIN_TURNS",
+    ]
+    controller.settings = SimpleNamespace(revision=0)
+    controller._collect_characters_stats = lambda: {}
+    controller._get_setting = lambda _key, default=None: default
+    monkeypatch.setattr(
+        "controllers.server_controller.ensure_shared_transfer_dirs",
+        lambda: (_ for _ in ()).throw(RuntimeError("disabled in test")),
+    )
+
+    body = controller._prepare_loaded_settings_body()
+    assert body["settings"]["DIALOGUE_AUTO_ROUNDS"] == 1
+    assert body["settings"]["DIALOGUE_MAX_CHAIN_TURNS"] == 24
+
+
+def test_game_master_controls_are_hidden_and_transport_is_forced_off(monkeypatch) -> None:
+    dialogue_settings = (
+        SRC_ROOT / "ui" / "settings" / "dialogue_settings.py"
+    ).read_text(encoding="utf-8")
+    assert "_GAME_MASTER_SETTINGS_VISIBLE = False" in dialogue_settings
+
+    controller = object.__new__(ServerController)
+    controller.settings_to_send = ["GM_ON"]
+    controller.settings = SimpleNamespace(revision=0)
+    controller._collect_characters_stats = lambda: {}
+    controller._get_setting = lambda _key, default=None: True
+    monkeypatch.setattr(
+        "controllers.server_controller.ensure_shared_transfer_dirs",
+        lambda: (_ for _ in ()).throw(RuntimeError("disabled in test")),
+    )
+
+    body = controller._prepare_loaded_settings_body()
+    assert body["settings"]["GM_ON"] is False
+
+
 def test_dialogue_controls_live_inside_game_settings() -> None:
     assert "dialogue" not in {spec.key for spec in get_settings_section_specs()}
 
@@ -118,9 +164,15 @@ def test_chain_limit_uses_standard_dependency_and_polished_stepper() -> None:
     block = source[key_position:key_position + 420]
 
     assert '"type": "number_stepper"' in block
-    assert '"default": 3' in block
+    assert '"default": 24' in block
     assert '"depends_on": "MITA_DIALOGUE_AUTO"' in block
     assert (SRC_ROOT / "ui" / "widgets" / "number_stepper.py").exists()
+
+    rounds_position = source.index('"key": "DIALOGUE_AUTO_ROUNDS"')
+    rounds_block = source[rounds_position:rounds_position + 420]
+    assert '"type": "number_stepper"' in rounds_block
+    assert '"default": 1' in rounds_block
+    assert '"depends_on": "MITA_DIALOGUE_AUTO"' in rounds_block
 
 
 def test_task_result_preserves_only_per_segment_addressees() -> None:
@@ -153,7 +205,7 @@ def test_python_generation_contract_has_no_flat_addressee_state() -> None:
     assert "consume_pending_targets" not in model
 
 
-def test_unity_groups_each_v3_response_by_unique_target_and_has_no_fallback() -> None:
+def test_unity_groups_targets_and_keeps_round_quota_separate() -> None:
     processor = (
         UNITY_SCRIPTS / "Network" / "Handlers" / "DialogueTaskResultProcessor.cs"
     ).read_text(encoding="utf-8")
@@ -168,9 +220,12 @@ def test_unity_groups_each_v3_response_by_unique_target_and_has_no_fallback() ->
     assert "Dictionary<CharacterType, List<string>> textsByTarget" in processor
     assert "List<CharacterType> targetOrder" in processor
     assert 'Text = string.Join(" ", textsByTarget[target])' in processor
-    assert "ClearAddressedMessages" in processor
+    assert "countSourceTurn" in processor
     assert "if (addressedMessage == null)" in order
-    assert "nextSpeaker = active[0]" not in order
+    assert "SelectNextQuotaSpeaker" in order
+    assert "speakerTurnCounts" in order
+    assert "speakersInCurrentRound" not in order
+    assert "!speakersInCurrentRound.Contains" not in order
     assert "dialogueTurnCount++" in order
 
 

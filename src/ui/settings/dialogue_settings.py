@@ -3,6 +3,8 @@ from __future__ import annotations
 from ui.gui_templates import create_settings_section
 from utils import _
 
+_GAME_MASTER_SETTINGS_VISIBLE = False
+
 
 def add_dialogue_settings_section(self, parent) -> None:
     """Add dialogue policy controls to the Game settings page."""
@@ -10,8 +12,8 @@ def add_dialogue_settings_section(self, parent) -> None:
         {
             "type": "text",
             "label": _(
-                "Автоматические разговоры персонажей, продолжения и GameMaster.",
-                "Automatic character conversations, continuations and GameMaster.",
+                "Автоматические разговоры персонажей и продолжения.",
+                "Automatic character conversations and continuations.",
             ),
         },
         {
@@ -30,19 +32,31 @@ def add_dialogue_settings_section(self, parent) -> None:
             ),
         },
         {
-            "label": _("Максимум ходов в цепочке (1–24)", "Maximum turns in chain (1–24)"),
-            "key": "DIALOGUE_MAX_CHAIN_TURNS",
+            "label": _("Минимум кругов разговора (1–24)", "Minimum conversation rounds (1–24)"),
+            "key": "DIALOGUE_AUTO_ROUNDS",
             "type": "number_stepper",
-            "default": 3,
+            "default": 1,
             "minimum": 1,
             "maximum": 24,
             "depends_on": "MITA_DIALOGUE_AUTO",
             "tooltip": _(
-                "Максимальное число ответов Мит, включая первый ответ на сообщение игрока.",
-                "Maximum number of Mita replies, including the first response to the player's message.",
+                "Каждая активная Мита отвечает хотя бы столько раз. Явные target-обращения могут добавить ответы сверх этой квоты.",
+                "Each active Mita replies at least this many times. Explicit target addresses may add replies beyond this quota.",
             ),
         },
-        {"type": "end"},
+        {
+            "label": _("Предельное число ходов в цепочке (1–200)", "Maximum turns in chain (1–200)"),
+            "key": "DIALOGUE_MAX_CHAIN_TURNS",
+            "type": "number_stepper",
+            "default": 24,
+            "minimum": 1,
+            "maximum": 200,
+            "depends_on": "MITA_DIALOGUE_AUTO",
+            "tooltip": _(
+                "Жёсткий предохранитель: учитывает первый ответ и дополнительные ответы по target. При достижении лимита цепочка завершается, даже если круги не закончены.",
+                "Hard safety limit: includes the first reply and extra target replies. Reaching it ends the chain even if rounds remain.",
+            ),
+        },
         {
             "type": "subsection",
             "label": _("Продолжения", "Continuations"),
@@ -61,39 +75,37 @@ def add_dialogue_settings_section(self, parent) -> None:
             ),
         },
         {"type": "end"},
-        {
-            "type": "subsection",
-            "label": _("Режим GameMaster", "GameMaster"),
-        },
-        {
-            "label": _("Включить GameMaster", "Enable GameMaster"),
-            "key": "GM_ON",
-            "type": "checkbutton",
-            "default_checkbutton": False,
-            "tooltip": _(
-                "GameMaster периодически проверяет разговор и может выдать направление.",
-                "GameMaster periodically reviews the conversation and may issue a directive.",
-            ),
-        },
-        {
-            "label": _("Ответы Мит между проверками (1–100)", "Mita replies between GameMaster checks (1–100)"),
-            "key": "GM_REPEAT",
-            "type": "number_stepper",
-            "default": 2,
-            "minimum": 1,
-            "maximum": 100,
-            "tooltip": _(
-                "Сколько ответов Мит проходит между проверками GameMaster.",
-                "How many Mita replies occur between GameMaster checks.",
-            ),
-        },
-        {
-            "label": _("Задача GameMaster", "GameMaster prompt"),
-            "key": "GM_SMALL_PROMPT",
-            "type": "textarea",
-            "default": "??????? ??? ???????",
-        },
     ]
+
+    # The implementation is retained for later work, but the unfinished
+    # controls must not be exposed or accidentally re-enabled from saved data.
+    if _GAME_MASTER_SETTINGS_VISIBLE:
+        config.extend([
+            {
+                "type": "subsection",
+                "label": _("Режим GameMaster", "GameMaster"),
+            },
+            {
+                "label": _("Включить GameMaster", "Enable GameMaster"),
+                "key": "GM_ON",
+                "type": "checkbutton",
+                "default_checkbutton": False,
+            },
+            {
+                "label": _("Ответы Мит между проверками (1–100)", "Mita replies between GameMaster checks (1–100)"),
+                "key": "GM_REPEAT",
+                "type": "number_stepper",
+                "default": 2,
+                "minimum": 1,
+                "maximum": 100,
+            },
+            {
+                "label": _("Задача GameMaster", "GameMaster prompt"),
+                "key": "GM_SMALL_PROMPT",
+                "type": "textarea",
+                "default": "",
+            },
+        ])
 
     create_settings_section(
         self,

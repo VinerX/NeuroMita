@@ -58,9 +58,12 @@ class MemoryIslandUpsertTests(unittest.TestCase):
         mm = self._fresh_mm("IslandChar2")
         a = mm.upsert_island("island:opinion", "I find them interesting")
         b = mm.upsert_island("island:preferences", "They like tea")
+        c = mm.upsert_island("island:language", "Russian (ru). Reply to the Player in Russian.")
         self.assertIsNotNone(a)
         self.assertIsNotNone(b)
+        self.assertIsNotNone(c)
         self.assertNotEqual(a, b)
+        self.assertNotEqual(b, c)
 
     def test_unknown_type_ignored(self):
         mm = self._fresh_mm("IslandChar3")

@@ -146,7 +146,8 @@ Rules:
 - attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
-- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts. Use islands for the big picture; use ordinary memories for specific facts.
+- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts, language. Use islands for the big picture; use ordinary memories for specific facts.
+- `language` stores the Player's primary conversation language. If absent, infer it from the first clear natural-language Player message and create the language island. Keep it stable; change it only on an explicit request to switch. A second language, isolated words, quotes, code, names, slang, emojis, wrong keyboard layout, or system/game events do not change it. Reply in the stored language.
 - memory_add format: "priority|content" where priority is one of: low, normal, high, critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
@@ -181,7 +182,8 @@ Rules:
 - attitude_change, boredom_change, stress_change: 0 is normal and the most common value for an ordinary neutral reply. Use small changes (about -2 to +2) only when your feelings actually shift; reserve larger values for clearly significant moments, and never leave the existing scale. Returning 0 for all three is perfectly fine.
 - memory_add/memory_update/memory_delete/memory_merge: TOP-LEVEL fields ONLY — NEVER place them inside segments. Omit entirely if no memory operations needed (do NOT output empty arrays).
 - Create a memory only when it is likely to matter later: stable player preferences, promises, conflicts, trust, relationship shifts, or important story events. Do NOT memorize greetings, small talk, the current room, distance, held item, lighting, temporary animations or other short-lived world data. Prefer updating an existing memory over adding a near-duplicate.
-- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts. Use islands for the big picture; use ordinary memories for specific facts.
+- Running summaries (memory islands): "island:<type>|content" in memory_add UPDATES the single island of that type instead of adding a duplicate. Types: relationship, opinion, preferences, commitments_conflicts, language. Use islands for the big picture; use ordinary memories for specific facts.
+- `language` stores the Player's primary conversation language. If absent, infer it from the first clear natural-language Player message and create the language island. Keep it stable; change it only on an explicit request to switch. A second language, isolated words, quotes, code, names, slang, emojis, wrong keyboard layout, or system/game events do not change it. Reply in the stored language.
 - memory_add format: "priority|content" or "priority|content|entity1,entity2"  priority = low | normal | high | critical
 - memory_update format: "number|priority|content" where priority is one of: low, normal, high, critical
 - memory_delete format: single number "5", comma-separated "5,6,7", or range "5-9"
@@ -266,7 +268,7 @@ When a physical event reaches you (for example in [Unity Runtime Events]), react
 Tag [SYSTEM INFO] means system information, not player speech.
 Tag [SPEAKER] means you are in a multi-speaker dialogue."""
 
-IF GRAPH_EXTRACTION_ENABLED == True THEN
+IF GRAPH_EXTRACTION_ENABLED == True AND RAG_ENABLED == True THEN
     SET LOCAL result = p_header + p_toc + p_schema_open + p_graph_schema_fields + p_graph_rules + p_graph_example + p_footer
 ELSE
     SET LOCAL result = p_header + p_toc + p_schema_open + p_schema_fields + p_rules + p_example + p_footer

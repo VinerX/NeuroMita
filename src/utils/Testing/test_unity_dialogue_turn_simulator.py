@@ -119,6 +119,7 @@ def test_policy_uses_real_server_settings() -> None:
             "settings_revision": 42,
             "settings": {
                 "MITA_DIALOGUE_AUTO": True,
+                "DIALOGUE_AUTO_ROUNDS": 2,
                 "DIALOGUE_MAX_CHAIN_TURNS": 4,
                 "DIALOGUE_MAX_CONTINUES": 5,
                 "GM_ON": True,
@@ -128,6 +129,7 @@ def test_policy_uses_real_server_settings() -> None:
     })
 
     assert policy.max_chain_turns == 4
+    assert policy.auto_dialogue_rounds == 2
     assert policy.chain_turn_limit() == 4
     assert policy.max_continues == 5
     assert policy.game_master_enabled is True
@@ -135,14 +137,14 @@ def test_policy_uses_real_server_settings() -> None:
     assert policy.settings_revision == 42
 
 
-def test_unaddressed_response_is_a_leaf_even_when_other_mitas_are_active() -> None:
+def test_unaddressed_response_starts_default_round_for_other_active_mitas() -> None:
     simulation = _simulation()
     first = simulation.prepare_player_turn("Начинаем")
     simulation.complete_turn(first, "Ответ Crazy")
 
     assert first.speaker_id == "Crazy"
-    assert simulation.pending_speaker_id == ""
-    assert simulation.stop_reason == "Нет адресованных сегментов — цепочка завершена"
+    assert simulation.pending_speaker_id == "Kind"
+    assert simulation.stop_reason == "Следующий ход: Kind"
 
 
 def test_player_mention_selects_target_and_autosolver_is_the_fallback() -> None:
@@ -331,8 +333,8 @@ def test_legacy_top_level_targets_do_not_route_a_turn() -> None:
     success["body"]["result"]["targets"] = ["Cappie"]
     session.handle_server_message(success)
 
-    assert len(transport.sent) == 1
-    assert simulation.pending_speaker_id == ""
+    assert len(transport.sent) == 2
+    assert transport.sent[-1]["character"] == "Kind"
 
 
 def test_segment_target_does_not_override_disabled_auto_dialogue() -> None:
@@ -393,11 +395,12 @@ def test_session_executes_continue_as_unity_intent_with_budget() -> None:
         "target": "Kind",
         "intents": [],
     }]))
+    assert simulation.chain_turn_count == 1
     assert transport.sent[-1]["type"] == "react"
     assert transport.sent[-1]["character"] == "Kind"
 
 
-def test_session_schedules_game_master_before_next_mita() -> None:
+def test_session_schedules_game_master_after_round_quota() -> None:
     simulation = _simulation()
     simulation.policy.game_master_enabled = True
     simulation.policy.game_master_repeat = 1
@@ -407,6 +410,12 @@ def test_session_schedules_game_master_before_next_mita() -> None:
     session.submit_player_message("Начинай")
     first = transport.sent[-1]
     session.handle_server_message(_success(first, "Ответ"))
+    kind = transport.sent[-1]
+    assert kind["character"] == "Kind"
+    session.handle_server_message(_success(kind, "Ответ Kind"))
+    cappie = transport.sent[-1]
+    assert cappie["character"] == "Cappie"
+    session.handle_server_message(_success(cappie, "Ответ Cappie"))
     game_master = transport.sent[-1]
 
     assert game_master["type"] == "game_master_observe"
@@ -424,7 +433,7 @@ def test_session_schedules_game_master_before_next_mita() -> None:
     assert simulation.pending_speaker_id == ""
 
 
-def test_max_three_chain_uses_fifo_breadth_first_order() -> None:
+def test_target_to_already_spoken_mita_has_priority_but_hard_limit_wins() -> None:
     simulation = _simulation()
     simulation.policy.max_chain_turns = 3
     transport = _FakeTransport()
@@ -443,15 +452,39 @@ def test_max_three_chain_uses_fifo_breadth_first_order() -> None:
         {"text": "Crazy, подключись", "target": "Crazy", "intents": []},
     ]))
 
-    kind = transport.sent[-1]
-    assert kind["character"] == "Kind"
-    session.handle_server_message(_success(kind, "Crazy, теперь ты", [
-        {"text": "Crazy, теперь ты", "target": "Crazy", "intents": []},
+    crazy_again = transport.sent[-1]
+    assert crazy_again["character"] == "Crazy"
+    session.handle_server_message(_success(crazy_again, "Kind, теперь ты", [
+        {"text": "Kind, теперь ты", "target": "Kind", "intents": []},
     ]))
 
-    assert [request["character"] for request in transport.sent] == ["Crazy", "Cappie", "Kind"]
+    assert [request["character"] for request in transport.sent] == ["Crazy", "Cappie", "Crazy"]
     assert simulation.chain_turn_count == 3
     assert simulation.stop_reason == "Достигнут максимум ходов в цепочке: 3"
+
+
+def test_two_rounds_make_every_active_mita_reply_twice() -> None:
+    simulation = _simulation()
+    simulation.policy.auto_dialogue_rounds = 2
+    transport = _FakeTransport()
+    session = UnityLikeDialogueSession(simulation, transport, on_event=lambda _event: None)
+
+    session.submit_player_message("Говорите два круга")
+    for index in range(6):
+        request = transport.sent[-1]
+        session.handle_server_message(_success(request, f"Ответ {index + 1}"))
+        if simulation.stop_reason == "Квота кругов выполнена — цепочка завершена":
+            break
+
+    speakers = [request["character"] for request in transport.sent]
+    assert speakers[:3] == ["Crazy", "Kind", "Cappie"]
+    assert {speaker: speakers.count(speaker) for speaker in set(speakers)} == {
+        "Crazy": 2,
+        "Kind": 2,
+        "Cappie": 2,
+    }
+    assert simulation.chain_turn_count == 6
+    assert simulation.stop_reason == "Квота кругов выполнена — цепочка завершена"
 
 
 def test_protocol_client_handshake_matches_server_wire_format() -> None:

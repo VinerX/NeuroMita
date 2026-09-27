@@ -21,6 +21,7 @@ from services.contracts import (
     AppVarsService,
     CharacterRegistry,
     CharacterEnvironmentContextService,
+    ChatService,
     EmbeddingPresetService,
     EmbeddingService,
     GameLinkService,
@@ -33,6 +34,7 @@ from services.contracts import (
     ModelStateService,
     RuntimeFeatureService,
     RuntimeCapabilitiesService,
+    RuntimeIPCService,
     SpeechService,
     VoiceModelService,
     InstallableCatalogService,
@@ -105,6 +107,13 @@ class MainController:
         self.settings = self.settings_controller.settings
         startup_trace.mark("controller.settings.ready")
         settings_service = services().get(SettingsService)
+        from services.runtime_ipc_service import DefaultRuntimeIPCService
+
+        self.runtime_ipc_service = services().register(
+            RuntimeIPCService,
+            DefaultRuntimeIPCService(settings_service),
+            replace=True,
+        )
         from services.asr_settings_service import ensure_asr_settings_service
 
         ensure_asr_settings_service()
@@ -190,6 +199,7 @@ class MainController:
             self.ai_engine_controller,
             replace=True,
         )
+        self.runtime_ipc_service.register_object(self.ai_engine_controller)
         from services.ai_environment_maintenance_service import (
             DefaultAIEnvironmentMaintenanceService,
         )
@@ -244,6 +254,7 @@ class MainController:
         self.chat_controller = self._build_component(
             "chat", lambda: ChatController(self.settings)
         )
+        services().register(ChatService, self.chat_controller, replace=True)
         services().register(GenerationActivityService, self.chat_controller, replace=True)
         logger.notify("ChatController успешно инициализирован.")
 
@@ -413,8 +424,9 @@ class MainController:
         feature_manager.register(
             FeatureSpec(
                 name="graph",
-                setting_keys=("GRAPH_EXTRACTION_ENABLED",),
-                enabled=enabled("GRAPH_EXTRACTION_ENABLED"),
+                setting_keys=("RAG_ENABLED", "GRAPH_EXTRACTION_ENABLED"),
+                enabled=lambda settings: bool(settings.get("RAG_ENABLED", False))
+                and bool(settings.get("GRAPH_EXTRACTION_ENABLED", False)),
                 factory=self._create_graph_controller,
                 priority=75,
             )
@@ -614,6 +626,10 @@ class MainController:
                 callback()
             except Exception as exc:
                 logger.error(f"Ошибка при остановке {name}: {format_exception(exc)}", exc_info=True)
+
+        runtime_ipc = getattr(self, "runtime_ipc_service", None)
+        if runtime_ipc is not None:
+            shutdown_step("runtime IPC", runtime_ipc.close)
 
         server_controller = getattr(self, "server_controller", None)
         if server_controller is not None:

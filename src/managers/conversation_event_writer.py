@@ -280,6 +280,7 @@ class ConversationEventWriter:
         thinking: str | None = None,
         llm_usage: dict | None = None,
         sample_id: str | None = None,
+        is_deleted: bool = False,
         turn_id: str,
     ) -> dict:
         msg = {
@@ -302,6 +303,10 @@ class ConversationEventWriter:
             msg.update(llm_usage)
         if sample_id:
             msg["sample_id"] = sample_id
+        if is_deleted:
+            # Internal HistoryManager flag. It intentionally does not use a
+            # public protocol field and is persisted as is_deleted=1.
+            msg["_history_is_deleted"] = True
         return msg
 
     def _save_drawings_to_disk(self, image_data: list[Any], character_id: str) -> None:
@@ -310,11 +315,11 @@ class ConversationEventWriter:
             ch_ref = self._get_character_ref(character_id)
             if ch_ref is None or not hasattr(ch_ref, "history_manager"):
                 return
-            char_name = getattr(ch_ref.history_manager, "character_name", None) or character_id
+            storage_name = getattr(ch_ref.history_manager, "storage_name", None) or character_id
             histories_dir = os.environ.get(
                 "NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories")
             )
-            drawings_dir = os.path.join(histories_dir, char_name, "Drawings")
+            drawings_dir = os.path.join(histories_dir, storage_name, "Drawings")
             os.makedirs(drawings_dir, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             for i, img in enumerate(image_data):
@@ -366,6 +371,7 @@ class ConversationEventWriter:
         thinking: str | None = None,
         llm_usage: dict | None = None,
         sample_id: str | None = None,
+        assistant_is_deleted: bool = False,
         dialogue: Any = None,
     ) -> ConversationWriteResult:
         resolved_speaker = self._identity_resolver.resolve(sender, dialogue)
@@ -417,6 +423,7 @@ class ConversationEventWriter:
             thinking=thinking,
             llm_usage=llm_usage,
             sample_id=sample_id,
+            is_deleted=assistant_is_deleted,
             turn_id=turn_id,
         )
 

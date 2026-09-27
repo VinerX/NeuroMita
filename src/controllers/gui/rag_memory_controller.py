@@ -138,6 +138,11 @@ def _reindex_embeddings(gui) -> None:
 
 def _extract_entities(gui, *, mode: str = "all", skip_existing: bool = True) -> None:
     """Run entity extraction. mode='current'|'all'. skip_existing skips already-processed messages."""
+    if not bool(use(SettingsService).get("RAG_ENABLED", False)):
+        QMessageBox.warning(gui, _("RAG выключен", "RAG disabled"),
+                            _("Граф знаний доступен только при включённом RAG.",
+                              "The knowledge graph is only available when RAG is enabled."))
+        return
     from managers.database_manager import DatabaseManager
     from managers.rag.graph.graph_store import GraphStore
     from managers.rag.graph.entity_extractor import parse_extraction_response, store_extraction
@@ -693,6 +698,64 @@ def _build_memory_limits_config(self) -> list:
          'tooltip': _('Сколько фрагментов RAG добавлять в system prompt.',
                       'How many RAG chunks to inject into the system prompt.')},
 
+        {'label': _('Оперативное состояние диалога', 'Dialogue working state'), 'type': 'subsection'},
+        {'label': _('Включить оперативное состояние', 'Enable working state'),
+         'key': 'ENABLE_WORKING_STATE', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Добавляет скрытую компактную передачу текущего фокуса, понимания ситуации и незакрытых тем между ответами. '
+             'Это не история, не долгосрочная память и не цепочка рассуждений.',
+             'Adds a hidden compact handoff of the current focus, situation understanding and open threads between replies. '
+             'It is not history, long-term memory, or chain-of-thought.')},
+        {'label': _('Лимит оперативного состояния (символы)', 'Working state limit (chars)'),
+         'key': 'WORKING_STATE_MAX_CHARS', 'type': 'entry', 'default': 2000,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_WORKING_STATE',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Жёсткий максимум для скрытого состояния на одного персонажа. 2000 символов — примерно 300–500 токенов; '
+             'при переполнении поздние поля обрезаются.',
+             'Hard maximum for one character\'s hidden state. 2000 characters is roughly 300–500 tokens; '
+             'later fields are trimmed on overflow.')},
+
+        {'label': _('Память запрошенных действий', 'Requested-action memory'), 'type': 'subsection'},
+        {'label': _('Включить память действий', 'Enable action memory'),
+         'key': 'ENABLE_ACTION_MEMORY', 'type': 'checkbutton', 'default_checkbutton': False,
+         'tooltip': _(
+             'Добавляет запрошенные structured actions к конкретным недавним репликам Миты. Отдельно хранится '
+             'только небольшой хвост, когда исходные реплики уже ушли в сводку. Python не считает действия выполненными Unity без подтверждения.',
+             'Adds requested structured actions to their specific recent Mita replies. Only a small tail is kept '
+             'separately after source replies enter the summary. Python never calls actions executed by Unity without acknowledgement.')},
+        {'label': _('Сохранять действий после сводки', 'Keep actions after summary'),
+         'key': 'ACTION_MEMORY_RETAIN_LAST', 'type': 'entry', 'default': 4,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_ACTION_MEMORY',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Сколько последних action requests сохранить отдельным мостом, когда их исходные реплики уже вошли в summary. '
+             'У недавних реплик действия остаются приклеенными к самой реплике.',
+             'How many latest action requests to retain as a separate bridge after their source replies enter the summary. '
+             'For recent replies, actions remain attached to the reply itself.')},
+        {'label': _('Аварийный лимит действий (записей)', 'Emergency action limit (records)'),
+         'key': 'ACTION_MEMORY_EMERGENCY_MAX_RECORDS', 'type': 'entry', 'default': 80,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_ACTION_MEMORY',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Предохранитель на случай отключённого или постоянно падающего сжатия. При достижении сохраняется '
+             'самый новый хвост, а в лог пишется предупреждение. В обычном режиме не должен срабатывать.',
+             'Safety guard for disabled or repeatedly failing compression. On overflow it keeps the newest suffix '
+             'and writes a warning to the log. It should not trigger in normal operation.')},
+        {'label': _('Аварийный лимит действий (символы)', 'Emergency action limit (chars)'),
+         'key': 'ACTION_MEMORY_EMERGENCY_MAX_CHARS', 'type': 'entry', 'default': 8000,
+         'validation': self.validate_positive_integer,
+         'depends_on': 'ENABLE_ACTION_MEMORY',
+         'hide_when_disabled': True,
+         'tooltip': _(
+             'Второй предохранитель для длинных команд и intent payload. Обычное сжатие по-прежнему сохраняет '
+             'только хвост после summary; этот лимит нужен лишь чтобы prompt не рос бесконечно.',
+             'Second safety guard for long commands and intent payloads. Normal summary retention still owns the '
+             'ordinary tail; this limit only prevents unbounded prompt growth.')},
+
         {'label': _('Гигиена памяти', 'Memory hygiene'), 'type': 'subsection'},
         {'label': _('Дедуп при добавлении', 'Deduplicate on insert'),
          'key': 'MEMORY_DEDUP_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
@@ -997,8 +1060,10 @@ def _build_rag_core_config(self) -> list:
 
         {'label': _('Включить RAG (требует перезагрузки)', 'Enable RAG (requires restart)'),
          'key': 'RAG_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
-         'tooltip': _('Включает систему RAG. Если выключено, модель эмбеддингов не загружается.',
-                      'Enables the RAG system. If disabled, the embedding model is not loaded.')},
+         'tooltip': _('Включает систему RAG. Если выключено, модель эмбеддингов не загружается, '
+                      'а также полностью отключается граф знаний (экстракция и запись).',
+                      'Enables the RAG system. If disabled, the embedding model is not loaded '
+                      'and the knowledge graph (extraction and writes) is fully disabled.')},
         {'label': _('Искать в памяти', 'Search in memory'),
          'key': 'RAG_SEARCH_MEMORY', 'type': 'checkbutton', 'default_checkbutton': True,
          'depends_on': 'RAG_ENABLED'},
@@ -1075,18 +1140,21 @@ def _build_graph_config(self, hc_provider_names) -> list:
 
         {'label': _('Включить экстракцию сущностей', 'Enable entity extraction'),
          'key': 'GRAPH_EXTRACTION_ENABLED', 'type': 'checkbutton', 'default_checkbutton': True,
-         'tooltip': _('Извлекать сущности и связи из диалога через LLM-провайдер и сохранять в граф.',
-                      'Extract entities and relations from dialogue via LLM provider and store in graph.')},
+         'depends_on': 'RAG_ENABLED',
+         'tooltip': _('Извлекать сущности и связи из диалога через LLM-провайдер и сохранять в граф. '
+                      'Работает только при включённом RAG.',
+                      'Extract entities and relations from dialogue via LLM provider and store in graph. '
+                      'Only works when RAG is enabled.')},
         {'label': _('Inline-режим (основная модель, без доп. запроса)', 'Inline mode (main model, no extra call)'),
          'key': 'GRAPH_EXTRACTION_INLINE', 'type': 'checkbutton', 'default_checkbutton': True,
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Основная модель сама пишет <graph>JSON</graph> в ответе — отдельный API-вызов не нужен. '
                       'Если выключено, используется отдельный провайдер ниже.',
                       'Main model embeds <graph>JSON</graph> in its response — no extra API call. '
                       'If disabled, a separate provider call is used instead.')},
         {'label': _('Реал-тайм экстракция (после каждого ответа)', 'Real-time extraction (after each reply)'),
          'key': 'GRAPH_EXTRACTION_REALTIME', 'type': 'checkbutton', 'default_checkbutton': False,
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Автоматически извлекать сущности после каждого ответа модели. '
                       'Если выключено — только ручная batch-экстракция кнопками ниже. '
                       'По умолчанию выключено, чтобы не конкурировать с основной моделью за LLM.',
@@ -1096,27 +1164,27 @@ def _build_graph_config(self, hc_provider_names) -> list:
         {'label': _('Провайдер для экстракции графа', 'Provider for graph extraction'),
          'key': 'GRAPH_PROVIDER', 'type': 'combobox',
          'options': hc_provider_names, 'default': _('Текущий', 'Current'),
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Провайдер для экстракции (используется только если inline-режим выключен). '
                       'Текущий = та же модель, но отдельным запросом после ответа.',
                       'Provider for extraction (only used when inline mode is off). '
                       'Current = same model, but as a separate request after the response.')},
         {'label': _('Искать в графе знаний при RAG', 'Search knowledge graph in RAG'),
          'key': 'RAG_SEARCH_GRAPH', 'type': 'checkbutton', 'default_checkbutton': False,
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Включает поиск в графе сущностей при RAG-запросе.',
                       'Enables entity graph search during RAG queries.')},
         {'label': _('Минимум результатов из графа', 'Min graph results'),
          'key': 'RAG_GRAPH_MIN_RESULTS', 'type': 'entry', 'default': 0,
-         'validation': self.validate_positive_integer_or_zero,
-         'depends_on': 'RAG_SEARCH_GRAPH',
+'validation': self.validate_positive_integer_or_zero,
+          'depends_on': ['RAG_SEARCH_GRAPH', 'RAG_ENABLED'],
          'tooltip': _('Минимальное количество граф-трипл в выдаче RAG (0 = без гарантий). '
                       'Гарантирует присутствие знаний из графа даже если они проигрывают по score.',
                       'Minimum number of graph triples guaranteed in RAG output (0 = no guarantee). '
                       'Ensures graph knowledge appears even if outscored by history/memories.')},
         {'label': _('Авто-очистка графа (GC) после экстракции', 'Auto-clean graph (GC) after extraction'),
          'key': 'GRAPH_GC_AUTO', 'type': 'checkbutton', 'default_checkbutton': False,
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Автоматически запускать сборщик мусора графа после каждой экстракции сущностей. '
                       'Удаляет мусор, дубли, объединяет синонимы.',
                       'Automatically run entity graph GC after each extraction. '
@@ -1124,7 +1192,7 @@ def _build_graph_config(self, hc_provider_names) -> list:
         {'label': _('Параллельных воркеров (batch-экстракция)', 'Parallel workers (batch extraction)'),
          'key': 'GRAPH_EXTRACTION_WORKERS', 'type': 'entry', 'default': 1,
          'validation': self.validate_positive_integer,
-         'depends_on': 'GRAPH_EXTRACTION_ENABLED',
+         'depends_on': ['GRAPH_EXTRACTION_ENABLED', 'RAG_ENABLED'],
          'tooltip': _('Сколько потоков одновременно отправляют запросы при batch-извлечении сущностей. '
                       '1 = последовательно (по умолчанию). '
                       'Увеличивай если LM Studio настроен на Parallel Requests > 1 и есть запас VRAM.',

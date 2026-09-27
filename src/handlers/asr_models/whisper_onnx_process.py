@@ -43,7 +43,7 @@ class WhisperOnnxProcessWorker:
             msg += "\n" + traceback.format_exc()
         self.log_queue.put(("error", f"[WhisperONNX] {msg}"))
 
-    def _select_provider(self) -> str:
+    def _select_provider(self) -> tuple[str, Optional[dict[str, int]]]:
         available: List[str] = []
         try:
             available = list(self._rt.get_available_providers())
@@ -52,14 +52,20 @@ class WhisperOnnxProcessWorker:
 
         dev = (self.device or "auto").strip().lower()
 
-        if dev == "dml":
-            return "DmlExecutionProvider" if "DmlExecutionProvider" in available else "CPUExecutionProvider"
+        if dev == "dml" or dev.startswith("dml:"):
+            if "DmlExecutionProvider" in available:
+                try:
+                    device_id = int(dev.partition(":")[2] or 0)
+                except (TypeError, ValueError):
+                    device_id = 0
+                return "DmlExecutionProvider", {"device_id": device_id}
+            return "CPUExecutionProvider", None
         if dev == "cpu":
-            return "CPUExecutionProvider"
+            return "CPUExecutionProvider", None
 
         if "DmlExecutionProvider" in available:
-            return "DmlExecutionProvider"
-        return "CPUExecutionProvider"
+            return "DmlExecutionProvider", {"device_id": 0}
+        return "CPUExecutionProvider", None
 
     def _make_session_options(self, provider: str):
         so = self._rt.SessionOptions()
@@ -104,7 +110,7 @@ class WhisperOnnxProcessWorker:
         from transformers import pipeline
         from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
 
-        provider = self._select_provider()
+        provider, provider_options = self._select_provider()
         so = self._make_session_options(provider)
 
         # Параметры, которые нужны для ЗАГРУЗКИ модели (они вызывали ошибку при генерации)
@@ -116,9 +122,12 @@ class WhisperOnnxProcessWorker:
         }
 
         # Варианты конфигурации для попытки загрузки (как в вашем коде)
+        provider_kwargs = {"provider": provider}
+        if provider_options is not None:
+            provider_kwargs["provider_options"] = provider_options
         attempts = [
-            dict(provider=provider, session_options=so),
-            dict(provider=provider),
+            dict(**provider_kwargs, session_options=so),
+            provider_kwargs,
             dict(), # Fallback (CPU default)
         ]
 
@@ -188,7 +197,7 @@ class WhisperOnnxProcessWorker:
             self._asr = self._build_pipeline()
 
             self.info(
-                f"Init OK. provider={self._select_provider()} "
+                f"Init OK. provider={self._select_provider()[0]} "
                 f"lang={self.language} max_tokens={self.max_tokens} "
                 f"onnx={self.onnx_subfolder}/{self.encoder_file_name},{self.decoder_file_name}"
             )

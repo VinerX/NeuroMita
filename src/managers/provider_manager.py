@@ -84,6 +84,7 @@ class ProviderManager:
             "protocol_id": req.protocol_id,
             "dialect_id": req.dialect_id,
             "provider_name": req.provider_name,
+            "provider_display_name": req.provider_display_name,
             "transforms": req.transforms or [],
             "transform_trace": [],
         }
@@ -91,7 +92,8 @@ class ProviderManager:
         req.extra["_protocol_trace"] = trace
 
         logger.info(
-            f"Using provider: {provider.name} | protocol={req.protocol_id} | dialect={req.dialect_id}"
+            f"Using provider: {req.provider_display_name or provider.name} "
+            f"| transport={provider.name} | protocol={req.protocol_id} | dialect={req.dialect_id}"
         )
 
         preprocess_messages_for_provider(req, provider)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from core.error_utils import format_exception
+from core.runtime_ipc import ipc_allowed
 
 import multiprocessing as mp
 import os
@@ -22,6 +23,7 @@ from core.daemon_executor import DaemonExecutor
 from core.services import services
 from core.runtime_environments import runtime_environments
 from core.task_supervisor import task_supervisor
+from handlers.ai_engine.runtime_failure_policy import CUDA_CONTEXT_POISONED_EXIT_CODE
 from main_logger import AIWorkerFileLogger, logger
 
 
@@ -651,8 +653,11 @@ class _Worker:
             return
 
         exit_code = getattr(proc, "exitcode", None)
+        cuda_poisoned = exit_code == CUDA_CONTEXT_POISONED_EXIT_CODE
         error = RuntimeError(
-            f"AI worker '{self.worker_name}' terminated unexpectedly (exitcode={exit_code})"
+            f"AI worker '{self.worker_name}' terminated "
+            f"{'after a fatal CUDA context failure' if cuda_poisoned else 'unexpectedly'} "
+            f"(exitcode={exit_code})"
         )
         self.ready.clear()
         for event in self.ready_by_service.values():
@@ -664,8 +669,12 @@ class _Worker:
                 Events.AI.ENGINE_EVENT,
                 {
                     "service": self.primary_service,
-                    "event": "worker_crashed",
-                    "data": {"worker": self.worker_name, "exitcode": exit_code},
+                    "event": "worker_runtime_poisoned" if cuda_poisoned else "worker_crashed",
+                    "data": {
+                        "worker": self.worker_name,
+                        "exitcode": exit_code,
+                        "reason": "cuda_context_poisoned" if cuda_poisoned else "unexpected_exit",
+                    },
                 },
             )
         except Exception:
@@ -1910,32 +1919,62 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             return False
         return w.wait_ready(s, timeout=float(timeout or 0.0))
 
+    def _wait_for_worker_replacement(self, service: str, old_worker: _Worker, timeout: float) -> bool:
+        deadline = time.monotonic() + max(1.0, float(timeout or 0.0))
+        while not self._shutting_down.is_set() and time.monotonic() < deadline:
+            with self._lock:
+                current = self._worker_for_service(service)
+            if current is not None and current is not old_worker:
+                remaining = max(0.0, deadline - time.monotonic())
+                return current.wait_ready(service, timeout=remaining)
+            self._shutting_down.wait(0.05)
+        return False
+
+    @ipc_allowed(
+        "ai.restart_service",
+        description="Restart one AI service: tts, asr, rag, or beats.",
+    )
     def restart_service(self, service: str, timeout: float = 5.0) -> bool:
         s = str(service or "").strip().lower()
         with self._lock:
             w = self._worker_for_service(s)
-            if not w:
-                return False
+            mode = self.mode
+        if not w:
+            return False
 
-            if self.mode == "shared":
-                return bool(w.restart_service(s, timeout=timeout))
+        if mode == "shared":
+            if w.restart_service(s, timeout=timeout):
+                return True
+            proc = getattr(w, "proc", None)
+            if proc is not None and not proc.is_alive():
+                # A fatal CUDA error may terminate the worker while processing the
+                # restart. The crash supervisor owns process recovery; wait for its
+                # replacement instead of racing it with another worker spawn.
+                return self._wait_for_worker_replacement(s, w, timeout=max(20.0, float(timeout or 0.0)))
+            return False
 
-            nw = _Worker(
-                self._ctx,
-                s,
-                (s,),
-                python_paths=w.python_paths,
-                probe_modules=w.probe_modules,
-            )
-            nw.start()
-            if not nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0))):
+        nw = _Worker(
+            self._ctx,
+            s,
+            (s,),
+            python_paths=w.python_paths,
+            probe_modules=w.probe_modules,
+        )
+        nw.start()
+        if not nw.wait_ready(s, timeout=max(1.0, float(timeout or 0.0))):
+            nw.stop(timeout=1.0)
+            return False
+        nw.on_crash = self._on_worker_crash
+        with self._lock:
+            # Another recovery/switch may have replaced this worker while the
+            # candidate was booting. Do not overwrite a newer owner.
+            if self._worker_for_service(s) is not w:
                 nw.stop(timeout=1.0)
                 return False
-            nw.on_crash = self._on_worker_crash
             self._workers[s] = nw
             self._service_to_worker[s] = s
-            w.stop(timeout=timeout)
-            return True
+        w.stop(timeout=timeout)
+        return True
 
     def restart_worker_for_service(self, service: str, timeout: float = 8.0) -> bool:
         s = str(service or "").strip().lower()
@@ -2026,6 +2065,39 @@ class AIEngineController(AIEngineService, AIEngineAdministrationService):
             and worker.proc.is_alive()
             and worker.wait_ready(service_name, timeout=0.0)
         )
+
+    def update_runtime_validation_payload(
+        self,
+        service: str,
+        item_id: str,
+        payload: dict[str, Any],
+        *,
+        runtime_slot: str | None = None,
+    ) -> bool:
+        """Update replay state without executing the validation again.
+
+        Capture-only operations such as changing an ASR microphone must keep
+        the original ``start_live`` validation current for a future worker
+        rebuild, but must not run it now because that would reload the model.
+        """
+
+        service_name = str(service or "").strip().lower()
+        model_id = str(item_id or "").strip()
+        if not service_name or not model_id:
+            return False
+
+        slot = self._runtime_slot_for(service_name, model_id, runtime_slot)
+        with self._runtime_switch_lock:
+            current = self._runtime_validations.get(slot)
+            if current is None or current[0] != service_name:
+                return False
+            self._runtime_validations[slot] = (
+                current[0],
+                current[1],
+                dict(payload or {}),
+                current[3],
+            )
+        return True
 
     def activate_environment(
         self,

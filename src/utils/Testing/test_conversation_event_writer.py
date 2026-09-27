@@ -55,6 +55,32 @@ def test_write_turn_fans_out_user_and_assistant_as_one_batch() -> None:
     assert {message["turn_id"] for message in character.batches[0]} == {"turn:task-1"}
 
 
+def test_write_turn_can_mark_only_rejected_assistant_output_as_deleted() -> None:
+    character = _Character("Mita")
+    writer = ConversationEventWriter(
+        character_ref_resolver=lambda character_id: character if character_id == "Mita" else None
+    )
+
+    writer.write_turn(
+        responder_character_id="Mita",
+        sender="Player",
+        participants=["Player", "Mita"],
+        user_input="Hello",
+        image_data=[],
+        req_id="request-invalid-json",
+        origin_message_id=None,
+        assistant_text='{"not": "a valid response"}',
+        assistant_target="Player",
+        event_type="chat",
+        task_uid="task-invalid-json",
+        assistant_is_deleted=True,
+    )
+
+    user_event, assistant_event = character.batches[0]
+    assert "_history_is_deleted" not in user_event
+    assert assistant_event["_history_is_deleted"] is True
+
+
 def test_write_turn_separates_source_and_responder_actor_metadata() -> None:
     character = _Character("Mita")
     writer = ConversationEventWriter(

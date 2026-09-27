@@ -65,7 +65,7 @@ class CharacterController:
             ch = self.character_manager.current_character
             self.event_bus.emit(Events.Character.CURRENT_CHANGED, {
                 "character_id": after or "",
-                "character_name": str(getattr(ch, "name", "") or "") if ch else ""
+                "character_name": str(getattr(ch, "display_name", "") or "") if ch else ""
             })
         return True
 

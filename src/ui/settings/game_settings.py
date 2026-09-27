@@ -7,10 +7,13 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QWidget,
 )
+from controllers.gui.async_runner import dispatch_to_gui
+from core.events import Events, get_event_bus
 
 from ui.settings.beat_settings_presentation import (
     BeatBackendSelected,
@@ -26,7 +29,7 @@ from ui.gui_templates import create_settings_section
 from ui.settings.dialogue_settings import add_dialogue_settings_section
 from ui.settings.settings_access import get_setting
 from core.services import use
-from services.contracts import CharacterRegistry
+from services.contracts import CharacterRegistry, GameLinkService
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 
@@ -34,14 +37,94 @@ from localization.live import tr_set
 _BEAT_BACKEND_OPTIONS = ("auto", "beat_this", "librosa", "dsp_fallback")
 
 
+def _manual_game_translate(russian: str, english: str) -> str:
+    return _(russian, english) if callable(_) else russian
+
+
+def _manual_game_display_name(game_id: str) -> str:
+    return {
+        "chess": _manual_game_translate("Шахматы", "Chess"),
+        "seabattle": _manual_game_translate("Морской бой", "Sea Battle"),
+    }.get(str(game_id or "").split("/", 1)[0].lower(), str(game_id or ""))
+
+
+def _manual_game_button_text(game_id: str, sandbox_name: str, unity_name: str = "") -> str:
+    game_name = _manual_game_display_name(game_id)
+    if unity_name and unity_name != sandbox_name:
+        return _manual_game_translate("{}: {} / Unity: {}", "{}: {} / Unity: {}").format(
+            game_name, sandbox_name, unity_name
+        )
+    return _manual_game_translate("{} с {}", "{} with {}").format(game_name, sandbox_name)
+
+
+def _set_sandbox_current_character(character_id: str) -> None:
+    get_event_bus().emit(
+        Events.Character.SET_CURRENT,
+        {"character_id": str(character_id or "")},
+    )
+
+
+def _unity_target_character():
+    try:
+        game_link = use(GameLinkService)
+        if not game_link.is_connected():
+            return None
+        unity_id = game_link.unity_target_character_id()
+        return use(CharacterRegistry).get(unity_id) if unity_id else None
+    except Exception:
+        return None
+
+
+def _select_manual_game_character(launcher_character, unity_character, choose_target):
+    """Resolve the explicit owner for a desktop-launched mini-game."""
+    if unity_character is None or str(unity_character.char_id) == str(launcher_character.char_id):
+        return launcher_character
+
+    def _label(character):
+        name = str(getattr(character, "display_name", "") or character.char_id)
+        return f"{name} ({character.char_id})"
+
+    choices = [_label(unity_character), _label(launcher_character)]
+    selected = choose_target(choices, choices[0])
+    if selected == choices[0]:
+        return unity_character
+    if selected == choices[1]:
+        return launcher_character
+    return None
+
+
+def _resolve_manual_game_target(gui, launcher_character):
+    """Offer the current Unity target when it differs from the launcher selection."""
+    unity_character = _unity_target_character()
+
+    def _choose(choices, preferred):
+        selected, accepted = QInputDialog.getItem(
+            gui,
+            _("Персонаж для игры", "Choose a character for the game"),
+            _manual_game_translate(
+                "В Sandbox выбран {sandbox}, в Unity игрок общается с {unity}. С кем начать игру?",
+                "Sandbox has {sandbox} selected, while Unity is talking to {unity}. Who should play?",
+            ).format(
+                sandbox=getattr(launcher_character, "display_name", "") or launcher_character.char_id,
+                unity=getattr(unity_character, "display_name", "") or unity_character.char_id,
+            ),
+            choices,
+            choices.index(preferred),
+            False,
+        )
+        return selected if accepted else None
+
+    return _select_manual_game_character(launcher_character, unity_character, _choose), unity_character
+
+
 def _start_manual_game(gui, game_id: str) -> None:
-    """Open a mini-game for the current character from the settings panel."""
+    """Open a mini-game for an explicitly resolved character."""
     try:
         character = use(CharacterRegistry).current()
     except Exception:
         character = None
 
-    if character is None or not hasattr(character, "game_manager"):
+    if character is None:
         QMessageBox.warning(
             gui,
             _("Игра недоступна", "Game unavailable"),
@@ -51,6 +134,28 @@ def _start_manual_game(gui, game_id: str) -> None:
             ),
         )
         return
+
+    launcher_character = character
+    character, unity_character = _resolve_manual_game_target(gui, launcher_character)
+    if character is None:
+        return
+    if not hasattr(character, "game_manager"):
+        QMessageBox.warning(
+            gui,
+            _("Игра недоступна", "Game unavailable"),
+            _(
+                "Выбранный персонаж ещё не загружен. Выберите текущего персонажа лаунчера и повторите.",
+                "The selected character is not loaded yet. Choose the launcher's current character and try again.",
+            ),
+        )
+        return
+
+    if (
+        unity_character is not None
+        and str(character.char_id) == str(unity_character.char_id)
+        and str(character.char_id) != str(launcher_character.char_id)
+    ):
+        _set_sandbox_current_character(character.char_id)
 
     if character.game_manager.start_game_from_player(game_id):
         return
@@ -76,13 +181,58 @@ def _bind_manual_game_launch_buttons(gui) -> None:
 
     def _sync(_=None) -> None:
         global_enabled = bool(getattr(gui, "ENABLE_GAMES", None) and gui.ENABLE_GAMES.isChecked())
+        registry = use(CharacterRegistry)
+        launcher_character = registry.current()
+        sandbox_id = str(
+            getattr(launcher_character, "char_id", "")
+            or registry.current_id()
+            or ""
+        )
+        sandbox_name = str(
+            getattr(launcher_character, "display_name", "")
+            or registry.display_name_of(sandbox_id)
+            or sandbox_id
+            or "?"
+        )
+        unity_character = _unity_target_character()
+        unity_name = str(
+            getattr(unity_character, "display_name", "")
+            or getattr(unity_character, "char_id", "")
+            or ""
+        )
+        try:
+            unity_connected = bool(use(GameLinkService).is_connected())
+        except Exception:
+            unity_connected = False
+        allow_toggle = getattr(gui, "ALLOW_GAMES_WHEN_CONNECTED", None)
+        connection_allowed = not unity_connected or bool(allow_toggle and allow_toggle.isChecked())
         for setting_name, button_name in mappings:
             toggle = getattr(gui, setting_name, None)
             button = getattr(gui, button_name, None)
             if button is not None:
-                button.setEnabled(global_enabled and bool(toggle and toggle.isChecked()))
+                button.setEnabled(global_enabled and connection_allowed and bool(toggle and toggle.isChecked()))
+                button.setText(_manual_game_button_text(
+                    "chess" if setting_name.endswith("CHESS") else "seabattle",
+                    sandbox_name,
+                    unity_name,
+                ))
+                if unity_name and unity_name != sandbox_name:
+                    tooltip = _manual_game_translate(
+                        "Sandbox: {}. Unity: {}. При запуске можно выбрать персонажа.",
+                        "Sandbox: {}. Unity: {}. Choose the game character when launching.",
+                    ).format(sandbox_name, unity_name)
+                else:
+                    tooltip = _manual_game_translate(
+                        "Запустить игру с {}.", "Start the game with {}."
+                    ).format(sandbox_name)
+                button.setToolTip(tooltip)
 
-    for setting_name in ("ENABLE_GAMES", "ENABLE_GAME_CHESS", "ENABLE_GAME_SEABATTLE"):
+    for setting_name in (
+        "ENABLE_GAMES",
+        "ENABLE_GAME_CHESS",
+        "ENABLE_GAME_SEABATTLE",
+        "ALLOW_GAMES_WHEN_CONNECTED",
+    ):
         toggle = getattr(gui, setting_name, None)
         if toggle is None:
             continue
@@ -93,6 +243,18 @@ def _bind_manual_game_launch_buttons(gui) -> None:
         callbacks.append(_sync)
         toggle.stateChanged.connect(_sync)
     _sync()
+
+    if not getattr(gui, "_manual_game_launch_event_callbacks", None):
+        callbacks = []
+        for event_name in (
+            Events.Character.CURRENT_CHANGED,
+            Events.Server.GAME_DIALOGUE_TARGET_CHANGED,
+            Events.GUI.UPDATE_STATUS_COLORS,
+        ):
+            callback = lambda _event, sync=_sync: dispatch_to_gui(gui, sync)
+            get_event_bus().subscribe(event_name, callback, weak=False)
+            callbacks.append(callback)
+        gui._manual_game_launch_event_callbacks = callbacks
 
 
 def _format_beat_cache_size(total_bytes: int) -> str:
@@ -300,6 +462,7 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
             'options': ['Idle events', 'All events'],
             'default': 'Idle events',
             'depends_on': 'IGNORE_GAME_REQUESTS',
+            'hide_when_disabled': True,
             'tooltip': _(
                 'Idle events — блокирует запросы от таймера молчания, All events — блокирует все запросы с внутриигровых событий',
                 'Idle events - blocks idle timer requests, All events - blocks all in-game event requests',
@@ -311,7 +474,8 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
         self,
         parent,
         _("Настройки мода", "Mod Settings"),
-        mod_config
+        mod_config,
+        icon_name='fa5s.sliders-h'
     )
 
     add_dialogue_settings_section(self, parent)
@@ -399,7 +563,8 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
         self,
         parent,
         _("Игры", "Games"),
-        games_config
+        games_config,
+        icon_name='fa5s.gamepad'
     )
     _bind_manual_game_launch_buttons(self)
 
@@ -472,7 +637,8 @@ def setup_game_controls(self, parent, *, beat_view_model) -> None:
         self,
         parent,
         _('Бит-синхронизация (Beat This)', 'Beat Sync (Beat This)'),
-        beat_sync_config
+        beat_sync_config,
+        icon_name='fa5s.music'
     )
     beat_view_model.dispatch(BeatSettingsActivated())
 

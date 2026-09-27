@@ -111,8 +111,11 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         policy_layout.setHorizontalSpacing(10)
         self.auto_check = QCheckBox("Автодиалог")
         self.auto_check.toggled.connect(self._read_policy_widgets)
+        self.rounds_spin = NumberStepper()
+        self.rounds_spin.setRange(1, 24)
+        self.rounds_spin.valueChanged.connect(self._read_policy_widgets)
         self.turn_limit_spin = NumberStepper()
-        self.turn_limit_spin.setRange(1, 24)
+        self.turn_limit_spin.setRange(1, 200)
         self.turn_limit_spin.valueChanged.connect(self._read_policy_widgets)
         self.continue_spin = NumberStepper()
         self.continue_spin.setRange(0, 12)
@@ -123,15 +126,18 @@ class DialogueTurnSimulatorWindow(QMainWindow):
         self.gm_repeat_spin.setRange(1, 100)
         self.gm_repeat_spin.valueChanged.connect(self._read_policy_widgets)
         policy_layout.addWidget(self.auto_check, 0, 0)
+        self.rounds_label = QLabel("Кругов")
+        policy_layout.addWidget(self.rounds_label, 0, 1)
+        policy_layout.addWidget(self.rounds_spin, 0, 2)
         self.turn_limit_label = QLabel("Максимум ходов в цепочке")
-        policy_layout.addWidget(self.turn_limit_label, 0, 1)
-        policy_layout.addWidget(self.turn_limit_spin, 0, 2)
-        policy_layout.addWidget(QLabel("Продолжений"), 0, 3)
-        policy_layout.addWidget(self.continue_spin, 0, 4)
-        policy_layout.addWidget(self.gm_check, 0, 5)
-        policy_layout.addWidget(QLabel("Проверка через"), 0, 6)
-        policy_layout.addWidget(self.gm_repeat_spin, 0, 7)
-        policy_layout.setColumnStretch(8, 1)
+        policy_layout.addWidget(self.turn_limit_label, 0, 3)
+        policy_layout.addWidget(self.turn_limit_spin, 0, 4)
+        policy_layout.addWidget(QLabel("Продолжений"), 0, 5)
+        policy_layout.addWidget(self.continue_spin, 0, 6)
+        policy_layout.addWidget(self.gm_check, 0, 7)
+        policy_layout.addWidget(QLabel("Проверка через"), 0, 8)
+        policy_layout.addWidget(self.gm_repeat_spin, 0, 9)
+        policy_layout.setColumnStretch(10, 1)
         layout.addWidget(policy)
 
         body = QHBoxLayout()
@@ -341,6 +347,7 @@ class DialogueTurnSimulatorWindow(QMainWindow):
     def _read_policy_widgets(self) -> None:
         policy = self.simulation.policy
         policy.auto_dialogue_enabled = self.auto_check.isChecked()
+        policy.auto_dialogue_rounds = self.rounds_spin.value()
         policy.max_chain_turns = self.turn_limit_spin.value()
         policy.max_continues = self.continue_spin.value()
         policy.game_master_enabled = self.gm_check.isChecked()
@@ -350,10 +357,18 @@ class DialogueTurnSimulatorWindow(QMainWindow):
 
     def _sync_policy_widgets(self) -> None:
         policy = self.simulation.policy
-        widgets = (self.auto_check, self.turn_limit_spin, self.continue_spin, self.gm_check, self.gm_repeat_spin)
+        widgets = (
+            self.auto_check,
+            self.rounds_spin,
+            self.turn_limit_spin,
+            self.continue_spin,
+            self.gm_check,
+            self.gm_repeat_spin,
+        )
         for widget in widgets:
             widget.blockSignals(True)
         self.auto_check.setChecked(policy.auto_dialogue_enabled)
+        self.rounds_spin.setValue(policy.auto_dialogue_rounds)
         self.turn_limit_spin.setValue(policy.max_chain_turns)
         self.continue_spin.setValue(policy.max_continues)
         self.gm_check.setChecked(policy.game_master_enabled)
@@ -364,6 +379,8 @@ class DialogueTurnSimulatorWindow(QMainWindow):
 
     def _sync_policy_dependencies(self) -> None:
         enabled = self.auto_check.isChecked()
+        self.rounds_label.setEnabled(enabled)
+        self.rounds_spin.setEnabled(enabled)
         self.turn_limit_label.setEnabled(enabled)
         self.turn_limit_spin.setEnabled(enabled)
 

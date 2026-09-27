@@ -46,6 +46,7 @@ class AsrEventsController(BaseController):
         eb.subscribe(Events.Speech.ASR_MODEL_INIT_STARTED, self._on_asr_init_started, weak=False)
         eb.subscribe(Events.Speech.ASR_MODEL_INITIALIZED, self._on_asr_initialized, weak=False)
         eb.subscribe(Events.Speech.ASR_FAILED, self._on_asr_failed, weak=False)
+        eb.subscribe(Events.Speech.REFRESH_ASR_STATUS, self._on_asr_status_refresh, weak=False)
 
         eb.subscribe(Events.Install.TASK_STARTED, self._on_install_started, weak=False)
         eb.subscribe(Events.Install.TASK_PROGRESS, self._on_install_progress, weak=False)
@@ -72,14 +73,20 @@ class AsrEventsController(BaseController):
             pass
 
         mic_active = bool(self._settings_cache.get("MIC_ACTIVE", False))
-        if mic_active:
-            self._asr_initializing = True
+        runtime_ready = self._read_runtime_ready()
+        if mic_active and runtime_ready is True:
+            self._record_runtime_ready(True)
+            self._sync_indicator(force=True)
+        elif mic_active:
             self._init_engine = str(self._settings_cache.get("RECOGNIZER_TYPE") or "").strip().lower() or None
-            self._arm_init_timeout_guard()
-            self._emit_indicator("loading", self._asr_loading_text(self._init_engine))
+            if runtime_ready is False:
+                self._record_runtime_ready(False)
+            # Do not invent an "initializing" state here: this controller may
+            # be created after both startup events. A real INIT_STARTED event
+            # below is the only authority for that state.
             self._sync_indicator(force=True)
         else:
-            self._emit_indicator(None, None)
+            self._publish_status(None, None, None, force=True)
 
     def _arm_init_timeout_guard(self):
         """Make sure the 'initializing' state can never stick forever: after a
@@ -140,6 +147,8 @@ class AsrEventsController(BaseController):
             text, pill_kind = self._asr_loading_text(self._init_engine), "progress"
         elif kind == "ready":
             text, pill_kind = _("Готово", "Ready"), "ok"
+        elif kind == "not_ready":
+            text, pill_kind = _("Не готово", "Not ready"), "warn"
         elif kind == "error":
             text, pill_kind = _("Ошибка", "Error"), "warn"
         else:
@@ -158,6 +167,7 @@ class AsrEventsController(BaseController):
     def _on_asr_init_started(self, _event: Event):
         self._asr_initializing = True
         self._asr_error = None
+        self._ready_cache = (None, 0.0)
         self._init_engine = str((_event.data or {}).get("engine") or "").strip().lower() or None
         self._arm_init_timeout_guard()
 
@@ -169,6 +179,17 @@ class AsrEventsController(BaseController):
     def _on_asr_initialized(self, _event: Event):
         self._asr_initializing = False
         self._asr_error = None
+        # This event is emitted only after the worker has opened the live input
+        # stream, so it is more authoritative than a preceding cached query.
+        now = time.time()
+        self._ready_cache = (True, now)
+        engine = self._init_engine or str(
+            self._settings_cache.get("RECOGNIZER_TYPE") or ""
+        ).strip()
+        if engine:
+            # A live worker is stronger evidence than the catalog probe: if it
+            # initialized, the selected model is necessarily installed.
+            self._installed_cache[engine] = (True, now)
 
         self._set_pill("ready")
         self._sync_indicator(force=True)
@@ -184,6 +205,15 @@ class AsrEventsController(BaseController):
         self._set_pill("error")
         self._sync_indicator(force=True)
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
+
+    def _on_asr_status_refresh(self, _event: Event) -> None:
+        """Render a fresh snapshot when the lazily-built settings page opens."""
+        runtime_ready = self._read_runtime_ready()
+        if runtime_ready is None:
+            self._ready_cache = (None, 0.0)
+        else:
+            self._record_runtime_ready(runtime_ready)
+        self._sync_indicator(force=True)
 
     def _on_language_changed(self, *_args) -> None:
         """Live-переключение языка: перерисовываем индикатор и пилюлю ASR на
@@ -321,9 +351,9 @@ class AsrEventsController(BaseController):
 
             if key == "MIC_ACTIVE":
                 try:
+                    self._ready_cache = (None, 0.0)
                     if not bool(change.value):
                         self._asr_initializing = False
-                        self._ready_cache = (None, 0.0)
                         if not self._asr_error:
                             self._set_pill(None)
                 except Exception:
@@ -336,11 +366,17 @@ class AsrEventsController(BaseController):
             self._sync_indicator(force=True)
 
     # ---------------- indicator logic ----------------
-    def _emit_indicator(self, state: str | None, tooltip: str | None):
+    def _emit_indicator(
+        self,
+        state: str | None,
+        tooltip: str | None,
+        *,
+        force: bool = False,
+    ):
         st = state if state in (None, "red", "green", "loading", "warn") else None
         tt = str(tooltip) if tooltip else None
 
-        if st == self._last_state and tt == self._last_tooltip:
+        if not force and st == self._last_state and tt == self._last_tooltip:
             return
 
         self._last_state = st
@@ -351,6 +387,19 @@ class AsrEventsController(BaseController):
             "state": st,
             "tooltip": tt
         })
+
+    def _publish_status(
+        self,
+        state: str | None,
+        tooltip: str | None,
+        pill_kind: str | None,
+        *,
+        force: bool = False,
+    ) -> None:
+        # Both surfaces are projections of the same branch. This also stores
+        # the pill state if the settings page has not been built yet.
+        self._set_pill(pill_kind)
+        self._emit_indicator(state, tooltip, force=force)
 
     def _ui_safe(self, fn):
         try:
@@ -414,6 +463,31 @@ class AsrEventsController(BaseController):
             return None
         return ok
 
+    def _read_runtime_ready(self) -> bool | None:
+        speech = services().get_optional(SpeechService)
+        if speech is None:
+            return None
+        try:
+            return bool(speech.mic_active())
+        except Exception:
+            return None
+
+    def _record_runtime_ready(self, ready: bool) -> None:
+        now = time.time()
+        self._ready_cache = (bool(ready), now)
+        if not ready:
+            return
+
+        # A running capture loop is authoritative even when its startup event
+        # happened before this optional GUI controller was created.
+        self._asr_initializing = False
+        self._asr_error = None
+        engine = self._init_engine or str(
+            self._settings_cache.get("RECOGNIZER_TYPE") or ""
+        ).strip()
+        if engine:
+            self._installed_cache[engine] = (True, now)
+
     def _request_ready_check(self):
         self._ready_inflight_token += 1
         tok = self._ready_inflight_token
@@ -460,46 +534,71 @@ class AsrEventsController(BaseController):
                 msg += f" ({p}%)"
             if st:
                 msg += f" — {st}"
-            self._emit_indicator("loading", msg)
+            self._publish_status("loading", msg, "loading", force=force)
             return
 
         if not mic_active:
             if self._asr_error:
-                self._emit_indicator("red", self._asr_error)
+                self._publish_status("red", self._asr_error, "error", force=force)
             else:
-                self._emit_indicator(None, None)
+                self._publish_status(None, None, None, force=force)
             return
 
         if self._asr_error:
-            self._emit_indicator("red", self._asr_error)
+            self._publish_status("red", self._asr_error, "error", force=force)
             return
 
         installed = self._get_installed_cached(engine)
         if installed is None:
-            self._emit_indicator("loading", _("Проверка ASR модели...", "Checking ASR model...") + f" {engine}")
+            self._publish_status(
+                "loading",
+                _("Проверка ASR модели...", "Checking ASR model...") + f" {engine}",
+                "loading",
+                force=force,
+            )
             self._request_installed_check(engine)
             return
 
         if engine and not installed:
-            self._emit_indicator("red", _("ASR модель не установлена: ", "ASR model not installed: ") + engine)
+            self._publish_status(
+                "red",
+                _("ASR модель не установлена: ", "ASR model not installed: ") + engine,
+                "error",
+                force=force,
+            )
             return
 
         if self._asr_initializing:
-            self._emit_indicator("loading", self._asr_loading_text(self._init_engine or engine))
+            self._publish_status(
+                "loading",
+                self._asr_loading_text(self._init_engine or engine),
+                "loading",
+                force=force,
+            )
             return
 
         ready = self._get_ready_cached()
         if ready is None:
-            self._emit_indicator("loading", _("Проверка статуса ASR...", "Checking ASR status..."))
+            self._publish_status(
+                "loading",
+                _("Проверка статуса ASR...", "Checking ASR status..."),
+                "loading",
+                force=force,
+            )
             self._request_ready_check()
             return
 
         if ready:
-            self._emit_indicator("green", _("ASR готов", "ASR ready"))
+            self._publish_status(
+                "green", _("ASR готов", "ASR ready"), "ready", force=force
+            )
         else:
             # Не готов ≠ сломан: красное остаётся за настоящей ошибкой (её ловит
             # ветка _asr_error выше), а «включено, но живой цикл ещё не поднят» —
             # это жёлтое «Не готово», как у озвучки.
-            self._emit_indicator(
-                "warn", _("ASR ещё не запущен", "ASR is not running yet")
+            self._publish_status(
+                "warn",
+                _("ASR ещё не запущен", "ASR is not running yet"),
+                "not_ready",
+                force=force,
             )

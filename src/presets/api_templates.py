@@ -4,6 +4,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 1,
         "name": "Mistral AI",
+        "settings_schema_id": "mistral",
         "pricing": "mixed",
         "url": "https://api.mistral.ai/v1/chat/completions",
         "default_model": "mistral-large-2512",
@@ -21,6 +22,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 2,
         "name": "OpenRouter",
+        "settings_schema_id": "openrouter",
         "pricing": "mixed",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "default_model": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -39,6 +41,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 3,
         "name": "Google AI Studio",
+        "settings_schema_id": "google-level",
         "pricing": "mixed",
         "url_tpl": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         "default_model": "gemini-3.1-flash-lite",
@@ -228,6 +231,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 6,
         "name": "Groq",
+        "settings_schema_id": "groq",
         "pricing": "mixed",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "default_model": "llama-3.1-8b-instant",
@@ -245,6 +249,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 7,
         "name": "Together AI",
+        "settings_schema_id": "together",
         "pricing": "mixed",
         "url": "https://api.together.ai/v1/chat/completions",
         "default_model": "openai/gpt-oss-20b",
@@ -297,6 +302,7 @@ API_TEMPLATES_DATA = [
     {
         "id": 9,
         "name": "LM Studio",
+        "settings_schema_id": "local-openai",
         "pricing": "free",
         "badge_kind": "local",
         "url": "http://127.0.0.1:1234/v1/chat/completions",

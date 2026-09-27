@@ -162,15 +162,22 @@ def _nvidia_driver_inventory() -> dict[str, Any]:
             "cuDeviceGetAttribute",
             (ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int),
         )
-        cu_luid = bind(
-            "cuDeviceGetLuid",
-            (ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_int),
-        )
         cu_name = bind("cuDeviceGetName", (ctypes.c_void_p, ctypes.c_int, ctypes.c_int))
         cu_driver = bind("cuDriverGetVersion", (ctypes.POINTER(ctypes.c_int),))
     except (AttributeError, OSError) as exc:
         result["error"] = format_exception(exc)
         return result
+
+    # LUID is useful for joining the CUDA-driver enumeration with DXGI, but it
+    # is not required to discover CUDA ordinals.  Keep it optional so an older
+    # driver/API surface cannot hide otherwise usable cuda:N devices.
+    try:
+        cu_luid = bind(
+            "cuDeviceGetLuid",
+            (ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_int),
+        )
+    except (AttributeError, OSError):
+        cu_luid = None
 
     code = int(cu_init(0))
     if code != 0:
@@ -201,11 +208,12 @@ def _nvidia_driver_inventory() -> dict[str, Any]:
         cu_attr(ctypes.byref(minor), 76, device.value)
         cu_name(name, len(name), device.value)
         luid_hex = ""
-        if int(cu_luid(luid, ctypes.byref(node_mask), device.value)) == 0:
+        if cu_luid is not None and int(cu_luid(luid, ctypes.byref(node_mask), device.value)) == 0:
             luid_hex = bytes(luid.raw).hex()
         devices.append(
             {
                 "ordinal": ordinal,
+                "device": f"cuda:{ordinal}",
                 "name": name.value.decode("utf-8", errors="replace"),
                 "compute_capability": f"sm_{major.value}{minor.value}",
                 "compute_major": int(major.value),
@@ -216,6 +224,129 @@ def _nvidia_driver_inventory() -> dict[str, Any]:
         )
     result["available"] = True
     result["devices"] = devices
+    return result
+
+
+def _normalized_adapter_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _attach_cuda_devices_to_adapters(
+    adapters: list[dict[str, Any]],
+    cuda_devices: list[dict[str, Any]],
+) -> None:
+    """Attach CUDA metadata to DXGI adapters without making the join fatal.
+
+    LUID is the authoritative Windows identity when available.  A unique
+    normalized-name match is only a fallback for drivers where cuDeviceGetLuid
+    is unavailable; ambiguous duplicate names are deliberately left unmatched.
+    """
+
+    by_luid = {
+        str(item.get("luid") or "").lower(): item
+        for item in cuda_devices
+        if str(item.get("luid") or "").strip()
+    }
+    unmatched = {int(item.get("ordinal", index)): item for index, item in enumerate(cuda_devices)}
+
+    for adapter in adapters:
+        luid = str(adapter.get("luid") or "").lower()
+        match = by_luid.get(luid) if luid else None
+        if match is None:
+            continue
+        adapter["cuda"] = dict(match)
+        try:
+            unmatched.pop(int(match.get("ordinal")), None)
+        except (TypeError, ValueError):
+            pass
+
+    if not unmatched:
+        return
+
+    # Name fallback is safe only when both sides have exactly one candidate
+    # with that name.  This avoids pairing the wrong board in homogeneous
+    # multi-GPU systems.
+    adapter_names: dict[str, list[dict[str, Any]]] = {}
+    for adapter in adapters:
+        if adapter.get("cuda") or str(adapter.get("vendor") or "").upper() != "NVIDIA":
+            continue
+        key = _normalized_adapter_name(adapter.get("name"))
+        if key:
+            adapter_names.setdefault(key, []).append(adapter)
+
+    cuda_names: dict[str, list[dict[str, Any]]] = {}
+    for item in unmatched.values():
+        key = _normalized_adapter_name(item.get("name"))
+        if key:
+            cuda_names.setdefault(key, []).append(item)
+
+    for name, matching_adapters in adapter_names.items():
+        matching_cuda = cuda_names.get(name, [])
+        if len(matching_adapters) != 1 or len(matching_cuda) != 1:
+            continue
+        matching_adapters[0]["cuda"] = dict(matching_cuda[0])
+
+
+def _build_accelerator_descriptors(
+    adapters: list[dict[str, Any]],
+    cuda_devices: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build an additive, backend-neutral view of physical accelerators.
+
+    This is intentionally a snapshot schema rather than a runtime routing
+    abstraction.  Consumers can show all physical GPUs while CUDA-capable
+    NVIDIA adapters additionally expose their exact cuda:N address.
+    """
+
+    result: list[dict[str, Any]] = []
+    matched_cuda_ordinals: set[int] = set()
+    for adapter in adapters:
+        cuda = adapter.get("cuda") if isinstance(adapter.get("cuda"), dict) else {}
+        ordinal: int | None = None
+        if cuda:
+            try:
+                ordinal = int(cuda.get("ordinal"))
+                matched_cuda_ordinals.add(ordinal)
+            except (TypeError, ValueError):
+                ordinal = None
+        result.append(
+            {
+                "id": (
+                    f"dxgi-luid:{adapter.get('luid')}"
+                    if adapter.get("luid")
+                    else f"dxgi:{adapter.get('index', len(result))}"
+                ),
+                "name": str(adapter.get("name") or "GPU"),
+                "vendor": str(adapter.get("vendor") or "UNKNOWN"),
+                "dedicated_vram_bytes": int(adapter.get("dedicated_vram_bytes") or 0),
+                "dxgi_index": adapter.get("index"),
+                "cuda_device": f"cuda:{ordinal}" if ordinal is not None else None,
+                "compute_capability": cuda.get("compute_capability") if cuda else None,
+                "source": str(adapter.get("source") or "dxgi"),
+            }
+        )
+
+    # If DXGI failed, or LUID/name association was impossible, CUDA discovery
+    # is still valuable.  Add those devices rather than hiding them.
+    for index, cuda in enumerate(cuda_devices):
+        try:
+            ordinal = int(cuda.get("ordinal", index))
+        except (TypeError, ValueError):
+            continue
+        if ordinal in matched_cuda_ordinals:
+            continue
+        result.append(
+            {
+                "id": f"cuda:{ordinal}",
+                "name": str(cuda.get("name") or f"CUDA {ordinal}"),
+                "vendor": "NVIDIA",
+                "dedicated_vram_bytes": 0,
+                "dxgi_index": None,
+                "cuda_device": f"cuda:{ordinal}",
+                "compute_capability": cuda.get("compute_capability"),
+                "source": "cuda_driver",
+            }
+        )
     return result
 
 
@@ -245,7 +376,18 @@ class WindowsHardwareInventoryService(HardwareInventoryService):
     def _copy(snapshot: dict[str, Any]) -> dict[str, Any]:
         return {
             **snapshot,
-            "adapters": [dict(item) for item in snapshot.get("adapters", [])],
+            "adapters": [
+                {
+                    **dict(item),
+                    **(
+                        {"cuda": dict(item["cuda"])}
+                        if isinstance(item.get("cuda"), dict)
+                        else {}
+                    ),
+                }
+                for item in snapshot.get("adapters", [])
+            ],
+            "accelerators": [dict(item) for item in snapshot.get("accelerators", [])],
             "cuda": {
                 **dict(snapshot.get("cuda") or {}),
                 "devices": [
@@ -270,19 +412,19 @@ class WindowsHardwareInventoryService(HardwareInventoryService):
                 adapters = []
                 error = format_exception(exc)
             try:
-                cuda = _nvidia_driver_inventory() if any(item.get("vendor") == "NVIDIA" for item in adapters) else {"available": False, "devices": []}
+                # CUDA Driver API enumeration does not import torch and gives
+                # the actual CUDA ordinal namespace (cuda:0, cuda:1, ...).
+                # Probe independently from DXGI so a DXGI failure does not also
+                # erase CUDA information from the hardware snapshot.
+                cuda = _nvidia_driver_inventory()
             except Exception as exc:
                 cuda = {"available": False, "devices": [], "error": format_exception(exc)}
 
-        cuda_by_luid = {
-            str(item.get("luid") or ""): item
-            for item in cuda.get("devices", [])
-            if item.get("luid")
-        }
-        for adapter in adapters:
-            match = cuda_by_luid.get(str(adapter.get("luid") or ""))
-            if match is not None:
-                adapter["cuda"] = dict(match)
+        _attach_cuda_devices_to_adapters(adapters, list(cuda.get("devices") or []))
+        accelerators = _build_accelerator_descriptors(
+            adapters,
+            list(cuda.get("devices") or []),
+        )
 
         primary = next(
             (item for vendor in ("NVIDIA", "AMD", "INTEL") for item in adapters if item.get("vendor") == vendor),
@@ -292,6 +434,7 @@ class WindowsHardwareInventoryService(HardwareInventoryService):
             "platform": platform.system(),
             "source": "dxgi+ctypes" if platform.system() == "Windows" else "unsupported",
             "adapters": adapters,
+            "accelerators": accelerators,
             "primary": dict(primary) if primary is not None else None,
             "vendor": str((primary or {}).get("vendor") or "CPU"),
             "cuda": cuda,

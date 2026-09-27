@@ -55,12 +55,12 @@ class _StubRegistry(CharacterRegistry):
         return "Crazy"
 
     def current_profile(self):
-        return {"character_id": "Crazy", "name": "Crazy"}
+        return {"character_id": "Crazy", "display_name": "Crazy"}
 
-    def current_name(self):
+    def current_display_name(self):
         return "Crazy"
 
-    def name_of(self, character_id):
+    def display_name_of(self, character_id):
         return str(character_id or "")
 
 
@@ -145,6 +145,27 @@ class _ThinkingGeneration(GenerationService):
             character_id="Crazy",
             think="private reasoning",
             message_id="out:thinking-task",
+        )
+
+    def generate_utility(self, request):
+        raise AssertionError("не используется")
+
+
+class _RejectedStructuredGeneration(GenerationService):
+    def generate_chat(self, request: ChatGenerationRequest):
+        return ChatGenerationResult(
+            text="",
+            character_id="Crazy",
+            voice_profile={"character_id": "Crazy", "silero_command": "/set_person Crazy"},
+            error="Model response did not match the required response format",
+            error_details={
+                "kind": "structured_response_error",
+                "code": "structured_schema_validation_failed",
+                "stage": "schema",
+                "message": "Ответ модели не соответствует ожидаемой схеме.",
+                "field": "segments.0.emotions",
+            },
+            structured_parse_level="rejected",
         )
 
     def generate_utility(self, request):
@@ -365,6 +386,39 @@ class ChatRequestPipelineTests(unittest.TestCase):
         plain_result = ChatController._build_task_result("hello", None)
         self.assertEqual(plain_result["response_protocol_version"], 3)
 
+    def test_rejected_structured_response_reports_failure_without_voiceover(self):
+        services().register(GenerationService, _RejectedStructuredGeneration(), replace=True)
+        self.controller.settings = _StubSettings({"USE_VOICEOVER": True})
+        task_updates: list[dict] = []
+        failures: list[dict] = []
+        voices: list[dict] = []
+        subscriptions = [
+            self.bus.subscribe(Events.Task.UPDATE_TASK_STATUS, lambda event: task_updates.append(event.data or {}), weak=False),
+            self.bus.subscribe(Events.Model.ON_FAILED_RESPONSE, lambda event: failures.append(event.data or {}), weak=False),
+            self.bus.subscribe(Events.Audio.VOICEOVER_REQUESTED, lambda event: voices.append(event.data or {}), weak=False),
+        ]
+        try:
+            result = self.controller._run_request("hello", character_id="Crazy", task_uid="bad-json-task")
+            self.bus.flush(2)
+        finally:
+            for subscription in subscriptions:
+                subscription.close()
+
+        self.assertIsNone(result)
+        self.assertEqual(voices, [])
+        self.assertTrue(any(
+            update.get("uid") == "bad-json-task"
+            and update.get("status") == TaskStatus.FAILED_ON_GENERATION
+            and "required response format" in str(update.get("error") or "")
+            for update in task_updates
+        ))
+        self.assertTrue(any(
+            "required response format" in str(failure.get("error") or "")
+            for failure in failures
+        ))
+        failure = next(item for item in failures if item.get("error_details"))
+        self.assertEqual(failure["error_details"]["code"], "structured_schema_validation_failed")
+
     def test_non_stream_request_does_not_create_presentation_coalescer(self):
         services().register(GenerationService, _ImmediateGeneration(), replace=True)
         self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
@@ -376,6 +430,31 @@ class ChatRequestPipelineTests(unittest.TestCase):
             result = self.controller._run_request("hi", character_id="Crazy")
 
         self.assertEqual(result, "ok")
+
+    def test_non_stream_group_reply_carries_request_participants_to_live_ui(self):
+        services().register(GenerationService, _ImmediateGeneration(), replace=True)
+        self.controller.settings = _StubSettings({"ENABLE_STREAMING": False})
+
+        with patch.object(self.controller.event_bus, "emit", wraps=self.controller.event_bus.emit) as emit:
+            result = self.controller._run_request(
+                "hi",
+                character_id="Kind",
+                participants=["Crazy", "Kind", "Cappie"],
+            )
+
+        self.assertEqual(result, "ok")
+        assistant_payload = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if len(call.args) >= 2
+            and call.args[0] == Events.GUI.UPDATE_CHAT_UI
+            and isinstance(call.args[1], dict)
+            and call.args[1].get("role") == "assistant"
+        )
+        self.assertEqual(
+            assistant_payload["surface_character_ids"],
+            ["Crazy", "Kind", "Cappie"],
+        )
 
     def test_non_stream_thinking_uses_assistant_message_identity(self):
         services().register(GenerationService, _ThinkingGeneration(), replace=True)

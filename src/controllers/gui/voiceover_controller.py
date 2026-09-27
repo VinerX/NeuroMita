@@ -56,12 +56,14 @@ class VoiceoverGuiController(BaseController):
 
         eb.subscribe(Events.GUI.VOICEOVER_REFRESH, self._on_refresh, weak=False)
         eb.subscribe(Events.GUI.VOICEOVER_MODEL_SELECTED, self._on_model_selected, weak=False)
+        eb.subscribe(Events.GUI.VOICEOVER_MODEL_REINITIALIZE, self._on_model_reinitialize, weak=False)
 
         self._subscribe_settings(
             self._on_setting_changed,
             keys=(
                 "USE_VOICEOVER", "VOICEOVER_METHOD", "NM_CURRENT_VOICEOVER",
-                "LOCAL_VOICE_LOAD_LAST", "VOICE_LANGUAGE", "TG_AUTOCONNECT",
+                "LOCAL_VOICE_LOAD_LAST", "LOCAL_VOICE_INIT_ON_REQUEST",
+                "VOICE_LANGUAGE", "TG_AUTOCONNECT",
             ),
         )
 
@@ -121,8 +123,30 @@ class VoiceoverGuiController(BaseController):
             )
             self.event_bus.emit(
                 Events.GUI.SHOW_ERROR_MESSAGE,
-                {"title": _("Ошибка", "Error"), "message": format_exception(exc)},
+                {"title": _("Ошибка", "Error"), "message": format_exception(exc) + "\n\n" + _("Смотреть логи", "See logs")},
             )
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
+
+    def _reinitialize_local_model(self, model_id: str) -> None:
+        local_voice = services().get_optional(LocalVoiceService)
+        if local_voice is None:
+            self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                "title": _("Ошибка", "Error"),
+                "message": _("Сервис локальной озвучки недоступен.", "Local voice service is unavailable."),
+            })
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
+            return
+        try:
+            local_voice.reinitialize_model(model_id)
+        except Exception as exc:
+            logger.error(
+                f"Failed to schedule local voice reinitialization for '{model_id}': {format_exception(exc)}",
+                exc_info=True,
+            )
+            self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                "title": _("Ошибка", "Error"),
+                "message": format_exception(exc) + "\n\n" + _("Смотреть логи", "See logs"),
+            })
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
     def preload_global_status_on_startup(self):
@@ -366,6 +390,30 @@ class VoiceoverGuiController(BaseController):
             self._save_setting("NM_CURRENT_VOICEOVER", model_id)
             self._set_combobox_by_model_id(model_id)
             self._select_or_init_model_async(model_id)
+
+        self._ui(apply)
+
+    def _on_model_reinitialize(self, event: Event):
+        model_id = str((event.data or {}).get("model_id") or "").strip()
+        if not model_id:
+            return
+
+        def apply():
+            if not self._backend_enabled():
+                self.event_bus.emit(Events.GUI.SHOW_INFO_MESSAGE, {
+                    "title": _("GUI-only режим", "GUI-only mode"),
+                    "message": _(
+                        "Озвучка недоступна: backend-контроллеры не запущены.",
+                        "Voiceover is unavailable because backend controllers are disabled.",
+                    ),
+                })
+                return
+            if model_id not in self._canonical_installed_model_ids():
+                self._sync_everything(allow_autoload=False)
+                return
+            if not self._begin_model_loading(model_id):
+                return
+            self._reinitialize_local_model(model_id)
 
         self._ui(apply)
 
@@ -706,10 +754,13 @@ class VoiceoverGuiController(BaseController):
         if chip is None and btn is None:
             return
 
-        use_voice = self._effective_use_voice()
         method = self._effective_method()
 
-        if not use_voice or method != "Local":
+        # Lifecycle controls of the selected local model must remain available
+        # even when USE_VOICEOVER is currently disabled. Only the selected
+        # voiceover method determines whether this Local-specific status/action
+        # belongs on screen.
+        if method != "Local":
             if chip is not None:
                 chip.setVisible(False)
             if btn is not None:
@@ -730,7 +781,10 @@ class VoiceoverGuiController(BaseController):
             return
 
         if bool(state.get("initialized")):
-            self._apply_model_status(chip, btn, "green", _("Готова", "Ready"), None, "")
+            self._apply_model_status(
+                chip, btn, "green", _("Готова", "Ready"),
+                "reinit", _("Переинициализировать", "Reinitialize"),
+            )
             return
 
         self._apply_model_status(
@@ -954,11 +1008,11 @@ class VoiceoverGuiController(BaseController):
         if chip is None and btn is None:
             return
 
-        use_voice = self._effective_use_voice()
         method = self._effective_method()
 
-        # Локальная озвучка неактуальна — прячем и чип, и кнопку.
-        if not use_voice or method != "Local":
+        # Инициализация/переинициализация — lifecycle локальной модели и не
+        # должна исчезать только потому, что USE_VOICEOVER временно выключен.
+        if method != "Local":
             if chip is not None:
                 chip.setVisible(False)
             if btn is not None:
@@ -984,10 +1038,12 @@ class VoiceoverGuiController(BaseController):
                                      "install", _("Установить", "Install"))
             return
 
-        # Установлена и уже загружена в память — всё готово, действие не нужно.
+        # Установлена и уже загружена в память — можно применить новые сохранённые
+        # AI Hub настройки через явную переинициализацию.
         if self._check_initialized(model_id):
             self._apply_model_status(chip, btn, "green",
-                                     _("Готова", "Ready"), None, "")
+                                     _("Готова", "Ready"),
+                                     "reinit", _("Переинициализировать", "Reinitialize"))
             return
 
         # Установлена, но не загружена — предлагаем инициализировать.

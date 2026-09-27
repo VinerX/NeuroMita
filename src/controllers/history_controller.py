@@ -13,6 +13,13 @@ from core.character_locks import character_lock
 from core.events import get_event_bus, Events, Event
 from core.executors import Pools, executors
 from core.message_content import MessageContentCodec
+from managers.action_memory import (
+    append_requested_actions,
+    cap_requested_actions,
+    render_requested_actions,
+    requested_actions_from_messages,
+    requested_actions_from_structured,
+)
 from core.response_status import response_status_kind
 from core.services import services, use
 from main_logger import logger
@@ -37,6 +44,7 @@ class HistoryController(HistoryService):
     # сообщения. Не зависит от длины списка и переживает любые удаления.
     _SUMMARY_ANCHOR_VAR = "HISTORY_COMPRESSION_SUMMARY_ANCHOR"
     _SUMMARY_SEGMENTS_VAR = "HISTORY_COMPRESSION_SUMMARY_SEGMENTS"
+    _ACTION_MEMORY_RETAINED_VAR = "ACTION_MEMORY_RETAINED_REQUESTS"
     _DEFAULT_COMPRESSION_PROMPT = (
         "Summarize the conversation below into a compact factual memory for "
         "{current_character_name}. Preserve important events, decisions, "
@@ -65,6 +73,7 @@ class HistoryController(HistoryService):
         # Счётчик сообщений на персонажа для фоновой ревизии памяти (08 P1).
         self._messages_since_last_maintenance: Dict[str, int] = {}
         self._maintenance_inflight: set[str] = set()
+        self._action_memory_cap_warnings: set[str] = set()
         self._closed = False
 
         services().register(HistoryService, self, replace=True)
@@ -141,6 +150,7 @@ class HistoryController(HistoryService):
             self._compression_cooldowns.pop(char_id, None)
             self._messages_since_last_periodic_compression.pop(char_id, None)
             self._messages_since_last_maintenance.pop(char_id, None)
+            self._action_memory_cap_warnings.discard(char_id)
         if timer is not None:
             timer.cancel()
         logger.info(f"[HistoryController][{char_id}] История сброшена: отложенное сжатие снято.")
@@ -181,6 +191,7 @@ class HistoryController(HistoryService):
         # того, что фоновое сжатие ещё не догнало историю.
         summary_cut = self._summary_cut_index(character, llm_messages_history)
         unsummarized_history = llm_messages_history[summary_cut:]
+        action_context = self._build_action_memory_context(character)
         window_overflow, history_limited = self._split_history_by_dialog_limit(
             unsummarized_history,
             effective_limit,
@@ -205,8 +216,89 @@ class HistoryController(HistoryService):
         return PreparedHistory(
             messages=history_for_llm,
             summary=history_summary,
+            action_context=action_context,
             last_message_at=last_message_at,
         )
+
+    def _action_memory_enabled(self) -> bool:
+        return bool(self._get_setting("ENABLE_ACTION_MEMORY", False))
+
+    def _action_memory_keep_last(self) -> int:
+        try:
+            value = int(self._get_setting("ACTION_MEMORY_RETAIN_LAST", 4) or 4)
+        except (TypeError, ValueError):
+            value = 4
+        return max(1, min(20, value))
+
+    def _action_memory_emergency_max_records(self) -> int:
+        try:
+            value = int(self._get_setting("ACTION_MEMORY_EMERGENCY_MAX_RECORDS", 80) or 80)
+        except (TypeError, ValueError):
+            value = 80
+        return max(1, min(1000, value))
+
+    def _action_memory_emergency_max_chars(self) -> int:
+        try:
+            value = int(self._get_setting("ACTION_MEMORY_EMERGENCY_MAX_CHARS", 8000) or 8000)
+        except (TypeError, ValueError):
+            value = 8000
+        return max(200, min(100_000, value))
+
+    def _load_retained_action_requests(self, character) -> list[str]:
+        try:
+            raw = character.get_variable(self._ACTION_MEMORY_RETAINED_VAR, "[]")
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            parsed = []
+        if not isinstance(parsed, list):
+            return []
+        return [str(item).strip() for item in parsed if str(item).strip()]
+
+    def _build_action_memory_context(
+        self,
+        character,
+    ) -> str:
+        """Render only the retained bridge across the summary boundary.
+
+        Actions of unsummarized assistant turns stay attached to their original
+        reply in ``_sanitize_history_for_llm``. The only separate derivative is
+        this small tail from turns that were successfully summarized.
+        """
+        if not self._action_memory_enabled():
+            return ""
+        records = self._load_retained_action_requests(character)
+        records, capped = cap_requested_actions(
+            records,
+            max_records=self._action_memory_emergency_max_records(),
+            max_chars=self._action_memory_emergency_max_chars(),
+        )
+        char_id = str(getattr(character, "char_id", "") or "")
+        warned = getattr(self, "_action_memory_cap_warnings", None)
+        if warned is None:
+            warned = set()
+            self._action_memory_cap_warnings = warned
+        if capped:
+            if char_id not in warned:
+                logger.warning(
+                    "[HistoryController][%s] Retained action bridge emergency cap reached; "
+                    "waiting for a successful summary to compact it normally.",
+                    char_id or "Unknown",
+                )
+                warned.add(char_id)
+        else:
+            warned.discard(char_id)
+        return render_requested_actions(records)
+
+    def _next_retained_action_requests(
+        self,
+        character,
+        messages_to_compress: List[Dict[str, Any]],
+    ) -> list[str] | None:
+        if not self._action_memory_enabled():
+            return None
+        records = self._load_retained_action_requests(character)
+        records.extend(requested_actions_from_messages(messages_to_compress))
+        return records[-self._action_memory_keep_last():]
 
     def _compression_enabled(self) -> bool:
         return bool(self._get_setting("ENABLE_HISTORY_COMPRESSION_ON_LIMIT", True)) or bool(
@@ -499,6 +591,10 @@ class HistoryController(HistoryService):
 
         summary_count = self._get_history_summary_count(character)
         anchor_id = self._last_row_id(messages_to_compress)
+        retained_action_requests = self._next_retained_action_requests(
+            character,
+            messages_to_compress,
+        )
         if is_layered:
             _, new_count = self._apply_layered_compression_result(
                 character,
@@ -507,6 +603,7 @@ class HistoryController(HistoryService):
                 compressed_count=len(messages_to_compress),
                 epoch=epoch,
                 anchor_id=anchor_id,
+                retained_action_requests=retained_action_requests,
             )
         else:
             _, new_count = self._apply_compression_result(
@@ -518,6 +615,7 @@ class HistoryController(HistoryService):
                 compressed_count=len(messages_to_compress),
                 epoch=epoch,
                 anchor_id=anchor_id,
+                retained_action_requests=retained_action_requests,
             )
 
         # Сжатие реально применилось — сообщаем UI, чтобы живые счётчики
@@ -587,7 +685,7 @@ class HistoryController(HistoryService):
 
         prompt = self._CANDIDATE_PROMPT.format(
             max_n=max_n,
-            char_name=getattr(character, "name", "Character"),
+            char_name=getattr(character, "display_name", "Character"),
             chunk=self._truncate_text_for_prompt(chunk, 6000),
         )
 
@@ -710,6 +808,7 @@ class HistoryController(HistoryService):
         compressed_count: int,
         epoch: Optional[int] = None,
         anchor_id: int = 0,
+        retained_action_requests: list[str] | None = None,
     ) -> tuple[str, int]:
         if epoch is None:
             epoch = self._history_epoch(character)
@@ -752,6 +851,7 @@ class HistoryController(HistoryService):
             summary_text=new_summary,
             summary_count=new_count,
             anchor_id=anchor_id,
+            retained_action_requests=retained_action_requests,
         ):
             return previous_summary, summary_count
         return new_summary, new_count
@@ -943,8 +1043,8 @@ class HistoryController(HistoryService):
                 )
 
             full_prompt = prompt_template.replace("{history_messages}", formatted_messages)
-            full_prompt = full_prompt.replace("{your character}", getattr(character, "name", "Character"))
-            full_prompt = full_prompt.replace("{current_character_name}", getattr(character, "name", "Character"))
+            full_prompt = full_prompt.replace("{your character}", getattr(character, "display_name", "Character"))
+            full_prompt = full_prompt.replace("{current_character_name}", getattr(character, "display_name", "Character"))
             full_prompt = full_prompt.replace("{previous_summary}", previous_summary_trimmed)
             max_attempts = max(1, int(self._get_setting("HISTORY_COMPRESSION_MAX_ATTEMPTS", 3)))
             base_retry_delay = max(0.0, float(self._get_setting("HISTORY_COMPRESSION_RETRY_BASE_DELAY_SEC", 2.0)))
@@ -1211,6 +1311,7 @@ class HistoryController(HistoryService):
         summary_count: int,
         anchor_id: int = 0,
         segments: Optional[List[Dict[str, Any]]] = None,
+        retained_action_requests: list[str] | None = None,
     ) -> bool:
         """Одна запись состояния сводки: слои + текст + счётчик + граница.
 
@@ -1244,6 +1345,11 @@ class HistoryController(HistoryService):
                 # Без id границу не сдвигаем: лучше пересжать кусок повторно, чем потерять окно.
                 if anchor_id > 0:
                     character.set_variable(self._SUMMARY_ANCHOR_VAR, int(anchor_id))
+                if retained_action_requests is not None:
+                    character.set_variable(
+                        self._ACTION_MEMORY_RETAINED_VAR,
+                        json.dumps(retained_action_requests, ensure_ascii=False),
+                    )
                 if hasattr(character, "flush_variables"):
                     character.flush_variables()
             return True
@@ -1384,6 +1490,7 @@ class HistoryController(HistoryService):
         compressed_count: int,
         epoch: Optional[int] = None,
         anchor_id: int = 0,
+        retained_action_requests: list[str] | None = None,
     ) -> tuple[str, int]:
         if epoch is None:
             epoch = self._history_epoch(character)
@@ -1405,6 +1512,7 @@ class HistoryController(HistoryService):
             summary_count=new_count,
             anchor_id=anchor_id,
             segments=segments,
+            retained_action_requests=retained_action_requests,
         ):
             return self._get_history_summary(character), summary_count
         logger.info(
@@ -1453,7 +1561,7 @@ class HistoryController(HistoryService):
                 )
             )
 
-        assistant_name = str(getattr(character, "name", "") or "Character")
+        assistant_name = str(getattr(character, "display_name", "") or "Character")
         for msg in messages_to_compress:
             if not isinstance(msg, dict):
                 continue
@@ -1697,6 +1805,15 @@ class HistoryController(HistoryService):
                 continue
 
             content = m.get("content")
+
+            # While a turn remains in the recent history, actions belong to
+            # that exact assistant reply. Do not persist this derived text:
+            # structured_data remains the source of truth in the database.
+            if role == "assistant" and self._action_memory_enabled():
+                content = append_requested_actions(
+                    content,
+                    requested_actions_from_structured(m.get("structured_data")),
+                )
 
             speaker = str(m.get("speaker") or m.get("sender") or ("Player" if role == "user" else owner_id) or "Player")
             target = str(m.get("target") or "Player")

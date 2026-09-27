@@ -347,9 +347,9 @@ class ChatServerNew:
     async def send_task_update(self, client_id: str, task):
         writer = self._writer_for(client_id)
         if writer is None:
-            return
+            return False
         message ={"type": "task_update", "uid": task.uid, "status": task.status.value, "body": task.to_dict()}
-        await self.send_json(writer, message)
+        return await self.send_json(writer, message)
 
     async def send_json(self, writer: asyncio.StreamWriter, data: Dict[str, Any]) -> bool:
         try:
@@ -417,13 +417,17 @@ class ChatServerNew:
     def can_schedule(self) -> bool:
         return bool(self._loop and self._loop.is_running())
 
-    def schedule_send_task_update(self, client_id: str, task) -> None:
+    def schedule_send_task_update(self, client_id: str, task):
         if not self.can_schedule():
-            return
+            return None
+
+        async def _push() -> bool:
+            return await self.send_task_update(client_id, task)
+
         try:
-            asyncio.run_coroutine_threadsafe(self.send_task_update(client_id, task), self._loop)
+            return asyncio.run_coroutine_threadsafe(_push(), self._loop)
         except Exception:
-            pass
+            return None
 
     def schedule_send_json(self, client_id: str, payload: Dict[str, Any]) -> None:
         if not self.can_schedule():

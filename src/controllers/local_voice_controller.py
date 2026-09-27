@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
+from core.settings_values import as_bool
 from services.contracts import (
     CharacterRegistry,
     InstallableCatalogService,
@@ -31,6 +32,9 @@ class LocalVoiceController(LocalVoiceService):
         self._model_configs_cache: Optional[list] = None
         self._installed_cache: Dict[str, bool] = {}
         self._initialized_cache: Dict[str, bool] = {}
+        # Не допускаем две параллельные тяжёлые инициализации при первых
+        # запросах озвучки после включения соответствующей настройки.
+        self._model_init_lock = asyncio.Lock()
 
         self._triton_status_cache: Optional[Dict[str, Any]] = None
 
@@ -147,6 +151,12 @@ class LocalVoiceController(LocalVoiceService):
             raise ValueError("model_id is required")
         return use(LoopService).run(self._async_init_model(normalized))
 
+    def reinitialize_model(self, model_id: str):
+        normalized = str(model_id or "").strip()
+        if not normalized:
+            raise ValueError("model_id is required")
+        return use(LoopService).run(self._async_reinit_model(normalized))
+
     def triton_status(self, *, refresh: bool = False) -> dict[str, Any]:
         event = Event(Events.Audio.REFRESH_TRITON_STATUS if refresh else Events.Audio.GET_TRITON_STATUS)
         handler = self._on_refresh_triton_status if refresh else self._on_get_triton_status
@@ -254,7 +264,7 @@ class LocalVoiceController(LocalVoiceService):
                     "message": _(
                         "Не удалось инициализировать модель {}. Причина записана в логах TTS/инициализации.",
                         "Failed to initialize model {}. The reason was written to the TTS/init logs."
-                    ).format(model_id)
+                    ).format(model_id) + "\n\n" + _("Смотреть логи", "See logs")
                 })
                 self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
@@ -264,7 +274,46 @@ class LocalVoiceController(LocalVoiceService):
             self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {"status": _("Ошибка!", "Error!")})
             self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
                 "title": _("Ошибка", "Error"),
-                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {format_exception(e)}"
+                "message": f"{_('Критическая ошибка при инициализации модели:', 'Critical init error:')} {format_exception(e)}\n\n{_('Смотреть логи', 'See logs')}"
+            })
+            self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
+
+    async def _async_reinit_model(self, model_id: str):
+        try:
+            logger.info(f"LocalVoiceController reinit start: model_id='{model_id}'")
+            self.event_bus.emit(
+                Events.Audio.UPDATE_MODEL_LOADING_STATUS,
+                {"status": _("Перезапуск нейро-ядра озвучки...", "Restarting voice AI engine...")},
+            )
+
+            engine = self._get_engine()
+            restart = getattr(engine, "restart_service", None) if engine is not None else None
+            if not callable(restart):
+                raise RuntimeError("AI engine does not support TTS service restart")
+
+            restarted = await asyncio.to_thread(restart, "tts", timeout=20.0)
+            if not restarted:
+                raise RuntimeError("Failed to restart the TTS runtime before reinitialization")
+
+            self._model_configs_cache = None
+            self._initialized_cache.clear()
+            self._triton_status_cache = None
+            self.event_bus.emit(
+                Events.Audio.UPDATE_MODEL_LOADING_STATUS,
+                {"status": _("Инициализация модели...", "Initializing model...")},
+            )
+            await self._ensure_model_environment(model_id, initialize=True)
+
+            self._initialized_cache[model_id] = True
+            logger.info(f"LocalVoiceController reinit done: model_id='{model_id}'")
+            self.event_bus.emit(Events.Audio.FINISH_MODEL_LOADING, {"model_id": model_id})
+        except Exception as e:
+            logger.error(f"reinit model failed (tts engine): {format_exception(e)}", exc_info=True)
+            self._initialized_cache[model_id] = False
+            self.event_bus.emit(Events.Audio.UPDATE_MODEL_LOADING_STATUS, {"status": _("Ошибка!", "Error!")})
+            self.event_bus.emit(Events.GUI.SHOW_ERROR_MESSAGE, {
+                "title": _("Ошибка", "Error"),
+                "message": f"{_('Критическая ошибка при переинициализации модели:', 'Critical reinitialization error:')} {format_exception(e)}\n\n{_('Смотреть логи', 'See logs')}"
             })
             self.event_bus.emit(Events.Audio.CANCEL_MODEL_LOADING)
 
@@ -395,10 +444,33 @@ class LocalVoiceController(LocalVoiceService):
         initialized = bool(self._initialized_cache.get(model_id, False))
 
         if not initialized:
-            raise RuntimeError(
-                f"Local voice model '{model_id}' is not initialized. "
-                "Initialize it explicitly in the voice model settings before synthesis."
-            )
+            if not as_bool(self._get_setting("LOCAL_VOICE_INIT_ON_REQUEST", False)):
+                raise RuntimeError(
+                    f"Local voice model '{model_id}' is not initialized. "
+                    "Initialize it explicitly in the voice model settings before synthesis."
+                )
+
+            # Cache проверяется повторно под lock: два первых запроса не должны
+            # одновременно переключать runtime и загружать одну и ту же модель.
+            init_lock = getattr(self, "_model_init_lock", None)
+            if init_lock is None:
+                init_lock = asyncio.Lock()
+                self._model_init_lock = init_lock
+            async with init_lock:
+                initialized = bool(self._initialized_cache.get(model_id, False))
+                if not initialized:
+                    logger.info(
+                        f"LocalVoiceController on-demand init start: model_id='{model_id}'"
+                    )
+                    await self._ensure_model_environment(model_id, initialize=True)
+                    self._initialized_cache[model_id] = True
+                    initialized = True
+                    event_bus = getattr(self, "event_bus", None)
+                    if event_bus is not None:
+                        event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
+                    logger.info(
+                        f"LocalVoiceController on-demand init done: model_id='{model_id}'"
+                    )
 
         resolved_profile = voice_profile if isinstance(voice_profile, dict) else None
         registry = use(CharacterRegistry)
@@ -414,6 +486,9 @@ class LocalVoiceController(LocalVoiceService):
         absolute_audio_path = os.path.abspath(output_file)
         os.makedirs(os.path.dirname(absolute_audio_path), exist_ok=True)
 
+        # Lazy init releases its lock before synthesis. Re-activate the selected
+        # environment here because another request may have selected a different
+        # TTS model in the meantime.
         await self._ensure_model_environment(model_id, initialize=False)
         result_path = await self._engine_call_async(
             "synthesize",

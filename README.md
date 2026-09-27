@@ -140,6 +140,7 @@ NeuroMita развивается силами сообщества. Сейчас
 - **[vlad2830](https://github.com/vlad2830)** — C#-часть MelonLoader-мода и Python-часть.
 - **Nelxi** (`distrane25`) — внедрение голосового ввода на Python.
 - **Feanor** (`feanorqq`) — настройка домика Доброй Миты.
+- **ʟɪɴᴋʏ** (`linkyescobar`) — ранние наработки по Миле.
 
 </details>
 

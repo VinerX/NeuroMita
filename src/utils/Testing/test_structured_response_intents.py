@@ -23,9 +23,9 @@ from utils.structured_response_parser import (
 
 
 def _segment_excl_for_caps(caps: dict) -> set:
-    """Reproduce the provider decision: intents hidden unless schema_intents."""
+    """Reproduce the provider decision for the default-on intent field."""
     seg = set(caps.get("structured_segment_exclude_fields") or ())
-    if not caps.get("schema_intents", False):
+    if not caps.get("schema_intents", True):
         seg.add("intents")
     return seg
 
@@ -166,8 +166,16 @@ class ProtocolVersionTests(unittest.TestCase):
 
 
 class SchemaVisibilityTests(unittest.TestCase):
-    def test_intents_hidden_from_schema_by_default(self) -> None:
-        caps: dict = {}  # selected DSL template did not opt in
+    def test_intents_visible_in_schema_by_default(self) -> None:
+        caps: dict = {}
+        seg_excl = _segment_excl_for_caps(caps)
+        openai = StructuredResponse.openai_response_format(exclude_segment_fields=seg_excl)
+        self.assertIn("intents", _openai_segment_props(openai))
+        gemini = StructuredResponse.gemini_schema_dict(exclude_segment_fields=seg_excl)
+        self.assertIn("intents", _gemini_segment_props(gemini))
+
+    def test_intents_remain_hidden_when_unity_fields_are_excluded(self) -> None:
+        caps = {"structured_segment_exclude_fields": ("intents",)}
         seg_excl = _segment_excl_for_caps(caps)
         openai = StructuredResponse.openai_response_format(exclude_segment_fields=seg_excl)
         self.assertNotIn("intents", _openai_segment_props(openai))

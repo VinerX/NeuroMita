@@ -27,20 +27,27 @@ from managers.character_resource_manager import (
 @dataclass(frozen=True)
 class CharacterDefinition:
     character_id: str
-    character_name: str
     factory: Type[Character]
+
+    @property
+    def display_name(self) -> str:
+        return str(getattr(self.factory, "DISPLAY_NAME", self.character_id) or self.character_id)
+
+    @property
+    def storage_name(self) -> str:
+        return str(getattr(self.factory, "STORAGE_NAME", self.character_id) or self.character_id)
 
 
 _CHARACTER_DEFINITIONS: tuple[CharacterDefinition, ...] = (
-    CharacterDefinition("Crazy", "Crazy Mita", CrazyMita),
-    CharacterDefinition("Kind", "Kind Mita", KindMita),
-    CharacterDefinition("Cappie", "Cappie", Cappie),
-    CharacterDefinition("ShortHair", "ShortHair Mita", ShortHairMita),
-    CharacterDefinition("Mila", "Mila", MilaMita),
-    CharacterDefinition("Sleepy", "Sleepy Mita", SleepyMita),
-    CharacterDefinition("Creepy", "Creepy Mita", CreepyMita),
-    CharacterDefinition("Ghost", "Ghost Mita", GhostMita),
-    CharacterDefinition("GameMaster", "GameMaster", GameMaster),
+    CharacterDefinition("Crazy", CrazyMita),
+    CharacterDefinition("Kind", KindMita),
+    CharacterDefinition("Cappie", Cappie),
+    CharacterDefinition("ShortHair", ShortHairMita),
+    CharacterDefinition("Mila", MilaMita),
+    CharacterDefinition("Sleepy", SleepyMita),
+    CharacterDefinition("Creepy", CreepyMita),
+    CharacterDefinition("Ghost", GhostMita),
+    CharacterDefinition("GameMaster", GameMaster),
 )
 
 
@@ -65,7 +72,7 @@ class CharacterManager:
         for definition in _CHARACTER_DEFINITIONS:
             self.resources.register_character(
                 definition.character_id,
-                definition.character_name,
+                definition.storage_name,
             )
 
         initial_id = (
@@ -106,6 +113,10 @@ class CharacterManager:
 
     def get_all_characters(self) -> List[str]:
         return list(self._definitions)
+
+    def get_display_name(self, char_id: str) -> str:
+        definition = self._definitions.get(str(char_id or "").strip())
+        return definition.display_name if definition is not None else str(char_id or "")
 
     def get_loaded_characters(self) -> List[Character]:
         with self._lock:
@@ -178,6 +189,7 @@ class CharacterManager:
             try:
                 self.resources.history_for(character_id).clear_history()
                 self.resources.memory_for(character_id).clear_memories()
+                self.resources.working_state_for(character_id).clear()
             except Exception as exc:
                 logger.error(
                     f"[CharacterManager] Failed to clear resources for {character_id}: {format_exception(exc)}",

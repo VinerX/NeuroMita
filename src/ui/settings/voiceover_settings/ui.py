@@ -184,33 +184,33 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
     self.local_model_settings_btn.clicked.connect(_open_current_model_settings)
 
+    # Основное действие модели располагается рядом с selector'ом, а не в
+    # отдельной строке статуса. Оно доступно даже когда сама озвучка временно
+    # выключена: установка/инициализация — это lifecycle модели, а не playback.
+    self.local_model_action_btn = QPushButton()
+    self.local_model_action_btn.setObjectName("VoiceModelActionButton")
+    self.local_model_action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.local_model_action_btn.setVisible(False)
+
     local_model_layout.addWidget(label_container)
     local_model_layout.addWidget(self.local_voice_combobox, 1)
     local_model_layout.addWidget(self.local_voice_empty_status, 1)
+    local_model_layout.addWidget(self.local_model_action_btn, 0)
     local_model_layout.addWidget(self.local_model_settings_btn, 0)
     local_layout.addWidget(local_model_row)
 
-    # Строка статуса локальной модели: цветной чип-состояние + адаптивная
-    # кнопка действия («Установить» / «Инициализировать»). Состояния и подписи
-    # выставляет VoiceoverGuiController._sync_local_model_status, действие кнопки
-    # разруливает wire_voiceover_settings_logic по свойству "action".
+    # Отдельная компактная строка остаётся только для состояния модели.
     status_row = SettingsBodyWidget()
     status_layout = QHBoxLayout(status_row)
-    status_layout.setContentsMargins(0, 0, 0, 2)
+    status_layout.setContentsMargins(150, 0, 0, 2)
     status_layout.setSpacing(8)
 
     self.local_model_status_chip = QLabel()
     self.local_model_status_chip.setObjectName("VoiceModelStatusChip")
     self.local_model_status_chip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-    self.local_model_action_btn = QPushButton()
-    self.local_model_action_btn.setObjectName("VoiceModelActionButton")
-    self.local_model_action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    self.local_model_action_btn.setVisible(False)
-
     status_layout.addWidget(self.local_model_status_chip)
     status_layout.addStretch(1)
-    status_layout.addWidget(self.local_model_action_btn)
     local_layout.addWidget(status_row)
 
     # Громкость воспроизведения в питоне (0..200%). Значения выше 100% усиливают
@@ -271,6 +271,10 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'key': 'LOCAL_VOICE_LOAD_LAST', 'type': 'checkbutton',
          'default_checkbutton': False},
 
+        {'label': _('Инициализировать модель при запросе', 'Initialize model on request'),
+         'key': 'LOCAL_VOICE_INIT_ON_REQUEST', 'type': 'checkbutton',
+         'default_checkbutton': False},
+
         {'label': _('Озвучивать в чате', 'Voiceover in chat'),
          'key': 'VOICEOVER_LOCAL_CHAT', 'type': 'checkbutton',
          'default_checkbutton': True},
@@ -279,7 +283,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
          'type': 'button',
          'command': (lambda: actions.dispatch(RestartVoiceService()))},
 
-        {'label': _('Перейти к настройкам AI Engine', 'Open AI Engine settings'),
+        {'label': _('Перейти к настройкам ИИ-движка', 'Open AI Engine settings'),
          'type': 'button',
          'command': (lambda: actions.dispatch(OpenAIEngineSettings()))}
     ]

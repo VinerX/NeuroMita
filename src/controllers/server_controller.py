@@ -3,15 +3,18 @@ from core.error_utils import format_exception
 import ipaddress
 import os
 import threading
+from concurrent.futures import Future
 from typing import Dict, Any, Optional, Tuple
 from collections import deque
 from main_logger import logger
 from core.events import get_event_bus, Events, Event
 from core.services import use
+from core.executors import Pools, executors
 from domain.dialogue_identity import DialogueActorKind
 from services.contracts import CharacterRegistry, SettingsService
 
 from managers.task_manager import TaskStatus
+from managers.unity_retry_store import UnityRetryStore
 from game_connections.shared_image_transfer import ensure_shared_transfer_dirs
 
 
@@ -135,6 +138,7 @@ class ServerController:
             "GAME_BLOCK_LEVEL",
             "MIC_INSTANT_SENT",
             "MITA_DIALOGUE_AUTO",
+            "DIALOGUE_AUTO_ROUNDS",
             "DIALOGUE_MAX_CHAIN_TURNS",
             "DIALOGUE_MAX_CONTINUES",
             "GM_ON",
@@ -330,6 +334,8 @@ class ServerController:
         else:
             self.ConnectedToGame = bool(client_connected)
         self.game_link.set_connected(self.ConnectedToGame)
+        if not self.ConnectedToGame:
+            self.game_link.set_unity_target_character_id("")
 
         self.event_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
@@ -451,13 +457,21 @@ class ServerController:
     def _prepare_loaded_settings_body(self) -> Dict[str, Any]:
         settings = {}
         for setting in self.settings_to_send:
+            if setting == "GM_ON":
+                settings[str(setting)] = False
+                continue
             if setting == 'BEAT_SYNC_USE_FILE_TRANSFER':
                 settings[str(setting)] = True
                 continue
             if setting == 'BEAT_SYNC_AUTO_INSTALL':
                 settings[str(setting)] = False
                 continue
-            default = True if setting == "MITA_DIALOGUE_AUTO" else None
+            defaults = {
+                "MITA_DIALOGUE_AUTO": True,
+                "DIALOGUE_AUTO_ROUNDS": 1,
+                "DIALOGUE_MAX_CHAIN_TURNS": 24,
+            }
+            default = defaults.get(setting)
             settings[str(setting)] = self._get_setting(setting, default)
 
         characters_stats = self._collect_characters_stats()
@@ -532,12 +546,189 @@ class ServerController:
         except Exception:
             pass
 
+        retry_message_id = str(task.data.get("unity_retry_message_id") or "")
+        character_id = str(task.data.get("character") or "")
+        task_uid = str(getattr(task, "uid", "") or "")
+        task_result = getattr(task, "result", None)
+        if retry_message_id and task.status in (TaskStatus.VOICING, TaskStatus.SUCCESS):
+            next_status = (
+                "generated_pending_voiceover"
+                if task.status == TaskStatus.VOICING
+                else "generated_pending_delivery"
+            )
+            if not UnityRetryStore.transition(
+                character_id,
+                retry_message_id,
+                expected_statuses={
+                    "generating",
+                    "delivery_retrying",
+                    "generated_pending_voiceover",
+                    "generated_pending_delivery",
+                },
+                status=next_status,
+                task_uid=task_uid,
+                expected_task_uid=task_uid,
+                result=task_result if isinstance(task_result, dict) else {},
+            ):
+                logger.error("Could not persist generated Unity answer %s", retry_message_id)
+                if UnityRetryStore.is_superseded_attempt(
+                    character_id, retry_message_id, task_uid
+                ):
+                    return
+        elif retry_message_id and task.status == TaskStatus.FAILED_ON_VOICEOVER:
+            voiceover_error = str(
+                getattr(task, "error", "")
+                or "Не удалось озвучить ответ; сохранённый текст можно отправить в игру."
+            )
+            if not UnityRetryStore.mark_voiceover_failed(
+                character_id,
+                retry_message_id,
+                task_uid,
+                voiceover_error,
+            ):
+                logger.error("Could not retain generated answer after voiceover failure %s", retry_message_id)
+            else:
+                self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                    "error": voiceover_error,
+                    "message_id": retry_message_id,
+                    "character_id": character_id,
+                })
+        if retry_message_id and task.status in (
+            TaskStatus.FAILED_ON_GENERATION,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.ABORTED,
+        ):
+            executors().submit(
+                Pools.IO,
+                UnityRetryStore.finish_failed_attempt,
+                character_id,
+                retry_message_id,
+                task_uid,
+                str(getattr(task, "error", "") or "Не удалось получить ответ."),
+            )
+
         try:
             client_id = str(task.data.get("client_id") or "")
             if client_id and self.server:
-                self.server.schedule_send_task_update(client_id, task)
+                delivery = self.server.schedule_send_task_update(client_id, task)
+                if retry_message_id and task.status in (
+                    TaskStatus.SUCCESS,
+                    TaskStatus.FAILED_ON_VOICEOVER,
+                    TaskStatus.VOICING,
+                ):
+                    if delivery is not None:
+                        delivery.add_done_callback(
+                            lambda result, char=character_id, mid=retry_message_id, uid=task_uid, status=task.status:
+                                executors().submit(
+                                    Pools.IO,
+                                    self._finalize_unity_retry_delivery
+                                    if status in (TaskStatus.SUCCESS, TaskStatus.FAILED_ON_VOICEOVER)
+                                    else self._finalize_unity_voiceover_delivery,
+                                    char,
+                                    mid,
+                                    uid,
+                                    result,
+                                )
+                        )
+                    else:
+                        executors().submit(
+                            Pools.IO,
+                            self._mark_unity_retry_delivery_failed,
+                            character_id,
+                            retry_message_id,
+                            str(getattr(task, "uid", "") or ""),
+                            "Ответ готов, но не удалось отправить его в игру.",
+                        )
+            elif retry_message_id and task.status in (
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILED_ON_VOICEOVER,
+                TaskStatus.VOICING,
+            ):
+                executors().submit(
+                    Pools.IO,
+                    self._mark_unity_retry_delivery_failed,
+                    character_id,
+                    retry_message_id,
+                    str(getattr(task, "uid", "") or ""),
+                    "Игровое подключение недоступно для доставки ответа.",
+                )
+        except Exception as exc:
+            if retry_message_id and task.status in (
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILED_ON_VOICEOVER,
+                TaskStatus.VOICING,
+            ):
+                executors().submit(
+                    Pools.IO,
+                    self._mark_unity_retry_delivery_failed,
+                    character_id,
+                    retry_message_id,
+                    str(getattr(task, "uid", "") or ""),
+                    str(exc) or "Не удалось отправить ответ в игру.",
+                )
+
+    def _finalize_unity_retry_delivery(
+        self,
+        character_id: str,
+        message_id: str,
+        task_uid: str,
+        delivery: Future,
+    ) -> None:
+        try:
+            sent = bool(delivery.result())
         except Exception:
-            pass
+            sent = False
+        if sent:
+            if not UnityRetryStore.complete_delivery(character_id, message_id, task_uid):
+                logger.error("Could not finalize Unity delivery %s", message_id)
+        else:
+            self._mark_unity_retry_delivery_failed(
+                character_id,
+                message_id,
+                task_uid,
+                "Ответ готов, но не удалось отправить его в игру.",
+            )
+
+    def _finalize_unity_voiceover_delivery(
+        self,
+        character_id: str,
+        message_id: str,
+        task_uid: str,
+        delivery: Future,
+    ) -> None:
+        try:
+            sent = bool(delivery.result())
+        except Exception:
+            sent = False
+        if not sent:
+            self._mark_unity_retry_delivery_failed(
+                character_id,
+                message_id,
+                task_uid,
+                "Не удалось доставить ответ в игру.",
+            )
+
+    def _mark_unity_retry_delivery_failed(
+        self,
+        character_id: str,
+        message_id: str,
+        task_uid: str,
+        error: str,
+    ) -> None:
+        if not UnityRetryStore.mark_delivery_failed(
+            character_id,
+            message_id,
+            task_uid,
+            error,
+        ):
+            logger.error("Could not retain Unity result for later delivery %s", message_id)
+            return
+        self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+            "error": error,
+            "message_id": message_id,
+            "character_id": character_id,
+        })
 
     def _on_send_task_update(self, event: Event):
         task = (event.data or {}).get('task')
@@ -608,6 +799,11 @@ class ServerController:
         origin_message_id = p.get("origin_message_id")
         presentation_message_id = str(p.get("presentation_message_id") or "")
         character_id = str(p.get("character_id") or "")
+        surface_character_ids = [
+            str(item or "").strip()
+            for item in (p.get("participants") or [])
+            if str(item or "").strip()
+        ]
 
         if not text.strip() or sender_kind is not DialogueActorKind.PLAYER:
             return
@@ -622,7 +818,7 @@ class ServerController:
         ):
             return
 
-        self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, {
+        ui_payload = {
             "role": "user",
             "response": text,
             "is_initial": False,
@@ -630,7 +826,10 @@ class ServerController:
             "speaker_name": "",
             "message_id": presentation_message_id,
             "character_id": character_id,
-        })
+        }
+        if surface_character_ids:
+            ui_payload["surface_character_ids"] = list(dict.fromkeys(surface_character_ids))
+        self.event_bus.emit(Events.GUI.UPDATE_CHAT_UI, ui_payload)
 
 
 

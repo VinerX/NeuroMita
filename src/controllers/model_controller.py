@@ -44,6 +44,7 @@ from core.performance_trace import get_trace, perf_mark, perf_span
 from handlers.llm_providers.base import LLMUsage
 from services.runtime_capabilities import runtime_capabilities
 from domain.world_character_relations import get_world_context_text
+from domain.conversation_message_ids import ConversationMessageIds
 from utils.structured_response_parser import (
     parse_structured_response_with_meta,
     structured_response_to_result_dict,
@@ -59,6 +60,21 @@ _DEFAULT_TOOL_ENABLED = {
     "memory_search": True,
     "reminder": True,
 }
+
+
+def extract_shared_world_info(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Project only passive, scalar world facts safe to share between characters."""
+    if not isinstance(snapshot, dict):
+        return {}
+    shared: dict[str, Any] = {}
+    room_player = snapshot.get("roomPlayer")
+    if isinstance(room_player, int) and not isinstance(room_player, bool):
+        shared["roomPlayer"] = room_player
+    world_player = snapshot.get("worldPlayer")
+    if isinstance(world_player, str) and world_player.strip():
+        shared["worldPlayer"] = world_player.strip()
+    return shared
+
 
 def _render_tools_for_prompt(schema: list) -> str:
     """Format tool JSON schema list into a human-readable prompt block."""
@@ -83,6 +99,41 @@ def _render_tools_for_prompt(schema: list) -> str:
 
 
 _GRAPH_TAG_RE = re.compile(r"<graph>([\s\S]*?)</graph>", re.IGNORECASE)
+
+
+def _structured_parse_user_message(code: str) -> str:
+    messages = {
+        "structured_response_empty": _(
+            "Модель вернула пустой ответ.", "The model returned an empty response."
+        ),
+        "structured_json_truncated": _(
+            "Ответ модели оборвался: structured JSON не завершён.",
+            "The model response was truncated: structured JSON is incomplete.",
+        ),
+        "structured_json_invalid": _(
+            "Модель вернула повреждённый JSON, который не удалось разобрать.",
+            "The model returned malformed JSON that could not be parsed.",
+        ),
+        "structured_json_root_type": _(
+            "Модель вернула JSON неправильного формата.",
+            "The model returned JSON with an unexpected top-level type.",
+        ),
+        "structured_schema_validation_failed": _(
+            "Ответ модели является JSON, но не соответствует ожидаемой схеме NeuroMita.",
+            "The model response is valid JSON but does not match the expected NeuroMita schema.",
+        ),
+        "structured_missing_segments": _(
+            "В structured-ответе модели отсутствуют сегменты реплики.",
+            "The model's structured response has no reply segments.",
+        ),
+    }
+    return messages.get(
+        code,
+        _(
+            "Не удалось обработать structured-ответ модели.",
+            "The model's structured response could not be processed.",
+        ),
+    )
 
 
 def _strip_graph_tag(text: str) -> tuple[str, Optional[str]]:
@@ -122,6 +173,9 @@ class ModelController(GenerationService, ModelStateService):
         self._history_character_id = ""
 
         self.preset_resolver = ApiPresetResolver(settings=self.settings, event_bus=self.event_bus)
+        from presets.character_provider import migrate_character_provider_settings
+        from services.contracts import ApiPresetService
+        migrate_character_provider_settings(self._settings_service, use(ApiPresetService).list_meta())
         self.model = ChatModel(settings)
 
         from managers.tools.builtin.memory_search import MemorySearchTool
@@ -134,12 +188,18 @@ class ModelController(GenerationService, ModelStateService):
         self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
         self._last_token_stats: dict[str, Any] = {}
 
-        self.game_state = GameState()
+        self._game_states_by_character_id: dict[str, GameState] = {}
+        self._shared_world_info: dict[str, Any] = {}
+        self._game_states_lock = threading.RLock()
         self._temporary_system_infos: dict[str, list[dict]] = {}
         self._temporary_system_infos_lock = threading.Lock()
 
         self.event_writer = ConversationEventWriter(character_ref_resolver=self._get_character_ref)
-        self.ui_projector = HistoryUiProjector(resolve_name=lambda cid: str(getattr(self._get_character_ref(cid), "name", "") or cid))
+        self.ui_projector = HistoryUiProjector(
+            resolve_name=lambda cid: str(
+                getattr(self._get_character_ref(cid), "display_name", "") or cid
+            )
+        )
 
         from handlers.image_description_handler import ImageDescriptionHandler
         self.image_description_handler = ImageDescriptionHandler(model=self.model, settings=self.settings)
@@ -239,7 +299,29 @@ class ModelController(GenerationService, ModelStateService):
     # ---------------------------------------------------------------------
 
     def _on_set_game_data(self, event: Event):
-        self.game_state.update_from_event_data(event.data or {})
+        data = event.data or {}
+        if not isinstance(data, dict):
+            return
+        character_id = str(data.get("character_id") or "").strip()
+        if not character_id:
+            character_id = str(self._get_current_character_id() or "").strip()
+        if not character_id:
+            return
+        state_data = {key: value for key, value in data.items() if key != "character_id"}
+        with self._game_states_lock:
+            state = self._game_states_by_character_id.setdefault(character_id, GameState())
+            state.update_from_event_data(state_data)
+            self._shared_world_info = extract_shared_world_info(state_data)
+
+    def _get_game_state_for_character(self, character_id: str) -> dict[str, Any]:
+        with self._game_states_lock:
+            state = self._game_states_by_character_id.get(str(character_id or ""))
+            if state is None:
+                result = GameState().to_prompt_dict()
+            else:
+                result = state.to_prompt_dict()
+            result["shared_world_info"] = dict(self._shared_world_info)
+            return result
 
     def _on_add_temporary_system_info(self, event: Event):
         data = event.data or {}
@@ -279,7 +361,9 @@ class ModelController(GenerationService, ModelStateService):
                 self._temporary_system_infos.pop(character_id, None)
 
     def _on_get_game_state(self, event: Event):
-        return self.game_state.to_prompt_dict()
+        data = event.data if isinstance(event.data, dict) else {}
+        character_id = str(data.get("character_id") or self._get_current_character_id() or "")
+        return self._get_game_state_for_character(character_id)
 
     def _remote_only_structured_segment_fields(self) -> list[str]:
         capabilities = runtime_capabilities(settings=self.settings)
@@ -869,20 +953,21 @@ class ModelController(GenerationService, ModelStateService):
         except Exception:
             return None
 
-    def _char_provider_label(self, character_id: str, character_name: str) -> str:
+    def _char_provider_value(self, character_id: str):
         label = self.settings.get(f"CHAR_PROVIDER_{character_id}", None)
-        if label is None and character_name:
-            label = self.settings.get(f"CHAR_PROVIDER_{character_name}", None)
-        return str(label if label is not None else "Current")
+        return label if label is not None else -1
 
-    def _resolve_chat_preset_id(self, character_id: str, character_name: str) -> Optional[int]:
-        return self._preset_id_from_label(self._char_provider_label(character_id, character_name))
+    def _resolve_chat_preset_id(self, character_id: str) -> Optional[int]:
+        from presets.character_provider import provider_preset_id
+        return provider_preset_id(
+            self._char_provider_value(character_id),
+        )
 
     def _resolve_preset_id(
-        self, event_type: str, policy: RequestPolicy, char_id: str, char_name: str
+        self, event_type: str, policy: RequestPolicy, char_id: str
     ) -> Optional[int]:
         if event_type != "react":
-            return self._resolve_chat_preset_id(char_id, char_name)
+            return self._resolve_chat_preset_id(char_id)
 
         lvl = int(getattr(policy, "react_level", None) or 1)
         default_label = self.settings.get("REACT_PROVIDER", _("Текущий", "Current"))
@@ -891,7 +976,7 @@ class ModelController(GenerationService, ModelStateService):
 
         preset_id = self._preset_id_from_label(label)
         if preset_id is None:
-            preset_id = self._resolve_chat_preset_id(char_id, char_name)
+            preset_id = self._resolve_chat_preset_id(char_id)
 
         logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         return preset_id
@@ -909,14 +994,16 @@ class ModelController(GenerationService, ModelStateService):
             char = self._get_character_ref(cid)
             if char is None:
                 return None
-            char_name = str(getattr(char, "name", "") or "")
+            char_name = str(getattr(char, "display_name", "") or "")
             policy = resolve_policy(model_event_type=str(event_type))
-            preset_id = self._resolve_chat_preset_id(cid, char_name)
+            preset_id = self._resolve_chat_preset_id(cid)
             capabilities: Dict[str, Any] = {}
             try:
                 capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
             except Exception:
                 capabilities = {}
+            capabilities["working_state"] = bool(self.settings.get("ENABLE_WORKING_STATE", False))
+            capabilities["action_memory"] = bool(self.settings.get("ENABLE_ACTION_MEMORY", False))
             cfg = getattr(self.model, "cfg", None)
             memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
             prompt_request = PromptBuildRequest(
@@ -928,7 +1015,7 @@ class ModelController(GenerationService, ModelStateService):
                 is_game_master=(cid == "GameMaster"),
                 separate_prompts=bool(self.settings.get("SEPARATE_PROMPTS", True)),
                 capabilities=capabilities,
-                game_state=self.game_state.to_prompt_dict(),
+                game_state=self._get_game_state_for_character(cid),
             )
             with character_lock(cid):
                 built = use(PromptBuilderService).build(prompt_request)
@@ -967,8 +1054,8 @@ class ModelController(GenerationService, ModelStateService):
         cid, messages, context_tokens = self._build_current_context_messages()
         cfg = getattr(self.model, "cfg", None)
         char = self._get_character_ref(cid) if cid else None
-        char_name = str(getattr(char, "name", "") or "")
-        preset_id = self._resolve_chat_preset_id(cid, char_name) if cid else None
+        char_name = str(getattr(char, "display_name", "") or "")
+        preset_id = self._resolve_chat_preset_id(cid) if cid else None
 
         pricing_info = None
         model_name = ""
@@ -1217,7 +1304,7 @@ class ModelController(GenerationService, ModelStateService):
         Ни RAG, ни промпт-сборка, ни запись в историю тут не участвуют.
         """
         char_ref = self._get_character_ref(request.character_id)
-        char_name = str(getattr(char_ref, "name", "") or "") or request.character_id or "Мита"
+        char_name = str(getattr(char_ref, "display_name", "") or "") or request.character_id or "Мита"
 
         # Один user-месседж: запрос из одного лишь system-сообщения часть
         # провайдеров (в т.ч. маршруты OpenRouter) отклоняет с HTTP 400.
@@ -1253,7 +1340,10 @@ class ModelController(GenerationService, ModelStateService):
                 return UtilityGenerationResult(
                     ok=True,
                     text=result.text,
-                    provider=getattr(result, "provider_name", None),
+                    provider=(
+                        getattr(result, "provider_display_name", None)
+                        or getattr(result, "provider_name", None)
+                    ),
                 )
 
             logger.warning(f"[ModelController] {request.kind}: model.generate() returned empty/None")
@@ -1295,7 +1385,9 @@ class ModelController(GenerationService, ModelStateService):
             if char is None:
                 logger.error(f"generate_chat: неизвестный character_id='{request.character_id}'.")
                 self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                    "error": _("Неизвестный персонаж.", "Unknown character.")
+                    "error": _("Неизвестный персонаж.", "Unknown character."),
+                    "message_id": ConversationMessageIds.incoming(request.req_id) if request.req_id else "",
+                    "character_id": str(request.character_id or ""),
                 })
                 return None
         else:
@@ -1304,7 +1396,9 @@ class ModelController(GenerationService, ModelStateService):
         if not char:
             logger.error("Генерация невозможна: персонаж не выбран.")
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Персонаж не выбран.", "Character not selected.")
+                "error": _("Персонаж не выбран.", "Character not selected."),
+                "message_id": ConversationMessageIds.incoming(request.req_id) if request.req_id else "",
+                "character_id": str(request.character_id or ""),
             })
             return None
 
@@ -1345,7 +1439,7 @@ class ModelController(GenerationService, ModelStateService):
             policy = request.policy or resolve_policy(model_event_type=str(event_type))
 
         char_id = getattr(char, "char_id", "") or ""
-        char_name = getattr(char, "name", "") or ""
+        char_name = getattr(char, "display_name", "") or ""
         is_game_master = char_id.casefold() == "gamemaster"
 
         rag_context = ""
@@ -1376,7 +1470,7 @@ class ModelController(GenerationService, ModelStateService):
         game_state = (
             copy.deepcopy(request.game_state)
             if request.game_state
-            else self.game_state.to_prompt_dict()
+            else self._get_game_state_for_character(char_id)
         )
 
         # World lore is character-specific. Resolve it on this request's
@@ -1423,7 +1517,7 @@ class ModelController(GenerationService, ModelStateService):
         # Пресет резолвим ДО capabilities. Раньше capabilities брались у текущего
         # пресета, а запрос уходил в пресет персонажа — structured_output мог не
         # совпадать с тем, что реально поддерживает провайдер.
-        preset_id = self._resolve_preset_id(event_type, policy, char_id, char_name)
+        preset_id = self._resolve_preset_id(event_type, policy, char_id)
 
         effective_capabilities = {}
         effective_preset = None
@@ -1477,6 +1571,20 @@ class ModelController(GenerationService, ModelStateService):
         effective_capabilities["schema_reasoning"] = self._resolve_preset_bool(
             effective_preset, "schema_reasoning", "SCHEMA_REASONING", default=False
         )
+        # Working state is an application-level opt-in, independent of native
+        # provider reasoning. When off, remove its field from strict schemas so
+        # the model's old response contract remains byte-for-byte compatible.
+        effective_capabilities["working_state"] = bool(
+            self.settings.get("ENABLE_WORKING_STATE", False)
+            and effective_capabilities.get("structured_output", False)
+        )
+        effective_capabilities["action_memory"] = bool(
+            self.settings.get("ENABLE_ACTION_MEMORY", False)
+        )
+        if not effective_capabilities["working_state"]:
+            excluded_fields = set(effective_capabilities.get("structured_exclude_fields") or ())
+            excluded_fields.add("working_state")
+            effective_capabilities["structured_exclude_fields"] = tuple(sorted(excluded_fields))
 
         # The selected DSL template is the only owner of intent support. The
         # capability is finalized after PromptController processes the template.
@@ -1622,7 +1730,9 @@ class ModelController(GenerationService, ModelStateService):
         except Exception as e:
             logger.error(f"Ошибка при сборке промпта: {format_exception(e)}", exc_info=True)
             self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
-                "error": _("Не удалось сформировать промпт.", "Failed to build prompt.")
+                "error": _("Не удалось сформировать промпт.", "Failed to build prompt."),
+                "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                "character_id": char_id,
             })
             return None
 
@@ -1686,6 +1796,10 @@ class ModelController(GenerationService, ModelStateService):
                     request_options_override={
                         "trace_id": trace_id,
                         "cancellation": request.cancellation,
+                        "failure_context": {
+                            "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                            "character_id": char_id,
+                        },
                     },
                     structured_model=structured_model_cls,
                     context_character_id=char_id,
@@ -1709,6 +1823,8 @@ class ModelController(GenerationService, ModelStateService):
                 if provider_error is None:
                     self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
                         "error": error_message,
+                        "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                        "character_id": char_id,
                     })
                 return ChatGenerationResult(
                     text="",
@@ -1718,9 +1834,12 @@ class ModelController(GenerationService, ModelStateService):
                 )
 
             raw_text = llm_response.text
+            response_provider_display_name = (
+                llm_response.provider_display_name or llm_response.provider_name or ""
+            )
             trace = get_trace(trace_id)
             if trace is not None:
-                trace.set_attribute("provider", llm_response.provider_name or "")
+                trace.set_attribute("provider", response_provider_display_name)
                 trace.set_attribute("model", llm_response.model or "")
                 trace.set_attribute("response_chars", len(raw_text or ""))
             visible_raw, think_text = self._split_response_thinking(llm_response)
@@ -1743,7 +1862,7 @@ class ModelController(GenerationService, ModelStateService):
                     think_text=think_text,
                     usage=llm_response.usage,
                     response_model=llm_response.model or "",
-                    response_provider=llm_response.provider_name or "",
+                    response_provider=response_provider_display_name,
                     pricing_info=active_pricing,
                     char=char,
                     char_id=char_id,
@@ -1781,7 +1900,8 @@ class ModelController(GenerationService, ModelStateService):
                 return structured_result
 
             inline_graph_json: Optional[str] = None
-            if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+            if (bool(self.settings.get("RAG_ENABLED", False))
+                    and bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
                     and bool(self.settings.get("GRAPH_EXTRACTION_INLINE", False))):
                 visible_raw, inline_graph_json = _strip_graph_tag(visible_raw)
 
@@ -1812,7 +1932,7 @@ class ModelController(GenerationService, ModelStateService):
             usage_snapshot = self._build_usage_snapshot(
                 llm_response.usage,
                 model=llm_response.model or "",
-                provider=llm_response.provider_name or "",
+                provider=response_provider_display_name,
                 cost_fallback=usage_cost_fallback,
                 cost_fallback_currency=getattr(active_pricing, "currency", None),
                 cost_fallback_source=getattr(active_pricing, "source", None),
@@ -1847,7 +1967,7 @@ class ModelController(GenerationService, ModelStateService):
             self._store_last_usage(
                 llm_response.usage,
                 model=llm_response.model or "",
-                provider=llm_response.provider_name or "",
+                provider=response_provider_display_name,
                 cost_fallback=usage_cost_fallback,
                 cost_fallback_currency=getattr(active_pricing, "currency", None),
                 cost_fallback_source=getattr(active_pricing, "source", None),
@@ -1882,7 +2002,11 @@ class ModelController(GenerationService, ModelStateService):
             raise
         except Exception as e:
             logger.error(f"Error during LLM generation/processing: {format_exception(e)}", exc_info=True)
-            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {"error": format_exception(e)})
+            self.event_bus.emit(Events.Model.ON_FAILED_RESPONSE, {
+                "error": format_exception(e),
+                "message_id": ConversationMessageIds.incoming(req_id) if req_id else "",
+                "character_id": char_id,
+            })
             return None
 
     # Default RAG output templates
@@ -2058,23 +2182,47 @@ class ModelController(GenerationService, ModelStateService):
         except StructuredResponseParseError as e:
             logger.error(
                 f"[ModelController] Failed to parse structured response for {char_id}: {format_exception(e)}. "
-                f"Falling back to legacy processing."
+                "Rejecting the response instead of forwarding raw JSON."
             )
-            # Fallback to legacy tag-based processing
-            with character_lock(char_id):
-                with perf_span(trace_id, "generation.nlp_postprocess"):
-                    processed = char.process_response_nlp_commands(
-                        visible_raw, self.settings.get("SAVE_MISSED_MEMORY", False)
-                    )
-                if hasattr(char, "flush_variables"):
-                    char.flush_variables()
-                voice_profile = None
-                if hasattr(char, "to_voice_profile"):
-                    try:
-                        voice_profile = char.to_voice_profile()
-                    except Exception:
-                        voice_profile = None
             usage_cost_fallback = pricing_info.estimate_usage_cost(usage) if pricing_info else None
+            usage_snapshot = self._build_usage_snapshot(
+                usage,
+                model=response_model,
+                provider=response_provider,
+                cost_fallback=usage_cost_fallback,
+                cost_fallback_currency=getattr(pricing_info, "currency", None),
+                cost_fallback_source=getattr(pricing_info, "source", None),
+            )
+            if policy.write_to_history:
+                try:
+                    with perf_span(trace_id, "generation.history_write", outcome="rejected_structured_response"):
+                        history_write = self.event_writer.write_turn(
+                            responder_character_id=char_id,
+                            sender=sender,
+                            participants=participants,
+                            user_input=user_input,
+                            image_data=image_data,
+                            image_source=image_source,
+                            image_descriptions=image_descriptions,
+                            req_id=req_id,
+                            origin_message_id=origin_message_id,
+                            assistant_text=visible_raw,
+                            assistant_target="Player",
+                            event_type=event_type,
+                            task_uid=task_uid,
+                            thinking=think_text or None,
+                            llm_usage=usage_snapshot,
+                            sample_id=sample_id,
+                            assistant_is_deleted=True,
+                            dialogue=dialogue,
+                        )
+                        self._publish_history_commit(history_write, character_id=char_id)
+                except Exception as history_error:
+                    logger.warning(
+                        "[ModelController] Failed to retain rejected structured response: "
+                        f"{format_exception(history_error)}",
+                        exc_info=True,
+                    )
             self._store_last_usage(
                 usage,
                 model=response_model,
@@ -2084,14 +2232,24 @@ class ModelController(GenerationService, ModelStateService):
                 cost_fallback_source=getattr(pricing_info, "source", None),
             )
 
-            self.event_bus.emit(Events.Model.ON_SUCCESSFUL_RESPONSE)
+            safe_message = _structured_parse_user_message(e.code)
+            error_details = {
+                "kind": "structured_response_error",
+                "code": e.code,
+                "stage": e.stage,
+                "message": safe_message,
+            }
+            if e.field:
+                error_details["field"] = e.field
+
             return ChatGenerationResult(
-                text=processed,
+                text="",
                 character_id=char_id,
-                voice_profile=voice_profile,
-                think=think_text or None,
+                voice_profile=None,
                 sample_id=sample_id or "",
-                structured_parse_level="legacy_fallback",
+                error=safe_message,
+                error_details=error_details,
+                structured_parse_level="rejected",
                 control_plane_trusted=False,
             )
 
@@ -2162,6 +2320,25 @@ class ModelController(GenerationService, ModelStateService):
                 dialogue=dialogue,
             )
 
+        # A tool-call response is only an intermediate turn. Commit its working
+        # state only when this is the final answer, so failed tools cannot leave
+        # a stale plan for the next player message.
+        if capabilities.get("working_state", False):
+            try:
+                if structured.working_state is None:
+                    char.working_state.clear()
+                else:
+                    char.working_state.update(
+                        structured.working_state,
+                        max_chars=int(self.settings.get("WORKING_STATE_MAX_CHARS", 2000) or 2000),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[ModelController][%s] Failed to update working state: %s",
+                    char_id,
+                    format_exception(exc),
+                )
+
         # Extract reasoning from structured response (if model used the reasoning field)
         if structured.reasoning:
             schema_reasoning = structured.reasoning.strip()
@@ -2176,6 +2353,9 @@ class ModelController(GenerationService, ModelStateService):
             result_dict = structured_response_to_result_dict(structured)
         # Remove reasoning from debug display — it's shown as a think block
         result_dict.pop("reasoning", None)
+        # Working state is an internal session handoff, never visible in UI,
+        # returned task data, or persisted assistant structured_data.
+        result_dict.pop("working_state", None)
         # Attach raw LLM JSON for the debug panel (not saved to history)
         result_dict["_raw_json"] = visible_raw
         final_text = result_dict["response"]
@@ -2247,7 +2427,8 @@ class ModelController(GenerationService, ModelStateService):
 
         # Build inline_graph_json from structured entities/relations (if graph extraction enabled)
         inline_graph_json: Optional[str] = None
-        if (bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
+        if (bool(self.settings.get("RAG_ENABLED", False))
+                and bool(self.settings.get("GRAPH_EXTRACTION_ENABLED", False))
                 and (structured.entities or structured.relations)):
             try:
                 import json as _json
@@ -2336,6 +2517,9 @@ class ModelController(GenerationService, ModelStateService):
         # Build first response result dict
         result_dict = structured_response_to_result_dict(structured)
         result_dict.pop("reasoning", None)
+        # Tool calls are intermediate responses too; working state must stay
+        # private and be committed only by the final response in the chain.
+        result_dict.pop("working_state", None)
         result_dict["_raw_json"] = visible_raw
         first_text = result_dict.get("response", "")
 
@@ -2501,7 +2685,11 @@ class ModelController(GenerationService, ModelStateService):
             think_text=combined_think or "",
             usage=merged_usage,
             response_model=llm_response_2.model or response_model,
-            response_provider=llm_response_2.provider_name or response_provider,
+            response_provider=(
+                llm_response_2.provider_display_name
+                or llm_response_2.provider_name
+                or response_provider
+            ),
             pricing_info=pricing_info,
             char=char,
             char_id=char_id,

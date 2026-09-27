@@ -557,9 +557,11 @@ class ChessGameController:
 
         if is_over:
             print(f"CONSOLE (ChessGameController _check_and_handle_game_over): Игра окончена: {final_outcome_message}")
+            # Publish the final board before the GUI emits its game-over event.
+            # The reaction generated from that event must see the finished position.
+            self._send_state_to_main_process()
             if self.game_over_cb_gui: self.game_over_cb_gui(final_outcome_message)
             else: self._send_status_to_gui_if_possible(final_outcome_message)
-            self._send_state_to_main_process() 
         return is_over
             
     def _send_state_to_main_process(self, error=None, error_move=None, error_message=None, game_resigned=False, game_stopped_by_llm=False, critical_process_failure=False, last_move_san=None):
@@ -594,6 +596,7 @@ class ChessGameController:
             "is_auto": self.is_auto,
             "is_cheat": self.is_cheat,
             "last_move_san": current_last_move_san if current_last_move_san else "N/A",
+            "recent_move_history": self.board_logic.get_recent_move_history(8),
             "timestamp": time.time()
         }
         if error: state_data["error"] = format_exception(error)

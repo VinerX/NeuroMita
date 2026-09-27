@@ -14,6 +14,7 @@ class SettingsController(BaseController):
             keys=(
                 "USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT",
                 "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST",
+                "LOCAL_VOICE_INIT_ON_REQUEST",
                 "CHAT_FONT_SIZE", "SHOW_CHAT_TIMESTAMPS",
                 "MAX_CHAT_HISTORY_DISPLAY", "HIDE_CHAT_TAGS",
                 "SHOW_STRUCTURED_IN_GUI", "STRUCTURED_EXPANDED_DEFAULT",
@@ -51,7 +52,7 @@ class SettingsController(BaseController):
         key = change.key
         value = change.value
 
-        if key in ["USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT", "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST"]:
+        if key in ["USE_VOICEOVER", "VOICEOVER_METHOD", "AUDIO_BOT", "NM_CURRENT_VOICEOVER", "VOICE_LANGUAGE", "LOCAL_VOICE_LOAD_LAST", "LOCAL_VOICE_INIT_ON_REQUEST"]:
             self.event_bus.emit(Events.GUI.VOICEOVER_REFRESH)
 
         if key == "AUDIO_BOT":

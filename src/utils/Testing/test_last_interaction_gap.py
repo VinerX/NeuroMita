@@ -30,7 +30,7 @@ class _StubHistoryManager:
 class _StubCharacter:
     def __init__(self, messages):
         self.char_id = "TestChar"
-        self.name = "TestChar"
+        self.display_name = "TestChar"
         self.history_manager = _StubHistoryManager(messages)
         self.vars = {}
 

@@ -103,3 +103,39 @@ def test_live_echo_boundary_projects_resolved_player_as_user() -> None:
             },
         )
     ]
+
+
+def test_live_echo_projects_group_player_line_to_all_participant_surfaces() -> None:
+    controller, event_bus = _controller()
+
+    controller._on_echo_chat_message_requested(
+        Event(
+            Events.Server.ECHO_CHAT_MESSAGE_REQUESTED,
+            {
+                "client_id": "client-1",
+                "sender": "Player",
+                "sender_kind": DialogueActorKind.PLAYER,
+                "text": "Message to everyone",
+                "message_id": "request-group-1",
+                "presentation_message_id": "in:request-group-1",
+                "character_id": "Kind",
+                "participants": ["Kind", "ShortHair", "Crazy", "Sleepy", "Crazy"],
+            },
+        )
+    )
+
+    assert event_bus.emitted == [
+        (
+            Events.GUI.UPDATE_CHAT_UI,
+            {
+                "role": "user",
+                "response": "Message to everyone",
+                "is_initial": False,
+                "emotion": "",
+                "speaker_name": "",
+                "message_id": "in:request-group-1",
+                "character_id": "Kind",
+                "surface_character_ids": ["Kind", "ShortHair", "Crazy", "Sleepy"],
+            },
+        )
+    ]

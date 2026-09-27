@@ -13,6 +13,9 @@ from managers.settings_manager import SettingsManager
 from utils import getTranslationVariant as _
 
 from core.events import get_event_bus, Events, Event
+from core.setting_behaviors import normalize_setting_behaviors
+from core.voice_device_selection import expand_voice_device_schema, validate_voice_devices
+from core.installables.compatibility import hardware_compute_capability
 from core.install_types import DEFAULT_INSTALL_TIMEOUT_SEC
 from core.task_supervisor import task_supervisor
 from core.services import services
@@ -52,7 +55,9 @@ class VoiceModelController(VoiceModelService):
 
         self.detected_gpu_vendor = "CPU"
         self.detected_cuda_devices = []
+        self.detected_cuda_device_records: list[dict[str, Any]] = []
         self.gpu_name = None
+        self.detected_compute_capability: int | None = None
         self._installable_catalog = services().get_optional(InstallableCatalogService)
         self._refresh_gpu_runtime_info()
 
@@ -145,12 +150,17 @@ class VoiceModelController(VoiceModelService):
         primary = snapshot.get("primary") if isinstance(snapshot.get("primary"), dict) else {}
         cuda = snapshot.get("cuda") if isinstance(snapshot.get("cuda"), dict) else {}
         self.detected_gpu_vendor = str(snapshot.get("vendor") or "CPU").strip().upper()
-        self.detected_cuda_devices = [
-            f"cuda:{int(device['ordinal'])}"
+        self.detected_cuda_device_records = [
+            dict(device)
             for device in (cuda.get("devices") or ())
             if isinstance(device, dict) and device.get("ordinal") is not None
         ]
+        self.detected_cuda_devices = [
+            f"cuda:{int(device['ordinal'])}"
+            for device in self.detected_cuda_device_records
+        ]
         self.gpu_name = str(primary.get("name") or "").strip() or None
+        self.detected_compute_capability = hardware_compute_capability(snapshot)
 
         new_vendor = str(self.detected_gpu_vendor or "CPU").upper()
         new_name = str(self.gpu_name or "").strip()
@@ -456,7 +466,7 @@ class VoiceModelController(VoiceModelService):
                 if isinstance(model_saved_values, dict):
                     for setting in model_data.get("settings", []):
                         setting_key = setting.get("key")
-                        if setting_key in model_saved_values:
+                        if setting_key in model_saved_values and not bool(setting.get("locked")):
                             setting.setdefault("options", {})["default"] = model_saved_values[setting_key]
 
             if not isinstance(model_data.get("gpu_vendor"), (list, tuple)):
@@ -469,6 +479,34 @@ class VoiceModelController(VoiceModelService):
     def save_settings_values(self, values: dict) -> dict:
         if not isinstance(values, dict) or not values:
             return {"changed": 0, "changed_by_model": {}}
+
+        hardware = self._voice_hardware_snapshot()
+        schemas = {
+            str(model.get("id") or ""): expand_voice_device_schema(
+                model.get("settings") or [], hardware
+            )
+            for model in getattr(self, "local_voice_models", [])
+        }
+        for model_id, settings in values.items():
+            if str(model_id) not in schemas and isinstance(settings, dict):
+                schemas[str(model_id)] = expand_voice_device_schema(
+                    [{"key": str(key)} for key in settings], hardware
+                )
+        values = {
+            str(model_id): normalize_setting_behaviors(
+                schemas.get(str(model_id), []), settings
+            )
+            for model_id, settings in values.items()
+            if isinstance(settings, dict)
+        }
+        errors = {
+            str(model_id): invalid
+            for model_id, settings in values.items()
+            if isinstance(settings, dict)
+            and (invalid := validate_voice_devices(schemas.get(str(model_id), []), settings))
+        }
+        if errors:
+            return {"changed": 0, "changed_by_model": {}, "errors": errors}
 
         os.makedirs(os.path.dirname(self.settings_values_file) or ".", exist_ok=True)
 
@@ -545,6 +583,60 @@ class VoiceModelController(VoiceModelService):
         if value in {"NVIDIA", "AMD", "INTEL", "CPU"}:
             return value
         return "CPU"
+
+    def _cuda_device_display_labels(self) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for index, record in enumerate(getattr(self, "detected_cuda_device_records", []) or []):
+            try:
+                ordinal = int(record.get("ordinal", index))
+            except (TypeError, ValueError):
+                continue
+            device_id = f"cuda:{ordinal}"
+            name = str(record.get("name") or "").strip()
+            labels[device_id] = f"{device_id} ({name})" if name else device_id
+        return labels
+
+    def _voice_hardware_snapshot(
+        self, cuda_devices: list[str] | None = None
+    ) -> dict[str, Any]:
+        catalog = getattr(self, "_installable_catalog", None)
+        try:
+            hardware = dict(catalog.hardware_snapshot() or {}) if catalog is not None else {}
+        except Exception:
+            hardware = {}
+
+        records = [
+            dict(record)
+            for record in getattr(self, "detected_cuda_device_records", []) or []
+            if isinstance(record, dict)
+        ]
+        if not records:
+            detected_devices = (
+                list(cuda_devices)
+                if cuda_devices is not None
+                else list(getattr(self, "detected_cuda_devices", []) or [])
+            )
+            for index, device_id in enumerate(detected_devices):
+                try:
+                    ordinal = int(str(device_id).split(":", 1)[1])
+                except (IndexError, TypeError, ValueError):
+                    ordinal = index
+                records.append({
+                    "ordinal": ordinal,
+                    "name": str(getattr(self, "gpu_name", "") or ""),
+                    "compute_capability": getattr(self, "detected_compute_capability", None),
+                })
+        if not records and str(getattr(self, "detected_gpu_vendor", "")).upper() == "NVIDIA":
+            hardware["cuda_default_record"] = {
+                "ordinal": 0,
+                "name": str(getattr(self, "gpu_name", "") or ""),
+                "compute_capability": getattr(self, "detected_compute_capability", None),
+            }
+
+        if records:
+            hardware["cuda"] = {**dict(hardware.get("cuda") or {}), "devices": records}
+        hardware.setdefault("vendor", str(getattr(self, "detected_gpu_vendor", "CPU") or "CPU"))
+        return hardware
 
     def _normalize_gpu_vendor_list(self, vendors: Any) -> list[str]:
         if not isinstance(vendors, (list, tuple, set)):
@@ -734,20 +826,47 @@ class VoiceModelController(VoiceModelService):
         operations = services().get_optional(InstallableOperationsService)
         if operations is None:
             return False
-        admission = operations.install(
-            {
-                "component_id": component_id,
-                "kind": "voice",
-                "item_id": mid,
-                "task_id": f"voice:install:{mid}",
-                "title": title,
-                "initial_status": _("Подготовка...", "Preparing..."),
-                "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
-                "with_ui": bool(with_ui),
-                "meta": {"kind": "voice", "item_id": mid, "op": "install"},
-            }
-        )
+        payload = {
+            "component_id": component_id,
+            "kind": "voice",
+            "item_id": mid,
+            "task_id": f"voice:install:{mid}",
+            "title": title,
+            "initial_status": _("Подготовка...", "Preparing..."),
+            "timeout_sec": float(timeout_sec or DEFAULT_INSTALL_TIMEOUT_SEC),
+            "with_ui": bool(with_ui),
+            "meta": {"kind": "voice", "item_id": mid, "op": "install"},
+        }
+        if mid in ("medium+", "medium+low"):
+            payload["device"] = self._selected_fish_device(mid)
+        admission = operations.install(payload)
         return bool(admission.accepted)
+
+    def _selected_fish_device(self, model_id: str) -> str:
+        mid = str(model_id or "").strip()
+        device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
+        with self._lock:
+            model = next(
+                (item for item in self.local_voice_models if str(item.get("id") or "") == mid),
+                None,
+            )
+            setting = next(
+                (
+                    item
+                    for item in (model.get("settings") or [])
+                    if str(item.get("key") or "") == device_key
+                ),
+                None,
+            ) if isinstance(model, dict) else None
+            options = setting.get("options") if isinstance(setting, dict) else None
+            selected = options.get("default") if isinstance(options, dict) else None
+        selected_device = str(selected or "").strip()
+        if selected_device:
+            return selected_device
+        logger.warning(
+            f"Fish Speech compile device is unavailable for '{mid}', falling back to cuda:0"
+        )
+        return "cuda:0"
 
     def start_uninstall(self, model_id: str, *, with_ui: bool = True, timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC) -> bool:
         mid = str(model_id or "").strip()
@@ -815,6 +934,7 @@ class VoiceModelController(VoiceModelService):
             Events.VoiceModel.MODEL_COMPILE_STARTED,
             {"model_id": mid, "clear_only": bool(clear_only)},
         )
+        selected_device = self._selected_fish_device(mid)
         admission = operations.initialize(
             {
                 "component_id": f"tts:{mid}",
@@ -831,6 +951,7 @@ class VoiceModelController(VoiceModelService):
                 "with_ui": bool(with_ui),
                 "install_style_variant": "ai_hub",
                 "initialize_mode": "clear_cache" if clear_only else "compile",
+                "device": selected_device,
                 "meta": {"kind": "voice", "item_id": mid, "op": "initialize"},
             }
         )
@@ -908,21 +1029,7 @@ class VoiceModelController(VoiceModelService):
         final_models = _copy.deepcopy(models_list)
 
         detected_vendor = self._normalize_gpu_vendor(detected_vendor)
-        gpu_name_upper = self.gpu_name.upper() if self.gpu_name else ""
-        force_fp32 = False
-
-        if detected_vendor == "NVIDIA" and gpu_name_upper:
-            if (
-                ("16" in gpu_name_upper and "V100" not in gpu_name_upper)
-                or "P40" in gpu_name_upper
-                or "P10" in gpu_name_upper
-                or "1060" in gpu_name_upper
-                or "1070" in gpu_name_upper
-                or "1080" in gpu_name_upper
-            ):
-                force_fp32 = True
-        elif detected_vendor in {"AMD", "INTEL"}:
-            force_fp32 = True
+        cuda_display_labels = self._cuda_device_display_labels()
 
         for model in final_models:
             compat = self._build_model_compatibility(model)
@@ -949,7 +1056,6 @@ class VoiceModelController(VoiceModelService):
                 setting_key = setting.get("key")
                 widget_type = setting.get("type")
                 is_device_setting = "device" in str(setting_key).lower()
-                is_half_setting = setting_key in ["is_half", "silero_rvc_is_half", "fsprvc_is_half", "half", "fsprvc_fsp_half"]
 
                 final_values_list = None
                 suffix_candidates: list[str]
@@ -1019,20 +1125,19 @@ class VoiceModelController(VoiceModelService):
                         final_values_list = ["cpu", "dml"]
                         options["default"] = "cpu"
 
-                if setting_key == "f5rvc_is_half" and detected_vendor != "NVIDIA":
-                    options["default"] = "False"
-                    setting["locked"] = True
-
                 if final_values_list is not None and widget_type == "combobox":
                     options["values"] = final_values_list
+                    labels = {
+                        str(value): cuda_display_labels[str(value)]
+                        for value in final_values_list
+                        if str(value) in cuda_display_labels
+                    }
+                    if labels:
+                        options["display_labels"] = labels
 
                 keys_to_remove = [k for k in list(options.keys()) if k.startswith("values_") or k.startswith("default_")]
                 for key_to_remove in keys_to_remove:
                     options.pop(key_to_remove, None)
-
-                if force_fp32 and is_half_setting:
-                    options["default"] = "False"
-                    setting["locked"] = True
 
                 if widget_type == "combobox" and "default" in options and "values" in options:
                     current_values = options["values"]
@@ -1045,6 +1150,11 @@ class VoiceModelController(VoiceModelService):
                     else:
                         options["default"] = ""
 
+        hardware = self._voice_hardware_snapshot(list(cuda_devices or []))
+        for model in final_models:
+            model["settings"] = expand_voice_device_schema(
+                model.get("settings") or [], hardware
+            )
         return final_models
 
     def open_doc(self, doc_name: str):

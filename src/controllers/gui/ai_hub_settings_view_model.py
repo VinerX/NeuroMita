@@ -14,6 +14,7 @@ from ui.windows.ai_hub.settings_presentation import (
     ApplyAIHubSettingsRows,
     CompileAIHubModel,
     DeleteAIHubModelCompilation,
+    DiscardAIHubSettingsChanges,
     OpenAIHubCompilationDocumentation,
     ResetAIHubSettings,
     SaveAIHubSettings,
@@ -68,6 +69,10 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             if self.state.selected_component_id:
                 self.select_component(self.state.selected_component_id)
             return
+        if isinstance(intent, DiscardAIHubSettingsChanges):
+            if self.state.dirty:
+                self.update_state(dirty=False, status_text="")
+            return
         if isinstance(intent, CompileAIHubModel):
             self._start_compile(clear_only=False)
             return
@@ -100,8 +105,25 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         component_tuple = tuple(components)
         if component_tuple == self.state.components and normalized_category == self._category:
             return
-        self._category = normalized_category
+
+        # Catalog/status refreshes are allowed while the user is editing a
+        # component.  Do not let a background row refresh silently replace
+        # the form state (and therefore discard unsaved values) when the
+        # current component is still present in the same category.
         ids = {item[0] for item in components}
+        if (
+            self.state.dirty
+            and normalized_category == self._category
+            and selected
+            and selected in ids
+        ):
+            self.update_state(
+                components=component_tuple,
+                components_revision=self.state.components_revision + 1,
+            )
+            return
+
+        self._category = normalized_category
         if selected not in ids:
             selected = components[0][0] if components else ""
         self.update_state(

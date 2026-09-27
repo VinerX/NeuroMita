@@ -675,6 +675,47 @@ QFrame#AIHubSchemaForm QSpinBox[hasError="true"] {
     border: 1px solid rgba(255,123,123,0.55);
     background: rgba(255,123,123,0.06);
 }
+QFrame#AIHubSchemaForm QWidget#NumberStepper {
+    background: {panel_bg};
+    border: 1px solid {outline};
+    border-radius: 8px;
+}
+QFrame#AIHubSchemaForm QSpinBox#NumberStepperValue {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0 8px;
+    color: {text};
+    font-size: 12px;
+    font-weight: 600;
+}
+QFrame#AIHubSchemaForm QToolButton#NumberStepperDecrease,
+QFrame#AIHubSchemaForm QToolButton#NumberStepperIncrease {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 38px;
+    max-height: 38px;
+    padding: 0;
+    background: rgba(255,255,255,0.035);
+    border: none;
+    color: {muted};
+    font-size: 13pt;
+}
+QFrame#AIHubSchemaForm QToolButton#NumberStepperDecrease {
+    border-right: 1px solid {outline};
+    border-top-left-radius: 7px;
+    border-bottom-left-radius: 7px;
+}
+QFrame#AIHubSchemaForm QToolButton#NumberStepperIncrease {
+    border-left: 1px solid {outline};
+    border-top-right-radius: 7px;
+    border-bottom-right-radius: 7px;
+}
+QFrame#AIHubSchemaForm QToolButton#NumberStepperDecrease:hover,
+QFrame#AIHubSchemaForm QToolButton#NumberStepperIncrease:hover {
+    background: rgba({accent_rgb}, 0.16);
+    color: {text};
+}
 QFrame#AIHubSchemaForm QCheckBox {
     background: transparent;
     border: none;

@@ -85,7 +85,7 @@ class ChatMessageActionsViewModel(IntentViewModel[_ChatMessageActionsState]):
         if isinstance(intent, RetryLastChat):
             self._events.publish(
                 UiTopic.CHAT_RETRY_LAST,
-                {"character_id": intent.character_id},
+                {"message_id": intent.message_id, "character_id": intent.character_id},
             )
             return
         if isinstance(intent, RateChatSample):

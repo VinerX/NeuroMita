@@ -154,6 +154,7 @@ def create_settings_section(gui, parent_layout, title, cfg_list, *, icon_name=No
                 options=cfg.get('options'), default=cfg.get('default', ''),
                 default_checkbutton=cfg.get('default_checkbutton', False),
                 validation=cfg.get('validation'), tooltip=cfg.get('tooltip'),
+                description=cfg.get('description'),
                 hide=cfg.get('hide', False), command=cfg.get('command'),
                 widget_name=cfg.get('widget_name', cfg.get('key')),
                 depends_on=cfg.get('depends_on'),
@@ -221,6 +222,7 @@ def create_settings_direct(gui, parent_layout, cfg_list, title=None):
                 options=cfg.get('options'), default=cfg.get('default', ''),
                 default_checkbutton=cfg.get('default_checkbutton', False),
                 validation=cfg.get('validation'), tooltip=cfg.get('tooltip'),
+                description=cfg.get('description'),
                 hide=cfg.get('hide', False), command=cfg.get('command'),
                 widget_name=cfg.get('widget_name', cfg.get('key')),
                 depends_on=cfg.get('depends_on'),
@@ -317,10 +319,11 @@ def create_setting_widget(
         default_checkbutton=False,
         validation=None,
         tooltip=None,
+        description=None,
         hide=False,
         command=None,
         widget_name=None,
-        depends_on: str | None = None,
+        depends_on: str | list | None = None,
         depends_on_value: str | None = None,
         hide_when_disabled: bool = False,
         toggle_key: str | None = None,
@@ -489,9 +492,10 @@ def create_setting_widget(
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(2)
         title_col.addWidget(lbl)
-        if tooltip:
-            desc = QLabel(str(tooltip))
-            register_if_tr(desc, tooltip)
+        inline_description = description if description is not None else tooltip
+        if inline_description:
+            desc = QLabel(str(inline_description))
+            register_if_tr(desc, inline_description)
             desc.setObjectName("SettingRowDescription")
             desc.setTextFormat(Qt.TextFormat.PlainText)
             desc.setWordWrap(True)
@@ -687,16 +691,20 @@ def create_setting_widget(
         setattr(gui, f"{widget_name}_frame", frame)
 
     if depends_on and widget:
-        controller = getattr(gui, depends_on, None)
+        dep_keys = [depends_on] if isinstance(depends_on, str) else list(depends_on)
+        controllers = []
+        for dep_key in dep_keys:
+            dep_controller = getattr(gui, dep_key, None)
+            if not dep_controller:
+                logger.warning(f"[depends_on] controller '{dep_key}' not found for '{setting_key}'")
+            else:
+                controllers.append(dep_controller)
 
-        if not controller:
-            logger.warning(f"[depends_on] controller '{depends_on}' not found for '{setting_key}'")
-        else:
-            def _dep_sync(_=None):
-                active = True
+        if controllers:
+            def _is_controller_active(controller):
                 if hasattr(controller, "isChecked"):
-                    active = controller.isChecked()
-                elif isinstance(controller, QComboBox):
+                    return bool(controller.isChecked())
+                if isinstance(controller, QComboBox):
                     controller_value = (
                         controller.current_value()
                         if callable(getattr(controller, "current_value", None))
@@ -704,13 +712,15 @@ def create_setting_widget(
                     )
                     if depends_on_value is not None:
                         if isinstance(depends_on_value, (list, tuple, set)):
-                            active = controller_value in depends_on_value
-                        else:
-                            active = (controller_value == depends_on_value)
-                    else:
-                        active = bool(controller_value)
-                elif hasattr(controller, "currentText"):
-                    active = bool(controller.currentText())
+                            return controller_value in depends_on_value
+                        return controller_value == depends_on_value
+                    return bool(controller_value)
+                if hasattr(controller, "currentText"):
+                    return bool(controller.currentText())
+                return True
+
+            def _dep_sync(_=None):
+                active = all(_is_controller_active(c) for c in controllers)
 
                 if hide_when_disabled:
                     frame.setVisible(active)
@@ -721,16 +731,17 @@ def create_setting_widget(
 
             _dep_sync()
 
-            callbacks = getattr(controller, "_settings_dependency_sync_callbacks", None)
-            if callbacks is None:
-                callbacks = []
-                setattr(controller, "_settings_dependency_sync_callbacks", callbacks)
-            callbacks.append(_dep_sync)
+            for controller in controllers:
+                callbacks = getattr(controller, "_settings_dependency_sync_callbacks", None)
+                if callbacks is None:
+                    callbacks = []
+                    setattr(controller, "_settings_dependency_sync_callbacks", callbacks)
+                callbacks.append(_dep_sync)
 
-            if hasattr(controller, "stateChanged"):
-                controller.stateChanged.connect(_dep_sync)
-            elif hasattr(controller, "currentTextChanged"):
-                controller.currentTextChanged.connect(_dep_sync)
+                if hasattr(controller, "stateChanged"):
+                    controller.stateChanged.connect(_dep_sync)
+                elif hasattr(controller, "currentTextChanged"):
+                    controller.currentTextChanged.connect(_dep_sync)
 
     if toggle_chk and widget_type == 'entry':
         enabled = toggle_chk.isChecked()

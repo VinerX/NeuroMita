@@ -82,6 +82,9 @@ class GraphController:
         return use(SettingsService).get(key, default)
 
     def _is_enabled(self) -> bool:
+        # Граф — часть RAG-подсистемы: RAG_ENABLED является мастер-выключателем.
+        if not bool(self._get_setting("RAG_ENABLED", False)):
+            return False
         return bool(self._get_setting("GRAPH_EXTRACTION_ENABLED", False))
 
     def _is_inline_mode(self) -> bool:
@@ -114,7 +117,7 @@ class GraphController:
     def _on_message_completed(self, event: Event) -> None:
         """Called after every assistant response is saved."""
         if not self._is_enabled():
-            logger.debug("[GraphController] Skipped: GRAPH_EXTRACTION_ENABLED is False")
+            logger.debug("[GraphController] Skipped: RAG_ENABLED or GRAPH_EXTRACTION_ENABLED is False")
             return
 
         data = event.data or {}

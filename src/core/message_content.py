@@ -254,5 +254,18 @@ class MessageContentCodec:
             return merged
         return prefix + str(content)
 
+    @classmethod
+    def append_text(cls, content: Any, suffix: str) -> Any:
+        """Добавляет текст после content, сохраняя порядок мультимодальных частей."""
+        if not suffix:
+            return content
+        if isinstance(content, str):
+            return content + suffix
+        if isinstance(content, list):
+            # A dedicated final text part preserves the order: an action block
+            # belongs after every original text/image part of the reply.
+            return [*content, {"type": TEXT_PART, "text": suffix}]
+        return str(content or "") + suffix
+
 
 __all__ = ["MessageContentCodec", "TEXT_PART", "IMAGE_PART"]

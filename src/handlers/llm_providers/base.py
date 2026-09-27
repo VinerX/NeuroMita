@@ -70,7 +70,10 @@ class LLMRequest:
     # protocol-driven routing
     protocol_id: Optional[str] = None
     dialect_id: Optional[str] = None
+    # Technical routing key, e.g. `common` for OpenAI-compatible APIs.
     provider_name: Optional[str] = None
+    # Human-readable external service, e.g. `OpenRouter`.
+    provider_display_name: Optional[str] = None
 
     headers: Dict[str, str] = field(default_factory=dict)
     transforms: List[Dict[str, Any]] = field(default_factory=list)
@@ -86,6 +89,7 @@ class LLMRequest:
     tools_payload: Optional[Any] = None
     tools_dialect: Optional[str] = None
 
+    native_parameters: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     settings: Optional[Any] = None
     depth: int = 0
@@ -161,7 +165,10 @@ class LLMResponse:
     text: Optional[str]
     usage: Optional[LLMUsage] = None
     model: Optional[str] = None
+    # Technical routing key; the same meaning as LLMRequest.provider_name.
     provider_name: Optional[str] = None
+    # Human-readable external service name for UI and diagnostics.
+    provider_display_name: Optional[str] = None
     finish_reason: Optional[str] = None
     error_message: Optional[str] = None
     error_details: Optional[Dict[str, Any]] = None

@@ -1,0 +1,43 @@
+// Runtime-state prompt shared by every character playing chess.
+// It is loaded through the resolver's _CommonPrompts root, rather than from
+// a character-specific prompt set.
+
+SET LOCAL prompt_text = "[Game: Chess]\n"
+
+IF GAME_CHESS_IS_AUTO == True THEN
+    SET prompt_text = prompt_text + "[Mode] Auto mode is enabled; the game engine makes its own moves. Do not issue chess commands.\n"
+ELSE
+    SET prompt_text = prompt_text + "[Mode] Manual Mita mode. You choose moves through commands.\n"
+ENDIF
+
+SET prompt_text = prompt_text + f"[Sides] You: {GAME_STATE_LLM_COLOR_TEXT}; player: {GAME_STATE_PLAYER_COLOR_TEXT}.\n"
+SET prompt_text = prompt_text + "[Voice] Do not mention Maia or the game engine unless the player explicitly asks about it.\n"
+SET prompt_text = prompt_text + f"[Last move] {GAME_STATE_LAST_MOVE_SAN}.\n"
+SET prompt_text = prompt_text + "[Recent move history: up to 8 moves per side, oldest first]\n" + GAME_STATE_RECENT_MOVE_HISTORY + "\n"
+
+IF GAME_STATE_BOARD_ASCII != None THEN
+    SET prompt_text = prompt_text + "[Board]\n```\n" + GAME_STATE_BOARD_ASCII + "\n```\n"
+ELSE
+    SET prompt_text = prompt_text + f"[FEN] {GAME_STATE_FEN}.\n"
+ENDIF
+
+IF GAME_STATE_IS_OVER == True THEN
+    SET prompt_text = prompt_text + f"[Status] Game over: {GAME_STATE_OUTCOME}.\n"
+ELSEIF GAME_STATE_IS_LLM_TURN == True THEN
+    IF GAME_CHESS_IS_AUTO == True THEN
+        SET prompt_text = prompt_text + "[Status] The automatic move is handled by the game.\n"
+    ELSE
+        SET prompt_text = prompt_text + "[Status] YOUR TURN. For an automatic-turn request, commands must contain exactly RequestBestChessMove; the recommended legal move will be selected and applied.\n"
+        IF GAME_STATE_HAS_LEGAL_MOVES == True THEN
+            SET prompt_text = prompt_text + f"[Legal moves] {GAME_STATE_LEGAL_MOVES_STRING}.\n"
+        ENDIF
+    ENDIF
+ELSE
+    SET prompt_text = prompt_text + "[Status] Player's turn; do not make a move.\n"
+ENDIF
+
+IF GAME_STATE_ERROR_MSG != None THEN
+    SET prompt_text = prompt_text + f"[Game command error] {GAME_STATE_ERROR_MSG}.\n"
+ENDIF
+
+RETURN prompt_text

@@ -7,23 +7,22 @@ import queue
 import threading
 from typing import Dict, Any, Optional
 
-from core.events import Events
-from core.request_policy import resolve_policy
-from core.services import use
 from main_logger import logger
 from modules.game_interface import GameInterface
-from services.contracts import SettingsService
+from managers.mini_game_session_registry import mini_game_sessions
 
 class SeaBattleGame(GameInterface):
 
-    def __init__(self, character, game_id: str = "seabattle"):
-        super().__init__(character, game_id)
+    def __init__(self, character, game_id: str = "seabattle", host=None):
+        super().__init__(character, game_id, host=host)
         self.gui_process: Optional[multiprocessing.Process] = None
         self.command_queue: Optional[multiprocessing.Queue] = None
         self.state_queue: Optional[multiprocessing.Queue] = None
         self.reaction_queue: Optional[multiprocessing.Queue] = None
         self._reaction_listener: Optional[threading.Thread] = None
         self._reaction_stop_event = threading.Event()
+        # Preserve a complete GUI snapshot across queue-feeder races.
+        self._last_state: Optional[Dict[str, Any]] = None
 
     def start(self, params: Dict[str, Any]):
         if self.gui_process and self.gui_process.is_alive():
@@ -39,6 +38,7 @@ class SeaBattleGame(GameInterface):
             self.command_queue = multiprocessing.Queue()
             self.state_queue = multiprocessing.Queue()
             self.reaction_queue = multiprocessing.Queue()
+            self._last_state = None
             self._reaction_stop_event.clear()
 
             logger.info(f"[{self.character.char_id}] Запуск GUI для 'Морского боя'.")
@@ -86,6 +86,7 @@ class SeaBattleGame(GameInterface):
 
     def cleanup(self):
         logger.debug(f"[{self.character.char_id}] Очистка ресурсов 'Морского боя'.")
+        mini_game_sessions().stop(self.character.char_id, self.game_id)
         self._reaction_stop_event.set()
         listener = self._reaction_listener
         if listener and listener.is_alive() and listener is not threading.current_thread():
@@ -113,6 +114,7 @@ class SeaBattleGame(GameInterface):
         self.state_queue = None
         self.reaction_queue = None
         self._reaction_listener = None
+        self._last_state = None
 
     def _listen_for_player_target_reactions(self):
         """Forward explicit player shots from the GUI to the normal L2 react path."""
@@ -136,98 +138,98 @@ class SeaBattleGame(GameInterface):
             if not isinstance(event, dict):
                 continue
             event_name = event.get("event")
+            if event_name == "game_closed":
+                self.cleanup()
+                return
             if event_name == "player_target_selected":
                 self._dispatch_player_target_reaction(event)
+            elif event_name == "mita_target_hit":
+                self._dispatch_mita_target_hit_reaction(event)
+            elif event_name == "manual_mita_turn":
+                self._dispatch_manual_turn_reaction()
+            elif event_name == "player_game_over":
+                self._dispatch_game_over_reaction(event)
             elif event_name == "player_placement_completed":
                 self._dispatch_placement_completed_reaction()
             elif event_name == "player_game_closed":
                 self._dispatch_player_close_reaction()
 
     def _dispatch_player_target_reaction(self, event: Dict[str, Any]):
-        """Request a visible Mita reaction after a valid player shot.
-
-        This mirrors the existing L2 ``react`` policy, so the global reactions
-        switches remain the source of truth.  The game-level checkbox only
-        decides whether the GUI sends this event for the current match.
-        """
-        try:
-            settings = use(SettingsService)
-            if not bool(settings.get("REACT_ENABLED", True)):
-                return
-            if not bool(settings.get("REACT_L2_ENABLED", True)):
-                return
-        except Exception as exc:
-            logger.debug(
-                f"[{self.character.char_id}] Не удалось проверить настройки реакций: "
-                f"{format_exception(exc)}"
-            )
-            return
-
         if not self.character.get_variable("playingGame", False):
             return
 
         coord = str(event.get("coord") or "неизвестную клетку")
-        result = str(event.get("message") or event.get("result") or "сделал ход")
-        system_input = (
-            "[Sea Battle] The player fired at "
-            f"{coord}. Result: {result}. "
-            "React briefly and naturally in character to this move. "
-            "Do not take a Sea Battle turn yourself in this reply."
+        result_code = str(event.get("result") or "").casefold()
+        result_message = str(event.get("message") or result_code or "сделал ход")
+        public_coord = (
+            coord.upper()
+            if re.fullmatch(r"[A-J](?:10|[1-9])", coord.upper())
+            else "an unknown square"
         )
-        policy = resolve_policy(model_event_type="react", react_level=2)
-        self.character.event_bus.emit(
-            Events.Chat.SEND_MESSAGE,
-            {
-                "user_input": "",
-                "system_input": system_input,
-                "event_type": "react",
-                "character_id": self.character.char_id,
-                "sender": "Player",
-                "participants": [],
-                "policy": policy.to_dict(),
-            },
+        public_result = (
+            "hit"
+            if result_code in {"hit", "sunk"}
+            else "miss"
+            if result_code == "miss"
+            else "shot"
+        )
+        mini_game_sessions().update_public_event(
+            self.character.char_id,
+            self.game_id,
+            f"The player fired at {public_coord}: {public_result}.",
+        )
+        self.request_character_reaction(
+            "[Sea Battle automatic turn request] The player fired at "
+            f"{coord}. Result: {result_message}. "
+            "It is now your turn. In this same response, react briefly in character "
+            "and put exactly one legal MakeMove,<coordinate> command in commands. "
+            "Do not wait for the player to ask again."
+        )
+
+    def _dispatch_mita_target_hit_reaction(self, event: Dict[str, Any]):
+        if not self.character.get_variable("playingGame", False):
+            return
+
+        coord = str(event.get("coord") or "an unknown square")
+        result = str(event.get("message") or event.get("result") or "hit")
+        self.request_character_reaction(
+            "[Sea Battle follow-up turn request] Mita hit the player's ship at "
+            f"{coord}. Result: {result}. It is still your turn. "
+            "In this same response, react briefly in character and put exactly one legal "
+            "MakeMove,<coordinate> command in commands. Do not wait for the player "
+            "to ask again."
+        )
+
+    def _dispatch_manual_turn_reaction(self):
+        if not self.character.get_variable("playingGame", False):
+            return
+
+        self.request_character_reaction(
+            "[Sea Battle manual turn request] The player pressed the button asking Mita "
+            "to make her move. It is your turn. In this same response, react briefly in "
+            "character and put exactly one legal MakeMove,<coordinate> command in commands."
         )
 
     def _dispatch_placement_completed_reaction(self):
-        if not self._reactions_enabled():
-            return
-        self._emit_reaction(
+        self.request_character_reaction(
             "[Sea Battle] The player has finished placing all ships. "
-            "React briefly and naturally in character before the battle begins."
+            "In this same response, react briefly in character and complete your own placement: "
+            "put PlaceShipsRandomly in commands when you still have ships to place. "
+            "Do not wait for the player to ask again."
+        )
+
+    def _dispatch_game_over_reaction(self, event: Dict[str, Any]):
+        winner = event.get("winner")
+        outcome = "The player won" if winner == event.get("player_id") else "Mita won"
+        self.request_character_reaction(
+            f"[Sea Battle] The game has ended: {outcome}. "
+            "React briefly and naturally in character; do not take another shot."
         )
 
     def _dispatch_player_close_reaction(self):
-        if not self._reactions_enabled():
-            return
-        self._emit_reaction(
+        self.request_character_reaction(
             "[Sea Battle] The player closed the Sea Battle game window. "
             "React briefly and naturally in character to the end of this match."
-        )
-
-    def _reactions_enabled(self) -> bool:
-        try:
-            settings = use(SettingsService)
-            return bool(settings.get("REACT_ENABLED", True)) and bool(settings.get("REACT_L2_ENABLED", True))
-        except Exception as exc:
-            logger.debug(
-                f"[{self.character.char_id}] Не удалось проверить настройки реакций: "
-                f"{format_exception(exc)}"
-            )
-            return False
-
-    def _emit_reaction(self, system_input: str):
-        policy = resolve_policy(model_event_type="react", react_level=2)
-        self.character.event_bus.emit(
-            Events.Chat.SEND_MESSAGE,
-            {
-                "user_input": "",
-                "system_input": system_input,
-                "event_type": "react",
-                "character_id": self.character.char_id,
-                "sender": "Player",
-                "participants": [],
-                "policy": policy.to_dict(),
-            },
         )
 
     def process_llm_tags(self, response: str) -> str:
@@ -303,11 +305,26 @@ class SeaBattleGame(GameInterface):
             return None
 
         latest_state: Optional[Dict[str, Any]] = None
-        while not self.state_queue.empty():
+        # multiprocessing.Queue.empty() is unreliable between processes.
+        while True:
             try:
                 latest_state = self.state_queue.get_nowait()
+            except queue.Empty:
+                break
             except Exception:
                 break
+
+        if latest_state is None and self._last_state is None:
+            try:
+                latest_state = self.state_queue.get(timeout=0.25)
+            except queue.Empty:
+                pass
+            except Exception:
+                pass
+        if isinstance(latest_state, dict):
+            self._last_state = latest_state
+        elif self._last_state is not None:
+            latest_state = self._last_state
 
         if latest_state and isinstance(latest_state, dict):
             ev = str(latest_state.get("event") or "").strip().lower()
@@ -321,7 +338,10 @@ class SeaBattleGame(GameInterface):
 
         if not latest_state:
             self._send_command({"action": "get_state"})
-            return "Игра 'Морской бой' активна. Ожидание данных от игрового модуля..."
+            return (
+                "Игра 'Морской бой' уже запущена и её окно открыто. "
+                "Доски ещё синхронизируются с игровым модулем; не считай игру незапущенной."
+            )
 
         mita_id = latest_state.get('mita_id')
 
@@ -359,7 +379,7 @@ class SeaBattleGame(GameInterface):
         self.character.set_variable("GAME_STATE_SHOT_HISTORY_STRING", latest_state.get('shot_history_str', ''))
         self.character.set_variable("GAME_STATE_ERROR_MSG", latest_state.get('error'))
 
-        template_filename = f"{self.game_id}.system"
+        template_filename = f"_CommonPrompts/{self.game_id}.system"
         try:
             content, _ = self.character.dsl_interpreter.process_file(template_filename)
             return content

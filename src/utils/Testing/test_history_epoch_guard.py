@@ -59,7 +59,7 @@ class _StubHistoryManager:
 class _StubCharacter:
     def __init__(self, messages=(), *, char_id="TestChar", memory_system=None):
         self.char_id = char_id
-        self.name = char_id
+        self.display_name = char_id
         self.history_manager = _StubHistoryManager(messages)
         self.memory_system = memory_system
         self.vars = {}

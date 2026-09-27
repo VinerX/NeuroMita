@@ -10,7 +10,7 @@ from core.services import use
 from services.contracts import ApiPresetService, ProtocolBuilderService
 from main_logger import logger
 from managers.protocol_registry import get_protocol_registry
-from presets.model_profiles import resolve_model_profile
+from model_settings.service import ModelSettingsService
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,9 @@ class PresetSettings:
     distribute_keys: bool = False
     generation_overrides: Dict[str, Any] = field(default_factory=dict)
     openrouter_routing: Dict[str, Any] = field(default_factory=dict)
+    native_parameters: Optional[Dict[str, Any]] = None
+    # Optional to keep callers that build legacy PresetSettings compatible.
+    provider_display_name: str = ""
 
     def to_safe_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +41,7 @@ class PresetSettings:
             "protocol_id": self.protocol_id,
             "dialect_id": self.dialect_id,
             "provider_name": self.provider_name,
+            "provider_display_name": self.provider_display_name,
             "api_url": self.api_url,
             "api_model": self.api_model,
             "reserve_keys_count": len(self.reserve_keys or []),
@@ -46,7 +50,8 @@ class PresetSettings:
 
 
 class ApiPresetResolver:
-    def __init__(self, settings: Any, event_bus: Any):
+    def __init__(self, settings: Any, event_bus: Any, *, model_settings_service=None):
+        self.model_settings_service = model_settings_service or ModelSettingsService()
         self.settings = settings
         self.event_bus = event_bus
         # Round-robin для режима «Всегда распределять» (ключ словарей — имя пресета).
@@ -80,6 +85,7 @@ class ApiPresetResolver:
 
         # Core fields from preset
         preset_name = str((preset or {}).get("name", "Unknown") or "Unknown")
+        provider_display_name = self._resolve_provider_display_name(preset, proto, preset_name)
         api_model = str((preset or {}).get("default_model", "") or "")
         if model_override is not None:
             mo = str(model_override or "").strip()
@@ -118,22 +124,9 @@ class ApiPresetResolver:
                 for k, v in oc.items():
                     capabilities[str(k)] = v
 
-        model_profile = resolve_model_profile(
-            api_model,
-            (preset or {}).get("model_profiles"),
-            (preset or {}).get("model_profile_overrides"),
-            default_safe=dialect_id == "gemini_generate_content",
-        )
-        if model_profile:
-            capabilities["model_profile"] = model_profile
-            if model_profile.get("safe_mode"):
-                capabilities.update({
-                    "tools_native": False,
-                    "tools_prompt_enabled": False,
-                    "streaming": False,
-                    "streaming_with_tools": False,
-                    "reasoning_control": "",
-                })
+        document = self.model_settings_service.for_preset(preset or {}, dialect_id, self.settings)
+        native_parameters = self.model_settings_service.compile(document, dialect_id)
+        capabilities = self.model_settings_service.capabilities(document, dialect_id, capabilities)
 
         # headers: let ProtocolsController build final headers/auth,
         # but allow preset overrides to contribute extra headers.
@@ -164,6 +157,7 @@ class ApiPresetResolver:
             protocol_id=protocol_id,
             dialect_id=dialect_id,
             provider_name=provider_name,
+            provider_display_name=provider_display_name,
             headers=final_headers,
             transforms=transforms,
             capabilities=capabilities,
@@ -175,6 +169,7 @@ class ApiPresetResolver:
             distribute_keys=distribute_keys,
             generation_overrides=generation_overrides,
             openrouter_routing=openrouter_routing,
+            native_parameters=native_parameters,
         )
 
     def resolve_chain(self, preset_id: Optional[int] = None, *, max_depth: int = 6) -> List[PresetSettings]:
@@ -323,6 +318,23 @@ class ApiPresetResolver:
     # ---------------------------
     # Internal helpers
     # ---------------------------
+
+    @staticmethod
+    def _resolve_provider_display_name(
+        preset: Optional[Dict[str, Any]], proto: Any, preset_name: str,
+    ) -> str:
+        """Return a human-readable service name without affecting transport routing."""
+        # ApiPresetService includes `base` only for user-created presets (both
+        # standalone and those cloned from a built-in template). Their chosen
+        # name identifies the actual endpoint better than a generic protocol.
+        if isinstance(preset, dict) and "base" in preset:
+            return str(preset_name or "Custom API")
+
+        # `provider_name` selects the implementation (for example, `common` for
+        # every OpenAI-compatible API). Built-ins instead expose this label.
+        return str(
+            getattr(proto, "display_name", "") or getattr(proto, "name", "") or preset_name
+        )
 
     def _load_preset_full(self, preset_id: Optional[int]) -> Optional[Dict[str, Any]]:
         if not preset_id:

@@ -101,8 +101,8 @@ SETTINGS_SECTION_SPECS: tuple[SettingsSectionSpec, ...] = (
     SettingsSectionSpec(
         key="ai_engine",
         icon_name="fa6s.microchip",
-        nav_label=("AI Engine", "AI Engine"),
-        title=("Управление AI Engine", "AI Engine management"),
+        nav_label=("ИИ-движок", "AI Engine"),
+        title=("Управление ИИ-движком", "AI Engine management"),
         subtitle=(
             "Аппаратный профиль, модели, режим workers и обслуживание AI-окружений.",
             "Hardware profile, models, worker topology and AI environment maintenance.",

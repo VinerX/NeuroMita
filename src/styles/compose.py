@@ -31,7 +31,9 @@ def build_main_window_qss() -> str:
 
 
 def get_main_window_stylesheet(overrides: dict[str, str] | None = None) -> str:
+    from ui.svg_icons import svg_stylesheet_url
     theme = get_theme()
     if overrides:
         theme.update(overrides)
+    theme["combo_arrow_url"] = svg_stylesheet_url("controls/chevron-up", theme["accent"])
     return render_qss(build_main_window_qss(), theme)

@@ -28,7 +28,7 @@ class MicrophoneSettingsController(BaseController):
     }
 
     def __init__(self, main_controller, view):
-        self._bound_sig: tuple[int, int, int, int, int, int] | None = None
+        self._bound_sig: tuple[int, ...] | None = None
         super().__init__(main_controller, view)
 
     # Настройки-переключатели микрофона, которые могут меняться извне (например,
@@ -65,6 +65,10 @@ class MicrophoneSettingsController(BaseController):
             return
         checkbox = getattr(v, attr)
         value = bool(getattr(change, "value", False))
+        if str(getattr(change, "key", "") or "") == "MIC_ACTIVE":
+            restart = getattr(v, "asr_restart_button", None)
+            if restart is not None:
+                restart.setEnabled(value)
         if checkbox is None or checkbox.isChecked() == value:
             return
         checkbox.blockSignals(True)
@@ -93,6 +97,7 @@ class MicrophoneSettingsController(BaseController):
             "mic_instant_delay_spin",
             "mic_instant_merge_input_checkbox",
             "mic_mute_while_speaking_checkbox",
+            "asr_restart_button",
             "vad_apply_button",
         )
         for n in need:
@@ -124,6 +129,9 @@ class MicrophoneSettingsController(BaseController):
 
         safe_disconnect(v.asr_refresh_button.clicked, self.refresh_engines)
         v.asr_refresh_button.clicked.connect(self.refresh_engines)
+
+        safe_disconnect(v.asr_restart_button.clicked, self._on_restart_asr)
+        v.asr_restart_button.clicked.connect(self._on_restart_asr)
 
         safe_disconnect(v.mic_combobox.currentIndexChanged, self._on_mic_changed)
         v.mic_combobox.currentIndexChanged.connect(self._on_mic_changed)
@@ -363,12 +371,41 @@ class MicrophoneSettingsController(BaseController):
                     except Exception:
                         current_full = mic_list[0] if mic_list else ""
 
+                    selected_index = -1
                     for i in range(v.mic_combobox.count()):
                         if v.mic_combobox.itemData(i, Qt.ItemDataRole.UserRole) == current_full:
-                            v.mic_combobox.setCurrentIndex(i)
+                            selected_index = i
                             break
 
-                    v.mic_combobox.setToolTip(str(current_full or ""))
+                    # После обновления старый PortAudio-индекс может исчезнуть
+                    # или указывать на WDM-KS. Сохраняем выбор физического
+                    # микрофона по имени и показываем его новый совместимый ID.
+                    if selected_index < 0:
+                        try:
+                            current_name = str(v.settings.get("NM_MICROPHONE_NAME", "") or "")
+                        except Exception:
+                            current_name = ""
+                        for i in range(v.mic_combobox.count()):
+                            option = str(
+                                v.mic_combobox.itemData(i, Qt.ItemDataRole.UserRole) or ""
+                            )
+                            option_name = option.rsplit(" (", 1)[0]
+                            if current_name and option_name.casefold() == current_name.casefold():
+                                selected_index = i
+                                break
+
+                    if selected_index < 0 and v.mic_combobox.count():
+                        selected_index = 0
+                    if selected_index >= 0:
+                        v.mic_combobox.setCurrentIndex(selected_index)
+                        current_full = str(
+                            v.mic_combobox.itemData(
+                                selected_index, Qt.ItemDataRole.UserRole
+                            )
+                            or ""
+                        )
+
+                    v.mic_combobox.setToolTip(current_full)
                     v.mic_combobox.setEnabled(True)
                 finally:
                     v.mic_combobox.blockSignals(False)
@@ -604,6 +641,18 @@ class MicrophoneSettingsController(BaseController):
 
     def _on_active_toggled(self, state: int):
         self._save_setting("MIC_ACTIVE", bool(state))
+        restart = getattr(self.view, "asr_restart_button", None)
+        if restart is not None:
+            restart.setEnabled(bool(state))
+
+    def _on_restart_asr(self):
+        v = self.view
+        if not v or not bool(v.settings.get("MIC_ACTIVE", False)):
+            return
+        self.event_bus.emit(
+            Events.Speech.RESTART_SPEECH_RECOGNITION,
+            {"full_restart": True},
+        )
 
     def _on_instant_toggled(self, state: int):
         self._save_setting("MIC_INSTANT_SENT", bool(state))

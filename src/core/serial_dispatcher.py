@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from core.task_supervisor import task_supervisor
+from core.trace_context import current_trace_id, trace_scope
 from main_logger import logger
 
 
@@ -17,6 +18,7 @@ class _DispatchItem:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     description: str
+    trace_id: str
 
 
 class SerialDispatcher:
@@ -70,6 +72,7 @@ class SerialDispatcher:
             args=args,
             kwargs=kwargs,
             description=str(description or getattr(callback, "__qualname__", str(callback))),
+            trace_id=current_trace_id(),
         )
         try:
             lane.put_nowait(item)
@@ -143,12 +146,14 @@ class SerialDispatcher:
                 self._queued = max(0, self._queued - 1)
                 self._active += 1
             try:
-                item.callback(*item.args, **item.kwargs)
-            except BaseException as exc:
-                logger.error(
-                    f"Serial task '{item.description}' failed in '{self._name}': {format_exception(exc)}",
-                    exc_info=True,
-                )
+                with trace_scope(item.trace_id):
+                    try:
+                        item.callback(*item.args, **item.kwargs)
+                    except BaseException as exc:
+                        logger.error(
+                            f"Serial task '{item.description}' failed in '{self._name}': {format_exception(exc)}",
+                            exc_info=True,
+                        )
             finally:
                 with self._condition:
                     self._active = max(0, self._active - 1)

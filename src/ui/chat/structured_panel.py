@@ -155,14 +155,14 @@ class MemoryBlock(QFrame):
                 layout.addWidget(lbl)
 
 class ReminderBlock(QFrame):
-    def __init__(self, rem_add: list, rem_delete: list, font_sm: int, parent=None):
+    def __init__(self, rem_add: list, rem_delete: list, timer_add: list, font_sm: int, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background-color: {CLR_REMIND_BG}; border: 1px solid {CLR_REMIND_BORDER}; border-radius: 8px; margin: 2px 0px; }}")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(2)
 
-        header = QLabel("\u23f0 reminder", self)
+        header = QLabel("\u23f0 schedule", self)
         header.setStyleSheet(f"color: {CLR_REMIND_HEADER}; font-weight: bold; font-size: {font_sm}pt; background: transparent; border: none;")
         layout.addWidget(header)
 
@@ -173,6 +173,12 @@ class ReminderBlock(QFrame):
                 lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 lbl.setStyleSheet(f"color: {CLR_REMIND_TEXT}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")
                 layout.addWidget(lbl)
+        for entry in timer_add:
+            lbl = QLabel(f"⏳ {entry}", self)
+            lbl.setWordWrap(True)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setStyleSheet(f"color: {CLR_REMIND_TEXT}; font-size: {font_sm}pt; background: transparent; border: none; padding-left: 4px;")
+            layout.addWidget(lbl)
 
 class GraphBlock(QFrame):
     def __init__(self, entities: list, relations: list, font_sm: int, parent=None):
@@ -293,9 +299,9 @@ class StructuredOutputPanel(QFrame):
         if mem_add or mem_update or mem_delete or mem_merge:
             layout.addWidget(MemoryBlock(mem_add, mem_update, mem_delete, self._font_sm, layout.parentWidget(), mem_merge=mem_merge))
 
-        rem_add, rem_delete = data.get("reminder_add") or [], data.get("reminder_delete") or []
-        if rem_add or rem_delete:
-            layout.addWidget(ReminderBlock(rem_add, rem_delete, self._font_sm, layout.parentWidget()))
+        rem_add, rem_delete, timer_add = data.get("reminder_add") or [], data.get("reminder_delete") or [], data.get("timer_add") or []
+        if rem_add or rem_delete or timer_add:
+            layout.addWidget(ReminderBlock(rem_add, rem_delete, timer_add, self._font_sm, layout.parentWidget()))
 
         entities, relations = data.get("entities") or [], data.get("relations") or []
         if entities or relations:

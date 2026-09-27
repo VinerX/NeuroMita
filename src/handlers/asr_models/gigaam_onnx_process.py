@@ -10,6 +10,21 @@ from typing import Optional, List, Any
 import numpy as np
 
 
+def onnx_providers_for_device(device: str, available: set[str]) -> list[Any]:
+    selected = str(device or "auto").strip().lower()
+    wants_dml = selected == "dml" or selected.startswith("dml:")
+    if (wants_dml or selected == "auto") and "DmlExecutionProvider" in available:
+        try:
+            device_id = int(selected.partition(":")[2] or 0)
+        except (TypeError, ValueError):
+            device_id = 0
+        return [
+            ("DmlExecutionProvider", {"device_id": device_id}),
+            "CPUExecutionProvider",
+        ]
+    return ["CPUExecutionProvider"]
+
+
 def run_gigaam_onnx_process(command_queue: Queue, result_queue: Queue, log_queue: Queue):
     try:
         loop = asyncio.new_event_loop()
@@ -81,9 +96,9 @@ class GigaAMOnnxProcessWorker:
 
             # --- providers ---
             import onnxruntime as rt
-            providers: List[str] = ["CPUExecutionProvider"]
+            providers: List[Any] = ["CPUExecutionProvider"]
 
-            want_dml = self.gigaam_device == "dml"
+            want_dml = self.gigaam_device == "dml" or self.gigaam_device.startswith("dml:")
             is_auto = self.gigaam_device == "auto"
 
             if want_dml or is_auto:
@@ -92,9 +107,8 @@ class GigaAMOnnxProcessWorker:
                     available = set(rt.get_available_providers())
                 except Exception:
                     pass
-                if "DmlExecutionProvider" in available:
-                    providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
-                elif want_dml:
+                providers = onnx_providers_for_device(self.gigaam_device, available)
+                if "DmlExecutionProvider" not in available and want_dml:
                     self.warning(f"DmlExecutionProvider недоступен (доступно: {sorted(available)}). Используем CPU.")
 
             self.info(f"ONNX providers: {providers}")

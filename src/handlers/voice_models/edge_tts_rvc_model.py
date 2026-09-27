@@ -10,13 +10,13 @@ import re
 import tempfile
 import threading
 import time
-import traceback
 from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from .base_model import IVoiceModel
 from core.app_paths import base_dir
 from core.backends import BackendKind
+from core.voice_device_selection import VoiceDeviceCatalog, device_half_precision_behavior
 from core.install_requirements import InstallRequirement, check_requirements
 from core.install_types import InstallAction, InstallPlan
 from handlers.voice_models.context import VoiceRuntimeContext
@@ -33,8 +33,10 @@ from handlers.voice_models.rvc_runtime_assets import (
     runtime_asset_download_action,
     runtime_asset_requirements,
 )
+from handlers.voice_models.onnx_device_adapter import enable_indexed_directml
 from main_logger import logger
 from utils import getTranslationVariant as _, get_character_voice_paths
+from utils.gpu_utils import get_hardware_snapshot, get_rvc_half_precision_decision
 
 
 EDGE_TTS_RVC_CUDA_ID = "edge_tts_rvc_cuda"
@@ -51,6 +53,9 @@ SILERO_RVC_ONNX_ID = "silero_rvc_onnx"
 _RVC_F0_METHODS = ("pm", "dio", "crepe", "rmvpe", "harvest", "fcpe")
 _RVC_F0_DEFAULT = "rmvpe"
 _EDGE_TTS_COMPATIBILITY_SPEC = "edge-tts>=6.1.9,<8.0.0"
+_EDGE_TTS_RATE_DEFAULT = 0
+_EDGE_TTS_RATE_MIN = -50
+_EDGE_TTS_RATE_MAX = 100
 _RVC_F0_HELP_RU = (
     "Алгоритм извлечения F0 (высоты тона): rmvpe/crepe — точнее, "
     "pm/harvest/dio — быстрее, fcpe — компромисс."
@@ -81,6 +86,14 @@ def _setting_check(key: str, label_ru: str, label_en: str, default: bool, help_r
     }
 
 
+def _coerce_edge_tts_rate(value: Any) -> int:
+    try:
+        rate = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        rate = _EDGE_TTS_RATE_DEFAULT
+    return max(_EDGE_TTS_RATE_MIN, min(_EDGE_TTS_RATE_MAX, rate))
+
+
 def _setting_combo(
     key: str,
     label_ru: str,
@@ -91,6 +104,7 @@ def _setting_combo(
     help_en: str,
     *,
     locked: bool = False,
+    behavior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = {
         "key": key,
@@ -101,6 +115,8 @@ def _setting_combo(
     }
     if locked:
         item["locked"] = True
+    if behavior:
+        item["behavior"] = dict(behavior)
     return item
 
 
@@ -123,6 +139,7 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
             "True",
             "FP16 для NVIDIA: быстрее и экономнее по VRAM на совместимых видеокартах.",
             "FP16 on NVIDIA: faster and lighter on VRAM for compatible GPUs.",
+            behavior=device_half_precision_behavior("device"),
         ),
         _setting_combo(
             "f0method",
@@ -137,7 +154,22 @@ def _cuda_edge_settings() -> list[dict[str, Any]]:
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
         _setting_entry("index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
         _setting_entry("protect", "Защита согласных (RVC)", "Consonant Protection (RVC)", "0.33", "Защищает глухие согласные от искажения тоном.", "Protect voiceless consonants from pitch distortion."),
-        _setting_entry("tts_rate", "Скорость TTS (%)", "TTS Speed (%)", "0", "Скорость базового Edge-TTS в процентах.", "Base Edge-TTS speed in percent."),
+        {
+            "key": "tts_rate",
+            "label": _("Скорость TTS (%)", "TTS Speed (%)"),
+            "type": "number_stepper",
+            "options": {
+                "default": _EDGE_TTS_RATE_DEFAULT,
+                "min": _EDGE_TTS_RATE_MIN,
+                "max": _EDGE_TTS_RATE_MAX,
+                "step": 1,
+                "suffix": " %",
+            },
+            "help": _(
+                "Изменение скорости Edge-TTS в процентах (-50..100). 0 — обычная скорость.",
+                "Edge-TTS speed adjustment in percent (-50..100). 0 is the normal speed.",
+            ),
+        },
         _setting_entry("filter_radius", "Радиус фильтра F0 (RVC)", "F0 Filter Radius (RVC)", "3", "Сглаживание кривой F0.", "Smooth F0 curve."),
         _setting_entry("rms_mix_rate", "Смешивание RMS (RVC)", "RMS Mixing (RVC)", "0.5", "Смешивание громкости исходника и RVC.", "Mix source loudness and RVC result."),
         _setting_entry("volume", "Громкость (volume)", "Volume", "1.0", "Итоговая громкость.", "Final loudness."),
@@ -185,7 +217,22 @@ def _onnx_edge_settings() -> list[dict[str, Any]]:
         _setting_check("use_index_file", "Исп. .index файл (RVC)", "Use .index file (RVC)", True, "Использовать .index для лучшего совпадения тембра.", "Use .index to better match voice timbre."),
         _setting_entry("index_rate", "Соотношение индекса RVC", "RVC Index Rate", "0.75", "Степень влияния .index (0..1).", "How much .index affects result (0..1)."),
         _setting_entry("protect", "Защита согласных (RVC)", "Consonant Protection (RVC)", "0.33", "Защита глухих согласных (0..0.5).", "Protect voiceless consonants (0..0.5)."),
-        _setting_entry("tts_rate", "Скорость TTS (%)", "TTS Speed (%)", "0", "Скорость базового Edge-TTS в процентах.", "Base Edge-TTS speed in percent."),
+        {
+            "key": "tts_rate",
+            "label": _("Скорость TTS (%)", "TTS Speed (%)"),
+            "type": "number_stepper",
+            "options": {
+                "default": _EDGE_TTS_RATE_DEFAULT,
+                "min": _EDGE_TTS_RATE_MIN,
+                "max": _EDGE_TTS_RATE_MAX,
+                "step": 1,
+                "suffix": " %",
+            },
+            "help": _(
+                "Изменение скорости Edge-TTS в процентах (-50..100). 0 — обычная скорость.",
+                "Edge-TTS speed adjustment in percent (-50..100). 0 is the normal speed.",
+            ),
+        },
         _setting_entry("volume", "Громкость (volume)", "Volume", "1.0", "Итоговая громкость.", "Final loudness."),
     ]
 
@@ -194,7 +241,7 @@ def _cuda_silero_settings() -> list[dict[str, Any]]:
     return [
         _setting_combo("silero_rvc_device", "Устройство RVC", "RVC Device", ["cuda:0", "cpu"], "cuda:0", "CUDA-устройство для RVC.", "CUDA device for RVC."),
         _setting_combo("silero_device", "Устройство Silero", "Silero Device", ["cuda", "cpu"], "cuda", "Устройство для Silero.", "Device for Silero."),
-        _setting_combo("silero_rvc_is_half", "Half-precision RVC", "Half-precision RVC", ["True", "False"], "True", "FP16 для RVC на NVIDIA.", "FP16 for RVC on NVIDIA."),
+        _setting_combo("silero_rvc_is_half", "Half-precision RVC", "Half-precision RVC", ["True", "False"], "True", "FP16 для RVC на NVIDIA.", "FP16 for RVC on NVIDIA.", behavior=device_half_precision_behavior("silero_rvc_device")),
         _setting_combo(
             "silero_rvc_f0method",
             "Метод F0 (RVC)",
@@ -595,6 +642,23 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
     def _resolve_runtime_device(self, value: Any) -> str:
         return str(value or self.RVC_DEFAULT_DEVICE).strip() or self.RVC_DEFAULT_DEVICE
 
+    def _ensure_runtime_device(self, requested_device: Any) -> None:
+        if self.current_tts_rvc is None or requested_device is None:
+            return
+        selected = self._resolve_runtime_device(requested_device)
+        active = str(getattr(self.current_tts_rvc, "device", "") or "").strip().lower()
+        if not active or active == selected.lower():
+            return
+        switch = getattr(self.current_tts_rvc, "set_device", None)
+        if callable(switch):
+            switch(selected)
+            return
+        self.current_tts_rvc = None
+        self.initialized = False
+        gc.collect()
+        if not self.initialize():
+            raise RuntimeError(f"RVC failed to switch to {selected}")
+
     @staticmethod
     def _normalize_runtime_path(path: str) -> str:
         value = str(path or "").strip()
@@ -831,6 +895,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         filter_radius: int,
         rms_mix_rate: float,
         is_half: bool,
+        device: Optional[str] = None,
         f0method: Optional[str],
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -841,7 +906,20 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             "rms_mix_rate": rms_mix_rate,
         }
         if self.SUPPORTS_HALF:
-            params["is_half"] = bool(is_half)
+            requested_half = bool(is_half)
+            decision = get_rvc_half_precision_decision(
+                str(device or self.RVC_DEFAULT_DEVICE)
+            )
+            effective_half = requested_half and bool(decision.allowed)
+            if requested_half and not effective_half:
+                logger.warning(
+                    "RVC FP16 request blocked by hardware policy: "
+                    f"device={device or self.RVC_DEFAULT_DEVICE}, "
+                    f"gpu='{decision.gpu_name or 'unknown'}', "
+                    f"sm={decision.compute_capability or 'unknown'}, "
+                    f"reason={decision.reason}"
+                )
+            params["is_half"] = effective_half
         if self.SUPPORTS_RUNTIME_F0 and f0method:
             params["f0method"] = self._normalize_f0_method(f0method)
         return params
@@ -912,7 +990,8 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         protect: float = 0.33,
         filter_radius: int = 3,
         rms_mix_rate: float = 0.5,
-        is_half: bool = True,
+        is_half: bool = False,
+        device: Optional[str] = None,
         f0method: Optional[str] = None,
         use_index_file: bool = True,
         volume: str = "1.0",
@@ -926,6 +1005,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             )
 
         try:
+            self._ensure_runtime_device(device)
             self._prepare_rvc_target(character, use_index_file)
             inference_params = self._rvc_params(
                 pitch=pitch,
@@ -934,15 +1014,15 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 filter_radius=filter_radius,
                 rms_mix_rate=rms_mix_rate,
                 is_half=is_half,
+                device=device,
                 f0method=f0method,
             )
             output_file_rvc = self.current_tts_rvc.voiceover_file(input_path=filepath, **inference_params)
             if not output_file_rvc or not os.path.exists(output_file_rvc) or os.path.getsize(output_file_rvc) == 0:
                 return None
             return self._convert_to_stereo(output_file_rvc, volume)
-        except Exception as error:
-            traceback.print_exc()
-            logger.info(f"RVC file conversion failed: {format_exception(error)}")
+        except Exception:
+            logger.exception("RVC file conversion failed")
             return None
 
     async def _voiceover_edge_tts_rvc(
@@ -958,6 +1038,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
         try:
             config_id = settings_model_id if settings_model_id else self.parent.current_model_id
             settings = self._load_settings_for(str(config_id))
+            self._ensure_runtime_device(settings.get("device", self.RVC_DEFAULT_DEVICE))
             voice_paths = self._update_parent_paths(character)
             character_name = voice_paths["character_name"]
 
@@ -968,6 +1049,7 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
             use_index_file = settings.get("use_index_file", True)
             self._prepare_rvc_target(character, use_index_file)
 
+            device = str(settings.get("device", self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
             inference_params = self._rvc_params(
                 pitch=pitch,
                 index_rate=float(settings.get("index_rate", 0.75)),
@@ -975,11 +1057,11 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 filter_radius=int(settings.get("filter_radius", 3)),
                 rms_mix_rate=float(settings.get("rms_mix_rate", 0.5)),
                 is_half=str(settings.get("is_half", "True")).lower() == "true",
+                device=device,
                 f0method=settings.get("f0method", None),
             )
 
             operation_started = time.monotonic()
-            device = str(settings.get("device", self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE)
             f0_method = str(inference_params.get("f0method") or self.RVC_DEFAULT_F0_METHOD)
             logger.info(
                 f"Edge-TTS + RVC synthesis started: device={device}, "
@@ -987,7 +1069,11 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 f"test_audio={bool(TEST_WITH_DONE_AUDIO)}"
             )
             if not TEST_WITH_DONE_AUDIO:
-                inference_params["tts_rate"] = int(settings.get("tts_rate", 0)) if config_id != "medium+low" else 0
+                inference_params["tts_rate"] = (
+                    _coerce_edge_tts_rate(settings.get("tts_rate", _EDGE_TTS_RATE_DEFAULT))
+                    if config_id != "medium+low"
+                    else _EDGE_TTS_RATE_DEFAULT
+                )
                 output_file_rvc = await asyncio.to_thread(
                     self.current_tts_rvc,
                     text=text,
@@ -1008,18 +1094,15 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 return None
             final_output_path = self._convert_to_stereo(output_file_rvc, str(settings.get("volume", "1.0")))
             return self._maybe_move_to_output(final_output_path, output_file)
-        except TimeoutError as error:
-            traceback.print_exc()
-            logger.error(
+        except TimeoutError:
+            logger.exception(
                 "Edge-TTS + RVC exceeded the vendor 300-second operation timeout. "
                 "The runtime was initialized successfully; the timeout occurred during synthesis/RVC. "
-                "For DirectML, try the PM F0 method if RMVPE remains too slow. "
-                f"Details: {format_exception(error)}"
+                "For DirectML, try the PM F0 method if RMVPE remains too slow."
             )
             return None
-        except Exception as error:
-            traceback.print_exc()
-            logger.info(f"Edge-TTS + RVC voiceover failed: {format_exception(error)}")
+        except Exception:
+            logger.exception("Edge-TTS + RVC voiceover failed")
             return None
 
     async def _voiceover_silero_rvc(self, text, character=None, output_file: Optional[str] = None):
@@ -1063,14 +1146,14 @@ class EdgeTTSRVCBaseModel(IVoiceModel):
                 filter_radius=int(settings.get("silero_rvc_filter_radius", 3)),
                 rms_mix_rate=float(settings.get("silero_rvc_rms_mix_rate", 0.5)),
                 is_half=str(settings.get("silero_rvc_is_half", "True")).lower() == "true",
+                device=str(settings.get("silero_rvc_device", self.RVC_DEFAULT_DEVICE) or self.RVC_DEFAULT_DEVICE),
                 f0method=settings.get("silero_rvc_f0method", None),
                 use_index_file=settings.get("silero_rvc_use_index_file", True),
                 volume=str(settings.get("volume", "1.0")),
             )
             return self._maybe_move_to_output(final_output_path, output_file)
-        except Exception as error:
-            traceback.print_exc()
-            logger.info(f"Silero + RVC voiceover failed: {format_exception(error)}")
+        except Exception:
+            logger.exception("Silero + RVC voiceover failed")
             return None
         finally:
             if temp_wav and os.path.exists(temp_wav):
@@ -1145,6 +1228,7 @@ class EdgeTTSRVCCudaModel(EdgeTTSRVCBaseModel):
 class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     BACKEND_KIND = BackendKind.ONNX
     RVC_PACKAGE = "tts-with-rvc-onnx[dml]"
+    INDEXED_DML_READY = False
     # PyPI documentation uses ``tts_with_rvc_onnx``, while the published wheel
     # has historically also shipped the repository package as ``tts_with_rvc``.
     # Treat the distribution identity and import package identity separately.
@@ -1195,8 +1279,11 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
 
     def _resolve_runtime_device(self, value: Any) -> str:
         requested = super()._resolve_runtime_device(value).lower()
-        if requested != "dml":
+        if requested != "dml" and not requested.startswith("dml:") and not requested.startswith("dml@"):
             return requested
+        if requested != "dml" and not self.INDEXED_DML_READY:
+            raise RuntimeError("Установленная RVC-библиотека не поддерживает выбор DirectML-адаптера")
+        selected = VoiceDeviceCatalog(get_hardware_snapshot()).resolve_runtime_device(requested)
         try:
             import onnxruntime
 
@@ -1204,7 +1291,9 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
         except Exception:
             providers = set()
         if "DmlExecutionProvider" in providers:
-            return "dml"
+            return selected
+        if requested != "dml":
+            raise RuntimeError("Выбранный DirectML-адаптер недоступен в ONNX Runtime")
         logger.warning(
             "ONNX RVC requested DirectML, but DmlExecutionProvider is unavailable; "
             "using CPUExecutionProvider."
@@ -1218,7 +1307,9 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
                 f"{module_name}.lib.infer_pack.onnx_inference"
             )
         except Exception:
+            cls.INDEXED_DML_READY = False
             return
+        cls.INDEXED_DML_READY = enable_indexed_directml(inference_module)
         if getattr(inference_module, "_neuromita_f0_cache_patch", False):
             return
 

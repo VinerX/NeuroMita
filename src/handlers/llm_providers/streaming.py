@@ -94,10 +94,17 @@ class StreamEventChannel:
     def __init__(self, req: LLMRequest) -> None:
         self.request_id = str((req.extra or {}).get("request_id") or "")
         self.callback = req.stream_event_cb
+        self.provider_display_name = str(req.provider_display_name or req.provider_name or "")
         self._sequence = 0
         self._started = False
         self._terminal = False
         self._lock = threading.RLock()
+
+    def set_provider_display_name(self, provider_display_name: Any) -> None:
+        """Use the active preset name for subsequent fallback stream events."""
+        with self._lock:
+            if not self._terminal:
+                self.provider_display_name = str(provider_display_name or "")
 
     def start(self, *, provider: str, model: str) -> None:
         with self._lock:
@@ -110,6 +117,9 @@ class StreamEventChannel:
         with self._lock:
             if self._terminal:
                 raise RuntimeError("Cannot emit after terminal stream event")
+            if not self._started:
+                self._started = True
+                self._emit_locked(LLMStreamEventType.STARTED, provider=provider, model=model)
             return self._emit_locked(event_type, provider=provider, model=model, **kwargs)
 
     def complete(self, response: LLMResponse) -> None:
@@ -120,19 +130,19 @@ class StreamEventChannel:
                 self._started = True
                 self._emit_locked(
                     LLMStreamEventType.STARTED,
-                    provider=str(response.provider_name or ""),
+                    provider=str(response.provider_display_name or self.provider_display_name or response.provider_name or ""),
                     model=str(response.model or ""),
                 )
             if response.usage is not None:
                 self._emit_locked(
                     LLMStreamEventType.USAGE,
-                    provider=str(response.provider_name or ""),
+                    provider=str(response.provider_display_name or self.provider_display_name or response.provider_name or ""),
                     model=str(response.model or ""),
                     usage=response.usage,
                 )
             self._emit_locked(
                 LLMStreamEventType.COMPLETED,
-                provider=str(response.provider_name or ""),
+                provider=str(response.provider_display_name or self.provider_display_name or response.provider_name or ""),
                 model=str(response.model or ""),
                 finish_reason=response.finish_reason,
             )
@@ -146,12 +156,12 @@ class StreamEventChannel:
                 self._started = True
                 self._emit_locked(
                     LLMStreamEventType.STARTED,
-                    provider=str(getattr(error, "provider", "") or ""),
+                    provider=self.provider_display_name or str(getattr(error, "provider", "") or ""),
                     model="",
                 )
             self._emit_locked(
                 LLMStreamEventType.FAILED,
-                provider=str(getattr(error, "provider", "") or ""),
+                provider=self.provider_display_name or str(getattr(error, "provider", "") or ""),
                 model="",
                 retryable=bool(getattr(error, "retryable", False)),
                 error_code=getattr(error, "code", None),
@@ -190,6 +200,7 @@ class StreamAccumulator:
     def __init__(self, req: LLMRequest, *, provider: str, model: str) -> None:
         self.req = req
         self.provider = str(provider or "")
+        self.provider_display_name = str(req.provider_display_name or self.provider)
         self.model = str(model or req.model or "")
         self.text_parts: list[str] = []
         self.reasoning_parts: list[str] = []
@@ -200,12 +211,14 @@ class StreamAccumulator:
             channel = StreamEventChannel(req)
             req.extra["_stream_event_channel"] = channel
         self.channel = channel
-        self.channel.start(provider=self.provider, model=self.model)
+        self.channel.set_provider_display_name(self.provider_display_name)
+        # A retryable pre-body failure may move to another preset. Do not expose
+        # this preset as the logical stream provider until it emits real output.
 
     def emit(self, event_type: LLMStreamEventType, **kwargs: Any) -> LLMStreamEvent:
         event = self.channel.emit(
             event_type,
-            provider=self.provider,
+            provider=self.provider_display_name,
             model=self.model,
             **kwargs,
         )
@@ -280,13 +293,14 @@ class StreamAccumulator:
         visible, reasoning = resolve_content_and_reasoning(
             "".join(self.text_parts),
             "".join(self.reasoning_parts),
-            provider_name=self.provider,
+            provider_name=self.provider_display_name,
         )
         return LLMResponse(
             text=visible or None,
             usage=self.usage,
             model=self.model or None,
-            provider_name=self.provider,
+            provider_name=self.req.provider_name or self.provider,
+            provider_display_name=self.provider_display_name,
             finish_reason=self.finish_reason,
             reasoning=reasoning or None,
         )

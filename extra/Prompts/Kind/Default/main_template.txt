@@ -5,6 +5,7 @@ behavior_state=custom
 [<../../Common/Dialogue.txt>]
 [<../../Common/TimeAwareness.txt>]
 [<../../Common/Security.txt>]
+[<../../Common/games.txt>]
 [<../../Common/ProjectInfo.txt>]
 [<Main/common.txt>]
 [<Main/main.txt>]

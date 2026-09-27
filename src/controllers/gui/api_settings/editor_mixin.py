@@ -6,16 +6,15 @@ from typing import Optional, Any
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox, QInputDialog
 
-from ui.settings.api_settings.dialogs.new_preset_dialog import NewPresetDialog
 from ui.settings.api_settings.widgets import CustomPresetListItem
 import qtawesome as qta
 
 from utils import _
+from styles.theme import THEME
 from core.events import Events
 from core.services import use
 from services.contracts import ApiPresetService
 from main_logger import logger
-from presets.model_profiles import resolve_model_profile
 from .state import PresetSnapshot
 
 
@@ -26,137 +25,10 @@ class EditorMixin:
         except Exception:
             return None
 
-    def _read_generation_overrides(self) -> dict:
-        """Read current generation overrides state from the UI widgets."""
-        from PyQt6.QtWidgets import QCheckBox, QComboBox
-        widgets = getattr(self.view, 'gen_override_widgets', {})
-        overrides = {}
-        for key, (chk, val_widget) in widgets.items():
-            enabled = chk.isChecked()
-            if isinstance(val_widget, QCheckBox):
-                value = val_widget.isChecked()
-            elif isinstance(val_widget, QComboBox):
-                value = val_widget.currentText()
-            else:
-                value = val_widget.text() if hasattr(val_widget, 'text') else ""
-            overrides[key] = {"enabled": enabled, "value": value}
-        return overrides
-
-    def _write_generation_overrides(self, overrides: dict) -> None:
-        """Populate generation overrides UI widgets from a dict."""
-        from PyQt6.QtWidgets import QCheckBox, QComboBox
-        widgets = getattr(self.view, 'gen_override_widgets', {})
-        for key, (chk, val_widget) in widgets.items():
-            spec = (overrides or {}).get(key) or {}
-            enabled = bool(spec.get("enabled", False))
-            chk.setChecked(enabled)
-            val_widget.setEnabled(enabled)
-            if isinstance(val_widget, QCheckBox):
-                val_widget.setChecked(bool(spec.get("value", False)))
-            elif isinstance(val_widget, QComboBox):
-                raw = str(spec.get("value") or "").strip()
-                # Чужое/пустое значение не должно молча сбрасывать список на первый пункт.
-                if raw and val_widget.findText(raw) >= 0:
-                    val_widget.setCurrentText(raw)
-            else:
-                raw = spec.get("value")
-                val_widget.setText(str(raw) if raw is not None else "")
-
-    def _read_model_profile_overrides(self) -> dict:
-        editor = getattr(self.view, "model_profile_overrides_edit", None)
-        raw = editor.toPlainText().strip() if editor is not None else ""
-        if not raw:
-            result = {}
-        else:
-            try:
-                result = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Model profile JSON is invalid: {exc.msg}") from exc
-            if not isinstance(result, dict):
-                raise ValueError("Model profile JSON must contain an object.")
-
-        safe_mode = bool(getattr(self.view, "model_safe_mode_cb", None).isChecked()) \
-            if getattr(self.view, "model_safe_mode_cb", None) is not None else False
-        if safe_mode:
-            result["safe_mode"] = True
-        else:
-            result.pop("safe_mode", None)
-        return result
-
-    def _write_model_profile_overrides(self, overrides: dict) -> None:
-        value = dict(overrides) if isinstance(overrides, dict) else {}
-        safe_mode = bool(value.pop("safe_mode", False))
-        checkbox = getattr(self.view, "model_safe_mode_cb", None)
-        if checkbox is not None:
-            checkbox.setChecked(safe_mode)
-        editor = getattr(self.view, "model_profile_overrides_edit", None)
-        if editor is not None:
-            editor.setPlainText(json.dumps(value, ensure_ascii=False, indent=2) if value else "")
-
-    def _refresh_model_profile_controls(self) -> None:
-        """Reflect the selected model profile in the editable preset controls."""
-        v = self.view
-        model = str(v.api_model_row.text() or "").strip()
-        source = getattr(self, "_active_template", None)
-        if not isinstance(source, dict):
-            source = self.current_preset_data if isinstance(self.current_preset_data, dict) else {}
-
-        try:
-            overrides = self._read_model_profile_overrides()
-        except ValueError:
-            summary = getattr(v, "model_profile_summary_label", None)
-            if summary is not None:
-                summary.setText(_("Профиль модели: JSON содержит ошибку.", "Model profile: JSON is invalid."))
-            return
-
-        protocol_id = self._current_protocol_id_ui()
-        profile = resolve_model_profile(
-            model,
-            source.get("model_profiles"),
-            overrides,
-            default_safe=protocol_id == "google_gemini_default",
-        )
-        summary = getattr(v, "model_profile_summary_label", None)
-        if summary is not None:
-            if profile.get("safe_mode"):
-                summary.setText(_(
-                    "Профиль: безопасная совместимость — дополнительные параметры и thinking отключены.",
-                    "Profile: safe compatibility — optional generation parameters and explicit thinking controls are disabled.",
-                ))
-            elif profile:
-                profile_id = str(profile.get("id") or model or "custom")
-                transport = str((profile.get("thinking") or {}).get("transport") or "none")
-                summary.setText(_(
-                    f"Профиль: {profile_id}; thinking: {transport}.",
-                    f"Profile: {profile_id}; thinking: {transport}.",
-                ))
-            else:
-                summary.setText(_(
-                    "Профиль не задан: используются настройки провайдера по умолчанию.",
-                    "No profile: provider defaults are used.",
-                ))
-
-        widget_pair = getattr(v, "gen_override_widgets", {}).get("reasoning_effort")
-        if not widget_pair:
-            return
-        _enabled_checkbox, combo = widget_pair
-        thinking = profile.get("thinking") if isinstance(profile, dict) else {}
-        allowed_levels = [
-            str(value).strip()
-            for value in (thinking.get("allowed_levels") or [])
-            if str(value).strip()
-        ] if isinstance(thinking, dict) else []
-        levels = allowed_levels or ["minimal", "low", "medium", "high"]
-        current = str(combo.currentText() or "")
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItems(levels)
-        if current in levels:
-            combo.setCurrentText(current)
-        else:
-            default_level = str((thinking or {}).get("default_level") or levels[0])
-            combo.setCurrentText(default_level if default_level in levels else levels[0])
-        combo.blockSignals(False)
+    def _refresh_model_settings_dialect(self) -> None:
+        protocol = self._protocols.get(self._current_protocol_id_ui()) or {}
+        dialect = str(protocol.get("dialect") or "openai_chat_completions")
+        self.model_settings_controller.set_dialect(dialect)
 
     def _read_openrouter_routing(self) -> dict:
         v = self.view
@@ -224,6 +96,7 @@ class EditorMixin:
             for fb in (getattr(v, "fallback_editor", None).get_value() if getattr(v, "fallback_editor", None) else [])
         )
         return PresetSnapshot(
+            name=v.preset_name_row.text(),
             url=str(v.api_url_row.text() or ""),
             model=str(v.api_model_row.text() or ""),
             key=str(v.api_key_row.text() or ""),
@@ -231,9 +104,7 @@ class EditorMixin:
             reserve_keys_text=str(v.reserve_keys_row.text() or "").strip(),
             reserve_keys_distribute=bool(v.reserve_keys_row.is_distribute()),
             protocol_id=self._current_protocol_id_ui(),
-            model_safe_mode=bool(getattr(v, "model_safe_mode_cb", None).isChecked()) if getattr(v, "model_safe_mode_cb", None) is not None else False,
-            model_profile_overrides_text=str(getattr(v, "model_profile_overrides_edit", None).toPlainText() or "") if getattr(v, "model_profile_overrides_edit", None) is not None else "",
-            generation_overrides=self._read_generation_overrides(),
+            model_settings=v.model_settings_form.document() or {},
             openrouter_routing=self._read_openrouter_routing(),
             fallbacks=fb_tuple,
         )
@@ -250,6 +121,7 @@ class EditorMixin:
 
         if self._snapshot:
             cur = self._get_snapshot()
+            v.preset_name_row.set_dirty(cur.name != self._snapshot.name)
             v.api_url_row.set_dirty(cur.url != self._snapshot.url)
             v.api_model_row.set_dirty(cur.model != self._snapshot.model)
             v.api_key_row.set_dirty(cur.key != self._snapshot.key)
@@ -267,20 +139,8 @@ class EditorMixin:
             item.update_changes_indicator(dirty)
 
         v.save_preset_button.setVisible(True)
-        v.save_preset_button.setEnabled(dirty)
+        v.save_preset_button.setEnabled(dirty and v.model_settings_form.validate())
         v.cancel_button.setVisible(dirty)
-
-        if dirty:
-            v.save_preset_button.setStyleSheet("""
-                QPushButton { background-color: #b74b7d; color: white; font-weight: bold; border: none; padding: 8px; border-radius: 4px; }
-                QPushButton:hover { background-color: #c04c80; }
-                QPushButton:pressed { background-color: #a0436c; }
-            """)
-        else:
-            v.save_preset_button.setStyleSheet("""
-                QPushButton { background-color: #95a5a6; color: #ecf0f1; font-weight: normal; border: none; padding: 8px; border-radius: 4px; }
-                QPushButton:disabled { background-color: #7f8c8d; color: #bdc3c7; }
-            """)
 
     def _on_field_changed(self, *_args) -> None:
         if self._is_loading_ui:
@@ -319,7 +179,7 @@ class EditorMixin:
                     v.api_url_row.set_text(new_url)
                     self._is_loading_ui = False
 
-        self._refresh_model_profile_controls()
+        self._refresh_model_settings_dialect()
 
         # normal dirty + debounce state
         self._set_dirty(self._snapshot is not None and (self._get_snapshot() != self._snapshot))
@@ -343,6 +203,7 @@ class EditorMixin:
             pid = self._current_protocol_id_ui() or self._protocol_default_id
             v.protocol_row.set_current_by_data(pid)
             self._apply_protocol_details(pid)
+            self._apply_help_links({})
 
             self._on_field_changed()
             return
@@ -359,6 +220,8 @@ class EditorMixin:
             self._is_loading_ui = True
 
             self._active_template = dict(tpl)
+            dialect = str((self._protocols.get(str(tpl.get("protocol_id") or "")) or {}).get("dialect") or "openai_chat_completions")
+            self.model_settings_controller.set_dialect(dialect, str(tpl.get("settings_schema_id") or ""))
 
             pid = str(tpl.get("protocol_id") or "").strip() or self._protocol_default_id
             v.protocol_row.set_current_by_data(pid)
@@ -388,7 +251,7 @@ class EditorMixin:
                 v.api_model_list_model.setStringList([str(x) for x in known_models if str(x).strip()])
 
             self._apply_help_links(tpl)
-            self._refresh_model_profile_controls()
+            self._refresh_model_settings_dialect()
 
             self._is_loading_ui = False
             self._on_field_changed()
@@ -396,6 +259,8 @@ class EditorMixin:
         self._bus_call_async(_call, _apply, name="load_template")
 
     def _emit_save_state(self) -> None:
+        if not self.view.model_settings_form.validate():
+            return
         if self._is_loading_ui:
             return
         if not self.current_preset_id:
@@ -426,8 +291,9 @@ class EditorMixin:
         v = self.view
         data = dict(self.current_preset_data or {})
         data["id"] = preset_id
-        if name is not None:
-            data["name"] = str(name).strip()
+        data["name"] = str(name if name is not None else v.preset_name_row.text()).strip()
+        if not data["name"]:
+            raise ValueError(str(_("Укажите название пресета", "Enter a preset name")))
         data["url"] = v.api_url_row.text()
         data["default_model"] = v.api_model_row.text()
         data["key"] = v.api_key_row.text()
@@ -445,8 +311,9 @@ class EditorMixin:
             data.pop("protocol_overrides", None)
             data["url"] = ""
 
-        data["generation_overrides"] = self._read_generation_overrides()
-        data["model_profile_overrides"] = self._read_model_profile_overrides()
+        data["generation_overrides"] = {}
+        data["model_settings"] = v.model_settings_form.document()
+        data.pop("model_profile_overrides", None)
         data["openrouter_routing"] = self._read_openrouter_routing()
         data["fallbacks"] = v.fallback_editor.get_value() if hasattr(v, "fallback_editor") else []
         return data
@@ -455,10 +322,10 @@ class EditorMixin:
         v = self.view
         if v.api_key_row.edit.echoMode() == v.api_key_row.edit.EchoMode.Password:
             v.api_key_row.edit.setEchoMode(v.api_key_row.edit.EchoMode.Normal)
-            v.key_visibility_button.setIcon(qta.icon('fa5s.eye-slash'))
+            v.key_visibility_button.setIcon(qta.icon('fa5s.eye-slash', color='#b6bbce'))
         else:
             v.api_key_row.edit.setEchoMode(v.api_key_row.edit.EchoMode.Password)
-            v.key_visibility_button.setIcon(qta.icon('fa5s.eye'))
+            v.key_visibility_button.setIcon(qta.icon('fa5s.eye', color='#b6bbce'))
 
     def _apply_help_links(self, preset: dict) -> None:
         # Запоминаем последний пресет и подписываемся (один раз) на смену языка:
@@ -479,18 +346,22 @@ class EditorMixin:
         doc_url = str(preset.get("documentation_url") or "")
         models_url = str(preset.get("models_url") or "")
         key_url = str(preset.get("key_url") or "")
+        test_url = str(preset.get("test_url") or "").strip()
+
+        v.test_button.setVisible(bool(test_url))
 
         v.url_help_label.setVisible(bool(doc_url))
-        v.url_help_label.setText(f'<a href="{doc_url}" style="color: #ab5df5; text-decoration: underline;">{_("Документация", "Documentation")}</a>' if doc_url else "")
+        v.url_help_label.setText(f'<a href="{doc_url}" style="color: {THEME["link"]}; text-decoration: underline;">{_("Документация", "Documentation")}</a>' if doc_url else "")
 
         v.model_help_label.setVisible(bool(models_url))
-        v.model_help_label.setText(f'<a href="{models_url}" style="color: #ab5df5; text-decoration: underline;">{_("Список моделей", "Models list")}</a>' if models_url else "")
+        v.model_help_label.setText(f'<a href="{models_url}" style="color: {THEME["link"]}; text-decoration: underline;">{_("Список моделей", "Models list")}</a>' if models_url else "")
 
         v.key_help_label.setVisible(bool(key_url))
-        v.key_help_label.setText(f'<a href="{key_url}" style="color: #ab5df5; text-decoration: underline;">{_("Получить ключ", "Get API key")}</a>' if key_url else "")
+        v.key_help_label.setText(f'<a href="{key_url}" style="color: {THEME["link"]}; text-decoration: underline;">{_("Получить ключ", "Get API key")}</a>' if key_url else "")
 
     def _set_protocol_config_visible(self, visible: bool) -> None:
         v = self.view
+        v.protocol_row.set_enabled(visible)
         sec = getattr(v, "protocol_section", None)
         if sec is not None:
             sec.setVisible(bool(visible))
@@ -502,6 +373,7 @@ class EditorMixin:
         self._is_loading_ui = True
         v = self.view
 
+        v.preset_name_row.set_text(self._snapshot.name)
         v.api_url_row.set_text(self._snapshot.url)
         v.api_model_row.set_text(self._snapshot.model)
         v.api_key_row.set_text(self._snapshot.key)
@@ -521,13 +393,13 @@ class EditorMixin:
         v.protocol_row.set_current_by_data(self._snapshot.protocol_id or self._protocol_default_id)
         self._apply_protocol_details(self._current_protocol_id_ui())
 
-        self._write_generation_overrides(self._snapshot.generation_overrides)
-        if getattr(v, "model_safe_mode_cb", None) is not None:
-            v.model_safe_mode_cb.setChecked(self._snapshot.model_safe_mode)
-        if getattr(v, "model_profile_overrides_edit", None) is not None:
-            v.model_profile_overrides_edit.setPlainText(self._snapshot.model_profile_overrides_text)
+        dialect = str((self._protocols.get(self._snapshot.protocol_id) or {}).get("dialect") or "openai_chat_completions")
+        self.model_settings_controller.restore(self._snapshot.model_settings, dialect)
+        self._active_template = dict(self.current_preset_data) if self._snapshot.base is not None else None
+        self._set_protocol_config_visible(self._snapshot.base is None)
+        self._apply_help_links(self.current_preset_data)
         self._write_openrouter_routing(self._snapshot.openrouter_routing)
-        self._refresh_model_profile_controls()
+        self._refresh_model_settings_dialect()
 
         if hasattr(v, "fallback_editor"):
             v.fallback_editor.blockSignals(True)
@@ -540,6 +412,8 @@ class EditorMixin:
         self._set_dirty(False)
 
     def _save_preset_async(self) -> None:
+        if not self.view.model_settings_form.validate():
+            return
         if not self.current_preset_id or self.current_preset_id not in self.custom_presets_list_items:
             return
 
@@ -560,6 +434,12 @@ class EditorMixin:
         def _apply(new_id):
             if not isinstance(new_id, int):
                 return
+            self.current_preset_data = dict(data)
+            item = self.custom_presets_list_items.get(pid)
+            if item is not None:
+                item.base_name = data["name"]
+                item.model = data["default_model"]
+                item.update_display()
             self._snapshot = self._get_snapshot()
             self._set_dirty(False)
 
@@ -616,101 +496,21 @@ class EditorMixin:
                     _("Не удалось скопировать пресет.", "Failed to copy preset."),
                 )
                 return
+            self._pending_select_id = int(new_id)
+            self._selection_retry_count = 0
             self.reload_presets_async()
-            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
 
         self._bus_call_async(_call, _apply, name="copy_preset")
 
     def _add_custom_preset_async(self) -> None:
         logger.info("[API UI] add preset clicked")
         v = self.view
-        template_options: list[tuple[str, object]] = []
-        template_presets_meta: list[object] = []
-        for i in range(v.template_combo.count()):
-            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
-            template_id = v.template_combo.itemData(i)
-            if template_id is None:
-                continue
-            preset_meta = getattr(getattr(v, "provider_delegate", None), "presets_meta", {}).get(template_id)
-            if preset_meta is not None:
-                template_presets_meta.append(preset_meta)
-
-        initial_template = v.template_combo.currentData() if getattr(v, "template_combo", None) is not None else None
-        dlg = NewPresetDialog(
-            v,
-            template_options=template_options,
-            initial_template_data=initial_template,
-            template_presets_meta=template_presets_meta,
-        )
-        if dlg.exec() != dlg.DialogCode.Accepted:
-            logger.info("[API UI] add preset cancelled")
-            return
-
-        name = dlg.preset_name()
-        selected_base = self._parse_base(dlg.selected_template_data())
-
-        payload = {
-            "name": str(name).strip(),
-            "id": None,
-            "pricing": "mixed",
-            "base": selected_base,
-            "url": "",
-            "default_model": "",
-            "key": "",
-            "reserve_keys": [],
-            "protocol_id": "" if selected_base is not None else (getattr(self, "_protocol_default_id", "") or ""),
-        }
-
-        logger.info(f"[API UI] Creating preset name='{payload['name']}', base={payload['base']}")
-
-        def _call():
-            logger.info("[API UI] saving custom preset through ApiPresetService...")
-            result = use(ApiPresetService).save_custom(payload)
-            logger.info(f"[API UI] save_custom result={result}")
-            return result
-
-        def _apply(new_id):
-            logger.info(f"[API UI] Created preset new_id={new_id} type={type(new_id)}")
-            if not isinstance(new_id, int):
-                QMessageBox.warning(
-                    v,
-                    _("Ошибка", "Error"),
-                    _("Не удалось создать пресет. Проверь логи (SAVE_CUSTOM_PRESET).",
-                    "Failed to create preset. Check logs (SAVE_CUSTOM_PRESET).")
-                )
-                return
-            self.reload_presets_async()
-            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
-
-        self._bus_call_async(_call, _apply, name="add_preset")
-        return
-        name, ok = QInputDialog.getText(v, _("Новый пресет", "New preset"), _("Название пресета:", "Preset name:"))
-        if not ok or not str(name or "").strip():
-            logger.info("[API UI] add preset cancelled/empty")
-            return
-
-        template_options: list[tuple[str, object]] = []
-        for i in range(v.template_combo.count()):
-            template_options.append((v.template_combo.itemText(i), v.template_combo.itemData(i)))
-
+        existing = {item.base_name for item in self.custom_presets_list_items.values()}
+        number = 1
+        while str(_("Пустой пресет", "Empty preset")) + f" {number}" in existing:
+            number += 1
+        name = str(_("Пустой пресет", "Empty preset")) + f" {number}"
         selected_base = None
-        if template_options:
-            labels = [label for label, _data in template_options]
-            selected_label, tpl_ok = QInputDialog.getItem(
-                v,
-                _("Шаблон для пресета", "Preset template"),
-                _("Шаблон (опционально):", "Template (optional):"),
-                labels,
-                0,
-                False,
-            )
-            if not tpl_ok:
-                logger.info("[API UI] add preset cancelled at template selection")
-                return
-            for label, data in template_options:
-                if label == selected_label:
-                    selected_base = self._parse_base(data)
-                    break
 
         payload = {
             "name": str(name).strip(),
@@ -742,10 +542,33 @@ class EditorMixin:
                     "Failed to create preset. Check logs (SAVE_CUSTOM_PRESET).")
                 )
                 return
+            self._pending_select_id = int(new_id)
+            self._selection_retry_count = 0
             self.reload_presets_async()
-            QTimer.singleShot(200, lambda: self._select_custom_preset(int(new_id)))
 
         self._bus_call_async(_call, _apply, name="add_preset")
+
+    def _on_preset_action(self, action: str, preset_id: int) -> None:
+        if action == "default":
+            self.event_bus.emit(Events.ApiPresets.SET_CURRENT_PRESET_ID, {"id": preset_id})
+            for pid, item in self.custom_presets_list_items.items():
+                item.is_default = pid == preset_id
+            self.view.custom_presets_list.viewport().update()
+            self.view.preset_active_tag.setVisible(preset_id == self.current_preset_id)
+            return
+        selected = self.view.custom_presets_list.currentItem()
+        if self.current_preset_id != preset_id or getattr(selected, "preset_id", None) != preset_id:
+            self._pending_preset_action = (action, preset_id)
+            self._select_custom_preset(preset_id)
+            return
+        callbacks = {
+            "rename": self._rename_custom_preset_async,
+            "copy": self._copy_custom_preset_async,
+            "remove": self._remove_custom_preset_async,
+        }
+        callback = callbacks.get(action)
+        if callback is not None:
+            callback()
 
     def _rename_custom_preset_async(self) -> None:
         v = self.view
@@ -783,6 +606,9 @@ class EditorMixin:
             if self.current_preset_data is not None:
                 self.current_preset_data["name"] = new_name
             v.provider_label.setText(new_name)
+            v.preset_name_row.set_text(new_name)
+            if self._snapshot is not None:
+                self._snapshot.name = new_name
 
         self._bus_call_async(_call, _apply, name="rename_preset")
 

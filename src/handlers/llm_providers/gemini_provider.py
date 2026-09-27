@@ -42,6 +42,8 @@ class GeminiProvider(BaseProvider):
         caps = capabilities or {}
         if not caps.get("structured_output", False):
             return False
+        if not caps.get("native_structured_output", True):
+            return False
         model_profile = caps.get("model_profile")
         return not (
             isinstance(model_profile, dict)
@@ -297,10 +299,22 @@ class GeminiProvider(BaseProvider):
 
         return filter_jsonable_params(cfg)
 
+    def _generation_config(self, req: LLMRequest) -> dict:
+        if req.native_parameters is not None:
+            from copy import deepcopy
+            return deepcopy(req.native_parameters.get("generationConfig", {}))
+        return self._map_unified_params_to_generation_config(
+            req.extra, req.model, (req.capabilities or {}).get("model_profile"),
+        )
+
     def generate_request_gemini(self, req: LLMRequest) -> LLMResponse:
         if req.depth > 3:
             logger.error("Превышена глубина рекурсии для Gemini tool calls")
-            return LLMResponse(text=None, provider_name=self.name)
+            return LLMResponse(
+                text=None,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
+            )
 
         formatted = self._format_messages_for_gemini_api(req.messages)
 
@@ -331,11 +345,7 @@ class GeminiProvider(BaseProvider):
                 if "text" in part:
                     part["text"] = f"[SYSTEM INFO] {part['text']}"
 
-        gen_cfg = self._map_unified_params_to_generation_config(
-            req.extra,
-            req.model,
-            (req.capabilities or {}).get("model_profile"),
-        )
+        gen_cfg = self._generation_config(req)
 
         caps = req.capabilities or {}
         if self._should_send_native_structured_output(caps):
@@ -349,7 +359,7 @@ class GeminiProvider(BaseProvider):
                     excl.add("reasoning")
                 excl.update(str(name) for name in caps.get("structured_exclude_fields") or () if str(name).strip())
                 segment_excl = set(caps.get("structured_segment_exclude_fields") or ())
-                if not caps.get("schema_intents", False):
+                if not caps.get("schema_intents", True):
                     segment_excl.add("intents")
                 schema = model_cls.gemini_schema_dict(
                     exclude_fields=excl or None,
@@ -445,7 +455,8 @@ class GeminiProvider(BaseProvider):
                 text=response_text,
                 usage=self._extract_usage(response_data),
                 model=(response_data.get("modelVersion") if isinstance(response_data, dict) else None) or req.model,
-                provider_name=self.name,
+                provider_name=req.provider_name or self.name,
+                provider_display_name=req.provider_display_name or req.provider_name or self.name,
                 raw=response_data if isinstance(response_data, dict) else {},
                 reasoning="\n".join(think_texts) or None,
             )

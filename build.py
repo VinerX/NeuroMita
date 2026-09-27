@@ -188,9 +188,21 @@ MANAGED_BACKEND_NAMES = {
 # 1 — включено (по умолчанию), 0 — выключено.
 CLEAN_OUTPUT = env.get("BUILD_CLEAN_OUTPUT", "1") == "1"
 
+# При включённой очистке эти папки остаются в BUILD_OUTPUT_DIR. Флаги
+# независимы: каждая папка сохраняется только при явном значении 1.
+PRESERVE_OUTPUT_DIRS = {
+    name
+    for name, variable in (
+        ("Histories", "BUILD_PRESERVE_HISTORIES"),
+        ("Settings", "BUILD_PRESERVE_SETTINGS"),
+        ("FineTuneData", "BUILD_PRESERVE_FINETUNE_DATA"),
+    )
+    if env.get(variable, "0") == "1"
+}
+
 
 def clean_output_dir() -> None:
-    """Полностью очищает OUTPUT_DIR перед сборкой. С защитой от опасных путей."""
+    """Очищает OUTPUT_DIR перед сборкой, сохраняя явно защищённые папки."""
     out = OUTPUT_DIR.resolve()
 
     # Защита: не даём случайно снести проект, диск целиком или короткий путь.
@@ -203,7 +215,14 @@ def clean_output_dir() -> None:
 
     if out.exists():
         print(f"Очищаю выходную папку: {out}")
-        _rmtree_robust(out)
+        for child in out.iterdir():
+            if child.name in PRESERVE_OUTPUT_DIRS:
+                print(f"  Сохраняю: {child}")
+                continue
+            if child.is_dir() and not child.is_symlink():
+                _rmtree_robust(child)
+            else:
+                _remove_file_if_exists(child)
     out.mkdir(parents=True, exist_ok=True)
 
 
@@ -423,6 +442,21 @@ if BUILD_MODE in ("full", "fast"):
                 if not bin_filter(arcname):
                     continue
                 zf.write(path, arcname)
+            required_ui_resources = {
+                "ui/svg_icons.py", "ui/icons/providers/google.svg",
+                "ui/icons/controls/chevron-up.svg",
+            }
+            required_ui_resources.update(
+                path.relative_to(src_dir).as_posix()
+                for path in (src_dir / "ui" / "icons").rglob("*.svg")
+            )
+            required_ui_resources.update(
+                path.relative_to(src_dir).as_posix()
+                for path in (src_dir / "model_settings" / "defaults").glob("*.json")
+            )
+            missing_ui_resources = required_ui_resources.difference(zf.namelist())
+            if missing_ui_resources:
+                raise RuntimeError(f"Missing UI resources in .pyz: {sorted(missing_ui_resources)}")
     print(f"Архив собран: {pyz_temp}")
 
     print(f"Перемещаю в {pyz_dest}...")

@@ -65,6 +65,44 @@ QFrame#SettingWidget QComboBox::drop-down {
     margin: 0px;
 }
 
+QFrame#SettingWidget QWidget#NumberStepper {
+    background-color: {panel_bg};
+    border: 1px solid {outline};
+    border-radius: 4px;
+}
+QFrame#SettingWidget QSpinBox#NumberStepperValue {
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0 6px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: {text};
+    font-size: 9pt;
+}
+QFrame#SettingWidget QToolButton#NumberStepperDecrease,
+QFrame#SettingWidget QToolButton#NumberStepperIncrease {
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+    background: {chip_bg};
+    border: none;
+    color: {muted};
+}
+QFrame#SettingWidget QToolButton#NumberStepperDecrease {
+    border-right: 1px solid {outline};
+}
+QFrame#SettingWidget QToolButton#NumberStepperIncrease {
+    border-left: 1px solid {outline};
+}
+QFrame#SettingWidget QToolButton#NumberStepperDecrease:hover,
+QFrame#SettingWidget QToolButton#NumberStepperIncrease:hover {
+    background: {chip_hover};
+    color: {text};
+}
+
 QFrame#SettingWidget QLineEdit[dirty="true"],
 QFrame#SettingWidget QComboBox[dirty="true"] {
     border: 1px solid rgba(230, 200, 80, 0.85);

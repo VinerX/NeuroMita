@@ -2,6 +2,7 @@ from __future__ import annotations
 from core.error_utils import format_exception
 
 from main_logger import logger
+from utils import _
 
 
 def setup_api_controls(self, parent_layout, *, wire_api) -> None:
@@ -13,4 +14,4 @@ def setup_api_controls(self, parent_layout, *, wire_api) -> None:
     except Exception as exc:
         logger.error("Failed to initialize API settings presenter: %s", format_exception(exc), exc_info=True)
         if hasattr(self, "provider_label"):
-            self.provider_label.setText("API presets: controller init failed (see logs)")
+            self.provider_label.setText(_("Не удалось загрузить API-настройки: подробности в журнале", "Failed to load API settings: see logs for details"))

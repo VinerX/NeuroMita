@@ -100,6 +100,28 @@ class _NoWheelComboBox(TRQComboBox):
         super().wheelEvent(event)
 
 
+class _SessionValueLabel(QLabel):
+    """Read-only session value that is intentionally not styled as a selector."""
+
+    def __init__(self, tooltip: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SandboxSessionValue")
+        self.setToolTip(tooltip)
+        self.setText("—")
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+
+    def set_value(self, value: str) -> None:
+        text = str(value or "—")
+        self.setText(text)
+        self.setToolTip(text)
+
+    def currentText(self) -> str:
+        """Compatibility with the former passive QComboBox call sites."""
+        return self.text()
+
+
 def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
     from PyQt6.QtGui import QPainter, QPainterPath
     scaled = src.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -663,66 +685,28 @@ class SandboxPage(QWidget):
             QMessageBox.warning(self, str(effect.title), str(effect.message))
 
     def _render_model_selector(self, state: SandboxState) -> None:
-        combo = self._chat_model_combobox
-        if combo is None:
+        value = self._chat_model_combobox
+        if value is None:
             return
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            if state.selectors_loading and not state.model_items:
-                combo.add_tr_item("Загрузка моделей...", "Loading models...", value=None)
-            elif state.model_items:
-                for item in state.model_items:
-                    combo.add_data_item(item.label, value=item.preset_id)
-            else:
-                combo.add_tr_item(
-                    "Нет настроенных моделей",
-                    "No configured models",
-                    value=None,
-                )
-            combo.insertSeparator(combo.count())
-            combo.add_tr_item(
-                "Настроить...",
-                "Configure...",
-                value=_MODEL_CONFIGURE_SENTINEL,
-            )
-            if state.current_model_id is not None:
-                for index in range(combo.count()):
-                    if combo.itemData(index) == state.current_model_id:
-                        combo.setCurrentIndex(index)
-                        break
-        finally:
-            combo.blockSignals(False)
+        if state.selectors_loading and not state.model_items:
+            value.set_value(_("Загрузка моделей...", "Loading models..."))
+            return
+        for item in state.model_items:
+            if item.preset_id == state.current_model_id:
+                value.set_value(item.label)
+                return
+        value.set_value(_("Нет настроенных моделей", "No configured models"))
 
     def _render_prompt_selector(self, state: SandboxState) -> None:
-        combo = self._chat_prompt_pack_combobox
-        if combo is None:
+        value = self._chat_prompt_pack_combobox
+        if value is None:
             return
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            if state.selectors_loading and not state.prompt_items:
-                combo.add_tr_item("Загрузка наборов...", "Loading sets...", value=None)
-            elif state.prompt_items:
-                for item in state.prompt_items:
-                    combo.add_data_item(item, value=item)
-            else:
-                combo.add_tr_item("Нет наборов", "No sets", value=None)
-            combo.insertSeparator(combo.count())
-            combo.add_tr_item(
-                "Настроить...",
-                "Configure...",
-                value=_PROMPT_CONFIGURE_SENTINEL,
-            )
-            if state.current_prompt:
-                index = combo.findText(
-                    state.current_prompt,
-                    Qt.MatchFlag.MatchFixedString,
-                )
-                if index >= 0:
-                    combo.setCurrentIndex(index)
-        finally:
-            combo.blockSignals(False)
+        if state.selectors_loading and not state.prompt_items:
+            value.set_value(_("Загрузка наборов...", "Loading sets..."))
+        elif state.current_prompt:
+            value.set_value(state.current_prompt)
+        else:
+            value.set_value(_("Нет наборов", "No sets"))
 
     def _render_character_selector(self, state: SandboxState) -> None:
         combo = self._chat_character_combobox
@@ -1652,23 +1636,31 @@ class SandboxPage(QWidget):
     def _build_inspector_session_tab(self) -> QWidget:
         page, layout = self._make_tab_page()
 
-        # ── Visible comboboxes (label + combo per row) ─────────────────────
+        # ── Session selectors (character is editable; the other values are
+        # plain read-only snapshots with a direct route to their settings) ───
         # Other modules (chat_panel, character_settings/logic, etc.) reference
         # gui.chat_*_combobox to read the active character / sync model lists.
         # These are _NoWheelComboBox, so the mouse wheel can't change the
         # selection — scrolling used to trigger a spurious re-initialization.
-        # To switch a value the user clicks the combo and picks an item; the
-        # final "Настроить…" entry jumps to the matching settings section.
-        def _session_combo(attr: str, *, tooltip: str, change_slot, by_text: bool = False) -> QComboBox:
+        # Prompt and model are labels, rather than disabled comboboxes: their
+        # gears open the character settings where the assignment is changed.
+        def _session_combo(attr: str, *, tooltip: str, change_slot, by_text: bool = False,
+                           read_only: bool = False) -> QComboBox:
             combo = _NoWheelComboBox()
             combo.setObjectName("ChatCharacterCombo")
             combo.setToolTip(tooltip)
-            if by_text:
+            combo.setEnabled(not read_only)
+            if by_text and not read_only:
                 combo.currentTextChanged.connect(change_slot)
-            else:
+            elif not read_only:
                 combo.currentIndexChanged.connect(change_slot)
             setattr(self, f"_{attr}", combo)
             return combo
+
+        def _session_value(attr: str, *, tooltip: str) -> _SessionValueLabel:
+            value = _SessionValueLabel(tooltip)
+            setattr(self, f"_{attr}", value)
+            return value
 
         def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None, trailing=None) -> None:
             row = QWidget()
@@ -1713,17 +1705,15 @@ class SandboxPage(QWidget):
         _combo_row(active_layout, _("Персонаж", "Character"), char_combo,
                    leading=self._character_avatar_label, trailing=char_settings_btn)
 
-        prompt_combo = _session_combo(
+        prompt_combo = _session_value(
             "chat_prompt_pack_combobox",
-            tooltip=_("Активный набор промптов", "Active prompt set"),
-            change_slot=self._on_chat_prompt_pack_changed,
+            tooltip=_("Текущий набор промптов. Изменяется в настройках персонажа", "Current prompt set. Change it in character settings"),
         )
         _combo_row(active_layout, _("Набор промптов", "Prompt set"), prompt_combo)
 
-        model_combo = _session_combo(
+        model_combo = _session_value(
             "chat_model_combobox",
-            tooltip=_("Активный API-пресет (модель)", "Active API preset (model)"),
-            change_slot=self._on_chat_model_changed,
+            tooltip=_("Модель, выбранная для активного персонажа", "Model selected for the active character"),
         )
         _combo_row(active_layout, _("Модель", "Model"), model_combo)
         layout.addWidget(active_strip)

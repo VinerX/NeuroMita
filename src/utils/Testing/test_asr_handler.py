@@ -43,6 +43,7 @@ class _FakeEngine:
         self._activation_result = activation_result
         self.calls: list[tuple[str, str, dict]] = []
         self.activations: list[tuple[str, str, str | None, str | None]] = []
+        self.validation_updates: list[tuple[str, str, dict]] = []
 
     def activate_environment(
         self,
@@ -63,6 +64,10 @@ class _FakeEngine:
     def call(self, service, method, payload):
         self.calls.append((service, method, payload))
         return _FakeFuture(self._result_value)
+
+    def update_runtime_validation_payload(self, service, item_id, payload):
+        self.validation_updates.append((service, item_id, payload))
+        return True
 
 
 class _FakeEventBus:
@@ -230,6 +235,33 @@ class SpeechRecognitionStartTests(unittest.TestCase):
 
         asyncio.run(run_start_and_stop())
 
+    def test_managed_asr_normalizes_unsupported_capture_sample_rate(self):
+        service = ASRService(emit_event=lambda *_args: None)
+
+        async def run_start():
+            with patch.object(
+                service,
+                "_stop_live_internal",
+                new=AsyncMock(),
+            ), patch.object(
+                service,
+                "_start_live_internal",
+                new=AsyncMock(return_value=True),
+            ) as start:
+                started = await service.handle(
+                    "start_live",
+                    {
+                        "engine_id": "gigaam",
+                        "microphone_index": 26,
+                        "vad": {"sample_rate": 14000},
+                    },
+                )
+
+            self.assertTrue(started)
+            self.assertEqual(start.await_args.kwargs["sample_rate"], 16000)
+
+        asyncio.run(run_start())
+
     def test_audio_capture_reports_ready_after_first_successful_read(self):
         sequence = []
         sounddevice = types.ModuleType("sounddevice")
@@ -268,10 +300,98 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                 on_ready=lambda: sequence.append("ready"),
             )
 
-        with patch.dict(sys.modules, {"sounddevice": sounddevice}):
+        with patch.dict(sys.modules, {"sounddevice": sounddevice}), patch(
+            "handlers.asr_audio_capture.refresh_portaudio_catalog"
+        ) as refresh_catalog:
             asyncio.run(run_capture())
 
+        refresh_catalog.assert_called_once_with(sounddevice)
         self.assertEqual(["open", "read", "ready", "close"], sequence)
+
+    def test_audio_capture_emulates_native_48khz_microphone_for_16khz_asr(self):
+        sounddevice = types.ModuleType("sounddevice")
+        state = {"reads": 0}
+        opened_with = {}
+        test_case = self
+
+        def query_devices(index=None):
+            device = {
+                "name": "Native-rate microphone",
+                "hostapi": 0,
+                "max_input_channels": 1,
+                "default_samplerate": 48000.0,
+            }
+            return device if index is not None else [device]
+
+        sounddevice.query_devices = query_devices
+        sounddevice.query_hostapis = lambda _index: {"name": "Windows WASAPI"}
+
+        def check_input_settings(*, device, channels, dtype, samplerate):
+            test_case.assertEqual(0, device)
+            test_case.assertEqual(1, channels)
+            test_case.assertEqual("float32", dtype)
+            if samplerate != 48000:
+                raise RuntimeError("Invalid sample rate")
+
+        sounddevice.check_input_settings = check_input_settings
+
+        class InputStream:
+            def __init__(self, **kwargs):
+                opened_with.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, chunk_size):
+                test_case.assertEqual(1536, chunk_size)
+                state["reads"] += 1
+                # The fake VAD below treats positive chunks as speech.  This
+                # emulates a native 48 kHz endpoint without real audio hardware.
+                value = 0.8 if state["reads"] <= 12 else 0.0
+                return np.full((chunk_size, 1), value, dtype=np.float32), False
+
+        sounddevice.InputStream = InputStream
+        segments = []
+        vad_shapes = []
+
+        async def run_capture():
+            await AudioCaptureService(_SilentLogger()).run(
+                microphone_index=0,
+                config=AudioCaptureConfig(
+                    sample_rate=16000,
+                    chunk_size=512,
+                    silence_timeout=0.064,
+                    min_speech_duration=0.0,
+                ),
+                is_active=lambda: state["reads"] < 15,
+                speech_probability=lambda audio, rate: (
+                    vad_shapes.append((len(audio), rate)) or float(audio[0])
+                ),
+                on_segment=lambda audio, rate: self._collect_segment(
+                    segments,
+                    audio,
+                    rate,
+                ),
+            )
+
+        with patch.dict(sys.modules, {"sounddevice": sounddevice}), patch(
+            "handlers.asr_audio_capture.refresh_portaudio_catalog"
+        ):
+            asyncio.run(run_capture())
+
+        self.assertEqual(48000, opened_with["samplerate"])
+        self.assertEqual(1536, opened_with["blocksize"])
+        self.assertTrue(vad_shapes)
+        self.assertTrue(all(shape == (512, 16000) for shape in vad_shapes))
+        self.assertEqual(1, len(segments))
+        self.assertEqual(16000, segments[0][1])
+
+    @staticmethod
+    async def _collect_segment(segments, audio, rate):
+        segments.append((audio, rate))
 
     def _capture_segments(self, script, **config_kwargs):
         """Прогоняет синтетический поток через захват и возвращает сегменты.
@@ -419,6 +539,28 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         )
         self.assertEqual(fake_engine.calls, [])
 
+    def test_microphone_switch_uses_capture_only_worker_call(self):
+        SpeechRecognition._recognizer_type = "whisper"
+        SpeechRecognition._is_running = True
+        SpeechRecognition.active = True
+        fake_engine = _FakeEngine(True)
+
+        with patch.object(SpeechRecognition, "_get_ai_engine", return_value=fake_engine):
+            switched = SpeechRecognition.speech_recognition_switch_microphone(18)
+
+        self.assertTrue(switched)
+        self.assertEqual(SpeechRecognition.microphone_index, 18)
+        self.assertEqual(
+            fake_engine.calls,
+            [("asr", "switch_input", {"microphone_index": 18})],
+        )
+        self.assertEqual(fake_engine.activations, [])
+        self.assertEqual(len(fake_engine.validation_updates), 1)
+        service, item_id, replay_payload = fake_engine.validation_updates[0]
+        self.assertEqual((service, item_id), ("asr", "whisper"))
+        self.assertEqual(replay_payload["microphone_index"], 18)
+        self.assertEqual(replay_payload["engine_id"], "whisper")
+
 
 class AsrEngineStatusReasonTests(unittest.TestCase):
     """running=false должен отличать штатный съём цикла от аварии."""
@@ -463,6 +605,77 @@ class AsrEngineStatusReasonTests(unittest.TestCase):
 
         self.assertIn(("status", {"running": False, "reason": "restart"}), events)
         self.assertIn(("status", {"running": True}), events)
+
+    def test_switch_input_keeps_recognizer_and_vad_loaded(self):
+        events = []
+        service = self._service(events)
+
+        class CountingRecognizer(_FakeRecognizer):
+            def __init__(self):
+                self.init_calls = 0
+                self.cleanup_calls = 0
+
+            async def init(self):
+                self.init_calls += 1
+                return True
+
+            def cleanup(self):
+                self.cleanup_calls += 1
+
+        recognizer = CountingRecognizer()
+        vad_model = object()
+        opened_devices = []
+
+        class RecordingCapture(_ReadyAudioCapture):
+            async def run(self, **kwargs):
+                opened_devices.append(kwargs["microphone_index"])
+                await super().run(**kwargs)
+
+        def get_recognizer(_engine_id):
+            service._recognizer = recognizer
+            return recognizer
+
+        async def get_vad_model():
+            service._vad_model = vad_model
+            return vad_model
+
+        async def scenario():
+            with patch.object(
+                service,
+                "_get_recognizer",
+                side_effect=get_recognizer,
+            ), patch.object(
+                service,
+                "_get_vad_model",
+                new=AsyncMock(side_effect=get_vad_model),
+            ) as get_vad, patch(
+                "handlers.ai_engine.services.asr_service.AudioCaptureService",
+                RecordingCapture,
+            ):
+                await service.handle("start_live", self._start_payload())
+                events.clear()
+                switched = await service.handle(
+                    "switch_input",
+                    {"microphone_index": 7},
+                )
+
+                self.assertTrue(switched)
+                self.assertEqual(1, recognizer.init_calls)
+                self.assertEqual(0, recognizer.cleanup_calls)
+                self.assertEqual(1, get_vad.await_count)
+                self.assertIs(service._recognizer, recognizer)
+                self.assertIs(service._vad_model, vad_model)
+                self.assertEqual([0, 7], opened_devices)
+                self.assertNotIn(
+                    ("status", {"running": False, "reason": "switch_input"}),
+                    events,
+                )
+                self.assertIn(("status", {"running": True}), events)
+
+                await service._stop_live_internal()
+                self.assertEqual(1, recognizer.cleanup_calls)
+
+        asyncio.run(scenario())
 
     def test_capture_dying_on_its_own_is_reported_as_failure(self):
         events = []

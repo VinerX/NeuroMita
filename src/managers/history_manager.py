@@ -75,10 +75,10 @@ class HistoryManager(CharacterScopedService):
         "meta_data",
     )
 
-    def __init__(self, character_name: str = "", history_file_name: str = "", character_id: str | None = None):
+    def __init__(self, storage_name: str = "", history_file_name: str = "", character_id: str | None = None):
         super().__init__(
-            default_character_id=str(character_id or character_name or ""),
-            default_character_name=str(character_name or character_id or ""),
+            default_character_id=str(character_id or storage_name or ""),
+            default_storage_name=str(storage_name or character_id or ""),
         )
         self.db = DatabaseManager()
 
@@ -279,7 +279,7 @@ class HistoryManager(CharacterScopedService):
                 ext = "jpg"
 
             histories_dir = os.environ.get("NEUROMITA_HISTORIES_DIR", os.path.join(os.getcwd(), "Histories"))
-            save_dir = os.path.join(histories_dir, self.character_name, "Images")
+            save_dir = os.path.join(histories_dir, self.storage_name, "Images")
             os.makedirs(save_dir, exist_ok=True)
 
             # ВАЖНО: убираем пробелы/переводы строк (иногда встречаются)
@@ -705,11 +705,15 @@ class HistoryManager(CharacterScopedService):
 
         cols: list[str] = []
         vals: list[Any] = []
+        # Diagnostic model output can be retained for inspection while staying
+        # outside the active conversation and RAG from the moment it is saved.
+        is_deleted = bool(msg.get("_history_is_deleted", False))
+        effective_is_active = 0 if is_deleted else int(is_active)
         cols.extend(["character_id", "role", "content", "is_active", "meta_data", "timestamp"])
-        vals.extend([self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts])
+        vals.extend([self.storage_key, msg.get("role"), db_content, effective_is_active, db_meta, ts])
         if "is_deleted" in self._history_cols:
             cols.append("is_deleted")
-            vals.append(0)
+            vals.append(int(is_deleted))
 
         for k in self._HISTORY_DESIRED_COLUMNS.keys():
             if k in self._history_cols and k not in cols:
@@ -899,11 +903,16 @@ class HistoryManager(CharacterScopedService):
                 )
                 if existing is not None:
                     existing_id, existing_active = existing
-                    desired_active = int(is_active)
-                    if existing_active != desired_active:
+                    is_deleted = bool(msg.get("_history_is_deleted", False))
+                    desired_active = 0 if is_deleted else int(is_active)
+                    if existing_active != desired_active or is_deleted:
+                        assignments = "is_active = ?"
+                        values: list[Any] = [desired_active]
+                        if is_deleted and "is_deleted" in self._history_cols:
+                            assignments += ", is_deleted = 1"
                         cursor.execute(
-                            "UPDATE history SET is_active = ? WHERE id = ?",
-                            (desired_active, existing_id),
+                            f"UPDATE history SET {assignments} WHERE id = ?",
+                            (*values, existing_id),
                         )
                     return existing_id
             except Exception:
@@ -928,13 +937,24 @@ class HistoryManager(CharacterScopedService):
             msg.get("content"),
             extra_meta,
         )
-        cursor.execute(
-            """
-            INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (self.storage_key, msg.get("role"), db_content, int(is_active), db_meta, ts),
-        )
+        is_deleted = bool(msg.get("_history_is_deleted", False))
+        effective_is_active = 0 if is_deleted else int(is_active)
+        if "is_deleted" in self._history_cols:
+            cursor.execute(
+                """
+                INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp, is_deleted)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (self.storage_key, msg.get("role"), db_content, effective_is_active, db_meta, ts, int(is_deleted)),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO history (character_id, role, content, is_active, meta_data, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (self.storage_key, msg.get("role"), db_content, effective_is_active, db_meta, ts),
+            )
         row_id = cursor.lastrowid
         return int(row_id) if row_id else None
 
@@ -1269,6 +1289,8 @@ class HistoryManager(CharacterScopedService):
 
         pending_embeddings: list[tuple[int, str]] = []
         for row_id, msg in committed:
+            if bool(msg.get("_history_is_deleted", False)):
+                continue
             content_text = self._extract_text_for_embedding(msg.get("content"))
             if content_text:
                 pending_embeddings.append((row_id, str(content_text)))
