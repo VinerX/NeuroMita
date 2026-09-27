@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from controllers.gui.intent_view_model import IntentViewModel
 from core.events import Event, Events, get_event_bus
+from main_logger import logger
 from ui.mvvm import immutable_payload, mutable_payload
 from ui.windows.ai_hub.helpers import meta_from_row, status_from_row
 from ui.windows.ai_hub.settings_presentation import (
@@ -54,8 +55,10 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             return
         if isinstance(intent, AIHubSettingsChanged):
             if not self.state.loading and not self.state.saving:
+                values = dict(mutable_payload(intent.values) or {})
                 self.update_state(
                     dirty=True,
+                    values=immutable_payload(values),
                     status_text=_(
                         "Есть несохранённые изменения",
                         "Unsaved changes",
@@ -74,7 +77,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 self.update_state(dirty=False, status_text="")
             return
         if isinstance(intent, CompileAIHubModel):
-            self._start_compile(clear_only=False)
+            self._start_compile(clear_only=False, values_payload=intent.values)
             return
         if isinstance(intent, DeleteAIHubModelCompilation):
             self._start_compile(clear_only=True)
@@ -145,6 +148,8 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 compile_available=False,
                 compile_cache_exists=False,
                 compile_cache_size_bytes=0,
+                compile_metadata_state="missing",
+                compile_targets=(),
                 compile_busy=False,
                 compile_revision=self.state.compile_revision + 1,
             )
@@ -197,6 +202,8 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 compile_available=self._is_fish_compile_component(component_id),
                 compile_cache_exists=bool(compile_status.get("cache_exists")),
                 compile_cache_size_bytes=int(compile_status.get("cache_size_bytes") or 0),
+                compile_metadata_state=str(compile_status.get("compile_metadata_state") or "missing"),
+                compile_targets=immutable_payload(list(compile_status.get("compiled_targets") or [])),
                 compile_revision=self.state.compile_revision + 1,
             )
 
@@ -218,7 +225,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         component_id = str(self.state.selected_component_id or "")
         return component_id.split(":", 1)[1] if ":" in component_id else component_id
 
-    def _start_compile(self, *, clear_only: bool) -> None:
+    def _start_compile(self, *, clear_only: bool, values_payload: Any = ()) -> None:
         component_id = self.state.selected_component_id
         if not self._is_fish_compile_component(component_id) or self.state.compile_busy:
             return
@@ -227,10 +234,21 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             compile_busy=True,
             status_text=_("Подготовка backend...", "Preparing backend..."),
         )
+        compile_values = dict(mutable_payload(values_payload) or {})
 
         def prepare_backend() -> None:
-            future = self._application.ensure_feature_async("installables")
-            future.result(timeout=60)
+            for feature_name in ("installables", "voice_models"):
+                future = self._application.ensure_feature_async(feature_name)
+                future.result(timeout=60)
+            if not clear_only and compile_values:
+                result = dict(
+                    self._catalog.save_settings(component_id, compile_values) or {}
+                )
+                if not result.get("ok"):
+                    errors = result.get("errors") if isinstance(result.get("errors"), dict) else {}
+                    raise RuntimeError(
+                        str(errors.get("_") or errors or "Could not save Fish Speech+ device settings")
+                    )
 
         def start_operation(_result: None) -> None:
             self._application.ensure_optional_gui("install")
@@ -238,7 +256,16 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 self._catalog.compile_model(component_id, clear_only=clear_only)
             )
             if accepted:
+                if compile_values:
+                    self.update_state(
+                        values=immutable_payload(compile_values),
+                        dirty=False,
+                    )
                 return
+            logger.error(
+                "AI Hub rejected Fish Speech+ compilation after runtime preparation: "
+                f"component={component_id}, clear_only={bool(clear_only)}"
+            )
             self.update_state(
                 compile_busy=False,
                 status_text=_(
@@ -307,6 +334,8 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             self.update_state(
                 compile_cache_exists=bool(payload.get("cache_exists")),
                 compile_cache_size_bytes=int(payload.get("cache_size_bytes") or 0),
+                compile_metadata_state=str(payload.get("compile_metadata_state") or "missing"),
+                compile_targets=immutable_payload(list(payload.get("compiled_targets") or [])),
                 compile_revision=self.state.compile_revision + 1,
             )
 

@@ -20,6 +20,8 @@ class AIHubSettingsState:
     compile_available: bool = False
     compile_cache_exists: bool = False
     compile_cache_size_bytes: int = 0
+    compile_metadata_state: str = "missing"
+    compile_targets: Any = ()
     compile_busy: bool = False
     compile_revision: int = 0
     components_revision: int = 0
@@ -40,7 +42,7 @@ class SelectAIHubSettingsComponent(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class AIHubSettingsChanged(UiIntent):
-    pass
+    values: Any = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +62,7 @@ class DiscardAIHubSettingsChanges(UiIntent):
 
 @dataclass(frozen=True, slots=True)
 class CompileAIHubModel(UiIntent):
-    pass
+    values: Any = ()
 
 
 @dataclass(frozen=True, slots=True)

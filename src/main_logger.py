@@ -84,6 +84,8 @@ class TraceContextFilter(logging.Filter):
         trace_id = current_trace_id()
         record.trace_id = trace_id
         record.trace_short = trace_id[:12] if trace_id else "-"
+        record.trace_prefix = f"[trace={trace_id}] " if trace_id else ""
+        record.trace_short_prefix = f"[trace={trace_id[:12]}] " if trace_id else ""
         return True
 
 # -----------------------------------------------------------------------------
@@ -145,7 +147,7 @@ class CustomLogger(logging.Logger):
             console_handler = colorlog.StreamHandler()
             console_handler.setFormatter(
                 colorlog.ColoredFormatter(
-                    '%(log_color)s%(levelname)-8s %(location)-30s [trace=%(trace_short)s] | %(message)s',
+                    '%(log_color)s%(levelname)-8s %(location)-30s %(trace_short_prefix)s| %(message)s',
                     log_colors={
                         'DEBUG':    'white',
                         'PROGRESS': 'light_blue',
@@ -160,7 +162,7 @@ class CustomLogger(logging.Logger):
             )
         else:
             console_handler = logging.StreamHandler()
-            console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s [trace=%(trace_short)s] | %(message)s'))
+            console_handler.setFormatter(logging.Formatter('%(levelname)-8s %(location)-30s %(trace_short_prefix)s| %(message)s'))
         console_handler.addFilter(ProjectFilter())
         console_handler.addFilter(LocationFilter())
 
@@ -177,7 +179,7 @@ class CustomLogger(logging.Logger):
             logging.Formatter(
                 '%(asctime)s - %(levelname)-8s '
                 '[%(filename)s:%(lineno)d - %(funcName)s] '
-                '[trace=%(trace_id)s] %(message)s'
+                '%(trace_prefix)s%(message)s'
             )
         )
         file_handler.addFilter(ProjectFilter())
