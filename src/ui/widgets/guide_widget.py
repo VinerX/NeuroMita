@@ -146,9 +146,8 @@ class GuideWidget(QWidget):
         },
         "FinalGuidePage": {
             1: (0.924, 0.100, 0.036, 0.050),
-            2: (0.936, 0.743, 0.032, 0.048),
-            3: (0.936, 0.813, 0.032, 0.048),
-            4: (0.936, 0.873, 0.032, 0.048),
+            2: (0.790, 0.758, 0.135, 0.045),
+            3: (0.938, 0.750, 0.028, 0.045),
         },
     }
 
@@ -1844,8 +1843,7 @@ class FinalGuidePage(IGuidePage):
 Если нужно общение только в чате, откройте Песочницу.
 Здесь также можно:
 • Выбрать понравившуюся Миту — <b>2 - Крейзи, Добрая, Сонная и другие</b>.
-• Выбрать или настроить <b>3 - Набор промптов</b>, который определит характер и поведение Миты.
-• Выбрать <b>4 - Пресет</b> для Миты.
+• Открыть <b>3 - настройки персонажа</b> — здесь можно выбрать набор промптов и провайдера для Мит.
 • Можно сразу начать чат — Мита ответит, используя созданный вами пресет.
 
 <b>Помните: это лишь основные настройки. Не бойтесь исследовать и другие разделы — NeuroMita умеет гораздо больше!</b>"""
@@ -1862,8 +1860,7 @@ If the game is already installed, just click “Play” and begin your adventure
 If you only need text chat, open the Sandbox.
 Here you can also:
 • Choose your favorite Mita — <b>2 - Crazy, Kind, Sleepy and others</b>.
-• Select or customize <b>3 - a prompt set</b> that defines Mita's character and behavior.
-• Choose <b>4 - a preset</b> for Mita.
+• Open <b>3 - character settings</b> — here you can choose the prompt set and the provider for each Mita.
 • Start chatting right away — Mita will respond using the preset you created.
 
 <b>Remember: these are just the main settings. Don't be afraid to explore other sections — NeuroMita can do a whole lot more!</b>"""
