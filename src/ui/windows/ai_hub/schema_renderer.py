@@ -14,6 +14,7 @@ Schema entries are plain dicts with keys:
     help          — tooltip / inline help (optional)
     locked        — if True, the input is rendered disabled
     behavior      — optional declarative dependency on another field
+    presentation_slot — a full-width named slot supplied by the owning view
 
 Anything not understood is rendered as a read-only QLineEdit so the field
 isn't silently dropped.
@@ -50,6 +51,7 @@ class SchemaForm(QWidget):
         set_values(values)    -> None              — bulk apply (for load)
         set_field_error(k, m) -> None              — show validation error
         clear_field_errors()  -> None
+        set_slot_widgets({slot: widget}) -> None   — register full-width UI slots
         is_dirty()            -> bool
         on_change             — optional callable invoked on any field edit
     """
@@ -69,6 +71,8 @@ class SchemaForm(QWidget):
         self._original: dict[str, str] = {}
         self._base_locked: dict[str, bool] = {}
         self._on_change = on_change
+        self._slot_widgets: dict[str, QWidget] = {}
+        self._slot_hosts: list[QFrame] = []
 
         self._form_box = QVBoxLayout(self)
         self._form_box.setContentsMargins(0, 0, 0, 0)
@@ -92,8 +96,22 @@ class SchemaForm(QWidget):
         self._clear()
         self._schema = list(schema or [])
         for entry in self._schema:
+            if self._normalize_type(entry.get("type")) == "presentation_slot":
+                self._build_slot_row(entry)
+                continue
             self._build_row(entry)
         self._apply_behaviors()
+
+    def set_slot_widgets(self, widgets: dict[str, QWidget] | None) -> None:
+        replacement = {
+            str(slot).strip(): widget
+            for slot, widget in dict(widgets or {}).items()
+            if str(slot).strip() and isinstance(widget, QWidget)
+        }
+        for slot, widget in self._slot_widgets.items():
+            if replacement.get(slot) is not widget:
+                widget.setParent(self)
+        self._slot_widgets = replacement
 
     def values(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -147,6 +165,9 @@ class SchemaForm(QWidget):
     # ---------------------------------------------------------- build
 
     def _clear(self) -> None:
+        for widget in self._slot_widgets.values():
+            widget.setParent(self)
+        self._slot_hosts.clear()
         while self._form_layout.rowCount() > 0:
             self._form_layout.removeRow(0)
         self._widgets.clear()
@@ -155,6 +176,19 @@ class SchemaForm(QWidget):
         self._original.clear()
         self._base_locked.clear()
         self._schema = []
+
+    def _build_slot_row(self, entry: dict[str, Any]) -> None:
+        slot = str(entry.get("slot") or "").strip()
+        widget = self._slot_widgets.get(slot)
+        if widget is None:
+            return
+        host = QFrame(self._form_host)
+        host.setObjectName("AIHubSchemaInlineHost")
+        layout = QVBoxLayout(host)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.addWidget(widget)
+        self._slot_hosts.append(host)
+        self._form_layout.addRow(host)
 
     # ---- schema-dialect tolerance -------------------------------------
     # Two schema formats coexist in the codebase:

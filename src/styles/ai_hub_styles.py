@@ -614,8 +614,32 @@ QFrame#AIHubSettingsCompileCard {
 }
 QLabel#AIHubSettingsCompileTitle {
     color: {text};
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#AIHubSettingsCompileDescription {
+    color: {muted};
+    font-size: 11px;
+}
+QFrame#AIHubSettingsCompileTarget {
+    background: rgba({accent_rgb}, 0.075);
+    border: 1px solid {outline};
+    border-radius: 8px;
+}
+QLabel#AIHubSettingsCompileCaption {
+    color: {muted};
+    font-size: 10px;
+    font-weight: 600;
+}
+QLabel#AIHubSettingsCompileTargetValue {
+    color: {text};
     font-size: 12px;
     font-weight: 700;
+}
+QLabel#AIHubSettingsCompileStatus {
+    color: {accent};
+    font-size: 11px;
+    font-weight: 600;
 }
 QPushButton#AIHubDanger {
     background: transparent;

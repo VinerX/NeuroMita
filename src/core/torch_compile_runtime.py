@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -7,6 +9,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Iterable, MutableMapping
+
+
+_COMPILE_METADATA_VERSION = 2
 
 
 def environment_root() -> Path:
@@ -21,6 +26,102 @@ def environment_root() -> Path:
 def cache_directories() -> tuple[Path, Path]:
     root = environment_root() / "cache"
     return root / "torchinductor", root / "triton"
+
+
+def compile_cache_metadata_path() -> Path:
+    return environment_root() / "cache" / "fish-speech-compile.json"
+
+
+def _canonical_compile_device(device: object) -> str:
+    value = str(device or "").strip().lower()
+    return "cuda:0" if value == "cuda" else value
+
+
+def _write_compile_metadata(payload: dict[str, object]) -> None:
+    path = compile_cache_metadata_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_compile_metadata() -> tuple[dict[str, dict[str, object]], str]:
+    path = compile_cache_metadata_path()
+    if not path.is_file():
+        return {}, "missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}, "invalid"
+    if not isinstance(payload, dict):
+        return {}, "invalid"
+
+    raw_targets = payload.get("targets")
+    schema_version = str(payload.get("schema_version") or "")
+    if schema_version == str(_COMPILE_METADATA_VERSION) and isinstance(raw_targets, dict):
+        targets: dict[str, dict[str, object]] = {}
+        for device, details in raw_targets.items():
+            canonical_device = _canonical_compile_device(device)
+            if not canonical_device or not isinstance(details, dict):
+                continue
+            target = dict(details)
+            target["device"] = canonical_device
+            targets[canonical_device] = target
+        return targets, "current"
+
+    legacy_device = _canonical_compile_device(payload.get("device"))
+    if legacy_device:
+        migrated = {
+            legacy_device: {
+                "device": legacy_device,
+                "gpu_name": str(payload.get("gpu_name") or ""),
+                "compute_capability": str(payload.get("compute_capability") or ""),
+                "compiled_at": str(payload.get("compiled_at") or ""),
+                "torch_version": str(payload.get("torch_version") or ""),
+                "cuda_version": str(payload.get("cuda_version") or ""),
+            }
+        }
+        try:
+            _write_compile_metadata({
+                "schema_version": _COMPILE_METADATA_VERSION,
+                "targets": migrated,
+            })
+        except OSError:
+            pass
+        return migrated, "migrated"
+    return {}, "invalid"
+
+
+def record_compile_target(
+    device: str,
+    *,
+    gpu_name: str = "",
+    compute_capability: str = "",
+    torch_version: str = "",
+    cuda_version: str = "",
+) -> None:
+    canonical_device = _canonical_compile_device(device)
+    if not canonical_device:
+        raise ValueError("Compilation device is empty")
+    targets, _state = _read_compile_metadata()
+    targets[canonical_device] = {
+        "device": canonical_device,
+        "gpu_name": str(gpu_name or ""),
+        "compute_capability": str(compute_capability or ""),
+        "compiled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "torch_version": str(torch_version or ""),
+        "cuda_version": str(cuda_version or ""),
+    }
+    _write_compile_metadata({
+        "schema_version": _COMPILE_METADATA_VERSION,
+        "targets": targets,
+    })
 
 
 def configure_compile_environment(
@@ -65,10 +166,18 @@ def compile_cache_status() -> dict[str, object]:
                     continue
         except OSError:
             continue
+    cache_exists = file_count > 0
+    targets, metadata_state = _read_compile_metadata()
+    compiled_targets = [targets[key] for key in sorted(targets)] if cache_exists else []
+    if cache_exists and metadata_state == "missing":
+        metadata_state = "legacy"
     return {
-        "cache_exists": file_count > 0,
+        "cache_exists": cache_exists,
         "cache_size_bytes": size_bytes,
         "cache_paths": [str(path) for path in paths],
+        "compile_metadata_state": metadata_state,
+        "compiled_devices": [str(item.get("device") or "") for item in compiled_targets],
+        "compiled_targets": compiled_targets,
         "long_paths_enabled": long_paths_enabled(),
     }
 
@@ -194,6 +303,7 @@ def _remove_cache_tree(path: Path, *, timeout: float = 5.0) -> None:
 def clear_compile_cache() -> None:
     for path in cache_directories():
         _remove_cache_tree(path)
+    compile_cache_metadata_path().unlink(missing_ok=True)
 
 
 def long_paths_enabled() -> bool:
