@@ -30,8 +30,8 @@ def _runtime_paths() -> list[str]:
     )
 
 
-def _activate_runtime_paths(paths: list[str]) -> None:
-    configure_compile_environment(paths)
+def _activate_runtime_paths(paths: list[str], *, device: str) -> None:
+    configure_compile_environment(paths, device=device)
     normalized = {
         os.path.normcase(os.path.abspath(path))
         for path in paths
@@ -62,9 +62,11 @@ def _activate_runtime_paths(paths: list[str]) -> None:
 
 
 def compile_fish_speech(reference_audio: str, *, device: str = "cuda") -> None:
-    _activate_runtime_paths(_runtime_paths())
+    _activate_runtime_paths(_runtime_paths(), device=device)
 
     print(f"Requested compilation device: {device}", flush=True)
+    print(f"TorchInductor cache: {os.environ['TORCHINDUCTOR_CACHE_DIR']}", flush=True)
+    print(f"Triton cache: {os.environ['TRITON_CACHE_DIR']}", flush=True)
     effective_device = str(device or "").strip()
     gpu_name = ""
     compute_capability = ""

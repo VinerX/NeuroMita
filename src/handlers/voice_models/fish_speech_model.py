@@ -7,6 +7,7 @@ import traceback
 import hashlib
 from datetime import datetime
 import subprocess
+from contextlib import nullcontext
 from typing import Optional, Any, List, Dict
 
 from .base_model import IVoiceModel
@@ -190,9 +191,9 @@ class FishSpeechInstallSpec:
     def _compile_call(
         cls,
         *,
+        device: str | None = None,
         optional: bool = False,
         clear_only: bool = False,
-        clear_cache: bool = False,
     ):
         def _fn(*, pip_installer=None, callbacks=None, ctx=None, **_kwargs) -> bool:
             cb = callbacks
@@ -229,6 +230,9 @@ class FishSpeechInstallSpec:
                 and str(path) not in python_paths
             )
             script_path = cls._script_path(pip_installer)
+            compile_device = str(device or "").strip()
+            if not clear_only and not compile_device:
+                raise RuntimeError("Fish Speech+ compilation device was not included in the plan")
             from core.torch_compile_runtime import clear_compile_cache, compile_cache_status
 
             if optional:
@@ -243,7 +247,7 @@ class FishSpeechInstallSpec:
                 suspended = engine.suspend_for_maintenance(timeout=15.0)
                 if not suspended:
                     raise RuntimeError("AI workers could not be suspended")
-            if clear_only or clear_cache:
+            if clear_only:
                 status(_("Удаление кеша компиляции...", "Deleting compilation cache..."))
                 try:
                     clear_compile_cache()
@@ -270,15 +274,15 @@ class FishSpeechInstallSpec:
 
             status(_("Компиляция Fish Speech+...", "Compiling Fish Speech+..."))
             try:
+                log(f"Clearing Fish Speech compilation cache for {compile_device} only")
+                clear_compile_cache(compile_device)
                 init_cmd = [
                     *cls._compile_entry_command(script_path, python_paths),
                     "--reference-audio",
                     ref_wav,
                 ]
-                compile_device = str(ctx.get("device") or "cuda:0").strip()
                 log(f"Fish Speech compile device: {compile_device}")
-                if compile_device:
-                    init_cmd.extend(["--device", compile_device])
+                init_cmd.extend(["--device", compile_device])
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 child_env = cls._runtime_subprocess_env(python_paths)
                 proc = subprocess.Popen(
@@ -412,7 +416,7 @@ class FishSpeechInstallSpec:
                     type="call",
                     description=_("Настройка компиляции Fish Speech+...", "Configuring Fish Speech+ compilation..."),
                     progress=88,
-                    fn=cls._compile_call(optional=True),
+                    fn=cls._compile_call(device=ctx.get("device"), optional=True),
                 )
             )
 
@@ -674,8 +678,8 @@ class FishSpeechModel(IVoiceModel):
                     ),
                     progress=20 if clear_only else 10,
                     fn=FishSpeechInstallSpec._compile_call(
+                        device=run_ctx.get("device"),
                         clear_only=clear_only,
-                        clear_cache=not clear_only,
                     ),
                 )
             ],
@@ -776,16 +780,23 @@ class FishSpeechModel(IVoiceModel):
             half = requested_half and get_rvc_half_precision_decision(str(device)).allowed
 
             checkpoint_dir = FishSpeechInstallSpec.checkpoint_dir()
-            self.current_fish_speech = self.fish_speech_module(
-                device=device,
-                half=half,
-                compile_model=compile_model,
-                llama_checkpoint_path=checkpoint_dir,
-                decoder_checkpoint_path=os.path.join(
-                    checkpoint_dir,
-                    "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
-                ),
+            from core.torch_compile_runtime import fish_speech_compile_environment
+
+            cache_context = (
+                fish_speech_compile_environment(str(device))
+                if compile_model and str(device).startswith("cuda") else nullcontext()
             )
+            with cache_context:
+                self.current_fish_speech = self.fish_speech_module(
+                    device=device,
+                    half=half,
+                    compile_model=compile_model,
+                    llama_checkpoint_path=checkpoint_dir,
+                    decoder_checkpoint_path=os.path.join(
+                        checkpoint_dir,
+                        "firefly-gan-vq-fsq-8x1024-21hz-generator.pth",
+                    ),
+                )
             self._active_device = str(device)
 
             self.parent.first_compiled = compile_model
@@ -848,18 +859,26 @@ class FishSpeechModel(IVoiceModel):
             if output_file_abs:
                 os.makedirs(os.path.dirname(output_file_abs) or ".", exist_ok=True)
 
-            sample_rate, audio_data = self.current_fish_speech(
-                text=text,
-                reference_audio=reference_audio_path,
-                reference_audio_text=reference_text,
-                top_p=float(settings.get(top_p_key, 0.7)),
-                temperature=float(settings.get(temp_key, 0.7)),
-                repetition_penalty=float(settings.get(rep_penalty_key, 1.2)),
-                max_new_tokens=int(settings.get(max_tokens_key, 1024)),
-                chunk_length=int(settings.get(chunk_len_key, 200)),
-                seed=seed_processed,
-                use_memory_cache=True,
+            from core.torch_compile_runtime import fish_speech_compile_environment
+
+            cache_context = (
+                fish_speech_compile_environment(selected_device)
+                if mode in ("medium+", "medium+low") and selected_device.startswith("cuda")
+                else nullcontext()
             )
+            with cache_context:
+                sample_rate, audio_data = self.current_fish_speech(
+                    text=text,
+                    reference_audio=reference_audio_path,
+                    reference_audio_text=reference_text,
+                    top_p=float(settings.get(top_p_key, 0.7)),
+                    temperature=float(settings.get(temp_key, 0.7)),
+                    repetition_penalty=float(settings.get(rep_penalty_key, 1.2)),
+                    max_new_tokens=int(settings.get(max_tokens_key, 1024)),
+                    chunk_length=int(settings.get(chunk_len_key, 200)),
+                    seed=seed_processed,
+                    use_memory_cache=True,
+                )
 
             hash_object = hashlib.sha1(f"{text[:20]}_{datetime.now().timestamp()}".encode())
             raw_output_filename = f"fish_raw_{hash_object.hexdigest()[:10]}.wav"

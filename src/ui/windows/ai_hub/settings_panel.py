@@ -132,9 +132,9 @@ class SettingsPanel(QWidget):
         self._compile_description = QLabel(
             _(
                 "torch.compile и Triton создают оптимизированные CUDA-ядра для выбранной видеокарты. "
-                "Кэш используется Fish Speech+ и Fish Speech+ + RVC.",
+                "Для каждой видеокарты хранится отдельный кэш, общий для Fish Speech+ и Fish Speech+ + RVC.",
                 "torch.compile and Triton create optimized CUDA kernels for the selected GPU. "
-                "Fish Speech+ and Fish Speech+ + RVC share this cache.",
+                "Each GPU has a separate cache shared by Fish Speech+ and Fish Speech+ + RVC.",
             )
         )
         self._compile_description.setObjectName("AIHubSettingsCompileDescription")
@@ -622,7 +622,12 @@ class SettingsPanel(QWidget):
                 self._compile_target.setText(selected_label)
                 if selected_compiled:
                     self._compile_status.setText(
-                        _("● Кэш для этой видеокарты готов", "● Cache for this GPU is ready")
+                        _(
+                            "● Используется старый общий кэш. Перекомпиляция создаст отдельный кэш этой видеокарты.",
+                            "● Using the legacy shared cache. Recompilation will create a separate cache for this GPU.",
+                        )
+                        if selected_target.get("cache_layout") == "shared"
+                        else _("● Кэш для этой видеокарты готов", "● Cache for this GPU is ready")
                     )
                 else:
                     self._compile_status.setText(
@@ -643,8 +648,8 @@ class SettingsPanel(QWidget):
                         "Compile it again for the selected GPU."
                     )
                 else:
-                    details_ru = "Общий кеш ещё не создан. Он используется Fish Speech+ и Fish Speech+ + RVC."
-                    details_en = "The shared cache has not been created yet. Fish Speech+ and Fish Speech+ + RVC use it."
+                    details_ru = "Кэши ещё не созданы. Для каждой видеокарты будет свой кэш, общий для обеих моделей Fish Speech+."
+                    details_en = "No caches have been created yet. Each GPU will have its own cache shared by both Fish Speech+ models."
                 self._compile_cache_summary.setText(_(details_ru, details_en))
                 self._btn_compile.setText(
                     _(

@@ -3,16 +3,90 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from core.torch_compile_runtime import cache_directories, record_compile_target, compile_cache_status
 
 from handlers.voice_models.fish_speech_model import FishSpeechInstallSpec, FishSpeechModel
 
 
 class FishSpeechInstallablesTests(unittest.TestCase):
+    def test_both_plus_models_use_selected_device_cache_during_initialization_and_generation(self):
+        for mode, device_key in (("medium+", "device"), ("medium+low", "fsprvc_fsp_device")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root, patch.dict(
+                os.environ, {"NEUROMITA_ENVIRONMENT_DIR": root}
+            ):
+                seen = []
+                parent = SimpleNamespace(
+                    current_model_id=mode,
+                    provider="NVIDIA",
+                    load_model_settings=lambda _mode: {device_key: "cuda:1"},
+                )
+                model = FishSpeechModel(parent, mode)
+
+                def generate(**_kwargs):
+                    seen.append(os.environ["TORCHINDUCTOR_CACHE_DIR"])
+                    raise RuntimeError("stop before audio processing")
+
+                def construct(**kwargs):
+                    self.assertEqual(kwargs["device"], "cuda:1")
+                    seen.append(os.environ["TORCHINDUCTOR_CACHE_DIR"])
+                    return generate
+
+                model.fish_speech_module = construct
+                with (
+                    patch.object(model, "_load_module"),
+                    patch("handlers.voice_models.fish_speech_model.get_rvc_half_precision_decision", return_value=SimpleNamespace(allowed=False)),
+                    patch("handlers.voice_models.fish_speech_model.get_character_voice_paths", return_value={"clone_voice_filename": str(Path(root) / "absent.wav")}),
+                    patch("handlers.voice_models.fish_speech_model.logger"),
+                ):
+                    self.assertTrue(model.initialize())
+                    self.assertIsNone(asyncio.run(model.voiceover("test")))
+
+                self.assertEqual(seen, [str(cache_directories("cuda:1")[0])] * 2)
+
+    def test_compiler_entry_passes_cuda_one_and_its_cache_to_library(self):
+        from handlers.voice_models.compile_fish_speech import compile_fish_speech
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ, {"NEUROMITA_ENVIRONMENT_DIR": root}
+        ):
+            cuda = SimpleNamespace(
+                is_available=lambda: True,
+                device_count=lambda: 2,
+                set_device=MagicMock(),
+                get_device_name=lambda index: f"GPU {index}",
+                get_device_capability=lambda _index: (8, 6),
+            )
+            torch = SimpleNamespace(cuda=cuda, __version__="test", version=SimpleNamespace(cuda="test"))
+
+            def construct(**kwargs):
+                self.assertEqual(kwargs["device"], "cuda:1")
+                self.assertEqual(os.environ["TORCHINDUCTOR_CACHE_DIR"], str(cache_directories("cuda:1")[0]))
+                self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(cache_directories("cuda:1")[1]))
+                cache = cache_directories("cuda:1")[0] / "compiled.bin"
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_bytes(b"compiled")
+                return lambda *_args, **_kwargs: None
+
+            with (
+                patch.dict(sys.modules, {
+                    "torch": torch,
+                    "fish_speech_lib": SimpleNamespace(__file__=str(Path(root) / "__init__.py")),
+                    "fish_speech_lib.inference": SimpleNamespace(FishSpeech=construct),
+                }),
+                patch("handlers.voice_models.compile_fish_speech._runtime_paths", return_value=[]),
+                patch("builtins.print"),
+            ):
+                compile_fish_speech(str(Path(root) / "reference.wav"), device="cuda:1")
+            cuda.set_device.assert_called_once_with(1)
+            self.assertEqual(compile_cache_status()["compiled_devices"], ["cuda:1"])
+
     def test_runtime_reinitializes_when_selected_device_changes(self):
         parent = SimpleNamespace(
             current_model_id="medium",
@@ -45,7 +119,7 @@ class FishSpeechInstallablesTests(unittest.TestCase):
 
     def test_cuda_rvc_settings_do_not_offer_directml(self):
         model = FishSpeechModel._find_model_config("medium+low")
-        settings = {item["key"]: item for item in model["settings"]}
+        settings = {item["key"]: item for item in model["settings"] if "key" in item}
         device = settings["fsprvc_rvc_device"]["options"]
 
         self.assertEqual(device["values"], ["cuda:0", "cpu"])
@@ -163,17 +237,28 @@ class FishSpeechInstallablesTests(unittest.TestCase):
             models_dir.mkdir()
             (models_dir / "Mila.wav").touch()
             with (
+                patch.dict(os.environ, {"NEUROMITA_ENVIRONMENT_DIR": str(Path(app_root) / "environment")}),
                 patch("handlers.voice_models.fish_speech_model.services", return_value=services_registry),
                 patch("handlers.voice_models.fish_speech_model.base_dir", return_value=app_root),
                 patch.object(FishSpeechInstallSpec, "_compile_entry_command", return_value=["python", "compile.py"]),
                 patch.object(FishSpeechInstallSpec, "_script_path", return_value="compile.py"),
                 patch("handlers.voice_models.fish_speech_model.subprocess.Popen", return_value=process) as popen,
             ):
-                result = FishSpeechInstallSpec._compile_call()(
+                files = []
+                for device in ("cuda:0", "cuda:1"):
+                    cache = cache_directories(device)[0] / "compiled.bin"
+                    cache.parent.mkdir(parents=True, exist_ok=True)
+                    cache.write_bytes(b"compiled")
+                    record_compile_target(device)
+                    files.append(cache)
+                result = FishSpeechInstallSpec._compile_call(device="cuda:1")(
                     pip_installer=SimpleNamespace(),
                     callbacks=callbacks,
                     ctx={"device": "cuda:1"},
                 )
+                self.assertEqual(files[0].read_bytes(), b"compiled")
+                self.assertFalse(files[1].exists())
+                self.assertEqual(compile_cache_status()["compiled_devices"], ["cuda:0"])
 
         self.assertTrue(result)
         command = popen.call_args.args[0]

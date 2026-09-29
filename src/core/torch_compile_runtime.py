@@ -7,11 +7,15 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, MutableMapping
 
 
-_COMPILE_METADATA_VERSION = 2
+_COMPILE_METADATA_VERSION = 3
+_COMPILE_ENVIRONMENT_LOCK = threading.RLock()
+_COMPILE_METADATA_LOCK = threading.RLock()
 
 
 def environment_root() -> Path:
@@ -23,8 +27,13 @@ def environment_root() -> Path:
     ).resolve()
 
 
-def cache_directories() -> tuple[Path, Path]:
+def cache_directories(device: str | None = None) -> tuple[Path, Path]:
     root = environment_root() / "cache"
+    if device is not None:
+        canonical_device = _canonical_compile_device(device)
+        if not canonical_device.startswith("cuda:") or not canonical_device[5:].isdigit():
+            raise ValueError(f"Invalid compilation device: {device!r}")
+        root = root / "fish-speech" / f"cuda-{int(canonical_device[5:])}"
     return root / "torchinductor", root / "triton"
 
 
@@ -34,7 +43,11 @@ def compile_cache_metadata_path() -> Path:
 
 def _canonical_compile_device(device: object) -> str:
     value = str(device or "").strip().lower()
-    return "cuda:0" if value == "cuda" else value
+    if value == "cuda":
+        return "cuda:0"
+    if value.startswith("cuda:") and value[5:].isdigit():
+        return f"cuda:{int(value[5:])}"
+    return value
 
 
 def _write_compile_metadata(payload: dict[str, object]) -> None:
@@ -51,7 +64,49 @@ def _write_compile_metadata(payload: dict[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def _compile_metadata_lock():
+    with _COMPILE_METADATA_LOCK:
+        path = compile_cache_metadata_path().with_suffix(".lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as lock:
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            deadline = time.monotonic() + 10.0
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        lock.seek(0)
+                        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Timed out waiting for compilation metadata lock")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _read_compile_metadata() -> tuple[dict[str, dict[str, object]], str]:
+    with _compile_metadata_lock():
+        return _read_compile_metadata_unlocked()
+
+
+def _read_compile_metadata_unlocked() -> tuple[dict[str, dict[str, object]], str]:
     path = compile_cache_metadata_path()
     if not path.is_file():
         return {}, "missing"
@@ -64,22 +119,34 @@ def _read_compile_metadata() -> tuple[dict[str, dict[str, object]], str]:
 
     raw_targets = payload.get("targets")
     schema_version = str(payload.get("schema_version") or "")
-    if schema_version == str(_COMPILE_METADATA_VERSION) and isinstance(raw_targets, dict):
+    if schema_version in ("2", str(_COMPILE_METADATA_VERSION)) and isinstance(raw_targets, dict):
         targets: dict[str, dict[str, object]] = {}
         for device, details in raw_targets.items():
             canonical_device = _canonical_compile_device(device)
-            if not canonical_device or not isinstance(details, dict):
+            if (
+                not canonical_device.startswith("cuda:")
+                or not canonical_device[5:].isdigit()
+                or not isinstance(details, dict)
+            ):
                 continue
             target = dict(details)
             target["device"] = canonical_device
+            target["cache_layout"] = (
+                "device" if schema_version == str(_COMPILE_METADATA_VERSION)
+                and details.get("cache_layout") == "device" else "shared"
+            )
             targets[canonical_device] = target
+        if schema_version == "2":
+            _write_compile_metadata({"schema_version": _COMPILE_METADATA_VERSION, "targets": targets})
+            return targets, "migrated"
         return targets, "current"
 
     legacy_device = _canonical_compile_device(payload.get("device"))
-    if legacy_device:
+    if legacy_device.startswith("cuda:") and legacy_device[5:].isdigit():
         migrated = {
             legacy_device: {
                 "device": legacy_device,
+                "cache_layout": "shared",
                 "gpu_name": str(payload.get("gpu_name") or ""),
                 "compute_capability": str(payload.get("compute_capability") or ""),
                 "compiled_at": str(payload.get("compiled_at") or ""),
@@ -107,32 +174,39 @@ def record_compile_target(
     cuda_version: str = "",
 ) -> None:
     canonical_device = _canonical_compile_device(device)
-    if not canonical_device:
-        raise ValueError("Compilation device is empty")
-    targets, _state = _read_compile_metadata()
-    targets[canonical_device] = {
-        "device": canonical_device,
-        "gpu_name": str(gpu_name or ""),
-        "compute_capability": str(compute_capability or ""),
-        "compiled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "torch_version": str(torch_version or ""),
-        "cuda_version": str(cuda_version or ""),
-    }
-    _write_compile_metadata({
-        "schema_version": _COMPILE_METADATA_VERSION,
-        "targets": targets,
-    })
+    cache_directories(canonical_device)
+    with _compile_metadata_lock():
+        targets, _state = _read_compile_metadata_unlocked()
+        targets[canonical_device] = {
+            "device": canonical_device,
+            "cache_layout": "device",
+            "gpu_name": str(gpu_name or ""),
+            "compute_capability": str(compute_capability or ""),
+            "compiled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "torch_version": str(torch_version or ""),
+            "cuda_version": str(cuda_version or ""),
+        }
+        _write_compile_metadata({
+            "schema_version": _COMPILE_METADATA_VERSION,
+            "targets": targets,
+        })
 
 
 def configure_compile_environment(
     python_paths: Iterable[str] = (),
     env: MutableMapping[str, str] | None = None,
+    *,
+    device: str | None = None,
 ) -> MutableMapping[str, str]:
     target = env if env is not None else os.environ
-    inductor_cache, triton_cache = cache_directories()
+    inductor_cache, triton_cache = cache_directories(device)
     inductor_cache.parent.mkdir(parents=True, exist_ok=True)
-    target.setdefault("TORCHINDUCTOR_CACHE_DIR", str(inductor_cache))
-    target.setdefault("TRITON_CACHE_DIR", str(triton_cache))
+    if device is None:
+        target.setdefault("TORCHINDUCTOR_CACHE_DIR", str(inductor_cache))
+        target.setdefault("TRITON_CACHE_DIR", str(triton_cache))
+    else:
+        target["TORCHINDUCTOR_CACHE_DIR"] = str(inductor_cache)
+        target["TRITON_CACHE_DIR"] = str(triton_cache)
     target.setdefault("TORCHINDUCTOR_FX_GRAPH_CACHE", "1")
 
     for raw_root in python_paths:
@@ -149,8 +223,28 @@ def configure_compile_environment(
     return target
 
 
-def compile_cache_status() -> dict[str, object]:
-    paths = cache_directories()
+@contextmanager
+def fish_speech_compile_environment(device: str):
+    with _COMPILE_ENVIRONMENT_LOCK:
+        targets, _state = _read_compile_metadata()
+        target = targets.get(_canonical_compile_device(device), {})
+        paths = cache_directories(None if target.get("cache_layout") == "shared" else device)
+        keys = ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR")
+        previous = {key: os.environ.get(key) for key in keys}
+        try:
+            for key, path in zip(keys, paths):
+                path.mkdir(parents=True, exist_ok=True)
+                os.environ[key] = str(path)
+            yield paths
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def _cache_statistics(paths: Iterable[Path]) -> tuple[int, int]:
     size_bytes = 0
     file_count = 0
     for root in paths:
@@ -166,9 +260,21 @@ def compile_cache_status() -> dict[str, object]:
                     continue
         except OSError:
             continue
+    return size_bytes, file_count
+
+
+def compile_cache_status() -> dict[str, object]:
+    paths = (*cache_directories(), environment_root() / "cache" / "fish-speech")
+    size_bytes, file_count = _cache_statistics(paths)
     cache_exists = file_count > 0
     targets, metadata_state = _read_compile_metadata()
-    compiled_targets = [targets[key] for key in sorted(targets)] if cache_exists else []
+    compiled_targets = []
+    for key in sorted(targets):
+        target = targets[key]
+        target_paths = cache_directories(None if target.get("cache_layout") == "shared" else key)
+        target_size, target_files = _cache_statistics(target_paths)
+        if target_files:
+            compiled_targets.append({**target, "cache_size_bytes": target_size})
     if cache_exists and metadata_state == "missing":
         metadata_state = "legacy"
     return {
@@ -300,10 +406,19 @@ def _remove_cache_tree(path: Path, *, timeout: float = 5.0) -> None:
             ) from last_error
 
 
-def clear_compile_cache() -> None:
-    for path in cache_directories():
+def clear_compile_cache(device: str | None = None) -> None:
+    paths = cache_directories(device)
+    if device is None:
+        paths = (*paths, environment_root() / "cache" / "fish-speech")
+    for path in paths:
         _remove_cache_tree(path)
-    compile_cache_metadata_path().unlink(missing_ok=True)
+    with _compile_metadata_lock():
+        if device is None:
+            compile_cache_metadata_path().unlink(missing_ok=True)
+        else:
+            targets, _state = _read_compile_metadata_unlocked()
+            targets.pop(_canonical_compile_device(device), None)
+            _write_compile_metadata({"schema_version": _COMPILE_METADATA_VERSION, "targets": targets})
 
 
 def long_paths_enabled() -> bool:

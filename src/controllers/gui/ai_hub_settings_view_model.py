@@ -235,6 +235,8 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             status_text=_("Подготовка backend...", "Preparing backend..."),
         )
         compile_values = dict(mutable_payload(values_payload) or {})
+        device_key = "fsprvc_fsp_device" if component_id == "tts:medium+low" else "device"
+        compile_device = str(compile_values.get(device_key) or "").strip()
 
         def prepare_backend() -> None:
             for feature_name in ("installables", "voice_models"):
@@ -253,7 +255,11 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         def start_operation(_result: None) -> None:
             self._application.ensure_optional_gui("install")
             accepted = bool(
-                self._catalog.compile_model(component_id, clear_only=clear_only)
+                self._catalog.compile_model(
+                    component_id,
+                    clear_only=clear_only,
+                    device=None if clear_only else compile_device,
+                )
             )
             if accepted:
                 if compile_values:
