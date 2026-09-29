@@ -22,6 +22,64 @@ from installables.registry_builder import build_installable_registry
 
 
 class EdgeTTSRVCInstallablesTests(unittest.TestCase):
+    def test_native_indexed_directml_does_not_require_legacy_methods(self):
+        from handlers.voice_models.onnx_device_adapter import enable_indexed_directml
+
+        class ExecutionDevice:
+            def __init__(self, backend, index):
+                self.providers = (("DmlExecutionProvider", {"device_id": str(index)}),)
+
+        module = SimpleNamespace(
+            OnnxExecutionDevice=ExecutionDevice,
+            resolve_execution_device=lambda device: device,
+            create_session=lambda *args: None,
+        )
+        self.assertTrue(enable_indexed_directml(module))
+        self.assertFalse(hasattr(module, "_neuromita_indexed_dml_patch"))
+
+        class BrokenExecutionDevice:
+            def __init__(self, backend, index):
+                self.providers = (("DmlExecutionProvider", {"device_id": "0"}),)
+
+        module.OnnxExecutionDevice = BrokenExecutionDevice
+        self.assertFalse(enable_indexed_directml(module))
+
+    def test_onnx_sampling_policy_preserves_readonly_runtime_property(self):
+        class Runtime:
+            def __init__(self):
+                self.sr = 44100
+                self.calls = []
+
+            @property
+            def sampling_rate(self):
+                return self.sr
+
+            def set_sampling_params(self, sr, hop):
+                self.calls.append((sr, hop))
+                self.sr = sr
+
+        parent = SimpleNamespace(current_character_name="ShorthairMita")
+        model = EdgeTTSRVCOnnxModel(parent, EDGE_TTS_RVC_ONNX_ID)
+        model.current_tts_rvc = Runtime()
+        model._apply_backend_sampling_policy()
+        self.assertEqual(model.current_tts_rvc.sampling_rate, 48000)
+        parent.current_character_name = "Mila"
+        model._apply_backend_sampling_policy()
+        self.assertEqual(model.current_tts_rvc.sampling_rate, 40000)
+        self.assertEqual(model.current_tts_rvc.calls, [(48000, 512), (40000, 512)])
+
+    def test_onnx_sampling_policy_updates_older_runtime_attribute(self):
+        model = EdgeTTSRVCOnnxModel(
+            SimpleNamespace(current_character_name="ShorthairMita"), EDGE_TTS_RVC_ONNX_ID
+        )
+        calls = []
+        model.current_tts_rvc = SimpleNamespace(
+            sampling_rate=40000, set_sampling_params=lambda sr, hop: calls.append((sr, hop))
+        )
+        model._apply_backend_sampling_policy()
+        self.assertEqual(model.current_tts_rvc.sampling_rate, 48000)
+        self.assertEqual(calls, [(48000, 512)])
+
     def test_registry_exposes_edge_and_silero_backend_variants(self):
         registry = build_installable_registry()
 

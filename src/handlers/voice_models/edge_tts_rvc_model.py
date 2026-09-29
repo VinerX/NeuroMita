@@ -1232,7 +1232,7 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
     # PyPI documentation uses ``tts_with_rvc_onnx``, while the published wheel
     # has historically also shipped the repository package as ``tts_with_rvc``.
     # Treat the distribution identity and import package identity separately.
-    RVC_IMPORT_CANDIDATES = ("tts_with_rvc_onnx", "tts_with_rvc")
+    RVC_IMPORT_CANDIDATES = ("tts_with_rvc", "tts_with_rvc_onnx")
     RVC_UNINSTALL_PACKAGES = ("tts-with-rvc-onnx",)
     MODEL_EXTENSION = "onnx"
     VOICE_PATH_PROVIDER = "AMD"
@@ -1308,8 +1308,14 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
             )
         except Exception:
             cls.INDEXED_DML_READY = False
+            logger.exception("Unable to inspect ONNX RVC runtime capabilities")
             return
         cls.INDEXED_DML_READY = enable_indexed_directml(inference_module)
+        logger.info(
+            f"ONNX RVC runtime: module={module_name}, "
+            f"path={getattr(module, '__file__', 'unknown')}, "
+            f"indexed_directml={cls.INDEXED_DML_READY}"
+        )
         if getattr(inference_module, "_neuromita_f0_cache_patch", False):
             return
 
@@ -1425,7 +1431,9 @@ class EdgeTTSRVCOnnxModel(EdgeTTSRVCBaseModel):
         char = getattr(self.parent, "current_character_name", "Mila")
         sr, hop = (48000, 512) if char == "ShorthairMita" else (40000, 512)
         self.current_tts_rvc.set_sampling_params(sr, hop)
-        self.current_tts_rvc.sampling_rate = sr
+        sampling_rate_property = getattr(type(self.current_tts_rvc), "sampling_rate", None)
+        if not isinstance(sampling_rate_property, property) or sampling_rate_property.fset is not None:
+            self.current_tts_rvc.sampling_rate = sr
         logger.info(f"[ONNX] Sampling parameters set for '{char}': {sr}/{hop}")
 
 
