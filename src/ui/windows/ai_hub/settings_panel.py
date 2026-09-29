@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +41,7 @@ from ui.windows.ai_hub.settings_presentation import (
 from utils import getTranslationVariant as _
 
 from .schema_renderer import SchemaForm
+from .status_widgets import SettingsStatusPane, StatusIcon
 
 
 class SettingsPanel(QWidget):
@@ -76,12 +79,30 @@ class SettingsPanel(QWidget):
 
         self._header = QLabel(_("Установленные модели", "Installed models"))
         self._header.setObjectName("AIHubSettingsListHeader")
-        ll.addWidget(self._header)
+        list_header = QHBoxLayout()
+        list_header.addWidget(self._header, 1)
+        self._list_spinner = StatusIcon(20)
+        self._list_spinner.set_status("fa5s.circle-notch", spinning=True)
+        list_header.addWidget(self._list_spinner)
+        self._list_count = QLabel()
+        self._list_count.setObjectName("AIHubSettingsListCount")
+        list_header.addWidget(self._list_count)
+        ll.addLayout(list_header)
 
         self._list = QListWidget()
         self._list.setObjectName("AIHubSettingsModelList")
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
-        ll.addWidget(self._list, 1)
+        self._list_stack = QStackedWidget()
+        self._list_stack.addWidget(self._list)
+        self._list_message = QLabel()
+        self._list_message.setObjectName("AIHubSettingsEmpty")
+        self._list_message.setWordWrap(True)
+        self._list_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._list_message.setContentsMargins(12, 12, 12, 12)
+        self._list_stack.addWidget(self._list_message)
+        ll.addWidget(self._list_stack, 1)
         root.addWidget(left, 0)
 
         # --- right: form host + actions
@@ -96,6 +117,8 @@ class SettingsPanel(QWidget):
         title_row.setSpacing(8)
         self._title = QLabel(_("Выберите модель", "Select a model"))
         self._title.setObjectName("AIHubSettingsTitle")
+        self._title.setWordWrap(True)
+        self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         title_row.addWidget(self._title, 1)
         self._dirty_dot = QLabel("●")
         self._dirty_dot.setObjectName("AIHubSettingsDirtyDot")
@@ -106,6 +129,7 @@ class SettingsPanel(QWidget):
         self._subtitle = QLabel("")
         self._subtitle.setObjectName("AIHubSettingsSubtitle")
         self._subtitle.setWordWrap(True)
+        self._subtitle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         rl.addWidget(self._subtitle)
 
         # scrollable form host
@@ -117,7 +141,14 @@ class SettingsPanel(QWidget):
 
         self._form = SchemaForm(on_change=self._on_form_changed)
         scroll.setWidget(self._form)
-        rl.addWidget(scroll, 1)
+        self._scroll = scroll
+        self._content = QStackedWidget()
+        self._content.setObjectName("AIHubSettingsContent")
+        self._content.addWidget(scroll)
+        self._state_pane = SettingsStatusPane()
+        self._state_pane.action.clicked.connect(self._on_state_action)
+        self._content.addWidget(self._state_pane)
+        rl.addWidget(self._content, 1)
 
         self._compile_card = QFrame()
         self._compile_card.setObjectName("AIHubSettingsCompileCard")
@@ -155,6 +186,7 @@ class SettingsPanel(QWidget):
         target_layout.addWidget(self._compile_target)
         self._compile_status = QLabel("")
         self._compile_status.setObjectName("AIHubSettingsCompileStatus")
+        self._compile_status.setWordWrap(True)
         target_layout.addWidget(self._compile_status)
         compile_layout.addWidget(target_box)
 
@@ -185,25 +217,19 @@ class SettingsPanel(QWidget):
         self._compile_card.setVisible(False)
         self._form.set_slot_widgets({"fish_speech_compilation": self._compile_card})
 
-        # placeholder shown when no model is installed in the current category
-        self._empty = QLabel(
-            _(
-                "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
-                "No models installed in this category.\nGo to the «Install» section to add one.",
-            )
-        )
-        self._empty.setObjectName("AIHubSettingsEmpty")
-        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty.setWordWrap(True)
-        self._empty.setVisible(False)
-        rl.addWidget(self._empty)
-
-        # buttons
-        btn_row = QHBoxLayout()
+        self._footer = QWidget()
+        self._footer.setObjectName("AIHubSettingsFooter")
+        btn_row = QHBoxLayout(self._footer)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(10)
+        self._activity_icon = StatusIcon(20)
+        self._activity_icon.set_status("fa5s.circle-notch", spinning=True)
+        btn_row.addWidget(self._activity_icon)
         self._status_lbl = QLabel("")
         self._status_lbl.setObjectName("AIHubSettingsStatus")
+        self._status_lbl.setFixedHeight(24)
+        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._footer.setFixedHeight(44)
         btn_row.addWidget(self._status_lbl, 1)
 
         self._btn_reset = QPushButton(_("Сбросить", "Reset"))
@@ -217,7 +243,7 @@ class SettingsPanel(QWidget):
         self._btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(self._btn_save, 0)
-        rl.addLayout(btn_row)
+        rl.addWidget(self._footer)
 
         root.addWidget(right, 1)
 
@@ -226,11 +252,13 @@ class SettingsPanel(QWidget):
         self._set_actions_enabled(False)
 
     # ---------------------------------------------------------- public API
-    def apply_data(self, rows: list[dict[str, Any]], category: str | None) -> None:
+    def apply_data(self, rows: list[dict[str, Any]], category: str | None, *, loading: bool = False, error: str = "") -> None:
         self._view_model.dispatch(
             ApplyAIHubSettingsRows(
                 rows=immutable_payload(list(rows or [])),
                 category=category,
+                catalog_loading=loading,
+                catalog_error=error,
             )
         )
 
@@ -281,7 +309,7 @@ class SettingsPanel(QWidget):
             return
         self._rendering = True
         try:
-            self._form.set_values(dict(mutable_payload(self._view_model.state.values) or {}))
+            self._form.set_values(dict(mutable_payload(self._view_model.state.saved_values) or {}))
             self._form.clear_field_errors()
         finally:
             self._rendering = False
@@ -312,20 +340,12 @@ class SettingsPanel(QWidget):
         self._compile_description.setText(
             _(
                 "torch.compile и Triton создают оптимизированные CUDA-ядра для выбранной видеокарты. "
-                "Кэш используется Fish Speech+ и Fish Speech+ + RVC.",
+                "Для каждой видеокарты хранится отдельный кэш, общий для Fish Speech+ и Fish Speech+ + RVC.",
                 "torch.compile and Triton create optimized CUDA kernels for the selected GPU. "
-                "Fish Speech+ and Fish Speech+ + RVC share this cache.",
+                "Each GPU has a separate cache shared by Fish Speech+ and Fish Speech+ + RVC.",
             )
         )
         self._compile_target_caption.setText(_("Целевая видеокарта", "Target GPU"))
-        if not self._current_id:
-            self._title.setText(_("Нет установленных моделей", "No installed models"))
-            self._empty.setText(
-                _(
-                    "В этой категории нет установленных моделей.\nПерейдите в раздел «Установка» и установите модель.",
-                    "No models installed in this category.\nGo to the «Install» section to add one.",
-                )
-            )
         self.render(self._view_model.state)
 
     # ---------------------------------------------------------- list
@@ -336,6 +356,7 @@ class SettingsPanel(QWidget):
             self._list.clear()
             for cid, title in state.components:
                 item = QListWidgetItem(title)
+                item.setToolTip(title)
                 item.setData(Qt.ItemDataRole.UserRole, cid)
                 self._list.addItem(item)
 
@@ -359,12 +380,6 @@ class SettingsPanel(QWidget):
 
     def _set_empty_state(self) -> None:
         self._current_id = None
-        self._title.setText(_("Нет установленных моделей", "No installed models"))
-        self._subtitle.setText("")
-        self._dirty_dot.setVisible(False)
-        self._set_form_visible(False)
-        self._empty.setVisible(True)
-        self._set_actions_enabled(False)
 
     # ---------------------------------------------------------- selection
     def _on_selection_changed(self) -> None:
@@ -424,8 +439,60 @@ class SettingsPanel(QWidget):
             )
 
     def _set_form_visible(self, visible: bool) -> None:
-        for w in self.findChildren(QScrollArea, "AIHubSettingsScroll"):
-            w.setVisible(visible)
+        self._content.setCurrentWidget(self._scroll if visible else self._state_pane)
+
+    def _on_state_action(self) -> None:
+        if self._view_model.state.load_error and self._current_id:
+            self._view_model.dispatch(SelectAIHubSettingsComponent(self._current_id))
+        else:
+            self.request_install_view.emit()
+
+    def _render_content_state(self, state: AIHubSettingsState) -> None:
+        has_form = bool(state.selected_component_id and state.schema and not state.loading and not state.load_error)
+        self._set_form_visible(has_form)
+        self._footer.setVisible(has_form)
+        self._list_spinner.setVisible(state.catalog_loading)
+        self._list_count.setText(str(len(state.components)))
+        self._list_count.setVisible(bool(state.components) or not state.catalog_loading)
+        self._list_stack.setCurrentWidget(self._list if state.components else self._list_message)
+        self._list_message.setText(
+            _("Проверяем установленные модели…", "Checking installed models…")
+            if state.catalog_loading else _("Нет установленных моделей", "No installed models")
+        )
+        self._subtitle.setText(
+            _("Измените параметры и сохраните настройки.", "Adjust the parameters and save your changes.")
+            if has_form else _("Настройки установленных AI-компонентов", "Settings for installed AI components")
+        )
+        if has_form:
+            return
+        pane = self._state_pane
+        if state.loading:
+            pane.present(_("Загружаем параметры…", "Loading parameters…"),
+                         _("Получаем настройки выбранной модели.", "Fetching settings for the selected model."),
+                         icon="fa5s.circle-notch", loading=True)
+        elif state.catalog_loading and not state.components:
+            pane.present(_("Загружаем модели…", "Loading models…"),
+                         _("Проверяем установленные компоненты. Их параметры появятся здесь.",
+                           "Checking installed components. Their settings will appear here."),
+                         icon="fa5s.circle-notch", loading=True)
+        elif state.load_error or (state.catalog_error and not state.components):
+            pane.present(_("Не удалось загрузить параметры", "Unable to load settings"),
+                         state.load_error or state.catalog_error, icon="fa5s.exclamation-circle",
+                         action=_("Повторить", "Retry") if state.load_error else _("К компонентам", "View components"))
+        elif not state.components:
+            pane.present(_("Пока нет установленных моделей", "No models installed yet"),
+                         _("Установите модель в этой категории, чтобы настроить её параметры.",
+                           "Install a model in this category to configure its parameters."),
+                         icon="fa5s.box-open", action=_("К компонентам", "View components"))
+        elif not state.selected_component_id:
+            pane.present(_("Выберите модель", "Select a model"),
+                         _("Выберите установленную модель в списке слева.", "Select an installed model from the list on the left."),
+                         icon="fa5s.mouse-pointer")
+        else:
+            pane.present(_("Дополнительных параметров нет", "No additional parameters"),
+                         _("Эта модель не предоставляет дополнительных настроек.",
+                           "This model does not expose additional settings."),
+                         icon="fa5s.sliders-h")
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         self._btn_save.setEnabled(enabled)
@@ -566,7 +633,7 @@ class SettingsPanel(QWidget):
             self._current_id = state.selected_component_id or None
             title = next(
                 (title for cid, title in state.components if cid == state.selected_component_id),
-                _("Выберите модель", "Select a model"),
+                _("Параметры моделей", "Model parameters"),
             )
             self._title.setText(title)
 
@@ -575,18 +642,12 @@ class SettingsPanel(QWidget):
                 schema = self._decorate_schema_for_display(list(mutable_payload(state.schema) or []))
                 values = dict(mutable_payload(state.values) or {})
                 self._form.clear_field_errors()
-                if schema:
+                if schema != getattr(self, "_rendered_schema", None):
                     self._form.set_schema(schema)
-                    self._form.set_values(values)
-                    self._empty.setVisible(False)
-                    self._set_form_visible(True)
-                else:
-                    self._set_form_visible(False)
-                    self._empty.setText(
-                        state.status_text
-                        or _("У этой модели нет настроек.", "This model has no settings.")
-                    )
-                    self._empty.setVisible(True)
+                    self._rendered_schema = schema
+                self._form.set_values(values)
+
+            self._render_content_state(state)
 
             if state.errors_revision != self._errors_revision:
                 self._errors_revision = state.errors_revision
@@ -596,11 +657,20 @@ class SettingsPanel(QWidget):
                     self._form.set_field_error(str(key), str(message))
 
             self._dirty_dot.setVisible(bool(state.dirty))
-            self._status_lbl.setText(str(state.status_text or ""))
+            self._status_lbl.setText(str(state.status_text or "") if state.dirty or state.save_status != "idle" or state.compile_busy else "")
+            self._status_lbl.setToolTip(str(state.status_text or ""))
+            color = "#a3e635" if state.save_status in {"saving", "saved"} else "#bca9bb"
+            if state.save_status == "error":
+                color = "#ffb4b4"
+            self._activity_icon.set_status(
+                "fa5s.circle-notch" if state.saving or state.compile_busy else "fa5s.check-circle" if state.save_status == "saved" else "fa5s.exclamation-circle" if state.save_status == "error" else "fa5s.circle",
+                spinning=bool(state.saving or state.compile_busy), color=color,
+            )
             self._list.setEnabled(not state.saving)
-            enabled = bool(state.schema) and not state.loading and not state.saving
-            self._set_actions_enabled(enabled)
-            self._compile_card.setVisible(bool(state.compile_available))
+            self._form.setEnabled(not state.saving and not state.compile_busy)
+            enabled = bool(state.schema) and not state.loading and not state.saving and not state.load_error and not state.compile_busy
+            self._set_actions_enabled(enabled and state.dirty)
+            self._compile_card.setVisible(bool(state.compile_available and not state.loading and not state.load_error))
             if state.compile_available:
                 cache_exists = bool(state.compile_cache_exists)
                 size_mb = int(state.compile_cache_size_bytes or 0) / (1024 * 1024)

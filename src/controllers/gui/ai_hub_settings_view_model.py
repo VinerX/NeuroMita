@@ -48,7 +48,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
 
     def dispatch(self, intent: Any) -> None:
         if isinstance(intent, ApplyAIHubSettingsRows):
-            self.apply_rows(intent.rows, intent.category)
+            self.apply_rows(intent.rows, intent.category, loading=intent.catalog_loading, error=intent.catalog_error)
             return
         if isinstance(intent, SelectAIHubSettingsComponent):
             self.select_component(intent.component_id)
@@ -57,7 +57,8 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             if not self.state.loading and not self.state.saving:
                 values = dict(mutable_payload(intent.values) or {})
                 self.update_state(
-                    dirty=True,
+                    dirty=values != dict(mutable_payload(self.state.saved_values) or {}),
+                    save_status="idle",
                     values=immutable_payload(values),
                     status_text=_(
                         "Есть несохранённые изменения",
@@ -68,13 +69,13 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         if isinstance(intent, SaveAIHubSettings):
             self.save(intent.values)
             return
-        if isinstance(intent, ResetAIHubSettings):
-            if self.state.selected_component_id:
-                self.select_component(self.state.selected_component_id)
-            return
-        if isinstance(intent, DiscardAIHubSettingsChanges):
+        if isinstance(intent, (ResetAIHubSettings, DiscardAIHubSettingsChanges)):
             if self.state.dirty:
-                self.update_state(dirty=False, status_text="")
+                self.update_state(
+                    values=self.state.saved_values, dirty=False, save_status="idle", status_text="",
+                    field_errors=(), form_revision=self.state.form_revision + 1,
+                    errors_revision=self.state.errors_revision + 1,
+                )
             return
         if isinstance(intent, CompileAIHubModel):
             self._start_compile(clear_only=False, values_payload=intent.values)
@@ -85,7 +86,9 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         if isinstance(intent, OpenAIHubCompilationDocumentation):
             self._open_documentation("installation_guide.html#fish_compile")
 
-    def apply_rows(self, rows_payload: Any, category: str | None) -> None:
+    def apply_rows(self, rows_payload: Any, category: str | None, *, loading: bool = False, error: str = "") -> None:
+        if self.state.catalog_loading != bool(loading) or self.state.catalog_error != str(error or ""):
+            self.update_state(catalog_loading=bool(loading), catalog_error=str(error or ""))
         rows = list(mutable_payload(rows_payload) or [])
         components: list[tuple[str, str]] = []
         for row in rows:
@@ -135,15 +138,18 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             components_revision=self.state.components_revision + 1,
             dirty=False,
             status_text="",
+            save_status="idle",
         )
         if selected:
             self.select_component(selected)
         else:
+            self._next_generation("ai-hub-settings-load")
             self.update_state(
                 schema=(),
                 values=(),
                 field_errors=(),
                 loading=False,
+                load_error="",
                 form_revision=self.state.form_revision + 1,
                 compile_available=False,
                 compile_cache_exists=False,
@@ -170,7 +176,13 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             return
         self.update_state(
             selected_component_id=component_id,
+            save_status="idle",
             loading=True,
+            load_error="",
+            schema=(),
+            values=(),
+            form_revision=self.state.form_revision + 1,
+            compile_available=False,
             dirty=False,
             status_text=_("Загрузка настроек...", "Loading settings..."),
             field_errors=(),
@@ -192,7 +204,9 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             self.update_state(
                 schema=immutable_payload(schema),
                 values=immutable_payload(values),
+                saved_values=immutable_payload(values),
                 loading=False,
+                load_error="",
                 dirty=False,
                 status_text="" if schema else _(
                     "У этой модели нет настроек.",
@@ -213,6 +227,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             applied,
             lambda error: self.update_state(
                 loading=False,
+                load_error=format_exception(error),
                 status_text=format_exception(error),
             ),
         )
@@ -265,6 +280,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
                 if compile_values:
                     self.update_state(
                         values=immutable_payload(compile_values),
+                        saved_values=immutable_payload(compile_values),
                         dirty=False,
                     )
                 return
@@ -354,19 +370,21 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
 
     def save(self, values_payload: Any) -> None:
         component_id = self.state.selected_component_id
-        if not component_id or self.state.saving:
+        if not component_id or self.state.saving or not self.state.dirty:
             return
         values = dict(mutable_payload(values_payload) or {})
-        self.update_state(saving=True, status_text=_("Сохранение...", "Saving..."))
+        self.update_state(saving=True, save_status="saving", status_text=_("Сохранение...", "Saving..."))
 
         def applied(result: dict[str, Any]) -> None:
             result = dict(result or {})
             if result.get("ok"):
                 self.update_state(
                     values=immutable_payload(values),
+                    saved_values=immutable_payload(values),
                     field_errors=(),
                     saving=False,
                     dirty=False,
+                    save_status="saved",
                     status_text=_("Сохранено", "Saved"),
                     form_revision=self.state.form_revision + 1,
                     errors_revision=self.state.errors_revision + 1,
@@ -376,6 +394,7 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
             global_error = str(errors.get("_") or "")
             field_errors = {str(k): str(v) for k, v in errors.items() if str(k) != "_"}
             self.update_state(
+                save_status="error",
                 field_errors=immutable_payload(field_errors),
                 saving=False,
                 status_text=(
@@ -395,5 +414,5 @@ class AIHubSettingsViewModel(IntentViewModel[AIHubSettingsState]):
         )
 
     def _save_failed(self, error: Exception) -> None:
-        self.update_state(saving=False, status_text=format_exception(error))
+        self.update_state(saving=False, save_status="error", status_text=format_exception(error))
         self.emit_effect(AIHubSettingsWarning(format_exception(error)))

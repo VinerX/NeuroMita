@@ -38,7 +38,7 @@ QMenu::separator {
 
 /* ========= Inputs ========= */
 QTextEdit, QLineEdit {
-    background-color: {panel_bg};
+    background-color: {control_bg};
     color: {text};
     border: 1px solid {border_soft};
     padding: 6px 10px;
@@ -49,7 +49,7 @@ QTextEdit, QLineEdit {
 }
 QTextEdit:focus, QLineEdit:focus {
     border: 1px solid {accent};
-    background-color: {panel_bg};
+    background-color: {control_bg};
     outline: none;
 }
 QTextEdit#DebugWindow {
@@ -62,7 +62,7 @@ QTextEdit#DebugWindow {
 
 /* ========= SpinBox ========= */
 QSpinBox, QDoubleSpinBox {
-    background-color: {panel_bg};
+    background-color: {control_bg};
     color: {text};
     border: 1px solid {border_soft};
     border-radius: 4px;
@@ -79,7 +79,7 @@ QSpinBox:disabled, QDoubleSpinBox:disabled {
 
 /* ========= ComboBox ========= */
 QComboBox {
-    background-color: {panel_bg};
+    background-color: {control_bg};
     color: {text};
     border: 1px solid {border_soft};
     padding: 4px 10px;
@@ -100,7 +100,7 @@ QComboBox::down-arrow {
     height: 12px;
 }
 QComboBox QAbstractItemView {
-    background-color: {panel_bg};
+    background-color: {control_bg};
     border: 1px solid {accent};
     selection-background-color: {accent};
     selection-color: #ffffff;
@@ -132,7 +132,7 @@ QPushButton#CancelButton {
 QPushButton#CancelButton:hover { background-color: {danger_hover}; }
 QPushButton#CancelButton:pressed { background-color: {danger_pressed}; }
 QPushButton#SecondaryButton {
-    background-color: {chip_bg};
+    background-color: {control_bg};
     color: {text};
     border: 1px solid {outline};
 }
