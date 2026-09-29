@@ -41,8 +41,8 @@ def _configure_startup_console() -> None:
 
 
 def _hide_startup_console() -> None:
-    """Hide the startup console after the main GUI has been shown."""
-    if sys.platform != "win32":
+    """Hide the console after GUI startup only when explicitly enabled."""
+    if sys.platform != "win32" or os.environ.get("HIDE_CONSOLE_AFTER_START") != "1":
         return
     try:
         import ctypes

@@ -1,4 +1,4 @@
-import pytest
+import unittest
 
 from core.setting_behaviors import evaluate_setting_behaviors, normalize_setting_behaviors
 from core.voice_device_selection import (
@@ -79,7 +79,8 @@ def test_directml_schema_lists_amd_and_both_nvidia_adapters():
     result = expand_voice_device_schema(source, HARDWARE)
     options = result[0]["options"]
 
-    assert options["values"] == ["dml", "dml:0", "dml:1", "dml:2", "cpu"]
+    assert options["values"] == ["dml:0", "dml:1", "dml:2", "cpu"]
+    assert options["default"] == "dml:0"
     assert options["display_labels"]["dml:0"] == "dml:0 (AMD Radeon RX 7900 GRE)"
     assert validate_voice_devices(result, {"device": "dml:0"}) == {}
     assert "device" in validate_voice_devices(result, {"device": "dml:9"})
@@ -98,8 +99,8 @@ def test_amd_variant_replaces_cuda_default_with_directml():
 
     options = expand_voice_device_schema(source, hardware)[0]["options"]
 
-    assert options["values"] == ["dml", "dml:0", "cpu"]
-    assert options["default"] == "dml"
+    assert options["values"] == ["dml:0", "cpu"]
+    assert options["default"] == "dml:0"
 
 
 def test_directml_identity_resolves_current_dxgi_index_after_reordering():
@@ -114,10 +115,37 @@ def test_directml_identity_resolves_current_dxgi_index_after_reordering():
 
     assert before.dml[0].value == f"dml@{luid}"
     assert after.resolve_runtime_device(f"dml@{luid}") == "dml:1"
-    with pytest.raises(ValueError, match="no longer available"):
-        after.resolve_runtime_device("dml:1")
-    with pytest.raises(ValueError, match="no longer available"):
+    assert after.resolve_runtime_device("dml:1") == "dml:1"
+    with unittest.TestCase().assertRaisesRegex(ValueError, "no longer available"):
+        after.resolve_runtime_device("dml:2")
+    with unittest.TestCase().assertRaisesRegex(ValueError, "no longer available"):
         VoiceDeviceCatalog({"adapters": []}).resolve_runtime_device(f"dml@{luid}")
+
+
+def test_directml_migration_uses_stable_identity_and_numeric_adapter_order():
+    hardware = {"adapters": [
+        {"index": 1, "name": "NVIDIA RTX", "luid": "0000000000000002"},
+        {"index": 0, "name": "AMD Radeon", "luid": "0000000000000001"},
+    ]}
+    source = [{"key": "device", "type": "combobox", "options": {
+        "values": ["dml", "cpu"], "default": "dml",
+    }}]
+    schema = expand_voice_device_schema(source, hardware)
+    options = schema[0]["options"]
+    assert options["values"] == ["dml@0000000000000001", "dml@0000000000000002", "cpu"]
+    assert options["default"] == "dml@0000000000000001"
+    assert migrate_voice_device_values(schema, {"device": "dml"})["device"] == options["default"]
+    assert migrate_voice_device_values(schema, {"device": "dml:1"})["device"] == "dml@0000000000000002"
+    assert expand_voice_device_schema(schema, hardware) == schema
+
+
+def test_directml_pending_enumeration_keeps_legacy_choice():
+    source = [{"key": "device", "type": "combobox", "options": {
+        "values": ["dml", "cpu"], "default": "dml",
+    }}]
+    schema = expand_voice_device_schema(source, {})
+    assert schema[0]["options"]["values"] == ["dml", "cpu"]
+    assert migrate_voice_device_values(schema, {"device": "dml"}) == {"device": "dml"}
 
 
 def test_half_precision_reacts_to_the_selected_cuda_device():
