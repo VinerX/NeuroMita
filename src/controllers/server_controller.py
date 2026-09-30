@@ -137,6 +137,8 @@ class ServerController:
             "IGNORE_GAME_REQUESTS",
             "GAME_BLOCK_LEVEL",
             "MIC_INSTANT_SENT",
+            "ASR_INPUT_MODE",
+            "MIC_ACTIVE",
             "MITA_DIALOGUE_AUTO",
             "DIALOGUE_AUTO_ROUNDS",
             "DIALOGUE_MAX_CHAIN_TURNS",
@@ -467,6 +469,8 @@ class ServerController:
                 settings[str(setting)] = False
                 continue
             defaults = {
+                "ASR_INPUT_MODE": "vad",
+                "MIC_ACTIVE": False,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
                 "DIALOGUE_MAX_CHAIN_TURNS": 24,
@@ -475,6 +479,9 @@ class ServerController:
             settings[str(setting)] = self._get_setting(setting, default)
 
         characters_stats = self._collect_characters_stats()
+
+        from handlers.asr_input_gate import normalize_input_mode
+        settings["ASR_INPUT_MODE"] = normalize_input_mode(settings.get("ASR_INPUT_MODE"))
 
         transport_raw = str(settings.get("IMAGE_TRANSPORT_MODE") or "auto").strip().lower()
         if transport_raw not in ("shared_files", "socket", "auto"):

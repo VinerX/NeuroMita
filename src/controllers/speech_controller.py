@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
+from handlers.asr_input_gate import normalize_input_mode
 from handlers.asr_audio_devices import (
     ASR_CAPTURE_SAMPLE_RATE,
     list_asr_input_devices,
@@ -39,6 +40,7 @@ class SpeechController(SpeechService):
         "VOSK_SAMPLE_RATE", "CHUNK_SIZE", "VAD_PRE_BUFFER_DURATION_SEC",
         "MAX_SPEECH_DURATION_SEC", "MIN_SPEECH_DURATION_SEC",
         "NM_MICROPHONE_ID", "NM_MICROPHONE_NAME",
+        "ASR_INPUT_MODE", "MIC_MUTE_WHILE_SPEAKING",
     })
 
     # Хвост после конца реплики: гасим затухание звука и задержку VAD,
@@ -158,6 +160,7 @@ class SpeechController(SpeechService):
         eb.subscribe(Events.Speech.SET_INSTANT_SEND_STATUS, self._on_set_instant_send_status, weak=False)
         eb.subscribe(Events.Speech.SPEECH_TEXT_RECOGNIZED, self._on_speech_text_recognized, weak=False)
         eb.subscribe(Events.Audio.MITA_SPEAKING_WINDOW, self._on_mita_speaking_window, weak=False)
+        eb.subscribe(Events.Speech.ASR_PTT_STATE, self._on_asr_ptt_state, weak=False)
         eb.subscribe(Events.Server.CLIENT_DISCONNECTED, self._on_client_disconnected, weak=False)
         eb.subscribe(Events.Server.ASR_TEXT_UNDELIVERED, self._on_asr_text_undelivered, weak=False)
 
@@ -192,6 +195,7 @@ class SpeechController(SpeechService):
         # иначе статус залипал на «ASR не готов».
         self.mic_recognition_active = True
         self.asr_is_ready = True
+        self._sync_input_gate(reset=True)
         self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
     def _on_asr_failed_backend(self, _event: Event):
@@ -229,6 +233,7 @@ class SpeechController(SpeechService):
             pass
 
         self._configured_engine = engine
+        self._sync_input_gate(reset=True)
         logger.info(f"Тип распознавателя установлен на: {engine}")
         if self.selected_microphone:
             logger.info(f"Загружен микрофон из настроек: {self.selected_microphone} (ID: {self.device_id})")
@@ -241,6 +246,7 @@ class SpeechController(SpeechService):
         value = change.value
 
         if key == "MIC_ACTIVE":
+            self._sync_input_gate(reset=not bool(value))
             if not bool(value):
                 # Флаги гасим сразу, чтобы статус не врал; сам стоп ждёт живой
                 # цикл до 8 секунд и уходит в реконсилятор с полосы наблюдателей.
@@ -249,7 +255,11 @@ class SpeechController(SpeechService):
             self._request_reconcile(f"MIC_ACTIVE={bool(value)}")
             self.events_bus.emit(Events.GUI.UPDATE_STATUS_COLORS)
 
+        elif key in ("ASR_INPUT_MODE", "MIC_MUTE_WHILE_SPEAKING"):
+            self._sync_input_gate()
+
         elif key == "RECOGNIZER_TYPE":
+            self._sync_input_gate(reset=True)
             engine = str(value)
             self.asr_settings.set_selected_engine(engine)
             # Настройки движка могли поменяться и без смены самого движка —
@@ -695,11 +705,41 @@ class SpeechController(SpeechService):
             )
         else:
             self._speaking_window.close(source=source, speech_id=speech_id)
+        self._sync_input_gate()
+
+    def _sync_input_gate(self, *, reset=False):
+        gate = SpeechRecognition._input_gate
+        if reset:
+            gate.reset()
+        input_mode = normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "vad"))
+        mute_while_speaking = input_mode == "ptt" or bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
+        gate.configure(
+            input_mode=input_mode,
+            enabled=bool(self.settings.get("MIC_ACTIVE", False)),
+            blocked_until=(self._speaking_window.blocked_until()
+                           if mute_while_speaking else 0.0),
+        )
+        SpeechRecognition.publish_input_gate()
+
+    def _on_asr_ptt_state(self, event: Event):
+        self._sync_input_gate()
+        data = event.data or {}
+        session_id = data.get("session_id", "")
+        # Re-check after EventBus delivery: ownership may have changed since dispatch.
+        if session_id != self._player_turn_owner():
+            return
+        if SpeechRecognition._input_gate.ptt(
+            active=data.get("active"), session_id=session_id,
+            generation=data.get("generation"), cancelled=data.get("cancelled", False),
+        ):
+            SpeechRecognition.publish_input_gate()
 
     def _on_client_disconnected(self, event: Event):
         client_id = str((event.data or {}).get("client_id") or "")
         if client_id:
             self._speaking_window.close_source(client_id)
+        SpeechRecognition._input_gate.disconnect(client_id)
+        self._sync_input_gate()
 
     def _is_mita_speaking(self) -> bool:
         return self._speaking_window.is_active()
@@ -714,6 +754,11 @@ class SpeechController(SpeechService):
             return
         if not bool(self.settings.get("MIC_ACTIVE")):
             performance_traces().finish(trace_id, "ignored", error_stage="asr.inactive") if trace_id else None
+            return
+
+        capture_context = data.get("capture_context")
+        if isinstance(capture_context, dict) and not SpeechRecognition._input_gate.valid(capture_context):
+            performance_traces().finish(trace_id, "ignored", error_stage="asr.capture_cancelled") if trace_id else None
             return
 
         # Не засчитываем то, что говорит сама Мита (её голос ловит микрофон),
@@ -738,7 +783,9 @@ class SpeechController(SpeechService):
         # получал два хода из одной фразы.
         # Адресат фиксируется здесь же, где принято решение «ход у игры»: пока
         # фраза дойдёт до отправки, активной может стать другая сессия мода.
-        turn_owner = self._player_turn_owner()
+        turn_owner = (str(capture_context.get("session_id") or "")
+                      if isinstance(capture_context, dict) and capture_context.get("input_mode") == "ptt"
+                      else self._player_turn_owner())
         if turn_owner:
             utterance_id = uuid.uuid4().hex
             self._claim_game_turn(utterance_id)

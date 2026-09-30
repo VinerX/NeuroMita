@@ -3,6 +3,7 @@ from core.error_utils import format_exception
 
 import asyncio
 import re
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -10,6 +11,7 @@ from typing import Awaitable, Callable
 import numpy as np
 
 from handlers.asr_audio_devices import refresh_portaudio_catalog
+from handlers.asr_input_gate import ASRInputGate
 
 
 class AudioCaptureError(RuntimeError):
@@ -199,6 +201,108 @@ class AudioCaptureConfig:
     min_speech_duration: float = 0.35
 
 
+class AudioSegmenter:
+    """Assembles bounded VAD or PTT segments independently of the audio device."""
+
+    def __init__(self, config: AudioCaptureConfig, gate: ASRInputGate):
+        self.config = config
+        self.gate = gate
+        self._context = gate.snapshot()
+        self._pre: deque[np.ndarray] = deque()
+        self._buffer: list[np.ndarray] = []
+        self._speech_frames = 0
+        self._silence_frames = 0
+        self._tail_frames = 0
+        self._press = None
+        self._exhausted = None
+
+    def _clear(self):
+        self._pre.clear()
+        self._buffer.clear()
+        self._speech_frames = self._silence_frames = self._tail_frames = 0
+        self._press = self._exhausted = None
+
+    def _remember(self, audio, duration):
+        self._pre.append(audio.copy())
+        limit = max(0, round(duration * self.config.sample_rate))
+        excess = sum(len(chunk) for chunk in self._pre) - limit
+        while excess > 0 and self._pre:
+            chunk = self._pre.popleft()
+            if len(chunk) > excess:
+                self._pre.appendleft(chunk[excess:])
+                break
+            excess -= len(chunk)
+
+    def _finish(self, *, ptt=False):
+        config = self.config
+        audio = np.concatenate(self._buffer).reshape(-1)
+        enough = self._speech_frames >= max(1, round(config.min_speech_duration * config.sample_rate))
+        context = dict(self._context)
+        press = self._press
+        self._clear()
+        if ptt:
+            self._exhausted = press
+        if enough:
+            return audio[:max(1, round(config.max_speech_duration * config.sample_rate))], context
+        return None
+
+    def feed(self, audio: np.ndarray, probability: float):
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        config = self.config
+        state = self.gate.snapshot()
+        if state["epoch"] != self._context["epoch"] or state["input_mode"] != self._context["input_mode"]:
+            self._clear()
+            self._context = state
+        if not state["permitted"]:
+            self._clear()
+            return None
+        voiced = probability > config.vad_threshold
+        maximum = max(1, round(config.max_speech_duration * config.sample_rate))
+        if state["input_mode"] == "ptt":
+            previous_segment = None
+            press = (state["session_id"], state["press_generation"])
+            if state["active"] and press != self._exhausted:
+                if self._press != press:
+                    if self._buffer:
+                        previous_segment = self._finish(ptt=True)
+                    self._buffer = list(self._pre)
+                    self._pre.clear()
+                    self._speech_frames = self._silence_frames = self._tail_frames = 0
+                    self._press = press
+                    self._context = state
+                self._buffer.append(audio.copy())
+                self._speech_frames += len(audio) if voiced else 0
+                if sum(len(chunk) for chunk in self._buffer) >= maximum:
+                    return self._finish(ptt=True)
+            elif self._buffer:
+                self._buffer.append(audio.copy())
+                self._speech_frames += len(audio) if voiced else 0
+                self._tail_frames += len(audio)
+                if self._tail_frames >= round(0.128 * config.sample_rate) or sum(len(chunk) for chunk in self._buffer) >= maximum:
+                    return self._finish(ptt=True)
+            elif not state["active"]:
+                self._remember(audio, 0.2)
+            return previous_segment
+
+        if voiced:
+            if not self._buffer:
+                self._buffer = list(self._pre)
+                self._pre.clear()
+                self._context = state
+            self._buffer.append(audio.copy())
+            self._speech_frames += len(audio)
+            self._silence_frames = 0
+        elif self._buffer:
+            self._buffer.append(audio.copy())
+            self._silence_frames += len(audio)
+        else:
+            self._remember(audio, config.pre_buffer_duration)
+        if self._buffer and (self._silence_frames >= max(1, round(config.silence_timeout * config.sample_rate / config.chunk_size)) * config.chunk_size
+                             or sum(len(chunk) for chunk in self._buffer) >= maximum):
+            return self._finish()
+        return None
+
+
 class AudioCaptureService:
     """Owns live microphone capture, VAD and speech-segment assembly."""
 
@@ -214,6 +318,9 @@ class AudioCaptureService:
         speech_probability: Callable[[np.ndarray, int], float],
         on_segment: Callable[[np.ndarray, int], Awaitable[None]],
         on_ready: Callable[[], None] | None = None,
+        input_gate: ASRInputGate | None = None,
+        on_segment_context: Callable[[np.ndarray, int, dict], Awaitable[None]] | None = None,
+        background_transcription: bool = False,
     ) -> None:
         try:
             import sounddevice as sd
@@ -250,20 +357,8 @@ class AudioCaptureService:
             round(config.chunk_size * capture_sample_rate / config.sample_rate),
         )
 
-        # Округляем, а не отсекаем: при chunk=512/16 кГц (32 мс на чанк) усечение
-        # превращало выставленные в настройках 0.15 с в 0.128 с — фактическое
-        # поведение не совпадало со значением в UI.
         chunks_per_sec = config.sample_rate / config.chunk_size
-        silence_chunks_needed = max(1, round(config.silence_timeout * chunks_per_sec))
-        pre_buffer_size = max(0, round(config.pre_buffer_duration * chunks_per_sec))
-        max_speech_chunks = max(1, round(config.max_speech_duration * chunks_per_sec))
-        min_speech_chunks = max(0, round(config.min_speech_duration * chunks_per_sec))
         diagnostic_chunks_needed = max(1, round(10.0 * chunks_per_sec))
-        pre_speech_buffer = deque(maxlen=pre_buffer_size) if pre_buffer_size else None
-        speech_buffer: list[np.ndarray] = []
-        speech_chunks = 0
-        is_speaking = False
-        silence_counter = 0
         overflow_count = 0
         diagnostic_chunks = 0
         diagnostic_sample_count = 0
@@ -271,6 +366,15 @@ class AudioCaptureService:
         diagnostic_peak = 0.0
         diagnostic_max_vad = 0.0
         loop = asyncio.get_running_loop()
+        segmenter = AudioSegmenter(config, input_gate or ASRInputGate())
+        transcriber = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr-transcribe") if background_transcription else None
+        pending = deque()
+
+        async def deliver(audio, context):
+            if on_segment_context is not None:
+                await on_segment_context(audio, config.sample_rate, context)
+            else:
+                await on_segment(audio, config.sample_rate)
 
         try:
             with sd.InputStream(
@@ -287,6 +391,8 @@ class AudioCaptureService:
                 )
                 ready_reported = False
                 while is_active():
+                    while pending and pending[0].done():
+                        pending.popleft().result()
                     try:
                         audio_chunk, overflowed = await loop.run_in_executor(
                             None, stream.read, capture_chunk_size
@@ -348,43 +454,18 @@ class AudioCaptureService:
                                 f"rms={rms:.6f}, max_vad={diagnostic_max_vad:.3f}, "
                                 f"threshold={config.vad_threshold:.3f}"
                             )
-                    should_finalize = False
-                    if probability > config.vad_threshold:
-                        if not is_speaking:
-                            is_speaking = True
-                            speech_buffer.clear()
-                            speech_chunks = 0
-                            if pre_speech_buffer is not None:
-                                speech_buffer.extend(pre_speech_buffer)
-                        speech_buffer.append(audio_chunk)
-                        speech_chunks += 1
-                        silence_counter = 0
-                        should_finalize = len(speech_buffer) >= max_speech_chunks
-                    elif is_speaking:
-                        speech_buffer.append(audio_chunk)
-                        silence_counter += 1
-                        should_finalize = (
-                            silence_counter >= silence_chunks_needed
-                            or len(speech_buffer) >= max_speech_chunks
-                        )
-                    elif pre_speech_buffer is not None:
-                        pre_speech_buffer.append(audio_chunk)
-
-                    if should_finalize and speech_buffer:
-                        audio = np.concatenate(speech_buffer).reshape(-1)
-                        too_short = speech_chunks < min_speech_chunks
-                        speech_buffer.clear()
-                        speech_chunks = 0
-                        is_speaking = False
-                        silence_counter = 0
-                        # Предбуфер копил звук ДО этой реплики: если речь
-                        # продолжится сразу, он подмешал бы в новый сегмент
-                        # хвост уже отданного.
-                        if pre_speech_buffer is not None:
-                            pre_speech_buffer.clear()
-                        if too_short:
-                            continue
-                        await on_segment(audio, config.sample_rate)
+                    segment = segmenter.feed(audio_chunk, probability)
+                    if segment is not None:
+                        audio, context = segment
+                        if transcriber is not None:
+                            if len(pending) >= 3:
+                                self._logger.warning("ASR transcription queue is full; dropping audio segment")
+                            else:
+                                pending.append(transcriber.submit(
+                                    lambda a=audio, c=context: asyncio.run(deliver(a, c))
+                                ))
+                        else:
+                            await deliver(audio, context)
         except AudioCaptureError:
             raise
         except Exception as exc:
@@ -399,5 +480,11 @@ class AudioCaptureService:
                 )
             ) from exc
         finally:
+            if transcriber is not None:
+                try:
+                    for future in pending:
+                        await asyncio.wrap_future(future)
+                finally:
+                    transcriber.shutdown(wait=False, cancel_futures=True)
             if overflow_count:
                 self._logger.warning(f"Переполнений буфера аудиопотока: {overflow_count}")

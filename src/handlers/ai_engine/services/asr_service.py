@@ -9,6 +9,7 @@ import numpy as np
 
 from handlers.asr_audio_capture import AudioCaptureConfig, AudioCaptureService
 from handlers.asr_audio_devices import ASR_CAPTURE_SAMPLE_RATE
+from handlers.asr_input_gate import ASRInputGate
 
 
 class ASRService:
@@ -27,6 +28,8 @@ class ASRService:
 
     def __init__(self, *, emit_event: Callable[[str, Any], None]):
         self.emit_event = emit_event
+        self._input_gate = ASRInputGate()
+        self._capture_generation = 0
 
         self._recognizer = None
         self._engine_id: str = "google"
@@ -54,6 +57,9 @@ class ASRService:
         if m == "get_status":
             return {"running": bool(self._active)}
 
+        if m == "set_input_gate":
+            return self._input_gate.apply(payload)
+
         if m == "start_live":
             engine_id = str(payload.get("engine_id") or "google").strip()
             mic_index = int(payload.get("microphone_index", 0) or 0)
@@ -74,6 +80,11 @@ class ASRService:
             min_speech_duration = float(vad_cfg.get("min_speech_duration", 0.35) or 0.0)
 
             await self._stop_live_internal(reason="restart")
+            gate_state = payload.get("input_gate")
+            if isinstance(gate_state, dict):
+                self._input_gate.apply({**gate_state, "active": False})
+            else:
+                self._input_gate.configure(input_mode=payload.get("input_mode", "vad"))
 
             try:
                 ok = await self._start_live_internal(
@@ -173,6 +184,7 @@ class ASRService:
             "min_speech_duration": min_speech_duration,
         }
         capture = AudioCaptureService(self._logger)
+        capture_generation = self._capture_generation
 
         self._active = True
         service_loop = asyncio.get_running_loop()
@@ -185,13 +197,13 @@ class ASRService:
 
             service_loop.call_soon_threadsafe(_resolve)
 
-        async def _handle_text(text: str):
+        async def _handle_text(text: str, context: dict):
             t = (text or "").strip()
             if t:
-                self.emit_event("text", {"text": t})
+                self.emit_event("text", {"text": t, "capture_context": context})
 
         def _active_flag():
-            return bool(self._active)
+            return bool(self._active and capture_generation == self._capture_generation)
 
         def _speech_probability(audio: np.ndarray, rate: int) -> float:
             import torch
@@ -199,10 +211,13 @@ class ASRService:
             tensor = torch.from_numpy(np.asarray(audio, dtype=np.float32))
             return float(vad_model(tensor, rate).item())
 
-        async def _transcribe_segment(audio: np.ndarray, rate: int) -> None:
+        async def _transcribe_segment(audio: np.ndarray, rate: int, context: dict | None = None) -> None:
+            context = context or self._input_gate.snapshot()
+            if not self._active or capture_generation != self._capture_generation or not self._input_gate.valid(context):
+                return
             text = await rec.transcribe(audio, rate)
-            if text:
-                await _handle_text(text)
+            if text and self._active and capture_generation == self._capture_generation and self._input_gate.valid(context):
+                await _handle_text(text, context)
 
         async def _runner():
             failed = False
@@ -224,6 +239,9 @@ class ASRService:
                             speech_probability=_speech_probability,
                             on_segment=_transcribe_segment,
                             on_ready=_mark_capture_ready,
+                            input_gate=self._input_gate,
+                            on_segment_context=_transcribe_segment,
+                            background_transcription=True,
                         )
                     )
                 )
@@ -236,12 +254,13 @@ class ASRService:
                 else:
                     self.emit_event("error", {"message": format_exception(e)})
             finally:
-                self._active = False
+                if capture_generation == self._capture_generation:
+                    self._active = False
                 if not capture_ready.done():
                     capture_ready.set_exception(
                         RuntimeError("Audio capture stopped before the microphone became ready")
                     )
-                elif not failed and self._stop_reason is None:
+                elif not failed and self._stop_reason is None and capture_generation == self._capture_generation:
                     # Цикл захвата завершился сам, снять его никто не просил —
                     # это авария (например отвалилось устройство).
                     self.emit_event(
@@ -314,6 +333,7 @@ class ASRService:
         emit_status: bool,
     ) -> None:
         self._stop_reason = reason
+        self._capture_generation += 1
         self._active = False
 
         if self._task is not None:

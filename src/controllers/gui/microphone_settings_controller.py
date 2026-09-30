@@ -11,6 +11,7 @@ from core.events import Events, Event
 from core.services import services
 from services.contracts import InstallableCatalogService, SpeechService
 from main_logger import logger
+from handlers.asr_input_gate import normalize_input_mode
 from utils import getTranslationVariant as _
 from .base_controller import BaseController
 
@@ -51,7 +52,7 @@ class MicrophoneSettingsController(BaseController):
         # другой контрол), подтягиваем чекбоксы, а не показываем устаревшее значение.
         self._subscribe_settings(
             self._reflect_external_setting,
-            keys=tuple(self._EXTERNAL_TOGGLES),
+            keys=(*self._EXTERNAL_TOGGLES, "ASR_INPUT_MODE"),
         )
 
         self._ui(self._bind_if_ready)
@@ -59,6 +60,15 @@ class MicrophoneSettingsController(BaseController):
     def _reflect_external_setting(self, change) -> None:
         v = self.view
         if not v:
+            return
+        if change.key == "ASR_INPUT_MODE":
+            combo = getattr(v, "asr_input_mode_combobox", None)
+            if combo is not None:
+                combo.blockSignals(True)
+                try:
+                    combo.setCurrentIndex(combo.findData(normalize_input_mode(change.value)))
+                finally:
+                    combo.blockSignals(False)
             return
         attr = self._EXTERNAL_TOGGLES.get(str(getattr(change, "key", "") or ""))
         if not attr or not hasattr(v, attr):
@@ -99,6 +109,7 @@ class MicrophoneSettingsController(BaseController):
             "mic_mute_while_speaking_checkbox",
             "asr_restart_button",
             "vad_apply_button",
+            "asr_input_mode_combobox",
         )
         for n in need:
             if not hasattr(v, n):
@@ -123,6 +134,9 @@ class MicrophoneSettingsController(BaseController):
                 qt_signal.disconnect(slot)
             except TypeError:
                 return
+
+        safe_disconnect(v.asr_input_mode_combobox.currentIndexChanged, self._on_input_mode_changed)
+        v.asr_input_mode_combobox.currentIndexChanged.connect(self._on_input_mode_changed)
 
         safe_disconnect(v.mic_refresh_button.clicked, self.refresh_microphones)
         v.mic_refresh_button.clicked.connect(self.refresh_microphones)
@@ -176,6 +190,9 @@ class MicrophoneSettingsController(BaseController):
         QTimer.singleShot(400, lambda: self._ui(self.refresh_engines))
 
         QTimer.singleShot(1200, lambda: self._ui(self._bind_if_ready))
+
+    def _on_input_mode_changed(self, _index):
+        self._save_setting("ASR_INPUT_MODE", normalize_input_mode(self.view.asr_input_mode_combobox.currentData()))
 
     def _load_vad_params(self):
         v = self.view

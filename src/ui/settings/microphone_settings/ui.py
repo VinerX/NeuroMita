@@ -160,6 +160,19 @@ def build_microphone_settings_ui(self, parent_layout):
         )
     )
 
+    self.asr_input_mode_combobox = QComboBox()
+    self.asr_input_mode_combobox.addItem(_("Автоматически (VAD)", "Automatic (VAD)"), "vad")
+    self.asr_input_mode_combobox.addItem(_("Удерживать кнопку в игре (PTT)", "Hold key in game (PTT)"), "ptt")
+    from handlers.asr_input_gate import normalize_input_mode
+    self.asr_input_mode_combobox.setCurrentIndex(
+        self.asr_input_mode_combobox.findData(normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "vad")))
+    )
+    self.asr_input_mode_combobox.setToolTip(_(
+        "В режиме PTT клавишей и индикатором управляет игра. Микрофон остаётся включённым.",
+        "In PTT mode the game controls the key and indicator. The microphone stays open.",
+    ))
+    root_lay.addWidget(make_row(_("Режим ввода", "Input mode"), self.asr_input_mode_combobox, label_w))
+
     self.mic_mute_while_speaking_checkbox = QCheckBox("")
     self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
     self.mic_mute_while_speaking_checkbox.setToolTip(_(

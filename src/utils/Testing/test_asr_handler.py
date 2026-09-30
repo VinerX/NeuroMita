@@ -31,6 +31,9 @@ class _FakeFuture:
     def result(self, timeout=None):
         return self._result_value
 
+    def add_done_callback(self, callback):
+        callback(self)
+
 
 class _FakeTask:
     def done(self):
@@ -551,9 +554,11 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         self.assertTrue(switched)
         self.assertEqual(SpeechRecognition.microphone_index, 18)
         self.assertEqual(
-            fake_engine.calls,
+            fake_engine.calls[1:],
             [("asr", "switch_input", {"microphone_index": 18})],
         )
+        self.assertEqual(fake_engine.calls[0][:2], ("asr", "set_input_gate"))
+        self.assertFalse(fake_engine.calls[0][2]["active"])
         self.assertEqual(fake_engine.activations, [])
         self.assertEqual(len(fake_engine.validation_updates), 1)
         service, item_id, replay_payload = fake_engine.validation_updates[0]
