@@ -30,7 +30,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
+    QGridLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -77,15 +77,16 @@ class SchemaForm(QWidget):
         self._form_box = QVBoxLayout(self)
         self._form_box.setContentsMargins(0, 0, 0, 0)
         self._form_box.setSpacing(14)
+        self._form_box.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._form_host = QFrame(self)
         self._form_host.setObjectName("AIHubSchemaForm")
-        self._form_layout = QFormLayout(self._form_host)
+        self._form_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self._form_layout = QVBoxLayout(self._form_host)
         self._form_layout.setContentsMargins(0, 0, 0, 0)
-        self._form_layout.setHorizontalSpacing(16)
-        self._form_layout.setVerticalSpacing(10)
-        self._form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._form_box.addWidget(self._form_host, 1)
+        self._form_layout.setSpacing(16)
+        self._form_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._form_box.addWidget(self._form_host, 0)
 
         if schema:
             self.set_schema(schema)
@@ -168,8 +169,11 @@ class SchemaForm(QWidget):
         for widget in self._slot_widgets.values():
             widget.setParent(self)
         self._slot_hosts.clear()
-        while self._form_layout.rowCount() > 0:
-            self._form_layout.removeRow(0)
+        while self._form_layout.count():
+            item = self._form_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()
+                item.widget().deleteLater()
         self._widgets.clear()
         self._error_labels.clear()
         self._defaults.clear()
@@ -188,7 +192,7 @@ class SchemaForm(QWidget):
         layout.setContentsMargins(0, 4, 0, 4)
         layout.addWidget(widget)
         self._slot_hosts.append(host)
-        self._form_layout.addRow(host)
+        self._form_layout.addWidget(host)
 
     # ---- schema-dialect tolerance -------------------------------------
     # Two schema formats coexist in the codebase:
@@ -245,46 +249,40 @@ class SchemaForm(QWidget):
         help_text = str(entry.get("help") or "")
         label = QLabel(label_text)
         label.setObjectName("AIHubFormLabel")
+        label.setWordWrap(True)
+        label.setFixedWidth(180)
+        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
         if help_text:
             label.setToolTip(help_text)
 
-        # Right column: widget + (optional) help line + error line
-        right_col = QVBoxLayout()
-        right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(4)
-
-        widget_wrap = QHBoxLayout()
-        widget_wrap.setContentsMargins(0, 0, 0, 0)
-        widget_wrap.setSpacing(8)
-        if type_ == "checkbutton" and isinstance(widget, QCheckBox):
-            # Boolean fields should stay compact instead of filling the whole
-            # form column like text inputs.
-            widget_wrap.addWidget(
-                widget,
-                0,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            )
-            widget_wrap.addStretch(1)
+        row = QFrame(self._form_host)
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        grid = QGridLayout(row)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(7)
+        grid.setColumnStretch(1, 1)
+        grid.addWidget(label, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        if type_ == "checkbutton":
+            widget.setMinimumHeight(32)
+            grid.addWidget(widget, 0, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         else:
-            widget_wrap.addWidget(widget, 1)
-        right_col.addLayout(widget_wrap)
-
+            grid.addWidget(widget, 0, 1)
         if help_text:
             help_lbl = QLabel(help_text)
             help_lbl.setObjectName("AIHubFormHelp")
             help_lbl.setWordWrap(True)
-            right_col.addWidget(help_lbl)
-
+            help_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+            grid.addWidget(help_lbl, 1, 1)
         err_lbl = QLabel("")
         err_lbl.setObjectName("AIHubFormError")
         err_lbl.setWordWrap(True)
-        err_lbl.setVisible(False)
-        right_col.addWidget(err_lbl)
+        err_lbl.hide()
+        grid.addWidget(err_lbl, 2, 1)
         self._error_labels[key] = err_lbl
-
-        right_host = QFrame()
-        right_host.setLayout(right_col)
-        self._form_layout.addRow(label, right_host)
+        self._form_layout.addWidget(row)
 
     def _build_widget(
         self,

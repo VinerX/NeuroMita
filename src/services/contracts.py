@@ -1041,6 +1041,7 @@ class VoiceModelService(ABC):
         model_id: str,
         *,
         clear_only: bool = False,
+        device: str | None = None,
         with_ui: bool = True,
         timeout_sec: float | None = None,
     ) -> bool: ...

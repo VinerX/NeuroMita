@@ -141,9 +141,9 @@ QFrame#AIHubCategoryButton[selected="true"] QLabel#AIHubCategoryCount {
 }
 
 QPushButton#AIHubSidebarBtn {
-    background: {panel_bg};
+    background: {control_bg};
     color: {text};
-    border: 1px solid {outline};
+    border: 1px solid {border_soft};
     border-radius: 10px;
     padding: 8px 12px;
     font-weight: 600;
@@ -514,9 +514,9 @@ QPushButton#AIHubPrimary:disabled {
     color: {btn_disabled_fg};
 }
 QPushButton#AIHubSecondary {
-    background: {panel_bg};
+    background: {control_bg};
     color: {text};
-    border: 1px solid {outline};
+    border: 1px solid {border_soft};
     border-radius: 10px;
     padding: 9px 18px;
     font-weight: 600;
@@ -607,6 +607,29 @@ QLabel#AIHubSettingsEmpty {
     color: {muted};
     font-size: 12px;
 }
+QLabel#AIHubSettingsStateTitle {
+    color: {text};
+    font-size: 16px;
+    font-weight: 600;
+}
+QLabel#AIHubSettingsListCount {
+    color: {muted};
+    background: rgba({accent_rgb}, 0.10);
+    border-radius: 7px;
+    padding: 3px 7px;
+    font-size: 11px;
+}
+QPushButton#AIHubStatusIcon, QPushButton#AIHubStatusIcon:disabled {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: {accent};
+}
+QStackedWidget#AIHubSettingsContent, QWidget#AIHubSettingsStatePane,
+QWidget#AIHubSettingsFooter {
+    background: transparent;
+    border: none;
+}
 QFrame#AIHubSettingsCompileCard {
     background: rgba({accent_rgb}, 0.055);
     border: 1px solid {accent_border};
@@ -680,13 +703,16 @@ QLabel#AIHubFormError {
 QFrame#AIHubSchemaForm QLineEdit,
 QFrame#AIHubSchemaForm QComboBox,
 QFrame#AIHubSchemaForm QSpinBox {
-    background: {panel_bg};
+    background: {control_bg};
     color: {text};
-    border: 1px solid {outline};
+    border: 1px solid {border_soft};
     border-radius: 8px;
     padding: 6px 10px;
     font-size: 12px;
     min-height: 22px;
+}
+QFrame#AIHubSchemaForm QComboBox {
+    font-size: 9pt;
 }
 QFrame#AIHubSchemaForm QLineEdit:focus,
 QFrame#AIHubSchemaForm QComboBox:focus,
@@ -700,8 +726,8 @@ QFrame#AIHubSchemaForm QSpinBox[hasError="true"] {
     background: rgba(255,123,123,0.06);
 }
 QFrame#AIHubSchemaForm QWidget#NumberStepper {
-    background: {panel_bg};
-    border: 1px solid {outline};
+    background: {control_bg};
+    border: 1px solid {border_soft};
     border-radius: 8px;
 }
 QFrame#AIHubSchemaForm QSpinBox#NumberStepperValue {

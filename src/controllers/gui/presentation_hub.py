@@ -861,7 +861,9 @@ class _InstallableController:
         service = services().get_optional(VoiceModelService)
         return dict(service.compile_status() or {}) if service is not None else {}
 
-    def compile_model(self, component_id: str, *, clear_only: bool = False) -> bool:
+    def compile_model(
+        self, component_id: str, *, clear_only: bool = False, device: str | None = None
+    ) -> bool:
         service = services().get_optional(VoiceModelService)
         if service is None:
             logger.error(
@@ -870,7 +872,11 @@ class _InstallableController:
             )
             return False
         model_id = str(component_id or "").split(":", 1)[-1]
-        accepted = bool(service.start_compile(model_id, clear_only=clear_only, with_ui=True))
+        accepted = bool(
+            service.start_compile(
+                model_id, clear_only=clear_only, device=device, with_ui=True
+            )
+        )
         if not accepted:
             logger.error(
                 "VoiceModelService rejected Fish Speech+ compilation: "

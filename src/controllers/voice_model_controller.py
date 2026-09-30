@@ -903,6 +903,7 @@ class VoiceModelController(VoiceModelService):
         model_id: str,
         *,
         clear_only: bool = False,
+        device: str | None = None,
         with_ui: bool = True,
         timeout_sec: float = DEFAULT_INSTALL_TIMEOUT_SEC,
     ) -> bool:
@@ -910,6 +911,23 @@ class VoiceModelController(VoiceModelService):
         if mid not in ("medium+", "medium+low"):
             logger.error(f"Compilation is not supported for voice model '{mid}'")
             return False
+        selected_device = None
+        if not clear_only:
+            from handlers.voice_models.base_model import load_voice_model_settings
+
+            device_key = "fsprvc_fsp_device" if mid == "medium+low" else "device"
+            raw_device = str(
+                device if device is not None else load_voice_model_settings(mid).get(device_key) or ""
+            ).strip().lower()
+            if raw_device == "cuda":
+                raw_device = "cuda:0"
+            if not raw_device.startswith("cuda:") or not raw_device[5:].isdigit():
+                logger.error(
+                    f"Fish Speech+ compilation requires a selected CUDA device: "
+                    f"model={mid}, value={raw_device!r}"
+                )
+                return False
+            selected_device = f"cuda:{int(raw_device[5:])}"
         operations = services().get_optional(InstallableOperationsService)
         if operations is None:
             runtime = services().get_optional(RuntimeFeatureService)
@@ -934,7 +952,6 @@ class VoiceModelController(VoiceModelService):
             Events.VoiceModel.MODEL_COMPILE_STARTED,
             {"model_id": mid, "clear_only": bool(clear_only)},
         )
-        selected_device = self._selected_fish_device(mid)
         admission = operations.initialize(
             {
                 "component_id": f"tts:{mid}",
@@ -951,7 +968,7 @@ class VoiceModelController(VoiceModelService):
                 "with_ui": bool(with_ui),
                 "install_style_variant": "ai_hub",
                 "initialize_mode": "clear_cache" if clear_only else "compile",
-                "device": selected_device,
+                **({"device": selected_device} if selected_device is not None else {}),
                 "meta": {"kind": "voice", "item_id": mid, "op": "initialize"},
             }
         )
