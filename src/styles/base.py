@@ -100,6 +100,7 @@ QComboBox::down-arrow {
     height: 12px;
 }
 QComboBox QAbstractItemView {
+    font-size: 9pt;
     background-color: {control_bg};
     border: 1px solid {accent};
     selection-background-color: {accent};

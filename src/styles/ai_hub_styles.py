@@ -711,6 +711,9 @@ QFrame#AIHubSchemaForm QSpinBox {
     font-size: 12px;
     min-height: 22px;
 }
+QFrame#AIHubSchemaForm QComboBox {
+    font-size: 9pt;
+}
 QFrame#AIHubSchemaForm QLineEdit:focus,
 QFrame#AIHubSchemaForm QComboBox:focus,
 QFrame#AIHubSchemaForm QSpinBox:focus {

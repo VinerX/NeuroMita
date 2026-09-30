@@ -136,6 +136,35 @@ class SettingsPanelStateTests(unittest.TestCase):
         self.render(save_status="error", status_text="An exceptionally long failure message " * 20)
         self.assertEqual(geometry(), initial)
 
+    def test_combobox_popup_uses_positive_point_sizes_without_font_warnings(self):
+        from PyQt6.QtCore import qInstallMessageHandler
+        from PyQt6.QtGui import QFontDatabase, QFont
+        font_id = QFontDatabase.addApplicationFont("C:/Windows/Fonts/segoeui.ttf")
+        previous_font = self.app.font()
+        if font_id >= 0:
+            self.app.setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 9))
+        messages = []
+        previous_handler = qInstallMessageHandler(lambda _type, _context, message: messages.append(message))
+        try:
+            self.render(catalog_loading=False, components=(("tts:a", "A"),), selected_component_id="tts:a",
+                        components_revision=1, form_revision=1,
+                        schema=immutable_payload([{"key": "device", "type": "combobox",
+                                                  "options": {"values": ["cpu", "cuda:0"], "default": "cpu"}}]))
+            combo = self.panel._form._widgets["device"]
+            self.assertGreater(combo.font().pointSizeF(), 0)
+            for _ in range(3):
+                combo.showPopup()
+                self.app.processEvents()
+                self.assertGreater(combo.view().font().pointSizeF(), 0)
+                combo.hidePopup()
+                self.app.processEvents()
+            self.assertEqual([message for message in messages if "QFont::setPointSize" in message], [])
+        finally:
+            qInstallMessageHandler(previous_handler)
+            self.app.setFont(previous_font)
+            if font_id >= 0:
+                QFontDatabase.removeApplicationFont(font_id)
+
     def test_spinner_stops_when_panel_is_hidden(self):
         self.panel.grab()
         icon = self.panel._state_pane.icon
