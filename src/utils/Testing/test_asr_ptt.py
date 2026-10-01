@@ -117,9 +117,11 @@ def test_new_session_cancels_old_audio_and_old_release_cannot_steal_owner():
     assert len(audio) == 16 * 512
 
 
-def test_vad_default_still_finalizes_on_silence():
+def test_explicit_vad_still_finalizes_on_silence():
     from handlers.asr_input_gate import ASRInputGate
-    s = segmenter(ASRInputGate())
+    g = ASRInputGate()
+    g.configure(input_mode="vad")
+    s = segmenter(g)
     feed(s, 12)
     assert len(feed(s, 19, 0.0)) == 1
 
@@ -286,12 +288,16 @@ def test_capture_keeps_reading_while_recognition_is_busy(monkeypatch):
         assert later_read.wait(1.0), "Microphone stopped reading during transcription"
         completed.append((len(audio), context["input_mode"]))
     logger = SimpleNamespace(info=lambda *_: None, warning=lambda *_: None)
+    from handlers.asr_input_gate import ASRInputGate
+    automatic_gate = ASRInputGate()
+    automatic_gate.configure(input_mode="vad")
     asyncio.run(capture.AudioCaptureService(logger).run(
         microphone_index=0, config=capture.AudioCaptureConfig(),
         is_active=lambda: state["reads"] < 40,
         speech_probability=lambda audio, _: float(audio[0]),
         on_segment=AsyncMock(), on_segment_context=recognize,
         background_transcription=True,
+        input_gate=automatic_gate,
     ))
     assert state["opens"] == 1
     assert completed == [(31 * 512, "vad")]
@@ -372,7 +378,7 @@ def test_settings_broadcast_has_safe_default_mode_and_microphone_state():
     values = {}
     ctrl._get_setting = lambda key, default=None: values.get(key, default)
     body = ctrl._prepare_loaded_settings_body()
-    assert body["settings"]["ASR_INPUT_MODE"] == "vad"
+    assert body["settings"]["ASR_INPUT_MODE"] == "radio"
     assert body["settings"]["MIC_ACTIVE"] is False
     values.update(ASR_INPUT_MODE=" PTT ", MIC_ACTIVE=True)
     body = ctrl._prepare_loaded_settings_body()
@@ -387,6 +393,7 @@ def test_microphone_ui_mode_persists_and_reflects_external_changes(monkeypatch):
     combo = QComboBox()
     combo.addItem("VAD", "vad")
     combo.addItem("PTT", "ptt")
+    combo.addItem("Radio", "radio")
     ctrl = object.__new__(MicrophoneSettingsController)
     ctrl.view = SimpleNamespace(asr_input_mode_combobox=combo)
     saved = []
@@ -395,7 +402,7 @@ def test_microphone_ui_mode_persists_and_reflects_external_changes(monkeypatch):
     ctrl._on_input_mode_changed(1)
     assert saved == [("ASR_INPUT_MODE", "ptt")]
     ctrl._reflect_external_setting(SimpleNamespace(key="ASR_INPUT_MODE", value="invalid"))
-    assert combo.currentData() == "vad"
+    assert combo.currentData() == "radio"
     assert saved == [("ASR_INPUT_MODE", "ptt")]
     assert app is not None
 

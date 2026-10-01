@@ -75,6 +75,10 @@ def _on_ai_engine_event(event: Event):
     ev = str(data.get("event") or "")
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
 
+    if ev == "capture":
+        get_event_bus().emit(Events.Speech.ASR_CAPTURE_PROGRESS, payload)
+        return
+
     if ev == "text":
         text = str(payload.get("text") or "").strip()
         if text:
@@ -463,6 +467,7 @@ class SpeechRecognition:
                             input_gate=SpeechRecognition._input_gate,
                             on_segment_context=transcribe_segment,
                             background_transcription=True,
+                            on_activity=lambda data: get_event_bus().emit(Events.Speech.ASR_CAPTURE_PROGRESS, data),
                         )
                     else:
                         logger.error(

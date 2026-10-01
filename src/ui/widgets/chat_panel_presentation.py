@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ui.mvvm import UiEffect, UiIntent
-from services.contracts import DialogueRuntimeSnapshot
+from services.contracts import ASRCaptureState, DialogueRuntimeSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,21 @@ class ChatPanelState:
     staged_count: int = 0
     revision: int = 0
     dialogue_snapshot: DialogueRuntimeSnapshot | None = None
+    capture: ASRCaptureState = ASRCaptureState()
+    capture_owned: bool = False
+
+    @property
+    def asr_busy(self) -> bool:
+        return self.capture.enabled and self.capture.phase == "recognizing"
+
+    @property
+    def can_submit(self) -> bool:
+        return self.can_send and not self.asr_busy
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMicrophoneToggled(UiIntent):
+    pass
 
 
 @dataclass(frozen=True, slots=True)

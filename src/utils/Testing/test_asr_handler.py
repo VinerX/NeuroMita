@@ -20,8 +20,15 @@ from handlers.asr_audio_capture import (
     _describe_audio_capture_error,
 )
 from handlers.asr_handler import SpeechRecognition
+from handlers.asr_input_gate import ASRInputGate
 from handlers.asr_models.google_recognizer import GoogleRecognizer
 from utils.native_paths import path_for_native_loader
+
+
+def _automatic_input_gate():
+    gate = ASRInputGate()
+    gate.configure(input_mode="vad")
+    return gate
 
 
 class _FakeFuture:
@@ -378,6 +385,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                     audio,
                     rate,
                 ),
+                input_gate=_automatic_input_gate(),
             )
 
         with patch.dict(sys.modules, {"sounddevice": sounddevice}), patch(
@@ -433,6 +441,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                 is_active=lambda: state["index"] < len(script),
                 speech_probability=lambda audio, _rate: float(audio[0]),
                 on_segment=on_segment,
+                input_gate=_automatic_input_gate(),
             )
 
         with patch.dict(sys.modules, {"sounddevice": sounddevice}):

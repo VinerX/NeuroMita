@@ -150,6 +150,27 @@ QFrame#ChatComposerBar {
     border-radius: 20px;
 }
 
+QFrame#ChatComposerBar[captureActive="true"] {
+    border: 1px solid rgba({accent_rgb}, 0.65);
+}
+QPushButton#ChatMicrophoneButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 13px;
+}
+QPushButton#ChatMicrophoneButton:hover {
+    background: transparent;
+    border-color: transparent;
+}
+QPushButton#ChatMicrophoneButton[captureActive="true"] {
+    background-color: #ec428b;
+    border-color: #ff70ae;
+}
+QPushButton#ChatMicrophoneButton[captureActive="true"]:hover {
+    background-color: #ff579c;
+    border-color: #ff8abc;
+}
+
 QFrame#SandboxInspector {
     /* #15: фон правой панели как у левого блока (SandboxChatHost), а не глубокий
        канвас — панели читаются как один уровень. */

@@ -84,7 +84,7 @@ class ASRService:
             if isinstance(gate_state, dict):
                 self._input_gate.apply({**gate_state, "active": False})
             else:
-                self._input_gate.configure(input_mode=payload.get("input_mode", "vad"))
+                self._input_gate.configure(input_mode=payload.get("input_mode", "radio"))
 
             try:
                 ok = await self._start_live_internal(
@@ -242,6 +242,7 @@ class ASRService:
                             input_gate=self._input_gate,
                             on_segment_context=_transcribe_segment,
                             background_transcription=True,
+                            on_activity=lambda data: self.emit_event("capture", data),
                         )
                     )
                 )

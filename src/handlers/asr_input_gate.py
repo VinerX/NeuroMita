@@ -6,7 +6,8 @@ from collections import deque
 
 
 def normalize_input_mode(value) -> str:
-    return "ptt" if str(value or "").strip().lower() == "ptt" else "vad"
+    mode = str(value or "").strip().lower()
+    return mode if mode in ("radio", "ptt", "vad") else "radio"
 
 
 class ASRInputGate:
@@ -16,8 +17,9 @@ class ASRInputGate:
         self._clock = clock
         self._lock = threading.RLock()
         self._retired = deque(maxlen=64)
-        self._state = dict(input_mode="vad", enabled=True, active=False,
+        self._state = dict(input_mode="radio", enabled=True, active=False,
                            session_id="", generation=-1, press_generation=-1,
+                           target="desktop",
                            epoch=0, revision=0, blocked_until=0.0, lease_until=0.0,
                            needs_release=False)
         self._remote_revision = -1
@@ -58,6 +60,21 @@ class ASRInputGate:
             self._state["revision"] += 1
 
     def ptt(self, *, active: bool, session_id: str, generation: int, cancelled: bool = False) -> bool:
+        return self._set_manual_capture(active=active, session_id=session_id,
+                                        generation=generation, cancelled=cancelled,
+                                        mode="ptt", target="game")
+
+    def radio(self, *, active: bool, session_id: str, generation: int,
+              cancelled: bool = False, target: str = "desktop", renew: bool = False) -> bool:
+        """Start or stop manual VAD capture; renewal cannot reopen a closed lease."""
+        if target not in ("desktop", "game"):
+            return False
+        return self._set_manual_capture(active=active, session_id=session_id,
+                                        generation=generation, cancelled=cancelled,
+                                        mode="radio", target=target, renew=renew)
+
+    def _set_manual_capture(self, *, active: bool, session_id: str, generation: int,
+                            cancelled: bool, mode: str, target: str, renew: bool = False) -> bool:
         if type(active) is not bool or type(generation) is not int or not 0 <= generation <= 2**63 - 1:
             return False
         if type(cancelled) is not bool or not isinstance(session_id, str) or not session_id:
@@ -65,7 +82,11 @@ class ASRInputGate:
         with self._lock:
             self._expire()
             state = self._state
-            if state["input_mode"] != "ptt" or session_id in self._retired:
+            if state["input_mode"] != mode or session_id in self._retired:
+                return False
+            if mode == "radio" and state["active"] and session_id != state["session_id"]:
+                return False
+            if renew and (not state["active"] or session_id != state["session_id"]):
                 return False
             if session_id != state["session_id"]:
                 if not active:
@@ -79,6 +100,9 @@ class ASRInputGate:
             if generation <= state["generation"] and not same_generation_release:
                 return False
             was_active = state["active"]
+            state["target"] = target
+            if mode == "radio" and target == "desktop" and not renew and self._permitted():
+                state["needs_release"] = False
             state["generation"] = generation
             if not active or cancelled:
                 state["needs_release"] = False
@@ -127,5 +151,5 @@ class ASRInputGate:
             return (context.get("epoch") == self._state["epoch"]
                     and context.get("input_mode") == self._state["input_mode"]
                     and self._permitted()
-                    and (context.get("input_mode") != "ptt"
+                    and (context.get("input_mode") not in ("ptt", "radio")
                          or context.get("session_id") == self._state["session_id"]))

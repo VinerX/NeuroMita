@@ -3,6 +3,7 @@ from core.error_utils import format_exception
 
 import asyncio
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from dataclasses import dataclass
@@ -202,7 +203,7 @@ class AudioCaptureConfig:
 
 
 class AudioSegmenter:
-    """Assembles bounded VAD or PTT segments independently of the audio device."""
+    """Assemble bounded automatic, radio or held-button speech segments."""
 
     def __init__(self, config: AudioCaptureConfig, gate: ASRInputGate):
         self.config = config
@@ -239,12 +240,19 @@ class AudioSegmenter:
         enough = self._speech_frames >= max(1, round(config.min_speech_duration * config.sample_rate))
         context = dict(self._context)
         press = self._press
+        silence_frames = self._silence_frames
         self._clear()
+        if context["input_mode"] == "radio" and self.gate.snapshot()["active"] and silence_frames:
+            self._remember(audio[-min(silence_frames, round(0.5 * config.sample_rate)):], 0.5)
         if ptt:
             self._exhausted = press
         if enough:
             return audio[:max(1, round(config.max_speech_duration * config.sample_rate))], context
         return None
+
+    @property
+    def has_speech(self) -> bool:
+        return bool(self._buffer)
 
     def feed(self, audio: np.ndarray, probability: float):
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
@@ -258,6 +266,28 @@ class AudioSegmenter:
             return None
         voiced = probability > config.vad_threshold
         maximum = max(1, round(config.max_speech_duration * config.sample_rate))
+        previous_segment = None
+        if state["input_mode"] == "radio":
+            if not state["active"]:
+                self._pre.clear()
+                if not self._buffer:
+                    return None
+                remaining = max(0, round(0.5 * config.sample_rate) - self._silence_frames)
+                self._buffer.append(audio[:remaining].copy())
+                self._silence_frames += min(len(audio), remaining)
+                if self._silence_frames >= round(0.5 * config.sample_rate):
+                    return self._finish()
+                return None
+            press = (state["session_id"], state["press_generation"])
+            if self._press is not None and self._press != press:
+                if self._buffer:
+                    previous_segment = self._finish()
+                self._clear()
+            self._press = press
+            pre_duration, silence_duration = 0.5, 0.5
+        else:
+            pre_duration = config.pre_buffer_duration
+            silence_duration = max(1, round(config.silence_timeout * config.sample_rate / config.chunk_size)) * config.chunk_size / config.sample_rate
         if state["input_mode"] == "ptt":
             previous_segment = None
             press = (state["session_id"], state["press_generation"])
@@ -293,14 +323,16 @@ class AudioSegmenter:
             self._speech_frames += len(audio)
             self._silence_frames = 0
         elif self._buffer:
-            self._buffer.append(audio.copy())
-            self._silence_frames += len(audio)
+            tail_limit = max(1, round(silence_duration * config.sample_rate))
+            remaining = tail_limit - self._silence_frames
+            self._buffer.append(audio[:remaining].copy())
+            self._silence_frames += min(len(audio), remaining)
         else:
-            self._remember(audio, config.pre_buffer_duration)
-        if self._buffer and (self._silence_frames >= max(1, round(config.silence_timeout * config.sample_rate / config.chunk_size)) * config.chunk_size
+            self._remember(audio, pre_duration)
+        if self._buffer and (self._silence_frames >= max(1, round(silence_duration * config.sample_rate))
                              or sum(len(chunk) for chunk in self._buffer) >= maximum):
             return self._finish()
-        return None
+        return previous_segment
 
 
 class AudioCaptureService:
@@ -321,6 +353,7 @@ class AudioCaptureService:
         input_gate: ASRInputGate | None = None,
         on_segment_context: Callable[[np.ndarray, int, dict], Awaitable[None]] | None = None,
         background_transcription: bool = False,
+        on_activity: Callable[[dict], None] | None = None,
     ) -> None:
         try:
             import sounddevice as sd
@@ -369,12 +402,39 @@ class AudioCaptureService:
         segmenter = AudioSegmenter(config, input_gate or ASRInputGate())
         transcriber = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr-transcribe") if background_transcription else None
         pending = deque()
+        activity_lock = threading.RLock()
+        activity = {"speech": False, "transcribing": 0, "phase": None}
+
+        def report_activity(*, speech=None, transcribing_delta=0):
+            if on_activity is None:
+                return
+            with activity_lock:
+                if speech is not None:
+                    activity["speech"] = speech
+                activity["transcribing"] += transcribing_delta
+                state = segmenter.gate.snapshot()
+                listening = state["permitted"] and (state["input_mode"] == "vad" or state["active"])
+                phase = ("recognizing" if activity["transcribing"] else
+                         "speech" if activity["speech"] else "listening" if listening else "idle")
+                if phase != activity["phase"]:
+                    activity["phase"] = phase
+                    on_activity({"phase": phase, "capture_context": state})
 
         async def deliver(audio, context):
-            if on_segment_context is not None:
-                await on_segment_context(audio, config.sample_rate, context)
-            else:
-                await on_segment(audio, config.sample_rate)
+            if not segmenter.gate.valid(context):
+                return
+            report_activity(transcribing_delta=1)
+            try:
+                if on_segment_context is not None:
+                    await on_segment_context(audio, config.sample_rate, context)
+                else:
+                    await on_segment(audio, config.sample_rate)
+            except Exception as exc:
+                self._logger.error(f"ASR transcription failed: {format_exception(exc)}", exc_info=True)
+                if on_activity is not None:
+                    on_activity({"phase": "error", "error": str(exc), "capture_context": context})
+            finally:
+                report_activity(transcribing_delta=-1)
 
         try:
             with sd.InputStream(
@@ -431,8 +491,12 @@ class AudioCaptureService:
                             target_frames=config.chunk_size,
                         )
 
-                    probability = float(speech_probability(audio_chunk.reshape(-1), config.sample_rate))
-                    if diagnostic_chunks < diagnostic_chunks_needed:
+                    gate_state = segmenter.gate.snapshot()
+                    detect_speech = gate_state["permitted"] and (
+                        gate_state["input_mode"] == "vad" or gate_state["active"]
+                    )
+                    probability = float(speech_probability(audio_chunk.reshape(-1), config.sample_rate)) if detect_speech else 0.0
+                    if detect_speech and diagnostic_chunks < diagnostic_chunks_needed:
                         flat_chunk = audio_chunk.reshape(-1)
                         diagnostic_chunks += 1
                         diagnostic_sample_count += len(flat_chunk)
@@ -449,12 +513,13 @@ class AudioCaptureService:
                                 diagnostic_square_sum / max(1, diagnostic_sample_count)
                             ) ** 0.5
                             self._logger.info(
-                                "Проверка входа ASR за первые 10 с: "
+                                "Проверка входа ASR за первые 10 с слушания: "
                                 f"device={microphone_index}, peak={diagnostic_peak:.6f}, "
                                 f"rms={rms:.6f}, max_vad={diagnostic_max_vad:.3f}, "
                                 f"threshold={config.vad_threshold:.3f}"
                             )
                     segment = segmenter.feed(audio_chunk, probability)
+                    report_activity(speech=segmenter.has_speech)
                     if segment is not None:
                         audio, context = segment
                         if transcriber is not None:

@@ -469,7 +469,7 @@ class ServerController:
                 settings[str(setting)] = False
                 continue
             defaults = {
-                "ASR_INPUT_MODE": "vad",
+                "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
