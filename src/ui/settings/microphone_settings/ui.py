@@ -163,7 +163,7 @@ def build_microphone_settings_ui(self, parent_layout):
     self.asr_input_mode_combobox = QComboBox()
     self.asr_input_mode_combobox.addItem(_("Рация — включать кнопкой", "Radio — start with a button"), "radio")
     self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
-    self.asr_input_mode_combobox.addItem(_("Удерживать кнопку в игре", "Hold a button in game"), "ptt")
+    self.asr_input_mode_combobox.addItem("Push-to-talk", "ptt")
     from handlers.asr_input_gate import normalize_input_mode
     self.asr_input_mode_combobox.setCurrentIndex(
         self.asr_input_mode_combobox.findData(normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio")))
