@@ -135,7 +135,7 @@ SET LOCAL p_rules = """
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
-- "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+- Use dedicated fields and typed intents listed in [Unity Intent Contract] for supported actions. Use "commands" only for commands explicitly exposed by the current runtime (for example camera_snapshot or commands described in [Unity Runtime Rules]). Never invent command names.
 """ + p_intents_rules + """
 
 Rules:
@@ -171,7 +171,7 @@ SET LOCAL p_graph_rules = """
 Field descriptions:
 - "text" must contain ONLY spoken words. NEVER put XML tags in text.
 - "animations": play animation once, "idle_animations": set as idle/loop.
-- "commands": CHARACTER ACTIONS ONLY (Walk, Run, Stop, Dance, etc.). NEVER put tool names here.
+- Use dedicated fields and typed intents listed in [Unity Intent Contract] for supported actions. Use "commands" only for commands explicitly exposed by the current runtime (for example camera_snapshot or commands described in [Unity Runtime Rules]). Never invent command names.
 """ + p_intents_rules + """
 
 Rules:
