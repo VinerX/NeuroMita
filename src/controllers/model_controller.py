@@ -185,7 +185,8 @@ class ModelController(GenerationService, ModelStateService):
 
         self.context_counter = ContextCounter(encoding_model="gpt-4o-mini")
         self.model_pricing_manager = ModelPricingManager()
-        self._base_prompt_cache: dict[tuple[str, str], list[dict]] = {}
+        self._context_snapshot_cache: dict[tuple[str, str], list[dict]] = {}
+        self._context_snapshot_lock = threading.RLock()
         self._last_token_stats: dict[str, Any] = {}
 
         self._game_states_by_character_id: dict[str, GameState] = {}
@@ -919,21 +920,14 @@ class ModelController(GenerationService, ModelStateService):
     # Token counting / cost
     # ---------------------------------------------------------------------
 
-    def _cache_base_prompt(self, character_id: str, event_type: str, messages: list[dict]) -> None:
-        """Кэш промпта для подсчёта токенов.
-
-        Раньше здесь был deepcopy всего промпта — вместе с base64-картинками, на
-        каждый ответ. Картинки в кэше не нужны: ContextCounter считает image_url
-        фиксированной ценой, поэтому редакция url не меняет число токенов.
-        """
+    def _record_context_snapshot(self, character_id: str, event_type: str, messages: list[dict]) -> None:
+        """Record the assembled request without retaining image payloads."""
         if not character_id or not isinstance(messages, list):
             return
 
-        safe = redact_image_payloads(list(messages))
-        if safe and isinstance(safe[-1], dict) and safe[-1].get("role") == "user":
-            safe = safe[:-1]
-
-        self._base_prompt_cache[(character_id, event_type)] = safe
+        safe = copy.deepcopy(redact_image_payloads(list(messages)))
+        with self._context_snapshot_lock:
+            self._context_snapshot_cache[(character_id, event_type)] = safe
 
     @staticmethod
     def _is_current_preset_label(label: str | None) -> bool:
@@ -981,74 +975,14 @@ class ModelController(GenerationService, ModelStateService):
         logger.info(f"[ModelController] react policy: level={lvl}, provider_label='{label}', preset_id={preset_id}")
         return preset_id
 
-    def _warm_base_prompt(self, cid: str, event_type: str) -> list[dict] | None:
-        """Собрать базовый промпт БЕЗ запроса — чтобы счётчик токенов под чатом
-        показывал контекст ещё до отправки первого сообщения (#1).
-
-        Используем настоящий PromptBuilderService (единый источник сборки), без
-        user_input/rag — это статическая часть окна (система + память + история).
-        RAG и текст сообщения добавятся сверху при реальном запросе. Всё
-        защищено: любая ошибка → None, счётчик просто останется на 0, как раньше.
-        """
-        try:
-            char = self._get_character_ref(cid)
-            if char is None:
-                return None
-            char_name = str(getattr(char, "display_name", "") or "")
-            policy = resolve_policy(model_event_type=str(event_type))
-            preset_id = self._resolve_chat_preset_id(cid)
-            capabilities: Dict[str, Any] = {}
-            try:
-                capabilities = dict(getattr(self.preset_resolver.resolve(preset_id), "capabilities", {}) or {})
-            except Exception:
-                capabilities = {}
-            capabilities["working_state"] = bool(self.settings.get("ENABLE_WORKING_STATE", False))
-            capabilities["action_memory"] = bool(self.settings.get("ENABLE_ACTION_MEMORY", False))
-            cfg = getattr(self.model, "cfg", None)
-            memory_limit = int(getattr(cfg, "memory_limit", 40) or 40)
-            prompt_request = PromptBuildRequest(
-                character=char,
-                event_type=event_type,
-                policy=policy,
-                user_input="",
-                memory_limit=memory_limit,
-                is_game_master=(cid == "GameMaster"),
-                separate_prompts=bool(self.settings.get("SEPARATE_PROMPTS", True)),
-                capabilities=capabilities,
-                game_state=self._get_game_state_for_character(cid),
-            )
-            with character_lock(cid):
-                built = use(PromptBuilderService).build(prompt_request)
-            # НЕ кладём в _base_prompt_cache: тот кэш — авторитетный слепок
-            # реального запроса. Оценку считаем свежей на каждый вызов (пока не
-            # было запроса), чтобы она отражала текущие настройки, а не залипала.
-            return redact_image_payloads(list(getattr(built, "messages", []) or []))
-        except Exception as e:
-            logger.debug(f"[ModelController] warm base prompt failed for {cid}: {format_exception(e)}")
-            return None
-
     def _build_current_context_messages(self) -> tuple[str, list[dict], int]:
+        """Count only the recorded request snapshot; never execute prompt scripts."""
         cid = self._get_current_character_id()
         if not cid:
             return "", [], 0
-
-        event_type = "chat"
-        base = self._base_prompt_cache.get((cid, event_type))
-        if not base:
-            # Кэш ещё не прогрет (не было запросов в этой сессии) — собираем
-            # базовый промпт на лету, чтобы счётчик не висел на нуле до отправки.
-            base = self._warm_base_prompt(cid, event_type)
-        if not base:
-            return cid, [], 0
-
-        # Events.Speech.GET_USER_INPUT удалён: единственный подписчик всегда
-        # возвращал "", то есть это был поход на шину за пустой строкой.
-        messages = list(base)
-        with self._temporary_system_infos_lock:
-            temporary = list(self._temporary_system_infos.get(cid, ()))
-        messages.extend([x for x in temporary if isinstance(x, dict)])
-
-        return cid, messages, self.context_counter.count_tokens(messages)
+        with self._context_snapshot_lock:
+            messages = copy.deepcopy(self._context_snapshot_cache.get((cid, "chat"), []))
+        return cid, messages, self.context_counter.count_tokens(messages) if messages else 0
 
     def _build_token_stats(self) -> dict[str, Any]:
         cid, messages, context_tokens = self._build_current_context_messages()
@@ -1754,7 +1688,7 @@ class ModelController(GenerationService, ModelStateService):
         combined_messages = prompt_data.messages
 
         if event_type == "chat":
-            self._cache_base_prompt(char_id, "chat", combined_messages)
+            self._record_context_snapshot(char_id, "chat", combined_messages)
 
         active_pricing = None
         try:
