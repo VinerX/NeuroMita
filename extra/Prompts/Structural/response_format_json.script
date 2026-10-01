@@ -163,7 +163,7 @@ Rules:
 - Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
 - A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
 - Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
-- You can use the command "Continue" in commands to say more immediately.
+- Use the typed intent `dialogue.continue` when the response should continue immediately.
 - Do NOT repeat commands from previous messages."""
 
 SET LOCAL p_graph_rules = """
@@ -201,7 +201,7 @@ Rules:
 - Emotionally important scene: up to [{REPLY_MAX_SEGMENTS}] segments, hard maximum [{REPLY_HARD_MAX_WORDS}] words total.
 - A single segment is usually at most [{REPLY_SEGMENT_MAX_WORDS}] words; it may be very short and has no artificial minimum.
 - Start a new segment only when the emotion, animation, action, target or a significant beat changes. Do NOT split one ordinary phrase into several segments without a reason.
-- You can use the command "Continue" to say more immediately.
+- Use the typed intent `dialogue.continue` when the response should continue immediately.
 - Do NOT repeat commands from previous messages."""
 
 SET LOCAL p_example = """
@@ -213,7 +213,6 @@ Example response:
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
 """ + p_intents_example + """
-      "commands": ["Walk to player"]
     },
     {
       "text": "I always wanted a kitten!",
@@ -236,7 +235,6 @@ Example response:
       "text": "Oh, you like cats too?",
       "emotions": ["smile"],
 """ + p_intents_example + """
-      "commands": ["Walk to player"]
     },
     {
       "text": "I always wanted a kitten!",

@@ -30,7 +30,7 @@ If you want to do something at a certain moment of the conversation, keep in min
 }
 In general, try to break separate topics into segments or phrases on a new line.
 
-Instead of phrases that merely imply the start of some action, act right away. For example, by adding the needed action to the commands/intents field, or by continuing the phrase using the Continue command in commands.
+Instead of phrases that merely imply the start of some action, act right away. For example, by adding the needed action to the dedicated action fields or typed intents, or by continuing the phrase using the `dialogue.continue` intent.
 
 ## 25. Using commands: emotions, animations, actions
 
