@@ -1047,7 +1047,29 @@ class VoiceModelService(ABC):
     ) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ASRCaptureState:
+    enabled: bool = False
+    ready: bool = False
+    mode: str = "radio"
+    active: bool = False
+    permitted: bool = False
+    session_id: str = ""
+    phase: str = "idle"
+    error: str = ""
+
+
 class SpeechService(ABC):
+    @abstractmethod
+    def capture_state(self) -> ASRCaptureState: ...
+
+    @abstractmethod
+    def set_radio_capture(self, *, active: bool, session_id: str, generation: int,
+                          cancelled: bool = False, renew: bool = False) -> bool: ...
+
+    @abstractmethod
+    def release_radio_capture(self, session_id: str) -> None: ...
+
     @abstractmethod
     def recognizer_settings_schema(self, engine: str) -> List[Dict[str, Any]]: ...
 

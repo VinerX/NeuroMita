@@ -160,6 +160,22 @@ def build_microphone_settings_ui(self, parent_layout):
         )
     )
 
+    self.asr_input_mode_combobox = QComboBox()
+    self.asr_input_mode_combobox.addItem(_("Рация — включать кнопкой", "Radio — start with a button"), "radio")
+    self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
+    self.asr_input_mode_combobox.addItem(_("Удерживать кнопку в игре", "Hold a button in game"), "ptt")
+    from handlers.asr_input_gate import normalize_input_mode
+    self.asr_input_mode_combobox.setCurrentIndex(
+        self.asr_input_mode_combobox.findData(normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio")))
+    )
+    self.asr_input_mode_combobox.setToolTip(_(
+        "Рация слушает после нажатия микрофона в чате. Повторное нажатие завершает слушание. "
+        "Речь выделяется автоматически, с 0,5 с до и после фразы. В игре слушанием управляет кнопка игры.",
+        "Radio listens after clicking the chat microphone. Click again to stop. "
+        "Speech is detected with 0.5 s before and after each phrase. In game, the game button controls capture.",
+    ))
+    root_lay.addWidget(make_row(_("Режим ввода", "Input mode"), self.asr_input_mode_combobox, label_w))
+
     self.mic_mute_while_speaking_checkbox = QCheckBox("")
     self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
     self.mic_mute_while_speaking_checkbox.setToolTip(_(

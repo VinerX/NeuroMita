@@ -684,6 +684,9 @@ class Events:
         SET_GIGAAM_OPTIONS = "set_gigaam_options"
         RESTART_SPEECH_RECOGNITION = "restart_speech_recognition"
         REFRESH_ASR_STATUS = "refresh_asr_status"
+        ASR_PTT_STATE = "asr_ptt_state"
+        ASR_CAPTURE_PROGRESS = "asr_capture_progress"
+        ASR_CAPTURE_CHANGED = "asr_capture_changed"
 
         INSTALL_ASR_MODEL = "install_asr_model"
         CHECK_ASR_MODEL_INSTALLED = "check_asr_model_installed" 

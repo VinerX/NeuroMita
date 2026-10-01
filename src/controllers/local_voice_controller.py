@@ -224,9 +224,9 @@ class LocalVoiceController(LocalVoiceService):
             initialized = bool(future.result(timeout=1.0))
             self._initialized_cache[model_id] = initialized
             return initialized
-        except Exception:
-            self._initialized_cache[model_id] = False
-            return False
+        except Exception as exc:
+            logger.debug(f"TTS readiness probe unavailable for '{model_id}': {format_exception(exc)}")
+            return bool(cached)
 
     # -------------------- select/init/lang --------------------
 

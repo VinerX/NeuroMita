@@ -85,14 +85,21 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
         except Exception:
             self._asr_settings_subscription = None
 
-    def _on_setting_changed(self, _change: Any) -> None:
-        # Component readiness can depend on device/model/provider settings.
-        # A single invalidation point prevents stale per-screen interpretations.
-        self.invalidate()
+    def _invalidate_category(self, category: str) -> None:
+        for entry in catalog_entries():
+            if str(entry.metadata_ru.get("category") or "") == category:
+                self.invalidate(entry.id)
+
+    def _on_setting_changed(self, change: Any) -> None:
+        if str(getattr(change, "key", "") or "") == "VOICE_LANGUAGE":
+            self._invalidate_category("tts")
 
     def _on_asr_setting_changed(self, change: Any) -> None:
         engine_id = str(getattr(change, "engine_id", "") or "").strip()
-        self.invalidate(f"asr:{engine_id}" if engine_id else None)
+        if engine_id:
+            self.invalidate(f"asr:{engine_id}")
+        else:
+            self._invalidate_category("asr")
 
     def close(self) -> None:
         with self._lock:
@@ -834,8 +841,9 @@ class DefaultInstallableCatalogService(InstallableCatalogService):
             for item in (cuda.get("devices") or ())
             if isinstance(item, dict) and item.get("ordinal") is not None
         ]
-        result["voice_language"] = "ru"
-        if self._settings is not None:
+        if category == "tts":
+            result["voice_language"] = "ru"
+        if category == "tts" and self._settings is not None:
             try:
                 result["voice_language"] = str(
                     self._settings.get("VOICE_LANGUAGE", "ru") or "ru"

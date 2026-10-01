@@ -503,7 +503,7 @@ class AppWindowBase(QMainWindow):
         # шёл только если refresh был «отложен» (label ещё не создан) — но при
         # обычном старте это условие ложно, и счётчик висел на плейсхолдере
         # «0/0» до первого запроса/смены настроек. Теперь обновляем всегда:
-        # _build_token_stats соберёт базовый контекст на лету (см. warm-путь).
+        # Счётчик читает снимок записанного запроса; до первого запроса он равен нулю.
         self._token_refresh_pending = False
         QTimer.singleShot(0, self.update_token_count)
         return True

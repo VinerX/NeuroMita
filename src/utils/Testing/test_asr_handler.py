@@ -20,8 +20,15 @@ from handlers.asr_audio_capture import (
     _describe_audio_capture_error,
 )
 from handlers.asr_handler import SpeechRecognition
+from handlers.asr_input_gate import ASRInputGate
 from handlers.asr_models.google_recognizer import GoogleRecognizer
 from utils.native_paths import path_for_native_loader
+
+
+def _automatic_input_gate():
+    gate = ASRInputGate()
+    gate.configure(input_mode="vad")
+    return gate
 
 
 class _FakeFuture:
@@ -30,6 +37,9 @@ class _FakeFuture:
 
     def result(self, timeout=None):
         return self._result_value
+
+    def add_done_callback(self, callback):
+        callback(self)
 
 
 class _FakeTask:
@@ -375,6 +385,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                     audio,
                     rate,
                 ),
+                input_gate=_automatic_input_gate(),
             )
 
         with patch.dict(sys.modules, {"sounddevice": sounddevice}), patch(
@@ -430,6 +441,7 @@ class SpeechRecognitionStartTests(unittest.TestCase):
                 is_active=lambda: state["index"] < len(script),
                 speech_probability=lambda audio, _rate: float(audio[0]),
                 on_segment=on_segment,
+                input_gate=_automatic_input_gate(),
             )
 
         with patch.dict(sys.modules, {"sounddevice": sounddevice}):
@@ -551,9 +563,11 @@ class SpeechRecognitionStartTests(unittest.TestCase):
         self.assertTrue(switched)
         self.assertEqual(SpeechRecognition.microphone_index, 18)
         self.assertEqual(
-            fake_engine.calls,
+            fake_engine.calls[1:],
             [("asr", "switch_input", {"microphone_index": 18})],
         )
+        self.assertEqual(fake_engine.calls[0][:2], ("asr", "set_input_gate"))
+        self.assertFalse(fake_engine.calls[0][2]["active"])
         self.assertEqual(fake_engine.activations, [])
         self.assertEqual(len(fake_engine.validation_updates), 1)
         service, item_id, replay_payload = fake_engine.validation_updates[0]

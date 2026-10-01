@@ -75,6 +75,7 @@ class VoiceoverGuiController(BaseController):
         eb.subscribe(Events.VoiceModel.MODEL_UNINSTALL_FINISHED, self._on_models_changed, weak=False)
         eb.subscribe(Events.VoiceModel.REFRESH_MODEL_PANELS, self._on_models_changed, weak=False)
         eb.subscribe(Events.Install.CATALOG_CHANGED, self._on_models_changed, weak=False)
+        eb.subscribe(Events.Install.COMPONENT_STATUS, self._on_component_status, weak=False)
 
         eb.subscribe(Events.Telegram.SET_SILERO_CONNECTED, self._on_tg_connected_event, weak=False)
         eb.subscribe(Events.Telegram.START_SILERO, self._on_tg_start_requested, weak=False)
@@ -174,6 +175,11 @@ class VoiceoverGuiController(BaseController):
         self._installed_models_cache_ts = 0.0
         self._model_id_to_name_ts = 0.0
         self._ui(lambda: self._sync_everything(allow_autoload=False))
+
+    def _on_component_status(self, event: Event) -> None:
+        payload = event.data if isinstance(event.data, dict) else {}
+        if str(payload.get("component_id") or "").startswith("tts:"):
+            self._ui(lambda: self._sync_everything(allow_autoload=False))
 
     def _on_setting_changed(self, change):
         key = str(change.key or "").strip()
@@ -585,10 +591,19 @@ class VoiceoverGuiController(BaseController):
             voice_models = services().get_optional(VoiceModelService)
             cfgs = voice_models.model_catalog_snapshot() if voice_models is not None else []
             installed_ids = self._canonical_installed_model_ids()
+            catalog = services().get_optional(InstallableCatalogService)
+            availability = None
+            if catalog is not None and current_model_id:
+                selected_status = dict(catalog.get_status(f"tts:{current_model_id}") or {})
+                if selected_status.get("code", "unknown") == "unknown":
+                    availability = "checking"
+                else:
+                    availability = "ready" if selected_status.get("ready") else "unavailable"
             if current_model_id and local_voice is not None:
                 initialized = bool(local_voice.check_initialized(current_model_id))
 
             return {
+                "availability": availability,
                 "cfgs": cfgs,
                 "installed_ids": installed_ids,
                 "current_model_id": current_model_id,
@@ -620,6 +635,7 @@ class VoiceoverGuiController(BaseController):
         current_model_id = self._update_local_models_combobox_from_snapshot(installed_ids, current_model_id)
 
         state = {
+            "availability": str(snapshot.get("availability") or ("ready" if current_model_id in installed_ids else "unavailable")),
             "installed": bool(current_model_id and current_model_id in installed_ids),
             "initialized": initialized,
             "current_model_id": current_model_id,
@@ -694,6 +710,8 @@ class VoiceoverGuiController(BaseController):
 
         ordered_ids = list(self._model_id_to_name.keys())
         ids = [mid for mid in ordered_ids if mid in installed_ids]
+        if current_model_id and current_model_id not in ids:
+            ids.append(current_model_id)
         items = [(self._model_id_to_name.get(mid, mid), mid) for mid in ids]
         self._set_local_model_selector_state(has_models=bool(items))
 
@@ -705,7 +723,7 @@ class VoiceoverGuiController(BaseController):
         finally:
             cb.blockSignals(False)
 
-        if current_model_id and current_model_id in installed_ids:
+        if current_model_id:
             self._set_combobox_by_model_id(current_model_id)
             return current_model_id
 
@@ -829,6 +847,12 @@ class VoiceoverGuiController(BaseController):
             })
             return
 
+        if state.get("availability") == "checking":
+            self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
+                "category": "voice", "state": "loading",
+                "tooltip": _("Проверяем модель озвучки…", "Checking voice model…"),
+            })
+            return
         if not bool(state.get("installed")):
             self.event_bus.emit(Events.GUI.SET_SETTINGS_ICON_INDICATOR, {
                 "category": "voice",
@@ -1031,8 +1055,12 @@ class VoiceoverGuiController(BaseController):
                                      _("Инициализация…", "Initializing…"), None, "")
             return
 
+        if state.get("availability") == "checking":
+            self._apply_model_status(chip, btn, "loading", _("Проверка…", "Checking…"), None, "")
+            return
+
         # Модель не выбрана или не установлена — предлагаем установить (AI Hub).
-        if not model_id or not self._check_installed(model_id):
+        if not model_id or not bool(state.get("installed")):
             self._apply_model_status(chip, btn, "red",
                                      _("Не установлена", "Not installed"),
                                      "install", _("Установить", "Install"))

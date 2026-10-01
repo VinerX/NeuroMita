@@ -27,6 +27,7 @@ from ui.widgets.chat_panel_presentation import (
     ChatClearStagedRequested,
     ChatImagesStaged,
     ChatInputChanged,
+    ChatMicrophoneToggled,
     ChatOpenHistoryRequested,
     ChatPanelActions,
     ChatPanelActivated,
@@ -38,6 +39,7 @@ from ui.widgets.chat_panel_presentation import (
 )
 from ui.widgets.image_preview_widget import ImagePreviewBar
 from ui.widgets.mita_status_widget import MitaStatusWidget
+from ui.widgets.microphone_button import MicrophoneButton
 from utils import _
 
 
@@ -109,7 +111,57 @@ class ChatPanel(QWidget):
         self.composer_warning.setVisible(state.blocked)
         cancel_mode = state.active_generation_count > 0
         self._set_send_button_mode(cancel_mode)
-        self.send_button.setEnabled(cancel_mode or bool(state.can_send))
+        self.send_button.setEnabled(cancel_mode or state.can_submit)
+        self._render_microphone(state)
+
+    def _render_microphone(self, state: ChatPanelState) -> None:
+        capture = state.capture
+        listening = capture.active and capture.permitted
+        self.microphone_button.setVisible(capture.enabled)
+        self.microphone_button.setEnabled(
+            capture.ready and (not capture.active or state.capture_owned)
+        )
+        phase = "error" if capture.error else capture.phase
+        if capture.error:
+            caption = _("Ошибка микрофона · подробности при наведении", "Microphone error · hover for details")
+        elif not capture.ready:
+            caption = _("Подготовка микрофона…", "Preparing microphone…")
+        elif not capture.permitted:
+            caption = _("Мита говорит — микрофон на паузе", "Mita is speaking — microphone paused")
+        elif capture.mode == "ptt":
+            caption = _("Управление кнопкой в игре", "Controlled by the game button")
+        elif capture.mode == "vad" and phase == "idle":
+            caption = _("Постоянное слушание", "Always listening")
+        else:
+            captions = {
+                "idle": _("Рация · нажмите микрофон, чтобы слушать", "Radio · click the microphone to listen"),
+                "listening": _("Слушаю… Говорите, текст появится после паузы.", "Listening… Speak; text will appear after a pause."),
+                "speech": _("Слышу речь…", "Speech detected…"),
+                "recognizing": _("Распознаю…", "Transcribing…"),
+                "error": _("Не удалось распознать · можно повторить", "Transcription failed · try again"),
+            }
+            caption = captions.get(phase, captions["idle"])
+        show_capture_placeholder = capture.enabled and (phase != "idle" or not capture.ready or not capture.permitted)
+        self.user_entry.setPlaceholderText(caption if show_capture_placeholder else _(
+            "Напиши что-нибудь Мите…", "Write something to Mita…",
+        ))
+        self.microphone_button.setToolTip(
+            (capture.error or caption) + "\n" + (
+            _("Остановить слушание", "Stop listening") if listening and capture.mode == "radio" else
+            _("Включить рацию", "Start radio listening") if capture.mode == "radio" else
+            _("Настройки режима микрофона", "Microphone mode settings"))
+        )
+        self.microphone_button.set_capture_visual(active=listening, phase=phase)
+        if bool(self.composer_bar.property("captureActive")) != listening:
+            self.composer_bar.setProperty("captureActive", listening)
+            self.composer_bar.style().unpolish(self.composer_bar)
+            self.composer_bar.style().polish(self.composer_bar)
+
+    def _on_microphone_clicked(self) -> None:
+        if self._state.capture.mode != "radio":
+            self._actions.open_settings("microphone")
+        else:
+            self._view_model.dispatch(ChatMicrophoneToggled())
 
     def _set_send_button_mode(self, cancel_mode: bool) -> None:
         if bool(self.send_button.property("cancelMode")) == cancel_mode:
@@ -144,7 +196,11 @@ class ChatPanel(QWidget):
         if self._state.active_generation_count > 0:
             self._actions.cancel_active_generations()
             return
-        self._actions.send_message()
+        self._send_if_available()
+
+    def _send_if_available(self) -> None:
+        if self._state.can_submit:
+            self._actions.send_message()
 
     def _handle_effect(self, effect) -> None:
         if isinstance(effect, ChatImagesStaged):
@@ -227,7 +283,7 @@ class ChatPanel(QWidget):
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
                 modifiers & Qt.KeyboardModifier.ShiftModifier
             ):
-                self._actions.send_message()
+                self._send_if_available()
                 return True
         return super().eventFilter(obj, event)
 
@@ -414,6 +470,11 @@ class ChatPanel(QWidget):
         bar_layout.addWidget(
             self.send_screen_button, 0, Qt.AlignmentFlag.AlignVCenter
         )
+
+        self.microphone_button = MicrophoneButton()
+        self.microphone_button.setAccessibleName(_("Микрофон — рация", "Microphone — radio"))
+        self.microphone_button.clicked.connect(self._on_microphone_clicked)
+        bar_layout.addWidget(self.microphone_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.send_button = QPushButton(
             qta.icon("fa6s.paper-plane", color="white", scale_factor=0.85), ""
