@@ -170,8 +170,9 @@ def test_capture_skips_vad_before_activation_and_recovers_after_transcription_er
     assert probabilities.call_count == len(script) - 20
     assert len(calls) == 2
     logger.error.assert_called_once()
-    assert sum(item["phase"] == "recognizing" for item in progress) == 2
+    assert sum(item["phase"] == "recognizing" for item in progress) == 1
     assert any(item["phase"] == "error" for item in progress)
+    assert progress[-1]["error"], "A later successful phrase must not hide a lost fragment"
     assert gate.snapshot()["active"]
 
 
@@ -332,3 +333,13 @@ def test_view_model_activation_does_not_open_capture_and_lost_lease_is_not_renew
         speech.set_radio_capture.assert_not_called()
         vm.close()
         speech.release_radio_capture.assert_called_once_with(vm._capture_session)
+
+def test_desktop_can_reclaim_microphone_after_game_and_stale_commands_cannot():
+    gate, _ = radio()
+    assert gate.radio(active=True, session_id="desktop", generation=1)
+    assert gate.radio(active=False, session_id="desktop", generation=2)
+    assert gate.radio(active=True, session_id="game#1", target="game", generation=1)
+    assert gate.radio(active=False, session_id="game#1", target="game", generation=2)
+    assert not gate.radio(active=True, session_id="desktop", generation=1)
+    assert gate.radio(active=True, session_id="desktop", generation=3)
+    assert gate.snapshot()["active"] and gate.snapshot()["target"] == "desktop"

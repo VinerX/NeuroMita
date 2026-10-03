@@ -569,6 +569,7 @@ class ChatServerNew:
         press_generation: int = -1,
         revision: int = 0,
         autosend: bool | None = None,
+        delay_sec: float = 0.0,
     ) -> "Future[bool]":
         """Отправить распознанную фразу конкретной сессии мода.
 
@@ -588,15 +589,18 @@ class ChatServerNew:
             "ts": float(ts or time.time()),
             "final": bool(final),
         }
+        if autosend is not None:
+            payload.update(autosend=bool(autosend), delay_sec=max(0.0, float(delay_sec)))
         if capture_id:
             payload.update(capture_id=capture_id, press_generation=press_generation,
-                           revision=revision, autosend=bool(autosend), session_id=client_id)
+                           revision=revision, autosend=bool(autosend), delay_sec=max(0.0, float(delay_sec)), session_id=client_id)
         return self._schedule_asr_message(client_id, payload)
 
     def schedule_send_asr_capture_state(self, data: dict) -> "Future[bool]":
         target = str(data.get("client_id") or "")
         payload = {key: data[key] for key in (
-            "capture_id", "press_generation", "revision", "phase", "active", "pending", "error") if key in data}
+            "capture_id", "press_generation", "revision", "phase", "active", "pending", "error",
+            "command_generation", "accepted") if key in data}
         payload.update(type="asr_capture_state", session_id=target)
         return self._schedule_asr_message(target, payload)
 

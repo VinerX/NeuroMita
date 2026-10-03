@@ -154,7 +154,7 @@ def test_wire_keeps_preview_final_and_status_in_order_for_original_session():
             assert server.schedule_send_asr_text(
                 client_id="game#1", text="phrase", utterance_id=str(revision), final=final,
                 capture_id="0:1", press_generation=1, revision=revision,
-                autosend=final).result(2)
+                autosend=final, delay_sec=2.5).result(2)
         assert server.schedule_send_asr_capture_state(dict(
             client_id="game#1", capture_id="0:1", press_generation=1,
             revision=3, phase="completed", active=False, pending=0)).result(2)
@@ -162,5 +162,58 @@ def test_wire_keeps_preview_final_and_status_in_order_for_original_session():
     assert [m["type"] for m in messages] == ["asr_text", "asr_text", "asr_capture_state"]
     assert not messages[0]["autosend"] and not messages[0]["final"]
     assert messages[1]["autosend"] and messages[1]["final"]
+    assert messages[1]["delay_sec"] == 2.5
     assert all(m["session_id"] == "game#1" and m["capture_id"] == "0:1" for m in messages)
     assert other.payloads() == []
+
+def test_failed_segment_error_survives_next_enqueue_and_completion():
+    events = []
+    tracker = CaptureProgressTracker(events.append)
+    c = context()
+    tracker.observe(c, c, voiced=True)
+    tracker.enqueue(c)
+    tracker.finish(c, "queue_full")
+    tracker.enqueue(c)
+    tracker.observe(context(active=False), None, voiced=False)
+    tracker.finish(c)
+    assert events[-1]["phase"] == "completed"
+    assert events[-1]["error"] == "queue_full"
+
+
+def test_partial_failed_capture_keeps_text_but_disables_auto_submission(monkeypatch):
+    from core.events import Event
+    from handlers.asr_handler import SpeechRecognition
+    from handlers.asr_input_gate import ASRInputGate
+    from utils.Testing.test_asr_session_routing import _Speech
+    import threading
+    gate = ASRInputGate(clock=lambda: 10)
+    gate.radio(active=True, session_id="game#1", target="game", generation=1)
+    monkeypatch.setattr(SpeechRecognition, "_input_gate", gate)
+    speech = _Speech(turn_owner="game#1")
+    speech.ctrl._capture_ui_lock = threading.RLock()
+    speech.ctrl._capture_phase = "listening"
+    speech.ctrl._capture_error = ""
+    speech.ctrl.mic_recognition_active = speech.ctrl.asr_is_ready = True
+    c = {**gate.snapshot(), "capture_tracking": True}
+    speech.ctrl._on_speech_text_recognized(Event("text", dict(text="saved fragment", capture_context=c)))
+    gate.radio(active=False, session_id="game#1", target="game", generation=2)
+    speech.ctrl._on_capture_progress(Event("progress", dict(
+        phase="completed", capture_context=c, error="queue_full", pending=0, active=False)))
+    final = speech.sent_to_game()[-1]
+    assert final["final"] and final["text"] == "saved fragment"
+    assert not final["autosend"]
+
+
+def test_wire_ack_and_always_on_delay_reach_original_game_session():
+    from utils.Testing.test_asr_session_routing import _Loop, _server, _FakeWriter
+    writer = _FakeWriter()
+    with _Loop() as loop:
+        server = _server(loop, {"game#1": writer})
+        assert server.schedule_send_asr_capture_state(dict(
+            client_id="game#1", phase="ack", active=False,
+            command_generation=7, accepted=False, error="capture_busy")).result(2)
+        assert server.schedule_send_asr_text(client_id="game#1", text="phrase",
+            utterance_id="vad", autosend=True, delay_sec=3).result(2)
+    ack, text = writer.payloads()
+    assert ack["command_generation"] == 7 and not ack["accepted"]
+    assert text["autosend"] and text["delay_sec"] == 3

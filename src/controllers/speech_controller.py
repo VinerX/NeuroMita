@@ -212,6 +212,7 @@ class SpeechController(SpeechService):
 
     def _on_asr_failed_backend(self, _event: Event):
         self.asr_is_ready = False
+        self._sync_input_gate(reset=True)
         with self._capture_ui_lock:
             self._capture_phase = "error"
             self._capture_error = str((_event.data or {}).get("message") or _("Микрофон недоступен", "Microphone unavailable"))
@@ -803,7 +804,7 @@ class SpeechController(SpeechService):
         if reset:
             gate.reset()
         input_mode = normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio"))
-        mute_while_speaking = input_mode in ("ptt", "radio") or bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
+        mute_while_speaking = bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
         gate.configure(
             input_mode=input_mode,
             enabled=bool(self.settings.get("MIC_ACTIVE", False)),
@@ -823,12 +824,23 @@ class SpeechController(SpeechService):
         gate = SpeechRecognition._input_gate
         command = gate.radio if gate.snapshot()["input_mode"] == "radio" else gate.ptt
         extra = {"target": "game"} if gate.snapshot()["input_mode"] == "radio" else {}
-        if command(
+        ready = not data.get("active") or self.mic_active()
+        accepted = ready and command(
             active=data.get("active"), session_id=session_id,
             generation=data.get("generation"), cancelled=data.get("cancelled", False),
             **extra,
-        ):
+        )
+        if accepted:
             SpeechRecognition.publish_input_gate()
+        state = gate.snapshot()
+        active = accepted and state["active"] and state["session_id"] == session_id
+        self.events_bus.emit(Events.Server.SEND_ASR_CAPTURE_STATE, {
+            "client_id": session_id, "phase": "ack", "active": active,
+            "command_generation": data.get("generation"), "accepted": accepted,
+            "error": ("capture_not_ready" if not ready else
+                      "speech_blocked" if not state["permitted"] else "capture_busy")
+                     if data.get("active") and not active else "",
+        })
 
     def _on_client_disconnected(self, event: Event):
         client_id = str((event.data or {}).get("client_id") or "")
@@ -865,7 +877,7 @@ class SpeechController(SpeechService):
             return
 
         now = time.time()
-        if self._is_asr_duplicate(text, now):
+        if not isinstance(capture_context, dict) and self._is_asr_duplicate(text, now):
             performance_traces().finish(trace_id, "ignored", error_stage="asr.duplicate") if trace_id else None
             return
         self._last_text = text
@@ -901,8 +913,6 @@ class SpeechController(SpeechService):
                 "engine": str(self._asr_settings.get("engine", "") or ""),
                 "ts": time.time(),
                 "final": True,
-                # Эти поля остаются только внутри Python для возврата реплики в
-                # desktop-чат, если выбранная игровая сессия успела отключиться.
                 "autosend": autosend,
                 "delay_sec": delay_sec,
             })
@@ -950,6 +960,8 @@ class SpeechController(SpeechService):
         )
 
     def _route_to_desktop(self, text: str, autosend: bool, delay_sec: float, trace_id: str | None = None):
+        if autosend and self._is_mita_speaking():
+            autosend = False
         if autosend and delay_sec <= 0:
             audio = services().get_optional(AudioStateService)
             if not (audio and audio.is_waiting_answer()):

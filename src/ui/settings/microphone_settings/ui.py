@@ -179,10 +179,10 @@ def build_microphone_settings_ui(self, parent_layout):
     self.mic_mute_while_speaking_checkbox = QCheckBox("")
     self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
     self.mic_mute_while_speaking_checkbox.setToolTip(_(
-        "Не засчитывать распознанное, пока Мита говорит (чтобы её голос из колонок не улетал в чат)",
-        "Ignore recognized speech while Mita is talking (so her voice from the speakers isn't sent to chat)"
+        "Приостанавливать распознавание во всех режимах, пока Мита говорит. Для записи через динамики оставьте включённым; в наушниках можно отключить.",
+        "Pause recognition in all modes while Mita is speaking. Keep enabled when using speakers; disable to dictate over her speech with headphones."
     ))
-    root_lay.addWidget(make_row(_("Не слышать Миту", "Ignore Mita's voice"), self.mic_mute_while_speaking_checkbox, label_w))
+    root_lay.addWidget(make_row(_("Приостанавливать распознавание, пока Мита говорит", "Pause recognition while Mita speaks"), self.mic_mute_while_speaking_checkbox, label_w))
 
     # 5) Статус (как раньше) — под кнопками
     status_field = SettingsBodyWidget()

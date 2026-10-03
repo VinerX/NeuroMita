@@ -407,18 +407,19 @@ def test_microphone_ui_mode_persists_and_reflects_external_changes(monkeypatch):
     assert app is not None
 
 
-@pytest.mark.parametrize("mode, permitted", [("vad", True), ("ptt", False)])
-def test_ptt_is_half_duplex_even_when_vad_speech_muting_is_disabled(monkeypatch, mode, permitted):
+@pytest.mark.parametrize("mode", ["ptt", "radio"])
+@pytest.mark.parametrize("mute", [False, True])
+def test_manual_capture_is_permitted_during_mita_speech(monkeypatch, mode, mute):
     from controllers.speech_controller import SpeechController
     from handlers.asr_handler import SpeechRecognition
     g = gate()
     monkeypatch.setattr(SpeechRecognition, "_input_gate", g)
     monkeypatch.setattr(SpeechRecognition, "publish_input_gate", lambda: None)
     ctrl = object.__new__(SpeechController)
-    ctrl.settings = {"MIC_ACTIVE": True, "ASR_INPUT_MODE": mode, "MIC_MUTE_WHILE_SPEAKING": False}
+    ctrl.settings = {"MIC_ACTIVE": True, "ASR_INPUT_MODE": mode, "MIC_MUTE_WHILE_SPEAKING": mute}
     ctrl._speaking_window = SimpleNamespace(blocked_until=lambda: 11.0)
     ctrl._sync_input_gate()
-    assert g.snapshot()["permitted"] is permitted
+    assert g.snapshot()["permitted"] is (not mute)
 
 
 def test_old_capture_generation_cannot_stop_replacement_capture(monkeypatch):
@@ -455,7 +456,9 @@ def test_old_capture_generation_cannot_stop_replacement_capture(monkeypatch):
     asyncio.run(run())
 
 
-def test_controller_speech_and_disconnect_events_cancel_gate(monkeypatch):
+@pytest.mark.parametrize("mode", ["ptt", "radio"])
+@pytest.mark.parametrize("mute", [False, True])
+def test_controller_speech_obeys_protection_and_disconnect(monkeypatch, mode, mute):
     from controllers.speech_controller import SpeechController
     from handlers.asr_handler import SpeechRecognition
     from managers.speaking_window import SpeakingWindow
@@ -467,9 +470,11 @@ def test_controller_speech_and_disconnect_events_cancel_gate(monkeypatch):
     published = []
     monkeypatch.setattr(SpeechRecognition, "publish_input_gate", lambda: published.append(g.snapshot()))
     ctrl = object.__new__(SpeechController)
-    ctrl.settings = {"ASR_INPUT_MODE": "ptt", "MIC_ACTIVE": True, "MIC_MUTE_WHILE_SPEAKING": True}
+    ctrl.settings = {"ASR_INPUT_MODE": mode, "MIC_ACTIVE": True, "MIC_MUTE_WHILE_SPEAKING": mute}
     ctrl._speaking_window = SpeakingWindow(clock=lambda: now[0])
     ctrl._player_turn_owner = lambda: "game#1"
+    ctrl.events_bus = SimpleNamespace(emit=lambda *_: None)
+    ctrl.mic_recognition_active = ctrl.asr_is_ready = True
     def press(active, generation):
         ctrl._on_asr_ptt_state(Event("asr_ptt_state", {
             "active": active, "generation": generation, "session_id": "game#1",
@@ -479,15 +484,33 @@ def test_controller_speech_and_disconnect_events_cancel_gate(monkeypatch):
     ctrl._on_mita_speaking_window(Event("mita_speaking_window", {
         "source": "game#1", "active": True, "speech_id": "mita-1",
     }))
-    assert not g.valid(context)
-    assert not g.snapshot()["active"]
+    if mute:
+        assert not g.valid(context)
+        assert not g.snapshot()["active"]
+        ctrl._on_mita_speaking_window(Event("mita_speaking_window", {
+            "source": "game#1", "active": False, "speech_id": "mita-1",
+        }))
+        now[0] = 11.0
+        press(False, 2)
+        press(True, 3)
+        assert g.snapshot()["active"]
+        ctrl._on_client_disconnected(Event("client_disconnected", {"client_id": "game#1"}))
+        assert not g.snapshot()["active"]
+        return
+    assert g.valid(context)
+    assert g.snapshot()["active"]
+    s = segmenter(g)
+    assert feed(s, 12) == []
+    press(False, 2)
+    completed = feed(s, 20, 0.0)
+    assert len(completed) == 1
+    assert g.valid(completed[0][1])
+    press(True, 3)
+    assert g.snapshot()["active"]
     ctrl._on_mita_speaking_window(Event("mita_speaking_window", {
         "source": "game#1", "active": False, "speech_id": "mita-1",
     }))
     now[0] = 11.0
-    press(True, 2)
-    assert not g.snapshot()["active"]
-    press(False, 3)
     press(True, 4)
     assert g.snapshot()["active"]
     ctrl._on_client_disconnected(Event("client_disconnected", {"client_id": "game#1"}))
@@ -495,6 +518,43 @@ def test_controller_speech_and_disconnect_events_cancel_gate(monkeypatch):
     press(True, 5)
     assert not g.snapshot()["active"]
     assert published[-1]["active"] is False
+
+
+@pytest.mark.parametrize("mode", ["ptt", "radio"])
+@pytest.mark.parametrize("mute", [False, True])
+def test_recognized_manual_speech_obeys_speaker_protection(monkeypatch, mode, mute):
+    from utils.Testing.test_asr_session_routing import _Speech
+    from handlers.asr_handler import SpeechRecognition
+    from core.events import Event
+    g = gate()
+    g.configure(input_mode=mode)
+    capture = g.ptt if mode == "ptt" else g.radio
+    assert capture(active=True, session_id="game#1", generation=1, **({"target": "game"} if mode == "radio" else {}))
+    context = g.snapshot()
+    speech = _Speech(turn_owner="game#1")
+    speech.ctrl.settings.update(ASR_INPUT_MODE=mode, MIC_MUTE_WHILE_SPEAKING=mute)
+    speech.ctrl._is_mita_speaking = lambda: True
+    monkeypatch.setattr(SpeechRecognition, "_input_gate", g)
+    speech.ctrl._on_speech_text_recognized(Event("speech.text_recognized", {
+        "text": "player phrase", "capture_context": context,
+    }))
+    if mute:
+        assert speech.sent_to_game() == []
+    else:
+        assert speech.sent_to_game()[0]["text"] == "player phrase"
+    assert speech.desktop == []
+
+
+@pytest.mark.parametrize("delay", [0.0, 3.0])
+def test_desktop_preserves_recognized_speech_without_autosend_while_mita_speaks(delay):
+    from controllers.speech_controller import SpeechController
+    from core.events import Events
+    ctrl = object.__new__(SpeechController)
+    ctrl._is_mita_speaking = lambda: True
+    sent = []
+    ctrl.events_bus = SimpleNamespace(emit=lambda *args: sent.append(args))
+    ctrl._route_to_desktop("player phrase", True, delay)
+    assert sent == [(Events.GUI.INSERT_TEXT_TO_INPUT, {"text": "player phrase", "autosend_after": 0.0})]
 
 
 def test_reconnected_session_gets_fresh_idle_prebuffer():
@@ -510,3 +570,25 @@ def test_reconnected_session_gets_fresh_idle_prebuffer():
     audio, _ = feed(s, 4, 0.0)[0]
     assert len(audio) == 3200 + 16 * 512
     assert np.all(audio[:3200] == np.float32(0.2))
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_game_command_acknowledges_readiness_and_accepted_state(monkeypatch, ready):
+    from controllers.speech_controller import SpeechController
+    from handlers.asr_handler import SpeechRecognition
+    from core.events import Event, Events
+    g = gate()
+    monkeypatch.setattr(SpeechRecognition, "_input_gate", g)
+    monkeypatch.setattr(SpeechRecognition, "publish_input_gate", lambda: None)
+    ctrl = object.__new__(SpeechController)
+    ctrl.settings = dict(MIC_ACTIVE=True, ASR_INPUT_MODE="ptt", MIC_MUTE_WHILE_SPEAKING=False)
+    ctrl._speaking_window = SimpleNamespace(blocked_until=lambda: 0)
+    ctrl._player_turn_owner = lambda: "game#1"
+    ctrl.mic_recognition_active = ctrl.asr_is_ready = ready
+    sent = []
+    ctrl.events_bus = SimpleNamespace(emit=lambda name, data: sent.append((name, data)))
+    ctrl._on_asr_ptt_state(Event("command", dict(active=True, generation=1, session_id="game#1")))
+    name, ack = sent[-1]
+    assert name == Events.Server.SEND_ASR_CAPTURE_STATE
+    assert ack["phase"] == "ack" and ack["command_generation"] == 1
+    assert ack["active"] is ready and ack["accepted"] is ready
+    assert ack["error"] == ("" if ready else "capture_not_ready")

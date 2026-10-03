@@ -139,6 +139,7 @@ class ServerController:
             "MIC_INSTANT_SENT",
             "ASR_INPUT_MODE",
             "MIC_ACTIVE",
+            "MIC_MUTE_WHILE_SPEAKING",
             "MITA_DIALOGUE_AUTO",
             "DIALOGUE_AUTO_ROUNDS",
             "DIALOGUE_MAX_CHAIN_TURNS",
@@ -473,6 +474,7 @@ class ServerController:
             defaults = {
                 "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
+                "MIC_MUTE_WHILE_SPEAKING": True,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
                 "DIALOGUE_MAX_CHAIN_TURNS": 24,
@@ -772,8 +774,7 @@ class ServerController:
                 engine=str(data.get("engine") or ""),
                 ts=data.get("ts", None),
                 final=bool(data.get("final", True)),
-                **({key: data[key] for key in ("capture_id", "press_generation", "revision", "autosend") if key in data}
-                   if data.get("capture_id") else {}),
+                **{key: data[key] for key in ("capture_id", "press_generation", "revision", "autosend", "delay_sec") if key in data},
             )
         except Exception as exc:
             logger.warning(f"Не удалось отправить asr_text в игру: {format_exception(exc)}")

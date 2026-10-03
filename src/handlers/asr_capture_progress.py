@@ -73,7 +73,6 @@ class CaptureProgressTracker:
         with self._lock:
             entry = self._entry(context)
             entry["pending"] += 1
-            entry["error"] = ""
 
     def finish(self, context, error=""):
         with self._lock:
