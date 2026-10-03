@@ -52,6 +52,7 @@ SEED_RAG_MEMORY Normal | A mounted chainsaw affectionately labeled 'POCHITA SAW'
 SEED_RAG_MEMORY High | A barred metal jail cage (клетка, тюрьма) is located in the Basement, meant for keeping prisoners. ENTITIES Basement, Cage
 SEED_RAG_MEMORY High | A blue console laptop sits on stacked cardboard boxes in front of the jail gate (консоль, ноутбук). ENTITIES Basement, Console
 SEED_RAG_MEMORY Normal | A plush striped cat toy sitting on a watermelon ('Кот на арбузе') rests on a metal storage shelf. ENTITIES Basement
+SEED_RAG_MEMORY High | A digital wall safe in the Basement marks the final boundary between the real world and the game world (сейф). ENTITIES Basement, Reality
 
 // ==========================================
 // 6. LOCATIONS: BATHROOM
