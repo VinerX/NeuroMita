@@ -38,6 +38,7 @@
       "visual_effects": ["glitch,3"]
     },
     {
+      "text": "Жду твоего доклада.",
       "emotions": ["catchQuest"],
       "idle_animations": ["ArmsAtSides"],
       "hint": "Включи консоль и опиши Мите, что на экране"
