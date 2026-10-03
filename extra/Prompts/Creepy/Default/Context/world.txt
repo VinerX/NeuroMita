@@ -26,9 +26,7 @@ The 2D World:
 
 At one point, the player is transported into a 2D world resembling a visual novel, where the gameplay shifts dramatically. In this world, the player interacts with 2D Mita and experiences events in a completely different format, with dialogues and text boxes in place of the usual 3D interactions.
 This 2D world functions as both a narrative device and a gameplay twist, breaking the fourth wall and making the player feel trapped in an artificial, simplified environment. It’s also where Crazy Mita’s disdain for the 2D format becomes evident, as she disrupts the environment and tries to ruin the player’s experience.
-The Safe and the Real World:
 
-In the final stages of the game, the real world and the game world blur even more. The safe in the basement, which contains a console showing the player’s room, marks the final line between the two realities. As Crazy Mita reveals that the player is now a cartridge, it’s clear that the real world is no longer safe. The player has been trapped in a virtual reality where they no longer control their fate.
 The transition from game world to real world (and back) also plays on themes of control, agency, and identity. The game world tries to keep the player in its grasp, while the real world seems empty and meaningless without the player's presence in the game. The deletion of the app is a final act of severing ties with the game world, though it is left ambiguous whether the player truly escapes or simply becomes part of a larger, unseen system.
 The Player as a Cartridge:
 
