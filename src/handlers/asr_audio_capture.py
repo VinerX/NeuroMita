@@ -13,6 +13,7 @@ import numpy as np
 
 from handlers.asr_audio_devices import refresh_portaudio_catalog
 from handlers.asr_input_gate import ASRInputGate
+from handlers.asr_capture_progress import CaptureProgressTracker
 
 
 class AudioCaptureError(RuntimeError):
@@ -254,6 +255,10 @@ class AudioSegmenter:
     def has_speech(self) -> bool:
         return bool(self._buffer)
 
+    @property
+    def buffered_context(self) -> dict | None:
+        return dict(self._context) if self._buffer else None
+
     def feed(self, audio: np.ndarray, probability: float):
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         config = self.config
@@ -402,39 +407,22 @@ class AudioCaptureService:
         segmenter = AudioSegmenter(config, input_gate or ASRInputGate())
         transcriber = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr-transcribe") if background_transcription else None
         pending = deque()
-        activity_lock = threading.RLock()
-        activity = {"speech": False, "transcribing": 0, "phase": None}
-
-        def report_activity(*, speech=None, transcribing_delta=0):
-            if on_activity is None:
-                return
-            with activity_lock:
-                if speech is not None:
-                    activity["speech"] = speech
-                activity["transcribing"] += transcribing_delta
-                state = segmenter.gate.snapshot()
-                listening = state["permitted"] and (state["input_mode"] == "vad" or state["active"])
-                phase = ("recognizing" if activity["transcribing"] else
-                         "speech" if activity["speech"] else "listening" if listening else "idle")
-                if phase != activity["phase"]:
-                    activity["phase"] = phase
-                    on_activity({"phase": phase, "capture_context": state})
+        progress = CaptureProgressTracker(on_activity or (lambda data: None))
 
         async def deliver(audio, context):
-            if not segmenter.gate.valid(context):
-                return
-            report_activity(transcribing_delta=1)
+            error = ""
             try:
+                if not segmenter.gate.valid(context):
+                    return
                 if on_segment_context is not None:
                     await on_segment_context(audio, config.sample_rate, context)
                 else:
                     await on_segment(audio, config.sample_rate)
             except Exception as exc:
+                error = "transcription_failed"
                 self._logger.error(f"ASR transcription failed: {format_exception(exc)}", exc_info=True)
-                if on_activity is not None:
-                    on_activity({"phase": "error", "error": str(exc), "capture_context": context})
             finally:
-                report_activity(transcribing_delta=-1)
+                progress.finish(context, error)
 
         try:
             with sd.InputStream(
@@ -519,12 +507,17 @@ class AudioCaptureService:
                                 f"threshold={config.vad_threshold:.3f}"
                             )
                     segment = segmenter.feed(audio_chunk, probability)
-                    report_activity(speech=segmenter.has_speech)
                     if segment is not None:
                         audio, context = segment
+                        context = {**context, "capture_tracking": True}
+                        progress.enqueue(context)
+                    progress.observe(segmenter.gate.snapshot(), segmenter.buffered_context,
+                                     voiced=detect_speech and probability > config.vad_threshold)
+                    if segment is not None:
                         if transcriber is not None:
                             if len(pending) >= 3:
                                 self._logger.warning("ASR transcription queue is full; dropping audio segment")
+                                progress.finish(context, "queue_full")
                             else:
                                 pending.append(transcriber.submit(
                                     lambda a=audio, c=context: asyncio.run(deliver(a, c))

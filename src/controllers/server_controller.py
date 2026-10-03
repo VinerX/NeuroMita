@@ -139,6 +139,7 @@ class ServerController:
             "MIC_INSTANT_SENT",
             "ASR_INPUT_MODE",
             "MIC_ACTIVE",
+            "MIC_MUTE_WHILE_SPEAKING",
             "MITA_DIALOGUE_AUTO",
             "DIALOGUE_AUTO_ROUNDS",
             "DIALOGUE_MAX_CHAIN_TURNS",
@@ -188,6 +189,7 @@ class ServerController:
         eb.subscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update, weak=False)
 
         eb.subscribe(Events.Server.SEND_ASR_TEXT, self._on_send_asr_text, weak=False)
+        eb.subscribe(Events.Server.SEND_ASR_CAPTURE_STATE, self._on_send_asr_capture_state, weak=False)
 
     def _unsubscribe_from_events(self):
         if self.event_bus and not self._destroyed:
@@ -201,6 +203,7 @@ class ServerController:
             eb.unsubscribe(Events.Server.SEND_TASK_UPDATE, self._on_send_task_update)
 
             eb.unsubscribe(Events.Server.SEND_ASR_TEXT, self._on_send_asr_text)
+            eb.unsubscribe(Events.Server.SEND_ASR_CAPTURE_STATE, self._on_send_asr_capture_state)
 
     def _init_server(self):
         from game_connections.server import ChatServerNew
@@ -471,6 +474,7 @@ class ServerController:
             defaults = {
                 "ASR_INPUT_MODE": "radio",
                 "MIC_ACTIVE": False,
+                "MIC_MUTE_WHILE_SPEAKING": True,
                 "MITA_DIALOGUE_AUTO": True,
                 "DIALOGUE_AUTO_ROUNDS": 1,
                 "DIALOGUE_MAX_CHAIN_TURNS": 24,
@@ -770,6 +774,7 @@ class ServerController:
                 engine=str(data.get("engine") or ""),
                 ts=data.get("ts", None),
                 final=bool(data.get("final", True)),
+                **{key: data[key] for key in ("capture_id", "press_generation", "revision", "autosend", "delay_sec") if key in data},
             )
         except Exception as exc:
             logger.warning(f"Не удалось отправить asr_text в игру: {format_exception(exc)}")
@@ -786,9 +791,14 @@ class ServerController:
 
         future.add_done_callback(_on_sent)
 
+    def _on_send_asr_capture_state(self, event: Event):
+        data = event.data or {}
+        if self.server and data.get("client_id"):
+            self.server.schedule_send_asr_capture_state(data)
+
     def _report_asr_undelivered(self, data: dict) -> None:
         """Фраза не доехала до мода — её обязан подобрать десктоп-чат."""
-        if self._destroyed or not self.event_bus:
+        if not data.get("final", True) or self._destroyed or not self.event_bus:
             return
         logger.info("asr_text не доставлен в игру — возвращаю фразу в десктоп-чат")
         self.event_bus.emit(Events.Server.ASR_TEXT_UNDELIVERED, dict(data))

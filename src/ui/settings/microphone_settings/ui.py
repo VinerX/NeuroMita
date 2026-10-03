@@ -25,6 +25,7 @@ def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     register_if_tr(lbl, label_text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     lbl.setFixedWidth(label_w)
+    lbl.setWordWrap(True)
     hl.addWidget(lbl, 0)
 
     hl.addWidget(field_widget, 1)
@@ -163,7 +164,7 @@ def build_microphone_settings_ui(self, parent_layout):
     self.asr_input_mode_combobox = QComboBox()
     self.asr_input_mode_combobox.addItem(_("Рация — включать кнопкой", "Radio — start with a button"), "radio")
     self.asr_input_mode_combobox.addItem(_("Слушать постоянно", "Always listen"), "vad")
-    self.asr_input_mode_combobox.addItem(_("Удерживать кнопку в игре", "Hold a button in game"), "ptt")
+    self.asr_input_mode_combobox.addItem("Push-to-talk", "ptt")
     from handlers.asr_input_gate import normalize_input_mode
     self.asr_input_mode_combobox.setCurrentIndex(
         self.asr_input_mode_combobox.findData(normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio")))
@@ -179,10 +180,10 @@ def build_microphone_settings_ui(self, parent_layout):
     self.mic_mute_while_speaking_checkbox = QCheckBox("")
     self.mic_mute_while_speaking_checkbox.setChecked(bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True)))
     self.mic_mute_while_speaking_checkbox.setToolTip(_(
-        "Не засчитывать распознанное, пока Мита говорит (чтобы её голос из колонок не улетал в чат)",
-        "Ignore recognized speech while Mita is talking (so her voice from the speakers isn't sent to chat)"
+        "Приостанавливать распознавание во всех режимах, пока Мита говорит. Для записи через динамики оставьте включённым; в наушниках можно отключить.",
+        "Pause recognition in all modes while Mita is speaking. Keep enabled when using speakers; disable to dictate over her speech with headphones."
     ))
-    root_lay.addWidget(make_row(_("Не слышать Миту", "Ignore Mita's voice"), self.mic_mute_while_speaking_checkbox, label_w))
+    root_lay.addWidget(make_row(_("Приостанавливать распознавание, пока Мита говорит", "Pause recognition while Mita speaks"), self.mic_mute_while_speaking_checkbox, label_w))
 
     # 5) Статус (как раньше) — под кнопками
     status_field = SettingsBodyWidget()

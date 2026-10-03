@@ -10,6 +10,7 @@ import sounddevice as sd
 
 from handlers.asr_handler import SpeechRecognition
 from handlers.asr_input_gate import normalize_input_mode
+from handlers.asr_capture_progress import GameCaptureTranscripts
 from handlers.asr_audio_devices import (
     ASR_CAPTURE_SAMPLE_RATE,
     list_asr_input_devices,
@@ -99,6 +100,7 @@ class SpeechController(SpeechService):
         self._capture_ui_lock = threading.RLock()
         self._capture_phase = "idle"
         self._capture_error = ""
+        self._game_capture_transcripts = GameCaptureTranscripts()
 
         # «Мита говорит» — чтобы ASR не засчитывал её собственный голос из
         # микрофона (см. _on_speech_text_recognized / _is_mita_speaking).
@@ -210,6 +212,7 @@ class SpeechController(SpeechService):
 
     def _on_asr_failed_backend(self, _event: Event):
         self.asr_is_ready = False
+        self._sync_input_gate(reset=True)
         with self._capture_ui_lock:
             self._capture_phase = "error"
             self._capture_error = str((_event.data or {}).get("message") or _("Микрофон недоступен", "Microphone unavailable"))
@@ -635,11 +638,38 @@ class SpeechController(SpeechService):
         context = data.get("capture_context")
         if not isinstance(context, dict) or not SpeechRecognition._input_gate.valid(context):
             return
+        if context.get("target") == "game" and context.get("input_mode") in ("radio", "ptt"):
+            transcripts = self._game_transcripts()
+            transcripts.discard_invalid(SpeechRecognition._input_gate.valid)
+            if data.get("phase") == "completed":
+                final = transcripts.complete(context)
+                if final is not None:
+                    self._send_game_capture_text(final, allow_autosend=not data.get("error"))
+            self.events_bus.emit(Events.Server.SEND_ASR_CAPTURE_STATE, {
+                **data, "client_id": context["session_id"],
+                "press_generation": context["press_generation"],
+            })
         with self._capture_ui_lock:
-            self._capture_phase = str(data.get("phase") or "idle")
+            self._capture_phase = ("error" if data.get("error") else "idle") if data.get("phase") == "completed" else str(data.get("phase") or "idle")
             if "error" in data or self._capture_phase == "recognizing":
                 self._capture_error = str(data.get("error") or "")
         self.events_bus.emit(Events.Speech.ASR_CAPTURE_CHANGED, self.capture_state())
+
+    def _game_transcripts(self):
+        if not hasattr(self, "_game_capture_transcripts"):
+            self._game_capture_transcripts = GameCaptureTranscripts()
+        return self._game_capture_transcripts
+
+    def _send_game_capture_text(self, payload, *, allow_autosend=True):
+        autosend, delay = self._instant_send_policy()
+        utterance_id = uuid.uuid4().hex
+        if payload["final"]:
+            self._claim_game_turn(utterance_id)
+        self.events_bus.emit(Events.Server.SEND_ASR_TEXT, {
+            **payload, "id": utterance_id,
+            "autosend": bool(payload["final"] and autosend and allow_autosend),
+            "delay_sec": delay, "engine": str(self._asr_settings.get("engine", "") or ""),
+        })
 
     def microphone_list_async(self, callback) -> None:
         self._on_get_microphone_list(
@@ -774,13 +804,14 @@ class SpeechController(SpeechService):
         if reset:
             gate.reset()
         input_mode = normalize_input_mode(self.settings.get("ASR_INPUT_MODE", "radio"))
-        mute_while_speaking = input_mode in ("ptt", "radio") or bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
+        mute_while_speaking = bool(self.settings.get("MIC_MUTE_WHILE_SPEAKING", True))
         gate.configure(
             input_mode=input_mode,
             enabled=bool(self.settings.get("MIC_ACTIVE", False)),
             blocked_until=(self._speaking_window.blocked_until()
                            if mute_while_speaking else 0.0),
         )
+        self._game_transcripts().discard_invalid(gate.valid)
         SpeechRecognition.publish_input_gate()
 
     def _on_asr_ptt_state(self, event: Event):
@@ -793,12 +824,23 @@ class SpeechController(SpeechService):
         gate = SpeechRecognition._input_gate
         command = gate.radio if gate.snapshot()["input_mode"] == "radio" else gate.ptt
         extra = {"target": "game"} if gate.snapshot()["input_mode"] == "radio" else {}
-        if command(
+        ready = not data.get("active") or self.mic_active()
+        accepted = ready and command(
             active=data.get("active"), session_id=session_id,
             generation=data.get("generation"), cancelled=data.get("cancelled", False),
             **extra,
-        ):
+        )
+        if accepted:
             SpeechRecognition.publish_input_gate()
+        state = gate.snapshot()
+        active = accepted and state["active"] and state["session_id"] == session_id
+        self.events_bus.emit(Events.Server.SEND_ASR_CAPTURE_STATE, {
+            "client_id": session_id, "phase": "ack", "active": active,
+            "command_generation": data.get("generation"), "accepted": accepted,
+            "error": ("capture_not_ready" if not ready else
+                      "speech_blocked" if not state["permitted"] else "capture_busy")
+                     if data.get("active") and not active else "",
+        })
 
     def _on_client_disconnected(self, event: Event):
         client_id = str((event.data or {}).get("client_id") or "")
@@ -835,7 +877,7 @@ class SpeechController(SpeechService):
             return
 
         now = time.time()
-        if self._is_asr_duplicate(text, now):
+        if not isinstance(capture_context, dict) and self._is_asr_duplicate(text, now):
             performance_traces().finish(trace_id, "ignored", error_stage="asr.duplicate") if trace_id else None
             return
         self._last_text = text
@@ -855,6 +897,12 @@ class SpeechController(SpeechService):
                           if isinstance(capture_context, dict) and capture_context.get("input_mode") == "ptt"
                           else self._player_turn_owner())
         if turn_owner:
+            if isinstance(capture_context, dict) and capture_context.get("capture_tracking"):
+                transcripts = self._game_transcripts()
+                transcripts.discard_invalid(SpeechRecognition._input_gate.valid)
+                self._send_game_capture_text(transcripts.append(capture_context, text))
+                performance_traces().finish(trace_id, "sent_to_game") if trace_id else None
+                return
             utterance_id = uuid.uuid4().hex
             self._claim_game_turn(utterance_id)
             logger.info(f"Распознано (в игру): {text}")
@@ -865,8 +913,6 @@ class SpeechController(SpeechService):
                 "engine": str(self._asr_settings.get("engine", "") or ""),
                 "ts": time.time(),
                 "final": True,
-                # Эти поля остаются только внутри Python для возврата реплики в
-                # desktop-чат, если выбранная игровая сессия успела отключиться.
                 "autosend": autosend,
                 "delay_sec": delay_sec,
             })
@@ -914,6 +960,8 @@ class SpeechController(SpeechService):
         )
 
     def _route_to_desktop(self, text: str, autosend: bool, delay_sec: float, trace_id: str | None = None):
+        if autosend and self._is_mita_speaking():
+            autosend = False
         if autosend and delay_sec <= 0:
             audio = services().get_optional(AudioStateService)
             if not (audio and audio.is_waiting_answer()):

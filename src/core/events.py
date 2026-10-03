@@ -14,7 +14,12 @@ from core.serial_dispatcher import SerialDispatcher
 from main_logger import logger
 
 
-_ORDERED_EVENT_NAMES = frozenset(
+_ASR_ORDERED_EVENT_NAMES = frozenset({
+    "speech_text_recognized", "asr_capture_progress",
+    "send_asr_text", "send_asr_capture_state",
+})
+
+_ORDERED_EVENT_NAMES = _ASR_ORDERED_EVENT_NAMES | frozenset(
     {
         "create_task",
         "update_task_status",
@@ -397,6 +402,8 @@ class EventBus:
     def _order_key(event: Event, *, explicit: Any = None) -> Any:
         if explicit is not None:
             return explicit
+        if event.name in _ASR_ORDERED_EVENT_NAMES:
+            return "asr_capture"
         data = event.data if isinstance(event.data, dict) else {}
         return (
             data.get("stream_id")
@@ -738,6 +745,7 @@ class Events:
         LOAD_SERVER_SETTINGS = "load_server_settings"
         ECHO_CHAT_MESSAGE_REQUESTED = "echo_chat_message_requested"
         SEND_ASR_TEXT = "send_asr_text"
+        SEND_ASR_CAPTURE_STATE = "send_asr_capture_state"
         CLIENT_DISCONNECTED = "server_client_disconnected"
         GAME_DIALOGUE_TARGET_CHANGED = "game_dialogue_target_changed"
         ASR_TEXT_UNDELIVERED = "asr_text_undelivered"

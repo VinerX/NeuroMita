@@ -17,6 +17,7 @@ class ASRInputGate:
         self._clock = clock
         self._lock = threading.RLock()
         self._retired = deque(maxlen=64)
+        self._session_generations = {}
         self._state = dict(input_mode="radio", enabled=True, active=False,
                            session_id="", generation=-1, press_generation=-1,
                            target="desktop",
@@ -84,6 +85,8 @@ class ASRInputGate:
             state = self._state
             if state["input_mode"] != mode or session_id in self._retired:
                 return False
+            if session_id != state["session_id"] and generation <= self._session_generations.get(session_id, -1):
+                return False
             if mode == "radio" and state["active"] and session_id != state["session_id"]:
                 return False
             if renew and (not state["active"] or session_id != state["session_id"]):
@@ -92,7 +95,7 @@ class ASRInputGate:
                 if not active:
                     return False
                 if state["session_id"]:
-                    self._retired.append(state["session_id"])
+                    self._session_generations[state["session_id"]] = state["generation"]
                 state.update(session_id=session_id, generation=-1, active=False,
                              epoch=state["epoch"] + (1 if state["session_id"] else 0),
                              needs_release=False)
@@ -104,6 +107,7 @@ class ASRInputGate:
             if mode == "radio" and target == "desktop" and not renew and self._permitted():
                 state["needs_release"] = False
             state["generation"] = generation
+            self._session_generations[session_id] = generation
             if not active or cancelled:
                 state["needs_release"] = False
             elif not self._permitted():
@@ -130,6 +134,7 @@ class ASRInputGate:
         with self._lock:
             if session_id:
                 self._retired.append(session_id)
+                self._session_generations.pop(session_id, None)
             if not session_id or session_id == self._state["session_id"]:
                 self.reset()
                 self._state.update(session_id="", generation=-1, press_generation=-1,
