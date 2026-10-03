@@ -1,9 +1,9 @@
 LOG "GetAvailableCommands: Script started. available_action_level=" + available_action_level
 
-SET base_commands = "walktoplayerclose\nwalktoplayernear\nwalktoplayerfar\nwalktorandompoint\nteleporttoplayer\nteleporttorandompoint"
+SET base_commands = ""
 
 SET level_1_commands = base_commands 
-SET level_2_commands = base_commands + """\nstartknifehunt\nstopknifehunt\nspawnmannequin\ndisableallmannequins\nenableallmannequins\ndestroyallmannequins\nreturntonormal"""
+SET level_2_commands = base_commands
 
 IF available_action_level == 2 THEN
     LOG "GetAvailableCommands: Level 2 (Crazy) commands selected."

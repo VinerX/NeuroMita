@@ -74,7 +74,7 @@ SET result = result + """  "segments": [
 
 // Если RAG и граф включены, добавляем entities и relations
 IF GRAPH_EXTRACTION_ENABLED == True AND RAG_ENABLED == True THEN
-    SET result = result + """  "entities": [{"name": "нижний_регистр_1_3_слова", "type": "person|place|thing|concept"}, ...],
+    SET result = result + """  "entities": ["нижний_регистр_1_3_слова:person|place|thing|concept", ...],
   "relations": ["субъект|предикат|объект", ...],
 """
 ENDIF
