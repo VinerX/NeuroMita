@@ -25,6 +25,7 @@ def make_row(label_text: str, field_widget: QWidget, label_w: int) -> QWidget:
     register_if_tr(lbl, label_text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     lbl.setFixedWidth(label_w)
+    lbl.setWordWrap(True)
     hl.addWidget(lbl, 0)
 
     hl.addWidget(field_widget, 1)
