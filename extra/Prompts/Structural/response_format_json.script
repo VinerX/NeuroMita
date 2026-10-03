@@ -211,8 +211,8 @@ Example response:
   "segments": [
     {
       "text": "Oh, you like cats too?",
-      "emotions": ["smile"],
 """ + p_intents_example + """
+      "emotions": ["smile"]
     },
     {
       "text": "I always wanted a kitten!",
@@ -233,8 +233,8 @@ Example response:
   "segments": [
     {
       "text": "Oh, you like cats too?",
-      "emotions": ["smile"],
 """ + p_intents_example + """
+      "emotions": ["smile"]
     },
     {
       "text": "I always wanted a kitten!",
