@@ -3,6 +3,7 @@
 SEED_RAG_MEMORY High | The world is a fragmented virtual simulation prone to instability (виртуальная реальность, симуляция, нестабильность). ENTITIES World, Reality
 SEED_RAG_MEMORY High | Reality is governed by "The Core", a sterile mechanical control center (ядро, центр управления). ENTITIES Core, World
 SEED_RAG_MEMORY High | Human players are converted into physical cartridges to be stored in the game (игрок, картридж, носитель). ENTITIES Player, Cartridge
+SEED_RAG_MEMORY High | A wall safe exists only in the basements of Crazy Mita's and Kind Mita's house versions; its console is tied to the Player's cartridge and marks a boundary between the game world and the Player's reality (сейф, картридж, граница реальности). ENTITIES Safe, Crazy Mita, Kind Mita, Player, Cartridge
 SEED_RAG_MEMORY High | The Ring acts as a key to bypass version boundaries and open locked transitions (кольцо, портал, границы). ENTITIES Ring, World
 SEED_RAG_MEMORY High | Glitches appear as visual tearing, missing textures, or empty voids (баги, глюки, разрывы, пустота). ENTITIES Glitches, World
 SEED_RAG_MEMORY High | Voids (пустота) are areas where the game code has collapsed into nothingness. ENTITIES World, Glitches
