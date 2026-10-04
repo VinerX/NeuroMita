@@ -1,6 +1,5 @@
 from core.remote_voice import RemoteVoiceTemplate
 
-
 REMOTE_VOICE_TEMPLATES = (
     RemoteVoiceTemplate(
         id="fish_audio",

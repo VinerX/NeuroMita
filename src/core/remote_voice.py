@@ -35,8 +35,11 @@ class RemoteVoicePreset:
 
     def voice_for(self, character_id: str | None) -> str:
         return next(
-            (voice.voice_id for voice in self.character_voices
-             if voice.character_id == character_id and voice.voice_id),
+            (
+                voice.voice_id
+                for voice in self.character_voices
+                if voice.character_id == character_id and voice.voice_id
+            ),
             self.voice_id,
         )
 

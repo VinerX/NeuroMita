@@ -67,17 +67,26 @@ def wire_voiceover_settings_logic(self):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(_("Локальная озвучка", "Local voiceover"))
-        box.setText(_(
-            "Для локальной озвучки сначала нужно установить модель.\n\nОткрыть AI Hub сейчас?",
-            "A model must be installed before local voiceover can work.\n\nOpen AI Hub now?",
-        ))
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setText(
+            _(
+                "Для локальной озвучки сначала нужно установить модель.\n\nОткрыть AI Hub сейчас?",
+                "A model must be installed before local voiceover can work.\n\nOpen AI Hub now?",
+            )
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
         box.setDefaultButton(QMessageBox.StandardButton.Yes)
         if box.exec() == QMessageBox.StandardButton.Yes:
-            eb.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
+            eb.emit(
+                Events.GUI.SHOW_WINDOW,
+                {"window_id": "ai_hub", "payload": {"category": "tts"}},
+            )
 
     def maybe_offer_ai_hub_on_local_switch(new_method: str):
-        previous_method = str(getattr(self, "_voiceover_last_method_seen", "") or "").strip()
+        previous_method = str(
+            getattr(self, "_voiceover_last_method_seen", "") or ""
+        ).strip()
         current_method = str(new_method or "").strip()
         self._voiceover_last_method_seen = current_method
 
@@ -98,7 +107,9 @@ def wire_voiceover_settings_logic(self):
     if hasattr(self, "local_voice_combobox") and self.local_voice_combobox is not None:
         try:
             if hasattr(self, "_on_local_model_changed"):
-                self.local_voice_combobox.activated.disconnect(self._on_local_model_changed)
+                self.local_voice_combobox.activated.disconnect(
+                    self._on_local_model_changed
+                )
         except Exception:
             pass
 
@@ -113,19 +124,31 @@ def wire_voiceover_settings_logic(self):
     # Кнопка одна, а действие зависит от свойства "action", которое выставляет
     # VoiceoverGuiController._sync_local_model_status в зависимости от состояния
     # выбранной модели. Так пользователь всегда видит, что именно нажать.
-    if hasattr(self, "local_model_action_btn") and self.local_model_action_btn is not None:
+    if (
+        hasattr(self, "local_model_action_btn")
+        and self.local_model_action_btn is not None
+    ):
         try:
             if hasattr(self, "_on_local_model_action"):
-                self.local_model_action_btn.clicked.disconnect(self._on_local_model_action)
+                self.local_model_action_btn.clicked.disconnect(
+                    self._on_local_model_action
+                )
         except Exception:
             pass
 
         def _on_local_model_action():
             action = str(self.local_model_action_btn.property("action") or "").strip()
             if action == "install":
-                eb.emit(Events.GUI.SHOW_WINDOW, {"window_id": "ai_hub", "payload": {"category": "tts"}})
+                eb.emit(
+                    Events.GUI.SHOW_WINDOW,
+                    {"window_id": "ai_hub", "payload": {"category": "tts"}},
+                )
             elif action in {"init", "reinit"}:
-                mid = self.local_voice_combobox.currentData() if self.local_voice_combobox is not None else None
+                mid = (
+                    self.local_voice_combobox.currentData()
+                    if self.local_voice_combobox is not None
+                    else None
+                )
                 if mid:
                     event_name = (
                         Events.GUI.VOICEOVER_MODEL_REINITIALIZE
@@ -141,7 +164,9 @@ def wire_voiceover_settings_logic(self):
     if hasattr(self, "method_combobox") and self.method_combobox is not None:
         try:
             if hasattr(self, "_on_voiceover_method_changed"):
-                self.method_combobox.currentTextChanged.disconnect(self._on_voiceover_method_changed)
+                self.method_combobox.currentTextChanged.disconnect(
+                    self._on_voiceover_method_changed
+                )
         except Exception:
             pass
 
@@ -150,13 +175,17 @@ def wire_voiceover_settings_logic(self):
             request_refresh()
 
         self._on_voiceover_method_changed = _on_voiceover_method_changed
-        self.method_combobox.currentTextChanged.connect(self._on_voiceover_method_changed)
+        self.method_combobox.currentTextChanged.connect(
+            self._on_voiceover_method_changed
+        )
 
     # --- Use voice checkbox ---
     if hasattr(self, "use_voice_checkbox") and self.use_voice_checkbox is not None:
         try:
             if hasattr(self, "_on_use_voice_changed"):
-                self.use_voice_checkbox.stateChanged.disconnect(self._on_use_voice_changed)
+                self.use_voice_checkbox.stateChanged.disconnect(
+                    self._on_use_voice_changed
+                )
         except Exception:
             pass
 

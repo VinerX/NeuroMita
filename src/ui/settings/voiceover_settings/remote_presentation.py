@@ -9,7 +9,9 @@ def remote_voice_message(message: str) -> str:
     match = re.fullmatch(r"Fish Audio: (.+) \(HTTP (\d+)\)\.", message)
     if match:
         reason, status = match.groups()
-        return translate("Fish Audio: {reason} (HTTP {status}).").format(reason=translate(reason), status=status)
+        return translate("Fish Audio: {reason} (HTTP {status}).").format(
+            reason=translate(reason), status=status
+        )
     match = re.fullmatch(r"Сервер вернул HTTP (\d+|error)\.", message)
     if match:
         return translate("Сервер вернул HTTP {status}.").format(status=match.group(1))

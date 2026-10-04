@@ -11,7 +11,9 @@ import httpx
 import pytest
 from PyQt6.QtWidgets import QApplication, QLineEdit, QWidget, QVBoxLayout
 
-from controllers.gui.remote_voice_settings_view_model import RemoteVoiceSettingsViewModel
+from controllers.gui.remote_voice_settings_view_model import (
+    RemoteVoiceSettingsViewModel,
+)
 from controllers.gui.voiceover_controller import VoiceoverGuiController
 from controllers.gui.voiceover_settings_view_model import VoiceoverSettingsViewModel
 from core.networking import HttpClientRegistry
@@ -20,7 +22,6 @@ from services.remote_voice_service import DefaultRemoteVoiceService
 from ui.settings.voiceover_settings.remote_api import RemoteVoiceSettingsWidget
 from ui.settings.voiceover_settings.ui import build_voiceover_settings_ui
 from ui.character_names import character_display_name
-
 
 _APP = None
 
@@ -39,10 +40,18 @@ def panel(tmp_path):
     _APP = QApplication.instance() or QApplication([])
     app = _APP
     app.setQuitOnLastWindowClosed(False)
-    service = DefaultRemoteVoiceService(repository=RemoteVoiceRepository(tmp_path / "profiles.json"),
-        registry=HttpClientRegistry(), client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(401))))
-    registry = SimpleNamespace(all_ids=lambda: ["Kind", "Cappie"],
-        display_name_of=lambda cid: {"Kind": "Kind Mita", "Cappie": "Cappie"}[cid], current_id=lambda: "Kind")
+    service = DefaultRemoteVoiceService(
+        repository=RemoteVoiceRepository(tmp_path / "profiles.json"),
+        registry=HttpClientRegistry(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(401))
+        ),
+    )
+    registry = SimpleNamespace(
+        all_ids=lambda: ["Kind", "Cappie"],
+        display_name_of=lambda cid: {"Kind": "Kind Mita", "Cappie": "Cappie"}[cid],
+        current_id=lambda: "Kind",
+    )
     vm = RemoteVoiceSettingsViewModel(service, character_registry=lambda: registry)
     widget = RemoteVoiceSettingsWidget(vm)
     settle(app, vm)
@@ -97,7 +106,9 @@ def test_actual_voiceover_panel_has_api_and_shared_playback(panel):
     root = QWidget()
     root.settings = Store(USE_VOICEOVER=True, VOICEOVER_METHOD="API")
     root._save_setting = root.settings.set
-    actions = VoiceoverSettingsViewModel(events=SimpleNamespace(publish=lambda *args: None), remote_service=service)
+    actions = VoiceoverSettingsViewModel(
+        events=SimpleNamespace(publish=lambda *args: None), remote_service=service
+    )
     build_voiceover_settings_ui(root, QVBoxLayout(root), actions=actions)
     settle(app, actions.remote)
     controller = VoiceoverGuiController.__new__(VoiceoverGuiController)
@@ -122,8 +133,13 @@ def test_preview_playback_failure_releases_file_and_speaking_state(panel, tmp_pa
     path.write_bytes(b"audio")
     transitions = []
     vm._playback_state = transitions.append
-    with patch.object(service, "synthesize", new_callable=AsyncMock, return_value=str(path)), \
-         patch("handlers.audio_handler.AudioHandler.handle_voice_file", new_callable=AsyncMock, side_effect=RuntimeError("no device")):
+    with patch.object(
+        service, "synthesize", new_callable=AsyncMock, return_value=str(path)
+    ), patch(
+        "handlers.audio_handler.AudioHandler.handle_voice_file",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("no device"),
+    ):
         with pytest.raises(RuntimeError):
             asyncio.run(vm._preview("test"))
     assert transitions == [True, False]
@@ -160,17 +176,23 @@ def test_preview_uses_selected_tab_and_cleans_file(panel, tmp_path):
     path = tmp_path / "preview.wav"
     path.write_bytes(b"audio")
     widget.voice_tabs.setCurrentIndex(2)
-    with patch.object(service, "synthesize", new_callable=AsyncMock, return_value=str(path)) as synthesize, \
-         patch("handlers.audio_handler.AudioHandler.handle_voice_file", new_callable=AsyncMock):
+    with patch.object(
+        service, "synthesize", new_callable=AsyncMock, return_value=str(path)
+    ) as synthesize, patch(
+        "handlers.audio_handler.AudioHandler.handle_voice_file", new_callable=AsyncMock
+    ):
         widget.preview_button.click()
         settle(app, vm)
-    synthesize.assert_awaited_once_with(widget.sample.toPlainText(), character_id="Cappie")
+    synthesize.assert_awaited_once_with(
+        widget.sample.toPlainText(), character_id="Cappie"
+    )
     assert not path.exists()
 
 
 def test_painted_tabs_support_mouse_keyboard_and_finish_animation(panel):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
+
     app, service, vm, widget = panel
     widget.resize(700, 760)
     widget.show()
@@ -190,14 +212,19 @@ def test_voice_catalog_link_uses_selected_template(panel):
     app, service, vm, widget = panel
     assert '<a href="voices"' in widget.voice_hint.text()
     assert "Голос не назначен" not in widget.voice_hint.text()
-    with patch("ui.settings.voiceover_settings.remote_api.QDesktopServices.openUrl") as open_url:
+    with patch(
+        "ui.settings.voiceover_settings.remote_api.QDesktopServices.openUrl"
+    ) as open_url:
         widget.voice_hint.linkActivated.emit("voices")
     assert open_url.call_args.args[0].toString() == vm.templates[0].voices_url
 
 
-def test_language_refresh_preserves_drafts_selection_and_key_visibility(panel, monkeypatch):
+def test_language_refresh_preserves_drafts_selection_and_key_visibility(
+    panel, monkeypatch
+):
     import localization
     from localization.live import refresh_all
+
     app, service, vm, widget = panel
     monkeypatch.setattr(localization, "_current_language", lambda: "EN")
     widget.voice_tabs.setCurrentIndex(0)
@@ -218,7 +245,9 @@ def test_language_refresh_preserves_drafts_selection_and_key_visibility(panel, m
     assert widget.character_title.text() == "通用声音"
     assert widget.sample.toPlainText() == "My own preview text"
     assert widget.voice.text() == "a" * 32
-    vm.update_state(busy=False, message="Fish Audio: API-ключ не принят (HTTP 401).", error=True)
+    vm.update_state(
+        busy=False, message="Fish Audio: API-ключ не принят (HTTP 401).", error=True
+    )
     monkeypatch.setattr(localization, "_current_language", lambda: "EN")
     refresh_all()
     assert widget.status.text() == "Fish Audio: API key rejected (HTTP 401)."

@@ -16,7 +16,6 @@ from core.remote_voice import RemoteCharacterVoice, RemoteVoiceError
 from services.remote_voice_repository import RemoteVoiceRepository
 from services.remote_voice_service import DefaultRemoteVoiceService
 
-
 SECRET = "test-secret-never-log-this"
 VOICE_ID = "0123456789abcdef0123456789abcdef"
 
@@ -29,9 +28,13 @@ def service_factory(tmp_path):
         client = httpx.Client(transport=httpx.MockTransport(handler))
         service = DefaultRemoteVoiceService(
             repository=RemoteVoiceRepository(tmp_path / "profiles.json"),
-            registry=HttpClientRegistry(), client=client, output_dir=tmp_path / "audio",
+            registry=HttpClientRegistry(),
+            client=client,
+            output_dir=tmp_path / "audio",
         )
-        preset = replace(service.configuration().active, api_key=SECRET, voice_id=VOICE_ID)
+        preset = replace(
+            service.configuration().active, api_key=SECRET, voice_id=VOICE_ID
+        )
         service.save_preset(preset)
         instances.append(service)
         return service
@@ -46,7 +49,9 @@ def test_native_contract_and_wav_output(service_factory):
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, headers={"content-type": "audio/pcm"}, content=b"\x01\x00\x02\x00")
+        return httpx.Response(
+            200, headers={"content-type": "audio/pcm"}, content=b"\x01\x00\x02\x00"
+        )
 
     service = service_factory(respond)
     assert service.status().configured and not service.status().verified
@@ -72,8 +77,11 @@ def test_native_contract_and_wav_output(service_factory):
 
 @pytest.mark.parametrize("status", [301, 401, 402, 403, 404, 422, 429, 500])
 def test_failure_is_safe_and_no_files_remain(service_factory, status, tmp_path):
-    service = service_factory(lambda request: httpx.Response(status, text=SECRET,
-                               headers={"location": "https://example.com/"}))
+    service = service_factory(
+        lambda request: httpx.Response(
+            status, text=SECRET, headers={"location": "https://example.com/"}
+        )
+    )
     with patch("services.remote_voice_service.logger") as log:
         with pytest.raises(RemoteVoiceError) as error:
             asyncio.run(service.synthesize("Привет"))
@@ -84,9 +92,16 @@ def test_failure_is_safe_and_no_files_remain(service_factory, status, tmp_path):
     assert not service.status().verified
 
 
-@pytest.mark.parametrize("body,content_type", [(b"", "audio/pcm"), (b"a", "audio/pcm"), (b"{}", "application/json")])
+@pytest.mark.parametrize(
+    "body,content_type",
+    [(b"", "audio/pcm"), (b"a", "audio/pcm"), (b"{}", "application/json")],
+)
 def test_invalid_audio_is_removed(service_factory, tmp_path, body, content_type):
-    service = service_factory(lambda request: httpx.Response(200, content=body, headers={"content-type": content_type}))
+    service = service_factory(
+        lambda request: httpx.Response(
+            200, content=body, headers={"content-type": content_type}
+        )
+    )
     with pytest.raises(RemoteVoiceError):
         asyncio.run(service.synthesize("Привет"))
     assert not list((tmp_path / "audio").glob("*"))
@@ -110,13 +125,18 @@ def test_profile_persistence_normalization_and_templates(service_factory, tmp_pa
     active = service.configuration().active
     assert SECRET not in repr(active)
     assert SECRET not in repr(service.configuration())
-    service.save_preset(replace(active, voice_id="https://fish.audio/m/" + VOICE_ID.upper() + "/"))
+    service.save_preset(
+        replace(active, voice_id="https://fish.audio/m/" + VOICE_ID.upper() + "/")
+    )
     assert service.configuration().active.voice_id == VOICE_ID
     second = service.add_preset("fish_audio").active
     assert second.model == "s1" and second.api_key == ""
     service.select_preset(active.id)
     assert service.configuration().active.api_key == SECRET
-    assert RemoteVoiceRepository(tmp_path / "profiles.json").load() == service.configuration()
+    assert (
+        RemoteVoiceRepository(tmp_path / "profiles.json").load()
+        == service.configuration()
+    )
     service.delete_preset(second.id)
     with pytest.raises(RemoteVoiceError, match="хотя бы один"):
         service.delete_preset(active.id)
@@ -127,9 +147,16 @@ def test_profile_persistence_normalization_and_templates(service_factory, tmp_pa
     assert service.templates()[0].endpoint == "https://api.fish.audio/v1/tts"
 
 
-@pytest.mark.parametrize("field,value", [("voice_id", "https://evil.example/" + VOICE_ID),
-                                         ("voice_id", "bad"), ("speed", float("nan")),
-                                         ("api_key", "secret\nheader"), ("name", "")])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("voice_id", "https://evil.example/" + VOICE_ID),
+        ("voice_id", "bad"),
+        ("speed", float("nan")),
+        ("api_key", "secret\nheader"),
+        ("name", ""),
+    ],
+)
 def test_invalid_profile_cannot_be_saved(service_factory, field, value):
     service = service_factory(lambda request: httpx.Response(200))
     previous = service.configuration()
@@ -164,7 +191,9 @@ def test_cancelled_request_cleans_output(service_factory, tmp_path):
 
 def test_closed_service_makes_no_request(service_factory):
     requested = []
-    service = service_factory(lambda request: requested.append(request) or httpx.Response(200))
+    service = service_factory(
+        lambda request: requested.append(request) or httpx.Response(200)
+    )
     service.close()
     with pytest.raises(RemoteVoiceError, match="закрыт"):
         asyncio.run(service.synthesize("Привет"))
@@ -173,7 +202,9 @@ def test_closed_service_makes_no_request(service_factory):
 
 def test_no_speech_does_not_spend_api_quota(service_factory):
     requested = []
-    service = service_factory(lambda request: requested.append(request) or httpx.Response(200))
+    service = service_factory(
+        lambda request: requested.append(request) or httpx.Response(200)
+    )
     with pytest.raises(RemoteVoiceError):
         asyncio.run(service.synthesize("<command>hidden</command>"))
     assert not requested
@@ -181,7 +212,9 @@ def test_no_speech_does_not_spend_api_quota(service_factory):
 
 def test_later_error_invalidates_verified_status(service_factory):
     statuses = iter([200, 401])
-    service = service_factory(lambda request: httpx.Response(next(statuses), content=b"\x00\x00"))
+    service = service_factory(
+        lambda request: httpx.Response(next(statuses), content=b"\x00\x00")
+    )
     asyncio.run(service.synthesize("Привет"))
     assert service.status().verified
     with pytest.raises(RemoteVoiceError):
@@ -207,13 +240,21 @@ def test_character_voices_are_routed_independently(service_factory):
         return httpx.Response(200, content=b"\x00\x00")
 
     service = service_factory(respond)
-    service.save_preset(replace(service.configuration().active, character_voices=(
-        RemoteCharacterVoice("Kind", kind_voice), RemoteCharacterVoice("Cappie", cappie_voice),
-    )))
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            character_voices=(
+                RemoteCharacterVoice("Kind", kind_voice),
+                RemoteCharacterVoice("Cappie", cappie_voice),
+            ),
+        )
+    )
 
     async def run():
-        await asyncio.gather(service.synthesize("Привет", character_id="Kind"),
-                             service.synthesize("Привет", character_id="Cappie"))
+        await asyncio.gather(
+            service.synthesize("Привет", character_id="Kind"),
+            service.synthesize("Привет", character_id="Cappie"),
+        )
 
     asyncio.run(run())
     assert sorted(references) == [kind_voice, cappie_voice]
@@ -226,27 +267,45 @@ def test_character_voices_are_routed_independently(service_factory):
 
 def test_individual_voice_without_default_and_verification_isolation(service_factory):
     service = service_factory(lambda request: httpx.Response(200, content=b"\x00\x00"))
-    service.save_preset(replace(service.configuration().active, voice_id="", character_voices=(
-        RemoteCharacterVoice("Kind", "a" * 32), RemoteCharacterVoice("Cappie", "b" * 32),
-    )))
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            voice_id="",
+            character_voices=(
+                RemoteCharacterVoice("Kind", "a" * 32),
+                RemoteCharacterVoice("Cappie", "b" * 32),
+            ),
+        )
+    )
     assert service.status().configured
     assert service.status(character_id="Kind").configured
     assert not service.status(character_id="Crazy").configured
     with pytest.raises(RemoteVoiceError):
         asyncio.run(service.synthesize("Привет", character_id="Crazy"))
     asyncio.run(service.synthesize("Привет", character_id="Kind"))
-    service.save_preset(replace(service.configuration().active, character_voices=(
-        RemoteCharacterVoice("Kind", "a" * 32), RemoteCharacterVoice("Cappie", "c" * 32),
-    )))
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            character_voices=(
+                RemoteCharacterVoice("Kind", "a" * 32),
+                RemoteCharacterVoice("Cappie", "c" * 32),
+            ),
+        )
+    )
     assert service.status(character_id="Kind").verified
     assert not service.status(character_id="Cappie").verified
 
 
 def test_assignments_persist_and_v1_default_migrates(service_factory, tmp_path):
     service = service_factory(lambda request: httpx.Response(200))
-    service.save_preset(replace(service.configuration().active, character_voices=(
-        RemoteCharacterVoice("Kind", "https://fish.audio/m/" + "A" * 32),
-    )))
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            character_voices=(
+                RemoteCharacterVoice("Kind", "https://fish.audio/m/" + "A" * 32),
+            ),
+        )
+    )
     config = RemoteVoiceRepository(tmp_path / "profiles.json").load()
     assert config.active.character_voices == (RemoteCharacterVoice("Kind", "a" * 32),)
     assert config.active.voice_id == VOICE_ID
@@ -262,15 +321,33 @@ def test_assignments_persist_and_v1_default_migrates(service_factory, tmp_path):
     assert migrated.active.character_voices == ()
 
 
-def test_voice_display_names_persist_without_affecting_synthesis(service_factory, tmp_path):
+def test_voice_display_names_persist_without_affecting_synthesis(
+    service_factory, tmp_path
+):
     references = []
-    service = service_factory(lambda request: references.append(json.loads(request.content)["reference_id"]) or httpx.Response(200, content=b"\x00\x00"))
-    service.save_preset(replace(service.configuration().active, voice_display_name="Общий · основной",
-        character_voices=(RemoteCharacterVoice("Kind", "a" * 32, "Добрая · спокойный"),)))
+    service = service_factory(
+        lambda request: references.append(json.loads(request.content)["reference_id"])
+        or httpx.Response(200, content=b"\x00\x00")
+    )
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            voice_display_name="Общий · основной",
+            character_voices=(
+                RemoteCharacterVoice("Kind", "a" * 32, "Добрая · спокойный"),
+            ),
+        )
+    )
     asyncio.run(service.synthesize("Привет", character_id="Kind"))
     assert references == ["a" * 32]
-    service.save_preset(replace(service.configuration().active,
-        character_voices=(RemoteCharacterVoice("Kind", "a" * 32, "Новое название"),)))
+    service.save_preset(
+        replace(
+            service.configuration().active,
+            character_voices=(
+                RemoteCharacterVoice("Kind", "a" * 32, "Новое название"),
+            ),
+        )
+    )
     assert service.status(character_id="Kind").verified
     config = RemoteVoiceRepository(tmp_path / "profiles.json").load()
     assert config.active.voice_display_name == "Общий · основной"

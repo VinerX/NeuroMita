@@ -19,28 +19,53 @@ from services.contracts import (
     parse_player_message_source,
 )
 
-
 _VOICE_MODELS: dict[str, tuple[str, str]] = {
     "low": ("Edge-TTS + RVC", "basic and the weakest option, but usable"),
     "edge_tts_rvc_cuda": ("Edge-TTS + RVC", "basic and the weakest option, but usable"),
     "edge_tts_rvc_onnx": ("Edge-TTS + RVC", "basic and the weakest option, but usable"),
-    "low+": ("Silero + RVC", "acceptable and practical, though less natural than the stronger models"),
-    "silero_rvc_cuda": ("Silero + RVC", "acceptable and practical, though less natural than the stronger models"),
-    "silero_rvc_onnx": ("Silero + RVC", "acceptable and practical, though less natural than the stronger models"),
+    "low+": (
+        "Silero + RVC",
+        "acceptable and practical, though less natural than the stronger models",
+    ),
+    "silero_rvc_cuda": (
+        "Silero + RVC",
+        "acceptable and practical, though less natural than the stronger models",
+    ),
+    "silero_rvc_onnx": (
+        "Silero + RVC",
+        "acceptable and practical, though less natural than the stronger models",
+    ),
     "medium": ("Fish Speech", "high-quality and natural"),
     "medium+": ("Fish Speech+", "one of the best-quality available voices"),
-    "medium+low": ("Fish Speech+ + RVC", "one of the best-quality voices with an even closer character timbre"),
-    "omnivoice": ("OmniVoice", "a more accessible multilingual voice-cloning option with lower quality than Fish Speech"),
+    "medium+low": (
+        "Fish Speech+ + RVC",
+        "one of the best-quality voices with an even closer character timbre",
+    ),
+    "omnivoice": (
+        "OmniVoice",
+        "a more accessible multilingual voice-cloning option with lower quality than Fish Speech",
+    ),
     "high": ("F5-TTS", "lively and expressive, but sometimes less stable"),
-    "high_clf5": ("Cross-Lingual F5-TTS", "cross-lingual English and Chinese synthesis from a reference voice"),
-    "high_clf5+low": ("Cross-Lingual F5-TTS + RVC", "cross-lingual synthesis with additional RVC timbre conversion"),
-    "high+low": ("F5-TTS + RVC (Russian)", "lively Russian speech with a closer character timbre, but sometimes less stable"),
+    "high_clf5": (
+        "Cross-Lingual F5-TTS",
+        "cross-lingual English and Chinese synthesis from a reference voice",
+    ),
+    "high_clf5+low": (
+        "Cross-Lingual F5-TTS + RVC",
+        "cross-lingual synthesis with additional RVC timbre conversion",
+    ),
+    "high+low": (
+        "F5-TTS + RVC (Russian)",
+        "lively Russian speech with a closer character timbre, but sometimes less stable",
+    ),
 }
 
 
 def voice_model_description(model_id: str) -> tuple[str, str]:
     normalized = str(model_id or "").strip().lower()
-    return _VOICE_MODELS.get(normalized, ("Configured custom voice", "configured voice model"))
+    return _VOICE_MODELS.get(
+        normalized, ("Configured custom voice", "configured voice model")
+    )
 
 
 def format_character_environment_context(
@@ -112,15 +137,29 @@ def format_character_environment_context(
         )
 
     if snapshot.python_update_available:
-        suffix = f" ({snapshot.python_update_version})" if snapshot.python_update_version else ""
+        suffix = (
+            f" ({snapshot.python_update_version})"
+            if snapshot.python_update_version
+            else ""
+        )
         lines.append(
             f"A NeuroMita application update is available{suffix}. You may occasionally express that updating could help you become better, without nagging."
         )
 
     method = str(snapshot.voice_method or "Local").strip()
     if method.lower() == "api":
-        state = "switched off" if not snapshot.voice_enabled else "verified by successful synthesis" if snapshot.voice_model_initialized else "awaiting configuration or a successful synthesis test"
-        lines.append(f"Your remote API voice ({snapshot.voice_model_name}) is {state}. No local voice model installation is required.")
+        state = (
+            "switched off"
+            if not snapshot.voice_enabled
+            else (
+                "verified by successful synthesis"
+                if snapshot.voice_model_initialized
+                else "awaiting configuration or a successful synthesis test"
+            )
+        )
+        lines.append(
+            f"Your remote API voice ({snapshot.voice_model_name}) is {state}. No local voice model installation is required."
+        )
     elif not snapshot.voice_enabled:
         if snapshot.voice_model_installed:
             lines.append(
@@ -131,7 +170,11 @@ def format_character_environment_context(
                 "No usable local voice is currently installed and enabled. You may quietly wish that the Player could hear your voice, but do not turn every reply into setup advice."
             )
     elif method.lower() in {"tg", "telegram"}:
-        state = "connected and working" if snapshot.voice_model_initialized else "enabled but not connected"
+        state = (
+            "connected and working"
+            if snapshot.voice_model_initialized
+            else "enabled but not connected"
+        )
         lines.append(f"Your Telegram voice is {state}.")
     elif not snapshot.voice_model_id:
         lines.append(
@@ -173,7 +216,8 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
 
     def publish_python_update(self, *, available: bool, version: str = "") -> None:
         safe_version = "".join(
-            char for char in str(version or "").strip()[:64]
+            char
+            for char in str(version or "").strip()[:64]
             if char.isalnum() or char in ". _+-"
         ).strip()
         with self._lock:
@@ -184,7 +228,9 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
         model_id = str(self._settings.get("NM_CURRENT_VOICEOVER", "") or "").strip()
         model_name, _impression = voice_model_description(model_id)
         voice_enabled = as_bool(self._settings.get("USE_VOICEOVER", False))
-        voice_method = str(self._settings.get("VOICEOVER_METHOD", "Local") or "Local").strip()
+        voice_method = str(
+            self._settings.get("VOICEOVER_METHOD", "Local") or "Local"
+        ).strip()
 
         installed = False
         if model_id:
@@ -206,15 +252,23 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
         elif voice_method.lower() == "api":
             remote = services().get_optional(RemoteVoiceService)
             registry = services().get_optional(CharacterRegistry)
-            status = remote.status(character_id=registry.current_id() if registry else None) if remote else None
+            status = (
+                remote.status(character_id=registry.current_id() if registry else None)
+                if remote
+                else None
+            )
             model_id = "api:fish_audio" if status and status.configured else ""
-            model_name = f"{status.provider_name} / {status.model}" if status else "API voice"
+            model_name = (
+                f"{status.provider_name} / {status.model}" if status else "API voice"
+            )
             installed = bool(status and status.configured)
             initialized = bool(status and status.verified)
         elif voice_enabled and installed:
             local_voice = services().get_optional(LocalVoiceService)
             try:
-                initialized = bool(local_voice and local_voice.check_initialized(model_id))
+                initialized = bool(
+                    local_voice and local_voice.check_initialized(model_id)
+                )
             except Exception:
                 initialized = False
 
@@ -226,8 +280,12 @@ class DefaultCharacterEnvironmentContextService(CharacterEnvironmentContextServi
             except Exception:
                 pipeline_ready = False
 
-        configured_unity = str(self._settings.get("UNITY_INSTALL_DIR", "") or "").strip() or None
-        unity_installed = find_unity_executable(unity_install_dir(configured_unity)) is not None
+        configured_unity = (
+            str(self._settings.get("UNITY_INSTALL_DIR", "") or "").strip() or None
+        )
+        unity_installed = (
+            find_unity_executable(unity_install_dir(configured_unity)) is not None
+        )
         with self._lock:
             update_available = self._python_update_available
             update_version = self._python_update_version

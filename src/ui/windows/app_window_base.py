@@ -33,10 +33,19 @@ from controllers.gui.async_runner import run_async
 from ui.chat import message_renderer
 from ui.chat.chat_delegate import ChatMessageDelegate
 from ui.chat.render_context import ChatRenderContext
-from ui.chat.presentation_coordinator import ChatPresentationCoordinator, ChatRenderCommand
+from ui.chat.presentation_coordinator import (
+    ChatPresentationCoordinator,
+    ChatRenderCommand,
+)
 from services.dialogue_runtime_state import get_dialogue_runtime_state_service
-from ui.dialogs.ffmpeg_dialogs import create_ffmpeg_install_popup, show_ffmpeg_error_popup
-from ui.dialogs.telegram_auth_dialogs import show_tg_code_dialog, show_tg_password_dialog
+from ui.dialogs.ffmpeg_dialogs import (
+    create_ffmpeg_install_popup,
+    show_ffmpeg_error_popup,
+)
+from ui.dialogs.telegram_auth_dialogs import (
+    show_tg_code_dialog,
+    show_tg_password_dialog,
+)
 from ui.widgets.image_viewer_widget import ImageViewerWidget
 from ui.widgets.overlay_widget import OverlayWidget
 from utils import getTranslationVariant as _
@@ -94,7 +103,9 @@ class AppWindowBase(QMainWindow):
     cancel_model_loading_signal = pyqtSignal()
 
     create_dialog_signal = pyqtSignal(dict)
-    create_installation_window_signal = pyqtSignal(str, str, object)  # title, initial_status, holder(dict)
+    create_installation_window_signal = pyqtSignal(
+        str, str, object
+    )  # title, initial_status, holder(dict)
     close_installation_window_signal = pyqtSignal(object)
     finalize_installation_window_signal = pyqtSignal(object, bool)  # win, close_now
 
@@ -132,7 +143,9 @@ class AppWindowBase(QMainWindow):
         self.settings_binding = None
 
         try:
-            self.SETTINGS_PANEL_WIDTH = int(self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520)
+            self.SETTINGS_PANEL_WIDTH = int(
+                self.settings.get("SETTINGS_PANEL_WIDTH", 520) or 520
+            )
         except Exception:
             self.SETTINGS_PANEL_WIDTH = 520
         self.SETTINGS_PANEL_WIDTH = max(280, min(1800, self.SETTINGS_PANEL_WIDTH))
@@ -170,6 +183,7 @@ class AppWindowBase(QMainWindow):
 
         tr_set(self, "Чат с NeuroMita", "NeuroMita Chat", "setWindowTitle")
         from ui.app_icon import application_icon
+
         self.setWindowIcon(application_icon())
 
         self.staged_image_data = []
@@ -185,7 +199,9 @@ class AppWindowBase(QMainWindow):
 
         self.update_chat_signal.connect(self._on_update_chat_signal)
         self.render_chat_event_signal.connect(self._on_render_chat_event_signal)
-        self.history_messages_committed_signal.connect(self._on_history_messages_committed)
+        self.history_messages_committed_signal.connect(
+            self._on_history_messages_committed
+        )
         self.update_status_signal.connect(self.update_status_colors)
         self.update_debug_signal.connect(self.update_debug_info)
 
@@ -195,7 +211,9 @@ class AppWindowBase(QMainWindow):
 
         self.show_thinking_signal.connect(self._show_thinking_slot)
         self.show_error_signal.connect(self._show_error_slot)
-        self.clear_chat_message_error_signal.connect(self._clear_chat_message_error_slot)
+        self.clear_chat_message_error_signal.connect(
+            self._clear_chat_message_error_slot
+        )
         self.hide_status_signal.connect(self._hide_status_slot)
         self.hide_generation_status_signal.connect(self._hide_generation_status_slot)
         self.pulse_error_signal.connect(self._pulse_error_slot)
@@ -264,15 +282,21 @@ class AppWindowBase(QMainWindow):
         self.insert_user_input_signal.connect(self._on_insert_user_input)
         self.send_text_message_signal.connect(
             lambda payload: self.send_message(
-                user_input=payload.get("text", "") if isinstance(payload, dict) else payload,
+                user_input=(
+                    payload.get("text", "") if isinstance(payload, dict) else payload
+                ),
                 trace_id=payload.get("trace_id") if isinstance(payload, dict) else None,
-                merge_input_from_entry=bool(self._get_setting("MIC_INSTANT_MERGE_CHAT_INPUT", True)),
+                merge_input_from_entry=bool(
+                    self._get_setting("MIC_INSTANT_MERGE_CHAT_INPUT", True)
+                ),
             ),
             type=Qt.ConnectionType.QueuedConnection,
         )
         self.show_info_message_signal.connect(self._on_show_info_message)
         self.show_error_message_signal.connect(self._on_show_error_message)
-        self.update_model_loading_status_signal.connect(self._on_update_model_loading_status)
+        self.update_model_loading_status_signal.connect(
+            self._on_update_model_loading_status
+        )
         self.run_ui_task_signal.connect(
             self._run_ui_task_slot,
             type=Qt.ConnectionType.QueuedConnection,
@@ -295,7 +319,9 @@ class AppWindowBase(QMainWindow):
             if callable(fn):
                 fn()
         except Exception as exc:
-            logger.error(f"_run_ui_task_slot error: {format_exception(exc)}", exc_info=True)
+            logger.error(
+                f"_run_ui_task_slot error: {format_exception(exc)}", exc_info=True
+            )
 
     def attach_settings_binding(self, binding) -> None:
         self.settings_view_model = binding
@@ -337,7 +363,10 @@ class AppWindowBase(QMainWindow):
         if effect.used_fallback:
             show_styled_message(
                 self,
-                _("Данные конкретного сообщения недоступны", "Message-specific data not available"),
+                _(
+                    "Данные конкретного сообщения недоступны",
+                    "Message-specific data not available",
+                ),
                 _(
                     "Не удалось найти сохранённый запрос именно для этого сообщения "
                     "(сбор данных для дообучения мог быть выключен, либо запись вытеснена лимитом истории).\n"
@@ -371,7 +400,9 @@ class AppWindowBase(QMainWindow):
         self._window_actions.reopen_install_logs()
 
     def setup_ui(self):
-        raise NotImplementedError("AppWindowBase.setup_ui() must be implemented by a concrete window class.")
+        raise NotImplementedError(
+            "AppWindowBase.setup_ui() must be implemented by a concrete window class."
+        )
 
     def _on_shell_utility_requested(self, action):
         if isinstance(action, str) and action.startswith("language:"):
@@ -380,6 +411,7 @@ class AppWindowBase(QMainWindow):
             # виджетов + сигнал language_changed (без перезапуска приложения).
             try:
                 from localization.live import set_language
+
                 set_language(code)
             except Exception:
                 try:
@@ -412,7 +444,7 @@ class AppWindowBase(QMainWindow):
         super().resizeEvent(event)
         self.overlay.resize(self.size())
         for child in self.children():
-            if child.__class__.__name__ == 'GuideOverlay':
+            if child.__class__.__name__ == "GuideOverlay":
                 child.resize(self.size())
         panel = self._chat_panel_view
         if panel is not None:
@@ -481,7 +513,9 @@ class AppWindowBase(QMainWindow):
             self.overlay.set_content(viewer)
             self.overlay.show_animated()
         except Exception as exc:
-            logger.error("Failed to show chat image: %s", format_exception(exc), exc_info=True)
+            logger.error(
+                "Failed to show chat image: %s", format_exception(exc), exc_info=True
+            )
 
     def _on_chat_ui_ready(self):
         """Flush deferred chat work when the lazy Sandbox page materializes."""
@@ -494,7 +528,9 @@ class AppWindowBase(QMainWindow):
         pending_payload = self._pending_history_payload
         self._pending_history_payload = None
         if pending_payload is not None:
-            QTimer.singleShot(0, lambda data=pending_payload: self._on_history_loaded(data))
+            QTimer.singleShot(
+                0, lambda data=pending_payload: self._on_history_loaded(data)
+            )
         elif self._chat_history_load_pending:
             self._chat_history_load_pending = False
             QTimer.singleShot(0, self.load_chat_history)
@@ -533,7 +569,9 @@ class AppWindowBase(QMainWindow):
             )
             QTimer.singleShot(
                 15000,
-                lambda request_id=ticket.request_id: self._recover_stalled_history_load(request_id),
+                lambda request_id=ticket.request_id: self._recover_stalled_history_load(
+                    request_id
+                ),
             )
             return True
         except Exception:
@@ -548,7 +586,9 @@ class AppWindowBase(QMainWindow):
             return
         if request_id and request_id != self._history_load_request_id:
             return
-        logger.warning("History UI load timed out; keeping the live presentation intact")
+        logger.warning(
+            "History UI load timed out; keeping the live presentation intact"
+        )
         self._chat_presentation.cancel_history_load(request_id or None)
         self._history_load_inflight = False
         self._history_load_request_id = ""
@@ -612,7 +652,9 @@ class AppWindowBase(QMainWindow):
             )
             return
         messages = payload.get("messages", []) or []
-        request_id = str(payload.get("request_id") or self._history_load_request_id or "")
+        request_id = str(
+            payload.get("request_id") or self._history_load_request_id or ""
+        )
         current_character_id = str(self._shell_actions.current_character_id() or "")
         plan = self._chat_presentation.plan_history_projection(
             request_id=request_id,
@@ -648,7 +690,10 @@ class AppWindowBase(QMainWindow):
             self.update_debug_info()
             chat_window.scroll_to_bottom()
         except Exception as exc:
-            logger.error(f"Failed to project loaded history: {format_exception(exc)}", exc_info=True)
+            logger.error(
+                f"Failed to project loaded history: {format_exception(exc)}",
+                exc_info=True,
+            )
         finally:
             if request_id == self._history_load_request_id:
                 self._history_load_inflight = False
@@ -677,10 +722,15 @@ class AppWindowBase(QMainWindow):
                 continue
             if message_id in known_ids:
                 for entry in messages:
-                    if isinstance(entry, dict) and str(entry.get("message_id") or "") == message_id:
+                    if (
+                        isinstance(entry, dict)
+                        and str(entry.get("message_id") or "") == message_id
+                    ):
                         entry["delivery_error"] = str(record.get("error") or "")
                 continue
-            request = record.get("request") if isinstance(record.get("request"), dict) else {}
+            request = (
+                record.get("request") if isinstance(record.get("request"), dict) else {}
+            )
             text = str(record.get("text") or request.get("user_input") or "")
             ui_images = [
                 {
@@ -694,18 +744,22 @@ class AppWindowBase(QMainWindow):
                 text = "Изображение из Unity"
             created_at = float(record.get("created_at") or 0)
             message_time = (
-                datetime.datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+                datetime.datetime.fromtimestamp(created_at).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
                 if created_at
                 else ""
             )
-            messages.append({
-                "role": "user",
-                "content": text,
-                "time": message_time,
-                "message_id": message_id,
-                "delivery_error": str(record.get("error") or ""),
-                "_ui_images": ui_images,
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": text,
+                    "time": message_time,
+                    "message_id": message_id,
+                    "delivery_error": str(record.get("error") or ""),
+                    "_ui_images": ui_images,
+                }
+            )
             known_ids.add(message_id)
         messages.sort(key=lambda item: str(item.get("time") or ""))
         merged["messages"] = messages
@@ -731,7 +785,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_float_positive_or_zero(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = float(new_value)
             return value >= 0.0
@@ -739,7 +794,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_positive_integer(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = int(new_value)
             return value > 0
@@ -747,7 +803,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_non_negative_integer(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = int(new_value)
             return value >= 0
@@ -755,7 +812,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_positive_integer_or_zero(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = int(new_value)
             return value >= 0
@@ -763,7 +821,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_float_0_to_1(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = float(new_value)
             return 0.0 <= value <= 1.0
@@ -771,7 +830,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_float_0_to_2(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = float(new_value)
             return 0.0 <= value <= 2.0
@@ -779,7 +839,8 @@ class AppWindowBase(QMainWindow):
             return False
 
     def validate_float_minus2_to_2(self, new_value):
-        if new_value == "": return True
+        if new_value == "":
+            return True
         try:
             value = float(new_value)
             return -2.0 <= value <= 2.0
@@ -787,7 +848,7 @@ class AppWindowBase(QMainWindow):
             return False
 
     def update_debug_info(self):
-        if not (hasattr(self, 'debug_window') and self.debug_window):
+        if not (hasattr(self, "debug_window") and self.debug_window):
             return
 
         self._debug_refresh_ticket += 1
@@ -796,9 +857,11 @@ class AppWindowBase(QMainWindow):
         def apply(debug_info):
             if ticket != self._debug_refresh_ticket:
                 return
-            if hasattr(self, 'debug_window') and self.debug_window:
+            if hasattr(self, "debug_window") and self.debug_window:
                 self.debug_window.clear()
-                self.debug_window.insertPlainText(str(debug_info or "Debug info not available"))
+                self.debug_window.insertPlainText(
+                    str(debug_info or "Debug info not available")
+                )
 
         self._shell_actions.request_debug_info(apply)
 
@@ -822,7 +885,9 @@ class AppWindowBase(QMainWindow):
             return f"{s}{_('к', 'k')}"
         return str(n)
 
-    def _render_token_stats_html(self, stats: dict, max_fallback: int) -> tuple[str, str]:
+    def _render_token_stats_html(
+        self, stats: dict, max_fallback: int
+    ) -> tuple[str, str]:
         """Строка статистики под чатом → (rich-HTML, tooltip).
 
         Две смысловые зоны: слева ОЦЕНКА до отправки (заполнение окна контекста
@@ -869,7 +934,11 @@ class AppWindowBase(QMainWindow):
         actual_prompt = stats.get("actual_prompt_tokens")
         actual_completion = stats.get("actual_completion_tokens")
         actual_cost = stats.get("actual_cost")
-        if actual_prompt is not None or actual_completion is not None or actual_cost is not None:
+        if (
+            actual_prompt is not None
+            or actual_completion is not None
+            or actual_cost is not None
+        ):
             ap = int(actual_prompt or 0)
             ac = int(actual_completion or 0)
             at = int(stats.get("actual_total_tokens") or (ap + ac))
@@ -920,7 +989,9 @@ class AppWindowBase(QMainWindow):
             def apply(stats: dict):
                 payload = {
                     "stats": stats or {},
-                    "max_model_tokens": int(self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000),
+                    "max_model_tokens": int(
+                        self._get_setting("MAX_MODEL_TOKENS", 32000) or 32000
+                    ),
                 }
                 if ticket != self._token_refresh_ticket:
                     return
@@ -944,7 +1015,9 @@ class AppWindowBase(QMainWindow):
             return
         else:
             label.setVisible(False)
-            label.setText(_("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available"))
+            label.setText(
+                _("Токены: Токенизатор недоступен", "Tokens: Tokenizer not available")
+            )
         self.update_debug_info()
         return True
 
@@ -966,7 +1039,9 @@ class AppWindowBase(QMainWindow):
         else:
             self._chat_presentation.mark_streams_unmounted()
         self._chat_render_context.reset_transient_state()
-        logger.debug("[Clear] chat_window.message_count: %s", chat_window.message_count())
+        logger.debug(
+            "[Clear] chat_window.message_count: %s", chat_window.message_count()
+        )
         chat_window.clear_messages()
 
     def user_input_text(self) -> str:
@@ -1056,12 +1131,16 @@ class AppWindowBase(QMainWindow):
     def _on_more_history_loaded(self, data: dict):
         if getattr(self, "chat_window", None) is None:
             return
-        messages_to_prepend = data.get('messages', [])
+        messages_to_prepend = data.get("messages", [])
         if not messages_to_prepend:
             return
-        character_id = str(data.get('character_id') or '')
-        current_character_id = str(self._shell_actions.current_character_id() or '')
-        if character_id and current_character_id and character_id.casefold() != current_character_id.casefold():
+        character_id = str(data.get("character_id") or "")
+        current_character_id = str(self._shell_actions.current_character_id() or "")
+        if (
+            character_id
+            and current_character_id
+            and character_id.casefold() != current_character_id.casefold()
+        ):
             return
         scrollbar = self.chat_window.verticalScrollBar()
         old_value = scrollbar.value()
@@ -1073,13 +1152,22 @@ class AppWindowBase(QMainWindow):
             structured_data = entry.get("structured_data")
             message_id = entry.get("message_id")
             sample_id = entry.get("sample_id")
-            message_renderer.insert_message(self._chat_render_context, role, content, insert_at_start=True,
-                                            message_time=message_time, structured_data=structured_data,
-                                            message_id=message_id, character_id=character_id,
-                                            ui_images=entry.get("_ui_images") or [],
-                                            sample_id=sample_id,
-                                            context_snapshot_id=entry.get("context_snapshot_id"))
-        QTimer.singleShot(0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value))
+            message_renderer.insert_message(
+                self._chat_render_context,
+                role,
+                content,
+                insert_at_start=True,
+                message_time=message_time,
+                structured_data=structured_data,
+                message_id=message_id,
+                character_id=character_id,
+                ui_images=entry.get("_ui_images") or [],
+                sample_id=sample_id,
+                context_snapshot_id=entry.get("context_snapshot_id"),
+            )
+        QTimer.singleShot(
+            0, lambda: scrollbar.setValue(scrollbar.maximum() - old_max + old_value)
+        )
         logger.info(f"Загружено еще {len(messages_to_prepend)} сообщений.")
 
     def _save_setting(self, key, value):
@@ -1146,7 +1234,10 @@ class AppWindowBase(QMainWindow):
         try:
             self._shell_actions.close_application()
         except Exception as exc:
-            logger.error(f"Ошибка при закрытии приложения: {format_exception(exc)}", exc_info=True)
+            logger.error(
+                f"Ошибка при закрытии приложения: {format_exception(exc)}",
+                exc_info=True,
+            )
 
         try:
             self._window_actions.close()
@@ -1162,13 +1253,13 @@ class AppWindowBase(QMainWindow):
         self.close()
 
     def _show_ffmpeg_installing_popup(self):
-        if hasattr(self, 'ffmpeg_install_popup') and self.ffmpeg_install_popup:
+        if hasattr(self, "ffmpeg_install_popup") and self.ffmpeg_install_popup:
             return
         self.ffmpeg_install_popup = create_ffmpeg_install_popup(self)
         self.ffmpeg_install_popup.show()
 
     def _close_ffmpeg_installing_popup(self):
-        if hasattr(self, 'ffmpeg_install_popup') and self.ffmpeg_install_popup:
+        if hasattr(self, "ffmpeg_install_popup") and self.ffmpeg_install_popup:
             self.ffmpeg_install_popup.close()
             self.ffmpeg_install_popup = None
 
@@ -1213,10 +1304,12 @@ class AppWindowBase(QMainWindow):
                 block_id = int(href.split("/")[-1])
                 message_renderer.toggle_think_block(self._chat_render_context, block_id)
             except Exception as e:
-                logger.error(f"Error toggling think block {block_id}: {format_exception(e)}")
+                logger.error(
+                    f"Error toggling think block {block_id}: {format_exception(e)}"
+                )
 
     def _show_thinking_slot(self, character_name):
-        if hasattr(self, 'mita_status') and self.mita_status:
+        if hasattr(self, "mita_status") and self.mita_status:
             logger.info('Показываем статус "Думает" для персонажа: %s', character_name)
             self.mita_status.show_thinking(character_name)
 
@@ -1224,8 +1317,8 @@ class AppWindowBase(QMainWindow):
         payload = error_payload if isinstance(error_payload, dict) else {}
         error_message = str(payload.get("error") or error_payload or "")
         self._pending_chat_error = error_message
-        if hasattr(self, 'mita_status') and self.mita_status:
-            logger.info('Показываем статус ошибки: %s', error_message)
+        if hasattr(self, "mita_status") and self.mita_status:
+            logger.info("Показываем статус ошибки: %s", error_message)
             self.mita_status.show_error(error_message)
             self._pending_chat_error = None
         message_id = str(payload.get("message_id") or "")
@@ -1238,6 +1331,7 @@ class AppWindowBase(QMainWindow):
             )
         if self._chat_render_context.is_bound and message_id:
             from ui.chat import message_renderer
+
             message_renderer.mark_user_error(
                 self._chat_render_context, message_id, error_message
             )
@@ -1253,20 +1347,22 @@ class AppWindowBase(QMainWindow):
             character_id=character_id,
         )
         for widget in getattr(getattr(self, "chat_window", None), "_messages", []):
-            if getattr(widget, "_message_id", None) == message_id and hasattr(widget, "clear_error"):
+            if getattr(widget, "_message_id", None) == message_id and hasattr(
+                widget, "clear_error"
+            ):
                 widget.clear_error()
 
     def _hide_status_slot(self):
-        if hasattr(self, 'mita_status') and self.mita_status:
-            logger.info('Скрываем статус')
+        if hasattr(self, "mita_status") and self.mita_status:
+            logger.info("Скрываем статус")
             self.mita_status.hide_animated()
 
     def _hide_generation_status_slot(self):
-        if hasattr(self, 'mita_status') and self.mita_status:
+        if hasattr(self, "mita_status") and self.mita_status:
             self.mita_status.hide_generation()
 
     def _pulse_error_slot(self):
-        if hasattr(self, 'mita_status') and self.mita_status:
+        if hasattr(self, "mita_status") and self.mita_status:
             self.mita_status.pulse_error_animation()
 
     def _show_voicing_slot(self, payload=None):
@@ -1288,7 +1384,7 @@ class AppWindowBase(QMainWindow):
                 pass
 
     def _hide_compression_slot(self):
-        if hasattr(self, 'mita_status') and self.mita_status:
+        if hasattr(self, "mita_status") and self.mita_status:
             self.mita_status.hide_compression()
 
     def _on_stream_start(self, _data=None):
@@ -1305,26 +1401,44 @@ class AppWindowBase(QMainWindow):
             QTimer.singleShot(0, self.load_chat_history)
 
     def _on_reload_prompts_success(self):
-        QMessageBox.information(self, _("Успешно", "Success"),
-            _("Промпты успешно скачаны и перезагружены.", "Prompts successfully downloaded and reloaded."))
+        QMessageBox.information(
+            self,
+            _("Успешно", "Success"),
+            _(
+                "Промпты успешно скачаны и перезагружены.",
+                "Prompts successfully downloaded and reloaded.",
+            ),
+        )
 
     def _on_reload_prompts_failed(self, data: dict):
-        error = data.get('error', 'Unknown error')
+        error = data.get("error", "Unknown error")
         if error == "Event loop not running":
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                _("Не удалось запустить асинхронную загрузку промптов.", "Failed to start asynchronous prompt download."))
+            QMessageBox.critical(
+                self,
+                _("Ошибка", "Error"),
+                _(
+                    "Не удалось запустить асинхронную загрузку промптов.",
+                    "Failed to start asynchronous prompt download.",
+                ),
+            )
         else:
-            QMessageBox.critical(self, _("Ошибка", "Error"),
-                _("Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.",
-                  "Failed to download prompts from GitHub. Check your internet connection."))
+            QMessageBox.critical(
+                self,
+                _("Ошибка", "Error"),
+                _(
+                    "Не удалось скачать промпты с GitHub. Проверьте подключение к интернету.",
+                    "Failed to download prompts from GitHub. Check your internet connection.",
+                ),
+            )
 
     def _show_loading_popup(self, message):
         self._on_display_loading_popup({"message": message})
 
     def _on_display_loading_popup(self, data: dict):
-        message = data.get('message', 'Loading...')
-        if not hasattr(self, 'loading_popup'):
+        message = data.get("message", "Loading...")
+        if not hasattr(self, "loading_popup"):
             from PyQt6.QtWidgets import QProgressDialog
+
             self.loading_popup = QProgressDialog(message, None, 0, 0, self)
             self.loading_popup.setWindowTitle(_("Загрузка", "Loading"))
             self.loading_popup.setModal(True)
@@ -1338,7 +1452,7 @@ class AppWindowBase(QMainWindow):
         self._on_hide_loading_popup()
 
     def _on_hide_loading_popup(self):
-        if hasattr(self, 'loading_popup') and self.loading_popup:
+        if hasattr(self, "loading_popup") and self.loading_popup:
             self.loading_popup.close()
 
     def _on_clear_user_input(self):
@@ -1378,13 +1492,13 @@ class AppWindowBase(QMainWindow):
         self.send_message()
 
     def _on_show_info_message(self, data: dict):
-        title = data.get('title', 'Информация')
-        message = data.get('message', '')
+        title = data.get("title", "Информация")
+        message = data.get("message", "")
         QMessageBox.information(self, title, message)
 
     def _on_show_error_message(self, data: dict):
-        title = data.get('title', 'Ошибка')
-        message = data.get('message', '')
+        title = data.get("title", "Ошибка")
+        message = data.get("message", "")
         QMessageBox.critical(self, title, message)
 
     def _on_remove_last_chat_widgets(self, n: int):
@@ -1393,12 +1507,13 @@ class AppWindowBase(QMainWindow):
             chat_window.remove_last_n_widgets(n)
 
     def _on_update_model_loading_status(self, status: str):
-        if hasattr(self, 'loading_status_label'):
+        if hasattr(self, "loading_status_label"):
             self.loading_status_label.setText(status)
 
     def _debug_wrapper(self, parent_layout):
         self.setup_debug_controls(parent_layout)
         from ui.settings.debug_settings import setup_debug_panel_controls
+
         setup_debug_panel_controls(self, parent_layout)
 
     def _on_debug_insert_system_message(self):
@@ -1416,11 +1531,15 @@ class AppWindowBase(QMainWindow):
     def _on_debug_save_snapshot(self):
         character_id = self._get_current_character_id_for_debug()
         self._shell_actions.save_snapshot(character_id)
-        self._on_show_info_message({
-            "title": _("Snapshot", "Snapshot"),
-            "message": _("Snapshot сохранён в папку Histories/.../Saved/",
-                         "Snapshot saved to Histories/.../Saved/"),
-        })
+        self._on_show_info_message(
+            {
+                "title": _("Snapshot", "Snapshot"),
+                "message": _(
+                    "Snapshot сохранён в папку Histories/.../Saved/",
+                    "Snapshot saved to Histories/.../Saved/",
+                ),
+            }
+        )
 
     def _on_debug_load_snapshot(self):
         character_id = self._get_current_character_id_for_debug()
@@ -1483,31 +1602,35 @@ class AppWindowBase(QMainWindow):
         parent_layout.addWidget(self.debug_window)
         self.update_debug_info()
 
-    def create_settings_section(self, parent_layout, title, settings_config, icon_name=None):
+    def create_settings_section(
+        self, parent_layout, title, settings_config, icon_name=None
+    ):
         header_widget = QWidget()
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 10)
         header_layout.setSpacing(5)
 
         title_label = QLabel(title)
-        title_label.setObjectName('SectionTitle')
+        title_label.setObjectName("SectionTitle")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet('''
+        title_label.setStyleSheet("""
             QLabel#SectionTitle { font-size: 14px; font-weight: bold; color: #ffffff; padding: 5px 0; }
-        ''')
+        """)
         header_layout.addWidget(title_label)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
-        separator.setStyleSheet('''
+        separator.setStyleSheet("""
             QFrame { background-color: #4a4a4a; max-height: 2px; margin: 0 10px; }
-        ''')
+        """)
         header_layout.addWidget(separator)
         parent_layout.addWidget(header_widget)
         gui_templates.create_settings_direct(self, parent_layout, settings_config)
 
-    def create_settings_flat(self, parent_layout, title, settings_config, icon_name=None):
+    def create_settings_flat(
+        self, parent_layout, title, settings_config, icon_name=None
+    ):
         gui_templates.create_settings_direct(self, parent_layout, settings_config)
 
     def _check_eula_and_guide(self):
@@ -1516,6 +1639,7 @@ class AppWindowBase(QMainWindow):
 
     def _show_eula_dialog(self):
         from ui.widgets.eula_widget import EULAWidget
+
         eula_widget = EULAWidget(self.settings_binding or self.settings)
         eula_widget.accepted.connect(lambda: self._on_eula_accepted(eula_widget))
         eula_widget.rejected.connect(lambda: self._on_eula_rejected(eula_widget))
@@ -1529,6 +1653,7 @@ class AppWindowBase(QMainWindow):
         try:
             if eula_widget.language_changed_on_start():
                 from ui.language_restart import prompt_language_restart
+
                 if prompt_language_restart(self):
                     return
         except Exception:
@@ -1536,9 +1661,12 @@ class AppWindowBase(QMainWindow):
         QTimer.singleShot(500, self._show_guide)
 
     def _on_eula_rejected(self, eula_widget):
-        QMessageBox.critical(self, "Отказ от соглашения / Agreement Rejected",
+        QMessageBox.critical(
+            self,
+            "Отказ от соглашения / Agreement Rejected",
             "Вы не можете использовать программу без принятия лицензионного соглашения.\n"
-            "You cannot use the software without accepting the license agreement.")
+            "You cannot use the software without accepting the license agreement.",
+        )
         self.close()
 
     def _show_guide(self):
@@ -1580,6 +1708,7 @@ class AppWindowBase(QMainWindow):
             )
 
         # ===== Обновление индикаторов статуса =====
+
     def update_status_colors(self):
         if self._shell_actions.is_closing:
             return
@@ -1613,19 +1742,23 @@ class AppWindowBase(QMainWindow):
 
             apply_to("game_status_checkbox", checked=bool(state.get("game_connected")))
 
-            if registry.get("silero_status_checkbox") or hasattr(self, "silero_status_checkbox"):
+            if registry.get("silero_status_checkbox") or hasattr(
+                self, "silero_status_checkbox"
+            ):
                 method = str(state.get("method") or "Local")
                 use_voice = bool(state.get("use_voice"))
                 if method == "Local":
-                    voice_label = _('Озвучка (Лок.)', 'Voice (Local)')
+                    voice_label = _("Озвучка (Лок.)", "Voice (Local)")
                     voice_active = bool(state.get("voice_initialized"))
                 elif method == "API":
-                    voice_label = _('Озвучка (API)', 'Voice (API)')
+                    voice_label = _("Озвучка (API)", "Voice (API)")
                     voice_active = bool(state.get("voice_initialized"))
                 else:
-                    voice_label = _('Озвучка (ТГ)', 'Voice (TG)')
+                    voice_label = _("Озвучка (ТГ)", "Voice (TG)")
                     voice_active = bool(use_voice and state.get("silero_connected"))
-                apply_to("silero_status_checkbox", checked=voice_active, text=voice_label)
+                apply_to(
+                    "silero_status_checkbox", checked=voice_active, text=voice_label
+                )
 
             # RAG «активен» только когда его модели подняты: настройка RAG_ENABLED
             # включается мгновенно, а веса эмбеддера/реранкера грузятся минутами.
@@ -1633,11 +1766,19 @@ class AppWindowBase(QMainWindow):
             apply_to(
                 "rag_status_checkbox",
                 checked=(rag_state == "ready"),
-                indicator={"loading": "loading", "error": "red", "ready": "green"}.get(rag_state),
+                indicator={"loading": "loading", "error": "red", "ready": "green"}.get(
+                    rag_state
+                ),
             )
             apply_to("mic_status_checkbox", checked=bool(state.get("mic_active")))
-            apply_to("screen_capture_status_checkbox", checked=bool(state.get("screen_capture_active")))
-            apply_to("camera_capture_status_checkbox", checked=bool(state.get("camera_capture_active")))
+            apply_to(
+                "screen_capture_status_checkbox",
+                checked=bool(state.get("screen_capture_active")),
+            )
+            apply_to(
+                "camera_capture_status_checkbox",
+                checked=bool(state.get("camera_capture_active")),
+            )
 
         self._shell_actions.request_status(apply)
 
@@ -1660,7 +1801,9 @@ class AppWindowBase(QMainWindow):
         )
 
     def _command_from_render_payload(self, data: dict) -> ChatRenderCommand:
-        character_id = str(data.get("character_id") or self._shell_actions.current_character_id() or "")
+        character_id = str(
+            data.get("character_id") or self._shell_actions.current_character_id() or ""
+        )
         return ChatRenderCommand(
             role=str(data.get("role") or ""),
             content=data.get("content", ""),
@@ -1723,7 +1866,9 @@ class AppWindowBase(QMainWindow):
         if not self._chat_presentation.record_live(
             command,
             current_character_id=command.character_id,
-            surface_character_ids=self._chat_surface_character_ids(command.character_id),
+            surface_character_ids=self._chat_surface_character_ids(
+                command.character_id
+            ),
         ):
             return False
         return self._render_chat_command(command)
@@ -1751,7 +1896,9 @@ class AppWindowBase(QMainWindow):
                 stream_id,
                 character_id=character_id,
                 role=role,
-                speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+                speaker_name=str(
+                    payload.get("speaker_name") or payload.get("character_name") or ""
+                ),
             )
             if not presentation.should_render_stream(
                 stream_id,
@@ -1766,13 +1913,16 @@ class AppWindowBase(QMainWindow):
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
+
         if presentation is not None and not presentation.is_stream_mounted(stream_id):
             return self._mount_stream_replay(stream_id)
         result = message_renderer.prepare_stream_slot(
             self._chat_render_context,
             role=role,
             stream_id=stream_id,
-            speaker_name=str(payload.get("speaker_name") or payload.get("character_name") or ""),
+            speaker_name=str(
+                payload.get("speaker_name") or payload.get("character_name") or ""
+            ),
         )
         if presentation is not None:
             presentation.mark_stream_mounted(stream_id)
@@ -1780,6 +1930,7 @@ class AppWindowBase(QMainWindow):
 
     def _append_stream_chunk_slot(self, data):
         from ui.chat import message_renderer
+
         payload = data if isinstance(data, dict) else {"chunk": data}
         stream_id = str(payload.get("stream_id") or "default")
         character_id = str(payload.get("character_id") or "")
@@ -1839,6 +1990,7 @@ class AppWindowBase(QMainWindow):
         if not self._chat_render_context.is_bound:
             return False
         from ui.chat import message_renderer
+
         payload = data if isinstance(data, dict) else {}
         stream_id = str(payload.get("stream_id") or "default")
         character_id = str(payload.get("character_id") or "")
@@ -1905,33 +2057,35 @@ class AppWindowBase(QMainWindow):
 
     # ===== Слоты прогресса установки ASR (если вдруг отсутствуют) =====
     def _on_asr_install_progress(self, data: dict):
-        if hasattr(self, 'install_model_button'):
-            status   = data.get("status", "")
+        if hasattr(self, "install_model_button"):
+            status = data.get("status", "")
             progress = data.get("progress", 0)
             self.install_model_button.setText(f"{status} ({progress}%)")
 
     def _on_asr_install_finished(self, data: dict):
-        if hasattr(self, 'install_model_button'):
+        if hasattr(self, "install_model_button"):
             self.install_model_button.setText(_("Установлено!", "Installed!"))
             self.install_model_button.setEnabled(True)
 
     def _on_asr_install_failed(self, data: dict):
-        if hasattr(self, 'install_model_button'):
-            self.install_model_button.setText(_("Ошибка установки", "Installation failed"))
+        if hasattr(self, "install_model_button"):
+            self.install_model_button.setText(
+                _("Ошибка установки", "Installation failed")
+            )
             self.install_model_button.setEnabled(True)
 
-    def set_settings_icon_indicator(self, category: str, state: str | None, tooltip: str | None = None) -> None:
+    def set_settings_icon_indicator(
+        self, category: str, state: str | None, tooltip: str | None = None
+    ) -> None:
         btn = getattr(self, "settings_buttons", {}).get(category)
         if not btn:
             return
         if hasattr(btn, "set_indicator_state"):
             btn.set_indicator_state(state, tooltip_text=tooltip)
 
-
     def _set_voice_icon_loading(self, model_id: str | None) -> None:
         mid = str(model_id) if model_id else None
         self._voice_model_init_in_progress_model_id = mid
-
 
     def _update_voice_settings_icon_indicator(self) -> None:
         use_voice = bool(self._get_setting("USE_VOICEOVER", False))
@@ -1946,39 +2100,29 @@ class AppWindowBase(QMainWindow):
 
         if not model_id:
             self.set_settings_icon_indicator(
-                "voice",
-                "red",
-                "Local voiceover enabled: model not selected"
+                "voice", "red", "Local voiceover enabled: model not selected"
             )
             return
 
         if self._voice_model_init_in_progress_model_id == model_id:
             self.set_settings_icon_indicator(
-                "voice",
-                "loading",
-                f"Initializing local voice model: {model_id}"
+                "voice", "loading", f"Initializing local voice model: {model_id}"
             )
             return
 
         is_installed, is_initialized = self._shell_actions.voice_model_state(model_id)
         if not is_installed:
             self.set_settings_icon_indicator(
-                "voice",
-                "red",
-                f"Local voice model not installed: {model_id}"
+                "voice", "red", f"Local voice model not installed: {model_id}"
             )
             return
 
         if not is_initialized:
             self.set_settings_icon_indicator(
-                "voice",
-                "red",
-                f"Local voice model requires initialization: {model_id}"
+                "voice", "red", f"Local voice model requires initialization: {model_id}"
             )
             return
 
         self.set_settings_icon_indicator(
-            "voice",
-            "green",
-            f"Local voice model ready: {model_id}"
+            "voice", "green", f"Local voice model ready: {model_id}"
         )

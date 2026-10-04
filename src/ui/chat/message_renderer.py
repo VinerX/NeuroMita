@@ -6,7 +6,13 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt
 from utils import _
 from ui.chat.chat_delegate import ChatMessageDelegate
-from ui.chat.message_widget import MessageWidget, ThinkBlockWidget, ImageWidget, AVATAR_SIZE, _get_avatar_pixmap
+from ui.chat.message_widget import (
+    MessageWidget,
+    ThinkBlockWidget,
+    ImageWidget,
+    AVATAR_SIZE,
+    _get_avatar_pixmap,
+)
 from ui.chat.message_actions_presentation import (
     DeleteChatMessage,
     EditChatMessage,
@@ -17,6 +23,7 @@ from ui.chat.message_actions_presentation import (
     ViewChatSampleContext,
 )
 from ui.chat.structured_panel import StructuredOutputPanel
+
 
 def _strip_hidden_image_descriptions(text: str) -> str:
     import re
@@ -40,7 +47,9 @@ def _strip_hidden_image_descriptions(text: str) -> str:
     for line in lines:
         stripped = line.strip()
         if not skipping_image_block and re.match(r"^\[Image(?:\s+\d+)?:", stripped):
-            needs_multiline_skip = (not stripped.endswith("]")) or ("{" in stripped and not stripped.endswith("}]"))
+            needs_multiline_skip = (not stripped.endswith("]")) or (
+                "{" in stripped and not stripped.endswith("}]")
+            )
             if needs_multiline_skip:
                 skipping_image_block = True
             continue
@@ -55,6 +64,7 @@ def _strip_hidden_image_descriptions(text: str) -> str:
     cleaned = "\n".join(kept)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
 
 def _wrap_panel_aligned(panel, role="assistant", parent=None, avatar_pixmap=None):
     """
@@ -120,14 +130,17 @@ def _demote_think_avatar(wrapper) -> None:
     lay.setSpacing(0)
     lay.setContentsMargins(AVATAR_SIZE + 16, 2, 0, 4)
 
-STRUCTURED_MODE_OFF   = "Выкл"
+
+STRUCTURED_MODE_OFF = "Выкл"
 STRUCTURED_MODE_BRIEF = "Кратко"
-STRUCTURED_MODE_JSON  = "JSON"
-_STRUCTURED_MODE_OFF_EN   = "Off"
+STRUCTURED_MODE_JSON = "JSON"
+_STRUCTURED_MODE_OFF_EN = "Off"
 _STRUCTURED_MODE_BRIEF_EN = "Brief"
+
 
 def _pop_sample_id_if_collecting(gui) -> str | None:
     return gui.chat_message_actions.consume_pending_sample_id()
+
 
 def _should_show_rating_controls(gui) -> bool:
     try:
@@ -137,6 +150,7 @@ def _should_show_rating_controls(gui) -> bool:
     except Exception:
         return False
 
+
 def _get_delegate(gui) -> ChatMessageDelegate:
     if hasattr(gui, "chat_delegate") and gui.chat_delegate:
         return gui.chat_delegate
@@ -144,26 +158,34 @@ def _get_delegate(gui) -> ChatMessageDelegate:
     setattr(gui, "chat_delegate", d)
     return d
 
+
 def _get_font_size(gui) -> int:
-    return int(getattr(gui, '_chat_font_size', None) or gui._get_setting("CHAT_FONT_SIZE", 12))
+    return int(
+        getattr(gui, "_chat_font_size", None) or gui._get_setting("CHAT_FONT_SIZE", 12)
+    )
+
 
 def _struct_mode(gui) -> str:
     return gui._get_setting("SHOW_STRUCTURED_IN_GUI", STRUCTURED_MODE_OFF)
 
+
 def _is_struct_off(mode) -> bool:
     return mode in (STRUCTURED_MODE_OFF, _STRUCTURED_MODE_OFF_EN, "", False, None)
 
+
 def _get_think_blocks(gui) -> dict:
-    if not hasattr(gui, '_think_block_widgets'):
+    if not hasattr(gui, "_think_block_widgets"):
         gui._think_block_widgets = {}
         gui._think_block_counter = 0
     return gui._think_block_widgets
 
+
 def toggle_think_block(gui, block_id: int):
     blocks = _get_think_blocks(gui)
     widget = blocks.get(block_id)
-    if widget and hasattr(widget, 'toggle'):
+    if widget and hasattr(widget, "toggle"):
         widget.toggle()
+
 
 def _group_segments_by_target(segments: list) -> list:
     if not segments:
@@ -182,21 +204,35 @@ def _group_segments_by_target(segments: list) -> list:
     groups.append((cur_target, cur_texts))
     return groups
 
-def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, character_id: str):
+
+def _connect_widget_signals(
+    gui, widget: MessageWidget, message_id: str, character_id: str
+):
     actions = gui.chat_message_actions
     if actions is None or actions.is_closed:
         raise RuntimeError("Chat message actions ViewModel is not attached")
 
     def on_delete(mid):
         actions.dispatch(DeleteChatMessage(str(mid), str(character_id)))
+
     def on_edit(mid):
         actions.dispatch(EditChatMessage(str(mid), str(character_id)))
+
     def on_regenerate(mid):
         actions.dispatch(RegenerateChat(str(character_id)))
+
     def on_retry(mid):
         actions.dispatch(RetryLastChat(str(mid), str(character_id)))
+
     def on_regenerate_from(mid):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PyQt6.QtWidgets import (
+            QDialog,
+            QVBoxLayout,
+            QHBoxLayout,
+            QLabel,
+            QPushButton,
+        )
+
         dlg = QDialog()
         dlg.setWindowTitle(_("Регенерировать", "Regenerate"))
         dlg.setModal(True)
@@ -212,7 +248,12 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(16, 16, 16, 12)
         lay.setSpacing(12)
-        lbl = QLabel(_("Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?", "All messages after this will be deleted and Mita will respond again. Continue?"))
+        lbl = QLabel(
+            _(
+                "Все сообщения после этого будут удалены, и Мита ответит заново. Продолжить?",
+                "All messages after this will be deleted and Mita will respond again. Continue?",
+            )
+        )
         lbl.setWordWrap(True)
         lay.addWidget(lbl)
         btn_row = QHBoxLayout()
@@ -244,6 +285,7 @@ def _connect_widget_signals(gui, widget: MessageWidget, message_id: str, charact
     widget.view_context_requested.connect(on_view_context)
     widget.view_response_context_requested.connect(on_view_response_context)
 
+
 def mark_user_error(gui, message_id: str, tooltip: str = "") -> bool:
     """Пометить конкретный пузырь пользователя как «сообщение не дошло»."""
     chat_window = getattr(gui, "chat_window", None)
@@ -271,7 +313,20 @@ def clear_message_errors(gui) -> None:
             widget.clear_error()
 
 
-def insert_message(gui, role, content, insert_at_start=False, message_time="", structured_data=None, message_id=None, character_id=None, ui_images=None, sample_id=None, context_snapshot_id=None, delivery_error=""):
+def insert_message(
+    gui,
+    role,
+    content,
+    insert_at_start=False,
+    message_time="",
+    structured_data=None,
+    message_id=None,
+    character_id=None,
+    ui_images=None,
+    sample_id=None,
+    context_snapshot_id=None,
+    delivery_error="",
+):
     chat_window = getattr(gui, "chat_window", None)
     if chat_window is None:
         return False
@@ -294,7 +349,14 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         if sd:
             mode = _struct_mode(gui)
             display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
-            panel = StructuredOutputPanel(sd, font_size, max_bw, start_expanded=True, mode=display_mode, parent=chat_parent)
+            panel = StructuredOutputPanel(
+                sd,
+                font_size,
+                max_bw,
+                start_expanded=True,
+                mode=display_mode,
+                parent=chat_parent,
+            )
             gui.chat_window.add_message_widget(panel, at_start=insert_at_start)
         return
 
@@ -306,14 +368,26 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
                 if isinstance(item, dict) and item.get("type") == "text":
                     think_text += item.get("text", "") or item.get("content", "")
                 elif isinstance(item, dict) and item.get("type") == "meta":
-                    speaker_name = str(item.get("speaker") or item.get("character_name") or item.get("name") or "")
+                    speaker_name = str(
+                        item.get("speaker")
+                        or item.get("character_name")
+                        or item.get("name")
+                        or ""
+                    )
         elif isinstance(content, str):
             think_text = content
 
         if not speaker_name and hasattr(gui, "_get_character_name"):
             speaker_name = gui._get_character_name()
 
-        block = ThinkBlockWidget(speaker_name, think_text, is_streaming=False, font_size=font_size, max_bubble_width=max_bw, parent=chat_parent)
+        block = ThinkBlockWidget(
+            speaker_name,
+            think_text,
+            is_streaming=False,
+            font_size=font_size,
+            max_bubble_width=max_bw,
+            parent=chat_parent,
+        )
         blocks = _get_think_blocks(gui)
         gui._think_block_counter += 1
         blocks[gui._think_block_counter - 1] = block
@@ -349,16 +423,23 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "meta":
-                speaker_name = str(item.get("speaker") or item.get("character_name") or item.get("name") or "")
+                speaker_name = str(
+                    item.get("speaker")
+                    or item.get("character_name")
+                    or item.get("name")
+                    or ""
+                )
             elif item.get("type") == "text":
                 text_parts.append(item.get("text") or item.get("content", ""))
             elif item.get("type") == "image_url":
                 image_url = item.get("image_url", {}).get("url", "")
                 if image_url:
-                    images.append({
-                        "url": image_url,
-                        "display_role": item.get("display_role"),
-                    })
+                    images.append(
+                        {
+                            "url": image_url,
+                            "display_role": item.get("display_role"),
+                        }
+                    )
     elif isinstance(content, str):
         text_parts.append(content)
 
@@ -389,7 +470,12 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         display_mode = "json" if mode in (STRUCTURED_MODE_JSON, "JSON") else "brief"
         start_expanded = bool(gui._get_setting("STRUCTURED_EXPANDED_DEFAULT", False))
         _pending_struct_panel = StructuredOutputPanel(
-            structured_data, font_size, max_bw, start_expanded=start_expanded, mode=display_mode, parent=chat_parent
+            structured_data,
+            font_size,
+            max_bw,
+            start_expanded=start_expanded,
+            mode=display_mode,
+            parent=chat_parent,
         )
         _think_blocks = _get_think_blocks(gui)
         gui._think_block_counter += 1
@@ -400,8 +486,16 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
         _ft_sample_id = _pop_sample_id_if_collecting(gui)
     _show_rating_controls = role == "assistant" and _should_show_rating_controls(gui)
 
-    segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
-    target_groups = _group_segments_by_target(segments) if role == "assistant" and len(segments) > 0 else []
+    segments = (
+        (structured_data.get("segments") or [])
+        if isinstance(structured_data, dict)
+        else []
+    )
+    target_groups = (
+        _group_segments_by_target(segments)
+        if role == "assistant" and len(segments) > 0
+        else []
+    )
 
     if len(target_groups) > 1:
         for i, (target, texts) in enumerate(target_groups):
@@ -411,17 +505,28 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             if not group_text:
                 continue
 
-            is_last = (i == len(target_groups) - 1)
+            is_last = i == len(target_groups) - 1
             is_self = target and speaker_name.lower().startswith(target.lower())
-            display_name = f"{speaker_name} → {target}" if target and target.lower() != "player" and not is_self else speaker_name
+            display_name = (
+                f"{speaker_name} → {target}"
+                if target and target.lower() != "player" and not is_self
+                else speaker_name
+            )
 
             # Show avatar only on the last bubble of the split sequence to avoid spam
-            show_av = is_last and (role not in ("system", "event", "think", "structured"))
+            show_av = is_last and (
+                role not in ("system", "event", "think", "structured")
+            )
 
             w = MessageWidget(
-                role=role, speaker_name=display_name, content_text=group_text,
-                show_avatar=show_av, font_size=font_size, message_time=message_time if is_last else "",
-                show_timestamp=show_ts and is_last, max_bubble_width=max_bw,
+                role=role,
+                speaker_name=display_name,
+                content_text=group_text,
+                show_avatar=show_av,
+                font_size=font_size,
+                message_time=message_time if is_last else "",
+                show_timestamp=show_ts and is_last,
+                max_bubble_width=max_bw,
                 sample_id=_ft_sample_id,
                 context_snapshot_id=context_snapshot_id,
                 message_id=message_id if is_last else None,
@@ -446,18 +551,27 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             gui.chat_window.add_message_widget(w, at_start=insert_at_start)
     elif full_text:
         msg_widget = MessageWidget(
-            role=role, speaker_name=speaker_name, content_text=full_text,
+            role=role,
+            speaker_name=speaker_name,
+            content_text=full_text,
             show_avatar=(role not in ("system", "event", "think", "structured")),
-            font_size=font_size, message_time=message_time, show_timestamp=show_ts,
-            max_bubble_width=max_bw, sample_id=_ft_sample_id, context_snapshot_id=context_snapshot_id, message_id=message_id,
+            font_size=font_size,
+            message_time=message_time,
+            show_timestamp=show_ts,
+            max_bubble_width=max_bw,
+            sample_id=_ft_sample_id,
+            context_snapshot_id=context_snapshot_id,
+            message_id=message_id,
             show_rating_controls=_show_rating_controls,
             rating_callback=lambda sample_id, rating: gui.chat_message_actions.dispatch(
                 RateChatSample(str(sample_id), int(rating))
             ),
-            parent=chat_parent
+            parent=chat_parent,
         )
         if message_id or context_snapshot_id or _ft_sample_id:
-            _connect_widget_signals(gui, msg_widget, message_id or "", character_id or "")
+            _connect_widget_signals(
+                gui, msg_widget, message_id or "", character_id or ""
+            )
         if _pending_struct_panel is not None:
             msg_widget.set_structured_ref(_pending_struct_panel)
         if delivery_error and role == "user":
@@ -478,12 +592,20 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
 
     # Images from the current live message or reconstructed history.
     for image_entry in images:
-        image_url = image_entry.get("url", "") if isinstance(image_entry, dict) else str(image_entry or "")
+        image_url = (
+            image_entry.get("url", "")
+            if isinstance(image_entry, dict)
+            else str(image_entry or "")
+        )
         image_key = str(image_url or "")
         img_info = ui_image_by_url.get(image_key, {})
         image_role = (
             img_info.get("display_role")
-            or (image_entry.get("display_role") if isinstance(image_entry, dict) else None)
+            or (
+                image_entry.get("display_role")
+                if isinstance(image_entry, dict)
+                else None
+            )
             or role
         )
         img_widget = ImageWidget(
@@ -510,7 +632,9 @@ def insert_message(gui, role, content, insert_at_start=False, message_time="", s
             description=img_info.get("description", ""),
             parent=chat_parent,
         )
-        wrapped_img = _wrap_panel_aligned(img_widget, img_info.get("display_role") or role, parent=chat_parent)
+        wrapped_img = _wrap_panel_aligned(
+            img_widget, img_info.get("display_role") or role, parent=chat_parent
+        )
         gui.chat_window.add_message_widget(wrapped_img, at_start=insert_at_start)
 
 
@@ -583,7 +707,9 @@ def prepare_stream_slot(gui, role="assistant", stream_id="default", speaker_name
         # Аватар на время стриминга — чтобы он появился сразу с блоком размышлений;
         # при переходе к ответу он снимается (_demote_think_avatar).
         avatar_pixmap = _get_avatar_pixmap(name, "assistant") if name else None
-        wrapped = _wrap_panel_aligned(block, "assistant", parent=chat_parent, avatar_pixmap=avatar_pixmap)
+        wrapped = _wrap_panel_aligned(
+            block, "assistant", parent=chat_parent, avatar_pixmap=avatar_pixmap
+        )
         state["think_wrapper"] = wrapped
         gui.chat_window.add_message_widget(wrapped)
         return
@@ -686,7 +812,11 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     gui._think_block_counter += 1
     _get_think_blocks(gui)[gui._think_block_counter - 1] = panel
 
-    segments = (structured_data.get("segments") or []) if isinstance(structured_data, dict) else []
+    segments = (
+        (structured_data.get("segments") or [])
+        if isinstance(structured_data, dict)
+        else []
+    )
     target_groups = _group_segments_by_target(segments) if segments else []
     speaker_name = getattr(message, "_speaker_name", "") or ""
     stream_sample_id = getattr(message, "_sample_id", None)
@@ -713,9 +843,7 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
                 show_timestamp=show_ts and is_last,
                 max_bubble_width=max_bw,
                 sample_id=stream_sample_id if is_last else None,
-                show_rating_controls=(
-                    _should_show_rating_controls(gui) and is_last
-                ),
+                show_rating_controls=(_should_show_rating_controls(gui) and is_last),
                 rating_callback=lambda sample_id, rating: gui.chat_message_actions.dispatch(
                     RateChatSample(str(sample_id), int(rating))
                 ),
@@ -746,7 +874,14 @@ def attach_structured_to_stream(gui, structured_data: dict, stream_id="default")
     gui.chat_window.scroll_to_bottom()
 
 
-def finish_stream_slot(gui, stream_id="default", message_id="", character_id="", sample_id="", context_snapshot_id=""):
+def finish_stream_slot(
+    gui,
+    stream_id="default",
+    message_id="",
+    character_id="",
+    sample_id="",
+    context_snapshot_id="",
+):
     key = str(stream_id or "default")
     states = _stream_states(gui)
     state = states.get(key)

@@ -81,12 +81,14 @@ class _NoWheelComboBox(TRQComboBox):
     """TRQComboBox (живой перевод пунктов) + блокировка wheel-скролла по
     разделителям/сентинелам."""
 
-    _SENTINELS = frozenset({
-        _MODEL_CONFIGURE_SENTINEL,
-        _TTS_CONFIGURE_SENTINEL,
-        _ASR_CONFIGURE_SENTINEL,
-        _PROMPT_CONFIGURE_SENTINEL,
-    })
+    _SENTINELS = frozenset(
+        {
+            _MODEL_CONFIGURE_SENTINEL,
+            _TTS_CONFIGURE_SENTINEL,
+            _ASR_CONFIGURE_SENTINEL,
+            _PROMPT_CONFIGURE_SENTINEL,
+        }
+    )
 
     def wheelEvent(self, event):
         step = -1 if event.angleDelta().y() > 0 else 1
@@ -124,8 +126,13 @@ class _SessionValueLabel(QLabel):
 
 def _round_pixmap(src: QPixmap, size: int) -> QPixmap:
     from PyQt6.QtGui import QPainter, QPainterPath
-    scaled = src.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                        Qt.TransformationMode.SmoothTransformation)
+
+    scaled = src.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
     out = QPixmap(size, size)
     out.fill(Qt.GlobalColor.transparent)
     p = QPainter(out)
@@ -171,9 +178,17 @@ class _SandboxStatusRow(QWidget):
         "error": ("rgba(255,69,58,0.18)", "#ff6b61"),
     }
 
-    def __init__(self, name_text: str, on_settings, settings_tooltip: str,
-                 on_toggle=None, initial_on: bool = False, nested: bool = False,
-                 name_tooltip: str | None = None, parent=None):
+    def __init__(
+        self,
+        name_text: str,
+        on_settings,
+        settings_tooltip: str,
+        on_toggle=None,
+        initial_on: bool = False,
+        nested: bool = False,
+        name_tooltip: str | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setObjectName("SandboxInfoRow")
         h = QHBoxLayout(self)
@@ -211,7 +226,9 @@ class _SandboxStatusRow(QWidget):
         h.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._value_slot = QWidget()
-        self._value_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._value_slot.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         # Небольшой резерв спасает от схлопывания до одной буквы, но не
         # раздувает строку так агрессивно, как старый минимум 112px. У подстроки
         # значения нет — там слот не должен отбирать ширину у лейбла.
@@ -222,15 +239,24 @@ class _SandboxStatusRow(QWidget):
 
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
-        self._value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._value.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._value.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._value.setMinimumWidth(0)
-        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        value_layout.addWidget(
+            self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
         h.addWidget(self._value_slot, 1, Qt.AlignmentFlag.AlignVCenter)
         self._full_value_text = "—"
 
         from ui.widgets.toggle_switch import ToggleSwitch
+
         self._switch = ToggleSwitch()
         self._switch.setChecked(bool(initial_on))
         tr_set(self._switch, "Включить / выключить", "Enable / disable", "setToolTip")
@@ -326,7 +352,9 @@ class _SandboxStatusRow(QWidget):
         return {
             "off": _("Выключено", "Disabled"),
             "active": _("Активно и готово", "Active and ready"),
-            "init": _("Включено, но не инициализировано", "Enabled but not initialized"),
+            "init": _(
+                "Включено, но не инициализировано", "Enabled but not initialized"
+            ),
             "error": _("Ошибка", "Error"),
         }.get(state, "")
 
@@ -380,12 +408,18 @@ class _GameLinkStatusRow(QWidget):
     """
 
     _CHIP_STYLE = {
-        "connected":    ("rgba(121,231,140,0.16)", "#79e78c"),
+        "connected": ("rgba(121,231,140,0.16)", "#79e78c"),
         "disconnected": ("rgba(255,255,255,0.06)", "rgba(255,255,255,0.45)"),
     }
 
-    def __init__(self, name_text: str, on_toggle_active, on_settings,
-                 settings_tooltip: str, parent=None):
+    def __init__(
+        self,
+        name_text: str,
+        on_toggle_active,
+        on_settings,
+        settings_tooltip: str,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setObjectName("SandboxInfoRow")
         h = QHBoxLayout(self)
@@ -408,7 +442,9 @@ class _GameLinkStatusRow(QWidget):
         h.addWidget(self._chip, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._value_slot = QWidget()
-        self._value_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._value_slot.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         self._value_slot.setMinimumWidth(64)
         value_layout = QHBoxLayout(self._value_slot)
         value_layout.setContentsMargins(0, 0, 0, 0)
@@ -422,18 +458,29 @@ class _GameLinkStatusRow(QWidget):
         value_layout.addWidget(self._value_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         self._value = QLabel("—")
         self._value.setObjectName("SandboxInfoValue")
-        self._value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._value.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._value.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._value.setMinimumWidth(0)
-        value_layout.addWidget(self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        value_layout.addWidget(
+            self._value, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        )
         h.addWidget(self._value_slot, 1, Qt.AlignmentFlag.AlignVCenter)
         self._full_value_text = "—"
 
         from ui.widgets.toggle_switch import ToggleSwitch
+
         self._switch = ToggleSwitch()
         self._switch.setChecked(True)  # по умолчанию принимаем запросы игры
-        tr_set(self._switch, "Принимать запросы игры / заглушить",
-               "Accept game requests / mute", "setToolTip")
+        tr_set(
+            self._switch,
+            "Принимать запросы игры / заглушить",
+            "Accept game requests / mute",
+            "setToolTip",
+        )
         self._switch.toggled.connect(lambda checked: on_toggle_active(bool(checked)))
         h.addWidget(self._switch, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -478,9 +525,12 @@ class _GameLinkStatusRow(QWidget):
     def _apply(self):
         state = "connected" if self._connected else "disconnected"
         bg, fg = self._CHIP_STYLE[state]
-        self._chip.setText(_("Активно", "Active") if self._connected else _("Нет связи", "Offline"))
+        self._chip.setText(
+            _("Активно", "Active") if self._connected else _("Нет связи", "Offline")
+        )
         self._chip.setToolTip(
-            _("Мод игры подключён", "Game mod connected") if self._connected
+            _("Мод игры подключён", "Game mod connected")
+            if self._connected
             else _("Мод игры не подключён", "Game mod not connected")
         )
         self._chip.setStyleSheet(
@@ -496,10 +546,16 @@ class _GameLinkStatusRow(QWidget):
         # принимаем → короткое «Активна»; заглушено → «idle/всё». Иконку слева
         # рисуем через qtawesome (см. _value_icon), не эмодзи.
         if self._ignore:
-            lvl = _("всё", "all") if str(self._level).lower().startswith("all") else "idle"
+            lvl = (
+                _("всё", "all")
+                if str(self._level).lower().startswith("all")
+                else "idle"
+            )
             self._set_value(
                 lvl,
-                tooltip=_("Запросы игры заглушены ({lvl})", "Game requests muted ({lvl})").format(lvl=lvl),
+                tooltip=_(
+                    "Запросы игры заглушены ({lvl})", "Game requests muted ({lvl})"
+                ).format(lvl=lvl),
                 icon="fa6s.volume-xmark",
                 icon_color="#ffd60a",
             )
@@ -513,13 +569,20 @@ class _GameLinkStatusRow(QWidget):
             )
             self._value.setStyleSheet("")
 
-    def _set_value(self, text: str, tooltip: str | None = None,
-                   icon: str | None = None, icon_color: str = "#cfcfe0"):
+    def _set_value(
+        self,
+        text: str,
+        tooltip: str | None = None,
+        icon: str | None = None,
+        icon_color: str = "#cfcfe0",
+    ):
         self._full_value_text = text or "—"
         self._value.setToolTip(tooltip or self._full_value_text)
         if icon:
             try:
-                self._value_icon.setPixmap(qta.icon(icon, color=icon_color).pixmap(14, 14))
+                self._value_icon.setPixmap(
+                    qta.icon(icon, color=icon_color).pixmap(14, 14)
+                )
                 self._value_icon.setToolTip(tooltip or "")
                 self._value_icon.setVisible(True)
             except Exception:
@@ -536,7 +599,9 @@ class _GameLinkStatusRow(QWidget):
         slot_w = self._value_slot.width() or self._value.width()
         available = max(24, slot_w - 2)
         elided = self._value.fontMetrics().elidedText(
-            value, Qt.TextElideMode.ElideRight, available,
+            value,
+            Qt.TextElideMode.ElideRight,
+            available,
         )
         self._value.setText(elided)
 
@@ -640,7 +705,9 @@ class SandboxPage(QWidget):
         def changed(*names: str) -> bool:
             if previous is None:
                 return True
-            return any(getattr(previous, name) != getattr(state, name) for name in names)
+            return any(
+                getattr(previous, name) != getattr(state, name) for name in names
+            )
 
         selectors_changed = False
         if changed("character_items", "current_character_id"):
@@ -844,14 +911,23 @@ class SandboxPage(QWidget):
         )
 
     # --------- Status rows (voice / mic / RAG) -----------
-    def _make_status_row(self, name_text: str, registry_attr: str, settings_key: str,
-                         enable_key: str, tooltip: str, subsection=None) -> "_SandboxStatusRow":
+    def _make_status_row(
+        self,
+        name_text: str,
+        registry_attr: str,
+        settings_key: str,
+        enable_key: str,
+        tooltip: str,
+        subsection=None,
+    ) -> "_SandboxStatusRow":
         initial_on = bool(self._setting(enable_key, False))
         row = _SandboxStatusRow(
             name_text,
             lambda: self._jump_to_settings(settings_key, subsection),
             tooltip,
-            on_toggle=lambda checked, _k=enable_key: self._on_status_toggle(_k, checked),
+            on_toggle=lambda checked, _k=enable_key: self._on_status_toggle(
+                _k, checked
+            ),
             initial_on=initial_on,
         )
         # Register under the shared indicator attr so update_status_colors()
@@ -892,10 +968,16 @@ class SandboxPage(QWidget):
         настройку уровня всё ещё можно поменять шестерёнкой в настройках мода."""
         ignore = not bool(active)
         if ignore:
-            self._view_model.dispatch(SandboxSettingChanged("GAME_BLOCK_LEVEL", "All events"))
+            self._view_model.dispatch(
+                SandboxSettingChanged("GAME_BLOCK_LEVEL", "All events")
+            )
         self._view_model.dispatch(SandboxSettingChanged("IGNORE_GAME_REQUESTS", ignore))
         if self._game_status_row is not None:
-            level = "All events" if ignore else self._setting("GAME_BLOCK_LEVEL", "Idle events")
+            level = (
+                "All events"
+                if ignore
+                else self._setting("GAME_BLOCK_LEVEL", "Idle events")
+            )
             self._game_status_row.set_mute_state(ignore, level)
 
     def _game_link_connected(self) -> bool:
@@ -907,9 +989,16 @@ class SandboxPage(QWidget):
         except Exception:
             return False
 
-    def _make_toggle_row(self, label_text: str, on_toggle, initial_on: bool,
-                         tooltip: str | None = None, with_dot: bool = False,
-                         on_settings=None, settings_tooltip: str = ""):
+    def _make_toggle_row(
+        self,
+        label_text: str,
+        on_toggle,
+        initial_on: bool,
+        tooltip: str | None = None,
+        with_dot: bool = False,
+        on_settings=None,
+        settings_tooltip: str = "",
+    ):
         """A [label … switch (gear)] row using the same pill toggle as the status
         rows. When *with_dot* is set, a leading status dot (like the Status
         rows above) reflects the switch — two states only: grey off / green on.
@@ -937,13 +1026,16 @@ class SandboxPage(QWidget):
         h.addStretch(1)
 
         from ui.widgets.toggle_switch import ToggleSwitch
+
         switch = ToggleSwitch()
         switch.setChecked(bool(initial_on))
         if tooltip:
             switch.setToolTip(tooltip)
         switch.toggled.connect(on_toggle)
         if dot is not None:
-            switch.toggled.connect(lambda checked, d=dot: self._style_toggle_dot(d, bool(checked)))
+            switch.toggled.connect(
+                lambda checked, d=dot: self._style_toggle_dot(d, bool(checked))
+            )
             self._toggle_dots[switch] = dot
         h.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -987,7 +1079,11 @@ class SandboxPage(QWidget):
             if not use_voice:
                 voice_val = _("Выключено", "Off")
             elif method.lower() == "local":
-                model_id = str(get("NM_CURRENT_VOICEOVER", "") or get("LOCAL_VOICE_MODEL_ID", "") or "").strip()
+                model_id = str(
+                    get("NM_CURRENT_VOICEOVER", "")
+                    or get("LOCAL_VOICE_MODEL_ID", "")
+                    or ""
+                ).strip()
                 voice_val = self._format_local_voice_value(model_id)
             elif method == "API":
                 voice_val = "API"
@@ -1005,7 +1101,9 @@ class SandboxPage(QWidget):
             # просто нет — отправлять всё равно нечего.
             mic_on = bool(get("MIC_ACTIVE", False))
             self._mic_instant_row.setVisible(mic_on)
-            self._mic_instant_row.set_enabled_state(bool(get("MIC_INSTANT_SENT", False)))
+            self._mic_instant_row.set_enabled_state(
+                bool(get("MIC_INSTANT_SENT", False))
+            )
             self._mic_instant_row.setChecked(mic_on)
 
         if self._rag_status_row is not None:
@@ -1029,6 +1127,7 @@ class SandboxPage(QWidget):
     def _local_voice_name(self, model_id: str) -> str:
         try:
             from presets.local_voice_models import LOCAL_VOICE_MODELS
+
             for model in LOCAL_VOICE_MODELS:
                 if str(model.get("id") or "") == model_id:
                     return str(model.get("name") or model_id)
@@ -1049,6 +1148,7 @@ class SandboxPage(QWidget):
     def _resolve_avatar_pixmap(self, character_id: str, size: int = 32) -> QPixmap:
         # Единый резолвер аватара (по id или display-имени) — общий с настройками.
         from ui.chat.message_widget import resolve_character_avatar
+
         return resolve_character_avatar(character_id, size)
 
     def _refresh_character_avatar(self):
@@ -1085,7 +1185,9 @@ class SandboxPage(QWidget):
 
     def _clear_stale_error_status(self):
         try:
-            status = self._chat_panel.mita_status if self._chat_panel is not None else None
+            status = (
+                self._chat_panel.mita_status if self._chat_panel is not None else None
+            )
             if status is not None and getattr(status, "current_state", None) == "error":
                 status.hide_animated()
         except Exception:
@@ -1147,6 +1249,7 @@ class SandboxPage(QWidget):
     # --------- RAG / memory profile -----------
     def _memory_profile_labels(self):
         from ui.settings.memory_profile import KEY_TO_LABEL_EN, KEY_TO_LABEL_RU
+
         lang = str(self._setting("LANGUAGE", "RU") or "RU").upper()
         return KEY_TO_LABEL_EN if lang == "EN" else KEY_TO_LABEL_RU
 
@@ -1260,7 +1363,9 @@ class SandboxPage(QWidget):
             value = char_combo.currentText().strip() if char_combo is not None else ""
             set_value("character", value if value and value != "..." else "—")
         if "prompts" in self._debug_summary_values:
-            value = prompt_combo.currentText().strip() if prompt_combo is not None else ""
+            value = (
+                prompt_combo.currentText().strip() if prompt_combo is not None else ""
+            )
             set_value("prompts", value if value else "—")
         if "model" in self._debug_summary_values:
             value = model_combo.currentText().strip() if model_combo is not None else ""
@@ -1270,7 +1375,14 @@ class SandboxPage(QWidget):
         if "asr" in self._debug_summary_values:
             set_value("asr", str(get("RECOGNIZER_TYPE", "") or "—"))
         if "rag" in self._debug_summary_values:
-            set_value("rag", self._rag_preset_name() if get("RAG_ENABLED", False) else _("Выключен", "Disabled"))
+            set_value(
+                "rag",
+                (
+                    self._rag_preset_name()
+                    if get("RAG_ENABLED", False)
+                    else _("Выключен", "Disabled")
+                ),
+            )
         if "messages" in self._debug_summary_values:
             set_value("messages", str(get("MODEL_MESSAGE_LIMIT", 35)))
         if "memory" in self._debug_summary_values:
@@ -1296,9 +1408,11 @@ class SandboxPage(QWidget):
         if "character" in self._debug_summary_values:
             safe("character", lambda: self._get_current_character_id() or "—")
         if "prompts" in self._debug_summary_values:
+
             def _prompts():
                 cid = self._get_current_character_id()
                 return get(f"PROMPT_SET_{cid}", "") or "—" if cid else "—"
+
             safe("prompts", _prompts)
         if "model" in self._debug_summary_values:
             safe("model", lambda: self._current_preset_name() or "—")
@@ -1307,8 +1421,14 @@ class SandboxPage(QWidget):
         if "asr" in self._debug_summary_values:
             safe("asr", lambda: str(get("RECOGNIZER_TYPE", "") or "—"))
         if "rag" in self._debug_summary_values:
-            safe("rag", lambda: (self._rag_preset_name() if get("RAG_ENABLED", False)
-                                 else _("Выключен", "Disabled")))
+            safe(
+                "rag",
+                lambda: (
+                    self._rag_preset_name()
+                    if get("RAG_ENABLED", False)
+                    else _("Выключен", "Disabled")
+                ),
+            )
         if "messages" in self._debug_summary_values:
             safe("messages", lambda: str(get("MODEL_MESSAGE_LIMIT", 35)))
         if "memory" in self._debug_summary_values:
@@ -1338,7 +1458,9 @@ class SandboxPage(QWidget):
         self._activation_ticket += 1
         ticket = self._activation_ticket
 
-        self._schedule_activation_step(ticket, 0, self._populate_chat_character_combobox)
+        self._schedule_activation_step(
+            ticket, 0, self._populate_chat_character_combobox
+        )
         self._schedule_activation_step(ticket, 0, self._refresh_character_avatar)
         self._schedule_activation_step(ticket, 15, self._populate_model_combobox)
         self._schedule_activation_step(ticket, 30, self._populate_prompt_pack_combobox)
@@ -1350,13 +1472,20 @@ class SandboxPage(QWidget):
         self._schedule_activation_step(
             ticket,
             120,
-            lambda: self._chat_panel.on_activated() if self._chat_panel is not None else None,
+            lambda: (
+                self._chat_panel.on_activated()
+                if self._chat_panel is not None
+                else None
+            ),
         )
         self._schedule_activation_step(
             ticket,
             135,
-            lambda: self._character_state_panel.refresh(rebuild=True)
-            if getattr(self, "_character_state_panel", None) is not None else None,
+            lambda: (
+                self._character_state_panel.refresh(rebuild=True)
+                if getattr(self, "_character_state_panel", None) is not None
+                else None
+            ),
         )
 
     def show_debug_tab(self):
@@ -1397,19 +1526,25 @@ class SandboxPage(QWidget):
         button.setObjectName("SandboxInspectorTabButton")
         button.setCheckable(True)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.clicked.connect(lambda checked=False, key=tab_key: self._set_inspector_tab(key))
+        button.clicked.connect(
+            lambda checked=False, key=tab_key: self._set_inspector_tab(key)
+        )
         self._inspector_tab_buttons[tab_key] = button
         return button
 
     def _update_inspector_collapse_icon(self) -> None:
         if self._inspector_collapse_btn is None:
             return
-        icon_name = "fa6s.angles-left" if self._inspector_collapsed else "fa6s.angles-right"
+        icon_name = (
+            "fa6s.angles-left" if self._inspector_collapsed else "fa6s.angles-right"
+        )
         self._inspector_collapse_btn.setIcon(qta.icon(icon_name, color="#ffd6ee"))
         self._inspector_collapse_btn.setIconSize(QSize(14, 14))
 
     # --------- Building blocks -----------
-    def _make_selector_card(self, title: str, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+    def _make_selector_card(
+        self, title: str, icon_name: str | None = None
+    ) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("SandboxSelectorCard")
         layout = QVBoxLayout(card)
@@ -1442,7 +1577,9 @@ class SandboxPage(QWidget):
         layout.setSpacing(12)
         return page, layout
 
-    def _make_inspector_card(self, title_text: str | None = None, icon_name: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+    def _make_inspector_card(
+        self, title_text: str | None = None, icon_name: str | None = None
+    ) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("SandboxInspectorCard")
         layout = QVBoxLayout(card)
@@ -1455,7 +1592,9 @@ class SandboxPage(QWidget):
             if icon_name:
                 icon_label = QLabel()
                 icon_label.setObjectName("SandboxSelectorIcon")
-                icon_label.setPixmap(qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14))
+                icon_label.setPixmap(
+                    qta.icon(icon_name, color="#ffd2ec").pixmap(14, 14)
+                )
                 title_row.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
             title = QLabel(title_text)
             register_if_tr(title, title_text)
@@ -1465,8 +1604,12 @@ class SandboxPage(QWidget):
             layout.addLayout(title_row)
         return card, layout
 
-    def _make_strip(self, title_text: str, icon_name: str | None = None,
-                    header_action: "QWidget | None" = None) -> tuple[QWidget, QVBoxLayout]:
+    def _make_strip(
+        self,
+        title_text: str,
+        icon_name: str | None = None,
+        header_action: "QWidget | None" = None,
+    ) -> tuple[QWidget, QVBoxLayout]:
         """Stack-panel section: flat, no card border, just a title row
         with an optional icon and an underline. Used everywhere except the
         State tab (which keeps cards on the character_state_panel).
@@ -1535,16 +1678,24 @@ class SandboxPage(QWidget):
         value_label.setObjectName("SandboxInfoValue")
         value_label.setMinimumWidth(0)
         value_label.setWordWrap(True)
-        value_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        h.addWidget(value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        value_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        value_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        h.addWidget(
+            value_label, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
+        )
 
         edit_btn = QPushButton()
         edit_btn.setObjectName("SandboxInfoEditBtn")
         edit_btn.setIcon(qta.icon("fa6s.pen", color="#ffd2ec"))
         edit_btn.setFixedSize(26, 26)
         edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit_btn.setToolTip(edit_tooltip or _("Изменить в настройках", "Edit in settings"))
+        edit_btn.setToolTip(
+            edit_tooltip or _("Изменить в настройках", "Edit in settings")
+        )
         edit_btn.clicked.connect(lambda: self._jump_to_settings(edit_target))
         h.addWidget(edit_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -1554,6 +1705,7 @@ class SandboxPage(QWidget):
 
             def _sync():
                 value_label.setText(combo.currentText() or "—")
+
             _sync()
             combo.currentTextChanged.connect(lambda _t: _sync())
         elif callable(value_provider):
@@ -1646,8 +1798,14 @@ class SandboxPage(QWidget):
         # selection — scrolling used to trigger a spurious re-initialization.
         # Prompt and model are labels, rather than disabled comboboxes: their
         # gears open the character settings where the assignment is changed.
-        def _session_combo(attr: str, *, tooltip: str, change_slot, by_text: bool = False,
-                           read_only: bool = False) -> QComboBox:
+        def _session_combo(
+            attr: str,
+            *,
+            tooltip: str,
+            change_slot,
+            by_text: bool = False,
+            read_only: bool = False,
+        ) -> QComboBox:
             combo = _NoWheelComboBox()
             combo.setObjectName("ChatCharacterCombo")
             combo.setToolTip(tooltip)
@@ -1664,7 +1822,9 @@ class SandboxPage(QWidget):
             setattr(self, f"_{attr}", value)
             return value
 
-        def _combo_row(strip_layout, label_text: str, combo: QComboBox, leading=None, trailing=None) -> None:
+        def _combo_row(
+            strip_layout, label_text: str, combo: QComboBox, leading=None, trailing=None
+        ) -> None:
             row = QWidget()
             row.setObjectName("SandboxInfoRow")
             h = QHBoxLayout(row)
@@ -1683,7 +1843,9 @@ class SandboxPage(QWidget):
             strip_layout.addWidget(row)
 
         # ── Активная сессия ────────────────────────────────────────────────
-        active_strip, active_layout = self._make_strip(_("Активная сессия", "Active session"), "fa6s.id-badge")
+        active_strip, active_layout = self._make_strip(
+            _("Активная сессия", "Active session"), "fa6s.id-badge"
+        )
 
         self._character_avatar_label = QLabel()
         self._character_avatar_label.setObjectName("SandboxCharacterAvatar")
@@ -1704,18 +1866,29 @@ class SandboxPage(QWidget):
         char_settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         char_settings_btn.setToolTip(_("Настройки персонажа", "Character settings"))
         char_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
-        _combo_row(active_layout, _("Персонаж", "Character"), char_combo,
-                   leading=self._character_avatar_label, trailing=char_settings_btn)
+        _combo_row(
+            active_layout,
+            _("Персонаж", "Character"),
+            char_combo,
+            leading=self._character_avatar_label,
+            trailing=char_settings_btn,
+        )
 
         prompt_combo = _session_value(
             "chat_prompt_pack_combobox",
-            tooltip=_("Текущий набор промптов. Изменяется в настройках персонажа", "Current prompt set. Change it in character settings"),
+            tooltip=_(
+                "Текущий набор промптов. Изменяется в настройках персонажа",
+                "Current prompt set. Change it in character settings",
+            ),
         )
         _combo_row(active_layout, _("Набор промптов", "Prompt set"), prompt_combo)
 
         model_combo = _session_value(
             "chat_model_combobox",
-            tooltip=_("Модель, выбранная для активного персонажа", "Model selected for the active character"),
+            tooltip=_(
+                "Модель, выбранная для активного персонажа",
+                "Model selected for the active character",
+            ),
         )
         _combo_row(active_layout, _("Модель", "Model"), model_combo)
         layout.addWidget(active_strip)
@@ -1731,13 +1904,16 @@ class SandboxPage(QWidget):
         status_refresh_btn.setIcon(qta.icon("fa6s.rotate", color="#ffd2ec"))
         status_refresh_btn.setFixedSize(26, 26)
         status_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        tr_set(status_refresh_btn,
-               "Перечитать состояние с диска (голоса, модели, RAG)",
-               "Re-read state from disk (voices, models, RAG)",
-               "setToolTip")
+        tr_set(
+            status_refresh_btn,
+            "Перечитать состояние с диска (голоса, модели, RAG)",
+            "Re-read state from disk (voices, models, RAG)",
+            "setToolTip",
+        )
         status_refresh_btn.clicked.connect(self._refresh_status_panel)
         status_strip, status_layout = self._make_strip(
-            _("Статус", "Status"), "fa6s.wave-square", header_action=status_refresh_btn)
+            _("Статус", "Status"), "fa6s.wave-square", header_action=status_refresh_btn
+        )
 
         # Связь с игрой — сверху: плашка = живое состояние TCP-связи с модом
         # (двигает update_status_colors через game_status_checkbox),
@@ -1747,12 +1923,15 @@ class SandboxPage(QWidget):
             _("Связь с игрой", "Game link"),
             self._on_game_mute_toggle,
             lambda: self._jump_to_settings("game"),
-            _("Открыть настройки мода (глушение idle / все события)",
-              "Open mod settings (mute idle / all events)"),
+            _(
+                "Открыть настройки мода (глушение idle / все события)",
+                "Open mod settings (mute idle / all events)",
+            ),
         )
         try:
             self._page_actions.register_status_indicator(
-                "game_status_checkbox", self._game_status_row)
+                "game_status_checkbox", self._game_status_row
+            )
         except Exception:
             pass
         status_layout.addWidget(self._game_status_row)
@@ -1787,11 +1966,15 @@ class SandboxPage(QWidget):
             _("Отправка сразу", "Instant send"),
             lambda: self._jump_to_settings("microphone"),
             _("Открыть настройки микрофона", "Open microphone settings"),
-            on_toggle=lambda checked: self._on_status_toggle("MIC_INSTANT_SENT", checked),
+            on_toggle=lambda checked: self._on_status_toggle(
+                "MIC_INSTANT_SENT", checked
+            ),
             initial_on=bool(self._setting("MIC_INSTANT_SENT", False)),
             nested=True,
-            name_tooltip=_("Распознанный текст сразу уходит в чат, без правки",
-                           "Recognized text goes straight to chat, no editing"),
+            name_tooltip=_(
+                "Распознанный текст сразу уходит в чат, без правки",
+                "Recognized text goes straight to chat, no editing",
+            ),
         )
         self._mic_instant_row.setVisible(bool(self._setting("MIC_ACTIVE", False)))
         status_layout.addWidget(self._mic_instant_row)
@@ -1823,9 +2006,12 @@ class SandboxPage(QWidget):
         self._panels["last_request"] = last_request_strip
 
         # ── Захват ─────────────────────────────────────────────────────────
-        capture_strip, capture_layout = self._make_strip(_("Захват", "Capture"), "fa6s.camera-retro")
-        _img_settings_tip = _("Открыть настройки изображений и камеры",
-                              "Open image & camera settings")
+        capture_strip, capture_layout = self._make_strip(
+            _("Захват", "Capture"), "fa6s.camera-retro"
+        )
+        _img_settings_tip = _(
+            "Открыть настройки изображений и камеры", "Open image & camera settings"
+        )
         attach_row, self._capture_auto_attach_cb = self._make_toggle_row(
             _("Авто-прикрепление", "Auto-attach"),
             lambda v: self._on_capture_toggle("AUTO_ATTACH_IMAGES", v),
@@ -1863,18 +2049,26 @@ class SandboxPage(QWidget):
         # (ui/widgets/chat_panel._build_conversation_strip), поэтому здесь не
         # дублируются. Остаётся сброс персонажа + переходы к настройкам и
         # просмотр последнего запроса (удобно для отладки, см. задачу 5).
-        actions_strip, actions_layout = self._make_strip(_("Быстрые действия", "Quick actions"), "fa6s.bolt")
+        actions_strip, actions_layout = self._make_strip(
+            _("Быстрые действия", "Quick actions"), "fa6s.bolt"
+        )
 
-        view_last_btn = tr_set(QPushButton(), "Посмотреть последний запрос", "View last request")
+        view_last_btn = tr_set(
+            QPushButton(), "Посмотреть последний запрос", "View last request"
+        )
         view_last_btn.setObjectName("SandboxQuickAction")
-        tr_set(view_last_btn,
-               "Открыть просмотр контекста последнего запроса к нейросети.",
-               "Open the context viewer for the last request sent to the model.",
-               "setToolTip")
+        tr_set(
+            view_last_btn,
+            "Открыть просмотр контекста последнего запроса к нейросети.",
+            "Open the context viewer for the last request sent to the model.",
+            "setToolTip",
+        )
         view_last_btn.clicked.connect(self._on_view_last_request)
         actions_layout.addWidget(view_last_btn)
 
-        char_settings_btn = tr_set(QPushButton(), "Настройки персонажа", "Character settings")
+        char_settings_btn = tr_set(
+            QPushButton(), "Настройки персонажа", "Character settings"
+        )
         char_settings_btn.setObjectName("SandboxQuickAction")
         char_settings_btn.clicked.connect(lambda: self._jump_to_settings("characters"))
         actions_layout.addWidget(char_settings_btn)
@@ -1913,7 +2107,9 @@ class SandboxPage(QWidget):
 
     # --------- Context budget panel -----------
     def _build_context_budget_strip(self) -> QWidget:
-        strip, slayout = self._make_strip(_("Бюджет контекста", "Context budget"), "fa6s.gauge-high")
+        strip, slayout = self._make_strip(
+            _("Бюджет контекста", "Context budget"), "fa6s.gauge-high"
+        )
 
         bar_row = QWidget()
         bar_row.setObjectName("SandboxMemoryRow")
@@ -1931,7 +2127,9 @@ class SandboxPage(QWidget):
 
         self._budget_value = QLabel("—")
         self._budget_value.setObjectName("SandboxInfoValue")
-        self._budget_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._budget_value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         slayout.addWidget(self._budget_value)
         return strip
 
@@ -1941,7 +2139,9 @@ class SandboxPage(QWidget):
 
     # --------- Last-request diagnostics panel -----------
     def _build_last_request_strip(self) -> QWidget:
-        strip, slayout = self._make_strip(_("Последний запрос", "Last request"), "fa6s.gauge")
+        strip, slayout = self._make_strip(
+            _("Последний запрос", "Last request"), "fa6s.gauge"
+        )
         self._lr_values = {}
         for key, label_text in (
             ("status", _("Статус", "Status")),
@@ -1960,8 +2160,12 @@ class SandboxPage(QWidget):
             value.setObjectName("SandboxInfoValue")
             value.setMinimumWidth(0)
             value.setWordWrap(True)
-            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             row.addWidget(value, 1)
             slayout.addLayout(row)
@@ -2038,16 +2242,26 @@ class SandboxPage(QWidget):
         layout.addWidget(self._character_state_panel)
 
         # Live DB mini-stats for the current character.
-        memory_card, memory_layout = self._make_inspector_card(_("Контекст и память", "Context & memory"), "fa6s.brain")
+        memory_card, memory_layout = self._make_inspector_card(
+            _("Контекст и память", "Context & memory"), "fa6s.brain"
+        )
         for label_text, stat_key, hint in (
             (_("Сообщений в окне", "Messages in window"), "messages", None),
             (_("Воспоминаний", "Memories"), "memories", None),
             (_("Забыто (RAG)", "Forgotten (RAG)"), "forgotten", None),
-            (_("Без эмбеддинга", "Missing embeddings"), "missing",
-             _("Сообщения / воспоминания без эмбеддинга для текущей модели (устаревший индекс)",
-               "Messages / memories without an embedding for the current model (stale index)")),
-            (_("Корзина", "Trash"), "trash",
-             _("Удалённые сообщения / воспоминания", "Deleted messages / memories")),
+            (
+                _("Без эмбеддинга", "Missing embeddings"),
+                "missing",
+                _(
+                    "Сообщения / воспоминания без эмбеддинга для текущей модели (устаревший индекс)",
+                    "Messages / memories without an embedding for the current model (stale index)",
+                ),
+            ),
+            (
+                _("Корзина", "Trash"),
+                "trash",
+                _("Удалённые сообщения / воспоминания", "Deleted messages / memories"),
+            ),
             (_("Посл. сообщение", "Last message"), "last", None),
             (_("Размер БД", "DB size"), "dbsize", None),
         ):
@@ -2084,48 +2298,75 @@ class SandboxPage(QWidget):
         # Show-thinking moved here from General settings: the toggle controls
         # the inline "thinking" message bubble. Default OFF so the sandbox
         # stays uncluttered out of the box.
-        display_strip, display_layout = self._make_strip(_("Отображение сообщений", "Message display"), "fa6s.eye")
+        display_strip, display_layout = self._make_strip(
+            _("Отображение сообщений", "Message display"), "fa6s.eye"
+        )
 
         think_cb = tr_set(QCheckBox(), "Показывать мышление", "Show thinking")
         think_cb.setObjectName("SandboxCaptureToggle")
         think_cb.setChecked(bool(self._setting("SHOW_THINK_IN_GUI", False)))
-        tr_set(think_cb,
-               "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
-               "Show the model's thinking block as a separate chat message.",
-               "setToolTip")
-        think_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v))
+        tr_set(
+            think_cb,
+            "Показывать содержимое блока мышления модели как отдельное сообщение в чате.",
+            "Show the model's thinking block as a separate chat message.",
+            "setToolTip",
+        )
+        think_cb.toggled.connect(
+            lambda v: self._on_capture_toggle("SHOW_THINK_IN_GUI", v)
+        )
         display_layout.addWidget(think_cb)
         self._show_thinking_cb = think_cb
 
         ts_cb = tr_set(QCheckBox(), "Показывать время сообщений", "Show timestamps")
         ts_cb.setObjectName("SandboxCaptureToggle")
         ts_cb.setChecked(bool(self._setting("SHOW_CHAT_TIMESTAMPS", True)))
-        ts_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v))
+        ts_cb.toggled.connect(
+            lambda v: self._on_capture_toggle("SHOW_CHAT_TIMESTAMPS", v)
+        )
         display_layout.addWidget(ts_cb)
         self._show_ts_cb = ts_cb
 
-        sys_cb = tr_set(QCheckBox(), "Показывать системные сообщения", "Show system messages")
+        sys_cb = tr_set(
+            QCheckBox(), "Показывать системные сообщения", "Show system messages"
+        )
         sys_cb.setObjectName("SandboxCaptureToggle")
         sys_cb.setChecked(bool(self._setting("SHOW_SYSTEM_MESSAGES", False)))
-        tr_set(sys_cb, "Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. По умолчанию скрыты.",
-                "Show system/context notes (e.g. \"[Easel drawing]…\") in chat. Hidden by default.", "setToolTip")
-        sys_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v))
+        tr_set(
+            sys_cb,
+            "Показывать системные/контекстные заметки (например «[Easel drawing]…») в чате. По умолчанию скрыты.",
+            'Show system/context notes (e.g. "[Easel drawing]…") in chat. Hidden by default.',
+            "setToolTip",
+        )
+        sys_cb.toggled.connect(
+            lambda v: self._on_capture_toggle("SHOW_SYSTEM_MESSAGES", v)
+        )
         display_layout.addWidget(sys_cb)
         self._show_sys_cb = sys_cb
 
-        tokens_cb = tr_set(QCheckBox(), "Показывать статистику токенов/стоимости", "Show token/cost stats")
+        tokens_cb = tr_set(
+            QCheckBox(),
+            "Показывать статистику токенов/стоимости",
+            "Show token/cost stats",
+        )
         tokens_cb.setObjectName("SandboxCaptureToggle")
         tokens_cb.setChecked(bool(self._setting("SHOW_TOKEN_INFO", False)))
-        tr_set(tokens_cb,
-               "Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. По умолчанию выключена.",
-               "Bottom-of-chat line with tokens, context fill, cache and cost. Off by default.", "setToolTip")
-        tokens_cb.toggled.connect(lambda v: self._on_capture_toggle("SHOW_TOKEN_INFO", v))
+        tr_set(
+            tokens_cb,
+            "Строка снизу чата с токенами, заполнением контекста, кешем и стоимостью. По умолчанию выключена.",
+            "Bottom-of-chat line with tokens, context fill, cache and cost. Off by default.",
+            "setToolTip",
+        )
+        tokens_cb.toggled.connect(
+            lambda v: self._on_capture_toggle("SHOW_TOKEN_INFO", v)
+        )
         display_layout.addWidget(tokens_cb)
         self._show_tokens_cb = tokens_cb
         layout.addWidget(display_strip)
 
         # ── Контекст сессии ─────────────────────────────────────────────────
-        summary_strip, summary_layout = self._make_strip(_("Контекст сессии", "Session context"), "fa6s.list-check")
+        summary_strip, summary_layout = self._make_strip(
+            _("Контекст сессии", "Session context"), "fa6s.list-check"
+        )
         rows = [
             ("character", _("Персонаж", "Character")),
             ("prompts", _("Промпты", "Prompts")),
@@ -2149,8 +2390,12 @@ class SandboxPage(QWidget):
             value.setObjectName("SandboxInfoValue")
             value.setMinimumWidth(0)
             value.setWordWrap(True)
-            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             row.addWidget(value, 1)
             summary_layout.addLayout(row)
             self._debug_summary_values[key] = value
@@ -2162,7 +2407,9 @@ class SandboxPage(QWidget):
         layout.addWidget(summary_strip)
 
         # ── Диагностика ─────────────────────────────────────────────────────
-        diagnostics_strip, diagnostics_layout = self._make_strip(_("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench")
+        diagnostics_strip, diagnostics_layout = self._make_strip(
+            _("Диагностика", "Diagnostics"), "fa6s.screwdriver-wrench"
+        )
         db_btn = tr_set(QPushButton(), "Открыть DB персонажа", "Open character DB")
         db_btn.setObjectName("SandboxQuickAction")
         db_btn.clicked.connect(self._open_selected_character_history)
@@ -2180,9 +2427,12 @@ class SandboxPage(QWidget):
         layout.addWidget(diagnostics_strip)
 
         # ── Параметры отладки (migrated debug panel) ────────────────────────
-        debug_panel_strip, debug_panel_layout = self._make_strip(_("Параметры отладки", "Debug parameters"), "fa6s.bug")
+        debug_panel_strip, debug_panel_layout = self._make_strip(
+            _("Параметры отладки", "Debug parameters"), "fa6s.bug"
+        )
         try:
             from ui.settings.debug_settings import setup_debug_panel_controls
+
             setup_debug_panel_controls(
                 debug_panel_layout,
                 settings=self,
@@ -2338,7 +2588,11 @@ class SandboxPage(QWidget):
         if self._inspector_rail is not None:
             self._inspector_rail.setVisible(collapsed)
 
-        width = self._inspector_collapsed_width if collapsed else self._inspector_expanded_width
+        width = (
+            self._inspector_collapsed_width
+            if collapsed
+            else self._inspector_expanded_width
+        )
         self._inspector_widget.setMinimumWidth(width)
         self._inspector_widget.setMaximumWidth(width)
         if self._inspector_layout is not None:
@@ -2351,7 +2605,9 @@ class SandboxPage(QWidget):
 
         if self._inspector_collapse_btn is not None:
             self._inspector_collapse_btn.setToolTip(
-                _("Развернуть панель", "Expand panel") if collapsed else _("Свернуть панель", "Collapse panel")
+                _("Развернуть панель", "Expand panel")
+                if collapsed
+                else _("Свернуть панель", "Collapse panel")
             )
         self._update_inspector_collapse_icon()
 

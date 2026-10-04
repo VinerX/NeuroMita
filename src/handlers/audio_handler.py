@@ -13,7 +13,14 @@ class AudioHandler:
     _lock = threading.Lock()
 
     @classmethod
-    async def handle_voice_file(cls, file_path, delete: bool = True, volume: int = 100, *, raise_errors: bool = False):
+    async def handle_voice_file(
+        cls,
+        file_path,
+        delete: bool = True,
+        volume: int = 100,
+        *,
+        raise_errors: bool = False,
+    ):
         """Проигрывает звуковой файл (MP3 или OGG).
 
         volume — громкость воспроизведения в процентах (100 = как есть).
@@ -29,7 +36,9 @@ class AudioHandler:
                     os.remove(file_path)
                     logger.info(f"Файл {file_path} удалён.")
                 except Exception as e:
-                    logger.info(f"Файл {file_path} НЕ удалён. Ошибка: {format_exception(e)}")
+                    logger.info(
+                        f"Файл {file_path} НЕ удалён. Ошибка: {format_exception(e)}"
+                    )
         except Exception as e:
             logger.info(f"Ошибка при воспроизведении файла: {format_exception(e)}")
             if raise_errors:
@@ -52,7 +61,9 @@ class AudioHandler:
             sf.write(tmp_path, data, sr)
             return tmp_path
         except Exception as e:
-            logger.info(f"Не удалось усилить WAV (откат на set_volume): {format_exception(e)}")
+            logger.info(
+                f"Не удалось усилить WAV (откат на set_volume): {format_exception(e)}"
+            )
             return None
 
     @classmethod
@@ -79,7 +90,9 @@ class AudioHandler:
                     pygame.mixer.music.load(play_path)  # Pygame поддерживает MP3 и OGG
                     pygame.mixer.music.set_volume(mixer_volume)
                     pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():  # Ждем завершения воспроизведения
+                    while (
+                        pygame.mixer.music.get_busy()
+                    ):  # Ждем завершения воспроизведения
                         pygame.time.Clock().tick(10)
                     pygame.mixer.music.stop()
                     pygame.mixer.quit()

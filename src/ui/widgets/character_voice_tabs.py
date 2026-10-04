@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 import qtawesome as qta
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    pyqtProperty,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
@@ -53,7 +62,11 @@ class CharacterVoiceTabs(QWidget):
 
     def _tab_label(self, index):
         cid, name, _avatar = self._entries[index]
-        return character_display_name(cid, name) if cid else translate("Общий голос", "Default voice")
+        return (
+            character_display_name(cid, name)
+            if cid
+            else translate("Общий голос", "Default voice")
+        )
 
     def _refresh_labels(self):
         if self._entries:
@@ -69,11 +82,15 @@ class CharacterVoiceTabs(QWidget):
     def _scroll_button(self, direction, step):
         button = QToolButton(self)
         button.setObjectName("CharacterVoiceScrollButton")
-        button.setIcon(qta.icon(f"fa5s.chevron-{direction}", color=self._theme["muted"]))
+        button.setIcon(
+            qta.icon(f"fa5s.chevron-{direction}", color=self._theme["muted"])
+        )
         button.setFixedSize(28, 32)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         tr_set(button, "Прокрутить голоса", "Scroll voices", "setToolTip")
-        button.clicked.connect(lambda: self._scroll_to(self._scroll_offset + step * self.TAB_STEP * 2))
+        button.clicked.connect(
+            lambda: self._scroll_to(self._scroll_offset + step * self.TAB_STEP * 2)
+        )
         return button
 
     def count(self):
@@ -86,18 +103,32 @@ class CharacterVoiceTabs(QWidget):
         return self._entries[index][0]
 
     def tabRect(self, index):
-        return QRect(round(16 + index * self.TAB_STEP - self._scroll_offset), 6, self.TAB_WIDTH, self.TAB_HEIGHT - 6)
+        return QRect(
+            round(16 + index * self.TAB_STEP - self._scroll_offset),
+            6,
+            self.TAB_WIDTH,
+            self.TAB_HEIGHT - 6,
+        )
 
     def set_characters(self, characters, selected_id):
         if characters != self._characters:
             self._characters = characters
             default = qta.icon("fa5s.users", color=self._theme["muted"]).pixmap(60, 60)
             self._entries = [(None, "Общий голос", default)]
-            self._entries.extend((c.character_id, c.display_name, resolve_character_avatar(c.character_id, 60)) for c in characters)
+            self._entries.extend(
+                (
+                    c.character_id,
+                    c.display_name,
+                    resolve_character_avatar(c.character_id, 60),
+                )
+                for c in characters
+            )
             self._hover.clear()
             self._hovered = -1
         self._motion.stop()
-        self._index = next((i for i, entry in enumerate(self._entries) if entry[0] == selected_id), 0)
+        self._index = next(
+            (i for i, entry in enumerate(self._entries) if entry[0] == selected_id), 0
+        )
         self._active_position = float(self._index)
         self._ensure_visible(animate=False)
         self._position_buttons()
@@ -191,15 +222,28 @@ class CharacterVoiceTabs(QWidget):
         panel_color = QColor(self._theme["sidebar_panel"])
         inactive_color = QColor(self._theme["control_bg"])
         body = QPainterPath()
-        body.addRoundedRect(QRectF(1, self.TAB_HEIGHT, self.width() - 2, self.height() - self.TAB_HEIGHT - 1), 18, 18)
+        body.addRoundedRect(
+            QRectF(
+                1,
+                self.TAB_HEIGHT,
+                self.width() - 2,
+                self.height() - self.TAB_HEIGHT - 1,
+            ),
+            18,
+            18,
+        )
         active_x = 16 + self._active_position * self.TAB_STEP - self._scroll_offset
-        surface = body.united(self._tab_path(active_x, self.TAB_WIDTH, 2, self.TAB_HEIGHT + 1))
+        surface = body.united(
+            self._tab_path(active_x, self.TAB_WIDTH, 2, self.TAB_HEIGHT + 1)
+        )
         painter.save()
         painter.setClipRect(QRectF(0, 0, self._viewport_width(), self.TAB_HEIGHT))
         painter.setPen(Qt.PenStyle.NoPen)
         for i in range(self.count()):
             rect = QRectF(self.tabRect(i)).adjusted(3, 4, -3, -4)
-            color = QColor(inactive_color).lighter(round(150 + 70 * self._hover.get(i, 0)))
+            color = QColor(inactive_color).lighter(
+                round(150 + 70 * self._hover.get(i, 0))
+            )
             painter.setBrush(color)
             painter.drawRoundedRect(rect, 16, 16)
         painter.restore()
@@ -238,7 +282,9 @@ class CharacterVoiceTabs(QWidget):
     def _index_at(self, point):
         if point.x() >= self._viewport_width() or point.y() >= self.TAB_HEIGHT:
             return -1
-        return next((i for i in range(self.count()) if self.tabRect(i).contains(point)), -1)
+        return next(
+            (i for i in range(self.count()) if self.tabRect(i).contains(point)), -1
+        )
 
     def mouseMoveEvent(self, event):
         index = self._index_at(event.position().toPoint())
@@ -246,7 +292,11 @@ class CharacterVoiceTabs(QWidget):
             self._hovered = index
             self._hover_timer.start()
             self.setToolTip(self._tab_label(index) if index >= 0 else "")
-            self.setCursor(Qt.CursorShape.PointingHandCursor if index >= 0 else Qt.CursorShape.ArrowCursor)
+            self.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if index >= 0
+                else Qt.CursorShape.ArrowCursor
+            )
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
@@ -271,7 +321,11 @@ class CharacterVoiceTabs(QWidget):
 
     def mousePressEvent(self, event):
         index = self._index_at(event.position().toPoint())
-        if event.button() == Qt.MouseButton.LeftButton and index >= 0 and self.isEnabled():
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index >= 0
+            and self.isEnabled()
+        ):
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             self.setCurrentIndex(index)
             event.accept()
@@ -279,8 +333,21 @@ class CharacterVoiceTabs(QWidget):
             super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() in {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Home, Qt.Key.Key_End}:
-            index = 0 if event.key() == Qt.Key.Key_Home else self.count() - 1 if event.key() == Qt.Key.Key_End else self._index + (1 if event.key() == Qt.Key.Key_Right else -1)
+        if event.key() in {
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+            Qt.Key.Key_Home,
+            Qt.Key.Key_End,
+        }:
+            index = (
+                0
+                if event.key() == Qt.Key.Key_Home
+                else (
+                    self.count() - 1
+                    if event.key() == Qt.Key.Key_End
+                    else self._index + (1 if event.key() == Qt.Key.Key_Right else -1)
+                )
+            )
             self.setCurrentIndex(index)
             event.accept()
         else:

@@ -1,10 +1,19 @@
 import os
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QVBoxLayout, QLabel, QComboBox,
-    QSizePolicy, QPushButton, QSlider
+    QHBoxLayout,
+    QVBoxLayout,
+    QLabel,
+    QComboBox,
+    QSizePolicy,
+    QPushButton,
+    QSlider,
 )
-from ui.gui_templates import create_setting_widget, create_section_header, SettingsBodyWidget
+from ui.gui_templates import (
+    create_setting_widget,
+    create_section_header,
+    SettingsBodyWidget,
+)
 from utils import getTranslationVariant as _
 from localization.live import tr_set
 from ui.settings.voiceover_settings.presentation import (
@@ -33,33 +42,43 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
     create_section_header(container_lay, _("Настройки озвучки", "Voiceover Settings"))
 
-    self.voiceover_section = type('obj', (object,), {'content_frame': parent_layout.parent()})()
+    self.voiceover_section = type(
+        "obj", (object,), {"content_frame": parent_layout.parent()}
+    )()
 
     main_config = [
-        {'label': _('Использовать озвучку', 'Use speech'),
-         'key': 'USE_VOICEOVER', 'type': 'checkbutton',
-         'default_checkbutton': False, 'widget_name': 'use_voice_checkbox'},
-        {'label': _("Вариант озвучки", "Voiceover Method"),
-         'key': 'VOICEOVER_METHOD', 'type': 'combobox',
-         'options': ["TG", "Local", "API"], 'default': 'Local',
-         'widget_name': 'method_combobox'},
+        {
+            "label": _("Использовать озвучку", "Use speech"),
+            "key": "USE_VOICEOVER",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+            "widget_name": "use_voice_checkbox",
+        },
+        {
+            "label": _("Вариант озвучки", "Voiceover Method"),
+            "key": "VOICEOVER_METHOD",
+            "type": "combobox",
+            "options": ["TG", "Local", "API"],
+            "default": "Local",
+            "widget_name": "method_combobox",
+        },
     ]
 
     for cfg in main_config:
         widget = create_setting_widget(
             gui=self,
             parent=container,
-            label=cfg.get('label'),
-            setting_key=cfg.get('key', ''),
-            widget_type=cfg.get('type', 'entry'),
-            options=cfg.get('options'),
-            default=cfg.get('default', ''),
-            default_checkbutton=cfg.get('default_checkbutton', False),
-            widget_name=cfg.get('widget_name')
+            label=cfg.get("label"),
+            setting_key=cfg.get("key", ""),
+            widget_type=cfg.get("type", "entry"),
+            options=cfg.get("options"),
+            default=cfg.get("default", ""),
+            default_checkbutton=cfg.get("default_checkbutton", False),
+            widget_name=cfg.get("widget_name"),
         )
         if widget:
             container_lay.addWidget(widget)
-            if cfg.get('widget_name') == 'method_combobox':
+            if cfg.get("widget_name") == "method_combobox":
                 self.method_frame = widget
 
     self.tg_settings_frame = SettingsBodyWidget()
@@ -68,50 +87,77 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     tg_layout.setSpacing(4)
 
     tg_config = [
-        {'label': _('Автоподключение Telegram', 'Telegram auto-connect'),
-         'key': 'TG_AUTOCONNECT', 'type': 'checkbutton',
-         'default_checkbutton': False},
-
-        {'label': _('Подключиться к Telegram', 'Connect Telegram'),
-         'type': 'button',
-         'command': (lambda: actions.dispatch(StartTelegramVoice())),
-         'widget_name': 'tg_connect_button'},
-
-        {'label': _('Канал/Сервис', "Channel/Service"), 'key': 'AUDIO_BOT',
-         'type': 'combobox', 'options': ["@silero_voice_bot", "@CrazyMitaAIbot"],
-         'default': "@silero_voice_bot"},
-
-        {'label': _('Макс. ожидание (сек)', 'Max wait (sec)'), 'key': 'SILERO_TIME',
-         'type': 'entry', 'default': '12', 'validation': getattr(self, 'validate_number_0_60', None)},
-
-        {'label': _('Мин. интервал запросов (сек)', 'Min request interval (sec)'),
-         'key': 'TG_MIN_REQUEST_INTERVAL',
-         'type': 'entry', 'default': '2', 'validation': getattr(self, 'validate_number_0_60', None)},
-
-        {'label': _('Настройки Telegram API', 'Telegram API Settings'), 'type': 'text'},
-
-        {'label': _('Telegram ID', 'Telegram ID'), 'key': 'NM_TELEGRAM_API_ID', 'type': 'entry',
-         'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('Telegram Hash', 'Telegram Hash'), 'key': 'NM_TELEGRAM_API_HASH', 'type': 'entry',
-         'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
-        {'label': _('Telegram Phone', 'Telegram Phone'), 'key': 'NM_TELEGRAM_PHONE', 'type': 'entry',
-         'default': "", 'hide': bool(self.settings.get("HIDE_PRIVATE"))},
+        {
+            "label": _("Автоподключение Telegram", "Telegram auto-connect"),
+            "key": "TG_AUTOCONNECT",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+        },
+        {
+            "label": _("Подключиться к Telegram", "Connect Telegram"),
+            "type": "button",
+            "command": (lambda: actions.dispatch(StartTelegramVoice())),
+            "widget_name": "tg_connect_button",
+        },
+        {
+            "label": _("Канал/Сервис", "Channel/Service"),
+            "key": "AUDIO_BOT",
+            "type": "combobox",
+            "options": ["@silero_voice_bot", "@CrazyMitaAIbot"],
+            "default": "@silero_voice_bot",
+        },
+        {
+            "label": _("Макс. ожидание (сек)", "Max wait (sec)"),
+            "key": "SILERO_TIME",
+            "type": "entry",
+            "default": "12",
+            "validation": getattr(self, "validate_number_0_60", None),
+        },
+        {
+            "label": _("Мин. интервал запросов (сек)", "Min request interval (sec)"),
+            "key": "TG_MIN_REQUEST_INTERVAL",
+            "type": "entry",
+            "default": "2",
+            "validation": getattr(self, "validate_number_0_60", None),
+        },
+        {"label": _("Настройки Telegram API", "Telegram API Settings"), "type": "text"},
+        {
+            "label": _("Telegram ID", "Telegram ID"),
+            "key": "NM_TELEGRAM_API_ID",
+            "type": "entry",
+            "default": "",
+            "hide": bool(self.settings.get("HIDE_PRIVATE")),
+        },
+        {
+            "label": _("Telegram Hash", "Telegram Hash"),
+            "key": "NM_TELEGRAM_API_HASH",
+            "type": "entry",
+            "default": "",
+            "hide": bool(self.settings.get("HIDE_PRIVATE")),
+        },
+        {
+            "label": _("Telegram Phone", "Telegram Phone"),
+            "key": "NM_TELEGRAM_PHONE",
+            "type": "entry",
+            "default": "",
+            "hide": bool(self.settings.get("HIDE_PRIVATE")),
+        },
     ]
 
     for cfg in tg_config:
         widget = create_setting_widget(
             gui=self,
             parent=self.tg_settings_frame,
-            label=cfg['label'],
-            setting_key=cfg.get('key', ''),
-            widget_type=cfg.get('type', 'entry'),
-            options=cfg.get('options'),
-            default=cfg.get('default', ''),
-            validation=cfg.get('validation'),
-            hide=cfg.get('hide', False),
-            default_checkbutton=cfg.get('default_checkbutton', False),
-            command=cfg.get('command'),
-            widget_name=cfg.get('widget_name'),
+            label=cfg["label"],
+            setting_key=cfg.get("key", ""),
+            widget_type=cfg.get("type", "entry"),
+            options=cfg.get("options"),
+            default=cfg.get("default", ""),
+            validation=cfg.get("validation"),
+            hide=cfg.get("hide", False),
+            default_checkbutton=cfg.get("default_checkbutton", False),
+            command=cfg.get("command"),
+            widget_name=cfg.get("widget_name"),
         )
         if widget:
             tg_layout.addWidget(widget)
@@ -139,7 +185,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     label_container = SettingsBodyWidget()
     label_container.setLayout(label_part)
     label_container.setMinimumWidth(140)
-    label_container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+    label_container.setSizePolicy(
+        QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred
+    )
 
     self.local_voice_combobox = QComboBox()
     self.local_voice_empty_status = QLabel(
@@ -172,6 +220,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             self.local_model_settings_btn.setText("")
     else:
         self.local_model_settings_btn.setText("")
+
     def _open_current_model_settings():
         # Открываем AI Hub на разделе TTS и сразу выделяем текущую модель.
         # component_id в реестре — "tts:<model_id>" (см. make_component_id).
@@ -208,7 +257,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
     self.local_model_status_chip = QLabel()
     self.local_model_status_chip.setObjectName("VoiceModelStatusChip")
-    self.local_model_status_chip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    self.local_model_status_chip.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextSelectableByMouse
+    )
 
     status_layout.addWidget(self.local_model_status_chip)
     status_layout.addStretch(1)
@@ -243,7 +294,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
 
     self.local_volume_value_label = QLabel(f"{_init_volume}%")
     self.local_volume_value_label.setMinimumWidth(44)
-    self.local_volume_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    self.local_volume_value_label.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
 
     def _on_volume_changed(value):
         self.local_volume_value_label.setText(f"{int(value)}%")
@@ -252,7 +305,9 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
             self._save_setting("VOICEOVER_LOCAL_VOLUME", int(value))
 
     def _on_volume_released():
-        self._save_setting("VOICEOVER_LOCAL_VOLUME", int(self.local_volume_slider.value()))
+        self._save_setting(
+            "VOICEOVER_LOCAL_VOLUME", int(self.local_volume_slider.value())
+        )
 
     self.local_volume_slider.valueChanged.connect(_on_volume_changed)
     self.local_volume_slider.sliderReleased.connect(_on_volume_released)
@@ -264,54 +319,74 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     playback_layout = QVBoxLayout(self.playback_settings_frame)
     playback_layout.setContentsMargins(0, 0, 0, 0)
     playback_layout.addWidget(volume_row)
-    playback_layout.addWidget(create_setting_widget(
-        gui=self, parent=self.playback_settings_frame,
-        label=_("Озвучивать в чате", "Voiceover in chat"),
-        setting_key="VOICEOVER_LOCAL_CHAT", widget_type="checkbutton",
-        default_checkbutton=True,
-    ))
+    playback_layout.addWidget(
+        create_setting_widget(
+            gui=self,
+            parent=self.playback_settings_frame,
+            label=_("Озвучивать в чате", "Voiceover in chat"),
+            setting_key="VOICEOVER_LOCAL_CHAT",
+            widget_type="checkbutton",
+            default_checkbutton=True,
+        )
+    )
 
     local_config = [
-        {'label': _("Язык локальной озвучки", "Local Voice Language"),
-         'key': "VOICE_LANGUAGE", 'type': 'combobox',
-         'options': ["ru", "en"], 'default': "ru",
-         'widget_name': 'voice_language_var'},
-
-        {'label': _('Автозагрузка модели', 'Autoload model'),
-         'key': 'LOCAL_VOICE_LOAD_LAST', 'type': 'checkbutton',
-         'default_checkbutton': False},
-
-        {'label': _('Инициализировать модель при запросе', 'Initialize model on request'),
-         'key': 'LOCAL_VOICE_INIT_ON_REQUEST', 'type': 'checkbutton',
-         'default_checkbutton': False},
-
-        {'label': _('Перезапустить нейро-ядро озвучки', 'Restart Voice AI Engine'),
-         'type': 'button',
-         'command': (lambda: actions.dispatch(RestartVoiceService()))},
-
-        {'label': _('Перейти к настройкам ИИ-движка', 'Open AI Engine settings'),
-         'type': 'button',
-         'command': (lambda: actions.dispatch(OpenAIEngineSettings()))}
+        {
+            "label": _("Язык локальной озвучки", "Local Voice Language"),
+            "key": "VOICE_LANGUAGE",
+            "type": "combobox",
+            "options": ["ru", "en"],
+            "default": "ru",
+            "widget_name": "voice_language_var",
+        },
+        {
+            "label": _("Автозагрузка модели", "Autoload model"),
+            "key": "LOCAL_VOICE_LOAD_LAST",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+        },
+        {
+            "label": _(
+                "Инициализировать модель при запросе", "Initialize model on request"
+            ),
+            "key": "LOCAL_VOICE_INIT_ON_REQUEST",
+            "type": "checkbutton",
+            "default_checkbutton": False,
+        },
+        {
+            "label": _("Перезапустить нейро-ядро озвучки", "Restart Voice AI Engine"),
+            "type": "button",
+            "command": (lambda: actions.dispatch(RestartVoiceService())),
+        },
+        {
+            "label": _("Перейти к настройкам ИИ-движка", "Open AI Engine settings"),
+            "type": "button",
+            "command": (lambda: actions.dispatch(OpenAIEngineSettings())),
+        },
     ]
     if os.environ.get("ENABLE_VOICE_DELETE_CHECKBOX", "0") == "1":
-        local_config.insert(2, {
-            'label': _('Удалять аудио', 'Delete audio'),
-            'key': 'LOCAL_VOICE_DELETE_AUDIO', 'type': 'checkbutton',
-            'default_checkbutton': True
-        })
+        local_config.insert(
+            2,
+            {
+                "label": _("Удалять аудио", "Delete audio"),
+                "key": "LOCAL_VOICE_DELETE_AUDIO",
+                "type": "checkbutton",
+                "default_checkbutton": True,
+            },
+        )
 
     for cfg in local_config:
         widget = create_setting_widget(
             gui=self,
             parent=self.local_settings_frame,
-            label=cfg.get('label'),
-            setting_key=cfg.get('key', ''),
-            widget_type=cfg.get('type', 'entry'),
-            options=cfg.get('options'),
-            default=cfg.get('default', ''),
-            default_checkbutton=cfg.get('default_checkbutton', False),
-            command=cfg.get('command'),
-            widget_name=cfg.get('widget_name')
+            label=cfg.get("label"),
+            setting_key=cfg.get("key", ""),
+            widget_type=cfg.get("type", "entry"),
+            options=cfg.get("options"),
+            default=cfg.get("default", ""),
+            default_checkbutton=cfg.get("default_checkbutton", False),
+            command=cfg.get("command"),
+            widget_name=cfg.get("widget_name"),
         )
         if widget:
             local_layout.addWidget(widget)
@@ -319,6 +394,7 @@ def build_voiceover_settings_ui(self, parent_layout, *, actions):
     container_lay.addWidget(self.local_settings_frame)
 
     from ui.settings.voiceover_settings.remote_api import RemoteVoiceSettingsWidget
+
     self.api_settings_frame = SettingsBodyWidget()
     api_layout = QVBoxLayout(self.api_settings_frame)
     api_layout.setContentsMargins(0, 0, 0, 0)
